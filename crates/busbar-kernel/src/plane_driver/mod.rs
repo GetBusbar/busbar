@@ -54,6 +54,7 @@
 //! cancelled; the write itself runs on).
 
 mod cancel;
+pub mod door;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;
@@ -61,7 +62,9 @@ mod money;
 mod needs;
 mod probe;
 mod route;
+pub mod route_tables;
 pub mod serve;
+pub mod slots;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -97,7 +100,7 @@ pub use hooks::{
     UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
@@ -569,10 +572,15 @@ impl PlaneDriver {
         }
     }
 
-    /// The driver's own ticketless `cancel` of `ticket`, on the calling task: its disposition and
-    /// its record writes, or `None` when it did not answer READY.
-    fn cancel_now(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
-        self.calls.cancel(ticket)
+    /// The driver's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit`, on
+    /// the calling task: its disposition and its record writes, or `None` when it did not answer
+    /// READY. The unit is named so the plane finds a unit no piece ever reached (audit P-M7).
+    fn cancel_now(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+    ) -> Option<busbar_contract::plane_calls::Cancelled> {
+        self.calls.cancel(ticket, unit)
     }
 }
 
@@ -1411,7 +1419,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let (streamed, cut) = {
             let st = self.lock();
             let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
-            (st.facts.streamed && success, st.facts.cut)
+            (st.facts.content && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
         self.steps.audit(token, ctx, outcome)

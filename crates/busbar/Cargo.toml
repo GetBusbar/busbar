@@ -47,11 +47,6 @@ hex = { workspace = true }
 # The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13): `root::keyset` mints the one
 # ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
 getrandom = { workspace = true }
-# The operator-signature verifier for the D38 `amend_rate_history` effect: the sealed operator key
-# arrives (through the posture seam) as raw ed25519 bytes, and this parses them and checks the
-# detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
-# admin verb's effect half.
-ed25519-dalek = { workspace = true }
 # THE LLM PLANE, through its memory-ABI door: the edge `plane-llm` carries through its door row
 # (`plane-llm-door`, see that feature). Every llm arrival is served through the plane driver.
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
@@ -234,12 +229,12 @@ plane-llm = ["plane-llm-door", "auth-sigv4", "auth-oauth"]
 # THE MCP PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # MCP. The plane is served through its memory-ABI door alone (`plane-mcp-door`): every word the root
 # reads about it is the door's own (its Statement, its tail's `cli_help`, its `declares.json`).
-plane-mcp = ["plane-mcp-door", "busbar-kernel/plane-mcp", "busbar-core-admin/plane-mcp"]
+plane-mcp = ["plane-mcp-door", "busbar-kernel/plane-mcp"]
 # THE A2A PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # A2A. The plane is served through its memory-ABI door alone (`plane-a2a-door`): every word the root
 # reads about it is the door's own (its Statement, its `declares.json`). `--no-default-features`
 # compiles it out while core still routes the other planes (the plane-split deletion test).
-plane-a2a = ["plane-a2a-door", "busbar-kernel/plane-a2a", "busbar-core-admin/plane-a2a"]
+plane-a2a = ["plane-a2a-door", "busbar-kernel/plane-a2a"]
 # THE STREAMING PLANE, through its memory-ABI door (FLIP-STREAMING; BUSBAR-1.6.0.md Part 3 section 12,
 # "The switch": the fold's development-only switch is deleted when the fold completes, and the
 # plane's one switch carries its door). IN `default`; `--no-default-features` compiles it out. On, the
@@ -397,7 +392,7 @@ plane-streaming = "busbar-plane-streaming"
 plane-a2a-door = "busbar-plane-a2a"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
-# kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
+# kernel-side), `protocols`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
@@ -436,7 +431,10 @@ transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 transport-webrtc = "transport transport-door"
 plane-decisions = "plane-door"
-plane-llm-door = "plane-door"
+# The fallback plane's door row also fills the protocol axis with the plane's own dialect
+# declarations (its entry's `PROTOCOLS`, contract data; ARCHITECT 2026-10-16 ruling 3): the
+# kernel's registry is seeded from the plane, and names none.
+plane-llm-door = "plane-door protocols"
 plane-mcp-door = "plane-door"
 plane-streaming = "plane-door"
 plane-a2a-door = "plane-door"
@@ -558,6 +556,9 @@ planes = ["door:busbar-plane-llm", "door:busbar-plane-mcp", "door:busbar-plane-a
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
+# The tests' own ed25519 keys (credential and keyset cells). No production path verifies an
+# operator signature (#77(9)), so it is a test dependency only.
+ed25519-dalek = { workspace = true }
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
 # `tests/plane_integration.rs` reads a plane's admission audience as a URL.

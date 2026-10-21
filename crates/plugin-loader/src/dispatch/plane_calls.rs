@@ -158,11 +158,12 @@ impl PlaneCalls for PlaneInstance {
         self.pure(slot::PROJECT, input, out, grow)
     }
 
-    fn cancel(&self, ticket: Ticket) -> Option<Cancelled> {
+    fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled> {
         use super::CancelFrame as _;
-        // The plane's own `cancel` frame, its record buffers lent (SEAM-L(r)).
+        // The plane's own `cancel` frame, its record buffers lent (SEAM-L(r)), naming the unit.
         let mut cancel = super::PlaneCancel::new();
         let _ = cancel.prepare(ticket, 0);
+        cancel.frame().input.unit = unit;
         let called = self.plugin.call(life::CANCEL, cancel.frame());
         (called.outcome == Outcome::Ready).then(|| Cancelled {
             disposition: cancel.disposition(),

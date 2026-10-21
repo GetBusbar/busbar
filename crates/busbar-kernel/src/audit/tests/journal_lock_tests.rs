@@ -5,14 +5,14 @@
 //! (`dlclose` included) runs under a host lock."; audit finding kernel-K4#6).
 //!
 //! The store is plugin code. These cells drive [`super::Journal`] over a store double that can PARK
-//! one crossing (an append, or a restore's read of one scope) until the test releases it, and that
+//! one crossing (an append, or a resume's read of one scope) until the test releases it, and that
 //! can RE-ENTER the journal from inside its own write. Every wait is bounded, so a journal that
 //! blocks on its own lock fails the cell instead of hanging the run.
 
 use super::{Journal, NeutralBody};
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, ChainedRecord, Framing};
-use crate::plane::store::{decode, PlaneStore};
+use crate::store::plane_view::{decode, PlaneStore};
 use busbar_contract::records::{PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -335,42 +335,33 @@ fn two_concurrent_appends_to_one_scope_still_chain_gap_free() {
     assert_eq!(j.next_seq("scope-a"), 3);
 }
 
-/// RED on the kind-wide lock: a restore parked reading scope A back from the store must not hold
-/// the position map, so an append to scope B completes meanwhile. The restore then commits A's
-/// tail.
+/// RED on the kind-wide lock: a resume parked reading scope A's tail back from the store (scope A
+/// was forgotten, so its next append reads the tail to continue it) must not hold the position map,
+/// so an append to scope B completes meanwhile. The resumed append then continues A's chain.
 #[test]
-fn an_append_completes_while_a_restore_is_parked_reading_another_scope() {
+fn an_append_completes_while_a_resume_is_parked_reading_another_scope() {
     let store = Arc::new(GateStore::default());
-    journal_over(&store)
-        .append_scoped(KIND, "scope-a", input(b"a1"), &reframe)
-        .expect("seed scope A");
     let j = journal_over(&store);
+    j.append_scoped(KIND, "scope-a", input(b"a1"), &reframe)
+        .expect("seed scope A");
+    j.forget("scope-a");
     let (entered, release) = park(&store, Op::List, "scope-a");
-    let (restored_tx, restored_rx) = mpsc::channel();
-    let jr = Arc::clone(&j);
-    let sr = Arc::clone(&store);
-    std::thread::spawn(move || {
-        let out = jr
-            .restore_scoped(KIND, &*sr, &reframe)
-            .map(|r| r.records)
-            .map_err(|e| e.to_string());
-        let _ = restored_tx.send(out);
-    });
+    let a = append_in_thread(&j, "scope-a", b"a2");
     entered
         .recv_timeout(WAIT)
-        .expect("the restore reaches scope A's read");
+        .expect("the resume reaches scope A's read");
     let b = append_in_thread(&j, "scope-b", b"b1");
     let b_done = b.recv_timeout(WAIT);
     let _ = release.send(());
     assert_eq!(
-        b_done.expect("scope B's append finishes while the restore reads scope A"),
+        b_done.expect("scope B's append finishes while the resume reads scope A"),
         Ok(1)
     );
     assert_eq!(
-        restored_rx
-            .recv_timeout(WAIT)
-            .expect("the restore finishes once released"),
-        Ok(1)
+        a.recv_timeout(WAIT)
+            .expect("the resumed append finishes once released"),
+        Ok(2),
+        "scope A continued its persisted tail"
     );
-    assert_eq!(j.next_seq("scope-a"), 2);
+    assert_eq!(j.next_seq("scope-a"), 3);
 }

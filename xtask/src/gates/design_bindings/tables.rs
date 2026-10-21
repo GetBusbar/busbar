@@ -108,7 +108,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-16", &[
         ("test", "test_flat_fee_charge_and_refund_use_charged_at_window", "the fee is refunded on a non-2xx and kept on a 2xx"),
         ("test", "a_pre_routing_refusal_leaves_a_prior_charge_intact", "a pre-routing failure refunds nothing extra"),
-        ("test", "a_dispatch_record_is_written_on_the_book_under_its_units_facts", "finish_admitted never refunds an uncharged admit"),
+        ("test", "crates/busbar/src/root/tests/plane_node_money.rs::a_dispatch_record_is_written_on_the_book_under_its_units_facts", "finish_admitted never refunds an uncharged admit"),
     ]),
     ("PB-18", &[
         ("test", "test_inbound_concurrency_layer_added_only_when_positive", "max_inbound_concurrent 0 adds no layer at all"),
@@ -487,7 +487,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-87", &[
         ("test", "rerank_resp_billing_is_flat", "a rerank reporting no search units projects Billing::Flat"),
         ("test", "rerank_resp_billing_counts_search_units_as_an_open_class", "reported search units leave as the counted class search_units (item 134)"),
-        ("test", "a_reranks_search_units_reach_the_price_on_both_books", "search units are priced by a present card, refused by a card silent about them (#42), read 0 with no card"),
+        ("test", "crates/busbar/src/root/tests/plane_node_money.rs::a_reranks_search_units_reach_the_price_on_both_books", "search units are priced by a present card, refused by a card silent about them (#42), read 0 with no card"),
     ]),
     ("PB-88", &[
         ("test", "a_bad_request_reject_is_the_generic_400", "the literal 400 We could not process the content of your request"),

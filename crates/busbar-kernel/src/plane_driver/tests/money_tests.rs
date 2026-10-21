@@ -468,6 +468,105 @@ fn a_delivered_zero_token_unit_meters_one_request() {
     assert_eq!((row.tokens_input, row.tokens_output), (0, 0));
 }
 
+/// A DOOR UNIT ARRIVING IN THE LAST SECOND OF A METERING BUCKET IS METERED IN THAT BUCKET. Door
+/// successor of `crates/busbar/src/root/tests/plane_node.rs::a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in`
+/// (the governance half its door port could not reach): the money seam the door opens every unit
+/// on files the unit's metering row under the ARRIVAL it was opened with, never a clock read at its
+/// end. The arrival is placed on the last second of the bucket before [`NOW`]'s, the one instant
+/// where a second clock read disagrees; the row is looked for in the bucket the unit arrived in,
+/// and the next bucket is checked to be empty, because a figure that leaked forward would land
+/// there. As the original pinned: one row in the arrival's bucket, none in the next.
+/// RED: the metering row keyed off a fresh clock read (or the arrival's next second).
+#[test]
+fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived_in() {
+    use crate::governance::metering_bucket;
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let arrived = metering_bucket(NOW) - 1;
+    assert_ne!(
+        metering_bucket(arrived),
+        metering_bucket(arrived + 1),
+        "one second later is a different bucket, which is what makes this a straddle"
+    );
+    assert_ne!(
+        metering_bucket(arrived),
+        metering_bucket(crate::store::now()),
+        "and the clock is in neither"
+    );
+    r.money.open(
+        UnitKey::new(1),
+        UnitMoney {
+            arrived,
+            ..r.unit.clone()
+        },
+    );
+    let _ = r.money.checkpoint(&ctx(1), &reported(40));
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.settle_end(UnitKey::new(1), 200);
+    r.gov.flush_metering();
+    let rows_in = |bucket| {
+        r.gov
+            .metering_for(bucket)
+            .expect("metering read")
+            .into_iter()
+            .filter(|row| row.key_id == r.key.id)
+            .count()
+    };
+    assert_eq!(
+        rows_in(metering_bucket(arrived)),
+        1,
+        "the unit's figures land in the bucket it arrived in"
+    );
+    assert_eq!(
+        rows_in(metering_bucket(arrived + 1)),
+        0,
+        "and nothing leaked into the bucket the clock was about to roll into"
+    );
+}
+
+/// A STREAM ITS FAR END CUT BILLS NO TOKENS AND IS NOT METERED, ITS REQUEST STILL COUNTS AND ITS
+/// FEE STANDS AS ITS PLANE REPORTED IT (status row 183; BUSBAR-1.6.0.md, Budgets, l.1014-1019): a
+/// unit whose 2xx stream the far end cut after the far end reported 40 input tokens ledgers none of
+/// them and writes no metering row (v1.5.5 `proxy/response_body.rs`: a transport error sets
+/// `stream_failed` (:283) and the drop-time gate bills no tokens (:642)); its admitted request and
+/// the fee its plane reported stay, as 1.5.5's finish kept the fee of a 2xx head
+/// (`ingress/mod.rs:574-575`; oracle cell `route.failover|fo|primary-cut-stream`, golden usage
+/// `{"requests":1}`, tokens 0).
+/// RED: the cut stream's reported tokens ledgered, or its end metered on its head's 2xx alone.
+#[test]
+fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    admit(&r);
+    let report = [
+        UnitCount {
+            class: INPUT,
+            source: UNITS_REPORTED,
+            amount: 40,
+        },
+        fee_reported(1),
+    ];
+    let _ = r.money.checkpoint(&ctx(1), &report);
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.far_cut(UnitKey::new(1));
+    r.money.settle_end_as(
+        UnitKey::new(1),
+        UnitEnd {
+            caller_status: 200,
+            cut: true,
+        },
+    );
+    assert!(metering_rows(&r).is_empty(), "a cut stream meters nothing");
+    assert_eq!(
+        usage(&r),
+        (0, 5),
+        "no token of the cut stream bills, and the fee its plane reported stands"
+    );
+    let u = r
+        .gov
+        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .expect("usage");
+    assert_eq!(u.requests, 1, "the request unit still counts");
+}
+
 /// A unit that failed over ledgers AND meters under the member that served it, never the model
 /// it was opened under. RED: without `served` the tokens sit under `m` and nothing meters.
 #[test]
@@ -918,6 +1017,7 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
         status: 0,
         far_end_answered: true,
         streamed: true,
+        content: true,
         cut: false,
         relayed: false,
         units: vec![

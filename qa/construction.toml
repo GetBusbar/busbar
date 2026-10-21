@@ -272,6 +272,11 @@ needle = "busbar_kernel::"
 # STRUCK: busbar-a2a = 232 (FLIP-A2A, the flip: the plane is served through its door, and its row
 # went with the crate).
 # busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
+# REPOINTED (coordinator ruling 2026-10-20, Law 10): with `gate.plane_crates` empty this rule read
+# no crate, so its per-crate ceiling held nothing and its self-test could raise no figure. The
+# planes are now the `[gate.plugin_kinds].plane` door crates on the tree; each is armed at its
+# measure. A door crate with no row is held at 0.
+busbar-plane-llm = 0
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -292,6 +297,13 @@ counts can trend to zero at their own pace."""
 # STRUCK: busbar-mcp = 185 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
 # STRUCK: busbar-a2a = 98 (FLIP-A2A — the crate is deleted).
 # busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
+# REPOINTED with ports-only above: the door crate's test reach, armed at its measure (20 lines, all
+# in crates/busbar-plane-llm/tests/on_driver: held.rs 3, policies.rs 2, projection.rs 7,
+# refusals.rs 1, seam.rs 7). Downward only.
+busbar-plane-llm = 20
+# The pinned a2a door (laid by the base layer at its pin d7cf79d): 93 lines, all in its
+# tests/root/mod.rs rig. Downward only.
+busbar-plane-a2a = 93
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -659,10 +671,11 @@ loop_verb = "run_unit"
 loop_root = "crates/busbar-kernel/src"
 max_callers_per_plane_crate = 1
 legacy_verb = "run_gauntlet"
-# Today: the LLM and A2A planes. The MCP plane's site left with `busbar-mcp`, and the host-seam
-# adapter body (`EngineHost::run_gauntlet`) was deleted with it (ARCHITECT Q1c). Down to 0 when the
-# planes move.
-max_legacy_sites = 2
+# The MCP plane's site left with `busbar-mcp`, and the host-seam adapter body
+# (`EngineHost::run_gauntlet`) was deleted with it (ARCHITECT Q1c). LOWERED 2 -> 0 by #1161
+# (DEV-GREEN row 83): the last two call sites left with the retired engine crate, and no
+# production code calls `run_gauntlet(` any more (Law 9: the ceiling sits at today's measure).
+max_legacy_sites = 0
 
 # ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
 # STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): its subject, the retired engine crate's
@@ -750,8 +763,9 @@ busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
 busbar-transport-http = ["futures", "http", "http-body-util", "hyper", "hyper-util", "memchr", "tokio", "tokio-util"]
 # The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2.
 busbar-transport-grpc = ["http", "http-body", "hyper"]
-# The pinned ws framer: tokio-tungstenite's frame codec (handshake feature only).
-busbar-transport-ws = ["tokio-tungstenite"]
+# The pinned ws framer: tungstenite's frame codec and handshake machines, driven over the host's
+# bytes with no runtime (handshake feature only; ws #21 dropped the tokio wrapper).
+busbar-transport-ws = ["tungstenite"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
@@ -918,7 +932,9 @@ known_sites = [
   "crates/busbar-kernel/src/config/migrate.rs :: model",
   "crates/busbar-kernel/src/config/migrate.rs :: pools.{pname}.members[].target -> model",
   "crates/busbar-kernel/src/config/mod.rs :: completion",
-  "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
+  # `crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names ...` STRUCK: the
+  # message is now written over the section (`{section}.{entry}`), so the plane noun is no longer in
+  # the file.
   "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
   # Moved from the retired shared value crate with the code that carries it (#83a SD-8), reviewed
   # there and frozen: the published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
@@ -1258,19 +1274,15 @@ known_sites = [
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
-  "crates/busbar-kernel/src/plane_host/dispatch.rs",
-  "crates/busbar-kernel/src/plane_host/egress.rs",
-  "crates/busbar-kernel/src/plane_host/identity_admit.rs",
-  "crates/busbar-kernel/src/plane_host/journal.rs",
-  "crates/busbar-kernel/src/plane_host/pipe.rs",
-  "crates/busbar-kernel/src/plane_host/vtable.rs",
+  # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",
   # was crates/busbar-core/src/router.rs (R099)
   "crates/busbar-kernel/src/router.rs",
-  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100); `sweep` is still the
+  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100), then
+  # crates/busbar-kernel/src/plane/handle_engine.rs::sweep (D2 item 15, a rename); `sweep` is still the
   # enclosing function — the escape is at :858, the fn opens at :820.
-  "crates/busbar-kernel/src/plane/handle_engine.rs::sweep",
+  "crates/busbar-kernel/src/host_work/handle_engine.rs::sweep",
   # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
   # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
   "crates/busbar-kernel/src/plane_host/mod.rs",
@@ -1316,8 +1328,8 @@ known_sites = [
   #   The declared-diagnostics catalogue, installed once at boot.
   "crates/busbar/src/root/linked.rs::register_diagnostics",
   #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
-  "crates/busbar-kernel/src/plane/door.rs::fold",
-  "crates/busbar-kernel/src/plane/door.rs::declaration_of",
+  "crates/busbar-kernel/src/plane_driver/door.rs::fold",
+  "crates/busbar-kernel/src/plane_driver/door.rs::declaration_of",
   #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
   #   it already holds), the leak-once intern shape of vocabulary.rs `key` above.
   "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",
@@ -1776,9 +1788,10 @@ fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 #          derivation, and it is the card crate's own convention -- `absent_in`/`from_config` take a
 #          bare `i64` with no `Option`, so "no fee named" is 0 everywhere, not just here.
 #   :1247  the STRING LITERAL `"per_request_fee"` in `canonical_amend_payload`'s fixed key list.
-#          It reads no fee at all: it names the JSON key so the operator's detached ed25519
-#          signature COVERS the fee. Deleting it to quiet a grep would take the fee outside the
-#          signed payload -- a security regression bought with a green row.
+#          It reads no fee at all: it names the JSON key so the correction's canonical payload,
+#          which the durable amendment record keeps, CARRIES the fee. No operator signature covers
+#          it any more (#77(9), BUSBAR-1.6.0.md l.2279: no verb carries operator signatures);
+#          deleting the key would take the fee out of the recorded payload.
 #
 # NONE of the four stores a price (#77(3)), writes a price into a durable book, computes money in
 # binary floating point (#77(8)/#81), or prices against any card at all -- they never price. What
@@ -1822,8 +1835,8 @@ fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 # so no plane and no root file spells a fee -- the read lives where the card lives." That discipline
 # is real and it still holds for every root file but this one. THE ONE EXCEPTION IS FORCED BY THE
 # WIRE: an admin verb that accepts a correction must spell the operator's own field name to parse
-# it and must spell it again to sign it (#47 fixes the spelling; the signature makes it
-# load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
+# it and must spell it again to record it in the canonical payload (#47 fixes the spelling; the
+# durable record makes it load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
 # read in that same file is RED again.
 fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-core-admin"]
 max_fee_readers = 0
@@ -1836,7 +1849,7 @@ max_fee_readers = 0
 [rules.one-pricing-site.fee_allowed.amend-rate-history]
 path = "crates/busbar/src/root/units_admin/mod.rs"
 max = 4
-because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), covers it with the operator's ed25519 signature, and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
+because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), names it in the canonical payload the durable amendment record keeps (no operator signature since #77(9)), and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
 
 [rules.one-pricing-site.allowed.cost-unit]
 path = "crates/busbar-kernel-ledger/src/cost/"
@@ -2214,6 +2227,15 @@ abi = 1
 "crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
 "crates/busbar-llm" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): the last legacy engine is deleted; the llm plane is served through its door alone, busbar-plane-llm, in default"
 "crates/busbar-a2a" = "FLIP-A2A U11 (Q128 pre-audit): the legacy a2a engine is deleted; the plane is served through its door, busbar-plane-a2a, in default (ARCHITECT 2026-10-04)"
+
+# THE RULE TABLES STRUCK WITH THEIR SUBJECT (coordinator ruling 2026-10-20, Law 9: a ceiling never
+# disappears silently). A `[rules.*]` table may leave this file only when it is named here with what
+# was deleted, the status row and the measured value, AND every subject path it named at the base
+# (`root`, `crate`, `allowed_file`) lies under a [gate.census.deleted] directory that is gone from
+# the tree. `ceiling-census` checks each condition; the ledger is add-only.
+[gate.census.deleted_rules]
+"rules.no-response-escapes-audit" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the retired engine crate's step directory crates/busbar-llm/src/unit (allowed file audit.rs), was deleted with crates/busbar-llm; measured 0 (max_escapes = 0 at the base): no file under that root exists"
+"rules.terminal-doors-in-audit-step" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the finish_admitted/finish_rejected call sites inside crate busbar-llm outside crates/busbar-llm/src/unit/audit.rs, was deleted with crates/busbar-llm; measured 0 (max_extra_sites = 0 at the base): the crate has no file"
 
 # THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
 # drop only when the root pins it as a git dependency at a rev under the package name it had at the

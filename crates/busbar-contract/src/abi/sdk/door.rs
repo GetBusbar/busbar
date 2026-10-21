@@ -122,7 +122,7 @@ unsafe impl AbiOut for CancelOut {}
 /// # Safety (the all-absent table)
 ///
 /// Every field of the table is an integer or an `Option` of a function pointer, so the all-zero
-/// bit pattern is a valid table with every op absent ([`no_ops`]).
+/// bit pattern is a valid table with every op absent ([`absent_table`]).
 pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
@@ -130,16 +130,6 @@ pub unsafe trait KindOps: Copy + 'static {
     /// index: [`Lifecycle`], or a kind's own where the kind widens a lifecycle `in`/`out` (the
     /// plane's `open`, `refresh` and `drive`).
     type Lifecycle: 'static;
-}
-
-/// THE ALL-ABSENT TABLE of a kind: every op `None`, every count `0`. [`plugin_door!`](crate::plugin_door)
-/// fills the ops an invocation does not name from it, so a kind op appended to a kind's table is
-/// absent from a plugin written before it, as it is from a dropped-in table that ends before it.
-#[must_use]
-pub const fn no_ops<T: KindOps>() -> T {
-    // SAFETY: `KindOps`' contract: every field of the table is an integer or an `Option` of a
-    // function pointer, for which all-zero is a valid value (`0`, `None`).
-    unsafe { ::core::mem::zeroed() }
 }
 
 /// The lifecycle's own `in`/`out` for every lifecycle slot (`abi::mechanism::lifecycle`): the
@@ -472,6 +462,18 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
     }
 }
 
+/// A `T` table with every kind-op slot NULL (its head is the caller's to replace): the base
+/// [`plugin_door!`](crate::plugin_door) fills the kind ops a door does not name from. A NULL kind op
+/// is ABSENT; the loader admits one only in a slot its kind states optional (absent = pass, the
+/// secret `check` and the auth `target`) and refuses a door that leaves any other slot NULL.
+#[must_use]
+pub const fn absent_table<T: KindOps>() -> T {
+    // SAFETY: `T: KindOps` is `#[repr(C)]` with `head: OpsHead` first and only `Option<Op>` slots
+    // after it; all-zero is a valid `OpsHead` (two zero `u32`s and `None` slots) and a valid `None`
+    // for every slot.
+    unsafe { MaybeUninit::<T>::zeroed().assume_init() }
+}
+
 /// Write `outcome = FAULT` into a host `out` head, and nothing else.
 ///
 /// # Safety
@@ -650,8 +652,9 @@ pub const fn door<T: KindOps>(
 ///   refuses the load, so all nine are named.
 /// * `kind_ops` — one [`Slot`] per kind op, by the table's field name; its index is read off the
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
-///   that index ([`KindSlot`]; a mismatch does not compile). Every field must be named (a struct
-///   literal).
+///   that index ([`KindSlot`]; a mismatch does not compile). A kind op left unnamed is NULL
+///   (absent), so a door written before an optional kind op was appended to its table still
+///   builds; the loader admits a NULL only where the kind states the op optional.
 /// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
 ///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
@@ -783,8 +786,8 @@ macro_rules! plugin_door {
             }
             const __STATEMENT: &$crate::abi::mechanism::door::Statement =
                 &__sdk::stamp::<__Ops>($statement);
-            // A kind op the invocation does not name (one its kind appended after the plugin was
-            // written) is absent (`None`), as a dropped-in table that ends before it states.
+            // A kind op the door names no slot for is NULL (absent), so a door written before an
+            // optional kind op was appended to its table still builds and states it.
             #[allow(clippy::needless_update)]
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(
@@ -801,7 +804,7 @@ macro_rules! plugin_door {
                 $($(
                     $field: __sdk::kind_op::<__Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
-                ..__sdk::no_ops::<__Ops>()
+                ..__sdk::absent_table::<__Ops>()
             };
             const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(
                 __STATEMENT,

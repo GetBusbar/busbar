@@ -206,10 +206,6 @@ impl ConstructionGate {
         .map(String::from)
         .collect();
 
-        for crate_name in cfg.plane_crates()? {
-            ids.push(format!("ports-only:{crate_name}"));
-            ids.push(format!("ports-only-tests:{crate_name}"));
-        }
         for (key, _) in cfg.doc.children("rules.legacy-reach.prefixes") {
             ids.push(format!("legacy-reach:{key}"));
         }
@@ -225,6 +221,17 @@ impl ConstructionGate {
             }
             Ok(out)
         };
+
+        // `ports-only` holds every plane: the legacy list (empty since DEV-GREEN row 83) and the
+        // door crates `[gate.plugin_kinds].plane` matches, so each is an owed row pair.
+        let mut planes = cfg.plane_crates()?;
+        planes.extend(crates_of(&["plane".to_string()])?);
+        planes.sort();
+        planes.dedup();
+        for crate_name in planes {
+            ids.push(format!("ports-only:{crate_name}"));
+            ids.push(format!("ports-only-tests:{crate_name}"));
+        }
 
         // THE KEYS `manifest_allowlist` OUGHT TO READ — NOT A COPY OF THE ONES IT DOES. This is the
         // rule's COMPLETENESS ORACLE, the list that decides which

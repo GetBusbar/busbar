@@ -330,6 +330,97 @@ pub fn base_line(cx: &Ctx) -> Result<(String, String), String> {
     Ok((r, why))
 }
 
+/// THE BASE'S COPY OF ONE FILE, for a DRAIN-ONLY list held against the base (Law 9: it "refuses
+/// every rise"). The same base [`base_ref`] gives `ceiling-census` and kind-isolation's minted
+/// rows, read the same way (`git show <base>:<path>`).
+///
+/// * `Ok((base, Some(text)))` — the base carries the file: a row this tree holds and the base does
+///   not was written by the change under judgement.
+/// * `Ok((base, None))` — the base carries no such file: the change ADDS the list, and that landing
+///   is the file's own review (kind-isolation's `registry_present`), so no row of it is minted.
+/// * `Err` — no base, or a base whose copy cannot be read for any other reason. RED at the caller:
+///   a list compared with nothing is not a list that held.
+pub fn base_copy(cx: &Ctx, path: &str) -> Result<(Base, Option<String>), String> {
+    let base = base_ref(cx).map_err(|e| {
+        format!(
+            "no base to hold {path} against, so no row can be shown to pre-date this change: {e}"
+        )
+    })?;
+    match cx.git_show(&base.sha, path) {
+        Ok(text) => Ok((base, Some(text))),
+        Err(e) => {
+            let synthetic = cx
+                .overlay_command(&format!("git-ref:{}", base.sha))
+                .is_some();
+            let commit = format!("{}^{{commit}}", base.sha);
+            let absent = synthetic
+                || (cx.git(&["cat-file", "-e", &commit]).is_ok()
+                    && cx
+                        .git(&["cat-file", "-e", &format!("{}:{path}", base.sha)])
+                        .is_err());
+            if absent {
+                Ok((base, None))
+            } else {
+                Err(format!(
+                    "the base {} ({}) could not be read for {path}: {e}",
+                    base.short(),
+                    base.how
+                ))
+            }
+        }
+    }
+}
+
+/// `now` minus `was`, as MULTISETS: each entry of `now` beyond what `was` holds of it. The rows a
+/// change wrote into a drain-only list.
+pub fn minted<K: Ord + Clone>(now: &[K], was: &[K]) -> Vec<K> {
+    let mut left: std::collections::BTreeMap<&K, usize> = std::collections::BTreeMap::new();
+    for k in was {
+        *left.entry(k).or_default() += 1;
+    }
+    let mut out = Vec::new();
+    for k in now {
+        match left.get_mut(k) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => out.push(k.clone()),
+        }
+    }
+    out
+}
+
+/// `cx` WITH ITS BASE PINNED TO THE COMMIT `HEAD` NAMES, for a self-test whose rows compare a
+/// ledger with the base. A battery runs on a detached checkout (CI checks out the judged commit
+/// alone), where [`base_ref`] is rightly RED; the self-test's question is the rule, not that
+/// checkout's history, so its unplanted baseline is measured against `HEAD` — the tree's own
+/// ledgers at the commit it stands on — and a case that is ABOUT the base plants a synthetic one.
+/// An overlay that already pins a base keeps it; a `HEAD` that does not read leaves `cx` as it is.
+pub fn with_head_pin(cx: &Ctx) -> Ctx {
+    if cx.overlay_command(BASE_PIN_KEY).is_some() {
+        return cx.clone();
+    }
+    let Some(head) = cx
+        .git(&["rev-parse", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return cx.clone();
+    };
+    let mut ov = cx.overlay().cloned().unwrap_or_default();
+    ov.set_command(BASE_PIN_KEY, head);
+    cx.with_overlay(ov)
+}
+
+/// A self-test plant over a SYNTHETIC base `sha` whose copy of `path` is `was`: the base is pinned
+/// to `sha`, the ref resolves, and every other file reads as absent there.
+pub fn synthetic_base(sha: &str, path: &str, was: impl Into<String>) -> crate::ctx::Overlay {
+    let mut ov = crate::ctx::Overlay::new();
+    ov.set_command(BASE_PIN_KEY, sha);
+    ov.set_command(format!("git-ref:{sha}"), "1");
+    ov.set_command(format!("git-show:{sha}:{path}"), was);
+    ov
+}
+
 /// [`BASE_ENV`], trimmed, with an empty value read as absent.
 ///
 /// A direct `std::env::var` rather than a field on [`Ctx`]'s environment struct because this is an

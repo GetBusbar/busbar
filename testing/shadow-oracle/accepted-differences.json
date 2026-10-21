@@ -1493,45 +1493,6 @@
       }
     },
     {
-      "id": "#64 the auth: unknown-key list names operator_pub",
-      "kind": "additive",
-      "text_list_growth": true,
-      "transform": {
-        "candidate": [
-          [
-            "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
-            "\\1 "
-          ]
-        ]
-      },
-      "changelog": "Validation messages know the new keys.",
-      "by": "owner (Matthew Jackson), 2026-09-20 decision #64 (parity packet #3, NEUT-U-auth)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-20",
-        "ruling": "decision #64, OWNER-LOCKED 2026-09-20: parity packet #3 (NEUT-U-auth) APPROVED",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^neutrality\\|NEUT-U-auth\\|validate$",
-      "expected_cells": 1,
-      "classes": [
-        "effects.stderr"
-      ],
-      "premise": {
-        "cell": "neutrality|NEUT-U-auth|validate",
-        "status": 1
-      },
-      "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
-    },
-    {
       "id": "#64-class build.auth_modules lists the webhook-signature module",
       "kind": "additive",
       "changelog": "1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.",
@@ -3321,6 +3282,50 @@
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-14",
         "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C: ThrottlingException/429)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "#24/#77(9) amend_rate_history is served on a node with no operator key",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.",
+      "by": "owner (Matthew Jackson), OWNER-LOCKED #24 (BUSBAR-1.6.0.md l.2202) and #77(9) (l.2279); applied by the coordinator 2026-10-19 (u18 BLOCK ruling)",
+      "cells": "^ledger\\|amend\\|(adjusting-entries|refused-unsigned)$",
+      "expected_cells": 2,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "rationale": "#24 (OWNER-LOCKED, BUSBAR-1.6.0.md l.2202): `amend_rate_history` is a real 1.6.0 money-path admin verb, additive new admin surface with no 1.5.5 golden of its own. #77(9) (OWNER-LOCKED, l.2279): no verb carries dual control, escrow or operator signatures; each verb is a plain scoped verb authorized by the admin token's allow-list. The node used to hide this path behind a sealed operator key (`served_here`), so a keyless node answered the 1.5.5 router's generic 404 here; with the operator key gone there is nothing to hide it behind, and a keyless node does NOT keep the 404 (coordinator ruling 2026-10-19). Both cells post a body in the pre-1.6.0 shape (`rate_card`/`window`, no `rates` and no `per_request_fee`) under the oracle's full-scope admin token, so the verb's own shape check refuses it: `amend_rate_history_effect` returns `GovernanceError::Validation` (a correction that moves no figure, crates/busbar/src/root/units_admin/mod.rs), `into_refusal` maps it to `ReasonCode::Validation`, `verbs_reason` to the kernel's `DecodeFailed`, `class_of` to `Unreadable`, and `answer_for` (units_admin/admin_mount.rs) renders `400` `{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid_request\"}}`. The `X-Busbar-Signature` header of the signed sibling is read by nothing, so the two cells answer the same bytes. SCOPE: exactly these two cell ids; every other ledger cell must stay byte-identical.",
+      "premise": {
+        "all": [
+          {
+            "cell": "ledger|amend|adjusting-entries",
+            "status": 400
+          },
+          {
+            "cell": "ledger|amend|adjusting-entries",
+            "pointer": "/error/code",
+            "equals": "invalid_request"
+          },
+          {
+            "cell": "ledger|amend|refused-unsigned",
+            "status": 400
+          },
+          {
+            "cell": "ledger|amend|refused-unsigned",
+            "pointer": "/error/code",
+            "equals": "invalid_request"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-08",
+        "ruling": "#24 and #77(9) OWNER-LOCKED (the admin API is dumb, owner 2026-09-08): amend_rate_history is additive admin surface and no verb carries operator signatures; this scope applied by the coordinator 2026-10-19"
       },
       "expires": {
         "baseline": "1.5.5",

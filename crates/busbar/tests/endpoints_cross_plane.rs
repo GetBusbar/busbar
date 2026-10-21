@@ -389,7 +389,7 @@ fn with_listing_door(
     names: &'static [&'static str],
 ) -> Arc<App> {
     use busbar_contract::plane_calls::{DoorFacing, PlaneRegistration};
-    use busbar_kernel::plane::door::{fold, DoorSection, DoorSlot};
+    use busbar_kernel::plane_driver::door::{fold, DoorSection, DoorSlot};
     let reg = PlaneRegistration {
         key,
         section,
@@ -508,7 +508,7 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
 
 /// A door plane whose open answers for every generation, folded as the composition root folds one.
 fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
-    busbar_kernel::plane::door::fold(busbar_contract::plane_calls::PlaneRegistration {
+    busbar_kernel::plane_driver::door::fold(busbar_contract::plane_calls::PlaneRegistration {
         key: "healthz-lanes-door",
         section: "healthz_lanes_door",
         owns: Vec::new(),
@@ -555,21 +555,21 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     let door = opening_door();
     let _isolated =
         busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[fallback, door]);
-    let section = busbar_kernel::plane::door::DoorSection::new(
+    let section = busbar_kernel::plane_driver::door::DoorSection::new(
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
     );
+    let section_defs = section.as_defs();
     let slot = (door.build)(&busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
-        agent_defs: &(),
-        tool_defs: &section,
+        plane_defs: &section_defs,
         public_url: None,
         prior: None,
         providers: None,
     })
     .expect("the configured door builds its generation's slot");
     assert!(
-        busbar_kernel::plane::door::opened(slot.as_ref()),
+        busbar_kernel::plane_driver::door::opened(slot.as_ref()),
         "the door opened"
     );
     let mut fixture = TestApp::new()
