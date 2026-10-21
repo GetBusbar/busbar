@@ -1005,6 +1005,48 @@ impl Gate for DepWallGate {
             ov,
             &["new-offender", "busbar-plane-llm", "std::net"],
         ));
+        // A TEST MARK INSIDE A GROUP covers one element, up to its `,`: the socket in the element
+        // after it is production source (#1128).
+        for (what, file, text) in [
+            (
+                "a struct field after a test-marked field",
+                "planted_field_socket.rs",
+                "pub struct S { #[cfg(test)] a: u8, pub b: std::net::TcpStream }\n",
+            ),
+            (
+                "an enum variant after a test-marked variant",
+                "planted_variant_socket.rs",
+                "pub enum E { #[cfg(test)] A(u8), B(std::net::TcpStream) }\n",
+            ),
+            (
+                "a match arm after a test-marked arm",
+                "planted_arm_socket.rs",
+                "pub fn dial(x: u8) { match x { #[cfg(test)] 0 => (), \
+                 _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); } } }\n",
+            ),
+            (
+                "a fn parameter after a test-marked parameter",
+                "planted_param_socket.rs",
+                "pub fn hold(#[cfg(test)] a: u8, b: std::net::TcpStream) { drop(b); }\n",
+            ),
+            // ONLY THE NAMED TEST MARKS are test code: `foo::test` is some crate's macro.
+            (
+                "a fn under a foreign `test` attribute",
+                "planted_foreign_test_socket.rs",
+                "#[foo::test] pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(format!("crates/busbar-plane-decisions/src/{file}"), text);
+            report.push(prove_red(
+                cx,
+                self,
+                format!("a socket path in {what} is production source and a new offender"),
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
         // THE SAME PLANT IN AN IN-TREE PLUGIN, whose source the wall reads off the disk.
         let mut ov = Overlay::new();
         ov.set(
