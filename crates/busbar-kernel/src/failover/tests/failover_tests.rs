@@ -16,6 +16,105 @@ use busbar_kernel::store::{BreakerCfg, LaneRuntime};
 
 use crate::store::HealthState;
 
+// ══ THE TEST-LOCAL ORDER, ADMISSION AND RECORDERS ════════════════════════════════════════════════
+//
+// A plane supplies the order and the admission [`walk_with`] runs over, and records each outcome
+// through the breaker store. These are the doubles the acceptance claims below drive the one loop
+// with: the operator's `members:` order, a breaker-only admission, and the classifier-driven
+// recorder. They live here, not in the seam: a verb with no production construction site does not
+// ship (BUSBAR-1.6.0.md Part 1 l.1932-1935).
+
+/// The operator's order: `members:` as written, skipping anything already `tried`.
+struct InOrder<'a> {
+    tried: &'a [usize],
+    cursor: usize,
+    len: usize,
+}
+
+impl Order for InOrder<'_> {
+    fn next(&mut self, _refused: Option<usize>) -> Option<usize> {
+        while self.cursor < self.len {
+            let position = self.cursor;
+            self.cursor += 1;
+            if !self.tried.contains(&position) {
+                return Some(position);
+            }
+        }
+        None
+    }
+}
+
+/// [`walk_with`] over the operator's order, admitted breaker-only.
+fn walk<'a, C: Candidate>(
+    store: &dyn LaneRuntime,
+    pool: &str,
+    members: &'a [C],
+    attempt: &Attempt<'_>,
+    now: u64,
+) -> Result<Admitted<'a, C, Option<u64>>, Refusal> {
+    let mut order = InOrder {
+        tried: attempt.tried,
+        cursor: 0,
+        len: members.len(),
+    };
+    let mut passed_over = Vec::new();
+    walk_with(
+        pool,
+        members,
+        attempt,
+        &mut order,
+        &mut passed_over,
+        &mut |_position, member| store.try_admit_breaker(pool, member.lane(), now),
+    )
+}
+
+/// Record what the upstream did through the one classifier onto the one breaker cell.
+fn record_outcome<C: Candidate>(
+    store: &dyn LaneRuntime,
+    pool: &str,
+    candidate: &C,
+    signal: &crate::breaker::CanonicalSignal,
+    cfg: &BreakerCfg,
+) -> crate::breaker::Disposition {
+    let disposition = crate::breaker::classify(signal);
+    let lane = candidate.lane();
+    match disposition {
+        crate::breaker::Disposition::ClientFault => store.record_client_fault(lane),
+        crate::breaker::Disposition::TransientUpstream => {
+            if signal.class == crate::breaker::StatusClass::RateLimit {
+                store.record_rate_limit_in(
+                    pool,
+                    lane,
+                    busbar_kernel::store::now(),
+                    cfg,
+                    signal.retry_after,
+                );
+            } else {
+                store.record_transient_in(
+                    pool,
+                    lane,
+                    signal.provider_signal.as_deref().unwrap_or("upstream"),
+                    cfg,
+                    signal.retry_after,
+                );
+            }
+        }
+        crate::breaker::Disposition::HardDown => {
+            store.record_hard_down_all_cells(
+                lane,
+                signal.provider_signal.as_deref().unwrap_or("hard_down"),
+            );
+        }
+        crate::breaker::Disposition::ContextLength => {}
+    }
+    disposition
+}
+
+/// The success half of [`record_outcome`].
+fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
+    store.record_success_in(pool, candidate.lane());
+}
+
 /// A store with `n` lanes and nothing else. `make_lane_data_with_weight` is a plane's own
 /// test lane constructor, reused verbatim: the LANE TABLE is the same table, which is half the reason
 /// the breaker below is provably the same breaker.
@@ -201,7 +300,7 @@ fn second_plane_a_dead_upstream_fails_fast_and_is_named() {
 /// `(pool, lane)` cell the seam used and shows the two agree — the same Open verdict, the same
 /// deadline. If the seam had grown a second breaker, the cell it tripped would not be this cell.
 #[test]
-fn the_seam_and_the_model_plane_share_one_breaker_cell() {
+fn the_seam_and_a_planes_own_admission_share_one_breaker_cell() {
     let store = store_with(2);
     let now = 3_000;
     const POOL: &str = "plane-a/pool:search";
@@ -212,7 +311,7 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
     let direct = store.try_admit_breaker(POOL, 0, now);
     assert!(
         matches!(direct, Err(busbar_kernel::store::Unavailable::BreakerOpen { until }) if until == now + 45),
-        "the model plane's own admission sees the cell Open: {direct:?}"
+        "a plane's own admission sees the cell Open: {direct:?}"
     );
 
     // The seam, on the same pool and the same lane, reaches the same verdict — because it IS that

@@ -97,7 +97,7 @@ pub use far_end::{
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
     HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
-    UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
+    UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
@@ -670,6 +670,15 @@ pub trait DriverSteps: Units {
     /// under that entry; asked once, at the unit's route leg. `None` = none resolved.
     fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Whether `member` is one of the members the generation's section states for the pool
+    /// `pool` (the pool a `ROUTE_POOL` unit's `arrive` named, as the kernel recorded it). A
+    /// gate-first unit routed over a pool binds the member its projection names only when this
+    /// holds (ARCHITECT 2026-10-07: the plane's later word never trades the gates attached to the
+    /// routed entry for another's). Fail-closed: steps that state no pools hold no member.
+    fn pool_holds(&self, _pool: &[u8], _member: &str) -> bool {
+        false
     }
 
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After

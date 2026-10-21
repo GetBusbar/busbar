@@ -1493,7 +1493,7 @@ cite  = "the drain: core names no instance"
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "752"
+count = "718"
 cite  = "the drain: core names no instance; the ceiling is the gate's measured value and only falls"
 
 [[law0]]
