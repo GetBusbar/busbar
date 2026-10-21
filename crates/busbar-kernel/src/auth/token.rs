@@ -213,7 +213,7 @@ impl LoginMethods {
     /// build. Runs inside `build_app_from_config`.
     pub(crate) fn build(
         cfg: &AuthCfg,
-        registry: &Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         Self::build_on(cfg, registry, secret_resolver, || {
@@ -224,7 +224,7 @@ impl LoginMethods {
     /// [`Self::build`] over the auth axis `open_axis` answers (opened on first use).
     fn build_on(
         cfg: &AuthCfg,
-        registry: &busbar_plugin_loader::PluginRegistry,
+        registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,
         open_axis: impl Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
     ) -> Result<Self, String> {

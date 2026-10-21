@@ -38,9 +38,28 @@ impl HookPolicy {
     pub(crate) fn policy(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
-            name: busbar_plugin_loader::intern_name(name),
+            name: intern_name(name),
         })
     }
+}
+
+/// INTERN a hook's registry name into a stable `&'static str`, one allocation per distinct name for
+/// the life of the process. A hook opens per config/plugin reload, per `push_configure`, per
+/// `fetch_status` (every `/metrics/hooks` scrape refresh) and per `fetch_schema`, so a name leaked
+/// per OPEN would grow without bound under routine scraping; interned, a repeated open of the same
+/// hook reuses its one leak.
+fn intern_name(name: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(existing) = guard.get(name) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    guard.insert(leaked);
+    leaked
 }
 
 impl std::fmt::Debug for HookPolicy {
