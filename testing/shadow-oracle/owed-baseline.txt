@@ -1098,3 +1098,16 @@ wire.h2|stream|openai
 wire.h2|two-requests|same-conn
 wire.tls|client-hello|default
 wire.tls|client-hello|http1-only
+http.crosscut|unknown-op|anthropic
+http.crosscut|unknown-op|bedrock
+http.crosscut|unknown-op|cohere
+http.crosscut|unknown-op|gemini
+http.crosscut|unknown-op|openai
+http.crosscut|unknown-op|responses
+http.crosscut|unserved-action|gemini-countTokens
+http.crosscut|url-model-missing|bedrock
+http.crosscut|url-model-missing|gemini
+http.crosscut|wrong-method|GET-chat-completions
+http.crosscut|wrong-method|GET-converse
+http.crosscut|wrong-method|GET-responses
+http.crosscut|wrong-method|GET-v2-chat

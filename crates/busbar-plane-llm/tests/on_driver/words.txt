@@ -43,19 +43,28 @@ caller.converse = /model/p/converse | {"messages":[{"role":"user","content":[{"t
 # is not JSON.
 missing_model_sentence = Missing required parameter: 'model'.
 unparsable_sentence = We could not parse the JSON body of your request.
-# The two decode shapes a dialect answers before decode on 1.5.5 and on the door, each as the
-# request a caller can send and 1.5.5's answer to it: `<path> | <status> | <sentence> |
-# <admissions>`. UNSERVED ACTION: an action the dialect has that the door does not serve (only the
-# generate dialect names one; every other dialect's resolved operations all have handlers, so a verb
-# its path does not take is another method on it, answered `wrong_verb_sentence` with a 405, v1.5.5
-# crates/busbar/src/ingress/dispatch.rs:311-318). NO URL MODEL: a dialect whose model rides the URL,
-# its URL naming none (v1.5.5 ingress/mod.rs:838-858 for generate; for converse, admitted at
-# ingress/dispatch.rs:199 and answered ingress/dispatch.rs:220-233 with ingress/mod.rs:1005-1013).
-unserved_action.generate = /v1beta/models/p:countTokens | 404 | or is not supported for countTokens. | 0
-wrong_verb = GET
-wrong_verb_sentence = method not allowed for this resource
-no_url_model.generate = /v1beta/models/:generateContent | 404 | Invalid resource path: models/:generateContent is not found for API version v1beta. | 0
-no_url_model.converse = /model//converse | 404 | The model '' does not exist or you do not have access to it. | 1
+# THE CAPTURED 1.5.5 LEGS of the decode cell: the request a caller can send, exactly as the oracle
+# sent it to the published 1.5.5 (busbar-release oracle-rerecord run 39539732372, binary sha256
+# 84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7), and the golden it recorded:
+# `capture.<caller>.<shape> = <method> | <path> | <headers JSON> | <body, or -> | <golden> |
+# <admissions> [| priced]` (`priced`: the deployment carries a rate card, as the oracle's did, for a
+# leg whose 1.5.5 answer is the rate check's). unknown_op: the dialect's own path grammar with an
+# operation it does not serve; no_url_model: a URL-model dialect's URL naming none; unserved_action
+# and wrong_method: the token-count action and another method on a POST path, legs beyond the four.
+capture.chat.unknown_op = POST | /v1/unknown-op | {} | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unknown-op__openai.json | 0
+capture.messages.unknown_op = POST | /v1/messages/unknown-op | {"anthropic-version":"2023-06-01"} | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unknown-op__anthropic.json | 0
+capture.chat_v2.unknown_op = POST | /v2/unknown-op | {} | {"model":"p","messages":[{"role":"user","content":"hi"}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unknown-op__cohere.json | 0
+capture.respond.unknown_op = POST | /v1/responses/unknown-op | {} | {"model":"p","input":"hi"} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unknown-op__responses.json | 0
+capture.generate.unknown_op = POST | /v1beta/models/p:unknownVerb | {} | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unknown-op__gemini.json | 0
+capture.converse.unknown_op = POST | /model/p/unknown-op | {} | {"messages":[{"role":"user","content":[{"text":"hi"}]}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unknown-op__bedrock.json | 0
+capture.generate.no_url_model = POST | /v1beta/models/:generateContent | {} | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__url-model-missing__gemini.json | 0
+capture.converse.no_url_model = POST | /model//converse | {} | {"messages":[{"role":"user","content":[{"text":"hi"}]}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__url-model-missing__bedrock.json | 0 | priced
+capture.generate.unserved_action = POST | /v1beta/models/p:countTokens | {} | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__unserved-action__gemini-countTokens.json | 0
+capture.chat.wrong_method = GET | /v1/chat/completions | {} | - | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__wrong-method__GET-chat-completions.json | 0
+capture.messages.wrong_method = GET | /v1/messages | {} | - | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__wrong-method__GET-messages.json | 0
+capture.chat_v2.wrong_method = GET | /v2/chat | {} | - | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__wrong-method__GET-v2-chat.json | 0
+capture.respond.wrong_method = GET | /v1/responses | {} | - | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__wrong-method__GET-responses.json | 0
+capture.converse.wrong_method = GET | /model/p/converse | {} | - | testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__wrong-method__GET-converse.json | 0
 # THE 1.5.5 GOLDENS the decode cell holds each dialect's answers to: the served request over the
 # members' dialect, and the malformed one ({ingress}: the caller row's golden name; {egress}:
 # `golden_egress`, the members' own dialect, `dialect` above), and the usage event the oracle's far

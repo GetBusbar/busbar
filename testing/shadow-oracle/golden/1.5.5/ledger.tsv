@@ -2490,3 +2490,16 @@ llm|cohere|cohere|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests
 llm|gemini|gemini|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|openai|openai|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|responses|responses|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+http.crosscut|unknown-op|anthropic	PASS	HTTP 404; usage Δ {}	
+http.crosscut|unknown-op|bedrock	PASS	HTTP 404; usage Δ {}	
+http.crosscut|unknown-op|cohere	PASS	HTTP 404; usage Δ {}	
+http.crosscut|unknown-op|gemini	PASS	HTTP 404; usage Δ {}	
+http.crosscut|unknown-op|openai	PASS	HTTP 404; usage Δ {}	
+http.crosscut|unknown-op|responses	PASS	HTTP 404; usage Δ {}	
+http.crosscut|unserved-action|gemini-countTokens	PASS	HTTP 404; usage Δ {}	
+http.crosscut|url-model-missing|bedrock	PASS	HTTP 400; usage Δ {}	
+http.crosscut|url-model-missing|gemini	PASS	HTTP 404; usage Δ {}	
+http.crosscut|wrong-method|GET-chat-completions	PASS	HTTP 405; usage Δ {}	
+http.crosscut|wrong-method|GET-converse	PASS	HTTP 405; usage Δ {}	
+http.crosscut|wrong-method|GET-responses	PASS	HTTP 405; usage Δ {}	
+http.crosscut|wrong-method|GET-v2-chat	PASS	HTTP 405; usage Δ {}	

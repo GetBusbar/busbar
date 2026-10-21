@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"message":"method not allowed for this resource"}},"effects":{"audit":{"added":0,"items":[]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"50","content-type":"application/json"},"status":405}
