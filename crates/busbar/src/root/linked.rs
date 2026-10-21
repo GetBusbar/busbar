@@ -416,10 +416,10 @@ pub fn register_stores(linked: &Linked) -> RootInstall {
 /// A program environment's secret reference, resolved at config time through the linked secret
 /// plugins ([`secret_rows`], the axis [`register_stores`] lends the kernel): the resolver the boot
 /// hands the connector it builds (`crate::root::connector::spawn_secret_resolver`). A member
-/// program's `env` secret references resolve through it (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM
-/// (A)), at CONFIG TIME — the need's declaration at a plane's load or a config apply, and the
-/// connector's refresher — and are held for the spawns, which resolve nothing (ARCHITECT ruling
-/// 2026-10-13, row 166: a spawn serves a request).
+/// program's `env` secret references resolve through it (the ARCHITECT round 5 ruling
+/// `crate::root::connector::boot` cites, answer (A)), at CONFIG TIME — the need's declaration at a
+/// plane's load or a config apply, and the connector's refresher — and are held for the spawns,
+/// which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
 pub(crate) fn spawn_secret(
     secret: &busbar_kernel::config::SecretRef,
     scope: &busbar_contract::config_time::ConfigScope,
