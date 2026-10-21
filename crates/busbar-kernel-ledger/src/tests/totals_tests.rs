@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The book of balances, and the one seam that lets an owner retire what a checkpoint already sealed.
+//! The book of balances, and the rule that lets it retire what a checkpoint already sealed.
 
-use crate::totals::Book;
+use std::collections::BTreeSet;
+
+use crate::totals::{past_retention, Book, ALL_TIME_WINDOW, WINDOW_RETENTION_SECS};
 
 use super::fixtures::{key, pool_key};
+
+/// One day, in the seconds a window opens at.
+const DAY: u64 = 86_400;
 
 fn filled() -> Book {
     let mut book = Book::new();
@@ -16,15 +21,17 @@ fn filled() -> Book {
     book
 }
 
-/// A book that only ever grows has no upper bound an integrator can reach for, whatever their
-/// retention policy says. The checkpoint is the retirement boundary, so retiring below one is the
-/// one thing the book has to offer.
+fn windows(of: &[u64]) -> BTreeSet<u64> {
+    of.iter().copied().collect()
+}
+
+/// Retiring names whole windows and takes exactly the balances in them.
 #[test]
-fn retiring_below_a_watermark_drops_exactly_the_windows_beneath_it() {
+fn retiring_a_window_drops_exactly_its_balances() {
     let mut book = filled();
     assert_eq!(book.len(), 8);
 
-    let dropped = book.retain_from(30);
+    let dropped = book.retire(&windows(&[10, 20]));
 
     assert_eq!(dropped, 4, "two keys in each of the two retired windows");
     assert_eq!(book.len(), 4);
@@ -37,7 +44,7 @@ fn retiring_below_a_watermark_drops_exactly_the_windows_beneath_it() {
     assert_eq!(
         book.get(&key("b"), 30).settled,
         30,
-        "the watermark survives"
+        "a kept window survives"
     );
     assert_eq!(book.get(&pool_key("b", "west"), 40).settled, 80);
 }
@@ -48,7 +55,7 @@ fn retiring_below_a_watermark_drops_exactly_the_windows_beneath_it() {
 fn the_survivors_keep_the_order_a_checkpoint_is_signed_over() {
     let full = filled();
     let mut retired = filled();
-    retired.retain_from(30);
+    retired.retire(&windows(&[10, 20]));
 
     let expected: Vec<_> = full
         .iter()
@@ -62,16 +69,55 @@ fn the_survivors_keep_the_order_a_checkpoint_is_signed_over() {
     assert_eq!(snapshot_order, expected);
 }
 
-/// Retiring from below everything is a no-op, and retiring from above everything empties the book.
+/// The horizon is 1.5.5's: a rolling window is kept while `window + 31 days > now` and retired at
+/// equality, and the all-time window is never past it however long the node runs.
 #[test]
-fn a_watermark_outside_the_book_is_all_or_nothing() {
-    let mut none = filled();
-    assert_eq!(none.retain_from(0), 0);
-    assert_eq!(none.len(), 8);
+fn the_horizon_is_thirty_one_days_from_the_window_opening_and_the_all_time_window_never_ages() {
+    assert_eq!(WINDOW_RETENTION_SECS, 31 * DAY);
+    let window = 100 * DAY;
+    assert!(!past_retention(window, window));
+    assert!(!past_retention(window, window + WINDOW_RETENTION_SECS - 1));
+    assert!(past_retention(window, window + WINDOW_RETENTION_SECS));
+    assert!(
+        !past_retention(ALL_TIME_WINDOW, u64::MAX),
+        "the all-time window never ages, however long the node runs"
+    );
+    // Near the top of the range the sum saturates at `u64::MAX` and the window is evicted at the
+    // cap, exactly as 1.5.5's `window_start.saturating_add(MAX_RETENTION_SECS) > n` keep-test did.
+    assert!(past_retention(u64::MAX - 1, u64::MAX));
+}
 
-    let mut all = filled();
-    assert_eq!(all.retain_from(u64::MAX), 8);
-    assert!(all.is_empty());
+/// What may go is a window past the horizon that a checkpoint holds at the book's own figures, with
+/// no hold open — and only whole windows.
+#[test]
+fn only_a_sealed_unchanged_settled_window_past_the_horizon_is_retirable() {
+    let old = DAY;
+    let moved = 2 * DAY;
+    let held = 3 * DAY;
+    let recent = 40 * DAY;
+    let now = recent + DAY;
+
+    let mut book = Book::new();
+    for window in [ALL_TIME_WINDOW, old, moved, held, recent] {
+        book.entry(key("b"), window).settled = 5;
+        book.entry(pool_key("b", "west"), window).settled = 7;
+    }
+    book.entry(key("b"), held).open_holds = 1;
+    let sealed = book.snapshot();
+    // A figure that moved after the seal: the checkpoint no longer holds what the book would drop.
+    book.entry(pool_key("b", "west"), moved).settled += 1;
+
+    assert_eq!(
+        book.retirable(&sealed, now),
+        windows(&[old]),
+        "the all-time window, a window that moved since the seal, a window with a hold open and a \
+         window inside the horizon all stay"
+    );
+    assert!(
+        book.retirable(&std::collections::BTreeMap::new(), now)
+            .is_empty(),
+        "nothing a checkpoint did not seal is retirable"
+    );
 }
 
 // ── THE BOOKS SATURATE (#10 `BUSBAR-1.6.0.md:331`) ───────────────────────────────────────────────
