@@ -2059,14 +2059,20 @@ mod tests {
     fn a_header_inside_what_reads_as_a_multiline_string_is_still_checked() {
         let text = "description = \"\"\"\nopen\n[patch.crates-io]\nx = 1\n\"\"\"\n";
         let found = super::redirect_entries(text);
-        assert!(found.iter().any(|(_, e)| e == "patch.crates-io"), "{found:?}");
+        assert!(
+            found.iter().any(|(_, e)| e == "patch.crates-io"),
+            "{found:?}"
+        );
     }
 
     #[test]
     fn the_multiline_state_closes_on_its_own_delimiter_only() {
         use super::multiline_after;
         assert_eq!(multiline_after("a = \"\"\"", None), Some("\"\"\""));
-        assert_eq!(multiline_after("end ''' here", Some("\"\"\"")), Some("\"\"\""));
+        assert_eq!(
+            multiline_after("end ''' here", Some("\"\"\"")),
+            Some("\"\"\"")
+        );
         assert_eq!(multiline_after("end \"\"\"\"\" # x", Some("\"\"\"")), None);
         assert_eq!(multiline_after("k = '''raw'''", None), None);
         assert_eq!(multiline_after("# '''", None), None);
@@ -2306,12 +2312,27 @@ mod q128_tests {
     fn every_toml_spelling_of_package_build_is_read() {
         use super::{package_build, BuildKey};
         let p = |s: &str| Some(BuildKey::Path(s.to_string()));
-        assert_eq!(package_build("[package] # c\nbuild = \"x/build.rs\"\n"), p("x/build.rs"));
-        assert_eq!(package_build("[ package ]\nbuild = 'x/build.rs' # c\n"), p("x/build.rs"));
-        assert_eq!(package_build("[\"package\"]\n\"build\" = \"x/b.rs\"\n"), p("x/b.rs"));
+        assert_eq!(
+            package_build("[package] # c\nbuild = \"x/build.rs\"\n"),
+            p("x/build.rs")
+        );
+        assert_eq!(
+            package_build("[ package ]\nbuild = 'x/build.rs' # c\n"),
+            p("x/build.rs")
+        );
+        assert_eq!(
+            package_build("[\"package\"]\n\"build\" = \"x/b.rs\"\n"),
+            p("x/b.rs")
+        );
         assert_eq!(package_build("package.build = \"x/b.rs\"\n"), p("x/b.rs"));
-        assert_eq!(package_build("package = { name = \"a\", build = \"x/b.rs\" }\n"), p("x/b.rs"));
-        assert_eq!(package_build("[package]\nbuild = false\n"), Some(BuildKey::Off));
+        assert_eq!(
+            package_build("package = { name = \"a\", build = \"x/b.rs\" }\n"),
+            p("x/b.rs")
+        );
+        assert_eq!(
+            package_build("[package]\nbuild = false\n"),
+            Some(BuildKey::Off)
+        );
         assert_eq!(package_build("[package]\nname = \"a\"\n"), None);
         assert_eq!(
             package_build("[package]\ndescription = \"\"\"\n[package]\nbuild = \"no\"\n\"\"\"\n"),
