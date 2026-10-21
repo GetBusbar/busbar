@@ -45,8 +45,41 @@ fn code(line: &str) -> &str {
     line.split("//").next().unwrap_or_default()
 }
 
+/// The 1-based lines of `text` that declare a `static` (plain, `mut`, or in a `thread_local!` /
+/// `lazy_static!` body) whose name or type names one of `words`. A static's type is read off its
+/// line and the next (a wrapped declaration); comments are not read.
+fn statics_naming(text: &str, words: &[&str]) -> Vec<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut hits = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let decl = code(line);
+        // `static` as an item, not the `'static` lifetime.
+        let is_static = decl.match_indices("static ").any(|(at, _)| {
+            decl[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '\''))
+        });
+        if !is_static {
+            continue;
+        }
+        let next = lines.get(n + 1).copied().map_or("", code);
+        if words
+            .iter()
+            .any(|w| has_ident(decl, w) || has_ident(next, w))
+        {
+            hits.push(n + 1);
+        }
+    }
+    hits
+}
+
+/// What names the root legacy table in a static's declaration: its rows' type and spelling, and
+/// the lent value itself.
+const TABLE_WORDS: &[&str] = &["Rows", "ROWS", "Legacy"];
+
 /// Every SHIPPED `static` of this crate whose name or type names one of `words`, as
-/// `file:line: text`. A static's type is read off its line and the next (a wrapped declaration).
+/// `file:line: text`.
 fn shipped_statics_naming(words: &[&str]) -> Vec<String> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -56,35 +89,57 @@ fn shipped_statics_naming(words: &[&str]) -> Vec<String> {
     for file in &files {
         let text = std::fs::read_to_string(file).expect("a source file reads");
         let lines: Vec<&str> = text.lines().collect();
-        for (n, line) in lines.iter().enumerate() {
-            let decl = code(line);
-            // `static` as an item, not the `'static` lifetime.
-            let is_static = decl.match_indices("static ").any(|(at, _)| {
-                decl[..at]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '\''))
-            });
-            if !is_static {
-                continue;
-            }
-            let next = lines.get(n + 1).copied().map_or("", code);
-            if words
-                .iter()
-                .any(|w| has_ident(decl, w) || has_ident(next, w))
-            {
-                hits.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
-            }
+        for n in statics_naming(&text, words) {
+            hits.push(format!("{}:{n}: {}", file.display(), lines[n - 1].trim()));
         }
     }
     hits
+}
+
+/// THE SCAN SEES A STATIC THAT HOLDS THE LENT VALUE, whatever cell carries it, and not the value
+/// passed as a parameter or kept on a struct.
+#[test]
+fn the_scan_sees_every_static_holding_the_legacy_table() {
+    for (planted, why) in [
+        ("static TABLE: std::sync::OnceLock<Legacy> = std::sync::OnceLock::new();\n", "a OnceLock"),
+        (
+            "static TABLE: std::sync::LazyLock<Legacy> =\n\
+             std::sync::LazyLock::new(Legacy::stand_in);\n",
+            "a LazyLock, wrapped",
+        ),
+        (
+            "thread_local! {\n\
+             static TABLE: std::cell::Cell<Option<crate::config::Legacy>> =\n\
+             const { std::cell::Cell::new(None) };\n\
+             }\n",
+            "a thread_local",
+        ),
+        ("pub(crate) static mut TABLE: Option<Legacy> = None;\n", "a static mut"),
+        (
+            "static ROWS: std::sync::OnceLock<Rows> = std::sync::OnceLock::new();\n",
+            "the rows themselves",
+        ),
+    ] {
+        assert_eq!(
+            statics_naming(planted, TABLE_WORDS).len(),
+            1,
+            "{why} holding the table is not seen:\n{planted}"
+        );
+    }
+    let lent = "pub fn read(legacy: Legacy) -> &'static str {\n    legacy.text(\"k\")\n}\n\
+                struct Cfg {\n    legacy: Legacy,\n}\n\
+                // static TABLE: OnceLock<Legacy>\n";
+    assert!(
+        statics_naming(lent, TABLE_WORDS).is_empty(),
+        "a lent value or a comment is not a static"
+    );
 }
 
 /// No shipped static of this crate holds the root legacy table's rows, and the kernel's legacy
 /// module offers no installer to fill one: the table reaches every reader as a value the root lent.
 #[test]
 fn no_static_holds_the_root_legacy_table_and_nothing_installs_one() {
-    let hits = shipped_statics_naming(&["Rows", "ROWS"]);
+    let hits = shipped_statics_naming(TABLE_WORDS);
     assert!(
         hits.is_empty(),
         "a process-wide static holds the root legacy table:\n{}",
