@@ -219,6 +219,7 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 /// with nothing red. It is armed here.
 const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[
     "busbar-kernel-audit",
+    "busbar-kernel-breaker",
     "busbar-kernel-identity",
     "busbar-kernel-scope",
     "busbar-kernel-wal",
