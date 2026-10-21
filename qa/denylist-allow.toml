@@ -104,6 +104,13 @@
 # two compose and the second edge still has to be defended here. (The streaming row went with its
 # crate's last route to `getrandom`, its dev edge to the loader: the plane is pinned from its own
 # repo (row 106), and its both-ways witness, the one user of the loader, lives in its cdylib twin.
-# The llm row, `getrandom -> libc` alone, went the same way at the llm extraction (rows 106/107):
-# its routes to `getrandom` were its own dev edge and its dev edge to the loader, which cargo never
-# resolves for a pinned dependency, so `denylist:stale-waivers` found it covering no hit.)
+# The llm row below did NOT go: it only looked stale while the gate skipped the pinned planes.
+# Judged at its checkout, the plane still reaches `getrandom` on a NORMAL edge through sonic-rs ->
+# ahash, and the architect re-signed the row for that route on 2026-10-21.)
+
+[[allow]]
+crate = "busbar-plane-llm"
+dep = "libc"
+via = "getrandom"
+reason = "ARCHITECT RULING 2026-10-21 (spec l.3869-3870: a plugin may use any third-party library; host-owned sockets/TLS stand). ROUTE, the only one to libc that does not pass through cpufeatures (settled by the edge exemption in qa/construction.toml): busbar-plane-llm -> sonic-rs -> ahash 0.8.12 (features default, runtime-rng) -> getrandom 0.3.4 -> libc, a NORMAL edge in the pinned plane's resolved closure. getrandom 0.3.4's ENTIRE libc surface, read from its source: getrandom(2) (statically or via dlsym(RTLD_DEFAULT, \"getrandom\") on Linux/Android), getentropy, CCRandomGenerateBytes (Apple), sysctl(KERN_ARND) (NetBSD), randABytes/randSecure (VxWorks); the use_file fallback's open(O_RDONLY|O_CLOEXEC) of exactly two constant paths, /dev/urandom (read) and /dev/random (poll only, to wait for the pool), plus read/close on that descriptor; and the support calls errno accessors, poll/pollfd, futex wait/wake via syscall(SYS_futex) and nanosleep/usleep for its one-time init. NO socket, connect, bind or listen, no std::net/std::fs/std::process/std::env, and no open of any path other than those two entropy devices. Entropy drawn by a library, not I/O the host owns. Re-review if any OTHER route to libc appears or getrandom's version moves."
+owner = "architect, 2026-10-21"
