@@ -97,23 +97,32 @@ struct Inner {
 /// endpoint is a browser endpoint and is allowed to respond with a page.
 pub(crate) const PENDING: &str = "\u{0}pending";
 
+impl Inner {
+    /// Make room for one more session: every lapsed session goes, with the answers staked on it,
+    /// and past [`MAX_SESSIONS`] the oldest live one goes too. So the answers table never holds an
+    /// answer for a session the live table no longer does.
+    fn make_room(&mut self, now: Instant) {
+        let Inner { live, staked } = self;
+        live.retain(|_, (_, exp)| *exp > now);
+        if live.len() >= MAX_SESSIONS {
+            if let Some(oldest) = live
+                .iter()
+                .min_by_key(|(_, (_, exp))| *exp)
+                .map(|(k, _)| k.clone())
+            {
+                live.remove(&oldest);
+            }
+        }
+        staked.retain(|id, _| live.contains_key(id));
+    }
+}
+
 impl Sessions {
     /// Record that this browser is the operator, and return the session id to set as a cookie.
     pub(crate) fn open(&self, subject: &str, id: String) -> String {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
-        inner.live.retain(|_, (_, exp)| *exp > now);
-        if inner.live.len() >= MAX_SESSIONS {
-            if let Some(oldest) = inner
-                .live
-                .iter()
-                .min_by_key(|(_, (_, exp))| *exp)
-                .map(|(k, _)| k.clone())
-            {
-                inner.live.remove(&oldest);
-                inner.staked.remove(&oldest);
-            }
-        }
+        inner.make_room(now);
         inner
             .live
             .insert(id.clone(), (subject.to_string(), now + SESSION_TTL));
@@ -121,13 +130,17 @@ impl Sessions {
     }
 
     /// Record a session the deployment's store holds (opened on any node), for this request's
-    /// synchronous callbacks.
+    /// synchronous callbacks. Bounded as [`Sessions::open`] is.
     pub(crate) fn hydrate(&self, id: &str, subject: &str) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if inner.live.contains_key(id) {
+            return;
+        }
+        let now = Instant::now();
+        inner.make_room(now);
         inner
             .live
-            .entry(id.to_string())
-            .or_insert_with(|| (subject.to_string(), Instant::now() + SESSION_TTL));
+            .insert(id.to_string(), (subject.to_string(), now + SESSION_TTL));
     }
 
     /// Plant an answer this node won in the deployment's store, for the approval callback to spend.
@@ -146,15 +159,18 @@ impl Sessions {
     }
 
     /// Stake ONE answer for `key` against this session: `approve` true for an approval, false
-    /// for the operator's refusal (RFC 6749 s4.1.2.1 `access_denied`).
+    /// for the operator's refusal (RFC 6749 s4.1.2.1 `access_denied`). A second answer for the same
+    /// request on the same session REPLACES one not yet spent, exactly as the deployment's store
+    /// keeps it (`shared::Shared::stake`): the operator's last word on a request is the one spent,
+    /// once.
     pub(crate) fn stake(&self, id: &str, key: String, approve: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if inner.live.contains_key(id) {
-            inner
-                .staked
-                .entry(id.to_string())
-                .or_default()
-                .push((key, approve));
+            let pending = inner.staked.entry(id.to_string()).or_default();
+            match pending.iter_mut().find(|(k, _)| *k == key) {
+                Some(slot) => slot.1 = approve,
+                None => pending.push((key, approve)),
+            }
         }
     }
 
@@ -364,3 +380,7 @@ fn percent_encode(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "tests/consent_tests.rs"]
+mod consent_tests;

@@ -6,7 +6,7 @@
 //! `AdminTransport` is transport-AGNOSTIC: the trait every wire format plugs into. Given the shared
 //! `AdminService`, an adapter builds whatever it needs to expose the frozen operations. The JSON-REST
 //! family (`super::json`, versioned by submodule — `json::v1::JsonV1`) is the first transport; a
-//! GraphQL or gRPC adapter later is a NEW `AdminTransport` impl calling the SAME `AdminService`
+//! GraphQL or RPC adapter is a NEW `AdminTransport` impl calling the SAME `AdminService`
 //! methods and reusing the SAME `contract` views/errors — no operation logic is ever duplicated per
 //! transport (or per version).
 //!

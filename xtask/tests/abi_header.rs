@@ -297,3 +297,58 @@ fn the_gate_proves_red_in_its_selftest() {
 fn the_committed_header_is_what_the_sources_render() {
     assert_eq!(run(&["abi-header"]), 0);
 }
+
+/// Audit contract-include #1: a struct the golden records by its module path
+/// (`tkind::route::RouteMatch`) or under its alias (`MechStr` for `AbiStr`) is pinned like any
+/// other, and the real tree's render fails, naming it, on a struct the golden does not record.
+#[test]
+fn every_struct_is_pinned_by_its_module_path_or_alias_and_an_unpinned_one_fails() {
+    use xtask::gates::abi_header::render_sources_pinned;
+    let render_pinned = |files: &[(&str, &str)], golden: &str| {
+        let srcs: Vec<Src<'_>> = files
+            .iter()
+            .map(|(k, t)| Src {
+                kind: k,
+                rel: "planted.rs",
+                text: t,
+            })
+            .collect();
+        render_sources_pinned(&srcs, golden)
+    };
+    let routed = [(
+        "transport",
+        "#[repr(C)]\npub struct Routed { pub a: u32 }\n",
+    )];
+    let h = render_pinned(
+        &routed,
+        "tkind::route::Routed.a=0\ntkind::route::Routed.__size=4\ntkind::route::Routed.__align=4\n",
+    )
+    .expect("a struct recorded by its module path is pinned");
+    for want in [
+        "BB_ASSERT(sizeof(bb_transport_Routed) == 4, ",
+        "BB_ASSERT(offsetof(bb_transport_Routed, a) == 0, ",
+        "1 of 1 structures are pinned",
+    ] {
+        assert!(h.contains(want), "missing `{want}` in:\n{h}");
+    }
+    let aliased = [(
+        "mech",
+        "#[repr(C)]\npub struct AbiStr { pub ptr: *const u8, pub len: usize }\n",
+    )];
+    let h = render_pinned(
+        &aliased,
+        "MechStr.ptr=0\nMechStr.len=8\nMechStr.__size=16\nMechStr.__align=8\n",
+    )
+    .expect("the golden's alias pins its struct");
+    assert!(
+        h.contains("BB_ASSERT(sizeof(bb_mech_AbiStr) == 16, "),
+        "missing the alias's pin in:\n{h}"
+    );
+    let e = render_pinned(&routed, "").expect_err("an unpinned struct must fail");
+    assert!(e.contains("bb_transport_Routed"), "{e}");
+    assert!(e.contains("is not pinned"), "{e}");
+    assert!(
+        render(&routed, "").is_ok(),
+        "a synthetic fragment may pin only what it tests"
+    );
+}

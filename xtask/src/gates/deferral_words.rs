@@ -19,13 +19,19 @@
 //! The script's default mode lists hits and exits 0, so the two scan rows are REPORT-ONLY
 //! ([`Gate::informational`]): they pass however many hits there are and print the full location
 //! list. What the script's exit code actually blocked on was its `--selftest`, the planted-deferral
-//! positive control, and that is what the gating rows are:
+//! positive control, and that is a gating row. So is LAW 9 over the scan (`:no-rise`): the Layer-1
+//! count of every `(document, shape)` pair is pinned at what the BASE commit
+//! ([`crate::gates::construction::ceilings::base_ref`], the merge-base CI names) measured, and any
+//! rise is RED, naming the document, the shape and both counts. A document the base did not hold
+//! starts at zero. A drain is green; nothing is typed by hand, so nothing can be raised beside the
+//! growth in the same commit. The gating rows are:
 //!
 //! | row | the refusal |
 //! | --- | --- |
 //! | `:scan-floor` | fewer than [`SCAN_FLOOR`] documents scanned, or one unreadable, is UNPROVEN |
 //! | `:layer1` | (report-only) Layer-1 occurrences over the doc set |
 //! | `:layer2` | (report-only) Layer-2 reading list over the doc set |
+//! | `:no-rise` | a `(document, Layer-1 shape)` count above the base's, or a base that cannot be read |
 //! | `:control-batch1` | every batch-1 phrase is caught at or above its expected layer |
 //! | `:control-batch2` | every batch-2 phrase is caught at or above its expected layer |
 //! | `:control-batch3-regressed` | a batch-3 phrase that was caught and now falls through |
@@ -56,6 +62,8 @@ pub const ROW_B1: &str = "deferral-words:control-batch1";
 pub const ROW_B2: &str = "deferral-words:control-batch2";
 pub const ROW_B3_REGRESSED: &str = "deferral-words:control-batch3-regressed";
 pub const ROW_B3_STALE: &str = "deferral-words:control-batch3-stale-pin";
+/// LAW 9 over the document set: no `(document, Layer-1 shape)` count rises against the base.
+pub const ROW_RISE: &str = "deferral-words:no-rise";
 
 /// The 1.6.0 document set the scan reads: the spec, the TODO, the SLOT-LOG and QUESTIONS. A scan of
 /// fewer is the instrument going blind, not a clean tree.
@@ -348,6 +356,8 @@ type Hit = (String, usize, String);
 
 struct Scan {
     files: usize,
+    /// The documents read, by path.
+    read: Vec<String>,
     unreadable: Vec<String>,
     l1: Vec<Hit>,
     l2: Vec<Hit>,
@@ -396,6 +406,7 @@ fn scan(cx: &Ctx) -> Result<Scan, String> {
     let paths = collect(cx)?;
     let mut s = Scan {
         files: 0,
+        read: Vec::new(),
         unreadable: Vec::new(),
         l1: Vec::new(),
         l2: Vec::new(),
@@ -409,6 +420,7 @@ fn scan(cx: &Ctx) -> Result<Scan, String> {
             }
         };
         s.files += 1;
+        s.read.push(rel.clone());
         for (n, shape) in file_hits(&text).iter() {
             let hit = (rel.clone(), *n, shape.clone());
             if shape.starts_with("L2:") {
@@ -634,10 +646,89 @@ fn by_shape(hits: &[Hit], strip_l2: bool) -> String {
         .join(", ")
 }
 
+/// Layer-1 occurrences per `(document, shape)`.
+fn counts<'a>(hits: impl IntoIterator<Item = &'a Hit>) -> BTreeMap<(String, String), usize> {
+    let mut m = BTreeMap::new();
+    for (p, _, shape) in hits {
+        *m.entry((p.clone(), shape.clone())).or_default() += 1;
+    }
+    m
+}
+
+/// LAW 9 over the document set: every `(document, Layer-1 shape)` count against the base's.
+///
+/// The base is read from history (`git show <base>:<doc>`), never from a file the same commit may
+/// edit, so a rise cannot be excused beside itself. A document the base does not carry counts zero
+/// for every shape: a new 1.6.0 document holds no banned shape either.
+fn rise_row(cx: &Ctx, s: &Scan) -> Row {
+    let title = "no 1.6.0 document holds more of a banned shape than its base did";
+    let base = match crate::gates::construction::ceilings::base_ref(cx) {
+        Ok(b) => b,
+        Err(why) => {
+            return Row::fail(
+                ROW_RISE,
+                "the base the counts are pinned at could not be established",
+                why,
+            )
+        }
+    };
+    let docs: BTreeSet<&str> = s.read.iter().map(String::as_str).collect();
+    let mut was: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for doc in &docs {
+        let Ok(text) = cx.git_show(&base.sha, doc) else {
+            continue;
+        };
+        for (_, shape) in file_hits(&text).iter() {
+            if !shape.starts_with("L2:") {
+                *was.entry(((*doc).to_string(), shape.clone())).or_default() += 1;
+            }
+        }
+    }
+    let now = counts(&s.l1);
+    let risen: Vec<String> = now
+        .iter()
+        .filter_map(|((doc, shape), n)| {
+            let before = was.get(&(doc.clone(), shape.clone())).copied().unwrap_or(0);
+            (*n > before).then(|| {
+                let at: Vec<String> =
+                    s.l1.iter()
+                        .filter(|(p, _, sh)| p == doc && sh == shape)
+                        .map(|(_, line, _)| line.to_string())
+                        .collect();
+                format!("{doc} {shape}: {before} -> {n} (lines {})", at.join(","))
+            })
+        })
+        .collect();
+    if risen.is_empty() {
+        Row::pass(
+            ROW_RISE,
+            title,
+            format!(
+                "{} (document, shape) count(s) at or below base {} ({})",
+                now.len(),
+                base.sha.get(..10).unwrap_or(&base.sha),
+                base.how
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_RISE,
+            "a 1.6.0 document holds more of a banned shape than its base did (Law 9: no rise)",
+            format!(
+                "against base {} ({}): {}. Strike the new phrasing; a banned shape is never \
+                 excused by a count",
+                base.sha.get(..10).unwrap_or(&base.sha),
+                base.how,
+                risen.join(" | ")
+            ),
+        )
+    }
+}
+
 fn floor_fail(why: String) -> Vec<Row> {
     let title = "the 1.6.0 document set could not be scanned, so the verdict is UNPROVEN";
     let mut rows = vec![Row::fail(ROW_FLOOR, title, why)];
-    for id in [ROW_L1, ROW_L2] {
+    for id in [ROW_L1, ROW_L2, ROW_RISE] {
         rows.push(Row::skip(
             id,
             "unproven — the scan stopped at the floor",
@@ -659,6 +750,7 @@ impl Gate for DeferralWordsGate {
             ROW_FLOOR,
             ROW_L1,
             ROW_L2,
+            ROW_RISE,
             ROW_B1,
             ROW_B2,
             ROW_B3_REGRESSED,
@@ -721,6 +813,7 @@ impl Gate for DeferralWordsGate {
                         locations(&s.l2)
                     ),
                 ));
+                rows.push(rise_row(cx, &s));
             }
         }
 
@@ -833,20 +926,77 @@ impl Gate for DeferralWordsGate {
             with(&c)
         };
 
+        // THE BASE IS PINNED for every case that reads `:no-rise`: a synthetic ref whose documents
+        // are the committed ones, answered from the overlay. A battery's checkout may be detached
+        // with no base to derive, and the proof must not depend on how that checkout was made; the
+        // live base is what the `gates` check measures against.
+        let files = collect(cx).unwrap_or_default();
+        // The synthetic base ref, answered entirely from the overlay.
+        let base = "deferral-words-selftest-base";
+        let based = |ov: &mut Overlay| {
+            ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, base);
+            ov.set_command(format!("git-ref:{base}"), base);
+            for f in &files {
+                ov.set_command(
+                    format!("git-show:{base}:{f}"),
+                    cx.read(f).unwrap_or_default(),
+                );
+            }
+        };
+        let mut pin = Overlay::new();
+        based(&mut pin);
+        let pinned = cx.with_overlay(pin);
+
         report.push(prove_green(
-            cx,
+            &pinned,
             self,
             "the committed tree, controls and pinned residue are green",
             &all,
         ));
 
+        // LAW 9: THE SCAN REFUSES A RISE. One more banned shape in a 1.6.0 document than the base
+        // held is RED, naming the document, the shape and the counts; the same shape struck (a
+        // drain) is green.
+        let spec = format!("{ROOT}/BUSBAR-1.6.0.md");
+        let text = cx.read(&spec).unwrap_or_default();
+        let mut risen = Overlay::new();
+        based(&mut risen);
+        risen.set(
+            spec.clone(),
+            format!("{text}\nThe remaining call sites are deferred.\n"),
+        );
+        report.push(prove_red(
+            &pinned,
+            self,
+            "one more banned shape in a 1.6.0 document than its base held is RED",
+            &[ROW_RISE],
+            risen,
+            &[ROW_RISE, spec.as_str(), "defer-family"],
+        ));
+        let mut base_held_more = Overlay::new();
+        based(&mut base_held_more);
+        base_held_more.set_command(
+            format!("git-show:{base}:{spec}"),
+            format!("{text}\nThe remaining call sites are deferred.\n"),
+        );
+        report.push(prove_green(
+            &cx.with_overlay(base_held_more),
+            self,
+            "a banned shape the base held and this tree struck is a drain, and green",
+            &[ROW_RISE],
+        ));
+
         // REPORT-ONLY: a planted deferral in the doc set is REPORTED, never red (the script's default
         // mode lists and exits 0).
+        // The base is pinned and holds the planted document too, so `:no-rise` reads no rise: this
+        // case proves the SCAN rows report rather than score; the rise is proven RED above.
+        let planted = "docs/design/1.6.0-PLANTED.md";
+        let planted_text =
+            "# planted\nThe remaining call sites are deferred to a follow-on release.\n";
         let mut ov = Overlay::new();
-        ov.set(
-            "docs/design/1.6.0-PLANTED.md",
-            "# planted\nThe remaining call sites are deferred to a follow-on release.\n",
-        );
+        based(&mut ov);
+        ov.set_command(format!("git-show:{base}:{planted}"), planted_text);
+        ov.set(planted, planted_text);
         report.push(prove_green(
             &cx.with_overlay(ov),
             self,
@@ -920,8 +1070,10 @@ impl Gate for DeferralWordsGate {
         let mut c = Controls::committed();
         c.b3 = caught;
         c.residue.remove(&0);
+        let mut widened = with(&c);
+        based(&mut widened);
         report.push(prove_green(
-            &cx.with_overlay(with(&c)),
+            &cx.with_overlay(widened),
             self,
             "batch 3: a residue phrase widened into a caught one, with its pin struck, is green",
             &[ROW_B3_REGRESSED, ROW_B3_STALE],

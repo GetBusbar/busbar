@@ -7,19 +7,23 @@
 //!
 //! ## The inputs, all committed
 //!
-//! * `conformance/registry.toml` — the ONE hand-authored file (P4, DERIVED-never-typed:
-//!   `scripts/release-gate/expected-ids.sh:11-14`). It lists which suites EXIST and their claim
-//!   TYPE, never their status.
-//! * `conformance/verdicts/<id>.json` — one per suite that ran, the arm-or-red fact each conformance
-//!   workflow already computes (`mcp-conformance.yml:486-559`), written to disk. In CI the release
-//!   pipeline drops the downloaded artifacts here before `--write`; a suite that did not run leaves
-//!   no file and is `not-run`, never absent, never green (P2: `fleet-fixtures/verdict.sh:164-172`).
+//! * `conformance/registry.toml` — the ONE hand-authored file. It lists which suites EXIST and
+//!   their claim TYPE, never their status (a field outside [`REGISTRY_KEYS`] is refused), and it is
+//!   held from below by two floors: every shipped plane owes a suite ([`plane_roster`]), and no
+//!   armed suite may leave ([`SUITE_FLOOR`]).
+//! * `conformance/verdicts/<id>.json` — one per suite that ran, the arm-or-red fact its rig
+//!   computed, written by `cargo xtask conformance record` stamped with the checkout's HEAD. Each is
+//!   held to `conformance/verdicts/verdict.schema.json` and to the suite it is filed under before
+//!   it is read ([`check_against_schema`]); a suite that did not run leaves no file and is
+//!   `not-run`, never absent, never green.
 //!
-//! ## The reconciliation (a ledger, exactly like `fleet-fixtures/verdict.sh:91-128`)
+//! ## The reconciliation (a ledger: owed against got)
 //!
 //! OWED = the registry. GOT = the verdicts present. Every registered suite resolves to `pass`,
-//! `fail`, or `not-run`; a registered suite with no verdict is `not-run`; a verdict whose `commit`
-//! is not the release commit is downgraded to `not-run(stale)`. `claim` is `null` for anything but
+//! `fail`, or `not-run`; a registered suite with no verdict is `not-run`; a pass whose `commit` is
+//! not the manifest anchor (the commit the armed passes agree on, [`Assessment::commit`]) is
+//! downgraded to `not-run(stale)`. Freshness against the release commit is the freshness row's
+//! judgement ([`stale_against`]), not the manifest status's. `claim` is `null` for anything but
 //! `pass`, so there is no code path that renders a non-green suite as anything but absent.
 
 use std::collections::BTreeMap;
@@ -43,8 +47,46 @@ const PLANE_CRATE_PREFIX: &str = "crates/busbar-plane-";
 pub const MANIFEST_PATH: &str = "conformance/manifest.json";
 pub const README_PATH: &str = "README.md";
 
-/// The verdict directory. The pipeline drops one `<id>.json` per suite that ran.
+/// The verdict directory. `cargo xtask conformance record` writes one `<id>.json` per suite that
+/// ran.
 pub const VERDICT_DIR: &str = "conformance/verdicts";
+
+/// The schema every verdict is held to before it is read ([`check_against_schema`]).
+pub const VERDICT_SCHEMA_PATH: &str = "conformance/verdicts/verdict.schema.json";
+
+/// The fields a `[[suite]]` block may carry. The registry holds no status: a field outside this
+/// list (a `not_run_reason`, a `status`) is refused, not ignored.
+pub const REGISTRY_KEYS: &[&str] = &[
+    "id", "standard", "plan", "tier", "label", "verdict", "public", "plane",
+];
+
+/// THE ARMED SUITE FLOOR (Law 9: a floor only rises). Every suite id the registry carries, armed at
+/// today's set. The plane floor ([`plane_roster`]) asks only that each shipped plane keep ONE
+/// suite, so on its own five of six language-model suites, two of three streaming suites and every
+/// suite that judges no plane (a transport, the auth server, the supply chain) could leave the MUST
+/// set with nothing refusing it. This list is that refusal: a registry that drops an armed id is
+/// refused, and a registry that adds a suite is refused until this list carries it too, so a new
+/// suite is armed in the commit that registers it.
+pub const SUITE_FLOOR: &[&str] = &[
+    "a2a",
+    "fapi2",
+    "h2",
+    "jev",
+    "llm-anthropic",
+    "llm-bedrock",
+    "llm-cohere",
+    "llm-gemini",
+    "llm-openai",
+    "llm-responses",
+    "mcp",
+    "oidf-oauth2",
+    "slsa-verifier",
+    "tls",
+    "voice-gemini-live",
+    "voice-openai-realtime",
+    "webrtc-browser",
+    "ws",
+];
 
 const MANIFEST_SCHEMA: &str = "busbar.conformance.manifest/1";
 const GENERATED_BANNER: &str =
@@ -59,9 +101,9 @@ pub const BADGE_END: &str = "<!-- END conformance-badges -->";
 
 // ── TIERS — the CEILING a suite may ever claim, baked into the type, not the copy ─────────────
 
-/// The honesty tiers, from `CONFORMANCE-MATRIX-RULING.md`. The `tier` is a registry constant and is
-/// the ceiling; the rendered claim string is a pure function of `(tier, status)` in [`claim_for`], so
-/// the page can never phrase a claim above its tier.
+/// The honesty tiers (the owner's conformance-matrix ruling, 2026-09-19). The `tier` is a registry
+/// constant and is the ceiling; the rendered claim string is a pure function of `(tier, status)` in
+/// [`claim_for`], so the page can never phrase a claim above its tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     /// A third-party body ISSUED a cert. Requires `cert_id`/`issuer`/`expires` in the verdict.
@@ -153,8 +195,6 @@ pub struct Suite {
     /// The verdict artifact name the pipeline downloads; recorded for provenance.
     pub verdict: String,
     pub public: bool,
-    /// The reason a suite is legitimately not covered yet, surfaced in the manifest when not-run.
-    pub not_run_reason: Option<String>,
     /// The shipped plane this suite judges (a key of [`plane_roster`]), or `None` for a suite that
     /// judges no plane (a transport, the auth server, the supply chain).
     pub plane: Option<String>,
@@ -202,8 +242,10 @@ pub fn plane_roster(cx: &Ctx) -> Result<Vec<String>, String> {
 }
 
 /// Parse and VALIDATE the registry. Every suite must name a standard, plan, label, a tier in the
-/// fixed enum and a verdict artifact; no duplicate id. A registry that does not parse un-freezes
-/// every claim it should govern, so this is a hard error, never a narrower scan.
+/// fixed enum and a verdict artifact, and carry no field outside [`REGISTRY_KEYS`]; no duplicate
+/// id; every shipped plane judged by a suite; every [`SUITE_FLOOR`] id registered and no id outside
+/// it. A registry that does not parse un-freezes every claim it should govern, so this is a hard
+/// error, never a narrower scan.
 pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
     let text = cx
         .read(REGISTRY_PATH)
@@ -228,6 +270,17 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
                 "duplicate suite id `{id}` — a claim with two homes is a claim nobody can reconcile"
             ));
         }
+        if let Some(key) = t
+            .values
+            .keys()
+            .find(|k| !REGISTRY_KEYS.contains(&k.as_str()))
+        {
+            return Err(format!(
+                "suite `{id}` carries `{key}`, which is no registry field ({}): the registry \
+                 holds which suites exist and their claim type, never their status",
+                REGISTRY_KEYS.join(", ")
+            ));
+        }
         let need = |key: &str| -> Result<String, String> {
             let v = t.get_one(key).unwrap_or_default().to_string();
             if v.is_empty() {
@@ -242,7 +295,6 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
         let verdict = need("verdict")?;
         let tier = Tier::parse(&need("tier")?).map_err(|e| format!("suite `{id}`: {e}"))?;
         let public = matches!(t.get_one("public"), Some("true"));
-        let not_run_reason = t.get_one("not_run_reason").map(str::to_string);
         let plane = t.get_one("plane").map(str::to_string);
         suites.push(Suite {
             id,
@@ -252,7 +304,6 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
             label,
             verdict,
             public,
-            not_run_reason,
             plane,
         });
     }
@@ -288,6 +339,32 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
             uncovered.join(", ")
         ));
     }
+    // THE ARMED FLOOR: no armed suite leaves, and no suite joins unarmed.
+    let dropped: Vec<&str> = SUITE_FLOOR
+        .iter()
+        .copied()
+        .filter(|id| !suites.iter().any(|s| s.id == *id))
+        .collect();
+    if !dropped.is_empty() {
+        return Err(format!(
+            "the armed suite(s) {} are absent from the registry: SUITE_FLOOR is a floor and only \
+             rises (Law 9), so deleting a suite's block cannot shrink the MUST set",
+            dropped.join(", ")
+        ));
+    }
+    let unarmed: Vec<&str> = suites
+        .iter()
+        .map(|s| s.id.as_str())
+        .filter(|id| !SUITE_FLOOR.contains(id))
+        .collect();
+    if !unarmed.is_empty() {
+        return Err(format!(
+            "the registered suite(s) {} are not armed in SUITE_FLOOR \
+             (xtask/src/gates/conformance_sync/render.rs): raise the floor in the commit that \
+             registers a suite, so it cannot later leave the MUST set unrefused",
+            unarmed.join(", ")
+        ));
+    }
     suites.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(suites)
 }
@@ -312,13 +389,151 @@ pub struct VerdictDoc {
     pub cert_id: Option<String>,
 }
 
-fn read_verdict(cx: &Ctx, suite: &Suite) -> Result<Option<VerdictDoc>, String> {
+/// The verdict schema, parsed. Unreadable or not JSON is an error: a verdict that cannot be held to
+/// its schema is not read.
+fn verdict_schema(cx: &Ctx) -> Result<Value, String> {
+    let text = cx
+        .read(VERDICT_SCHEMA_PATH)
+        .map_err(|e| format!("{VERDICT_SCHEMA_PATH}: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("{VERDICT_SCHEMA_PATH}: not JSON: {e}"))
+}
+
+/// The schema keywords [`check_against_schema`] reads at the top level and per property. A schema
+/// that uses any other keyword is refused rather than half-checked.
+const SCHEMA_TOP_KEYWORDS: &[&str] = &[
+    "$schema",
+    "$id",
+    "title",
+    "description",
+    "type",
+    "additionalProperties",
+    "required",
+    "properties",
+];
+const SCHEMA_PROPERTY_KEYWORDS: &[&str] = &["description", "type", "const", "enum"];
+
+/// HOLD ONE VERDICT TO ITS SCHEMA (`conformance/verdicts/verdict.schema.json`): an object; every
+/// `required` key present; under `additionalProperties: false`, no key the schema does not declare;
+/// each value of its declared `type` (`string` or `boolean`), equal to its `const`, inside its
+/// `enum`; and the schema's own rule that `armed: false` means `status: not-run` (so a pass is
+/// always armed). A keyword this reader does not check is refused, so the schema cannot grow a rule
+/// the reader silently skips.
+pub fn check_against_schema(schema: &Value, v: &Value, path: &str) -> Result<(), String> {
+    let refuse_schema = |why: String| format!("{VERDICT_SCHEMA_PATH}: {why}");
+    let top = schema
+        .as_object()
+        .ok_or_else(|| refuse_schema("not a JSON object".to_string()))?;
+    if let Some(kw) = top
+        .keys()
+        .find(|k| !SCHEMA_TOP_KEYWORDS.contains(&k.as_str()))
+    {
+        return Err(refuse_schema(format!(
+            "uses `{kw}`, a keyword the verdict reader does not check"
+        )));
+    }
+    if top.get("type").is_some_and(|t| t != "object") {
+        return Err(refuse_schema(
+            "a verdict schema types an object".to_string(),
+        ));
+    }
+    let props = top
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| refuse_schema("declares no `properties`".to_string()))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("{path}: a verdict is a JSON object"))?;
+    for key in top
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let key = key.as_str().unwrap_or_default();
+        if !obj.contains_key(key) {
+            return Err(format!(
+                "{path}: {VERDICT_SCHEMA_PATH} requires `{key}`, and the verdict carries none"
+            ));
+        }
+    }
+    let closed = top.get("additionalProperties") == Some(&Value::Bool(false));
+    for (key, value) in obj {
+        let Some(spec) = props.get(key) else {
+            if closed {
+                return Err(format!(
+                    "{path}: `{key}` is no field of {VERDICT_SCHEMA_PATH}"
+                ));
+            }
+            continue;
+        };
+        let spec = spec
+            .as_object()
+            .ok_or_else(|| refuse_schema(format!("`{key}` is not a property object")))?;
+        if let Some(kw) = spec
+            .keys()
+            .find(|k| !SCHEMA_PROPERTY_KEYWORDS.contains(&k.as_str()))
+        {
+            return Err(refuse_schema(format!(
+                "`{key}` uses `{kw}`, a keyword the verdict reader does not check"
+            )));
+        }
+        for (kw, want) in spec {
+            let admitted = match kw.as_str() {
+                "type" => match want.as_str() {
+                    Some("string") => value.is_string(),
+                    Some("boolean") => value.is_boolean(),
+                    _ => {
+                        return Err(refuse_schema(format!(
+                            "`{key}` has the type {want}, which the verdict reader does not check"
+                        )))
+                    }
+                },
+                "const" => value == want,
+                "enum" => want.as_array().is_some_and(|a| a.contains(value)),
+                // `description`: prose, nothing to hold the value to.
+                _ => true,
+            };
+            if !admitted {
+                return Err(format!(
+                    "{path}: `{key}` is {value}, which {VERDICT_SCHEMA_PATH} does not admit \
+                     ({kw} {want})"
+                ));
+            }
+        }
+    }
+    let armed = obj.get("armed").and_then(Value::as_bool).unwrap_or(false);
+    let status = obj
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !armed && status != "not-run" {
+        return Err(format!(
+            "{path}: `armed` is false and `status` is `{status}`: {VERDICT_SCHEMA_PATH} admits \
+             only `not-run` from a rig that did not judge"
+        ));
+    }
+    Ok(())
+}
+
+/// Read `suite`'s verdict, held to `schema` and to the suite it is filed under. `None` is no file
+/// (the suite did not run); a file that breaks its schema, or names another suite, is an error, so
+/// a verdict copied under another suite's name is never credited to it.
+fn read_verdict(cx: &Ctx, schema: &Value, suite: &Suite) -> Result<Option<VerdictDoc>, String> {
     let path = format!("{VERDICT_DIR}/{}.json", suite.id);
     let text = match cx.read(&path) {
         Ok(t) => t,
         Err(_) => return Ok(None),
     };
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: not JSON: {e}"))?;
+    check_against_schema(schema, &v, &path)?;
+    let filed = v.get("suite").and_then(Value::as_str).unwrap_or_default();
+    if filed != suite.id {
+        return Err(format!(
+            "{path}: the verdict judges suite `{filed}` and is filed under `{}`: a verdict is \
+             credited only to the suite it judged",
+            suite.id
+        ));
+    }
     let s = |k: &str| {
         v.get(k)
             .and_then(Value::as_str)
@@ -386,13 +601,15 @@ pub struct Assessment {
 }
 
 pub fn assess(cx: &Ctx, suites: &[Suite]) -> Result<Assessment, String> {
+    let schema = verdict_schema(cx)?;
     let mut verdicts: Vec<(Suite, Option<VerdictDoc>)> = Vec::new();
     for s in suites {
-        verdicts.push((s.clone(), read_verdict(cx, s)?));
+        verdicts.push((s.clone(), read_verdict(cx, &schema, s)?));
     }
 
-    // The release commit: the mode of the armed passing verdicts' commits. Ties break to the
-    // lexicographically smallest, so the anchor is deterministic.
+    // The manifest anchor: the mode of the armed passing verdicts' commits. Ties break to the
+    // lexicographically largest (`max_by_key` keeps the last of equal maxima over the sorted map),
+    // so the anchor is deterministic.
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for (_, v) in &verdicts {
         if let Some(v) = v {
@@ -420,12 +637,7 @@ pub fn assess(cx: &Ctx, suites: &[Suite]) -> Result<Assessment, String> {
         let (status, reason) = match &verdict {
             None => (
                 "not-run".to_string(),
-                Some(
-                    suite
-                        .not_run_reason
-                        .clone()
-                        .unwrap_or_else(|| "no verdict artifact for this commit".to_string()),
-                ),
+                Some("no verdict artifact for this commit".to_string()),
             ),
             Some(v) if !v.armed => (
                 "not-run".to_string(),
@@ -444,7 +656,7 @@ pub fn assess(cx: &Ctx, suites: &[Suite]) -> Result<Assessment, String> {
                 (
                     "not-run".to_string(),
                     Some(format!(
-                        "stale: verdict commit {} is not the release commit {}",
+                        "stale: verdict commit {} is not the commit the armed passes agree on {}",
                         short(&v.commit),
                         short(&commit)
                     )),

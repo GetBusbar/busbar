@@ -2,7 +2,7 @@
 # Bedrock Converse dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
-wire = "bedrock"  # the wire lock: dialects/bedrock.wire.json (notation A paths)
+wire = "bedrock"  # the wire lock: testing/llm-conformance/wire/bedrock.wire.json (notation A paths)
 request = ["structure", "inference_config", "tier", "output_config", "blocks"]
 response = ["response"]
 stream = ["stream"]
@@ -142,7 +142,9 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 # Controls beyond the rows. `requestMetadata` (validated per entry), `top_k` (either spelling) and
 # the hosted tool kinds are the writer's own code. Converse has no penalties, seed or candidate
 # count: 1.5.5 omitted them with no warn and no audit (1.5.5:
-# crates/busbar/src/proto/bedrock/reader.rs:703 reads none, its writer writes none).
+# crates/busbar/src/proto/bedrock/reader.rs:703 reads none, its writer writes none). `silent = true`
+# means "no dialect text of its own": the runtime drops the control like one with no row, with the
+# dialect's `drop_warn` and the seam's audit entry (a drop is never silent, spec Part 2 #76).
 [controls]
 "metadata" = { code = "bedrock_request_metadata" }
 "top_k" = { code = "bedrock_top_k" }

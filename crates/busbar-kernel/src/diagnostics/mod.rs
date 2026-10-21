@@ -2214,9 +2214,8 @@ pub const ADMIN_AUTH_CHAIN_EMPTY: Diagnostic = Diagnostic {
     severity: Severity::Actionable,
     summary: "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every \
               admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` \
-              REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned \
-              grant, never full), so this posture can only be entered deliberately via config.yaml \
-              at boot — never flipped open by one unnoticed API call.",
+              applies an empty chain as 1.5.5 did, with this warning, and the open posture is then \
+              live until the chain is set again.",
     action: "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set \
              `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an \
              admin credential entry, or an admin module) before exposing the admin API to any \

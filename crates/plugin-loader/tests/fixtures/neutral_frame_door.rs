@@ -62,10 +62,7 @@ const SELECTOR_CODES: [u8; SELECTOR_FORMS.len()] = form_codes(SELECTOR_FORMS);
 
 const FACTS: &[AbiStr] = &[abi_str(tfacts::PEER)];
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ZERO;
 
 /// The schemes this door claims, by name: the Statement's `claims`, the one place they are stated.
 const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
@@ -81,25 +78,21 @@ const CLAIMS: &[Claim] = &[Claim {
     facts_len: FACTS.len(),
     status_namespace: abi_str(KEY),
     session: 1,
-    session_bound: 0,
     unit0_trigger: UNIT0_FIRST_BYTES,
-    status_at: 0,
-    _reserved: 0,
+    ..Claim::ZERO
 }];
 
 /// The claim's numbering: `0` a stream that ended whole, `1..=9` any other end.
 const STATUS_ROWS: &[StatusRow] = &[
     StatusRow {
-        claim: 0,
-        lo: 0,
-        hi: 0,
         class: STATUS_SUCCESS as u32,
+        ..StatusRow::ZERO
     },
     StatusRow {
-        claim: 0,
         lo: 1,
         hi: 9,
         class: STATUS_OTHER as u32,
+        ..StatusRow::ZERO
     },
 ];
 
@@ -107,43 +100,35 @@ const STATUS_ROWS: &[StatusRow] = &[
 /// (`check_fault_cover`). Every end but the whole one is the caller's, so this neutral door trips
 /// nothing, as it read before the table was appended.
 const FAULT_ROWS: &[FaultRow] = &[FaultRow {
-    claim: 0,
     lo: 1,
     hi: 9,
     fault: FAULT_CALLER as u32,
+    ..FaultRow::ZERO
 }];
 
 const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
         size: std::mem::size_of::<TransportTail>() as u32,
-        _reserved: 0,
+        ..KindTailHead::ZERO
     },
     // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
     // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
     // one the connector may pick as its address carrier, and this one would refuse every dial.
     role: ROLE_FRAMER,
     framing: FRAMING_STREAM,
-    facts: 0,
-    handshake_max_steps: 0,
-    composes_over: std::ptr::null(),
-    composes_over_len: 0,
     claim_rows: CLAIMS.as_ptr(),
     claim_rows_len: CLAIMS.len(),
-    upgrades_to: std::ptr::null(),
-    upgrades_to_len: 0,
     handoff_from: NONE,
     handoff_to: NONE,
     handoff_binding_fact: NONE,
     handshake_frame_kind: NONE,
     status_rows: STATUS_ROWS.as_ptr(),
     status_rows_len: STATUS_ROWS.len(),
-    settings: std::ptr::null(),
-    settings_len: 0,
     fault_rows: FAULT_ROWS.as_ptr(),
     fault_rows_len: FAULT_ROWS.len(),
     // The stride this framer writes its pieces at: the contract's it was built against.
     frame_piece_size: FRAME_PIECE_SIZE,
-    _reserved: 0,
+    ..TransportTail::ZERO
 };
 
 /// The door's Statement: the identity framer.
@@ -577,12 +562,8 @@ impl Framing {
                     stream: 1,
                     offset: at as u64,
                     len: len as u64,
-                    code: 0,
-                    status_class: 0,
                     flags: PIECE_END_OF_FRAME,
-                    fault: 0,
-                    retry_after_secs: 0,
-                    declared_len: 0,
+                    ..FramePiece::ZERO
                 });
             }
             at += len;
@@ -612,15 +593,9 @@ impl Framing {
             // SAFETY: a host buffer of `pieces_cap >= 1` pieces.
             unsafe {
                 sink.pieces.write(FramePiece {
-                    stream: 0,
-                    offset: 0,
                     len: n as u64,
-                    code: 0,
-                    status_class: 0,
                     flags,
-                    fault: 0,
-                    retry_after_secs: 0,
-                    declared_len: 0,
+                    ..FramePiece::ZERO
                 });
             }
             y.frame_len = n as u64;

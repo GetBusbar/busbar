@@ -206,7 +206,7 @@ fn usage_view_serializes_currency_from_const() {
     );
 }
 
-/// THE `classes` CONTRACT (new in 1.6.0, FLIP-A2A ruling): a usage row's plane-declared classes
+/// THE `classes` CONTRACT (new in 1.6.0, PLANE-FLIP ruling): a usage row's plane-declared classes
 /// serialize as an object keyed by class name, each `{count, cost}`, flattened onto a by-model row
 /// beside its token columns; a row with none carries no `classes` key at all (1.5.5's shape).
 #[test]

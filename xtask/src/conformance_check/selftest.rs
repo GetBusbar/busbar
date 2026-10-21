@@ -126,7 +126,7 @@ pub fn run(cx: &Ctx) -> i32 {
         "not a registered suite",
     ));
 
-    // ── RED: a pass carried over from an older sha — CONFORMANCE-SYNC-DESIGN.md §5.2.
+    // ── RED: a pass carried over from an older sha: a pass is honoured only on its own commit.
     cases.push(expect(
         "a pass carried over from an older sha is STALE (RED)",
         check_one_suite(&planted_cx, DEFAULT_MANIFEST_PATH, "alpha", OTHER_SHA),
@@ -270,6 +270,47 @@ pub fn run(cx: &Ctx) -> i32 {
     cases.push(Case {
         name: "--musts denies when a shipped plane has no registered suite (RED, derived floor)",
         proven: floor_red,
+    });
+
+    // ── `--musts` RED: the MUST set has an ARMED floor too (`SUITE_FLOOR`, Law 9). A registry with
+    //    the block of a suite that judges no plane (ws) cut out leaves every plane covered, and the
+    //    same all-pass manifest minus that row is still DENIED: no suite leaves the MUST set.
+    let without_ws = registry
+        .split("\n[[suite]]\n")
+        .filter(|block| !block.starts_with("id = \"ws\"\n"))
+        .collect::<Vec<_>>()
+        .join("\n[[suite]]\n");
+    let mut ov = Overlay::new();
+    ov.set(
+        DEFAULT_MANIFEST_PATH,
+        serde_json::to_string_pretty(&registered_manifest(
+            &ids.iter()
+                .filter(|i| *i != "ws")
+                .cloned()
+                .collect::<Vec<_>>(),
+            None,
+            &[],
+        ))
+        .unwrap(),
+    );
+    ov.set(
+        crate::gates::conformance_sync::render::REGISTRY_PATH,
+        without_ws.clone(),
+    );
+    let armed_rows = check_musts(&cx.with_overlay(ov), DEFAULT_MANIFEST_PATH, SHA);
+    let armed_red = without_ws != registry
+        && armed_rows.len() == 1
+        && armed_rows[0].id == "conformance-check:registry"
+        && armed_rows[0].status == Status::Fail
+        && armed_rows[0]
+            .detail
+            .contains("the armed suite(s) ws are absent");
+    if !armed_red {
+        eprintln!("  NOT PROVEN: --musts armed-floor RED: rows = {armed_rows:?}");
+    }
+    cases.push(Case {
+        name: "--musts denies when an armed suite's block is deleted (RED, armed floor)",
+        proven: armed_red,
     });
 
     let mut failed = Vec::new();

@@ -267,7 +267,8 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
     }
 
     /// `store_restore` — restore the store from a named backup. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit_recovery_verb`] and only then handed to the store, which refuses it when it has
+    /// no restore operation (the configured store never has one: restores happen off-node, row 187).
     pub fn store_restore(
         &self,
         admin: &Grant<AdminVerb>,

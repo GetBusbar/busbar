@@ -97,8 +97,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 /// The fixture's `cdylib`: the `-plugin` crate of its row's logic crate.
 fn fixture_cdylib() -> Vec<u8> {
     let (krate, _) = door_fixture(PROOF);
-    let path = cdylib(&format!("{krate}_plugin"));
-    std::fs::read(path).expect("read the cdylib")
+    std::fs::read(cdylib(krate)).expect("read the cdylib")
 }
 
 /// The linked and dropped-in registries of the fixture; a `cdylib` not built is a hard failure

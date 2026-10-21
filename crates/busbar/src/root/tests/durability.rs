@@ -360,7 +360,9 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     assert_eq!(second.seq, first.seq + 1);
 
     let reread = boot(&cfg, 7).expect("the journal reopens");
-    let whole = reread.audit_window(1, u64::MAX);
+    let whole = reread
+        .audit_window(1, u64::MAX)
+        .expect("the journal reads back");
     assert_eq!(whole, vec![first, second]);
     assert!(AuditChain::verify_chain(&whole).is_ok());
     assert!(reread.retained_audit_findings().is_empty());
@@ -390,14 +392,19 @@ fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
         restarted.audit_records[0].seq, 6,
         "the cache holds the newest"
     );
-    let old = restarted.audit_window(1, 3);
+    let old = restarted
+        .audit_window(1, 3)
+        .expect("the journal reads back");
     assert_eq!(
         old.iter().map(|r| r.seq).collect::<Vec<_>>(),
         vec![1, 2, 3],
         "the journal answers for what the cache let go"
     );
     assert!(AuditChain::verify_window(&old).is_ok());
-    assert_eq!(restarted.audit_window(total, total)[0].seq, total);
+    let newest = restarted
+        .audit_window(total, total)
+        .expect("the cache answers");
+    assert_eq!(newest[0].seq, total);
 }
 
 /// A RETAINED RECORD EDITED AFTER IT WAS SEALED IS A `/verify` FINDING.
@@ -1331,8 +1338,9 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
     assert_eq!(restarted.recovered_holds, 0, "every hold was closed");
     assert_eq!(restarted.incarnation, 2, "the second boot of this journal");
 
-    // A book that lost a row.
-    restarted.ledger.book_mut().retain_from(86_401);
+    // A book that lost both rows.
+    *restarted.ledger.book_mut().entry(key.clone(), 86_400) = Default::default();
+    *restarted.ledger.book_mut().entry(other.clone(), 86_400) = Default::default();
     let findings = restarted.reconcile_with_journal();
     assert_eq!(
         findings.len(),
@@ -2210,9 +2218,9 @@ fn an_idempotency_claim_with_no_hold_behind_it_is_voided_at_recovery() {
 }
 
 /// A JOURNAL SEGMENT CORRUPTED MID-LOG DOES NOT STOP THE BOOT, AND IS NOT SILENT: the book opens over
-/// the records before the damage, the damaged remainder is in a quarantine file beside the segment,
-/// the verdict names the file, the offset and the byte count, and a durable `ChainBreak` record of
-/// it goes on the chain.
+/// every record that verifies, those behind the damage included, the damaged record is in a
+/// quarantine file beside the segment, the verdict names the file, the offset and the byte count, a
+/// durable `ChainBreak` record of it goes on the chain, and the chain still verifies across it.
 #[test]
 fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
     use busbar_kernel_wal::{Entry, Journal, QuarantineKept, RecordClass, FRAME_BYTES};
@@ -2255,13 +2263,13 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
     let q = durability.quarantined[0].clone();
     assert_eq!(q.segment_file.as_deref(), Some(segment.as_path()));
     assert_eq!(q.offset, FRAME_BYTES as u64);
-    assert_eq!(q.bytes, 3 * FRAME_BYTES as u64);
+    assert_eq!(q.bytes, FRAME_BYTES as u64, "the damaged record alone");
     let QuarantineKept::File(file) = &q.kept else {
         panic!("an on-disk journal quarantines to a file");
     };
     assert_eq!(
         std::fs::read(file).expect("the quarantine file is there"),
-        bytes[FRAME_BYTES..4 * FRAME_BYTES].to_vec()
+        bytes[FRAME_BYTES..2 * FRAME_BYTES].to_vec()
     );
 
     let ack = durability
@@ -2270,6 +2278,122 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
         .expect("a quarantine is recorded");
     assert_eq!(ack.sealed.len(), 1);
     assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
+    let seqs: Vec<u64> = durability
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("the chain verifies across the quarantine")
+        .iter()
+        .map(|r| r.node_seq)
+        .collect();
+    assert_eq!(seqs[..3], [1, 3, 4], "every kept record: {seqs:?}");
+    assert!(seqs.len() > 3, "and the break after them: {seqs:?}");
+}
+
+/// **ONE DAMAGED SETTLEMENT COSTS ITS OWN UNIT AND NOTHING ELSE, ON EVERY BOOT** (arch-audit u44:
+/// THE DESIGN, MONEY-CHAIN, BUSBAR-1.6.0.md l.1056-1059; one sealed facts line per unit, written
+/// once, never edited, #77 l.2279). Three units settle; the middle one's settlement is altered on
+/// the medium while the node is down.
+///
+/// RED before the fix, twice over. On the boot that found the damage, the scan stopped at it for
+/// good, so the third unit's settlement — whole and acknowledged — was cut off the log with it and
+/// left the book. And once that boot sealed the quarantine's `ChainBreak`, the chain never verified
+/// again: every later boot rebuilt an EMPTY book. Now the damaged settlement alone is set aside;
+/// every other unit's line is on the book at every boot; and the unit the damaged record names
+/// stays OPEN-QUARANTINED at every boot, never settled at 0.
+#[test]
+fn one_damaged_settlement_costs_its_own_unit_and_nothing_else_on_every_boot() {
+    let scratch = ScratchDir::new("one-damaged-settlement");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let (a, b, c, d) = (
+        totals_key("vk_a"),
+        totals_key("vk_b"),
+        totals_key("vk_c"),
+        totals_key("vk_d"),
+    );
+    {
+        let mut durability = boot(&cfg, 26).expect("the directory is writable");
+        settle_one(&mut durability, &a, 5_000, 1_111, 31);
+        settle_one(&mut durability, &b, 5_000, 4_321, 32);
+        settle_one(&mut durability, &c, 5_000, 2_222, 33);
+    }
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
+            bytes[i..i + 8].copy_from_slice(&4_322u64.to_le_bytes());
+        }),
+        "the fixture found the middle settlement on disk"
+    );
+
+    let check = |durability: &Durability, boot: &str| {
+        let book = durability.ledger.book();
+        assert_eq!(book.get(&a, 86_400).settled, 1_111, "{boot}: unit a");
+        assert_eq!(
+            book.get(&c, 86_400).settled,
+            2_222,
+            "{boot}: the unit settled BEHIND the damage is on the book"
+        );
+        let damaged = book.get(&b, 86_400);
+        assert_eq!(
+            damaged.settled, 0,
+            "{boot}: the altered figure is not taken"
+        );
+        assert_eq!(
+            damaged.open_holds, 5_000,
+            "{boot}: and its hold is NOT settled at its checkpoint"
+        );
+        assert_eq!(durability.recovered_holds, 0, "{boot}: nothing on a guess");
+        let findings: Vec<String> = durability
+            .restart_findings
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.starts_with("journal quarantine:"))
+                && findings
+                    .iter()
+                    .any(|f| f.contains("unit 32 is left OPEN-QUARANTINED")),
+            "{boot}: the findings name the quarantine and the unit: {findings:?}"
+        );
+        assert!(
+            !findings.iter().any(|f| f.contains("does not verify")),
+            "{boot}: the chain verifies across the quarantine: {findings:?}"
+        );
+    };
+
+    {
+        let mut restarted = boot(&cfg, 26).expect("a corrupt journal does not stop the boot");
+        assert_eq!(
+            restarted.quarantined.len(),
+            1,
+            "the damaged record is set aside"
+        );
+        check(&restarted, "the boot that found it");
+        restarted
+            .journal_quarantines(&token(), StepName::Meter, 1_758_700_000)
+            .expect("appends")
+            .expect("the quarantine goes on the chain");
+        settle_one(&mut restarted, &d, 5_000, 3_333, 34);
+    }
+    for later in ["the next boot", "the one after"] {
+        let mut again = boot(&cfg, 26).expect("reopens");
+        check(&again, later);
+        assert_eq!(
+            again.ledger.book().get(&d, 86_400).settled,
+            3_333,
+            "{later}: a unit settled after the quarantine is on the book"
+        );
+        assert!(
+            again
+                .journal_quarantines(&token(), StepName::Meter, 1_758_700_001)
+                .expect("appends")
+                .is_none(),
+            "{later}: the hole is on the chain once"
+        );
+    }
 }
 
 /// A SETTLED FIGURE TAMPERED ON DISK IS CAUGHT AT BOOT (the boot reconciliation is the check a stored
@@ -2842,6 +2966,81 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
+/// **A CHAIN READ WHILE THE LANE IS BETWEEN TWO PARTS OF A RECORD IS NOT A TORN RECORD.** A slot
+/// carries 510 bytes of a record, so a journal record past that (a 160-byte header and its body)
+/// crosses to the store as two or more puts, and the lane's worker runs beside the book. A chain read
+/// that lands between two of them (the boot's own `arm_checkpoints` and the keyset's sealed
+/// Bootstrap read do, right after the opening seal ships) finds the record's first part in the store
+/// and the whole record still in the lane. The record is read whole from the lane and nothing is
+/// reported: a record the lane still holds was never torn, it is being put. Posed here as a store
+/// that takes the first part and answers no more, which holds that moment still.
+///
+/// RED before the fix: the read warned "the stored journal holds a record whose parts are not all
+/// there" on a clean boot (oracle cells boot.warning|BOOT-W21, BOOT-W34, neutrality|boot-lines),
+/// a line 1.5.5 never printed.
+#[test]
+fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = 23;
+    let mut durability = store_book(&slots, node);
+    durability
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    drained(&durability);
+
+    // A body past one slot's bound: two parts at the least.
+    slots.take_then_refuse(1);
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                RecordClass::Load,
+                vec![7u8; 1_000],
+            )],
+        )
+        .expect("handed to the lane");
+    let newest = durability.journal.next_seq() - 1;
+    let lane = durability.lane().expect("a book over the store");
+    assert!(
+        lane.wait_acked(node, newest, std::time::Duration::from_secs(5))
+            .is_err(),
+        "the store took the first part and refused the next"
+    );
+    assert_eq!(lane.pending(), 1, "the record is still the lane's");
+
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let chain =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            durability.chain()
+        })
+        .expect("the chain reads back")
+        .expect("and verifies");
+    assert_eq!(
+        chain.last().map(|r| r.node_seq),
+        Some(newest),
+        "the half-put record is on the chain, read whole from the lane"
+    );
+    assert!(
+        !cap.contains("parts are not all there"),
+        "a record the lane still holds is not torn: {:?}",
+        cap.messages()
+    );
+
+    slots.refuse(false);
+    drained(&durability);
+    assert_eq!(
+        read_chain(slots.calls().as_ref(), node)
+            .expect("reads back")
+            .last()
+            .map(|r| r.node_seq),
+        Some(newest),
+        "and the store holds it whole once it takes the rest"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // H3 follow-up (ARCHITECT 2026-10-07): THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
 // ---------------------------------------------------------------------------------------------
@@ -2887,11 +3086,82 @@ fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
         Vec::<String>::new(),
         "the prior boot's records verify under the key the store kept"
     );
-    let (calls, own, keys) = restarted
+    let (lane, own, keys) = restarted
         .stored_walk_inputs()
         .expect("a book over the store");
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert_eq!(walk.findings, Vec::<String>::new());
+}
+
+/// **THE WALK OF EVERY STORED CHAIN DOES NOT CALL THIS NODE'S RECORD MID-PUT TORN.** The walk
+/// (`/admin/verify`) reads the store without the book's lock while the lane's worker puts this
+/// node's records part by part. A record whose first part is in the store and which the lane still
+/// holds is being put, not torn, and the walk says nothing about it. A record missing a part that
+/// the node does not hold is torn, and the walk still says so.
+///
+/// RED before the fix: the walk read this node's chain with the plain stored read and warned "the
+/// stored journal holds a record whose parts are not all there" for the lane's record mid-put.
+#[test]
+fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    const TORN: &str = "parts are not all there";
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mut durability = keyed_store_book(&slots, 27);
+    durability
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    drained(&durability);
+
+    // A body past one slot's bound: two parts at the least. The store takes the first, no more.
+    slots.take_then_refuse(1);
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                RecordClass::Load,
+                vec![7u8; 1_000],
+            )],
+        )
+        .expect("handed to the lane");
+    let newest = durability.journal.next_seq() - 1;
+    let lane = durability.lane().expect("a book over the store");
+    assert!(
+        lane.wait_acked(
+            durability.journal.node(),
+            newest,
+            std::time::Duration::from_secs(5)
+        )
+        .is_err(),
+        "the store took the first part and refused the next"
+    );
+    assert_eq!(lane.pending(), 1, "the record is still the lane's");
+
+    let (lane, own, keys) = durability
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let walk =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            walk_stored_chains(&lane, own, &keys)
+        });
+    assert_eq!(walk.findings, Vec::<String>::new(), "the chain verifies");
+    assert!(
+        !cap.contains(TORN),
+        "a record the lane still holds is not torn: {:?}",
+        cap.messages()
+    );
+
+    // A part with no first part, past anything the node holds: torn, and said so.
+    let stray = newest + 10;
+    slots.put_row(JOURNAL_SCHEMA, &part_key(own, stray, 1), &[0, 2, 9]);
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let _ =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            walk_stored_chains(&lane, own, &keys)
+        });
+    assert_eq!(cap.count(TORN), 1, "a torn record is still reported");
 }
 
 /// **ON A CHAIN THE STORE KEEPS, EVERY RECORD NAMES THE NODE THE STORE ASSIGNED** (THE DESIGN §1:
@@ -2941,11 +3211,11 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
     );
     drained(&restarted);
     assert_eq!(restarted.retained_audit_findings(), Vec::<String>::new());
-    let (calls, own, keys) = restarted
+    let (lane, own, keys) = restarted
         .stored_walk_inputs()
         .expect("a book over the store");
     assert_eq!(own, node);
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert_eq!(walk.chains, vec![node]);
     assert_eq!(
         walk.findings,
@@ -3151,15 +3421,15 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
         second.restart_findings
     );
 
-    let (calls, own, keys) = first.stored_walk_inputs().expect("a book over the store");
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let (lane, own, keys) = first.stored_walk_inputs().expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
     let mut both = vec![a, b];
     both.sort_unstable();
     assert_eq!(walk.chains, both, "the walk reads both chains");
     assert_eq!(walk.findings, Vec::<String>::new(), "and both verify");
 
     slots.corrupt(JOURNAL_SCHEMA, &part_key(b, 2, 0));
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert!(
         walk.findings
             .iter()
@@ -3700,10 +3970,10 @@ fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
         3,
         "the first process's chain is untouched"
     );
-    let (calls, own, keys) = keyed_store_book(&slots, second.id)
+    let (lane, own, keys) = keyed_store_book(&slots, second.id)
         .stored_walk_inputs()
         .expect("a book over the store");
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert!(walk.chains.contains(&first.id) && walk.chains.contains(&second.id));
 }
 
@@ -3844,4 +4114,185 @@ fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_di
         "the adopted id is held under the lease"
     );
     assert!(peer.lease.is_none(), "and the peer holds none");
+}
+
+/// THE HELD CHECKPOINTS ARE RE-DERIVED FROM THE CHAIN, AS THEY WERE SEALED (Q128 kernel-ledger
+/// HIGH 1, ARCHITECT ruling A1): the node keeps each seal's head and not its balances, and one
+/// ordered walk of its journal hands every held checkpoint back with the very figures it sealed,
+/// oldest first, the same set the ring holds.
+#[test]
+fn every_held_checkpoint_is_re_derived_from_the_chain_as_it_was_sealed() {
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_held");
+    let mut sealed = Vec::new();
+    for n in 1..=3u64 {
+        settle_one(&mut durability, &key, 1_000, 100 * n, n);
+        sealed.push(
+            durability
+                .seal_checkpoint(&token, StepName::Meter, 1_700_000_000 + n)
+                .expect("the seal goes down"),
+        );
+    }
+    assert!(
+        sealed
+            .windows(2)
+            .all(|pair| pair[0].totals != pair[1].totals),
+        "each seal holds figures the one before it did not"
+    );
+    let mut served = Vec::new();
+    durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives");
+    // The set the ring holds (the cadence may have sealed beside the explicit seals), in order,
+    // and every explicit seal among them with the very figures it sealed.
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        durability.checkpoints
+    );
+    for seal in &sealed {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+    }
+}
+
+/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE IS REFUSED BY ITS SEQUENCE
+/// NUMBER, never served with numbers. A figure the book moved with no record behind it is sealed
+/// into the second checkpoint, so the chain re-derives figures that are not the sealed ones; and a
+/// held head no record on the chain carries is refused as not on the chain.
+#[test]
+fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_by_its_seq() {
+    use crate::root::durability::CheckpointUnreadable;
+
+    let token = token();
+    let mut durability = memory_node();
+    settle_one(&mut durability, &totals_key("vk_held"), 1_000, 400, 1);
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, 1_700_000_001)
+        .expect("the seal goes down");
+    durability
+        .ledger
+        .book_mut()
+        .entry(totals_key("vk_unrecorded"), 86_400)
+        .settled = 1;
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, 1_700_000_002)
+        .expect("the seal goes down");
+
+    let mut served = Vec::new();
+    let refused = durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.checkpoint_seq))
+        .expect_err("a figure no record carries cannot be re-derived");
+    assert_eq!(
+        refused,
+        CheckpointUnreadable::Diverged {
+            checkpoint_seq: second.checkpoint_seq
+        }
+    );
+    assert!(served.contains(&first.checkpoint_seq), "{served:?}");
+    assert!(
+        served.iter().all(|seq| *seq < second.checkpoint_seq),
+        "no figure past the refusal: {served:?}"
+    );
+
+    let mut stray = first.head();
+    stray.checkpoint_seq = 99;
+    durability.checkpoints = vec![stray];
+    assert_eq!(
+        durability.each_held_checkpoint(&mut |_| {}),
+        Err(CheckpointUnreadable::NotOnChain { checkpoint_seq: 99 })
+    );
+}
+
+/// RED (Q128 kernel-ledger HIGH 1, the held-checkpoint walk): ON A NODE RESUMED FROM THE STORE WHOSE
+/// CHAIN OUTGREW ONE MEMORY SEGMENT, EVERY HELD CHECKPOINT STILL RE-DERIVES. The memory log keeps only
+/// its newest segment resident (`Wal::memory_seeded`); the rest of the chain is the store's. A walk
+/// of the journal's own replay starts mid-chain, misses the settlement sealed before the roll, and
+/// reads every held checkpoint as diverged; the walk has to read the whole chain, store copy plus
+/// the resident segment, as `/verify`'s chain reader does ([`Durability::chain`]).
+///
+/// The segment is the shipped [`busbar_kernel_wal::SEGMENT_BYTES`]: the log has no smaller one to
+/// ask for, so the first boot pads the chain past it, as the amendment journal's `store` phase does.
+#[test]
+fn a_store_resumed_chain_past_one_segment_re_derives_every_held_checkpoint() {
+    /// One padding record's body: a few hundred roll the log past a segment, and 256 of them (one
+    /// block of the store's scan) stay inside one scan.
+    const PAD_BODY: usize = 100_000;
+    const NODE: u64 = 41;
+
+    let token = token();
+    let slots = crate::root::store_double::RecordSlots::new();
+    let early = totals_key("vk_before_the_roll");
+    let late = totals_key("vk_after_the_roll");
+    {
+        let mut durability = store_book(&slots, NODE);
+        settle_one(&mut durability, &early, 1_000, 300, 1);
+        let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
+        for _ in 0..pads {
+            durability
+                .journal
+                .append(
+                    &token,
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Load, vec![0x5a; PAD_BODY]).at(1_700_000_000, 0)],
+                )
+                .expect("the padding goes on the chain");
+        }
+        assert!(
+            durability
+                .lane()
+                .expect("a book over the store")
+                .drain(std::time::Duration::from_secs(120)),
+            "the store takes the journal's records"
+        );
+    }
+
+    let mut restarted = store_book(&slots, NODE);
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
+    assert!(
+        restarted.journal.log().segments_used() >= 2,
+        "the resumed memory journal rolled past one segment"
+    );
+    assert_eq!(
+        restarted.ledger.book().get(&early, 86_400).settled,
+        300,
+        "the boot read the whole chain"
+    );
+    let mut sealed = Vec::new();
+    for n in 1..=2u64 {
+        settle_one(&mut restarted, &late, 1_000, 100 * n, 10 + n);
+        sealed.push(
+            restarted
+                .seal_checkpoint(&token, StepName::Meter, 1_700_000_100 + n)
+                .expect("the seal goes down"),
+        );
+    }
+
+    let mut served = Vec::new();
+    restarted
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives from the whole chain");
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        restarted.checkpoints,
+        "the set the ring holds, in order"
+    );
+    for seal in &sealed {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+        assert_eq!(
+            seal.totals_for(&early, 86_400).settled,
+            300,
+            "the seal holds the settlement made before the roll"
+        );
+    }
 }

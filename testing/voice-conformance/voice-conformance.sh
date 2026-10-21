@@ -42,7 +42,7 @@
 # leg judges the DOOR'S half of its seam and names the half that is the kernel's (lib/conform-bin.sh):
 #
 #   spec-per-dialect   every fixture, per dialect (MATRIX: openai, gemini, twilio): codec round trip, and the
-#                      door's relay of it by the session rules.
+#                      door's relay of it by the session rules, byte for byte.
 #   replay             each captured transcript through one session: codec skeleton, and the door's
 #                      relay and skeleton in emitted order.
 #   cross-parity       the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg): the codec bridge per the
@@ -56,9 +56,11 @@
 #   route-failover     each ATTEMPT answered afresh on the pass need; nothing reaches the caller early.
 #   audit-record       the audit kind and operation the kernel's one row is written under; no door row.
 #   exit-terminal      one session, one end; a stream that ended is refused on every side.
-#   tool-reply         a tool call is relayed to the caller and never answered by busbar (Law 11).
+#   tool-reply         a tool call is relayed to the caller and never answered by busbar (Law 11); the
+#                      turn's usage report reaches the caller as sent and is reported as units.
 #   twilio-route       the Twilio claim (ws, one-level /twilio, webhook-signature alone); opens on `start`.
-#   twilio-media       Twilio media in and out, mark, clear; stop ends the session once.
+#   twilio-media       Twilio media in and out, clear; stop ends the session once; a far end's tool
+#                      call relayed down the Twilio session as-is (Law 11).
 #   twilio-metering    a Twilio session's units once per turn; the open turn settled at stop.
 #   governance         the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). GOVERNANCE IS
 #                      NOT A CONFORMANCE RESULT — it can never move the conformance verdict, exactly

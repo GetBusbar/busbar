@@ -390,5 +390,8 @@ fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
         }),
         private_reach: false,
     };
-    assert!(matches!(seal(Some(&base), &bad), Err(BadClientIdentity(_))));
+    assert!(matches!(
+        seal(Some(&base), &bad),
+        Err(BadAnchors::Identity(BadClientIdentity(_)))
+    ));
 }

@@ -9,8 +9,9 @@
 #                 ("first-party signature failed").
 #   4. TAMPERED (lib):      post-signing byte-flip in the cdylib is REFUSED ("integrity").
 #   5. TAMPERED (manifest): post-signing manifest edit is REFUSED (signature failed).
-#   and a RED plant: the unsigned arm re-judged under `plugins.trust.allow_unsigned: true`, where
-#   the loader ACCEPTS the unsigned tarball, must FAIL, or the arm proves nothing.
+#   and a RED plant, `plugins.trust.allow_unsigned: true`: under it the unsigned tarball must LOAD
+#   (any refusal, for any reason, is RED: the plant did not take) and the unsigned arm must FAIL;
+#   without it the same tarball is refused for the signing reason. Otherwise the arm proves nothing.
 #
 # A LINKED ROW ANSWERING THE REFERENCE (busbar links busbar-store-memory, alias `memory`): the
 # config's reference then resolves in-process whatever the tarball's fate, so `--validate` exits 0
@@ -255,17 +256,31 @@ install_only "$WORK/tampered-lib.tar.gz";      expect "tampered-lib-refused"    
 install_only "$WORK/tampered-manifest.tar.gz"; expect "tampered-manifest-refused" "$TMM_RC" "${TMM_RE[@]}"
 
 # ── 5. RED: the unsigned arm must FAIL when the loader ACCEPTS the unsigned tarball ─────────────
-# The same arm, the same expectations, re-judged under `plugins.trust.allow_unsigned: true`, where
-# the unsigned tarball loads. An arm that still passes here is satisfied by something other than the
-# loader's refusal (a linked row, a config error) and proves nothing about signing.
+# The plant is `plugins.trust.allow_unsigned: true`, and the arm asserts the outcome it plants, not
+# merely that the unsigned arm stops passing:
+#   a. under the plant the unsigned tarball LOADS, judged exactly as the signed one is (`signed-ok`'s
+#      exit and summary). Any refusal here, for whatever reason, makes the arm itself RED with the
+#      loader's output shown: the plant did not take, so nothing below proves anything. (Before
+#      this, only (b) was asked, and a refusal for another reason satisfied it: hook-webrequest's
+#      unsigned tarball is refused for an egress class under allow_unsigned, and the arm passed.)
+#   b. under the plant the unsigned arm FAILS: its expectations are not met by an accepted tarball,
+#      so it cannot be satisfied by a linked row or a config error.
+#   c. without the plant the same tarball is refused again, for the signing reason (the unsigned
+#      arm's own expectations), so the one difference between (a) and (c) is the trust posture.
 write_config $'  trust:\n    allow_unsigned: true'
 install_only "$WORK/unsigned.tar.gz"
+if ! check "unsigned-loads (planted: allow_unsigned)" "$POS_RC" "$POS_RE"; then
+  echo "FAIL [unsigned-refused RED]: under allow_unsigned the unsigned tarball did not load (output above), so the plant proves nothing about signing"
+  exit 1
+fi
 if check "unsigned-refused (planted: allow_unsigned)" "$UNS_RC" "${UNS_RE[@]}"; then
   echo "FAIL [unsigned-refused RED]: an unsigned tarball the loader ACCEPTED still passed the unsigned arm"
   exit 1
 fi
-echo "PASS [unsigned-refused RED] (the arm fails when the unsigned tarball is accepted)"
 write_config ""
+install_only "$WORK/unsigned.tar.gz"
+expect "unsigned-refused (plant removed)" "$UNS_RC" "${UNS_RE[@]}"
+echo "PASS [unsigned-refused RED] (the unsigned tarball loads under allow_unsigned, the arm fails there, and it is refused for the signing reason without it)"
 
 # ── 6. With NO linked row answering, an unsigned tarball the config references still EXITS 1 ─────
 # The same unsigned artifact under a name and alias no row this build links claims, referenced by

@@ -16,7 +16,9 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
-use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
+};
 use crate::abi::plane::*;
 use crate::caps::ReasonCode;
 
@@ -1417,6 +1419,27 @@ fn exactly_one_section_is_the_declaring_one() {
     assert_eq!(check_sections(&[unnamed]), f(Rule::Missing, "section.name"));
 }
 
+/// A plane's section may select it without being its verb (`SECTION_SELECTS`, Law 7), never as
+/// well as being its verb. RED: before the bit was known, the selecting section was an unknown code.
+#[test]
+fn a_selecting_section_is_not_the_declaring_one() {
+    assert_eq!(
+        check_sections(&[
+            section(SECTION_DECLARING),
+            section(SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_DECLARING | SECTION_SELECTS)]),
+        f(Rule::Contradiction, "section.flags")
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_SELECTS)]),
+        f(Rule::NotExactlyOne, "section.declaring")
+    );
+}
+
 #[test]
 fn dialect_auth_names_a_dialect_and_a_style() {
     let d = DialectAuth {
@@ -2508,6 +2531,19 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     // The kernel's own refusals, rendered by the owning plane (ARCHITECT ruling 2026-10-16, 3b B).
     (44, RefusalCode::MethodNotAllowed, "method_not_allowed"),
     (45, RefusalCode::Internal, "internal"),
+    // The walk's exhaustion with nothing sent: kernel-to-plane piece reasons alone.
+    (46, RefusalCode::UnsentNoAttempt, "unsent_no_attempt"),
+    (47, RefusalCode::UnsentNoRoute, "unsent_no_route"),
+    (48, RefusalCode::UnsentNeedUnbound, "unsent_need_unbound"),
+    (
+        49,
+        RefusalCode::UnsentTargetNotPath,
+        "unsent_target_not_path",
+    ),
+    (50, RefusalCode::UnsentFieldName, "unsent_field_name"),
+    (51, RefusalCode::UnsentUnrecorded, "unsent_unrecorded"),
+    (52, RefusalCode::UnsentAuthFailed, "unsent_auth_failed"),
+    (53, RefusalCode::UnsentOpenRefused, "unsent_open_refused"),
 ];
 
 #[test]
@@ -2529,6 +2565,18 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
             assert_eq!(reason_of(*number), None, "{word}: no plane carries it");
             continue;
         }
+        if code.unsent() {
+            // The walk's exhaustion with nothing sent: the kernel's piece reason, never a reason a
+            // plane states, and the one family `nothing_sent` reads beside the credential's.
+            assert_eq!(reason_of(*number), None, "{word}: no plane states it");
+            assert!(nothing_sent(*number), "{word}: nothing left");
+            continue;
+        }
+        assert_eq!(
+            nothing_sent(*number),
+            *code == RefusalCode::CredentialUnavailable,
+            "{word}: only the credential's refusal and the unsent codes say nothing left"
+        );
         let reason = reason_of(*number).expect("a pinned code names a reason");
         assert_eq!(reason.as_str(), *word, "code {number}");
         assert_eq!(reason_code(reason), *number);

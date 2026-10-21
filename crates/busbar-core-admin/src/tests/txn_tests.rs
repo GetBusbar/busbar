@@ -697,7 +697,7 @@ async fn register_secret_hook(handle: Arc<AppHandle>) -> StatusCode {
             "module": "some-hook-plugin",
             "kind": "gate",
             "global": true,
-            "settings": { "licenseKey": { "module": "vault", "settings": { "path": "kv/busbar" } } }
+            "settings": { "licenseKey": { "module": "acme-vault", "settings": { "path": "kv/busbar" } } }
         }
     });
     crate::v1::json::register_hook(

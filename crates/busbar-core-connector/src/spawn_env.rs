@@ -20,7 +20,7 @@
 //! The values live here, in the host's records, and in the child's environment: never in the table
 //! that holds the program, never in the destination the carrier is handed.
 
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use busbar_contract::config_time::ConfigScope;
@@ -30,17 +30,12 @@ use busbar_contract::secret_ref::SecretRef;
 /// How a program's environment REFERENCE turns into its value: a string secret resolved through
 /// the secret plugins the build links, at config time (it takes the proof). `Err` names the
 /// reference's source, never a byte of the secret.
+///
+/// The composition root hands it to the connector it builds (`Connector::resolving_spawn_secrets`),
+/// and the connector hands it to every environment it loads: no process-wide static holds it. A
+/// connector handed none resolves no reference, and a program that states one is not spawned
+/// (fail-closed).
 pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<String, String>;
-
-/// The installed [`SpawnSecretFn`]; until one is installed no reference resolves, and a program
-/// that states one is not spawned (fail-closed).
-static SPAWN_SECRETS: OnceLock<SpawnSecretFn> = OnceLock::new();
-
-/// Install how a program's environment references resolve; the first install holds. Answers
-/// whether this one was installed.
-pub fn install_spawn_secrets(resolve: SpawnSecretFn) -> bool {
-    SPAWN_SECRETS.set(resolve).is_ok()
-}
 
 /// How often a held environment is re-resolved, off the request path: the refresher's lease.
 pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
@@ -63,6 +58,8 @@ impl Resolved {
 /// One program's environment references and what they resolved to at the last load or refresh.
 struct SpawnEnv {
     refs: Vec<(String, SecretRef)>,
+    /// How the references resolve: what the connector that loaded this environment was handed.
+    secrets: Option<SpawnSecretFn>,
     held: arc_swap::ArcSwap<Resolved>,
     /// Taken by a reload alone, so two reloads never race their stores; no spawn ever waits on it.
     reloading: Mutex<()>,
@@ -98,18 +95,23 @@ impl std::fmt::Debug for HeldEnv {
     }
 }
 
-/// `refs` resolved now, through the installed resolver, with the proof.
-fn resolve(refs: &[(String, SecretRef)], scope: &ConfigScope) -> Resolved {
-    Resolved(resolve_each(refs, scope))
+/// `refs` resolved now, through `secrets`, with the proof.
+fn resolve(
+    refs: &[(String, SecretRef)],
+    secrets: Option<SpawnSecretFn>,
+    scope: &ConfigScope,
+) -> Resolved {
+    Resolved(resolve_each(refs, secrets, scope))
 }
 
 fn resolve_each(
     refs: &[(String, SecretRef)],
+    secrets: Option<SpawnSecretFn>,
     scope: &ConfigScope,
 ) -> Result<Vec<(String, Secret<String>)>, String> {
     let mut env = Vec::with_capacity(refs.len());
     for (name, reference) in refs {
-        let secret = SPAWN_SECRETS.get().ok_or_else(|| {
+        let secret = secrets.ok_or_else(|| {
             format!(
                 "the program's environment `{name}` is a secret reference and no secret \
                  resolver is installed"
@@ -134,21 +136,28 @@ impl HeldEnv {
     pub fn written_only() -> Self {
         Self(Arc::new(SpawnEnv {
             refs: Vec::new(),
+            secrets: None,
             held: arc_swap::ArcSwap::from_pointee(Resolved(Ok(Vec::new()))),
             reloading: Mutex::new(()),
         }))
     }
 
-    /// `refs` RESOLVED NOW, at config time (`scope`: the need's declaration at a plane's load or
-    /// a config apply), and kept on the refresher's lease from here on.
+    /// `refs` RESOLVED NOW through `secrets` (the resolver the connector was handed; `None`
+    /// resolves nothing), at config time (`scope`: the need's declaration at a plane's load or a
+    /// config apply), and kept on the refresher's lease from here on, through the same resolver.
     #[must_use]
-    pub fn load(refs: &[(String, SecretRef)], scope: &ConfigScope) -> Self {
+    pub fn load(
+        refs: &[(String, SecretRef)],
+        secrets: Option<SpawnSecretFn>,
+        scope: &ConfigScope,
+    ) -> Self {
         if refs.is_empty() {
             return Self::written_only();
         }
         let held = Self(Arc::new(SpawnEnv {
             refs: refs.to_vec(),
-            held: arc_swap::ArcSwap::from_pointee(resolve(refs, scope)),
+            secrets,
+            held: arc_swap::ArcSwap::from_pointee(resolve(refs, secrets, scope)),
             reloading: Mutex::new(()),
         }));
         refresher::keep(&held.0);
@@ -177,7 +186,8 @@ impl SpawnEnv {
             .reloading
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        self.held.store(Arc::new(resolve(&self.refs, scope)));
+        self.held
+            .store(Arc::new(resolve(&self.refs, self.secrets, scope)));
     }
 
     /// The refresher's re-resolution, on its own thread: config time, off every request path.
@@ -297,8 +307,8 @@ pub(crate) fn refresh_all() {
 }
 
 /// THE CELLS' RESOLVER: an `env` reference reads its variable (nothing else resolves), and every
-/// resolution is counted by variable, so a cell can tell a spawn resolved nothing. One function for
-/// every cell of this crate: the first install holds for the whole test binary.
+/// resolution is counted by variable, so a cell can tell a spawn resolved nothing. A cell hands it
+/// to the connector or the environment it builds.
 #[cfg(test)]
 pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<String, String> {
     let var = r

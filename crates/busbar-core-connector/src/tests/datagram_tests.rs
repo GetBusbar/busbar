@@ -814,6 +814,83 @@ fn dialling_an_admitted_candidate_never_binds_unverified() {
     assert!(r.host.presented());
 }
 
+/// The core probes `r` sent to `to` (Binding requests).
+fn probes_to(r: &Rig, to: SocketAddr) -> Vec<Vec<u8>> {
+    r.elsewhere
+        .iter()
+        .filter(|(at, d)| *at == to && is_request(d))
+        .map(|(_, d)| d.clone())
+        .collect()
+}
+
+#[test]
+fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_bound() {
+    // The framer asks to move to any path a check comes from that is not the bound one.
+    let mut r = rig(Knobs {
+        dial: true,
+        rebind_new: true,
+        ..Knobs::default()
+    });
+    r.pump(200);
+    assert_eq!(r.host.bound(), Some(r.far.addr));
+    assert!(r.elsewhere.is_empty(), "{:?}", r.elsewhere);
+
+    // A verified check (the far end knows the host's password) from an address the destination
+    // judge refuses, never advertised as a candidate.
+    let refused = p("169.254.10.20:4000");
+    r.deliver(refused, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 0x21));
+    r.pump(20);
+    assert!(
+        r.judged.lock().unwrap().contains(&refused.to_string()),
+        "the heard path met the judge"
+    );
+    // Were core to have probed it, the far end answering from there would prove and bind it.
+    for probe in probes_to(&r, refused) {
+        r.deliver(refused, &answer(&probe, FAR_PWD));
+    }
+    r.pump(20);
+    assert_eq!(
+        r.host.bound(),
+        Some(r.far.addr),
+        "a refused path is never bound"
+    );
+    assert!(
+        r.elsewhere.iter().all(|(to, _)| *to != refused),
+        "a refused path is sent no byte: {:?}",
+        r.elsewhere
+    );
+    assert!(
+        !r.host.owns(refused),
+        "a refused path is not the association's"
+    );
+    assert!(
+        r.seen()
+            .iter()
+            .all(|s| s.told.iter().all(|(_, a)| a != &refused.to_string())),
+        "a refused path is never numbered or told to the framer"
+    );
+
+    // RED arm: a check from an address the judge admits is probed, told, and binds once proven.
+    let admitted = p("192.0.2.50:7000");
+    r.deliver(admitted, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 0x22));
+    r.pump(1);
+    assert!(r.judged.lock().unwrap().contains(&admitted.to_string()));
+    assert!(r.host.owns(admitted));
+    assert!(r
+        .seen()
+        .iter()
+        .any(|s| s.told.iter().any(|(_, a)| a == &admitted.to_string())));
+    let probe = probes_to(&r, admitted)
+        .pop()
+        .expect("core probed the admitted path");
+    r.deliver(admitted, &answer(&probe, FAR_PWD));
+    assert_eq!(
+        r.host.bound(),
+        Some(admitted),
+        "an admitted, proven path binds"
+    );
+}
+
 // ── the port's demultiplexer ────────────────────────────────────────────────────────────────────
 
 const B_UFRAG: &str = "bfrag";

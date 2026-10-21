@@ -44,7 +44,8 @@
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
 //! second run (a `READ_REPLY`'s with its piece and its bytes, written again into what the replay
 //! lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
-//! ticket's when its next tick starts, and any other ticket's when a new op (not a short answer's
+//! ticket's when its next tick starts with nothing held on it (a held exchange keeps its
+//! answers), and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
 
 use std::collections::{HashMap, HashSet};
@@ -218,6 +219,25 @@ fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal
     super::handle::resolve(ctx)?.route.get()?.upgrade()?.seal()
 }
 
+/// `run` under handle `h`, as the driver ticket's held exchanges see it (`super::held`): a tick
+/// that reuses a handle another exchange issued in a kept cycle is answered FAULT and nothing runs
+/// (a replay would hand it that exchange's kept answer); else `run`'s answer, PENDING or not,
+/// noted against `h`.
+fn held(ctx: HostCtx, h: CompletionHandle, run: impl FnOnce() -> Answer) -> Answer {
+    let store = super::handle::resolve(ctx)
+        .and_then(|w| w.route.get())
+        .and_then(std::sync::Weak::upgrade)
+        .and_then(|r| r.store());
+    if store.as_ref().is_some_and(|s| !s.held.call(h)) {
+        return Answer::with(Outcome::Fault, "");
+    }
+    let a = run();
+    if let Some(s) = store {
+        s.held.answered(h, a.outcome == Outcome::Pending);
+    }
+    a
+}
+
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
 /// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the whole `out`
 /// is written.
@@ -242,11 +262,13 @@ fn slot(
             // A never-pend service that writes the caller's memory is run afresh on a replay: a
             // kept answer would say the bytes were written into memory this call never touched.
             Some((id, table)) if service == service::IDENTITY => body(*id, table, head),
-            Some((id, table)) if service == service::READ_REPLY => {
+            Some((id, table)) if service == service::READ_REPLY => held(ctx, head.handle, || {
                 replay_read(*id, head.handle, input);
                 kept(*id, head.handle, || body(*id, table, head))
-            }
-            Some((id, table)) => kept(*id, head.handle, || body(*id, table, head)),
+            }),
+            Some((id, table)) => held(ctx, head.handle, || {
+                kept(*id, head.handle, || body(*id, table, head))
+            }),
             None => Answer::of(ConnError::Unarmed),
         }
     }))

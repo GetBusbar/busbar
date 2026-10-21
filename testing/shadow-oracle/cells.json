@@ -10878,7 +10878,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request before the store is reached (bad_body). "
+      "why": "Disaster recovery, refused (row 187, ARCHITECT 2026-10-20): the configured store has no restore operation, so an admitted call is 503 unavailable and nothing changes; restores happen off-node. A body naming no `backup_ref` string is 400 invalid_request first (bad_body). "
     },
     {
       "id": "admin.ops|PostStoreRestore|unauth",

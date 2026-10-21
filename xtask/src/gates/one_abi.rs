@@ -653,8 +653,8 @@ fn package_name(text: &str) -> Option<String> {
     let mut inside = false;
     for raw in text.lines() {
         let t = raw.trim();
-        if t.starts_with('[') {
-            inside = t == "[package]";
+        if let Some(is_package) = crate::manifest::package_header(t) {
+            inside = is_package;
             continue;
         }
         if inside {

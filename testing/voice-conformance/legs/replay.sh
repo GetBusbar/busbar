@@ -12,9 +12,9 @@
 #     barge-in → close/complete) re-derived in order;
 #   * DOOR: the whole transcript driven through ONE live session on the door (client lines as caller
 #     pieces, server lines as far-end pieces), linked AND dropped; what the door relays must equal the
-#     session rules, and the same skeleton must appear in the order the door emitted it (less the far
-#     end's usage, which the session consumes into reported units). RED arm: a door reporting a token
-#     the transcript never sent fails.
+#     session rules byte for byte, and the same skeleton must appear in the order the door emitted it
+#     (the far end's usage reports included: they are relayed, and also reported as units). RED arms:
+#     a door reporting a token the transcript never sent, re-encoding a frame, or dropping one fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

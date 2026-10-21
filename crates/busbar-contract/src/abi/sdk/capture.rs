@@ -279,11 +279,11 @@ impl CaptureSlot {
             self.diags.push(Diag {
                 id_idx,
                 severity,
-                _reserved: [0; 3],
                 text: AbiStr {
                     ptr: text.as_ptr(),
                     len: text.len(),
                 },
+                ..Diag::ZERO
             });
         }
         envelope.diags = self.diags.as_ptr();

@@ -180,7 +180,7 @@ fn sha256_hex_is_lowercase_64() {
 /// `sha256_hex` that hashed the wrong bytes, truncated and padded, or returned a fixed 64-char hex
 /// constant; the second one compares the value to a transform of itself. Every admin and plugin
 /// credential compare in the tree routes through this function
-/// (`crates/auth-admin-tokens/src/lib.rs:46,51`), and
+/// (the admin-token auth plugin's constant-time compare), and
 /// until this test nothing anywhere pinned its actual output. The two vectors are FIPS 180-2's,
 /// so they are checkable against any independent implementation rather than against ours.
 #[test]

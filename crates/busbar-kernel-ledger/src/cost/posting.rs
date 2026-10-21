@@ -126,6 +126,7 @@ impl Posting {
     /// invariant stated as code rather than as a comment: a posting whose stored figure has been
     /// corrupted answers exactly what the quantities and the history say, because that figure is not
     /// on the path at all.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn priced_nanos(&self, view: &HistoryView<'_>) -> Result<u128, Unpriceable> {
         price(view, self).map(|p| p.priced_nanos)
     }
@@ -339,6 +340,9 @@ pub fn price_at_card(
 
     for quantity in &posting.quantities {
         let class = quantity.class.as_str();
+        // `unit_price_nanos` comes from `class_price` below; the product is checked, because a fee
+        // lane's rate (`fee_minor × NANOS_PER_CENT`) is wider than a `u64` and the product can pass
+        // `u128::MAX`: a REFUSAL, never a wrapped figure.
         let (unit_price_nanos, priced) = match pricing.class_price(class) {
             // A plane's fee unit on its fee lane: the plane's own fee, lifted to nano-units (#44).
             ClassPrice::FeeMinor(fee_minor) => (
@@ -350,13 +354,14 @@ pub fn price_at_card(
             ClassPrice::Nanos(nanos) => (u128::from(nanos), true),
             ClassPrice::Unpriced => (0u128, false),
         };
+        let amount_nanos = u128::from(quantity.amount)
+            .checked_mul(unit_price_nanos)
+            .ok_or(Unpriceable::Overflow)?;
         lines.push(PricedLine {
             class: class.to_string(),
             quantity: quantity.amount,
             unit_price_nanos,
-            // A `u64` quantity times a `u64` rate is inside a `u128` by a whole bit: exact, with
-            // no saturation to hide behind. The SUM is the one function's, below.
-            amount_nanos: u128::from(quantity.amount) * unit_price_nanos,
+            amount_nanos,
             unpriced: !priced,
         });
     }

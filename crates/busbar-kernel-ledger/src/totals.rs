@@ -14,10 +14,10 @@
 //! ## Why every figure is a signed 128-bit integer
 //!
 //! Amounts are nano-units, so a modest deployment's yearly turnover already needs more than 64 bits
-//! of headroom once adjustments and reversals are in the same column as settlements. Signed, because
-//! an adjustment is a reversal and a reversal is negative; storing it as an unsigned figure with a
-//! separate direction flag is how a sign error becomes invisible. Nothing here is floating point,
-//! for the reason nothing in a ledger ever is.
+//! of headroom. Signed, because some figures move both ways: an unconfirmed settlement moves out of
+//! the settled column and back again, and an overdraft is carried in and out; storing them as
+//! unsigned figures with a separate direction flag is how a sign error becomes invisible. Nothing
+//! here is floating point, for the reason nothing in a ledger ever is.
 
 //! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
 //!
@@ -175,7 +175,8 @@ pub struct Totals {
     pub open_slice_remainders: i128,
     /// How much has been moved by a correction, positive or negative.
     pub adjustments: i128,
-    /// How much has been posted that the recompute has not yet agreed with.
+    /// How much has been posted that the journal has not yet confirmed: a settlement moves here out
+    /// of `settled` until its append is acknowledged ([`crate::settle::Ledger::record_unreconciled`]).
     pub unreconciled: i128,
     /// Overdraft carried into this window from the last one.
     pub overdraft_carried_in: i128,
@@ -354,12 +355,10 @@ impl Statement {
 
 /// Cut a statement as of a history snapshot: **re-derived from the quantities, every time**.
 ///
-/// This is the read path for money, and the one rule it has is that it never sums a cached price.
-/// The cache on a line is what the node computed at settlement; it is correct until an amendment
-/// makes it stale, and a statement that added those figures up would be a statement whose answer
-/// depended on whether the recompute had got round to that line yet. So the quantities go through
-/// the lookup again, against the view the caller named, and the cache is not read at all — which is
-/// why hand-corrupting every cached figure in a book leaves this function's answer untouched.
+/// This is the read path for money, and the one rule it has is that every line is priced from its
+/// quantities against the view the caller named: a line carries counts and the instant they price
+/// at, never a price, so an amendment to the card moves the next statement with nothing to
+/// recompute. A row whose sum passes the arithmetic is refused, not pinned.
 ///
 /// The tier is the line's own: a tier is a property of the chain a request was admitted through,
 /// and an amendment to the price of a token is not a re-decision about which chain admitted it.
@@ -411,12 +410,24 @@ pub fn totals_as_of<'a>(
                 }
             }
             Ok(priced) => {
+                // A row past the arithmetic is REFUSED, never pinned at the ceiling (item 28): the
+                // line moves no row and is listed as unpriceable.
                 let row = rows.entry(line.key.clone()).or_default();
-                row.priced_nanos = row
-                    .priced_nanos
-                    .saturating_add(i128::try_from(priced.priced_nanos).unwrap_or(i128::MAX));
-                row.fee_count = row.fee_count.saturating_add(priced.fee_count);
-                row.lines = row.lines.saturating_add(1);
+                let summed = i128::try_from(priced.priced_nanos)
+                    .ok()
+                    .and_then(|nanos| row.priced_nanos.checked_add(nanos));
+                match summed {
+                    Some(nanos) => {
+                        row.priced_nanos = nanos;
+                        row.fee_count = row.fee_count.saturating_add(priced.fee_count);
+                        row.lines = row.lines.saturating_add(1);
+                    }
+                    None => unpriceable.push(Unpriced {
+                        node: line.node,
+                        node_seq: line.node_seq,
+                        why: Divergence::Overflow,
+                    }),
+                }
             }
             Err(why) => unpriceable.push(Unpriced {
                 node: line.node,

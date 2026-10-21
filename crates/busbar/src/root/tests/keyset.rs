@@ -193,7 +193,9 @@ fn keyset_missing_refuses_in_its_exact_words_when_the_file_is_gone() {
     let dir = Dir::new("missing");
     let (first, bound) = boot(&dir.0);
     bound.expect("the first boot mints");
-    let fingerprint = sealed_fingerprint(&first).expect("the Bootstrap is sealed");
+    let fingerprint = sealed_fingerprint(&first)
+        .expect("the chain reads back")
+        .expect("the Bootstrap is sealed");
     drop(first);
     std::fs::remove_file(dir.0.join(KEYSET_FILE)).expect("the keyset file is removed");
 
@@ -266,6 +268,6 @@ fn a_cached_keyset_with_no_bootstrap_is_adopted_not_replaced() {
     assert_eq!(durability.record.signing_key_id(), Some(expected.key_id()));
     assert_eq!(
         sealed_fingerprint(&durability),
-        Some(fingerprint_of_signer(&expected))
+        Ok(Some(fingerprint_of_signer(&expected)))
     );
 }

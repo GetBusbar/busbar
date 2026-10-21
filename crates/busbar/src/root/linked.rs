@@ -189,8 +189,8 @@ pub type ClaimsOf = fn() -> Vec<&'static str>;
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
-/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
-/// door over.
+/// A wire's build: handed the deployment's settings, it opens the row's door and answers the boot's
+/// admission of it (`HostWire::new`: a claim, no layer).
 pub type BuildTransport = fn(
     &busbar_contract::transport::TransportSettings,
 ) -> Arc<busbar_core_connector::wire::HostWire>;
@@ -338,9 +338,12 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
-/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
-/// before anything resolves a store or a secret.
+/// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
+/// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
+/// taken of every configuration as it is built (`crate::root::door_steps::door_config`), so a
+/// config apply refreshes them onto the new generation. No row is a default store: the store is
+/// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
+/// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
@@ -351,22 +354,21 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            // The root's card repricer is the kernel's rate holder and dater (the node unit, in
+            // every build's root-unit table, arms its journal before the boot resolution:
+            // `crate::root::kernel::install_card_repricer`).
+            rate_apply: Some(&crate::root::kernel::CardRepricer),
+            rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
-            host_counters: Some(crate::root::dispatch::host_counters),
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
-    // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
-    // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
-    // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
-    busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's

@@ -2,7 +2,7 @@
 # v2 /chat dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
-wire = "cohere"  # the wire lock: dialects/cohere.wire.json (notation A paths)
+wire = "cohere"  # the wire lock: testing/llm-conformance/wire/cohere.wire.json (notation A paths)
 label = "Cohere"
 request = ["structure", "sampling", "penalties", "blocks"]
 response = ["response"]
@@ -94,7 +94,8 @@ drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no
 "type=message-end" = { prim = "message_end" }
 
 # Controls beyond the rows. /v2/chat has no candidate count: 1.5.5 omitted `n` with no warn and no
-# audit (1.5.5: crates/busbar/src/proto/cohere/reader.rs:489). Every hosted tool kind, custom included, is reported by the
+# audit (1.5.5: crates/busbar/src/proto/cohere/reader.rs:489); `silent = true` means "no dialect text
+# of its own", so the runtime warns and audits the drop (spec Part 2 #76). Every hosted tool kind, custom included, is reported by the
 # writer's own hosted-tool code.
 [controls]
 "n" = { silent = true }

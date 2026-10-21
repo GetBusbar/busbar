@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex};
 use busbar_contract::records::{ModelTokens, RecordStore, VirtualKey};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{budget_window, GovState, LimitBlocked, MemoryStore, WINDOW_TOTAL};
-use busbar_kernel::rate_apply::{install_rate_epoch, RateEpoch};
+use busbar_kernel::rate_apply::RateEpoch;
+use busbar_kernel::test_support::rate_holders::install_rate_epoch;
 use busbar_kernel_ledger::cost::{
     price_in_view, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
 };

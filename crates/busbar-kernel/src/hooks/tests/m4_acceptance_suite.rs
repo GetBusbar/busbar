@@ -78,11 +78,11 @@
 //! |---|---|
 //! | `dlopen_policy_drives_every_op` | `dlopen_decide_order_and_abstain` + `dlopen_transform_rewrite_and_reject` + `dlopen_status_and_schema_reads` |
 //! | `dlopen_policy_abstains_and_drops_unknown_idx` | `dlopen_decide_order_and_abstain` |
-//! | `dlopen_configure_acks_exact_version` | same name, `tests.rs:1751` |
+//! | `dlopen_configure_acks_exact_version` | same name, in `tests.rs` |
 //! | `dlopen_notify_never_errors` | `dlopen_notify_is_fire_and_forget` |
 //! | `dlopen_configure_nack_is_err` | `dlopen_configure_nack_does_not_commit` |
 //! | `dlopen_empty_management_reads_are_none` | `dlopen_empty_management_reads_are_fail_open_none` |
-//! | `dlopen_slow_gate_hits_the_deadline` (ARCHITECT-named) | `dlopen_decide_deadline_cuts_off_a_slow_gate`, `tests.rs:2134` — **unignored, passing**: confirms the owner ruling (off-worker `spawn_blocking` + hard `timeout_ms`) holds on today's dispatch path |
+//! | `dlopen_slow_gate_hits_the_deadline` (ARCHITECT-named) | `dlopen_decide_deadline_cuts_off_a_slow_gate`, in `tests.rs` — **unignored, passing**: confirms the owner ruling (THE DESIGN §11.11 R1, l.298-301: every hook call runs on an off-worker lane and a crossing watchdog trips at the deadline) holds on today's dispatch path |
 //! | `dlopen_decide_reject_over_the_seam` | `dlopen_decide_reject_status_is_clamped` + `dlopen_decide_reject_from_opt_in_prompt` |
 //! | `dlopen_transform_rewrites_over_the_seam` | `dlopen_transform_rewrite_and_reject` |
 //! | `dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain` | `dlopen_decide_raw_reply_is_fail_closed` |

@@ -922,28 +922,8 @@ impl Ctx {
         }
 
         // The base first, then the overlay, so a plant's claim about a pinned file is the last word.
-        for ov in self.base().into_iter().chain(self.overlay()) {
-            for (path, change) in &ov.files {
-                let s = path.to_string_lossy().replace('\\', "/");
-                // `.` IS THE WHOLE TREE, AND A PLANT INTO A DIRECTORY THAT DOES NOT EXIST YET IS
-                // STILL UNDER IT. A gate that walks the repository for every manifest — the census
-                // `kind-isolation:registry` runs — is proven by planting `vendor/…/Cargo.toml`,
-                // and the prefix test `"vendor/…".starts_with("./")` is false, so the plant would
-                // have been filtered out of the very walk it exists to be found by.
-                let under_a_root = spec
-                    .roots
-                    .iter()
-                    .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
-                match change {
-                    Change::Absent => rels.retain(|p| p != path),
-                    Change::Unreadable(_) | Change::Content(_) => {
-                        if under_a_root && !rels.contains(path) {
-                            rels.push(path.clone());
-                        }
-                    }
-                }
-            }
-        }
+        let layers: Vec<&Overlay> = self.base().into_iter().chain(self.overlay()).collect();
+        let rels = merge_layers(rels, &layers, &spec.roots);
 
         let mut kept: Vec<PathBuf> = Vec::new();
         for rel in rels {
@@ -1414,6 +1394,44 @@ impl Ctx {
     }
 }
 
+/// THE LAYERS' CLAIMS MERGED INTO A DISK LISTING, in layer order: an `Absent` claim drops the path,
+/// any other claim under one of `roots` adds it once, after the paths already listed.
+///
+/// MEMBERSHIP IS A SET LOOKUP. It was `rels.contains(path)` per claim — a linear scan of the whole
+/// listing for every file the base layer lays (some 700 pinned-plugin files), 1.5-3 million path
+/// comparisons for every listing over `crates/`, paid on every gate run of every self-test case.
+/// The answer is the same list in the same order (`merge_layers_is_the_linear_merge` holds it to
+/// the scan it replaced).
+fn merge_layers(mut rels: Vec<PathBuf>, layers: &[&Overlay], roots: &[String]) -> Vec<PathBuf> {
+    let mut present: std::collections::HashSet<PathBuf> = rels.iter().cloned().collect();
+    for ov in layers {
+        for (path, change) in &ov.files {
+            let s = path.to_string_lossy().replace('\\', "/");
+            // `.` IS THE WHOLE TREE, AND A PLANT INTO A DIRECTORY THAT DOES NOT EXIST YET IS STILL
+            // UNDER IT. A gate that walks the repository for every manifest — the census
+            // `kind-isolation:registry` runs — is proven by planting `vendor/…/Cargo.toml`, and the
+            // prefix test `"vendor/…".starts_with("./")` is false, so the plant would have been
+            // filtered out of the very walk it exists to be found by.
+            let under_a_root = roots
+                .iter()
+                .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
+            match change {
+                Change::Absent => {
+                    if present.remove(path) {
+                        rels.retain(|p| p != path);
+                    }
+                }
+                Change::Unreadable(_) | Change::Content(_) => {
+                    if under_a_root && present.insert(path.clone()) {
+                        rels.push(path.clone());
+                    }
+                }
+            }
+        }
+    }
+    rels
+}
+
 fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {
     if dir.is_file() {
         if let Ok(rel) = dir.strip_prefix(root) {
@@ -1630,5 +1648,81 @@ mod coverage_tests {
         assert!(!extra.is_whole());
         assert_eq!(extra.extra, vec!["stray.rs".to_string()]);
         assert!(extra.census().contains("NOT tracked: stray.rs"));
+    }
+}
+
+#[cfg(test)]
+mod merge_layers_tests {
+    use super::*;
+
+    /// THE REFERENCE: the merge as `Ctx::list` wrote it before [`merge_layers`], a linear
+    /// `contains` per claim.
+    fn merge_linear(mut rels: Vec<PathBuf>, layers: &[&Overlay], roots: &[String]) -> Vec<PathBuf> {
+        for ov in layers {
+            for (path, change) in &ov.files {
+                let s = path.to_string_lossy().replace('\\', "/");
+                let under_a_root = roots
+                    .iter()
+                    .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
+                match change {
+                    Change::Absent => rels.retain(|p| p != path),
+                    Change::Unreadable(_) | Change::Content(_) => {
+                        if under_a_root && !rels.contains(path) {
+                            rels.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        rels
+    }
+
+    /// THE SET MERGE IS THE LINEAR MERGE: on the real tree's listing of `crates/` with its real
+    /// base layer, and on planted layers that add, re-add, remove, remove-then-re-add, claim a
+    /// path outside every root, and claim one already listed twice (overlapping roots).
+    #[test]
+    fn merge_layers_is_the_linear_merge() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let disk = cx
+            .collect_memoized(&cx.abs("crates"))
+            .expect("crates/ lists")
+            .to_vec();
+        let first = disk.first().cloned().expect("crates/ holds a file");
+        let mut doubled = disk.clone();
+        doubled.extend(disk.iter().take(3).cloned());
+
+        let mut plant = Overlay::new();
+        plant.set("crates/zz-new/src/lib.rs", "pub fn a() {}\n");
+        plant.set("crates/zz-new/src/lib.rs", "pub fn b() {}\n");
+        plant.remove(&first);
+        plant.set("vendor/zz/Cargo.toml", "[package]\n");
+        let mut again = Overlay::new();
+        again.set(&first, "// re-added\n");
+        again.unreadable("crates/zz-unreadable/src/lib.rs", "planted");
+
+        let base: Vec<&Overlay> = cx.base().into_iter().collect();
+        let roots = |r: &[&str]| r.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let cases: Vec<(Vec<PathBuf>, Vec<&Overlay>, Vec<String>)> = vec![
+            (disk.clone(), base.clone(), roots(&["crates"])),
+            (
+                disk.clone(),
+                base.iter().copied().chain([&plant, &again]).collect(),
+                roots(&["crates"]),
+            ),
+            (disk.clone(), vec![&plant, &again], roots(&["."])),
+            (
+                doubled,
+                vec![&plant, &again, &plant],
+                roots(&["crates", "crates/zz-new"]),
+            ),
+            (Vec::new(), vec![&again], roots(&["crates"])),
+        ];
+        for (i, (rels, layers, roots)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                merge_layers(rels.clone(), &layers, &roots),
+                merge_linear(rels, &layers, &roots),
+                "case {i}: the set merge is not the linear merge"
+            );
+        }
     }
 }

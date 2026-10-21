@@ -217,11 +217,12 @@ pub struct StatedAdminRoute {
     pub audit_verb: &'static str,
 }
 
-/// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
-/// and R2-C: a plane's config section, scope kinds and the rest are DERIVED from its Statement,
-/// never declared in the root). The loader reads them off a door's Statement (`sections`) and its
-/// plane tail, linked or dropped alike, and the kernel folds them into its plane registry before the
-/// config prepass (`busbar_kernel::plane_driver::door::fold`). Every word is kept for the process.
+/// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03 on a deleted plane's
+/// declaration; spec #49 and R2-C: a plane's config section, scope kinds and the rest are DERIVED
+/// from its Statement, never declared in the root). The loader reads them off a door's Statement
+/// (`sections`) and its plane tail, linked or dropped alike, and the kernel folds them into its
+/// plane registry before the config prepass (`busbar_kernel::plane_driver::door::fold`). Every word
+/// is kept for the process.
 #[derive(Clone)]
 pub struct PlaneRegistration {
     /// The plane's registry key: the door's Statement name.

@@ -176,20 +176,14 @@ pub type Parts = (
 /// dialects, or re-emitted byte-exact within one),
 /// told the caller's usage opt-in and request; and the JSON-array framer for a caller that asked
 /// for its stream as an array.
+/// A stream the translator times (a Bedrock caller's `metrics.latencyMs`) is timed on the host's
+/// one clock, the codec host each `feed` is handed, never on a clock of the plane's own.
 #[must_use]
 pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
-    parts_on(ctx, std::time::Instant::now)
-}
-
-/// [`parts`], the stream timed on `clock` (a Bedrock caller's `metrics.latencyMs`): a proof that
-/// relays one stream twice and compares the bytes hands both relays one clock.
-#[must_use]
-pub fn parts_on(ctx: &RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Parts {
     let translate = crate::codec::proto_stream::new_stream_translator_on(
         ctx.ingress,
         ctx.egress,
         ctx.far_is_stream,
-        clock,
         ctx.translate_cap,
     )
     .map(|mut t| {
@@ -213,13 +207,7 @@ impl Relay {
     /// OPEN the relay.
     #[must_use]
     pub fn new(ctx: RelayCtx<'_>) -> Self {
-        Self::new_on(ctx, std::time::Instant::now)
-    }
-
-    /// OPEN the relay, its stream timed on `clock` ([`parts_on`]).
-    #[must_use]
-    pub fn new_on(ctx: RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Self {
-        let (translate, json_array) = parts_on(&ctx, clock);
+        let (translate, json_array) = parts(&ctx);
         Self::from_parts(
             ctx.ingress,
             ctx.far_is_stream,

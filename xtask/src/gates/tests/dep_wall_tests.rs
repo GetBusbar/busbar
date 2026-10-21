@@ -151,3 +151,36 @@ fn a_grouped_import_in_an_in_tree_plugin_is_a_new_offender() {
         "a grouped import of std::net in busbar-plane-llm went unreported: {new}"
     );
 }
+
+/// A test mark inside a group (a struct's fields, an enum's variants, a match's arms, a fn's
+/// parameters) covers ONE element, which ends at its `,`: the element after it is production and
+/// is read (#1128).
+#[test]
+fn a_test_mark_inside_a_group_covers_one_element_not_the_rest_of_the_group() {
+    for text in [
+        "struct S { #[cfg(test)] a: u8, b: std::net::TcpStream }",
+        "enum E { #[cfg(test)] A(u8), B(std::net::TcpStream) }",
+        "fn f(x: u8) { match x { #[cfg(test)] 0 => (), _ => { let _ = std::net::TcpStream::connect(\"a:1\"); } } }",
+        "fn f(#[cfg(test)] a: u8, b: std::net::TcpStream) {}",
+    ] {
+        assert_eq!(paths(text), ["std::net"], "{text}");
+    }
+}
+
+/// Only `test`, `tokio::test`, `cfg(test)` and `cfg(all(test, ..))` mark test code: an attribute
+/// whose LAST segment is `test` is some other crate's macro, and the item under it is production.
+#[test]
+fn only_the_named_test_marks_are_test_code() {
+    for text in [
+        "#[foo::test] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+        "#[foo::bar::test] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+        "#[::test] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+        "#[tokio::test::x] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+    ] {
+        assert_eq!(paths(text), ["std::net"], "{text}");
+    }
+    assert!(paths("#[test] fn f() { std::net::TcpStream::connect(\"a:1\"); }").is_empty());
+    assert!(
+        paths("#[tokio::test] async fn f() { std::net::TcpStream::connect(\"a\"); }").is_empty()
+    );
+}

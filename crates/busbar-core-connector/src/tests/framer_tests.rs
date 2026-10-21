@@ -64,8 +64,8 @@ fn a_dial_hands_its_opening_head_fields_to_begin() {
 fn a_text_piece_is_read_as_text() {
     for text in [true, false] {
         let door = Arc::new(TestDoor::new(
-            "ws",
-            &["ws"],
+            "msg",
+            &["msg"],
             &[],
             Knobs {
                 text,
@@ -279,4 +279,55 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
         Ok(Err(busbar_contract::abi::mechanism::call::Outcome::Fault)),
         "the framing faults within its bound"
     );
+}
+
+/// RED (Q128 arch u22 LOW 9; `busbar_contract::abi::transport`: "A framer that fills a buffer
+/// answers READY with `YIELD_MORE` and the host calls the same op again"): `encode` renders a
+/// whole message, statelessly, into one buffer sized for it, so it has no re-call to continue
+/// from. A framer answering it `YIELD_MORE` owes bytes the host cannot ask for, and the encode
+/// FAULTs. Taken as whole, the partial wire was sent as the message.
+#[test]
+fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
+    let door = TestDoor::new(
+        "spin",
+        &["spin"],
+        &[],
+        Knobs {
+            spin: true,
+            ..Knobs::default()
+        },
+    );
+    let refused = encode(&door, &[], b"body").expect_err("a YIELD_MORE encode is refused");
+    assert_eq!(
+        refused.outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Fault
+    );
+    assert_eq!(
+        encode(&TestDoor::identity("bytes"), &[], b"body").ok(),
+        Some(b"body".to_vec()),
+        "a whole answer is the message"
+    );
+}
+
+/// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE"):
+/// a `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
+/// a frame: it is never handed up as a piece (relayed, it reached a reader as an empty body piece,
+/// ahead of the head on a dialled stream). The messages around it are handed up as they came.
+#[test]
+fn a_writable_piece_is_never_handed_up_as_a_frame() {
+    let door = Arc::new(TestDoor::new(
+        "messages",
+        &["messages"],
+        &[],
+        Knobs {
+            messages: Some(1),
+            ..Knobs::default()
+        },
+    ));
+    let (mut f, _) = Framing::begin(door, SIDE_DIAL, "t", &Established::default()).unwrap();
+    let y = f.ingest(b"w", false).unwrap();
+    assert!(y.pieces.is_empty(), "a writable piece is no frame: {y:?}");
+    let y = f.ingest(b"xwz", false).unwrap();
+    let got: Vec<Vec<u8>> = y.pieces.iter().map(|p| p.bytes.clone()).collect();
+    assert_eq!(got, vec![b"x".to_vec(), b"z".to_vec()]);
 }

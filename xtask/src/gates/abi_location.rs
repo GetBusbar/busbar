@@ -173,9 +173,68 @@ fn is_test_path(rel: &str) -> bool {
     p.contains("/tests/") || p.contains("/benches/")
 }
 
+/// [`scan_file_fresh`]'s answer for one file, MEMOISED ON EVERYTHING IT READS: the repo, the path,
+/// the bytes and the ABI's fn types, each compared in full (no hash stands in for a byte).
+///
+/// The gate lexed every `.rs` file of the tree on every run, and a self-test case is a run over a
+/// tree one planted file away from the last: the battery paid the whole tree's lex once per case
+/// and went over its work-unit budget doing it (10 354 of 9 000, ModernCI 2026-10-21, after the two
+/// base-ledger cases of 168cb115c6 joined it). The findings are a pure function of these four
+/// inputs, so every case after the first lexes only what it planted; the ledger, the base and the
+/// verdict are still taken fresh on every run.
+fn scan_file(repo: &str, rel: &str, text: &str, sigs: &BTreeSet<Sig>) -> Vec<Finding> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    struct Entry {
+        repo: String,
+        text: String,
+        sigs: usize,
+        found: Arc<Vec<Finding>>,
+    }
+    #[derive(Default)]
+    struct Memo {
+        /// Every distinct set of fn types seen, so an entry names its set by index.
+        sigs: Vec<BTreeSet<Sig>>,
+        files: BTreeMap<String, Vec<Entry>>,
+    }
+    static MEMO: OnceLock<Mutex<Memo>> = OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let sigs_at = {
+        let mut m = memo.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = match m.sigs.iter().position(|s| s == sigs) {
+            Some(at) => at,
+            None => {
+                m.sigs.push(sigs.clone());
+                m.sigs.len() - 1
+            }
+        };
+        if let Some(e) = m.files.get(rel).and_then(|es| {
+            es.iter()
+                .find(|e| e.sigs == at && e.repo == repo && e.text == text)
+        }) {
+            return e.found.as_ref().clone();
+        }
+        at
+    };
+    let found = scan_file_fresh(repo, rel, text, sigs);
+    let mut m = memo.lock().unwrap_or_else(PoisonError::into_inner);
+    let entries = m.files.entry(rel.to_string()).or_default();
+    if !entries
+        .iter()
+        .any(|e| e.sigs == sigs_at && e.repo == repo && e.text == text)
+    {
+        entries.push(Entry {
+            repo: repo.to_string(),
+            text: text.to_string(),
+            sigs: sigs_at,
+            found: Arc::new(found.clone()),
+        });
+    }
+    found
+}
+
 /// Every ABI shape in one file's PRODUCTION lines. `sigs` are the ABI's fn types: a definition
 /// with one of them implements it and is not a finding.
-fn scan_file(repo: &str, rel: &str, text: &str, sigs: &BTreeSet<Sig>) -> Vec<Finding> {
+fn scan_file_fresh(repo: &str, rel: &str, text: &str, sigs: &BTreeSet<Sig>) -> Vec<Finding> {
     let lines = scan::test_scope(text);
     let mut out = Vec::new();
     for (idx, sl) in lines.iter().enumerate() {
@@ -1365,6 +1424,31 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The memo answers exactly what a fresh scan answers: on the first read, on the second, and
+    /// when the bytes or the ABI's fn types change under the same path.
+    #[test]
+    fn the_memoised_scan_is_the_fresh_scan() {
+        let described = |v: Vec<Finding>| v.iter().map(Finding::describe).collect::<Vec<_>>();
+        let rel = "crates/busbar-kernel/src/memo_probe.rs";
+        let a = "#[repr(C)]\npub struct S { pub a: u32 }\npub extern \"C\" fn slot(x: u32) -> u32 { x }\n";
+        let b = "pub const PROBE_ABI: u32 = 1;\n";
+        let none = BTreeSet::new();
+        let mut one = BTreeSet::new();
+        one.insert((vec!["u32".to_string()], "u32".to_string()));
+        for (text, sigs) in [(a, &none), (a, &none), (b, &none), (a, &one), (a, &none)] {
+            assert_eq!(
+                described(scan_file("", rel, text, sigs)),
+                described(scan_file_fresh("", rel, text, sigs)),
+                "{text:?} over {sigs:?}"
+            );
+        }
+        assert_ne!(
+            described(scan_file("", rel, a, &none)),
+            described(scan_file("", rel, a, &one)),
+            "a slot whose signature is an ABI fn type is no finding, and the memo must see that"
+        );
+    }
 
     fn items(l: &str) -> Vec<(Option<String>, Option<Sig>)> {
         let c: Vec<char> = scan::blank_literals(l).chars().collect();

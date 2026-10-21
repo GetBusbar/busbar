@@ -18,6 +18,9 @@
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/one-memory-abi.toml` (see
 //! [`super::one_abi`]). M6 (cold delete) and M3 (the kind tables) drain it.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::one_abi::{self, Finding, Spec};
 use crate::gates::{Gate, Report};
@@ -164,9 +167,8 @@ pub const PINNED_FILES_FLOOR: usize = 100;
 /// read at its pinned commit through the audit ledger's pinned mount ([`crate::audit_pinned`]), with
 /// any planted file of the overlay laid over it. A pin that cannot be read is an error, never a skip.
 fn pinned_sources(cx: &Ctx, members: &[one_abi::Member]) -> Result<Vec<(String, String)>, String> {
-    let meta: serde_json::Value =
-        serde_json::from_str(&cx.cargo_metadata_all_features("Cargo.toml")?)
-            .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
+    let meta = all_features_metadata(cx)?;
+    let meta: &serde_json::Value = &meta;
     let have: std::collections::BTreeSet<&str> = members.iter().map(|m| m.name.as_str()).collect();
     let store = crate::audit_pinned::PinStore::new(
         crate::audit_pinned::default_cargo_home(),
@@ -197,18 +199,9 @@ fn pinned_sources(cx: &Ctx, members: &[one_abi::Member]) -> Result<Vec<(String, 
             let pin = crate::audit_pinned::Pin::from_source(name, source).ok_or_else(|| {
                 format!("pinned plugin {name}: its source `{source}` names no commit")
             })?;
-            let mount = store.mount(&pin)?;
-            for (rel, oid) in &mount.files {
-                let production = rel.starts_with("src/")
-                    && rel.ends_with(".rs")
-                    && !rel.contains("/tests/")
-                    && !rel.contains("/benches/");
-                if production {
-                    let text = crate::gitp::git(&mount.db, &["cat-file", "blob", oid])
-                        .map_err(|e| format!("pinned plugin {name} @ {}: {rel}: {e}", pin.sha))?;
-                    files.insert(format!("{dir}/{rel}"), text);
-                }
-            }
+            files = pinned_production_files(cx, &store, &pin, &dir)?
+                .as_ref()
+                .clone();
             // A plant into the pinned crate is the top layer, as it is over a crate on disk.
             let planted: Vec<String> = cx
                 .overlay()
@@ -239,6 +232,101 @@ fn pinned_sources(cx: &Ctx, members: &[one_abi::Member]) -> Result<Vec<(String, 
         out.extend(files);
     }
     Ok(out)
+}
+
+/// `cargo metadata --all-features` over the root manifest, READ ONCE PER CHECKOUT AND PROCESS.
+///
+/// Cargo reads the manifests ON DISK, never the overlay, so its answer cannot change while one
+/// gate process runs; only a planted answer (the overlay's `cargo-metadata:Cargo.toml` command)
+/// can, and that one is read as planted every time. Every self-test case used to pay a whole
+/// `cargo metadata` of its own (one-memory-abi 12 258 of 9 000 work units, ModernCI 2026-10-21).
+fn all_features_metadata(cx: &Ctx) -> Result<std::sync::Arc<serde_json::Value>, String> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    let parse = |out: &str| {
+        serde_json::from_str::<serde_json::Value>(out)
+            .map(Arc::new)
+            .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))
+    };
+    if let Some(planted) = cx.overlay_command("cargo-metadata:Cargo.toml") {
+        return parse(&planted);
+    }
+    type Memo = Mutex<BTreeMap<PathBuf, Result<Arc<serde_json::Value>, String>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(cx.root())
+    {
+        return hit.clone();
+    }
+    let answer = cx
+        .cargo_metadata_all_features("Cargo.toml")
+        .and_then(|out| parse(&out));
+    memo.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(cx.root().to_path_buf(), answer.clone());
+    answer
+}
+
+/// A pinned crate's PRODUCTION files at its pinned commit (`{dir}/{rel}` -> text), READ ONCE PER
+/// PIN AND PROCESS: a commit's blobs never change, so the answer is a pure function of the pin and
+/// the stores it is read from. Each run used to mount every pin afresh (a new [`PinStore`] per run)
+/// and spawn one `git cat-file` per file, a few hundred processes per self-test case. Any planted
+/// file is laid over this by the caller, on every run.
+///
+/// [`PinStore`]: crate::audit_pinned::PinStore
+fn pinned_production_files(
+    cx: &Ctx,
+    store: &crate::audit_pinned::PinStore,
+    pin: &crate::audit_pinned::Pin,
+    dir: &str,
+) -> Result<std::sync::Arc<BTreeMap<String, String>>, String> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Key = (PathBuf, PathBuf, crate::audit_pinned::Pin, String);
+    type Memo = Mutex<BTreeMap<Key, Result<Arc<BTreeMap<String, String>>, String>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let key: Key = (
+        crate::audit_pinned::default_cargo_home(),
+        cx.root().to_path_buf(),
+        pin.clone(),
+        dir.to_string(),
+    );
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+    {
+        return hit.clone();
+    }
+    let answer = read_production_files(store, pin, dir).map(Arc::new);
+    memo.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(key, answer.clone());
+    answer
+}
+
+/// [`pinned_production_files`]'s reading, taken fresh.
+fn read_production_files(
+    store: &crate::audit_pinned::PinStore,
+    pin: &crate::audit_pinned::Pin,
+    dir: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let mount = store.mount(pin)?;
+    let mut files = BTreeMap::new();
+    for (rel, oid) in &mount.files {
+        let production = rel.starts_with("src/")
+            && rel.ends_with(".rs")
+            && !rel.contains("/tests/")
+            && !rel.contains("/benches/");
+        if production {
+            let text = crate::gitp::git(&mount.db, &["cat-file", "blob", oid])
+                .map_err(|e| format!("pinned plugin {} @ {}: {rel}: {e}", pin.package, pin.sha))?;
+            files.insert(format!("{dir}/{rel}"), text);
+        }
+    }
+    Ok(files)
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {

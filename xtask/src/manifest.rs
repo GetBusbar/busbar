@@ -222,6 +222,21 @@ fn split_kv(line: &str) -> Option<(String, &str)> {
 /// cfg expression Cargo accepts contains one, and the alternative — a reader that tracks quotes to
 /// decide whether a comment is a comment — is a second parser to be wrong in a second way. Anything
 /// this cut makes unreadable is reported by [`unreadable`] rather than skipped.
+/// WHETHER A MANIFEST LINE IS A TABLE HEADER, and if it is, whether the table is `[package]`. Read
+/// as its segments, as [`dep_decls`] reads a dependency table's: `[ package ]` and `["package"]` are
+/// the table Cargo reads, a BOM or a trailing `#` comment is no part of the header, and `[[bin]]`
+/// is an array table. `None` for a line that is no header. The one reading every gate's
+/// `[package] name` reader shares, so none of them drops a crate over two spaces.
+pub(crate) fn package_header(line: &str) -> Option<bool> {
+    let header = strip_comment(line).strip_prefix('[')?;
+    Some(
+        !header.starts_with('[')
+            && header
+                .strip_suffix(']')
+                .is_some_and(|h| header_segments(h) == ["package"]),
+    )
+}
+
 fn strip_comment(raw: &str) -> &str {
     let t = raw.trim_start_matches('\u{feff}').trim();
     match t.find('#') {

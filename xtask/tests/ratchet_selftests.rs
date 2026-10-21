@@ -40,6 +40,11 @@ fn door_only_proves_its_ledger_against_the_base() {
 }
 
 #[test]
+fn door_cells_rig_proves_its_ledger_against_the_base() {
+    assert_eq!(selftest("door-cells-rig"), 0);
+}
+
+#[test]
 fn plane_secret_blindness_proves_its_ledger_against_the_base() {
     assert_eq!(selftest("plane-secret-blindness"), 0);
 }

@@ -72,8 +72,8 @@ use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
-    answered, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    submit_on, tick, validate, Fold, Leg, Recorder, Subject,
+    answered, bind_far, called, close, crossings, dispatcher, input, load, open, output,
+    ready_step, refresh, submit_on, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
@@ -507,6 +507,13 @@ fn recall_again(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: u
     line
 }
 
+/// THE BIND THE HOOK SCRIPT LOADS ITS DOOR WITH, on each leg: as every kind whose needs reach a
+/// far end is bound ([`super::bind_far`], the auth and plane scripts'), over a table serving the far
+/// ends its inputs name (`far_ends`), else the leg's own table ([`Subject::bind`]).
+pub(super) fn bind_for(d: &Dispatcher, s: &Subject) -> crate::dispatch::Bind {
+    bind_far(d, "hook", s)
+}
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("hook");
     assert!(k.is_object(), "conformance.json has no `hook` inputs");
@@ -545,7 +552,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let after = Arc::new(Request::of(&k["refresh"]["request"], order_cap));
 
     let d = dispatcher();
-    let p = load::<Hook>(s, leg, s.bind(&d, "hook")).expect("the hook door loads");
+    let p = load::<Hook>(s, leg, bind_for(&d, s)).expect("the hook door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(

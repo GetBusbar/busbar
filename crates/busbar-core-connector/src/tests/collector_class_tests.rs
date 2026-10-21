@@ -4,7 +4,7 @@
 //! THE OTLP COLLECTOR POLICY AS THE `loopback-allowed` EGRESS CLASS JUDGES IT (ARCHITECT rule 15.3:
 //! ported, not dropped). 1.5.x held the OTLP endpoint to a collector guard (`collector_policy`),
 //! deleted with the cold export lane together with its suite (`crates/busbar/src/root/tests/otlp.rs`)
-//! and the root's egress-carrier tests. In 1.6.0 the `busbar-export-otlp` sink declares one outbound
+//! and the root's egress-carrier tests. In 1.6.0 the trace-export sink declares one outbound
 //! need in the `loopback-allowed` class and names the collector itself; the http framer locates the
 //! collector URL's authority and whether it is secured, and the connector's open judges that: the
 //! endpoint check, the one dial judge ([`judge`] over a [`GuardJudge`], the node's own ports held
@@ -103,17 +103,18 @@ fn allowing(allow: &[&str]) -> Arc<dyn DialJudge> {
 
 /// `authority` (`host:port`, as the http framer locates it out of the collector URL), dialled
 /// `secure` or in plaintext by a plugin-named need in `class`, judged as the connector's open
-/// judges it: the endpoint check, open-web's plaintext refusal, the dial judgement (waiting out a
-/// resolution), the class's scheme rule on the pinned address. The endpoint check's refusal reads
-/// as [`DEST_METADATA`], the scheme rule's as [`DEST_PLAINTEXT`].
+/// judges it: the endpoint check (the target names a host), open-web's plaintext refusal, the dial
+/// judgement (waiting out a resolution; the guard's metadata and link-local refusal reads as
+/// [`DEST_METADATA`]), the class's scheme rule on the pinned address. A hostless authority reads as
+/// [`DEST_NO_HOST`], the scheme rule's refusal as [`DEST_PLAINTEXT`].
 fn open(
     j: &Arc<dyn DialJudge>,
     authority: &str,
     secure: bool,
     class: u32,
 ) -> Result<SocketAddr, Verdict> {
-    if crate::endpoint::check(authority).is_err() {
-        return Err(DEST_METADATA);
+    if crate::endpoint::named(authority).is_err() {
+        return Err(DEST_NO_HOST);
     }
     if class == EGRESS_OPEN_WEB && !secure {
         return Err(DEST_PLAINTEXT);
@@ -410,7 +411,7 @@ fn only_an_http_or_https_url_names_a_collector() {
     for url in [
         "file:///etc/shadow",
         "ftp://collector.example.com",
-        "grpc://collector:4317",
+        "rpc://collector:4317",
         "HTTPX://collector.example.com",
     ] {
         assert_eq!(j.judge_name(url, LA, false), Err(DEST_SCHEME), "{url}");

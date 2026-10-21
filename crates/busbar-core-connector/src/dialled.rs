@@ -36,7 +36,9 @@ use crate::udp::{ReadyPort, MAX_DATAGRAM};
 
 /// The most datagrams one drive reads before it yields.
 const READS_PER_DRIVE: usize = 256;
-/// The most channel messages a leg holds for a reader that has not read them.
+/// The channel messages a leg holds for a reader that has not read them, at which it stops
+/// draining its port (back-pressure: the far end's own reliability holds what it sent until the
+/// reader catches up); a message the association already yielded is never dropped.
 const MAX_READY: usize = 1024;
 /// The most bytes of the far end's description the open buffers before its end.
 const MAX_DESCRIPTION: usize = 64 * 1024;
@@ -96,21 +98,28 @@ impl UpstreamLeg {
     }
 
     /// Take what the leg's association yielded through the pairing: line frames go across, the
-    /// channel heads name the write channel, the channel messages wait for the reader.
-    fn take(&self, pairing: &Pairing, pieces: Vec<Got>, now: Instant) {
+    /// channel heads name the write channel, the channel messages wait for the reader, every one
+    /// of them, an empty message as an empty message. A channel's end is no message; a channel
+    /// that FAILED fails the leg (its reason is never the reader's payload).
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Fault`]: a channel of the leg failed.
+    fn take(&self, pairing: &Pairing, pieces: Vec<Got>, now: Instant) -> Result<(), ConnError> {
         for g in pairing.sort(Leg::Upstream, pieces, now) {
             if g.fields {
                 lock(&self.channel).get_or_insert(g.stream);
                 continue;
             }
-            if g.stream == 0 || g.bytes.is_empty() {
+            if g.failed && g.stream != 0 {
+                return Err(ConnError::Fault);
+            }
+            if g.stream == 0 || g.ends_stream() {
                 continue;
             }
-            let mut ready = lock(&self.ready);
-            if ready.len() < MAX_READY {
-                ready.push_back((g.bytes, g.end_of_frame));
-            }
+            lock(&self.ready).push_back((g.bytes, g.end_of_frame));
         }
+        Ok(())
     }
 
     /// Read every datagram waiting on the port, keep the association's clock, flush, and arm the
@@ -127,7 +136,13 @@ impl UpstreamLeg {
             let mut held = lock(&self.framing);
             let f = held.as_mut().ok_or(ConnError::Closed)?;
             let mut buf = lock(&self.recv);
+            // BACK-PRESSURE: at the queue's bound the port is not drained; the reader's next read
+            // takes a message and drives again.
+            let room = MAX_READY.saturating_sub(lock(&self.ready).len());
             for _ in 0..READS_PER_DRIVE {
+                if pieces.len() >= room {
+                    break;
+                }
                 match self.port.poll_recv_from(cx, &mut buf) {
                     Poll::Ready(Ok((n, from))) => {
                         let y = f
@@ -165,8 +180,7 @@ impl UpstreamLeg {
                 None => *timer = None,
             }
         }
-        self.take(pairing, pieces, now);
-        Ok(())
+        self.take(pairing, pieces, now)
     }
 }
 
@@ -308,7 +322,7 @@ impl Dialled {
             self.leg.flush(f);
             y.pieces
         };
-        self.leg.take(&self.pairing, pieces, now);
+        self.leg.take(&self.pairing, pieces, now)?;
         let leg: Arc<dyn LegSink> = Arc::clone(&self.leg) as Arc<dyn LegSink>;
         if self.pairing.attach(leg).is_err() {
             self.leg.close();
@@ -397,7 +411,7 @@ impl Dialled {
             self.leg.flush(f);
             y.pieces
         };
-        self.leg.take(&self.pairing, pieces, now);
+        self.leg.take(&self.pairing, pieces, now)?;
         Ok(bytes.len())
     }
 

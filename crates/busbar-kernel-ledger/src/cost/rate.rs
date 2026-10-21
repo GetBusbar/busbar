@@ -411,6 +411,7 @@ impl RateCard {
     /// Every configured cell this card could not represent, in the order it was configured. Empty
     /// for every card whose rates are all representable — which is every card config validation
     /// admits (#77(5): an unpriced class is a BOOT refusal when billing is on).
+    #[cfg(test)]
     pub fn refused_cells(&self) -> &[LaneClass] {
         &self.refused
     }

@@ -15,7 +15,7 @@
     "release": { "type": "string", "description": "The release this manifest is about, e.g. 1.6.0." },
     "commit": {
       "type": "string",
-      "description": "The release commit the passing verdicts agree on (the shipping sha). A pass whose verdict commit is not this is downgraded to not-run(stale)."
+      "description": "The manifest anchor: the commit most armed passing verdicts agree on, empty when there is none. It is NOT the release commit. A pass whose verdict commit is not this anchor is downgraded to not-run(stale); freshness against the release commit (HEAD of the checkout under judgement) is judged by the conformance:freshness row and by `cargo xtask conformance check`, never by this field."
     },
     "generated_at": { "type": "string", "description": "ISO-8601; the latest verdict timestamp, so the render is reproducible from committed inputs." },
     "suites": {
@@ -39,7 +39,7 @@
         "public": { "type": "boolean" },
         "status": {
           "enum": ["pass", "fail", "not-run"],
-          "description": "pass only if the verdict was armed, passed, and about the release commit."
+          "description": "pass only if the verdict was armed, passed, and about the manifest anchor (`commit` above); whether that pass is about the release commit is the freshness row's and the admission check's judgement."
         },
         "claim": {
           "type": ["string", "null"],

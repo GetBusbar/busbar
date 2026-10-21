@@ -85,7 +85,6 @@ fn suite(id: &str) -> Suite {
         label: id.to_string(),
         verdict: format!("conformance-verdict-{id}"),
         public: true,
-        not_run_reason: None,
         plane: None,
     }
 }
@@ -640,6 +639,14 @@ fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
     std::fs::create_dir_all(roster.parent().unwrap()).unwrap();
     std::fs::copy(repo_root().join("qa/construction.toml"), &roster)
         .expect("the tree's plane roster copies into the fixture");
+    // Every verdict is held to the verdict schema before it is read.
+    let schema = repo.join("conformance/verdicts/verdict.schema.json");
+    std::fs::create_dir_all(schema.parent().unwrap()).unwrap();
+    std::fs::copy(
+        repo_root().join("conformance/verdicts/verdict.schema.json"),
+        &schema,
+    )
+    .expect("the tree's verdict schema copies into the fixture");
     let suites = xtask::gates::conformance_sync::render::parse_registry(
         &xtask::ctx::Ctx::new(&repo).expect("a context over the fixture"),
     )

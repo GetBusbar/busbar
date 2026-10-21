@@ -87,28 +87,36 @@ impl Durability {
     /// [`AUDIT_RING`] of them. From the cache when it covers `from`; otherwise read back off the
     /// journal, which keeps every record — so a window older than the cache is never answered as
     /// empty.
+    ///
+    /// `None` when the journal could not be read back, or does not verify: there is no window to
+    /// answer with then, and an empty one would say the chain holds nothing there (audit R1#3).
     #[must_use]
-    pub fn audit_window(&self, from: u64, to: u64) -> Vec<AuditRecord> {
+    pub fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
         let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
         if covered || self.audit_records.is_empty() && !self.keeps_chain() {
-            return self
-                .audit_records
-                .iter()
-                .filter(pick)
-                .take(AUDIT_RING)
-                .cloned()
-                .collect();
+            let cached = self.audit_records.iter().filter(pick).take(AUDIT_RING);
+            return Some(cached.cloned().collect());
         }
-        let Ok(Ok(records)) = self.chain() else {
-            return Vec::new();
+        let records = match self.chain() {
+            Ok(Ok(records)) => records,
+            Ok(Err(broken)) => {
+                tracing::error!(?broken, "the chain an audit window reads does not verify");
+                return None;
+            }
+            Err(e) => {
+                let why = self.unreadable(&e);
+                tracing::error!(why = %why, "an audit window was not read back");
+                return None;
+            }
         };
-        records
+        let window: Vec<AuditRecord> = records
             .iter()
             .filter_map(|r| decode_audit(r).ok().flatten())
             .filter(|r| r.seq >= from && r.seq <= to)
             .take(AUDIT_RING)
-            .collect()
+            .collect();
+        Some(window)
     }
 
     /// WHAT A WALK OF THE RETAINED AUDIT CHAIN FINDS, as `GET /admin/verify` reports it: a record

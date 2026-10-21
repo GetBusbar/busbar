@@ -214,7 +214,7 @@ impl Leases {
             ptr: held.as_ptr(),
             len: held.len(),
             fmt,
-            flags: 0,
+            ..Blob::ZERO
         };
         self.hold(head, Lease::Bytes(held));
         blob
@@ -242,10 +242,7 @@ impl Leases {
     /// leases nothing and answers the empty string.
     pub fn str(&self, head: &mut OutHead, text: String) -> AbiStr {
         if text.is_empty() {
-            return AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            };
+            return AbiStr::ZERO;
         }
         let held: Box<[u8]> = text.into_bytes().into();
         let s = AbiStr {
@@ -294,10 +291,8 @@ impl Leases {
 
 fn absent() -> Blob {
     Blob {
-        ptr: std::ptr::null(),
-        len: 0,
         fmt: crate::abi::mechanism::call::BLOB_ABSENT,
-        flags: 0,
+        ..Blob::ZERO
     }
 }
 

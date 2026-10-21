@@ -206,8 +206,19 @@ fn read_all_paths(usage: &serde_json::Value, trace: Option<&serde_json::Value>) 
             _ => None,
         })
         .expect("the metadata frame emits a MessageDelta");
+    // The tail in the wire's member order: Converse writes `trace` after `usage`.
+    let mut wire = serde_json::json!({
+        "output": body["output"].clone(),
+        "stopReason": "end_turn",
+        "usage": usage
+    })
+    .to_string();
+    if let Some(trace) = trace {
+        wire.pop();
+        wire.push_str(&format!(",\"trace\":{trace}}}"));
+    }
     let recovered = BedrockReader
-        .recover_truncated_usage(body.to_string().as_bytes())
+        .recover_truncated_usage(wire.as_bytes())
         .expect("the trailing usage is recoverable");
     [
         read_of(&buffered),
@@ -221,8 +232,7 @@ fn read_all_paths(usage: &serde_json::Value, trace: Option<&serde_json::Value>) 
 /// cache-write entry moves nothing beyond its cache write and is attributed to its TTL; 7 more on
 /// `totalTokens` alone is reported as a 7-unit gap and ledgers 7 `unitemized_tokens` (a truncated
 /// body recovers the same `usage`, so the same 7); 7 of a guardrail count on each of two
-/// guardrails ledgers 14 under that count's own class (buffered and streamed; a truncated body
-/// recovers the turn's `usage` only). RED when the reader drops a count (a usage-table row, a
+/// guardrails ledgers 14 under that count's own class (buffered, streamed and truncated alike). RED when the reader drops a count (a usage-table row, a
 /// guardrail count), mis-classes one, stops checking the stated total, or the lock gains a count
 /// nobody classed.
 #[test]
@@ -286,6 +296,9 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
                         .find(|(c, _)| *c == count)
                         .expect("every guardrail count has a class");
                     opened = open(class, 14);
+                    // A truncated body bills the same policy units (Q128 u53): its `trace`
+                    // follows the turn's `usage`, so it is in the tail.
+                    truncated_opened = opened.clone();
                 }
                 ((0, 0, 0, 0), None)
             }
@@ -340,6 +353,13 @@ fn a_truncated_body_recovers_the_turns_usage_not_a_guardrails() {
         .recover_truncated_usage(tail)
         .expect("the turn's usage is in the tail");
     assert_eq!((u.input, u.output), (10, 5));
+    // Q128 u53: and the guardrail's policy units on the trailing `trace`, as buffered.
+    assert_eq!(
+        u.open_units.values().sum::<u64>(),
+        4,
+        "the trailing guardrail's units are billed: {:?}",
+        u.open_units
+    );
     let only_guardrail =
         br#"...cut"}}},"trace":{"guardrail":{"inputAssessment":{"g1":{"invocationMetrics":{"usage":{"contentPolicyUnits":3}}}}}}}"#;
     assert_eq!(

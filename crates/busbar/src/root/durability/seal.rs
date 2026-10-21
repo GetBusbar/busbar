@@ -35,7 +35,6 @@ use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditVerifyingKey};
 use busbar_kernel_ledger::checkpoint::{
     ChainHead, CheckpointSecret, CheckpointVerifier, SignError, Signature,
 };
-use busbar_kernel_ledger::migration::OPENING_CHECKPOINT_SEQ;
 
 use super::*;
 
@@ -196,16 +195,14 @@ impl Durability {
     /// ARM THE CADENCE: from now on this book seals a checkpoint whenever one is due.
     ///
     /// `now` is wall seconds. The checkpoint numbering continues from the highest sequence number
-    /// the chain already carries, so a restart never re-uses one.
+    /// the chain already carries, so a restart never re-uses one. That number was taken from the
+    /// chain the book was rebuilt from and kept current since; the chain is not read again here,
+    /// so a store that stops answering cannot send the numbering back to one (audit R1#3).
     pub fn arm_checkpoints(&mut self, now: u64) {
-        let next_checkpoint_seq = match self.chain() {
-            Ok(Ok(records)) => next_checkpoint_seq_on(&records),
-            _ => OPENING_CHECKPOINT_SEQ.saturating_add(1),
-        };
         self.cadence = Some(Cadence::starting(
             self.journal.next_seq(),
             now,
-            next_checkpoint_seq,
+            self.next_checkpoint_seq,
         ));
     }
 
@@ -229,11 +226,7 @@ impl Durability {
         now: u64,
     ) -> Result<Checkpoint, CheckpointFailed> {
         let mut cadence = self.cadence.unwrap_or_else(|| {
-            Cadence::starting(
-                self.journal.next_seq(),
-                now,
-                OPENING_CHECKPOINT_SEQ.saturating_add(1),
-            )
+            Cadence::starting(self.journal.next_seq(), now, self.next_checkpoint_seq)
         });
         let checkpoint_seq = cadence.next_checkpoint_seq;
         cadence.next_checkpoint_seq = checkpoint_seq.saturating_add(1);

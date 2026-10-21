@@ -105,6 +105,18 @@ pub struct DatagramRoute {
     pub lane: u32,
 }
 
+impl DatagramRoute {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `DatagramRoute { …, ..DatagramRoute::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        offset: 0,
+        len: 0,
+        path: 0,
+        lane: 0,
+    };
+}
+
 /// One path the host knows: its number and its far-end address. On the dialling side these are the
 /// far end's advertised candidates the host's destination judge allowed; on the accepting side,
 /// the addresses verified checks came from.
@@ -176,6 +188,22 @@ pub struct RendezvousTerms {
     /// when it advertised none. The host judges each before any byte goes there; the accepting
     /// side's host learns paths from verified checks instead.
     pub candidates: FrameSpan,
+}
+
+impl RendezvousTerms {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RendezvousTerms { …, ..RendezvousTerms::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self {
+        role: 0,
+        _reserved: 0,
+        local_user: FrameSpan::ZERO,
+        local_secret: FrameSpan::ZERO,
+        remote_user: FrameSpan::ZERO,
+        remote_secret: FrameSpan::ZERO,
+        peer_fingerprint: FrameSpan::ZERO,
+        candidates: FrameSpan::ZERO,
+    };
 }
 
 /// What a datagram framer's answer adds to [`super::FramerYield`]: its routes, at most one path

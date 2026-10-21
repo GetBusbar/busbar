@@ -16,9 +16,6 @@
 /// The kind a shed carries when the pool had nowhere to send the request.
 pub const KIND_OVERLOADED: &str = "overloaded";
 
-/// The kind a body that could not be read carries.
-pub const KIND_INVALID_REQUEST: &str = "invalid_request_error";
-
 /// The words a shed says when the pool is exhausted.
 pub const DETAIL_OVERLOADED: &str = "The service is temporarily overloaded. Please retry shortly.";
 
@@ -32,9 +29,6 @@ pub const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please retry sh
 pub const DETAIL_INTERNAL_ERROR: &str =
     "We received an unexpected internal error. Please try again.";
 
-/// The words an unreadable body says.
-pub const DETAIL_INVALID_JSON: &str = "We could not parse the JSON body of your request.";
-
 /// The words a spill says when a gate's restriction left no eligible member in the pool it spilled
 /// into. Failing closed here is the point: spilling into a member the restriction excludes would
 /// break the promise that a restriction holds across a failover.
@@ -46,9 +40,6 @@ pub const STATUS_SERVICE_UNAVAILABLE: u16 = 503;
 
 /// The status an internal failure before any send carries.
 pub const STATUS_INTERNAL_ERROR: u16 = 500;
-
-/// The status a body that could not be read carries.
-pub const STATUS_BAD_REQUEST: u16 = 400;
 
 /// A refusal this unit produced, in the words the previous release used.
 ///
@@ -141,17 +132,6 @@ impl Shed {
             STATUS_INTERNAL_ERROR,
             KIND_API_ERROR,
             DETAIL_INTERNAL_ERROR,
-            false,
-        )
-    }
-
-    /// The request body was not the shape its content type claimed.
-    #[must_use]
-    pub fn invalid_body() -> Self {
-        Self::of(
-            STATUS_BAD_REQUEST,
-            KIND_INVALID_REQUEST,
-            DETAIL_INVALID_JSON,
             false,
         )
     }

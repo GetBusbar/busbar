@@ -499,13 +499,17 @@ impl Gate for ConfigSchemaGate {
                 Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
             }
         }
-        let fresh =
-            match declared::read(cx).and_then(|declared| schema::extract_with(&read, &declared)) {
-                Ok(v) => v,
-                Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
-            };
-        let fresh_text = schema::canonical(&fresh);
-        let n_types = type_count(&fresh);
+        let declared = match declared::read(cx) {
+            Ok(d) => d,
+            Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
+        };
+        let reading = schema::reading(&read, &declared);
+        let fresh = match &reading.extracted {
+            Ok(v) => v,
+            Err(why) => return refuse(ROW_TRACKED_SOURCES, why.clone()),
+        };
+        let fresh_text = schema::canonical(fresh);
+        let n_types = type_count(fresh);
 
         let mut rows = vec![row_tracked_sources(files.len(), n_types)];
 
@@ -559,9 +563,9 @@ impl Gate for ConfigSchemaGate {
                     BaselineState::Ok { path, .. } => path.as_str(),
                     _ => schema::SNAPSHOT,
                 };
-                let see = see_through(cx, &r, home, &baseline, &fresh, &read);
+                let see = see_through(cx, &r, home, &baseline, fresh, &read, &reading);
                 let outcome =
-                    classify::judge(classify::classify_with(&baseline, &fresh, &see), &waivers);
+                    classify::judge(classify::classify_with(&baseline, fresh, &see), &waivers);
                 rows.push(row_additive(&outcome));
                 rows.push(row_waivers(&if outcome.stale.is_empty() {
                     WaiverState::Ok { n: waivers.len() }
@@ -690,9 +694,10 @@ fn see_through(
     baseline: &Value,
     fresh: &Value,
     read: &[(String, String)],
+    reading: &schema::Reading,
 ) -> classify::SeeThrough {
     let mut see = classify::SeeThrough {
-        forwards: schema::forwards(read),
+        forwards: reading.forwards(read).clone(),
         ..Default::default()
     };
     let empty = serde_json::Map::new();
@@ -746,7 +751,7 @@ fn see_through(
         .filter_map(|p| cx.git_show(r, &p).ok().map(|t| (p, t)))
         .collect();
     let base_eff = schema::effective_refusals(&base_src);
-    let fresh_eff = schema::effective_refusals(read);
+    let fresh_eff = reading.refusals(read);
     for x in need {
         if let (Some(Some(b)), Some(Some(f))) = (base_eff.get(x), fresh_eff.get(x)) {
             see.refusals

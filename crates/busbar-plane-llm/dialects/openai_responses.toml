@@ -2,7 +2,7 @@
 # the OpenAI Responses dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
-wire = "responses"  # the wire lock: dialects/responses.wire.json (notation A paths)
+wire = "responses"  # the wire lock: testing/llm-conformance/wire/responses.wire.json (notation A paths)
 request = [
     "responses_structure",
     "sampling",
@@ -36,7 +36,7 @@ stream = ["stream"]
 "temperature" = { ir = "temperature" }
 "top_p" = { ir = "top_p" }
 
-# The Q57 request members Responses and Chat spell alike (ir-slots-landed.md IR-03..06). A raw
+# The Q57 request members Responses and Chat spell alike. A raw
 # member the slot cannot reproduce is parked in `extra` (same-dialect fidelity).
 [rows.openai_family]
 park = true
@@ -166,10 +166,11 @@ park = true
 
 # The response `service_tier` (the tier that SERVED the answer, RSP-17) <> the IR attribution word
 # (the Anthropic vocabulary: `default` IS `standard`). The OpenAI-family words are written as-is so
-# a tier that arrived in that vocabulary is not lost.
+# a tier that arrived in that vocabulary is not lost; Responses also READS `flex` / `scale` (as Chat
+# does), so an answer served at either keeps its tier.
 [words.served_tier]
 "standard" = { wire = "default" }
 "default" = { wire = "default", dir = "write" }
 "priority" = { wire = "priority" }
-"flex" = { wire = "flex", dir = "write" }
-"scale" = { wire = "scale", dir = "write" }
+"flex" = { wire = "flex" }
+"scale" = { wire = "scale" }

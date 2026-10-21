@@ -694,7 +694,10 @@ max_legacy_sites = 0
 why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \
 A third is a second selection policy growing beside the first."""
 verb = "pick_among"
-max_sites = 2
+# LOWERED 2 -> 1, the measured count (Law 9): one production call site of `pick_among(`
+# (crates/busbar-kernel-egress/src/walk.rs); the row is green and is struck from
+# CONSTRUCTION_STANDING_REDS in the same commit.
+max_sites = 1
 
 # ── 14. no-unit-crates (BUSBAR-1.6.0.md THE DESIGN, §1; fold F14) ──────────────────────────────────
 # The section 1.1 LINE-COUNT ceilings that lived here (`kernel_ceiling`, `caps_contract_ceiling`,

@@ -16,9 +16,18 @@
 //! reaches is refused naming it.
 //!
 //! The reader is a token scanner, not a parser: it skips comments, string, raw-string, byte-string
-//! and char literals (and tells a char literal from a lifetime), and reads only `#[path = ".."]`,
+//! and char literals (and tells a char literal from a lifetime), and reads only attributes
+//! (`#[path = ".."]`, `#[cfg(..)]`, `#![cfg(..)]` and the attributes a `fn` carries),
 //! `mod <ident> ;`, `mod <ident> {`, `fn <ident>` and brace depth. `scripts/capability-equality-summary.py`
 //! carries the same algorithm for the equality ledger's own runner.
+//!
+//! THE CFGS ON THE WAY ARE KEPT (Law 10, status row 178). A name that resolves is a fn that EXISTS;
+//! whether any build compiles it is a different question, and a module declared under a cfg no
+//! build enables (`#[cfg(all(test, linked_axis_node))] mod tests;` once no linked row carried the
+//! `node` axis) resolves exactly as well as one every build carries. So the tree records, for every
+//! file it reaches, the `cfg` predicates of every declaration and inline module on the way to it,
+//! and [`resolve_cell`] hands those back beside each fn's own attributes for a caller
+//! (`crate::ci_cfg`) to judge against the build that runs it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,13 +39,66 @@ enum Tok {
     Punct(char),
 }
 
+/// One `fn <name>` definition: its inline nesting, its name, the `cfg` predicates it compiles
+/// under within its file (the inline modules' it sits in, outermost first, then its own), and its
+/// other outer attributes as written (`test`, `tokio::test(flavor="multi_thread",worker_threads=)`,
+/// `ignore`, `cfg_attr(miri,ignore)`, …; numbers are not kept).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FnItem {
+    pub nest: Vec<String>,
+    pub name: String,
+    pub cfgs: Vec<String>,
+    pub attrs: Vec<String>,
+}
+
+/// One `mod <name>;` declaration: its inline nesting, its name, its `#[path]` value if any, and the
+/// `cfg` predicates it is declared under (the inline modules' it sits in, then its own).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ModDecl {
+    pub nest: Vec<String>,
+    pub name: String,
+    pub path: Option<String>,
+    pub cfgs: Vec<String>,
+}
+
 /// What a file says about modules and fns, with the inline-module nesting each one sits in.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FileItems {
-    /// `mod <name>;` declarations: (inline nesting, name, `#[path]` value if any).
-    pub decls: Vec<(Vec<String>, String, Option<String>)>,
-    /// `fn <name>` definitions: (inline nesting, name).
-    pub fns: Vec<(Vec<String>, String)>,
+    /// `mod <name>;` declarations.
+    pub decls: Vec<ModDecl>,
+    /// `fn <name>` definitions.
+    pub fns: Vec<FnItem>,
+    /// The file's own inner `#![cfg(..)]` predicates, which gate everything in it.
+    pub file_cfgs: Vec<String>,
+}
+
+/// An attribute's tokens as one string: idents and strings as written (a string re-quoted), puncts
+/// as themselves, a single space only between two adjacent words. `cfg(all(test, linked_axis_node))`
+/// reads `cfg(all(test,linked_axis_node))`; `cfg(feature = "x")` reads `cfg(feature="x")`.
+fn attr_text(toks: &[Tok]) -> String {
+    let mut out = String::new();
+    let mut prev_word = false;
+    for t in toks {
+        let (s, word) = match t {
+            Tok::Ident(s) => (s.clone(), true),
+            Tok::Str(s) => (format!("\"{s}\""), true),
+            Tok::Punct(c) => (c.to_string(), false),
+        };
+        if word && prev_word {
+            out.push(' ');
+        }
+        out.push_str(&s);
+        prev_word = word;
+    }
+    out
+}
+
+/// The predicate of a `cfg(..)` attribute's text, or `None` for any other attribute.
+#[must_use]
+pub fn cfg_predicate(attr: &str) -> Option<String> {
+    attr.strip_prefix("cfg(")
+        .and_then(|r| r.strip_suffix(')'))
+        .map(str::to_string)
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -191,44 +253,97 @@ pub const DOOR_CELLS: &str = "<door-cells>";
 /// The generated file the composition root includes its door planes' own root cells from.
 const DOOR_CELLS_FILE: &str = "/door_cells.rs";
 
-/// The module declarations and fn definitions of one file, each with its inline nesting.
+/// The module declarations and fn definitions of one file, each with its inline nesting and the
+/// `cfg` predicates it sits under within the file.
 #[must_use]
 pub fn file_items(src: &str) -> FileItems {
     let t = tokens(src);
     let mut items = FileItems::default();
-    // Inline modules open: (name, the brace depth INSIDE it).
-    let mut stack: Vec<(String, usize)> = Vec::new();
+    // Inline modules open: (name, the brace depth INSIDE it, the cfg predicates it is declared under).
+    let mut stack: Vec<(String, usize, Vec<String>)> = Vec::new();
     let mut depth = 0usize;
     let mut pending_path: Option<String> = None;
+    // The outer attributes read since the last item boundary, as [`attr_text`] spells them.
+    let mut pending_attrs: Vec<String> = Vec::new();
+    let nest_of = |stack: &[(String, usize, Vec<String>)]| -> Vec<String> {
+        stack.iter().map(|(m, _, _)| m.clone()).collect()
+    };
+    let cfgs_of = |stack: &[(String, usize, Vec<String>)], own: &[String]| -> Vec<String> {
+        stack
+            .iter()
+            .flat_map(|(_, _, c)| c.iter().cloned())
+            .chain(own.iter().filter_map(|a| cfg_predicate(a)))
+            .collect()
+    };
     let mut i = 0;
     while i < t.len() {
         match &t[i] {
-            // `#[path = "..."]`
-            Tok::Punct('#')
-                if matches!(t.get(i + 1), Some(Tok::Punct('[')))
-                    && matches!(t.get(i + 2), Some(Tok::Ident(p)) if p == "path")
-                    && matches!(t.get(i + 3), Some(Tok::Punct('=')))
-                    && matches!(t.get(i + 5), Some(Tok::Punct(']'))) =>
-            {
-                if let Some(Tok::Str(s)) = t.get(i + 4) {
-                    pending_path = Some(s.clone());
+            // An attribute: `#[..]` (outer) or `#![..]` (inner), read to its matching `]`.
+            Tok::Punct('#') => {
+                let inner = matches!(t.get(i + 1), Some(Tok::Punct('!')));
+                let open = if inner { i + 2 } else { i + 1 };
+                if matches!(t.get(open), Some(Tok::Punct('['))) {
+                    let mut level = 0usize;
+                    let mut k = open;
+                    while k < t.len() {
+                        match &t[k] {
+                            Tok::Punct('[') => level += 1,
+                            Tok::Punct(']') => {
+                                level -= 1;
+                                if level == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                    let body = &t[open + 1..k.min(t.len())];
+                    match body {
+                        // `#[path = "..."]`
+                        [Tok::Ident(p), Tok::Punct('='), Tok::Str(s)] if p == "path" && !inner => {
+                            pending_path = Some(s.clone());
+                        }
+                        _ if inner => {
+                            // `#![cfg(..)]` gates the module it sits in: the inline module open
+                            // around it, or the whole file.
+                            if let Some(pred) = cfg_predicate(&attr_text(body)) {
+                                match stack.last_mut() {
+                                    Some((_, _, c)) => c.push(pred),
+                                    None => items.file_cfgs.push(pred),
+                                }
+                            }
+                        }
+                        _ => pending_attrs.push(attr_text(body)),
+                    }
+                    i = k + 1;
+                    continue;
                 }
-                i += 6;
-                continue;
             }
             Tok::Ident(kw) if kw == "mod" => {
                 if let Some(Tok::Ident(name)) = t.get(i + 1) {
-                    let nest: Vec<String> = stack.iter().map(|(m, _)| m.clone()).collect();
+                    let nest = nest_of(&stack);
                     match t.get(i + 2) {
                         Some(Tok::Punct(';')) => {
-                            items.decls.push((nest, name.clone(), pending_path.take()));
+                            items.decls.push(ModDecl {
+                                nest,
+                                name: name.clone(),
+                                path: pending_path.take(),
+                                cfgs: cfgs_of(&stack, &pending_attrs),
+                            });
+                            pending_attrs.clear();
                             i += 3;
                             continue;
                         }
                         Some(Tok::Punct('{')) => {
+                            let own: Vec<String> = pending_attrs
+                                .iter()
+                                .filter_map(|a| cfg_predicate(a))
+                                .collect();
                             depth += 1;
-                            stack.push((name.clone(), depth));
+                            stack.push((name.clone(), depth, own));
                             pending_path = None;
+                            pending_attrs.clear();
                             i += 3;
                             continue;
                         }
@@ -238,8 +353,17 @@ pub fn file_items(src: &str) -> FileItems {
             }
             Tok::Ident(kw) if kw == "fn" => {
                 if let Some(Tok::Ident(name)) = t.get(i + 1) {
-                    let nest: Vec<String> = stack.iter().map(|(m, _)| m.clone()).collect();
-                    items.fns.push((nest, name.clone()));
+                    items.fns.push(FnItem {
+                        nest: nest_of(&stack),
+                        name: name.clone(),
+                        cfgs: cfgs_of(&stack, &pending_attrs),
+                        attrs: pending_attrs
+                            .iter()
+                            .filter(|a| cfg_predicate(a).is_none())
+                            .cloned()
+                            .collect(),
+                    });
+                    pending_attrs.clear();
                     i += 2;
                     continue;
                 }
@@ -254,22 +378,32 @@ pub fn file_items(src: &str) -> FileItems {
                         .take(14)
                         .any(|tok| matches!(tok, Tok::Str(s) if s == DOOR_CELLS_FILE)) =>
             {
-                let nest: Vec<String> = stack.iter().map(|(m, _)| m.clone()).collect();
-                items.decls.push((nest, DOOR_CELLS.to_string(), None));
+                items.decls.push(ModDecl {
+                    nest: nest_of(&stack),
+                    name: DOOR_CELLS.to_string(),
+                    path: None,
+                    cfgs: cfgs_of(&stack, &pending_attrs),
+                });
                 pending_path = None;
+                pending_attrs.clear();
             }
             Tok::Punct('{') => {
                 depth += 1;
                 pending_path = None;
+                pending_attrs.clear();
             }
             Tok::Punct('}') => {
-                while stack.last().is_some_and(|(_, d)| *d == depth) {
+                while stack.last().is_some_and(|(_, d, _)| *d == depth) {
                     stack.pop();
                 }
                 depth = depth.saturating_sub(1);
                 pending_path = None;
+                pending_attrs.clear();
             }
-            Tok::Punct(';') => pending_path = None,
+            Tok::Punct(';') => {
+                pending_path = None;
+                pending_attrs.clear();
+            }
             _ => {}
         }
         i += 1;
@@ -313,6 +447,11 @@ pub struct ModuleTree {
     pub paths: BTreeMap<String, BTreeSet<String>>,
     /// file -> its items.
     pub items: BTreeMap<String, FileItems>,
+    /// (file, module path) -> the `cfg` predicates that module is compiled under: every
+    /// declaration and inline module on the way from the crate root, outermost first, then the
+    /// file's own `#![cfg]`s. A door-cells module adds `feature="<row>"`, the filter its build
+    /// script includes it under.
+    pub chains: BTreeMap<(String, String), Vec<String>>,
 }
 
 /// The `[table]` rows of a Cargo manifest, `key = value` one per line, both sides unquoted (the
@@ -351,6 +490,18 @@ const PLANE_DOOR_AXIS: &str = "plane-door";
 /// by that same mount (`DOOR_CELLS_FILES`), so a plane door that left for its own repo keeps its root
 /// cells: they are read from the pin, never skipped.
 pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec<(String, String)> {
+    door_cell_rows(read, root_file)
+        .into_iter()
+        .map(|(ident, file, _)| (ident, file))
+        .collect()
+}
+
+/// [`door_cells`], each row with the cargo feature that keys it: `(module, file, feature)`. The
+/// build script includes a row's module only when that feature is on.
+pub fn door_cell_rows(
+    read: &dyn Fn(&str) -> Option<String>,
+    root_file: &str,
+) -> Vec<(String, String, String)> {
     let crate_dir = parent(&parent(root_file));
     let Some(manifest) = read(&join(&crate_dir, "Cargo.toml")) else {
         return Vec::new();
@@ -373,9 +524,24 @@ pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec
                 Some(path) => join(&crate_dir, path),
                 None => join(&parent(&crate_dir), &krate),
             };
-            Some((feature.replace('-', "_"), join(&dir, "tests/root/mod.rs")))
+            Some((
+                feature.replace('-', "_"),
+                join(&dir, "tests/root/mod.rs"),
+                feature,
+            ))
         })
         .collect()
+}
+
+/// One file the walk still has to read: the module path it is reached under, the directory its
+/// children resolve against, the non-mod-rs stem if any, and the cfg predicates of every
+/// declaration on the way to it.
+struct Visit {
+    file: String,
+    module: String,
+    dir: String,
+    relative: Option<String>,
+    on_the_way: Vec<String>,
 }
 
 /// Walk the crate whose root file is `root_file` (repo-relative, e.g. `crates/busbar/src/main.rs`),
@@ -383,14 +549,21 @@ pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec
 #[must_use]
 pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> ModuleTree {
     let mut tree = ModuleTree::default();
-    // (file, module path, directory its children resolve against, the non-mod-rs stem if any)
-    let mut work: Vec<(String, String, String, Option<String>)> = vec![(
-        root_file.to_string(),
-        String::new(),
-        parent(root_file),
-        None,
-    )];
-    while let Some((file, module, dir, relative)) = work.pop() {
+    let mut work: Vec<Visit> = vec![Visit {
+        file: root_file.to_string(),
+        module: String::new(),
+        dir: parent(root_file),
+        relative: None,
+        on_the_way: Vec::new(),
+    }];
+    while let Some(Visit {
+        file,
+        module,
+        dir,
+        relative,
+        on_the_way,
+    }) = work.pop()
+    {
         let fresh = tree
             .paths
             .entry(file.clone())
@@ -410,9 +583,23 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
                 it
             }
         };
-        for (nest, name, path_attr) in &items.decls {
+        let chain: Vec<String> = on_the_way
+            .iter()
+            .chain(items.file_cfgs.iter())
+            .cloned()
+            .collect();
+        tree.chains
+            .insert((file.clone(), module.clone()), chain.clone());
+        for ModDecl {
+            nest,
+            name,
+            path: path_attr,
+            cfgs: decl_cfgs,
+        } in &items.decls
+        {
+            let child_chain: Vec<String> = chain.iter().chain(decl_cfgs.iter()).cloned().collect();
             if name == DOOR_CELLS {
-                for (ident, cells) in door_cells(read, root_file) {
+                for (ident, cells, feature) in door_cell_rows(read, root_file) {
                     let child_module = std::iter::once(module.as_str())
                         .filter(|m| !m.is_empty())
                         .map(str::to_string)
@@ -421,7 +608,15 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
                         .collect::<Vec<_>>()
                         .join("::");
                     let cells_dir = parent(&cells);
-                    work.push((cells, child_module, cells_dir, None));
+                    let mut cells_chain = child_chain.clone();
+                    cells_chain.push(format!("feature=\"{feature}\""));
+                    work.push(Visit {
+                        file: cells,
+                        module: child_module,
+                        dir: cells_dir,
+                        relative: None,
+                        on_the_way: cells_chain,
+                    });
                 }
                 continue;
             }
@@ -448,7 +643,13 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
                 Some(p) => {
                     let child = join(&inline_dir, p);
                     let child_dir = parent(&child);
-                    work.push((child, child_module, child_dir, None));
+                    work.push(Visit {
+                        file: child,
+                        module: child_module,
+                        dir: child_dir,
+                        relative: None,
+                        on_the_way: child_chain,
+                    });
                 }
                 None => {
                     let base = if nest.is_empty() {
@@ -462,10 +663,22 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
                     let flat = join(&base, &format!("{name}.rs"));
                     let nested = join(&base, &format!("{name}/mod.rs"));
                     if read(&flat).is_some() {
-                        work.push((flat, child_module, base, Some(name.clone())));
+                        work.push(Visit {
+                            file: flat,
+                            module: child_module,
+                            dir: base,
+                            relative: Some(name.clone()),
+                            on_the_way: child_chain,
+                        });
                     } else if read(&nested).is_some() {
                         let nested_dir = parent(&nested);
-                        work.push((nested, child_module, nested_dir, None));
+                        work.push(Visit {
+                            file: nested,
+                            module: child_module,
+                            dir: nested_dir,
+                            relative: None,
+                            on_the_way: child_chain,
+                        });
                     }
                 }
             }
@@ -474,12 +687,32 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
     tree
 }
 
+/// One fn a ledger cites, resolved: its libtest name, the `cfg` predicates its MODULE is compiled
+/// under (from the crate root to its file, then the file's own), and each definition of that name
+/// at that nesting (one, or several `cfg`-alternative bodies): its own `cfg` predicates within the
+/// file and its other attributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCell {
+    pub path: String,
+    pub chain: Vec<String>,
+    pub defs: Vec<FnItem>,
+}
+
 /// The libtest name of `func` in `file`, or why there is none: the file is not reached, or the file
 /// or the fn is reached two ways (ambiguity is refused, naming both, never guessed).
 ///
 /// # Errors
 /// A sentence naming the file or fn and what made it unresolvable.
 pub fn resolve(tree: &ModuleTree, file: &str, func: &str) -> Result<String, String> {
+    resolve_cell(tree, file, func).map(|c| c.path)
+}
+
+/// [`resolve`], with what decides whether a build compiles the fn and whether the harness runs it:
+/// the cfgs on the way to its module and each definition's own cfgs and attributes.
+///
+/// # Errors
+/// As [`resolve`].
+pub fn resolve_cell(tree: &ModuleTree, file: &str, func: &str) -> Result<ResolvedCell, String> {
     let Some(paths) = tree.paths.get(file) else {
         return Err(format!(
             "{file} is reached by no `mod` declaration from the crate root, so no test in it runs"
@@ -492,17 +725,12 @@ pub fn resolve(tree: &ModuleTree, file: &str, func: &str) -> Result<String, Stri
         ));
     }
     let module = paths.iter().next().cloned().unwrap_or_default();
-    let nests: BTreeSet<&Vec<String>> = tree
+    let defs: Vec<&FnItem> = tree
         .items
         .get(file)
-        .map(|it| {
-            it.fns
-                .iter()
-                .filter(|(_, n)| n == func)
-                .map(|(nest, _)| nest)
-                .collect()
-        })
+        .map(|it| it.fns.iter().filter(|f| f.name == func).collect())
         .unwrap_or_default();
+    let nests: BTreeSet<&Vec<String>> = defs.iter().map(|f| &f.nest).collect();
     let mut nests = nests.into_iter();
     let Some(nest) = nests.next() else {
         return Err(format!("no `fn {func}` in {file}"));
@@ -514,12 +742,22 @@ pub fn resolve(tree: &ModuleTree, file: &str, func: &str) -> Result<String, Stri
             other.join("::")
         ));
     }
-    Ok(std::iter::once(module)
+    let chain = tree
+        .chains
+        .get(&(file.to_string(), module.clone()))
+        .cloned()
+        .unwrap_or_default();
+    let path = std::iter::once(module)
         .filter(|m| !m.is_empty())
         .chain(nest.iter().cloned())
         .chain(std::iter::once(func.to_string()))
         .collect::<Vec<_>>()
-        .join("::"))
+        .join("::");
+    Ok(ResolvedCell {
+        path,
+        chain,
+        defs: defs.into_iter().cloned().collect(),
+    })
 }
 
 #[cfg(test)]

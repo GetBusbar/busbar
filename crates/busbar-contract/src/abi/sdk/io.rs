@@ -84,13 +84,11 @@ io_in!(OpenIn, ListenIn, AddrIn, ReadIn, WriteIn, ReadyIn, ShutIn, HandleIn, Spa
 
 const fn head() -> ServiceHead {
     ServiceHead {
-        size: 0,
-        op: 0,
         handle: CompletionHandle {
             ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
+        ..ServiceHead::ZERO
     }
 }
 
@@ -153,22 +151,13 @@ impl<'h> Io<'h> {
             handle: CompletionHandle {
                 ticket: self.ticket,
                 seq,
-                _reserved: 0,
+                ..CompletionHandle::ZERO
             },
         };
         let mut out = ServiceOut {
             size: std::mem::size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(Outcome::Fault),
-            _reserved: [0; 3],
-            value: 0,
-            len: 0,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
-            error: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            ..ServiceOut::ZERO
         };
         match f(self.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome() {
             Outcome::Ready => Poll::Ready(Ok(out)),

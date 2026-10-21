@@ -3,9 +3,10 @@
 
 //! The neutral `<n><unit>` duration parser shared by the plane config readers.
 //!
-//! Both plane config surfaces (MCP `verify_ttl`, A2A `reverify_ttl`/`backoff`) and core's admin/
-//! key-TTL paths express durations as `7d`/`24h`/`30s`. One parser, in the neutral substrate, so a
-//! plane crate names it without reaching into busbar-core; core re-exports it from `admin`.
+//! Both plane config surfaces (a tool plane's `verify_ttl`, an agent plane's
+//! `reverify_ttl`/`backoff`) and core's admin/key-TTL paths express durations as `7d`/`24h`/`30s`.
+//! One parser, in the neutral substrate, so a plane crate names it without reaching into
+//! busbar-core; core re-exports it from `admin`.
 
 /// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
 /// cannot overflow the `exp` computation.

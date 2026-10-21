@@ -54,7 +54,15 @@ export function judge(report) {
         unimplemented.push({ agent, case: caseId, behavior });
         continue;
       }
-      failures.push({ agent, case: caseId, behavior });
+      // Its duration and closing behaviour, as Autobahn recorded them: a case that ran out of time
+      // reads differently from one the peer answered wrongly.
+      failures.push({
+        agent,
+        case: caseId,
+        behavior,
+        duration: result?.duration,
+        behaviorClose: result?.behaviorClose,
+      });
     }
   }
   // FLOOR: zero agents, or an agent that ran zero cases, is refused rather than accepted.
@@ -112,7 +120,8 @@ function main(argv) {
 
   console.log(`ws-conformance: ${totalCases} case(s) judged, ${failures.length} failure(s), ${unimplemented.length} unimplemented (not claimed)`);
   for (const f of failures.slice(0, 50)) {
-    console.log(`  RED  ${f.agent} :: ${f.case} -> ${f.behavior}`);
+    const timing = f.duration === undefined ? '' : ` (${f.duration} ms, close ${f.behaviorClose ?? '?'})`;
+    console.log(`  RED  ${f.agent} :: ${f.case} -> ${f.behavior}${timing}`);
   }
   for (const u of unimplemented.slice(0, 50)) {
     console.log(`  SKIP ${u.agent} :: ${u.case} -> ${u.behavior} (extension not negotiated, not claimed by this suite)`);

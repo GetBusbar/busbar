@@ -1689,6 +1689,7 @@ impl ProtocolWriter for ResponsesWriter {
                     text,
                     signature,
                     redacted,
+                    kind,
                     ..
                 } => {
                     // A REDACTED reasoning block (Bedrock `redactedContent`) holds opaque encrypted
@@ -1711,11 +1712,9 @@ impl ProtocolWriter for ResponsesWriter {
                         keys::ID.to_string(),
                         serde_json::json!(synthesize_item_id(host, ITEM_ID_PREFIX_RS)),
                     );
-                    item.insert(SUMMARY.to_string(), serde_json::Value::Array(Vec::new()));
-                    item.insert(
-                        keys::CONTENT.to_string(),
-                        serde_json::json!([{ (keys::TYPE): CONTENT_TYPE_REASONING_TEXT, (keys::TEXT): text }]),
-                    );
+                    // IR-17: the same `summary[]` / `content[]` placement the stream assembles (a
+                    // summary-kind thought is a `summary_text` part, else a `reasoning_text` one).
+                    super::slots::insert_reasoning_text(&mut item, text, *kind);
                     if let Some(sig) = emit_sig {
                         item.insert(ENCRYPTED_CONTENT.to_string(), serde_json::json!(sig));
                     }

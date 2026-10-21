@@ -38,7 +38,18 @@
 //! live here too, so a range added for one caller is added for every caller.
 
 use std::borrow::Cow;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+/// THE ADDRESS VALUE TYPES A PLUGIN NAMES, through the contract and never through `std::net`.
+///
+/// An address literal parsed, held, compared or printed (a config value, a log field, an authority
+/// judged as a literal) opens nothing, dials nothing, binds nothing and resolves nothing. A plugin
+/// that needs one names it here (`busbar_contract::net::SocketAddr`, or `abi::sdk::net::..`), so
+/// its own source names no `std::net` path and the dependency wall (`cargo xtask gate dep-wall`)
+/// holds without an exemption. These are Rust-side value types only: no ABI shape carries them, and
+/// nothing that opens a socket (`TcpStream`, `UdpSocket`, `ToSocketAddrs`, ..) is re-exported.
+pub use std::net::{
+    AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,
+};
 
 /// Well-known cloud-metadata / internal DNS names that resolve, at connect time, to the IMDS family
 /// even though they are not IP literals. Blocked case-insensitively by [`dns_name_is_internal`] and

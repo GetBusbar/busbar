@@ -72,6 +72,18 @@ pub struct FieldSpan {
     pub _reserved: u32,
 }
 
+impl FieldSpan {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `FieldSpan { …, ..FieldSpan::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        name: Span::ZERO,
+        value: Span::ZERO,
+        flags: 0,
+        _reserved: 0,
+    };
+}
+
 /// `fields`' `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

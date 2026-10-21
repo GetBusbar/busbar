@@ -50,15 +50,12 @@ use busbar_contract::abi::sdk::services::Services;
 use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
 
 /// An absent string.
-const NONE: AbiStr = AbiStr {
-    ptr: ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ZERO;
 
 const SECTIONS: &[Section] = &[Section {
     name: abi_str("door"),
     flags: SECTION_DECLARING,
-    _reserved: 0,
+    ..Section::ZERO
 }];
 const DIALECTS: &[AbiStr] = &[abi_str("door/1")];
 const OP_CLASSES: &[OpClass] = &[OpClass {
@@ -76,9 +73,8 @@ const RECORD_KINDS: &[AbiStr] = &[abi_str("last")];
 const TAIL: &PlaneTail = &PlaneTail {
     head: KindTailHead {
         size: size_of::<PlaneTail>() as u32,
-        _reserved: 0,
+        ..KindTailHead::ZERO
     },
-    flags: 0,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_PIECEWISE,
     // The layout this plane writes its answers in: the contract's it was built against.
@@ -93,40 +89,18 @@ const TAIL: &PlaneTail = &PlaneTail {
     cli_help: NONE,
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
-    dialect_auth: ptr::null(),
-    dialect_auth_len: 0,
-    scope_kinds: ptr::null(),
-    scope_kinds_len: 0,
     op_classes: OP_CLASSES.as_ptr(),
     op_classes_len: OP_CLASSES.len(),
     billable_classes: CLASSES.as_ptr(),
     billable_classes_len: CLASSES.len(),
-    route_cost: ptr::null(),
-    route_cost_len: 0,
-    fee_units: ptr::null(),
-    fee_units_len: 0,
     record_kinds: RECORD_KINDS.as_ptr(),
     record_kinds_len: RECORD_KINDS.len(),
-    egress_targets: ptr::null(),
-    egress_targets_len: 0,
-    record_chains: ptr::null(),
-    record_chains_len: 0,
-    trust_keys: ptr::null(),
-    trust_keys_len: 0,
-    refusal_statuses: std::ptr::null(),
-    refusal_statuses_len: 0,
     caller_credential_refusal: NONE,
-    admin_routes: std::ptr::null(),
-    admin_routes_len: 0,
     admin_openapi: busbar_contract::abi::mechanism::call::Blob {
-        ptr: std::ptr::null(),
-        len: 0,
         fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-        flags: 0,
+        ..busbar_contract::abi::mechanism::call::Blob::ZERO
     },
-    metric_lanes: std::ptr::null(),
-    metric_lanes_len: 0,
-    stream_ceiling_secs: 0,
+    ..PlaneTail::ZERO
 };
 
 /// Every generation's claims: the request door, and with a public URL the session door.
@@ -313,9 +287,9 @@ slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
 slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     let mut units = input.units_buf();
     units.push(UnitCount {
-        class: 0,
         source: UNITS_ESTIMATED,
         amount: input.body.len as u64,
+        ..UnitCount::ZERO
     });
     if !units.fits() {
         out.set(|o| &o.units_needed, units.needed() as u32);
@@ -342,7 +316,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
                 let handle = |seq| CompletionHandle {
                     ticket: input.head.ticket,
                     seq,
-                    _reserved: 0,
+                    ..CompletionHandle::ZERO
                 };
                 let member = input.field(|i| &i.member).as_str().unwrap_or_default();
                 // A service the host does not serve gates nothing.
@@ -387,16 +361,16 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
                 value: arena.span(b"door"),
             });
             records.push(RecordWrite {
-                kind: 0,
                 op: RECORD_PUT,
                 key: arena.span(b"k"),
                 value: arena.span(b"v"),
+                ..RecordWrite::ZERO
             });
             let lane = arena.span(b"lane");
             units.push(UnitCount {
-                class: 0,
                 source: UNITS_REPORTED,
                 amount: piece.len() as u64,
+                ..UnitCount::ZERO
             });
             // One short answer for every buffer (the multi-buffer rule).
             let short = !(fields.fits() && records.fits() && units.fits() && arena.fits());

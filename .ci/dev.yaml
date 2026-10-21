@@ -174,8 +174,9 @@ checks:
     # The base-relative rules read history: only a backend with the repo's history runs this check.
     requires: [cc, git-history]
   oracle:
-    # cargo links with the system C linker: only a backend with a C compiler may run this check.
-    requires: [cc]
+    # cargo links with the system C linker: only a backend with a C compiler may run this check; the
+    # store-persist cells' live backends run in docker.
+    requires: [cc, docker]
     # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
     # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
     # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
@@ -196,10 +197,25 @@ checks:
       fi
       cargo build --locked --release -p busbar --bin busbar
       ./bin/oracle fetch-golden
+      # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
+      # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
+      # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
+      # backends up for this run (testing/shadow-oracle/scripts/oracle-box-store-services.sh), under
+      # run-unique names on free ports, export the three URLs, and remove them when the check ends.
+      sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+      free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
+      export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
+      export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
+      trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
+      . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
+      bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
+    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
+    outputs: [target/oracle/reports/]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.

@@ -35,7 +35,9 @@
 //! 5. **AN UNREADABLE ENTRY IS RED, NEVER GUESSED.** A result outside the four known values, a
 //!    `counts` that is not an object, an unknown severity, a negative or boolean count — each is
 //!    `invalid`, and `invalid` can never fall through to `clean`. Every ROUND is held to the same
-//!    bar as the record it belongs to, and the top-level record must BE the last round.
+//!    bar as the record it belongs to, and the top-level record must BE the last round -- save
+//!    its `tree_hash` once a fix is stamped, which must be the scope's tree at the fix commit
+//!    ([`fixed_problems`]).
 //! 6. **A RECORDED FINDING STANDS UNTIL IT IS ANSWERED.** A `findings` round is answered by a fix
 //!    stamp, or by two zero rounds after it at one tree from two auditors who are neither each other
 //!    nor the one who found it ([`open_findings`]). Nothing less answers it: not a round that is
@@ -278,8 +280,8 @@ impl Git {
     }
 
     /// THE UNIVERSE: every tracked blob at `rev`, path -> blob oid, PLUS every pinned plugin crate
-    /// of `rev`'s default distribution mounted at `crates/<package>` where the tree holds no such
-    /// directory ([`crate::audit_pinned`]). A pin whose checkout cannot be produced is an `Err`
+    /// of `rev`'s `Cargo.lock` (every feature, every target) mounted at `crates/<package>` where
+    /// the tree holds no such directory ([`crate::audit_pinned`]). A pin whose checkout cannot be produced is an `Err`
     /// naming the package and the commit — the universe is never silently missing a crate.
     pub fn files_at(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
         Ok(self.universe_at(rev)?.0)
@@ -1019,6 +1021,25 @@ pub fn audited_tree_hash(sc: &Json, git: &Git) -> Result<Option<String>, String>
     Ok(tree_hash(under, &files))
 }
 
+/// The hash the scope's files ACTUALLY had at the commit its fix was stamped at — the hash `fixed`
+/// writes, and the one `--check` holds a fixed scope's top-level `tree_hash` to.
+///
+/// Under the paths the digest is over ([`hashed_scope`]): `fixed` hashes under the scope's own
+/// paths and drops any `hashed_as`, and a `move` after it that cannot re-stamp anchors the record
+/// to the paths it was taken over, exactly as it does for a round. An unresolvable or non-commit
+/// `fixed_at` is an error for the same reason [`audited_tree_hash`]'s is.
+pub fn fixed_tree_hash(sc: &Json, git: &Git) -> Result<Option<String>, String> {
+    let Some(at) = sc.get("fixed_at").as_str() else {
+        return Err(format!(
+            "fixed_at is {}, which names no commit",
+            json_lite::py_repr_json(sc.get("fixed_at"))
+        ));
+    };
+    let under = hashed_scope(sc, sc);
+    let files = git.scope_files_at(under, at)?;
+    Ok(tree_hash(under, &files))
+}
+
 /// The commit a record — a scope's top-level record or one of its rounds — claims to have read.
 pub fn record_at(rec: &Json) -> Option<&str> {
     rec.get("audited_at").as_str()
@@ -1281,6 +1302,11 @@ fn record_problems(label: &str, rec: &Json, bad: &mut Vec<String>) {
 /// last round. `clean` is computed from the rounds list, so a rounds list nothing validates is a
 /// rounds list anybody can append a second auditor to; and a top-level record that has drifted from
 /// the round it came from means one of the two is a hand edit, whichever one it is.
+///
+/// ONE KEY MOVES WHEN A FIX IS STAMPED. `fixed` re-hashes the top level to the fix commit on
+/// purpose (property 4), so while `fixed_at` is set the top-level `tree_hash` is held to the
+/// scope's tree at the fix commit instead of to the last round's. That needs git, so it is
+/// [`fixed_problems`], and `--check` reports both into the one list.
 pub fn register_problems(doc: &Json) -> Vec<String> {
     let mut bad = Vec::new();
     let Some(scopes) = doc.get("scopes").as_array() else {
@@ -1325,7 +1351,11 @@ pub fn register_problems(doc: &Json) -> Vec<String> {
             }
         }
         if let Some(last) = rounds.last() {
+            let fixed = sc.get("fixed_at").truthy();
             for key in RECORD_KEYS {
+                if key == "tree_hash" && fixed {
+                    continue;
+                }
                 if last.get(key) != sc.get(key) {
                     bad.push(format!(
                         "{sid}: the scope's {key} is {} but its last round's is {} -- the top-level \
@@ -1335,6 +1365,39 @@ pub fn register_problems(doc: &Json) -> Vec<String> {
                     ));
                 }
             }
+        }
+    }
+    bad
+}
+
+/// Every FIXED scope whose top-level `tree_hash` is not the scope's tree at its `fixed_at` commit
+/// ([`fixed_tree_hash`]), in scope order.
+///
+/// The other half of [`register_problems`]' last-round rule: that rule stands down on `tree_hash`
+/// once a fix is stamped, and this is where the hash is held instead, so the rule moves rather than
+/// disappears. A fix commit git cannot produce is reported too: the stamp it names cannot be
+/// checked.
+pub fn fixed_problems(doc: &Json, git: &Git) -> Vec<String> {
+    let mut bad = Vec::new();
+    for sc in doc.get("scopes").as_array().unwrap_or(&[]) {
+        if !sc.get("fixed_at").truthy() {
+            continue;
+        }
+        let sid = sc.get("id").as_str().unwrap_or("<no id>");
+        let at = sc.get("fixed_at").as_str().unwrap_or("?");
+        let short = &at[..8.min(at.len())];
+        match fixed_tree_hash(sc, git) {
+            Ok(actual) if actual.as_deref() == sc.get("tree_hash").as_str() => {}
+            Ok(actual) => bad.push(format!(
+                "{sid}: the scope's tree_hash is {} but its tree at the fix commit {short} hashes \
+                 to {} -- a fixed scope's top-level hash must BE the tree `fixed` stamped",
+                json_lite::py_repr_json(sc.get("tree_hash")),
+                actual.map_or_else(|| "None".to_string(), |h| json_lite::py_repr(&h))
+            )),
+            Err(e) => bad.push(format!(
+                "{sid}: the fix commit {short} cannot be resolved in this repository, so the tree \
+                 the fix was stamped against cannot be produced ({e})"
+            )),
         }
     }
     bad

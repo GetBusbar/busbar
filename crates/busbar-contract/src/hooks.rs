@@ -346,7 +346,7 @@ pub trait RoutingPolicy: Send + Sync + 'static {
     ) -> PolicyResult;
 
     /// Stable transport/policy name for metrics + the `x-busbar-route` header
-    /// (e.g. `"webhook"`, `"socket"`, `"weighted"`, `"cheapest"`).
+    /// (e.g. `"socket"`, `"weighted"`, `"cheapest"`).
     fn name(&self) -> &'static str;
 
     /// REWRITE phase (`prompt: rw` gate): send the request projection and return the hook's `rewrite`

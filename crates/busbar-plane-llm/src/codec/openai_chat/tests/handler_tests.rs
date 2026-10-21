@@ -341,6 +341,35 @@ fn transcription_egress_audio_cannot_smuggle_a_second_model_part() {
     );
 }
 
+/// Q128 arch u56: THE REFUSED WRITE IS A REFUSAL AT THE SEAM, never an empty body forwarded
+/// upstream in the caller's name. A JSON-ingress transcription (a Gemini caller's audio, say) whose
+/// audio carries the openai form's delimiter is `EgressWire::Unrepresentable` on the openai egress,
+/// which the translate seam refuses 4xx. RED: the handle answered `EgressWire::Bytes(empty)` and
+/// the empty multipart request was dispatched.
+#[test]
+fn a_transcription_whose_audio_carries_the_delimiter_is_refused_at_the_seam() {
+    use busbar_contract::codec::EgressWire;
+    use busbar_contract::ir::handle::IrHandle;
+    let smuggled = b"RIFF\r\n------busbaraudioMIME\r\nContent-Disposition: form-data; \
+                     name=\"model\"\r\n\r\nwhisper-large-v3\r\n";
+    let mut handle = crate::codec::leaf_handles::TranscriptionReqHandle(
+        crate::codec::ir::audio::TranscriptionReq {
+            model: "whisper-1".into(),
+            audio: Some(MediaBlob {
+                payload: MediaPayload::Bytes(SlabBytes::from(&smuggled[..])),
+                mime_type: "audio/wav".into(),
+                pcm: None,
+            }),
+            ..Default::default()
+        },
+    );
+    let wire = handle.write_egress_request(crate::codec::test_host::HOST, "openai", "whisper-1");
+    assert!(
+        matches!(wire, EgressWire::Unrepresentable { .. }),
+        "the delimiter-carrying audio is refused, not sent as an empty body"
+    );
+}
+
 /// The boundary is 1.5.5's literal (v1.5.5 `crates/busbar/src/handlers/openai.rs:238`, `:281`), a
 /// constant the plugin holds no state for, and the Content-Type the engine sends upstream names the
 /// SAME boundary the body is framed with. RED while it was a per-process `OnceLock` draw.

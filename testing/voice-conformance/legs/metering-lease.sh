@@ -9,8 +9,9 @@
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): the tail declares the six counted classes plus the
 # per-session fee unit; `arrive` admits on no estimate; every session answer reports cumulative
-# REPORTED units — a turn's far-end tokens and its audio seconds once per turn (a short answer's re-call
-# does not count its audio twice), the open turn settled once at the end, and the fee only once the
+# REPORTED units — a turn's far-end tokens once per turn, the open turn's audio seconds in every
+# answer as they stream (a short answer's re-call does not count its audio twice), the open turn
+# settled once at the end, and the fee only once the
 # far end answered (a session whose far end never answered reports none). RED arm: a door reporting one
 # token more than the far end sent fails.
 #

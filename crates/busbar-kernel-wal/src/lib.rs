@@ -93,17 +93,18 @@ pub use backend::{
     SegmentFactory, SharedBytes,
 };
 pub use journal::{
-    body_digest, decode_run, tail_of, verify as verify_journal, BodyReader, BodyWriter, Entry,
-    Journal, JournalAck, JournalBreak, JournalBreakKind, JournalRecord, Overflow, RecordClass,
-    JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, MEMORY_BUFFER_RECORDS,
+    body_digest, decode_run, tail_of, verify as verify_journal, verify_bridged, BodyReader,
+    BodyWriter, Entry, Journal, JournalAck, JournalBreak, JournalBreakKind, JournalRecord,
+    Overflow, RecordClass, JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION,
+    MEMORY_BUFFER_RECORDS,
 };
 pub use record::{
     decode_frame, FrameError, FrameHeader, Record, FRAME_BYTES, FRAME_END_MARK, FRAME_HEADER_BYTES,
     FRAME_MAGIC, FRAME_PAYLOAD_BYTES, FRAME_TRAILER_BYTES, FRAME_VERSION,
 };
 pub use recover::{
-    recover_and_truncate, scan, Quarantine, QuarantineKept, Recovered, TailVerdict,
-    QUARANTINE_BODY_TAG,
+    quarantine_in_place, recover_and_truncate, scan, Bridge, Hole, Quarantine, QuarantineKept,
+    QuarantineNote, Recovered, TailVerdict, QUARANTINE_BODY_TAG,
 };
 pub use segment::{Segment, SegmentError, GROWTH_STEP_BYTES, SEGMENT_BYTES};
 pub use ship::{NullShipper, ShipError, Shipper};

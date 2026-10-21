@@ -1137,7 +1137,6 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
 /// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
 /// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
 /// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
     let hook = |module: &str| {
@@ -1176,7 +1175,6 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
 }
 
 /// The linked hook's Statement name, as this test build links it (the ranking double).
-#[cfg(feature = "hooks-ranking")]
 fn linked_hook_name() -> &'static str {
     crate::test_support::ranking_double::NAME
 }
@@ -1187,7 +1185,6 @@ fn linked_hook_name() -> &'static str {
 /// The words are the door's Statement marks, never registry aliases: no registry row spells them.
 /// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
 /// unknown.
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     for name in crate::config::RESERVED_HOOK_NAMES
@@ -1217,7 +1214,6 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
 /// candidates, the same expected order or abstain). Every answer is `Ok`: the call never fails,
 /// times out or reaches `on_error`. Its deadline is the dispatcher's Call class budget, never the
 /// 1 ms gate default.
-#[cfg(feature = "hooks-ranking")]
 #[tokio::test]
 async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
     use crate::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
@@ -2011,18 +2007,29 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
-    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (mut router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
 
-    let client = reqwest::Client::new();
+    // The request is handed to the router IN PROCESS: no socket is bound, so there is no port for
+    // another process's listener to be mistaken for ours. The old shape bound `127.0.0.1:0` and
+    // dialled it, and on a CI host running the whole workspace's test binaries side by side a
+    // dial could land on a different process's listener (the integration tests reserve ports by
+    // pick-then-bind) and read ITS 404 here. Every layer under test is still the production
+    // stack: `DefaultBodyLimit`, the reshape, auth and the catch-all all run, and axum enforces
+    // the cap on the body stream exactly as it does off a connection.
     let oversized = "x".repeat(4096);
-    let r = client
-        .post(format!("http://{addr}/v1/chat/completions"))
+    let payload = serde_json::json!({"pad": oversized}).to_string();
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/v1/chat/completions")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"pad": oversized}).to_string())
-        .send()
+        .header("content-length", payload.len().to_string())
+        .body(axum::body::Body::from(payload))
+        .unwrap();
+    type Req = axum::http::Request<axum::body::Body>;
+    std::future::poll_fn(|cx| <axum::Router as tower::Service<Req>>::poll_ready(&mut router, cx))
+        .await
+        .unwrap();
+    let r = <axum::Router as tower::Service<Req>>::call(&mut router, req)
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
@@ -2032,7 +2039,11 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let body = r.text().await.unwrap();
+    let body = {
+        use http_body_util::BodyExt as _;
+        let bytes = r.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    };
     assert!(
         ct.starts_with("application/json"),
         "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
@@ -2044,8 +2055,6 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         v.get("error").is_some(),
         "the 413 must carry the error envelope; got {v}"
     );
-
-    server.abort();
 }
 
 // ── THE MOUNT-AWARE RESOLVER, read off the wire ──────────────────────────────────────────────────

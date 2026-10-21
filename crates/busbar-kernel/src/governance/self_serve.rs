@@ -55,9 +55,12 @@ impl GovState {
     ///   holds until the admin re-enables or deletes the key; a login must neither re-enable the row
     ///   nor mint a fresh key beside it.
     /// - [`SelfMintRefusal::OtherProvider`]: one of those rows records a minting provider
-    ///   ([`SELF_KEY_PROVIDER_LABEL`]) other than `provider`. The subject alone keys the binding,
+    ///   ([`VirtualKey::idp_provider`]) other than `provider`. The subject alone keys the binding,
     ///   so a second provider asserting the same subject would otherwise be handed this key.
     fn self_mint_refusal(&self, user_sub: &str, provider: &str) -> Option<SelfMintRefusal> {
+        if !self.self_mint_holds() {
+            return None;
+        }
         let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
         let caches = self.caches_read();
         let rows = caches.by_id.values().filter(|k| {
@@ -70,17 +73,31 @@ impl GovState {
             if !k.enabled {
                 return Some(SelfMintRefusal::Disabled);
             }
-            if k.labels
-                .get(SELF_KEY_PROVIDER_LABEL)
-                .is_some_and(|p| p != provider)
-            {
+            if k.idp_provider.as_deref().is_some_and(|p| p != provider) {
                 refusal = Some(SelfMintRefusal::OtherProvider);
             }
         }
         refusal
     }
 
-    /// The first epoch at or after `from` whose derived id has NO row at all, with that id. See
+    /// Whether this governance holds an admin's state and the minting provider across a self-serve
+    /// login ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]).
+    fn self_mint_holds(&self) -> bool {
+        self.self_mint_holds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// TEST-ONLY: hold an admin's state and the minting provider across a self-serve login, as the
+    /// signed rule would ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]), so the rule stays tested
+    /// while it waits behind its const.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_self_mint_state(&self) {
+        self.self_mint_holds
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The first epoch at or after `from` whose derived id is free (no row at all when held; no
+    /// tombstone when unheld, as 1.5.5 probed), with that id. See
     /// [`GovState::write_self_binding`] for why an existing row, live, disabled or tombstoned, must
     /// be skipped rather than written over.
     ///
@@ -114,7 +131,13 @@ impl GovState {
         for _ in 0..MAX_PROBES {
             let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
-            if self.store.get_key(&id)?.is_none() {
+            // Held: any existing row is occupied. Unheld (1.5.5): only a tombstone is.
+            let holds = self.self_mint_holds();
+            let occupied = self
+                .store
+                .get_key(&id)?
+                .is_some_and(|k| holds || k.deleted_at.is_some());
+            if !occupied {
                 return Ok((id, epoch));
             }
             stride = if stride == 0 {
@@ -177,11 +200,10 @@ impl GovState {
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
-            // The minting identity provider, so another provider asserting this subject is refused.
-            labels: std::collections::BTreeMap::from([(
-                SELF_KEY_PROVIDER_LABEL.to_string(),
-                provider.to_string(),
-            )]),
+            // EMPTY, as 1.5.5 wrote a self-serve key (v1.5.5 crates/busbar/src/governance/state.rs
+            // :487): `labels` is served by every admin key view, so the minting provider rides the
+            // kernel-only `idp_provider` below, never this map.
+            labels: std::collections::BTreeMap::new(),
             expires_at: None,
             deleted_at: None,
             revision: 0,
@@ -193,6 +215,8 @@ impl GovState {
             // preserving; they are pure attribution metadata.
             idp_subject: Some(user_sub.to_string()),
             binding_mode: Some(SELF_KEY_BINDING_MODE.to_string()),
+            // The minting identity provider, so another provider asserting this subject is refused.
+            idp_provider: Some(provider.to_string()),
             ..Default::default()
         };
         self.store.put_key(&binding)?;
@@ -234,9 +258,9 @@ impl GovState {
             Some(existing) => {
                 // The pools the caller resolved THIS login (from the possibly-changed binding).
                 let new_scopes = crate::governance::pool_scopes(allowed_pools.clone());
-                // A binding minted before the provider label existed ADOPTS the first provider that
-                // logs in, recorded on the row so every other provider is refused from now on.
-                let adopt = !existing.labels.contains_key(SELF_KEY_PROVIDER_LABEL);
+                // A binding minted before the provider record existed ADOPTS the first provider
+                // that logs in, recorded on the row so every other provider is refused from now on.
+                let adopt = existing.idp_provider.is_none();
                 if new_scopes != existing.allowed_scopes || adopt {
                     // allowed_pools CHANGED since the binding was created (an admin narrowed or
                     // widened the group) — update THE EXISTING ROW in place with the fresh pools,
@@ -257,9 +281,7 @@ impl GovState {
                     // the row that already existed.
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
-                    updated
-                        .labels
-                        .insert(SELF_KEY_PROVIDER_LABEL.to_string(), provider.to_string());
+                    updated.idp_provider = Some(provider.to_string());
                     self.store.put_key(&updated)?;
                     self.refresh()?;
                     let generation = binding_generation(&updated.generation_hash);

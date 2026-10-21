@@ -153,10 +153,11 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
         if !hooks.gates.is_empty() {
-            let projected = view.projected.clone().unwrap_or_default();
             let now_ms = crate::store::now_ms();
             let door = DoorSubject {
-                projected: &projected,
+                // The plane's own body, or none: a gate granted the content never screens an
+                // absent body as empty content (`decide_door`, audit Q128 p15#3).
+                projected: view.projected.as_deref(),
                 container: &view.pool,
                 dialect: &view.dialect,
                 request_id: hooks.request_id,
@@ -167,6 +168,12 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     generation: s.generation,
                     now_ms,
                 }),
+                // THE DESIGN Appendix B.9 l.5436-5437: the hook view's plane-derived fields.
+                plane: crate::hooks::gate::DoorShape {
+                    max_tokens: view.max_tokens,
+                    stream: view.stream,
+                    end_user: view.end_user.as_deref(),
+                },
             };
             if let GateVerdict::Reject {
                 status,

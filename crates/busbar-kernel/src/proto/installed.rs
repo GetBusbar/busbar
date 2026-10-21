@@ -250,7 +250,8 @@ static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::O
 
 /// THE KERNEL'S CODEC HOST: the host services every codec the kernel drives is handed, down its call
 /// graph, as a `&dyn CodecHost` — the host entropy source (the OS CSPRNG, one `getrandom` fill per
-/// call) and the host wall clock (`store::now`, whole Unix seconds). A value with no state: the
+/// call), the host wall clock (`store::now`, whole Unix seconds) and its monotonic clock. A value with
+/// no state of its own: the
 /// services are the kernel's, and the contract holds neither.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CodecHostServices;
@@ -265,6 +266,13 @@ impl busbar_contract::codec::CodecHost for CodecHostServices {
 
     fn wall_clock_now(&self) -> Option<u64> {
         Some(crate::store::now())
+    }
+
+    /// The kernel's monotonic reading, nanoseconds from the first one this process took.
+    fn monotonic_ns(&self) -> Option<u64> {
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let origin = ORIGIN.get_or_init(std::time::Instant::now);
+        Some(u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX))
     }
 }
 

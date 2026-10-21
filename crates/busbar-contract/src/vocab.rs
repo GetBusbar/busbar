@@ -4,10 +4,10 @@
 //! THE AUDIT VOCABULARY — the stable tokens every chained record's `outcome` and `reason` fields may
 //! carry, owned by core rather than by whichever plane wrote them down first.
 //!
-//! ## Why the MCP words won, rather than the oldest ones
+//! ## Why the tool plane's words won, rather than the oldest ones
 //!
-//! Three streams recorded outcomes and they were not equally good at it. The admin audit log has one
-//! word for a failure — `rejected` — while the MCP call log deliberately distinguishes
+//! Three streams recorded outcomes and they were not equally good at it. The admin audit log has
+//! one word for a failure — `rejected` — while the tool plane's call log deliberately distinguishes
 //! [`REASON_NOT_GRANTED`] (the caller was never entitled to this), [`REASON_EGRESS_DENIED`] (it was
 //! entitled, and the credential gate refused) and [`REASON_UPSTREAM_FAILED`] (it went out and the
 //! far end broke). Those are three different incidents with three different owners, and a log that
@@ -195,11 +195,12 @@ pub const REASON_GENERATION_MOVED: &str = "generation_moved";
 // ── TASK PROVENANCE EVENT KINDS ─────────────────────────────────────────────────────────────────
 //
 // The `kind` token every per-task provenance event carries. Owned here in the neutral vocabulary,
-// not by the A2A plane that appends them, for the reason the whole module states: the digest covers
-// the kind's VALUE, so events already on disk keep verifying against the same formula only if there
-// is ONE spelling of each kind. The core TASKS engine hash-chains and persists them and the A2A plane
-// (and its a2a-side event-kind mapping) supplies them; both name these constants, so core re-exports
-// them at `busbar_kernel::provenance::EV_*` and its own call sites are unchanged.
+// not by the agent-delegation plane that appends them, for the reason the whole module states: the
+// digest covers the kind's VALUE, so events already on disk keep verifying against the same formula
+// only if there is ONE spelling of each kind. The core TASKS engine hash-chains and persists them
+// and the agent-delegation plane (and its own event-kind mapping) supplies them; both name these
+// constants, so core re-exports them at `busbar_kernel::provenance::EV_*` and its own call sites
+// are unchanged.
 
 /// Accepted, not yet started.
 pub const EV_SUBMITTED: &str = "task.submitted";

@@ -135,7 +135,7 @@ tools:
   hooks: [pii-screen]                      # RESERVED all-MCP attach: fires for EVERY server
   filesystem:
     url: https://mcp.internal/fs
-    pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+    pin: { mechanism: cert_spki, key: "sha256/…" }   # SPKI SHA-256: `sha256/<base64>` canonical, plain `<base64>` accepted
     hooks: [fs-policy]                     # this server only; ADDS to the section list
 
 agents:

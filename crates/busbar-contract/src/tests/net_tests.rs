@@ -22,8 +22,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
     let rows: &[Row] = &[
         // The authority ends at `#` under RFC 3986, so the `@` after it is not a userinfo marker.
         (
-            "ldap://evil.example#@127.0.0.1",
-            ("ldap", false, "evil.example", None, "#@127.0.0.1"),
+            "ldaps://evil.example#@127.0.0.1",
+            ("ldaps", false, "evil.example", None, "#@127.0.0.1"),
             false,
             false,
         ),
@@ -85,8 +85,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
         ),
         (
-            "ldap://u@db.internal:389/x",
-            ("ldap", true, "db.internal", Some(389), "/x"),
+            "ldaps://u@db.internal:389/x",
+            ("ldaps", true, "db.internal", Some(389), "/x"),
             false,
             false,
         ),
@@ -104,8 +104,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
         ),
         (
-            "ldap://[::1]",
-            ("ldap", false, "::1", None, ""),
+            "ldaps://[::1]",
+            ("ldaps", false, "::1", None, ""),
             true,
             false,
         ),
@@ -376,4 +376,25 @@ fn the_authority_ends_where_the_dialling_stack_ends_it() {
             "{url}"
         );
     }
+}
+
+/// The address value types a plugin names through the contract ARE `std::net`'s: a plugin that
+/// switches its `std::net::SocketAddr` to `busbar_contract::net::SocketAddr` reads the same value.
+#[test]
+fn the_contract_address_values_are_the_std_types() {
+    let v4: Result<super::Ipv4Addr, super::AddrParseError> = "127.0.0.1".parse();
+    assert_eq!(v4, Ok(std::net::Ipv4Addr::LOCALHOST));
+    let sock: Result<super::SocketAddr, super::AddrParseError> = "[::1]:443".parse();
+    assert_eq!(
+        sock,
+        Ok(std::net::SocketAddr::from((
+            std::net::Ipv6Addr::LOCALHOST,
+            443
+        )))
+    );
+    assert!("example.com:443".parse::<super::SocketAddr>().is_err());
+    let v6: super::SocketAddrV6 = super::SocketAddrV6::new(super::Ipv6Addr::LOCALHOST, 1, 0, 0);
+    let ip: super::IpAddr = (*v6.ip()).into();
+    assert!(ip.is_loopback());
+    let _: Option<super::SocketAddrV4> = None;
 }

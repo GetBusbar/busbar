@@ -882,6 +882,7 @@ fn compute_layout() -> String {
     record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);
     record!(s, tkind::KeyingMaterial, [size, profile, bytes, len]);
     record!(s, tkind::DatagramRoute, [offset, len, path, lane]);
+    record!(s, tkind::DatagramPath, [path, _reserved, addr]);
     record!(
         s,
         tkind::DatagramLane,

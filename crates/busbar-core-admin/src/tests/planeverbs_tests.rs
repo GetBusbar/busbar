@@ -4,7 +4,7 @@
 //! THE PROOF THAT THE TRUST VERB SURFACE IS ONE SURFACE.
 //!
 //! The mounted behaviour of each plane's verbs is driven over the REAL router where it lives
-//! (`mcp/tests/adminverbs_tests.rs`, `a2a/tests/adminverbs_tests.rs`). What those cannot prove is
+//! (each plane crate's own `tests/adminverbs_tests.rs`). What those cannot prove is
 //! what this file exists for: that there is one surface above them, that its refusal and its audit
 //! naming are DERIVED from the plane rather than written per plane, and that it contains no branch
 //! on which plane it is serving.

@@ -136,49 +136,75 @@ impl Scratch {
         );
     }
 
-    /// The busbar tree: a root crate that links the plugin's cdylib TWIN (the logic crate reaches
-    /// the default distribution through the twin's lock edge), a non-plugin git dependency, a
-    /// plugin only a dev-dependency names, and a plugin behind a feature `default` does not turn on.
-    /// `pin` is `(url, sha)` of the pinned plugin; `in_tree` lays the logic crate on disk too.
+    /// The busbar tree with the pinned plugin linked the way the default distribution links it.
     fn busbar_commit(&self, pin: Option<(&str, &str)>, in_tree: Option<&str>) -> String {
+        self.busbar_commit_linked(pin, in_tree, Link::Default)
+    }
+
+    /// The busbar tree: a root crate, a non-plugin git dependency, and the pinned plugin linked as
+    /// `link` says. `pin` is `(url, sha)` of the pinned plugin; `in_tree` lays the logic crate on
+    /// disk too. The lock carries what cargo would resolve for that manifest over every feature.
+    fn busbar_commit_linked(
+        &self,
+        pin: Option<(&str, &str)>,
+        in_tree: Option<&str>,
+        link: Link,
+    ) -> String {
         let b = self.busbar();
         let mut ws =
             String::from("[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\n");
         ws.push_str(
             "left-pad = { git = \"https://example.invalid/left-pad\", rev = \"1111111\" }\n",
         );
-        ws.push_str(
-            "busbar-auth-devonly = { git = \"https://example.invalid/busbar-auth-devonly\", rev = \"2222222\" }\n",
-        );
-        ws.push_str(
-            "busbar-export-off = { git = \"https://example.invalid/busbar-export-off\", rev = \"3333333\" }\n",
-        );
-        let mut root_deps = String::from(
-            "left-pad = { workspace = true }\nbusbar-export-off = { workspace = true, optional = true }\n",
-        );
-        let mut lock = String::from(
-            "version = 4\n\n[[package]]\nname = \"busbar\"\nversion = \"0.1.0\"\ndependencies = [\n \"busbar-auth-devonly\",\n \"busbar-export-off\",\n \"left-pad\",\n]\n\n",
-        );
-        for (name, n) in [
-            ("left-pad", '1'),
-            ("busbar-auth-devonly", '2'),
-            ("busbar-export-off", '3'),
-        ] {
-            let sha = n.to_string().repeat(40);
-            lock.push_str(&format!(
-                "[[package]]\nname = \"{name}\"\nversion = \"0.1.0\"\nsource = \"git+https://example.invalid/{name}?rev={n}{n}{n}{n}{n}{n}{n}#{sha}\"\n\n"
-            ));
-        }
+        let mut root_deps = String::from("left-pad = { workspace = true }\n");
+        let mut dev_deps = String::new();
+        let mut root_lock_deps = vec!["left-pad".to_string()];
+        let mut lock = String::from("version = 4\n\n");
+        let sha1 = "1".repeat(40);
+        lock.push_str(&format!(
+            "[[package]]\nname = \"left-pad\"\nversion = \"0.1.0\"\nsource = \"git+https://example.invalid/left-pad?rev=1111111#{sha1}\"\n\n"
+        ));
         if let Some((url, sha)) = pin {
             ws.push_str(&format!(
                 "{LOGIC} = {{ git = \"{url}\", rev = \"{sha}\" }}\n{LOGIC}-plugin = {{ git = \"{url}\", rev = \"{sha}\" }}\n"
             ));
-            root_deps.push_str(&format!("{LOGIC}-plugin = {{ workspace = true }}\n"));
             lock.push_str(&format!(
-                "[[package]]\nname = \"{LOGIC}\"\nversion = \"0.1.0\"\nsource = \"git+{url}?rev={sha}#{sha}\"\n\n\
-                 [[package]]\nname = \"{LOGIC}-plugin\"\nversion = \"0.1.0\"\nsource = \"git+{url}?rev={sha}#{sha}\"\ndependencies = [\n \"{LOGIC}\",\n]\n\n"
+                "[[package]]\nname = \"{LOGIC}\"\nversion = \"0.1.0\"\nsource = \"git+{url}?rev={sha}#{sha}\"\n\n"
             ));
+            match link {
+                // The cdylib TWIN is the root's edge; the logic crate is reached through the
+                // twin's own lock edge.
+                Link::Default => {
+                    root_deps.push_str(&format!("{LOGIC}-plugin = {{ workspace = true }}\n"));
+                    root_lock_deps.push(format!("{LOGIC}-plugin"));
+                    lock.push_str(&format!(
+                        "[[package]]\nname = \"{LOGIC}-plugin\"\nversion = \"0.1.0\"\nsource = \"git+{url}?rev={sha}#{sha}\"\ndependencies = [\n \"{LOGIC}\",\n]\n\n"
+                    ));
+                }
+                // `transport-webrtc`'s shape: an optional edge only a feature `default` leaves off
+                // turns on.
+                Link::FeatureOff => {
+                    root_deps.push_str(&format!(
+                        "{LOGIC} = {{ workspace = true, optional = true }}\n"
+                    ));
+                    root_lock_deps.push(LOGIC.to_string());
+                }
+                // `busbar-auth-oidc`'s shape: only a proof links it.
+                Link::DevOnly => {
+                    dev_deps.push_str(&format!("{LOGIC} = {{ workspace = true }}\n"));
+                    root_lock_deps.push(LOGIC.to_string());
+                }
+            }
         }
+        root_lock_deps.sort();
+        let listed = root_lock_deps
+            .iter()
+            .map(|d| format!(" \"{d}\",\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        lock.push_str(&format!(
+            "[[package]]\nname = \"busbar\"\nversion = \"0.1.0\"\ndependencies = [\n{listed}]\n"
+        ));
         write(&b, "Cargo.toml", &ws);
         write(&b, "Cargo.lock", &lock);
         write(
@@ -186,8 +212,8 @@ impl Scratch {
             "crates/busbar/Cargo.toml",
             &format!(
                 "[package]\nname = \"busbar\"\nversion = \"0.1.0\"\n\n[dependencies]\n{root_deps}\n\
-                 [features]\ndefault = [\"plane-twin\"]\nplane-twin = []\nexport-off = [\"dep:busbar-export-off\"]\n\n\
-                 [dev-dependencies]\nbusbar-auth-devonly = {{ workspace = true }}\n"
+                 [features]\ndefault = [\"plane-twin\"]\nplane-twin = []\ndemo = [\"dep:{LOGIC}\"]\n\n\
+                 [dev-dependencies]\n{dev_deps}"
             ),
         );
         write(&b, "crates/busbar/src/main.rs", "fn main() {}\n");
@@ -233,6 +259,17 @@ impl Scratch {
         audit::save(&path, &audit::new_doc(scopes)).expect("the register is writable");
         path
     }
+}
+
+/// How the busbar root links the pinned plugin.
+#[derive(Clone, Copy, Debug)]
+enum Link {
+    /// Through the default distribution (the root's normal edge to the cdylib twin).
+    Default,
+    /// Behind a root feature `default` does not turn on.
+    FeatureOff,
+    /// Through a dev-dependency only.
+    DevOnly,
 }
 
 fn row_status(doc: &Json, git: &Git, id: &str) -> (&'static str, Option<String>, usize) {
@@ -346,12 +383,11 @@ fn a_pin_that_cannot_be_produced_turns_check_red_naming_it() {
     assert!(err.contains(sha), "names the commit: {err}");
 }
 
-/// RED (d): ONLY A PLUGIN KIND'S LOGIC CRATE IN THE DEFAULT DISTRIBUTION IS MOUNTED — AND A PLANE'S
-/// CDYLIB TWIN BESIDE IT. A git dependency of no plugin kind, a plugin only a dev-dependency names
-/// and a plugin behind a feature `default` leaves off are all `git+` packages of the lock, and none
-/// of them is mounted (they carry commits no repository has, so reading any of them would be an
-/// error here). The plane's twin is mounted from its logic crate's repository and commit (ARCHITECT
-/// ruling on busbar #1269: the twin's `export_door!` image is audited, never by nobody).
+/// RED (d): ONLY A PLUGIN KIND'S LOGIC CRATE IS MOUNTED — AND A PLANE'S CDYLIB TWIN BESIDE IT. A git
+/// dependency of no plugin kind is a `git+` package of the lock and is not mounted (it carries a
+/// commit no repository has, so reading it would be an error here). The plane's twin is mounted
+/// from its logic crate's repository and commit (ARCHITECT ruling on busbar #1269: the twin's
+/// `export_door!` image is audited, never by nobody).
 #[test]
 fn a_plane_twin_is_mounted_and_a_non_plugin_git_dep_is_not() {
     let s = Scratch::new("twin");
@@ -382,16 +418,10 @@ fn a_plane_twin_is_mounted_and_a_non_plugin_git_dep_is_not() {
             .any(|sc| sc.get("id").as_str() == Some(format!("crates/{LOGIC}-plugin/src").as_str())),
         "the twin's production code is a scope of its own"
     );
-    for absent in [
-        "crates/left-pad/",
-        "crates/busbar-auth-devonly/",
-        "crates/busbar-export-off/",
-    ] {
-        assert!(
-            !all.keys().any(|k| k.starts_with(absent)),
-            "{absent} is not mounted"
-        );
-    }
+    assert!(
+        !all.keys().any(|k| k.starts_with("crates/left-pad/")),
+        "a git dependency of no plugin kind is not mounted"
+    );
     assert!(all.contains_key("crates/busbar-plane-demo/src/lib.rs"));
     assert!(
         !all.keys().any(|k| k.contains("README")),
@@ -449,4 +479,110 @@ fn a_pinned_package_still_in_the_tree_is_not_mounted() {
         Some(tracked.trim()),
         "the tree's own blob, not the pin's"
     );
+}
+
+/// The digest a record about the pinned plugin's `src` carries, computed BY HAND from the plugin
+/// repository — the sha256 of the sorted `crates/<package>/src/<rel><TAB><blob>` lines — and never
+/// through the instrument under test.
+fn hand_hash(plugin: &Path, sha: &str) -> String {
+    let listing = git(
+        plugin,
+        &["ls-tree", "-r", "--full-tree", sha, "plane-demo/src"],
+    );
+    let mut lines: Vec<String> = listing
+        .lines()
+        .filter_map(|l| {
+            let (meta, path) = l.split_once('\t')?;
+            let oid = meta.split_whitespace().nth(2)?;
+            let rel = path.strip_prefix("plane-demo/")?;
+            Some(format!("crates/{LOGIC}/{rel}\t{oid}\n"))
+        })
+        .collect();
+    assert!(!lines.is_empty(), "the plugin's src holds files");
+    lines.sort();
+    let mut h = crate::sha256::Sha256::new();
+    for l in &lines {
+        h.update(l.as_bytes());
+    }
+    h.hexdigest()
+}
+
+/// The production scope over the pinned plugin's `src`, as `derive_scopes` shapes it, carrying ONE
+/// zero round read at `at` whose digest is `hash`.
+fn recorded_scope(at: &str, hash: &str) -> Json {
+    let id = scope();
+    let mut o = Obj::new();
+    o.insert("id", Json::Str(id.clone()));
+    o.insert("kind", Json::Str("production".to_string()));
+    o.insert("paths", Json::Array(vec![Json::Str(id.clone())]));
+    o.insert("tree_hash", Json::Str(hash.to_string()));
+    o.insert("audited_at", Json::Str(at.to_string()));
+    o.insert("round", Json::Int(1));
+    o.insert("result", Json::Str("zero".to_string()));
+    o.insert("counts", Json::Object(Obj::new()));
+    o.insert("report", Json::Str("reports/demo.md".to_string()));
+    o.insert("auditor", Json::Str("alice".to_string()));
+    o.insert("fixed_at", Json::Null);
+    o.insert(
+        "exclude",
+        Json::Array(vec![Json::Str(format!("{id}/tests"))]),
+    );
+    Json::Object(o)
+}
+
+/// RED (f): A PIN THE DEFAULT DISTRIBUTION LEAVES OUT IS STILL A PIN, AND ITS RECORDS ARE CHECKED
+/// AGAINST IT. `busbar-transport-webrtc` sits behind `transport-webrtc`, a feature `default` does
+/// not turn on, and `busbar-auth-oidc` is linked by a proof only; both are real plugins the binary
+/// can link or a deployment can drop in. The pin rule used to follow the root's `default` feature,
+/// so neither was mounted, their scopes hashed to `None`, and `--check` called a record carrying
+/// the correct digest of the pinned bytes "not the tree at the commit they claim". A record whose
+/// digest IS the pinned tree must pass, and one whose digest is not must fail, naming the scope.
+#[test]
+fn a_record_about_a_pin_outside_the_default_features_is_checked_against_the_pin() {
+    for link in [Link::FeatureOff, Link::DevOnly] {
+        let s = Scratch::new(&format!("{link:?}").to_lowercase());
+        let v1 = s.plugin_commit(LIB_V1);
+        let v2 = s.plugin_commit(LIB_V2);
+        s.fill_cargo_db();
+        let url = "https://example.invalid/GetBusbar/busbar-plane-demo";
+        let at = s.busbar_commit_linked(Some((url, &v1)), None, link);
+        let g = s.git();
+
+        let pins: Vec<String> = g
+            .pins_at(&at)
+            .expect("pins read")
+            .into_iter()
+            .map(|p| p.package)
+            .collect();
+        assert!(
+            pins.iter().any(|p| p == LOGIC),
+            "{link:?}: the pin is mounted: {pins:?}"
+        );
+
+        let mounted = g.mounted_at("HEAD").expect("the mounts read");
+        let derived = audit::derive_scopes(&s.busbar(), &mounted);
+
+        // THE RIGHT DIGEST PASSES.
+        let right = hand_hash(&s.plugin(), &v1);
+        let register = s.register(audit::merge(&derived, &[recorded_scope(&at, &right)]));
+        let f = crate::audit_cmd::check(&g, &register).expect("the check reads every pin");
+        assert!(f.stamped.is_empty(), "{link:?}: stamped: {:?}", f.stamped);
+        assert!(f.phantom.is_empty(), "{link:?}: phantom: {:?}", f.phantom);
+        assert!(f.missing.is_empty(), "{link:?}: missing: {:?}", f.missing);
+        let doc = audit::load(&register).expect("the register parses");
+        let (status, pin, _) = row_status(&doc, &g, &scope());
+        assert_eq!(status, "unconfirmed", "{link:?}: the record reads the pin");
+        assert!(pin.is_some_and(|p| p.ends_with(&v1[..10])));
+
+        // A WRONG DIGEST FAILS: the digest of the plugin's NEXT commit, claimed against this one.
+        let wrong = hand_hash(&s.plugin(), &v2);
+        assert_ne!(right, wrong);
+        let register = s.register(audit::merge(&derived, &[recorded_scope(&at, &wrong)]));
+        let f = crate::audit_cmd::check(&g, &register).expect("the check reads every pin");
+        assert!(
+            f.stamped.iter().any(|l| l.starts_with(&scope())),
+            "{link:?}: a wrong digest about a non-default pin is red: {:?}",
+            f.stamped
+        );
+    }
 }

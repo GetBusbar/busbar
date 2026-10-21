@@ -29,7 +29,7 @@ const NOT_RUN_WORD: &str = "conformant";
 
 /// The floor under this suite's own case count. A suite that runs zero cases reports zero failures,
 /// which is the false green the gate exists to be immune to.
-const CASE_FLOOR: usize = 18;
+const CASE_FLOOR: usize = 32;
 
 /// The release commit the freshness FIXTURE is judged against. Not a real sha on purpose: the
 /// fixture says "the checkout under judgement is this commit, and every verdict is about it".
@@ -81,12 +81,12 @@ fn on_fresh(cx: &Ctx) -> Ctx {
 /// README carries exactly one badge, the anchor's.
 ///
 /// WHY A FIXTURE AND NOT THE REAL TREE. The readme-drift plants mutate a badge: recolour one, or
-/// drop the suite behind one from the manifest. The real tree carries no verdict files (a verdict
-/// is produced at judge time, d2b588d74e), so every suite is not-run, the manifest claims nothing
-/// and the README's marked span is empty: there is no badge to mutate, the recolour plant writes
-/// back the bytes the tree has, and dropping a not-run suite's claim changes nothing the README
-/// renders. Measured from this base, the unplanted row is honestly green (its control proves it)
-/// and each plant is the base with exactly one mutation.
+/// drop the suite behind one from the manifest. The real tree carries no passing verdict (a pass
+/// is produced at judge time, on the commit it judges), so no suite is green, the manifest claims
+/// nothing and the README's marked span is empty: there is no badge to mutate, the recolour plant
+/// writes back the bytes the tree has, and dropping a non-green suite's claim changes nothing the
+/// README renders. Measured from this base, the unplanted row is honestly green (its control
+/// proves it) and each plant is the base with exactly one mutation.
 fn badged_base(cx: &Ctx) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(
@@ -130,6 +130,29 @@ fn registry_of(entries: &[(&str, &str, Option<&str>)]) -> String {
 fn overlay_registry(text: String) -> Overlay {
     let mut ov = Overlay::new();
     ov.set("conformance/registry.toml", text);
+    ov
+}
+
+/// `registry` with the `[[suite]]` block of `id` cut out whole, the way a block is deleted.
+fn registry_without(registry: &str, id: &str) -> String {
+    const BLOCK: &str = "\n[[suite]]\n";
+    let head = format!("id = \"{id}\"\n");
+    registry
+        .split(BLOCK)
+        .filter(|block| !block.starts_with(&head))
+        .collect::<Vec<_>>()
+        .join(BLOCK)
+}
+
+/// The anchor suite's verdict with `mutate` applied, filed at `<id>.json`: the verdict plants.
+fn verdict_plant(id: &str, mutate: impl FnOnce(&mut Value)) -> Overlay {
+    let mut v = anchor_verdict("dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6");
+    mutate(&mut v);
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{VERDICT_DIR}/{id}.json"),
+        serde_json::to_string_pretty(&v).unwrap(),
+    );
     ov
 }
 
@@ -250,6 +273,48 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["no registered suite judges the shipped plane(s) video"],
     ));
 
+    // THE ARMED FLOOR (`SUITE_FLOOR`, Law 9): the plane floor keeps one suite per plane, so these
+    // deletions passed it. Each plant is the real registry with one block cut out, or one added.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: deleting a suite that judges no plane (ws) is REFUSED",
+        &[ROW_REGISTRY],
+        overlay_registry(registry_without(&real_registry, "ws")),
+        &["the armed suite(s) ws are absent from the registry"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: deleting one of a plane's several suites (llm-cohere) is REFUSED",
+        &[ROW_REGISTRY],
+        overlay_registry(registry_without(&real_registry, "llm-cohere")),
+        &["the armed suite(s) llm-cohere are absent from the registry"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: a suite registered without arming it in SUITE_FLOOR is REFUSED",
+        &[ROW_REGISTRY],
+        overlay_registry(format!(
+            "{real_registry}\n[[suite]]\nid = \"smoke-signal\"\nstandard = \"Smoke Signal\"\n\
+             plan = \"a hilltop\"\ntier = \"conformant\"\nlabel = \"Smoke\"\nverdict = \
+             \"conformance-verdict-smoke-signal\"\npublic = \"true\"\n"
+        )),
+        &["the registered suite(s) smoke-signal are not armed in SUITE_FLOOR"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: a suite block carrying a status field is REFUSED (the registry holds none)",
+        &[ROW_REGISTRY],
+        overlay_registry(real_registry.replace(
+            "id = \"ws\"\n",
+            "id = \"ws\"\nnot_run_reason = \"planned\"\n",
+        )),
+        &["suite `ws` carries `not_run_reason`, which is no registry field"],
+    ));
+
     // ══ :manifest-drift ══════════════════════════════════════════════════════════════════════════
     let mut ov = Overlay::new();
     ov.set(
@@ -292,6 +357,63 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &[ROW_MANIFEST_DRIFT],
         ov,
         &["is STALE"],
+    ));
+
+    // EVERY VERDICT IS HELD TO ITS SCHEMA AND TO ITS FILE NAME before it is read; a verdict that is
+    // not is refused, so the render refuses rather than crediting it.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "manifest-drift: a verdict filed under another suite's name is REFUSED, not credited",
+        &[ROW_MANIFEST_DRIFT],
+        verdict_plant("llm-cohere", |_| {}),
+        &["judges suite `mcp` and is filed under `llm-cohere`"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "manifest-drift: a verdict whose status is outside the schema's enum is REFUSED",
+        &[ROW_MANIFEST_DRIFT],
+        verdict_plant(ANCHOR, |v| v["status"] = json!("green")),
+        &["`status` is \"green\", which conformance/verdicts/verdict.schema.json does not admit"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "manifest-drift: a verdict carrying a field the schema does not declare is REFUSED",
+        &[ROW_MANIFEST_DRIFT],
+        verdict_plant(ANCHOR, |v| v["badge"] = json!("certified")),
+        &["`badge` is no field of conformance/verdicts/verdict.schema.json"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "manifest-drift: a verdict missing a field the schema requires is REFUSED",
+        &[ROW_MANIFEST_DRIFT],
+        verdict_plant(ANCHOR, |v| {
+            if let Some(o) = v.as_object_mut() {
+                o.remove("commit");
+            }
+        }),
+        &["requires `commit`, and the verdict carries none"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "manifest-drift: a verdict of another schema id is REFUSED",
+        &[ROW_MANIFEST_DRIFT],
+        verdict_plant(ANCHOR, |v| {
+            v["schema"] = json!("busbar.conformance.verdict/0")
+        }),
+        &["`schema` is \"busbar.conformance.verdict/0\""],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "manifest-drift: an unarmed verdict that is not `not-run` is REFUSED",
+        &[ROW_MANIFEST_DRIFT],
+        verdict_plant(ANCHOR, |v| v["armed"] = json!(false)),
+        &["`armed` is false and `status` is `pass`"],
     ));
 
     // ══ :coverage ════════════════════════════════════════════════════════════════════════════════

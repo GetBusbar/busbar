@@ -2,7 +2,7 @@
 # generateContent dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
-wire = "gemini"  # the wire lock: dialects/gemini.wire.json (notation A paths)
+wire = "gemini"  # the wire lock: testing/llm-conformance/wire/gemini.wire.json (notation A paths)
 label = "Gemini"
 request = ["structure", "generation_config", "tier", "blocks"]
 response = ["response"]
