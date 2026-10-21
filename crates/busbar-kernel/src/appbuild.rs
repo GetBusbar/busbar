@@ -483,7 +483,8 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// previous limits are restored.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
-/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
+/// rate-apply seam ([`crate::rate_apply::rates_applied`], to the holder the build's governance book
+/// carries) is raised HERE, at `keep`, and not
 /// during the build: its holder appends the rates to the dated rate-card history and journals them
 /// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
@@ -502,16 +503,18 @@ pub struct InstalledLimits {
     destinations: config::Destinations,
 }
 
-/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
-/// the config change never committed — the holder is told to withdraw them.
+/// The rates one build staged ([`crate::rate_apply::rates_staged`]) with the holder its governance
+/// book carries (`governance`, the build's own). Dropped while still armed — the config change
+/// never committed — that holder is told to withdraw them.
 struct StagedRates {
     armed: bool,
+    governance: Option<Arc<governance::GovState>>,
 }
 
 impl Drop for StagedRates {
     fn drop(&mut self) {
         if self.armed {
-            crate::rate_apply::rates_withdrawn();
+            crate::rate_apply::rates_withdrawn(self.governance.as_deref());
         }
     }
 }
@@ -552,7 +555,7 @@ impl InstalledLimits {
         guard.commit();
         crate::egress::trust::destinations_applied(&destinations);
         staged.armed = false;
-        crate::rate_apply::rates_applied(&rates.raw());
+        crate::rate_apply::rates_applied(staged.governance.as_deref(), &rates.raw());
     }
 }
 
@@ -627,9 +630,7 @@ pub fn build_app_from_config(
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
     // The root's projection of this configuration, taken before any part of it is consumed.
-    let config_projection = crate::preflight::root_rows()
-        .config_projection
-        .map(|project| project(&cfg));
+    let config_projection = root.config_projection.map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -1404,7 +1405,9 @@ pub fn build_app_from_config(
             signer,
         ) {
             Ok(gs) => {
-                let gs = Arc::new(gs);
+                // The rate holder and dater the record lends ride the book this build makes, before
+                // anything accrues on it or is hydrated into it.
+                let gs = Arc::new(gs.with_rates(root.rate_apply, root.rate_epoch));
                 // The store's typed records, kept for the kernel's host services (plane records
                 // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
                 if let Some(calls) = store_calls {
@@ -2099,13 +2102,18 @@ pub fn build_app_from_config(
     // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
     // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
     // withdraws the staged card.
-    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
+    // Staged with the holder this build's governance book carries (lent on the root's record).
+    let book = app.governance.clone();
+    crate::rate_apply::rates_staged(book.as_deref(), &resolved_rates.raw()).map_err(|why| {
         format!(
             "the rate card could not be made durable, so the configuration change was refused \
              and nothing was changed: {why}"
         )
     })?;
-    let staged = StagedRates { armed: true };
+    let staged = StagedRates {
+        armed: true,
+        governance: book,
+    };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it

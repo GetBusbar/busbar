@@ -441,7 +441,8 @@ fn admin_modules_rebuilt_on_reload() {
         Path::new(&plugins.dir),
         &busbar_kernel::test_support::trust_policy(&plugins).unwrap(),
     )
-    .expect("scan succeeds");
+    .expect("scan succeeds")
+    .with_auth_axis(busbar_kernel::preflight::RootInstall::STAND_IN.auth_axis);
     let registry = std::sync::Arc::new(registry);
     let mut cfg = AuthCfg::default_none();
     let mut entry = AuthChainEntry::bare("admin-oidc");

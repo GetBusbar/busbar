@@ -3567,7 +3567,8 @@ fn other_style_chain() -> AuthMiddleware {
             "other-style",
             other_style::door,
         )])
-        .expect("the fixture links");
+        .expect("the fixture links")
+        .with_auth_axis(crate::preflight::RootInstall::STAND_IN.auth_axis);
     AuthMiddleware::new(
         &chain_cfg(&["keys"]),
         &std::sync::Arc::new(registry),

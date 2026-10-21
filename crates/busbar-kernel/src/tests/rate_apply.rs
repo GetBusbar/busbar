@@ -29,33 +29,41 @@ impl RateApply for Recorder {
     }
 }
 
-/// The whole of the seam, in the order the process actually sees it: silent before an install, and
-/// delivering the raw view verbatim after one.
-///
-/// ONE test, not two, because the holder a test binary hands in
-/// (`test_support::rate_holders::install_rate_apply`) is process-wide and the hand-in is
-/// irreversible: split across two `#[test]`s the two halves would race, and whichever ran second
-/// would be asserting the other one's state. Within one test the order is the language's.
-#[test]
-fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbatim() {
-    // BEFORE: a build with no root ledger in it swallows the apply rather than refusing it, and
-    // nothing is recorded because there is nothing to record to.
-    assert!(
-        crate::test_support::rate_holders::apply().is_none()
-            && crate::preflight::root_rows().rate_apply.is_none(),
-        "this is the only test that installs a holder, so the seam must still be empty here"
-    );
-    rates_applied(&RawRates {
-        lanes: &[],
-        units: &[],
-        flat_minor: 7,
-        present: false,
-        plane_fees: &Default::default(),
-    });
+/// A governance book over an empty store, answering to `holder`.
+fn book(holder: Option<&'static dyn RateApply>) -> GovState {
+    GovState::new(
+        std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        None,
+    )
+    .expect("governance builds")
+    .with_rates(holder, None)
+}
 
-    // AFTER: the holder receives the figures the engine resolved, unchanged.
+/// The whole of the seam: silent for a book lent no holder, and delivering the raw view verbatim to
+/// the holder a book is lent.
+#[test]
+fn the_seam_is_silent_for_a_book_lent_no_holder_and_delivers_the_view_verbatim_to_its_own() {
+    // NO HOLDER: a build with no root ledger in it swallows the apply rather than refusing it, and
+    // nothing is recorded because there is nothing to record to.
+    let unlent = book(None);
+    assert!(
+        holder(&unlent).is_none(),
+        "a book lent no holder answers to none"
+    );
+    rates_applied(
+        Some(&unlent),
+        &RawRates {
+            lanes: &[],
+            units: &[],
+            flat_minor: 7,
+            present: false,
+            plane_fees: &Default::default(),
+        },
+    );
+
+    // LENT ONE: the holder receives the figures the engine resolved, unchanged.
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
-    crate::test_support::rate_holders::install_rate_apply(recorder);
+    let lent = book(Some(recorder));
     // Four DISTINCT tier rates per lane, so a seam that carried the right lane names with the wrong
     // (or a defaulted) card is red rather than green.
     let fast = RawTierRates {
@@ -73,13 +81,16 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
     // An open-class rate (item 123) travels beside the four, verbatim.
     let units = [("slow".to_string(), "search_units".to_string(), 5_000)];
-    rates_applied(&RawRates {
-        lanes: &lanes,
-        units: &units,
-        flat_minor: 11,
-        present: true,
-        plane_fees: &Default::default(),
-    });
+    rates_applied(
+        Some(&lent),
+        &RawRates {
+            lanes: &lanes,
+            units: &units,
+            flat_minor: 11,
+            present: true,
+            plane_fees: &Default::default(),
+        },
+    );
 
     let seen = recorder.0.lock().unwrap().clone();
     assert_eq!(
@@ -87,18 +98,21 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
         vec![(lanes.to_vec(), units.to_vec(), 11, true)],
         "exactly the one apply raised after the install, with the lanes in the deployment's own \
          order, every tier rate, the fee and the present flag as they were resolved — the apply \
-         raised BEFORE it reached nobody, which is what an uninstalled seam owes"
+         raised to the book lent no holder reached nobody, which is what an unlent seam owes"
     );
 
     // PRESENCE IS NOT EMPTINESS. A card that names no lane is a different statement from no card at
     // all, and collapsing the two would turn one deployment's configuration into another's.
-    rates_applied(&RawRates {
-        lanes: &[],
-        units: &[],
-        flat_minor: 11,
-        present: true,
-        plane_fees: &Default::default(),
-    });
+    rates_applied(
+        Some(&lent),
+        &RawRates {
+            lanes: &[],
+            units: &[],
+            flat_minor: 11,
+            present: true,
+            plane_fees: &Default::default(),
+        },
+    );
     let seen = recorder.0.lock().unwrap().clone();
     assert_eq!(
         seen.last(),

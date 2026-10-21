@@ -225,7 +225,8 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         Path::new(&strict.dir),
         &crate::test_support::trust_policy(&strict).unwrap(),
     )
-    .expect("scan succeeds; the untrusted plugin is merely skipped");
+    .expect("scan succeeds; the untrusted plugin is merely skipped")
+    .with_auth_axis(crate::preflight::RootInstall::STAND_IN.auth_axis);
     let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
@@ -287,7 +288,8 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         Path::new(&plugins.dir),
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
-    .expect("scan");
+    .expect("scan")
+    .with_auth_axis(crate::preflight::RootInstall::STAND_IN.auth_axis);
     let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,

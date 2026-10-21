@@ -653,7 +653,7 @@ fn the_usage_read_answers_with_the_process_history() {
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     let linked = include_str!("../linked.rs");
     let record = linked
-        .split("pub fn register_stores(linked: &Linked) {")
+        .split("pub fn register_stores(linked: &Linked) -> RootInstall {")
         .nth(1)
         .expect("register_stores is declared")
         .split("\n}")
@@ -671,7 +671,7 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     );
     assert!(
         include_str!("../../main.rs").contains("root::linked::register_stores(&LINKED);"),
-        "main.rs no longer installs the root's install record, so neither half is ever raised"
+        "main.rs no longer builds the root's install record, so neither half is ever raised"
     );
     let kernel = include_str!("../kernel.rs");
     let body = kernel

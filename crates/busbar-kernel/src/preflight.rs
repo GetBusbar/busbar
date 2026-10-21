@@ -200,8 +200,12 @@ impl std::fmt::Debug for RootInstall {
             .field("hook_axis", &self.hook_axis.is_some())
             .field("store_axis", &self.store_axis.is_some())
             .field("secret_axis", &self.secret_axis.is_some())
+            .field("rate_apply", &self.rate_apply.is_some())
+            .field("rate_epoch", &self.rate_epoch.is_some())
             .field("export_axis", &self.export_axis.is_some())
             .field("trust_policy", &self.trust_policy.is_some())
+            .field("auth_axis", &self.auth_axis.is_some())
+            .field("config_projection", &self.config_projection.is_some())
             .finish()
     }
 }
@@ -280,35 +284,33 @@ pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
 }
 
 /// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the
-/// composition root's (it holds the dispatcher), installed once; the kernel names neither the
-/// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
+/// composition root's (it holds the dispatcher), lent on its install record
+/// ([`RootInstall::auth_axis`]) and set on every registry built from that record
+/// ([`PluginRegistry::with_auth_axis`]); the kernel names neither the dispatcher nor the rows it
+/// opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
 pub type AuthAxisOpener = fn(Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
 
-/// The auth-axis opener the composition root's OWN test binary hands in
-/// ([`crate::test_support::install_root_auth_axis`]): a test build's install record reports it in
-/// place of the stand-in's, whichever read came first. The first hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
-    std::sync::OnceLock::new();
-
-// FINAL-REPIN: delete when the pinned door root cells move to test_support::install_root_auth_axis
+// FINAL-REPIN: delete when the pinned door root cells lend their TestApp a record of their own
 /// THE PINNED DOOR ROOT CELLS' NAME for the root test binary's auth-axis hand-in, kept until their
-/// pin moves: it hands `open` in through [`crate::test_support::install_root_auth_axis`], so the
-/// install record reports it as it reports that hand-in. Never in a shipped build (`test-support`).
+/// pin moves: a [`crate::test_support::TestApp`] lent no record of its own lends the stand-in with
+/// `open` in place of the stand-in's opener (`test_support::hand_in_root_auth_axis`).
+/// Nothing else reads it, and never a shipped build (`test-support`).
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub fn install_auth_axis(open: AuthAxisOpener) {
-    crate::test_support::install_root_auth_axis(open);
+    crate::test_support::hand_in_root_auth_axis(open);
 }
 
-/// This build's auth axis over `registry`, through the opener on the root's install record
-/// ([`RootInstall::auth_axis`]); `None` (no opener installed, no stand-in): no auth row answers
-/// anything. A test build has no root: the loader's test stand-in opens the build's rows on a
-/// dispatcher of its own.
+/// This build's auth axis over `registry`, through the opener the registry was built with — the
+/// one the install record it was built from lends ([`RootInstall::auth_axis`],
+/// [`PluginRegistry::auth_axis`]); `None` (the record lent no opener): no auth row answers
+/// anything. A test build has no root: its stand-in record lends the loader's test stand-in,
+/// opening the build's rows on a dispatcher of its own.
 pub(crate) fn auth_axis(
     registry: Arc<PluginRegistry>,
 ) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
-    root_rows().auth_axis.map(|open| open(registry))
+    let open = registry.auth_axis()?;
+    Some(open(registry))
 }
 
 /// This build's auth axis over the LINKED rows `root` lends alone (no plugins directory): what
@@ -470,9 +472,12 @@ fn require_plugin(
 
 /// A registry holding only the [`linked_rows`] `root` lends — what a build with the plugins
 /// directory off has — each answering the former names the root legacy table the composition root
-/// lent (`legacy`) gives it. No directory is read.
+/// lent (`legacy`) gives it, its auth rows opened through the opener `root` lends. No directory is
+/// read.
 pub fn linked(root: &RootInstall, legacy: config::Legacy) -> Result<PluginRegistry, String> {
-    PluginRegistry::empty().link(linked_rows(root, legacy))
+    PluginRegistry::empty()
+        .link(linked_rows(root, legacy))
+        .map(|registry| registry.with_auth_axis(root.auth_axis))
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
@@ -673,7 +678,9 @@ pub fn plugins_preflight(
     let registry_build = root
         .registry_build
         .ok_or("no composition root installed the plugin registry build")?;
-    let registry = registry_build(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
+    // The registry built from the lent record opens its auth rows through the record's opener.
+    let registry = registry_build(build, &mut |n| log_build(n, &plugins_cfg.dir))?
+        .with_auth_axis(root.auth_axis);
     if !plugins_cfg.enabled {
         return Ok(registry);
     }

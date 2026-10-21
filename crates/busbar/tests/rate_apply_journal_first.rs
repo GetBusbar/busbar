@@ -11,7 +11,8 @@
 //! nothing persisted, nothing swapped — and a change that stages and then never commits withdraws
 //! what it staged.
 //!
-//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
+//! The holder rides the install record the configuration is lent (`RootInstall::rate_apply`), as
+//! the shipped root lends its own, and the build's governance book carries it to the commit.
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
 //! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
@@ -25,7 +26,6 @@ use std::sync::{Arc, Mutex};
 
 use busbar_kernel::config::transaction::{config_transaction, Outcome, TxnError};
 use busbar_kernel::rate_apply::{RateApply, RawRates};
-use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The flat figure whose card the holder's journal refuses.
 const REFUSED: i64 = 666_001;
@@ -62,16 +62,18 @@ impl RateApply for Journal {
     }
 }
 
-fn cfg(per_request_fee: i64) -> busbar_kernel::config::RootCfg {
+fn cfg(per_request_fee: i64, holder: &'static Journal) -> busbar_kernel::config::RootCfg {
     let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
         busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_JOURNAL_FIRST"),
     );
     cfg.per_request_fee = per_request_fee;
+    cfg.root.rate_apply = Some(holder);
     cfg
 }
 
 fn build(
     per_request_fee: i64,
+    holder: &'static Journal,
 ) -> Result<
     (
         busbar_kernel::state::App,
@@ -81,7 +83,7 @@ fn build(
     String,
 > {
     busbar_kernel::build_app_from_config(
-        cfg(per_request_fee),
+        cfg(per_request_fee, holder),
         busbar_kernel::config::PluginsCfg::default(),
         None,
         std::collections::HashSet::new(),
@@ -99,11 +101,13 @@ async fn change(
     handle: &Arc<busbar_kernel::state::AppHandle>,
     per_request_fee: i64,
     persist_ok: bool,
+    holder: &'static Journal,
 ) -> (bool, Result<(), TxnError>) {
     let persisted = Arc::new(AtomicBool::new(false));
     let ran = Arc::clone(&persisted);
     let answer = config_transaction(handle, move |_txn| {
-        let (next, _rotate, limits) = build(per_request_fee).map_err(TxnError::Validation)?;
+        let (next, _rotate, limits) =
+            build(per_request_fee, holder).map_err(TxnError::Validation)?;
         Ok(Outcome::commit_then(
             Arc::new(next),
             move || {
@@ -134,16 +138,15 @@ async fn a_config_change_whose_card_the_journal_refuses_leaves_the_config_unchan
     busbar_kernel::snapshot::init();
     linked::install();
     let journal: &'static Journal = Box::leak(Box::new(Journal(Mutex::new(Vec::new()))));
-    install_rate_apply(journal);
 
-    let (first, _rotate, limits) = build(1).expect("the boot config builds");
+    let (first, _rotate, limits) = build(1, journal).expect("the boot config builds");
     limits.keep();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(first)));
     let before = handle.load();
     journal.0.lock().unwrap().clear();
 
     // THE JOURNAL REFUSES THE CARD: the whole change is refused.
-    let (persisted, answer) = change(&handle, REFUSED, true).await;
+    let (persisted, answer) = change(&handle, REFUSED, true, journal).await;
     assert!(answer.is_err(), "the change was not refused");
     assert!(!persisted, "the refused change was saved");
     assert!(
@@ -157,7 +160,7 @@ async fn a_config_change_whose_card_the_journal_refuses_leaves_the_config_unchan
     );
 
     // THE CARD IS STAGED BUT THE PERSIST FAILS: the staged card is withdrawn, nothing published.
-    let (persisted, answer) = change(&handle, 2, false).await;
+    let (persisted, answer) = change(&handle, 2, false, journal).await;
     assert!(answer.is_err() && persisted);
     assert!(Arc::ptr_eq(&before, &handle.load()));
     assert_eq!(
@@ -167,7 +170,7 @@ async fn a_config_change_whose_card_the_journal_refuses_leaves_the_config_unchan
     journal.0.lock().unwrap().clear();
 
     // THE CHANGE COMMITS: staged before the save, published at the commit, once.
-    let (persisted, answer) = change(&handle, 3, true).await;
+    let (persisted, answer) = change(&handle, 3, true, journal).await;
     assert!(answer.is_ok() && persisted);
     assert!(!Arc::ptr_eq(&before, &handle.load()));
     assert_eq!(
