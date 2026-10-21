@@ -199,13 +199,14 @@ impl Stated {
 /// # Panics
 /// When the door states no auth tail.
 fn stated(s: &Subject) -> Stated {
-    let door = crate::dispatch::load::enter_door(s.door);
-    assert!(!door.is_null(), "the door function answered NULL");
-    // SAFETY: a door function answers a `'static` door whose Statement, kind tail and word marks
-    // are `'static` plain data (`abi/mechanism/door.rs`); an auth door's kind tail is an
+    let (door, _) =
+        crate::dispatch::load::read_door(crate::dispatch::load::enter_door(s.door), None)
+            .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+    // SAFETY: a door that passed its head checks answers a `'static` Statement whose kind tail and
+    // word marks are `'static` plain data (`abi/mechanism/door.rs`); an auth door's kind tail is an
     // `AuthTail` leading with its `KindTailHead` (`abi/auth/mod.rs`). Each is read unaligned.
     unsafe {
-        let st: *const Statement = std::ptr::addr_of!((*door).statement).read_unaligned();
+        let st: *const Statement = door.statement;
         assert!(!st.is_null(), "the door states no Statement");
         let st = st.read_unaligned();
         assert!(!st.kind_tail.is_null(), "an auth door states its auth tail");

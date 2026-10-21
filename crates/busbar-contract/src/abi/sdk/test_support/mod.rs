@@ -510,7 +510,7 @@ impl DoorView {
         assert!(
             at >= first
                 && at + size_of::<Option<Op>>() <= base + size_of::<T>()
-                && (at - first) % size_of::<Option<Op>>() == 0,
+                && (at - first).is_multiple_of(size_of::<Option<Op>>()),
             "DoorView::op: the picked reference is not a slot of the door's table"
         );
         (*slot).map(|op| ViewOp {

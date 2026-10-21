@@ -813,7 +813,7 @@ pub const fn door<T: KindOps>(
 /// `reply::call` enters only a slot a door view names (status row 159): a `ViewOp` is not built
 /// from a raw `Op` or a safe `extern "C" fn`; a door view's own slot is one:
 ///
-/// ```compile_fail,E0063
+/// ```compile_fail,E0451
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -844,7 +844,11 @@ pub const fn door<T: KindOps>(
 /// #     RawOutcome(0)
 /// # }
 /// fn main() {
-///     let _ = ViewOp { op: forged };
+///     let _ = ViewOp {
+///         op: forged,
+///         door: todo!(),
+///         index: 0,
+///     };
 /// }
 /// ```
 ///
@@ -929,7 +933,7 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
-/// ```compile_fail,E0063
+/// ```compile_fail,E0451
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -962,6 +966,7 @@ pub const fn door<T: KindOps>(
 /// fn main() {
 ///     let _ = Instance {
 ///         ptr: core::ptr::null_mut(),
+///         door: todo!(),
 ///     };
 /// }
 /// ```
