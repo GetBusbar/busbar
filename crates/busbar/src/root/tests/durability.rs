@@ -4750,7 +4750,7 @@ fn a_window_posted_again_after_its_retirement_still_re_derives() {
 /// the horizons removed: one horizon, and one kept window, per seal ever made.
 #[test]
 fn the_horizons_kept_are_bounded_by_the_ring_when_a_window_can_never_retire() {
-    use super::super::CHECKPOINT_RING;
+    use super::CHECKPOINT_RING;
     use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
 
     let token = token();
