@@ -3861,3 +3861,10 @@ fn registration_anchors(
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
 pub(crate) mod tests;
+
+// A registration's anchors read here, sealed on the in-tree connector over this build's linked
+// wires and dialled over real TLS: the build links a wire to dial over, and the plane door whose
+// section's registrations seal a peer-key pin and a client identity.
+#[cfg(all(test, linked_axis_transport_door, linked_section_agents))]
+#[path = "tests/registration_pin.rs"]
+mod registration_pin_tests;
