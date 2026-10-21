@@ -936,3 +936,74 @@ fn red_an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_o
         drop(held);
     });
 }
+
+/// RED (row 192 C under A STREAM'S OWN BACKPRESSURE, `busbar_contract::abi::transport`): an
+/// answer head on a FULL stream is taken as an `emit` on it is: not at all (`Ok(0)`, nothing
+/// crosses, its status with it) until the framer says the stream is writable again; then the
+/// head goes whole, its status on its emit.
+#[test]
+fn an_answer_head_on_a_full_stream_waits_until_it_is_writable() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::new(
+            "messages",
+            &["messages"],
+            &[],
+            crate::support::Knobs {
+                messages: Some(1),
+                full_at: Some(1),
+                ..crate::support::Knobs::default()
+            },
+        ));
+        let mut l = plain(door.clone(), AcceptLimits::default());
+        let addr = l.local_addr();
+        let (go, went) = tokio::sync::oneshot::channel::<()>();
+        let client = tokio::spawn(async move {
+            let mut s = Client::connect(addr).await.unwrap();
+            s.write_all(b"q").await.unwrap();
+            let mut first = [0_u8; 1];
+            s.read_exact(&mut first).await.unwrap();
+            let _ = went.await;
+            // The window opens: the framer's writable piece.
+            s.write_all(b"w").await.unwrap();
+            let mut second = [0_u8; 1];
+            s.read_exact(&mut second).await.unwrap();
+            [first, second]
+        });
+        let mut conn = accept(&mut l).await.conn;
+        let p = next(&mut conn).await.unwrap().unwrap();
+        assert_eq!((p.stream, p.bytes.as_slice()), (1, &b"q"[..]));
+        assert_eq!(
+            conn.emit_head(1, 100, b"C", false, &mut noop()),
+            Ok(1),
+            "the first head is taken whole, and fills the stream"
+        );
+        assert_eq!(
+            conn.emit_head(1, 200, b"H", false, &mut noop()),
+            Ok(0),
+            "the stream is full: the head is not taken"
+        );
+        assert_eq!(
+            door.emitted_statuses.lock().unwrap().as_slice(),
+            &[100],
+            "nothing of the held head crossed"
+        );
+        let _ = go.send(());
+        let taken = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::poll_fn(|cx| match conn.emit_head(1, 200, b"H", false, cx) {
+                Ok(0) => std::task::Poll::Pending,
+                r => std::task::Poll::Ready(r),
+            }),
+        )
+        .await
+        .expect("the writable piece releases the head");
+        assert_eq!(taken, Ok(1));
+        assert_eq!(
+            door.emitted_statuses.lock().unwrap().as_slice(),
+            &[100, 200],
+            "the head goes with its status once the stream is writable"
+        );
+        tokio::spawn(async move { while let Ok(Some(_)) = next(&mut conn).await {} });
+        assert_eq!(client.await.unwrap(), [[b'C'], [b'H']]);
+    });
+}
