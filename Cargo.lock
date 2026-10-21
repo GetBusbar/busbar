@@ -481,7 +481,6 @@ version = "1.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
- "busbar-auth-admin-tokens-plugin",
  "busbar-contract",
  "busbar-kernel",
  "flate2",
