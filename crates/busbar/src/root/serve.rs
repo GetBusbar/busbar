@@ -36,12 +36,12 @@ use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
-/// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::root::accepted::{Answer, Head, Streamed};
+pub use crate::root::accepted::{DrivenUnit, Reply as IngressReply};
 use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{door_facts, DoorFacts, DoorPools};
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
@@ -4381,18 +4381,6 @@ pub struct IngressCaller {
     arrived: Mutex<Option<Bytes>>,
 }
 
-/// A reply head: the status number and the head fields.
-type Head = (u32, HeadFields);
-
-/// The handler's end of an [`IngressCaller`]: the reply, once the unit states its head.
-#[derive(Debug)]
-pub struct IngressReply {
-    head: oneshot::Receiver<Head>,
-    body: mpsc::Receiver<Bytes>,
-    /// The answer's trailers, where a framer renders a close after its body (ARCHITECT 4l).
-    trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
-}
-
 impl IngressCaller {
     /// A caller side and the reply it feeds.
     #[must_use]
@@ -4493,88 +4481,67 @@ impl IngressReply {
         ))
     }
 
-    /// The same reply, its body followed by the trailers `trailers` delivers (a framer's close).
-    #[must_use]
-    pub fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
-        self.trailers = Some(trailers);
-        self
-    }
-
     /// THE UNIT, SERVED: `unit` runs here until it states its head, then inside the response's
     /// body as the body is read, so a caller that goes away drops it (the driver's client-drop
     /// path). A unit that ends with no head answers what it rendered (a refusal or failure before
     /// any byte), or the driver's plane-fault status when it rendered nothing.
     pub async fn answer(self, unit: DrivenUnit) -> Response {
-        self.answer_with(unit, |rendered| match rendered {
-            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
-            None => stated(
-                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                Body::empty(),
-            ),
-        })
-        .await
+        self.answer_with(unit, unrendered_response).await
     }
 
     /// [`IngressReply::answer`], a unit that ends with no head answered by `unrendered` from what
-    /// it rendered (a framed stream's framer closes it, ARCHITECT 4l).
+    /// it rendered (a framed answer's framer closes it, ARCHITECT 4l). The answer's shape is
+    /// [`crate::root::accepted::Reply::shape`]'s one decision, written as a hyper response.
     pub async fn answer_with(
         self,
-        mut unit: DrivenUnit,
-        unrendered: impl FnOnce(Option<Rendered>) -> Response,
+        unit: DrivenUnit,
+        unrendered: impl FnOnce(Option<Rendered>) -> Response + Send,
     ) -> Response {
-        let IngressReply {
-            mut head,
+        self.shape(unit, HyperAnswer(unrendered)).await
+    }
+}
+
+/// What a unit that ended with no head is answered with on the old path: what it rendered, or the
+/// driver's plane-fault status when it rendered nothing.
+pub(crate) fn unrendered_response(rendered: Option<Rendered>) -> Response {
+    match rendered {
+        Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+        None => stated(
+            (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+            Body::empty(),
+        ),
+    }
+}
+
+/// THE OLD PATH'S SINK ([`Answer`]): each decision written as the hyper response the data router
+/// answers with, `unrendered` answering a unit that ended with no head.
+pub(crate) struct HyperAnswer<F>(pub(crate) F);
+
+impl<F> Answer for HyperAnswer<F>
+where
+    F: FnOnce(Option<Rendered>) -> Response + Send,
+{
+    type Out = Response;
+
+    async fn whole(self, head: Head, body: Vec<u8>) -> Response {
+        stated(head, Body::from(body))
+    }
+
+    async fn closed(self, head: Head, block: HeaderMap) -> Response {
+        closed_whole(head, block)
+    }
+
+    async fn streamed(self, head: Head, body: Streamed) -> Response {
+        let Streamed {
             body,
-            mut trailers,
-        } = self;
-        let first = tokio::select! {
-            biased;
-            h = &mut head => Ok(h.ok()),
-            rendered = &mut unit => Err(rendered),
-        };
-        let rendered = match first {
-            // A WHOLE ANSWER goes out whole: an answer whose head states its length (one the plane
-            // rendered in full) is collected to its end and sent under the length of what was
-            // written, as the previous release sent a buffered answer; any other answer goes out
-            // piece by piece as the unit writes it.
-            Ok(Some(h)) if whole_answer(&h.1) => {
-                let whole = collect(body, unit).await;
-                return stated(unlengthed(h), Body::from(whole));
-            }
-            // A STREAMED ANSWER: the unit runs on, on its own task, once its head is stated
-            // (ARCHITECT ruling 2026-10-07, STREAM-CEILING); the body only drains what it writes.
-            // A stream already closed before its first body byte goes out whole instead, the unit
-            // run to its end.
-            Ok(Some(h)) => {
-                if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
-                    let _ = unit.await;
-                    return closed_whole(h, block);
-                }
-                let running = Running(tokio::spawn(unit));
-                return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
-            }
-            Ok(None) => unit.await,
-            Err(rendered) => match head.try_recv() {
-                // The unit ended in the poll that stated its head: a whole answer is every piece it
-                // wrote, sent under its length.
-                Ok(h) if whole_answer(&h.1) => {
-                    let mut body = body;
-                    let mut whole = Vec::new();
-                    while let Ok(bytes) = body.try_recv() {
-                        whole.extend_from_slice(&bytes);
-                    }
-                    return stated(unlengthed(h), Body::from(whole));
-                }
-                Ok(h) => {
-                    if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
-                        return closed_whole(h, block);
-                    }
-                    return stated(h, Body::new(ReplyBody(body, None, trailers)));
-                }
-                Err(_) => rendered,
-            },
-        };
-        unrendered(rendered)
+            running,
+            trailers,
+        } = body;
+        stated(head, Body::new(ReplyBody(body, running, trailers)))
+    }
+
+    async fn unrendered(self, rendered: Option<Rendered>) -> Response {
+        (self.0)(rendered)
     }
 }
 
@@ -4586,92 +4553,14 @@ type UnitCaller = (
     Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 );
 
-/// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is
-/// already rendered and nothing of its body was written. The closing block, taken; `None` when the
-/// body holds bytes or the stream is still open.
-///
-/// The probe takes the trailers only when they are ready (`try_recv` leaves an open stream's where
-/// it is), and a body with bytes is never asked for its close.
-fn closed_before_body(
-    body: &mpsc::Receiver<Bytes>,
-    trailers: Option<&mut oneshot::Receiver<HeaderMap>>,
-) -> Option<HeaderMap> {
-    if !body.is_empty() {
-        return None;
-    }
-    trailers?.try_recv().ok()
-}
-
-/// [`closed_before_body`]'s answer, WHOLE: the head and the closing block as ONE header block and no
-/// body, as the previous release closed a call that ended before its first message (the line's
-/// trailers-only answer). The host renders none of the claim's wire: the block is the framer's.
+/// [`crate::root::accepted::closed_before_body`]'s answer, WHOLE: the head and the closing block
+/// as ONE header block and no body, as the previous release closed a call that ended before its
+/// first message (the line's trailers-only answer). The host renders none of the claim's wire: the block is the framer's.
 fn closed_whole(h: Head, block: HeaderMap) -> Response {
     let mut response = stated(h, Body::empty());
     response.headers_mut().extend(block);
     response
 }
-
-/// Whether a reply head is a WHOLE answer's: it states its length and is no stream (one of the
-/// [`streamed_media`] types, which the previous release relayed piece by piece).
-fn whole_answer(fields: &HeadFields) -> bool {
-    let named = |field: &[u8]| {
-        fields
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(field))
-            .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
-    };
-    named(b"content-length").is_some()
-        && !named(b"content-type").is_some_and(|v| streamed_media(&v))
-}
-
-/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
-/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
-/// boot ([`declared_stream_media`]).
-fn streamed_media(content_type: &str) -> bool {
-    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied())
-        .any(|media| {
-            content_type
-                .get(..media.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(media))
-        })
-}
-
-/// A whole answer's head without its stated length: the response states the length of what was
-/// written.
-fn unlengthed((status, mut fields): Head) -> Head {
-    fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
-    (status, fields)
-}
-
-/// Every piece the unit writes until it ends, the unit driven meanwhile (its writes wait on this
-/// side), then whatever it wrote last.
-async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u8> {
-    let mut whole = Vec::new();
-    loop {
-        tokio::select! {
-            biased;
-            piece = body.recv() => match piece {
-                Some(bytes) => whole.extend_from_slice(&bytes),
-                None => {
-                    let _ = unit.await;
-                    break;
-                }
-            },
-            _ = &mut unit => {
-                while let Ok(bytes) = body.try_recv() {
-                    whole.extend_from_slice(&bytes);
-                }
-                break;
-            }
-        }
-    }
-    whole
-}
-
-/// A unit the data door drives: what it rendered for its caller when it ended before any byte.
-pub type DrivenUnit = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;
 
 /// A response under a stated head: a status the wire cannot carry is the plane's fault, answered as
 /// the driver answers a plane fault; a field the wire cannot carry is not sent.
@@ -4694,26 +4583,12 @@ fn stated((status, fields): Head, body: Body) -> Response {
     response
 }
 
-/// A UNIT RUNNING ON ITS OWN TASK after its head (ARCHITECT ruling 2026-10-07, STREAM-CEILING): it
-/// is driven whether or not its body is read, so a caller that stops reading with its socket open
-/// leaves the unit's own deadline able to fire (a plane's stated stream ceiling) instead of freezing
-/// it until the socket closes. Dropping it aborts the task, which drops the unit there: the reply's
-/// body was dropped, so its caller is gone, and the unit ends on the driver's client-drop path as
-/// it did when the body owned it.
-struct Running(tokio::task::JoinHandle<Option<Rendered>>);
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 /// The response body: the pieces the unit writes, in order, until its caller side is dropped; the
 /// unit's task, which the body outlives no further than the unit's own end; and the trailers a
 /// framer's close rendered, after the last piece, where the answer has them.
 struct ReplyBody(
     mpsc::Receiver<Bytes>,
-    Option<Running>,
+    Option<crate::root::accepted::Running>,
     Option<oneshot::Receiver<axum::http::HeaderMap>>,
 );
 

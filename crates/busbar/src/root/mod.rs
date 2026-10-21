@@ -63,6 +63,7 @@
 // It comes off with the last plane switch, when `main()` calls into this module.
 #![allow(dead_code)]
 
+pub mod accepted;
 pub mod adapters;
 pub mod auth_bindings;
 pub mod boot;
