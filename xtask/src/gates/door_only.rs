@@ -240,6 +240,60 @@ impl Gate for DoorOnlyGate {
             file,
             format!("pub const ROW: fn() = {plugin}::door;\npub static NAME: &str = \"x\";\n"),
         );
+        // A PLUGIN PINNED FROM ITS OWN REPOSITORY IS STILL A PLUGIN THIS BINARY LINKS (row 159, audit
+        // XF HIGH 15; BUSBAR-1.6.0.md l.3875 puts fleet `plugins.yaml` in this gate's scope). Most
+        // plugins left `crates/` for their own repos; a kernel path into one is the same reach
+        // around the door as a path into a member. The plant takes the first plugin the root pins,
+        // read off `cargo metadata`, never typed here.
+        let pinned: &'static str = match one_abi::pinned_plugin_members(cx).map(|ms| {
+            ms.into_iter()
+                .find(|m| one_abi::is_plugin_crate(&m.name))
+                .map(|m| m.name.replace('-', "_"))
+        }) {
+            Ok(Some(ident)) => Box::leak(ident.into_boxed_str()),
+            Ok(None) => {
+                let mut report = Report::new();
+                report.note_infra_failure(
+                    "door-only selftest: the root pins no plugin crate to plant a path into",
+                );
+                return report;
+            }
+            Err(e) => {
+                let mut report = Report::new();
+                report.note_infra_failure(format!("door-only selftest: {e}"));
+                return report;
+            }
+        };
+        let mut pinned_path = Overlay::new();
+        pinned_path.set(
+            file,
+            format!("pub fn planted() {{ {pinned}::carrier::Planted::go(); }}\n"),
+        );
+        // A RENAMED DEPENDENCY. `planted_door_alias = { package = "<pinned plugin>" }` in the
+        // kernel's manifest makes the source spell `planted_door_alias::`, never the crate's name.
+        let kernel_manifest = "crates/busbar-kernel/Cargo.toml";
+        let pinned_pkg = pinned.replace('_', "-");
+        let renamed_manifest = {
+            let text = cx.read(kernel_manifest).unwrap_or_default();
+            let decl = format!(
+                "planted_door_alias = {{ package = \"{pinned_pkg}\", path = \"../{pinned_pkg}\" }}\n"
+            );
+            if text.contains("\n[dependencies]\n") {
+                text.replacen(
+                    "\n[dependencies]\n",
+                    &format!("\n[dependencies]\n{decl}"),
+                    1,
+                )
+            } else {
+                format!("{text}\n[dependencies]\n{decl}")
+            }
+        };
+        let mut renamed = Overlay::new();
+        renamed.set(kernel_manifest, renamed_manifest);
+        renamed.set(
+            file,
+            "pub fn planted() { planted_door_alias::carrier::Planted::go(); }\n",
+        );
         let mut report = one_abi::selftest(
             cx,
             self,
@@ -256,6 +310,18 @@ impl Gate for DoorOnlyGate {
                     "a static fn-pointer seam in the kernel is RED, naming it",
                     seam,
                     vec![file, "PLANTED_SEAM"],
+                ),
+                (
+                    ROW_PATH,
+                    "the kernel naming a pinned plugin's Rust item is RED, naming the crate",
+                    pinned_path,
+                    vec![file, pinned],
+                ),
+                (
+                    ROW_PATH,
+                    "the kernel naming a plugin through a renamed dependency is RED, naming the key",
+                    renamed,
+                    vec![file, "planted_door_alias"],
                 ),
             ],
         );
