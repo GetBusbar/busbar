@@ -26,13 +26,15 @@
 //!   anything else. While anything is held, a tick's start keeps what the services kept under the
 //!   ticket (the conn answers and the stored service results the held work redeems by handle, its
 //!   pended services still able to complete and wake it), so each held exchange resumes when its
-//!   wake fires while the next tick starts more; the work held side by side on one driver ticket
-//!   counts its handles on, never reusing one a held exchange issued. The held set (the ticks that
-//!   answered PENDING) is bounded by the instance's `max_inflight`: a tick past it is answered
-//!   PENDING by the host without a crossing (`next_tick_ns` 0), and the `drive` that next runs
-//!   re-polls it. With nothing held, a tick's start is its cycle's boundary: what the services
-//!   kept under the ticket since the last tick is forgotten then, the most ever kept counted
-//!   ([`DispatchStats::driver_kept_high`]).
+//!   wake fires while the next tick starts more. The host sees each held exchange as the one
+//!   handle its last call pended under (`super::held`): it is released when a call on that handle
+//!   answers anything else, one exchange at a time. A tick of a kept cycle that reuses a handle
+//!   the cycle already issued is answered FAULT on that call, never another exchange's kept
+//!   answer. The held exchanges are bounded by the instance's `max_inflight`: a tick that finds
+//!   them full is PARKED, PENDING and not crossed, and crosses once a held exchange ends (its
+//!   caller is answered then, with no poke of its own). With nothing held, a tick's start is its
+//!   cycle's boundary: what the services kept under the ticket since the last tick is forgotten
+//!   then, the most ever kept counted ([`DispatchStats::driver_kept_high`]).
 //! * DEADLINE CLASSES. Call, Stream and Connection: when `deadline_ns` passes with the op pending,
 //!   the host calls `cancel` (ticket-less: it may not pend) and answers the kind's timeout outcome;
 //!   a client drop does the same. WriteBehind is NEVER cancelled — not by its deadline, a client
@@ -620,6 +622,9 @@ pub(crate) struct Current {
     pending: bool,
     wake_at_ns: u64,
     detached: bool,
+    /// A `tick` on a driver ticket whose held set is full, not yet crossed: it waits, PENDING, for
+    /// a held exchange to end ([`Worker::unpark`]), and then crosses.
+    parked: bool,
 }
 
 /// THE NAMES A DRIVER TICKET'S READY `drive` ANSWERED (a plane's ready sessions), held for the
@@ -722,11 +727,10 @@ pub(crate) struct Driver {
     frame: Option<Box<dyn DriveFrame>>,
     pending: bool,
     wake_at_ns: u64,
-    /// THE HELD SET: the ticks that answered PENDING since the last `drive` that answered anything
-    /// else. While it is not empty, or the last `drive` answered PENDING (`pending`), a tick's
-    /// start keeps the services' answers under the ticket; it never passes the instance's
-    /// `max_inflight`.
-    held: u32,
+    /// The ticks that answered PENDING since the last `drive` that answered anything else. While it
+    /// is not zero, or the last `drive` answered PENDING (`pending`), or an exchange is held under
+    /// a handle (`super::held`), a tick's start keeps the services' answers under the ticket.
+    ticks_held: u32,
 }
 
 impl Drop for Driver {
@@ -872,6 +876,10 @@ impl WakeRoute for Pool {
             store: Arc::clone(&self.env.services),
             provider: Arc::clone(self.env.provider.as_ref()?),
         })
+    }
+
+    fn store(&self) -> Option<Arc<ServiceStore>> {
+        Some(Arc::clone(&self.env.services))
     }
 
     fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
@@ -1091,6 +1099,11 @@ impl Worker {
                         self.recycle_now(st, idx, env);
                     } else {
                         e.recycle_when_idle = true;
+                        // A tick parked for a slot of a driver ticket that is going: it is
+                        // answered REFUSED, never crossed.
+                        if e.current.as_ref().is_some_and(|c| c.parked) {
+                            self.end(st, idx, Crossed::host(Outcome::Refused), env);
+                        }
                     }
                 }
             }
@@ -1103,6 +1116,7 @@ impl Worker {
         let e = &mut st.entries[idx as usize];
         env.services.forget(self.ticket(idx, e.generation));
         let ticket = self.ticket(idx, e.generation);
+        env.services.held.untrack(ticket);
         for id in e.conns.drain(..) {
             super::conn_services::forget(id, ticket);
         }
@@ -1286,22 +1300,26 @@ impl Worker {
                 let Some((meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
                 };
-                // A tick on a driver ticket whose held set is full waits for it to drain.
-                let mut full = false;
+                // A tick on a driver ticket whose held set is full waits for a slot (parked); one
+                // of a kept cycle may not reuse a handle the cycle issued (`super::held`).
+                let (mut full, mut kept_cycle) = (false, false);
                 if let Some(d) = e.driver.as_ref() {
-                    if d.held == 0 && !d.pending {
+                    let held = env.services.held.held(ticket);
+                    if d.ticks_held == 0 && !d.pending && held == 0 {
                         // Nothing is held: the tick starts the driver ticket's next cycle, and the
                         // last cycle's kept answers (and their epoch) go.
                         let kept = env.services.forget(ticket)
                             + super::conn_services::forget(meta.instance.instance, ticket);
+                        env.services.held.forget(ticket);
                         env.stats
                             .driver_kept_high
                             .fetch_max(kept as u64, Ordering::Relaxed);
                     } else {
                         // A PENDING is honoured: what is held keeps its answers and its epoch,
-                        // and resumes through `drive` when its wake fires. The held set is bounded
-                        // by the instance's `max_inflight`.
-                        full = d.held >= meta.instance.cap;
+                        // and resumes through `drive` when its wake fires. The held exchanges are
+                        // bounded by the instance's `max_inflight`.
+                        kept_cycle = true;
+                        full = held >= meta.instance.cap;
                     }
                 } else if e.short_slot != Some(meta.slot) {
                     // A NEW op starts on the ticket (not the one re-call a short answer earns):
@@ -1322,10 +1340,6 @@ impl Worker {
                     Some(Outcome::Fault)
                 } else if expired {
                     Some(inst.timeout)
-                } else if full {
-                    // Not crossed: PENDING with no tick named, so the `drive` that next runs
-                    // re-polls it (R-PUSH).
-                    Some(Outcome::Pending)
                 } else {
                     None
                 };
@@ -1343,21 +1357,34 @@ impl Worker {
                     meta.slot,
                     env.budgets.of(meta.slot, meta.class).max(meta.watch),
                 );
+                let driven = e.driver.is_some();
                 e.current = Some(Current {
                     meta,
                     job: Some(job),
-                    pending: false,
+                    pending: full,
                     wake_at_ns: 0,
                     detached: false,
+                    parked: full,
                 });
                 if let Some(o) = early {
                     self.end(&mut st, idx, Crossed::host(o), env);
                     return Some(st);
                 }
-                self.cross_current(st, idx, &inst, s, budget, env)
+                if full {
+                    // PENDING, not crossed: its wake is a held exchange's end ([`Worker::unpark`]),
+                    // so whoever awaits the tick is answered then, with no poke of its own.
+                    return Some(st);
+                }
+                if !driven {
+                    return self.cross_current(st, idx, &inst, s, budget, env);
+                }
+                env.services.held.enter(ticket, kept_cycle);
+                let st = self.cross_current(st, idx, &inst, s, budget, env);
+                env.services.held.leave(ticket);
+                st
             }
             Action::Resume => {
-                let Some(cur) = e.current.as_mut().filter(|c| c.pending) else {
+                let Some(cur) = e.current.as_mut().filter(|c| c.pending && !c.parked) else {
                     return Some(st);
                 };
                 cur.pending = false;
@@ -1442,6 +1469,8 @@ impl Worker {
                 };
                 let inst = d.instance.clone();
                 if inst.faulted.load(Ordering::Acquire) || !inst.is_open() {
+                    // A parked tick is answered (the instance's fault) rather than left waiting.
+                    self.unpark(&mut st, idx, env);
                     return Some(st);
                 }
                 let Some(mut frame) = d.frame.take() else {
@@ -1451,7 +1480,9 @@ impl Worker {
                 let heads = frame.prepare(ticket, flags);
                 d.pending = false;
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
+                env.services.held.enter(ticket, false);
                 let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget)?;
+                env.services.held.leave(ticket);
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
                 }
@@ -1465,18 +1496,50 @@ impl Worker {
                         // `drive` carries every held exchange on: PENDING while one still waits,
                         // anything else once none does.
                         if !d.pending {
-                            d.held = 0;
+                            d.ticks_held = 0;
+                            env.services.held.drained(ticket);
                         }
                         if d.pending && std::mem::take(&mut e.latched) {
                             Self::schedule(&mut st, idx, Action::Drive);
                         }
                     }
                 }
+                // A held exchange that ended freed a slot: a parked tick crosses now.
+                if st.entries[idx as usize].generation == generation {
+                    self.unpark(&mut st, idx, env);
+                }
                 // A wake's `drive` ran: the host re-polls `tick` (R-PUSH), PENDING or not, so the
                 // new cycle's work runs alongside what is still held.
                 inst.driven.drove();
                 Some(st)
             }
+        }
+    }
+
+    /// A tick parked on driver `idx` (its held set was full) goes back to the head of the queue
+    /// once a held exchange has ended (a slot is free) or its instance can no longer cross, and the
+    /// queue's head is started.
+    fn unpark(&self, st: &mut WorkerState, idx: u32, env: &Env) {
+        let e = &mut st.entries[idx as usize];
+        let ticket = self.ticket(idx, e.generation);
+        let free = e.current.as_ref().filter(|c| c.parked).map(|c| {
+            let inst = &c.meta.instance;
+            inst.faulted.load(Ordering::Acquire)
+                || !inst.is_open()
+                || env.services.held.held(ticket) < inst.cap
+        });
+        if free == Some(true) {
+            if let Some(Current {
+                meta,
+                job: Some(job),
+                ..
+            }) = e.current.take()
+            {
+                e.queue.push_front((meta, job));
+            }
+        }
+        if e.current.is_none() && !e.queue.is_empty() {
+            Self::schedule(st, idx, Action::Start);
         }
     }
 
@@ -1508,7 +1571,7 @@ impl Worker {
             // A tick on a driver ticket that answered PENDING ends; what pended inside it is held
             // and goes on through `drive`.
             if let Some(d) = e.driver.as_mut().filter(|_| c.outcome == Outcome::Pending) {
-                d.held = d.held.saturating_add(1);
+                d.ticks_held = d.ticks_held.saturating_add(1);
             }
             self.end(&mut st, idx, c, env);
         }
@@ -2035,13 +2098,15 @@ impl Dispatcher {
         if !self.adopt(inst) || !inst.is_open() || inst.faulted.load(Ordering::Acquire) {
             return None;
         }
-        self.worker(worker)?.mint(Some(Driver {
+        let driver = self.worker(worker)?.mint(Some(Driver {
             instance: inst.clone(),
             frame: Some(K::drive_frame()),
             pending: false,
             wake_at_ns: 0,
-            held: 0,
-        }))
+            ticks_held: 0,
+        }))?;
+        self.pool.env.services.held.track(driver);
+        Some(driver)
     }
 
     /// Submit op `s` on `ticket`. Answers at once, WITHOUT calling the plugin, when: the ticket is

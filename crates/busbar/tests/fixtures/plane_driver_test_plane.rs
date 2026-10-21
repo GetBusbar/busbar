@@ -30,7 +30,8 @@
 //! reads that stream again on its driver ticket. Each `/tick-hold` arms one HELD EXCHANGE for a
 //! coming `tick` to start ([`hold_step`]): ESTABLISH then READ on the driver ticket, under handles
 //! of its own; one that pends is held, its `tick` answers PENDING, and every `drive` carries each
-//! held exchange on, answering PENDING while one still waits. `/ticks`
+//! held exchange on, answering PENDING while one still waits; `/tick-reuse` makes the next one
+//! issue the first exchange's handles instead of its own (a plane bug the host refuses). `/ticks`
 //! answers the tick counters, in [`Ticked`] order.
 //!
 //! A DUPLEX SESSION's pieces (those with a stream) are answered by [`session_piece`]: a caller piece
@@ -127,9 +128,11 @@ pub enum Ticked {
     HoldStarted = 6,
     /// The held exchanges whose READ answered: bit `k` for the `k`th started.
     HoldDone = 7,
+    /// Calls of held exchanges the host answered FAULT.
+    HoldFaulted = 8,
 }
 /// How many counters `/ticks` answers.
-pub const TICKED: usize = 8;
+pub const TICKED: usize = 9;
 
 /// The counters `/sessions` answers, in this order.
 #[derive(Debug, Clone, Copy)]
@@ -512,8 +515,11 @@ struct Inst {
     stream: AtomicU64,
     /// Held exchanges armed for the coming ticks (`/tick-hold`), one per `tick`.
     holds: AtomicU64,
-    /// The held exchanges still waiting, by the order they started.
-    held: Mutex<Vec<u32>>,
+    /// The held exchanges still waiting, by the order they started: each one's index and first
+    /// handle.
+    held: Mutex<Vec<(u32, u32)>>,
+    /// The next held exchange issues the first one's handles (`/tick-reuse`).
+    reuse: AtomicBool,
     ticked: [AtomicU64; TICKED],
     /// The instance's driver ticket, as its last `tick` was handed it.
     driver: Mutex<Ticket>,
@@ -695,6 +701,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             stream: AtomicU64::new(0),
             holds: AtomicU64::new(0),
             held: Mutex::new(Vec::new()),
+            reuse: AtomicBool::new(false),
             ticked: Default::default(),
             driver: Mutex::new(Ticket::NONE),
             outbox: Mutex::new(HashMap::new()),
@@ -744,9 +751,9 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
         // Every held exchange carried on, on the driver ticket: PENDING while one still waits.
         let driver = (*input.cast::<DriveIn>()).driver;
         let held = std::mem::take(&mut *me.held.lock().unwrap());
-        let waiting: Vec<u32> = held
+        let waiting: Vec<(u32, u32)> = held
             .into_iter()
-            .filter(|k| !hold_step(me, driver, *k))
+            .filter(|(k, base)| !hold_step(me, driver, *k, *base))
             .collect();
         let pending = !waiting.is_empty();
         me.held.lock().unwrap().extend(waiting);
@@ -895,6 +902,10 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             }
             b"/tick-hold" => {
                 me.holds.fetch_add(1, Ordering::SeqCst);
+                vec![estimate(0, 0)]
+            }
+            b"/tick-reuse" => {
+                me.reuse.store(true, Ordering::SeqCst);
                 vec![estimate(0, 0)]
             }
             t if t.starts_with(b"/tick-every:") => {
@@ -1731,8 +1742,13 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             .is_ok();
         if armed {
             let k = n(Ticked::HoldStarted).fetch_add(1, Ordering::SeqCst) as u32;
-            if !hold_step(me, t, k) {
-                me.held.lock().unwrap().push(k);
+            let base = if me.reuse.swap(false, Ordering::SeqCst) {
+                hold_base(0)
+            } else {
+                hold_base(k)
+            };
+            if !hold_step(me, t, k, base) {
+                me.held.lock().unwrap().push((k, base));
                 pended = true;
             }
         }
@@ -1812,11 +1828,17 @@ fn hold_base(k: u32) -> u32 {
     100 + 10 * k
 }
 
-/// ONE ENTRY OF HELD EXCHANGE `k` on `ticket`: ESTABLISH its need (handle [`hold_base`]), then READ
-/// it (the next handle), the same calls in the same order on every entry (the replay rule: a kept
-/// ESTABLISH answers its stream again without a second dial). `true` once it is over: its READ
-/// answered (bit `k` of [`Ticked::HoldDone`]), or it could not establish.
-unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32) -> bool {
+/// ONE ENTRY OF HELD EXCHANGE `k` on `ticket`: ESTABLISH its need (handle `base`, its
+/// [`hold_base`]), then READ it (the next handle), the same calls in the same order on every entry
+/// (the replay rule: a kept ESTABLISH answers its stream again without a second dial). `true` once
+/// it is over: its READ answered (bit `k` of [`Ticked::HoldDone`]), or a call failed (a FAULT
+/// counted in [`Ticked::HoldFaulted`]).
+unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32, base: u32) -> bool {
+    let faulted = |o: &ServiceOut| {
+        if o.outcome.outcome() == Outcome::Fault {
+            me.ticked[Ticked::HoldFaulted as usize].fetch_add(1, Ordering::SeqCst);
+        }
+    };
     let Some(slots) = me.conns.as_ref() else {
         return true;
     };
@@ -1828,7 +1850,6 @@ unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32) -> bool {
         within: NO_STR,
         member: NO_STR,
     };
-    let base = hold_base(k);
     let Some(o) = conn_call(
         me,
         slots.establish,
@@ -1839,6 +1860,7 @@ unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32) -> bool {
     ) else {
         return true;
     };
+    faulted(&o);
     if o.outcome.outcome() != Outcome::Ready {
         return true;
     }
