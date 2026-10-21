@@ -88,7 +88,15 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-pub const MIN_FILES: usize = 1220;
+/// Lowered 1220 -> 1197 by the kernel egress engine deletion (#1230; u30, TODO row 36, status row
+/// 130), measured 1197 on its head merged with dev 18036aea0e (1224 there): 27 files left, none
+/// arrived. `busbar-kernel/src`: `egress/engine/{client,deadline,https,mod,observe,pool,resolve,
+/// tls}.rs`, `egress/engine/tests/{dial_judge,engine,observe,pool_h2,pool,resolver,tls,
+/// tunnel_judge}_tests.rs`, `egress/fixtures.rs`, `egress/tests/pinned_pool_tests.rs`,
+/// `egress/trust/{identity,spki,trust_anchor}.rs`, `egress/trust/tests/{identity,trust_anchor}
+/// _tests.rs`, `secure.rs`, `topology/worker_shard_tests.rs`; `busbar-core-connector/src`:
+/// `tls/{engine,engine_tests}.rs`.
+pub const MIN_FILES: usize = 1197;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
