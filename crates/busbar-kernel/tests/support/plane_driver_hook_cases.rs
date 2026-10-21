@@ -699,12 +699,13 @@ const ANSWERS: Answers = [
     }),
 ];
 
-fn counting(
-    answer: fn() -> TransformOutcome,
-) -> (
+/// A counting rewrite chain: its invocation count, and the chain.
+type Counted = (
     Arc<std::sync::atomic::AtomicUsize>,
     Vec<(Duration, Arc<dyn RoutingPolicy>)>,
-) {
+);
+
+fn counting(answer: fn() -> TransformOutcome) -> Counted {
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hook: Arc<dyn RoutingPolicy> = Arc::new(CountingRewriter {
         calls: calls.clone(),
