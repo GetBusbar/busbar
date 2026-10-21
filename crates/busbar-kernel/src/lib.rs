@@ -335,6 +335,7 @@ pub mod test_support;
 /// kernel's own test binary reads its protocol set.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
+// FINAL-REPIN: delete with a2a path move
 /// THE HOST SEAM'S OLD TEST PATH, kept for the door cells a pinned plane crate compiles into the
 /// root's test binary (`crates/<crate>/tests/root/mod.rs`): a plane's root cells mint their hook
 /// stage's host as `busbar_kernel::plane_host::engine_host`, and the plane's pin moves on that
