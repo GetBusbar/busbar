@@ -306,42 +306,16 @@ macro_rules! plane_behaviour {
     };
 }
 
-/// The shape of [`PlaneDecl::openapi_schemas`]: the schema pass over the two SHARED generators and
-/// the `paths` map. With `openapi-schema` off nothing generates a document and no plane can supply
-/// one, so the type collapses to an uncallable fn and `schemars` is named nowhere.
-#[cfg(feature = "openapi-schema")]
-pub type OpenapiSchemasHook = fn(
-    &mut schemars::SchemaGenerator,
-    &mut schemars::SchemaGenerator,
-    &mut serde_json::Map<String, serde_json::Value>,
-);
-/// See the `openapi-schema` twin: uncallable, because no document is generated in this build.
-#[cfg(not(feature = "openapi-schema"))]
-pub type OpenapiSchemasHook = fn(std::convert::Infallible);
+/// The shape of [`PlaneDecl::openapi_schemas`]: the `components.schemas` a plane states, as data
+/// (schema name to schema body). The admin document's generator inserts them into its response
+/// generator's definitions as written; the hook names no generator type, so its shape is the same in
+/// every build and a build that generates no document simply never calls it.
+pub type OpenapiSchemasHook = fn() -> Option<serde_json::Map<String, serde_json::Value>>;
 
 /// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
-/// OpenAPI blob states ([`crate::plane_driver::door::stated_schemas`]), inserted into the generator's
-/// definitions as written. `None` in a build that generates no document.
-#[cfg(feature = "openapi-schema")]
+/// OpenAPI blob states ([`crate::plane_driver::door::stated_schemas`]).
 pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
-    Some(stated_schemas::<I>)
-}
-
-/// See the `openapi-schema` twin: no document is generated in this build.
-#[cfg(not(feature = "openapi-schema"))]
-pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
-    None
-}
-
-#[cfg(feature = "openapi-schema")]
-fn stated_schemas<const I: usize>(
-    schema_gen: &mut schemars::SchemaGenerator,
-    _req_gen: &mut schemars::SchemaGenerator,
-    _paths: &mut serde_json::Map<String, serde_json::Value>,
-) {
-    if let Some(schemas) = crate::plane_driver::door::stated_schemas::<I>() {
-        schema_gen.definitions_mut().extend(schemas);
-    }
+    Some(crate::plane_driver::door::stated_schemas::<I>)
 }
 
 impl std::ops::Deref for PlaneDecl {
@@ -442,9 +416,7 @@ plane_behaviour! {
     /// admin document in declaration order. `None` for a plane that contributes no admin path. A plane
     /// that contributes admin verbs ([`Self::admin_routes`] is `Some`) MUST return a non-empty object
     /// here, so the document can never silently omit a mounted verb.
-    // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
-    // default `--no-default-features` build has neither, so the field is genuinely unread there.
-    #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
+    // Read by the OpenAPI generator and the non-vacuity floor test.
     openapi: Option<fn() -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
@@ -525,16 +497,15 @@ plane_behaviour! {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     reresolve_gates: Option<fn(&mut dyn crate::plane_driver::slots::ContainerGateSink)>,
 
-    /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
-    /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
-    /// and request [`schemars::SchemaGenerator`]s and the `paths` map, it registers its own view/body
-    /// types into `#/components/schemas` and attaches their `$ref`s onto the paths its [`Self::openapi`]
-    /// fragment inserted — so `handlers` names no `crate::mcp`/`crate::a2a` view type and the document
-    /// stays byte-identical. `None` for a plane with no admin verbs (the LLM plane).
+    /// STATE THIS PLANE'S ADMIN COMPONENT SCHEMAS for the OpenAPI document — the plane half of the
+    /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`, which inserts the returned
+    /// schemas into `#/components/schemas` as written; the `$ref`s naming them are already on the
+    /// paths its [`Self::openapi`] fragment inserted. So `handlers` names no `crate::mcp`/`crate::a2a`
+    /// view type and the document stays byte-identical. `None` for a plane with no admin verbs (the
+    /// LLM plane).
     ///
-    /// The FIELD is unconditional and only its type ([`OpenapiSchemasHook`]) follows the
-    /// `openapi-schema` feature, so a plane that supplies `None` builds whichever crate turned the
-    /// kernel's feature on.
+    /// The hook's shape ([`OpenapiSchemasHook`]) is plain data in every build: the kernel names no
+    /// schema generator for it.
     openapi_schemas: Option<OpenapiSchemasHook>,
 
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of

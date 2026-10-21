@@ -289,11 +289,9 @@ pub fn scope_kind_index(kind: &str) -> Option<u32> {
 
 /// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.
 ///
-/// NAMED FOR ITS AXIS, not `decl_for`. the `structure-lint` gate's declaration census holds
-/// `fn decl_for(` to EXACTLY ONE production occurrence — "there is exactly ONE by-name protocol
-/// resolution in busbar, and a second one is a second answer to which protocols exist". That rule
-/// is right and is not weakened to make room for this: plane resolution is a different axis and
-/// says so in its name, so the census keeps meaning what it means.
+/// NAMED FOR ITS AXIS, not `decl_for`: the kernel holds no by-name protocol resolution (the
+/// construction gate's `kernel-no-protocol-registry` refuses `fn decl_for` here), and plane
+/// resolution is a different axis that says so in its name.
 pub fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
     plane_decls().iter().copied().find(|d| d.key == key)
 }

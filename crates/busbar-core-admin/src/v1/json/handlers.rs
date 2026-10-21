@@ -4663,16 +4663,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
-    // THE PLANES' TRUST-VERB SCHEMAS, contributed through the registry rather than named here. Each
-    // plane attaches its own typed success-body (and, for the planes that need one, request-body)
-    // schemas onto the paths its `openapi()` fragment inserted above, using the SAME shared
-    // `gen`/`req_gen` — so the plane types register into `#/components/schemas` exactly as the
-    // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
-    // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
-    // those calls had.
+    // THE PLANES' COMPONENT SCHEMAS, contributed through the registry rather than named here. Each
+    // plane states the `components.schemas` its `openapi()` fragment's `$ref`s name, and they are
+    // inserted into the SAME shared `gen` as written — so the plane schemas register into
+    // `#/components/schemas` exactly as before, and this document is byte-identical while this
+    // function names no plane-specific view type. Folded in `plane_decls()` order.
     for decl in busbar_kernel::plane_driver::doors::plane_decls() {
-        if let Some(schemas) = decl.openapi_schemas {
-            schemas(&mut gen, &mut req_gen, &mut paths);
+        if let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated()) {
+            gen.definitions_mut().extend(schemas);
         }
     }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
