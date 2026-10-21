@@ -571,8 +571,8 @@ tokio-rustls = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http = { workspace = true }
-# The root's tests implement `#[async_trait]` traits (`root/tests/serve_hook_seats.rs`), so their
-# test impls need the macro.
+# The hook-seat tests (`root/tests/serve_hook_seats.rs`) implement the kernel's `#[async_trait]`
+# hook policy trait, so their test impls need the macro.
 async-trait = { workspace = true }
 # The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
 # whatever plane features the build enables.

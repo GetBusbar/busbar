@@ -945,7 +945,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 std::sync::Arc::clone(&app),
             );
             std::sync::Arc::new(move || {
-                busbar_kernel::plane_host::engine_host(
+                busbar_kernel::plane_driver::engine_host(
                     &live
                         .get()
                         .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
@@ -998,7 +998,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // unit (`root::serve`'s probe target over the plane's sealed egress), so no linked row carries
     // the `on-host` axis for it: one prober per lane, as 1.5.5 ran.
     let on_host = LINKED.on_host;
-    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
+    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
     if let Some(host) = &boot_host {
         for spawn in on_host {
             spawn(host);
@@ -1157,8 +1157,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {
-        let _attached =
-            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
+        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::live_standing(
+            app_handle.clone(),
+        ));
     }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to

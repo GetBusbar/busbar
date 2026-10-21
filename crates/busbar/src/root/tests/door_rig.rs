@@ -150,7 +150,7 @@ pub(crate) fn bind_door(
 pub(crate) fn folded_door(
     door: DoorFn,
     instance: &str,
-) -> Result<&'static busbar_kernel::plane::registry::PlaneDecl, String> {
+) -> Result<&'static busbar_kernel::plane_driver::row::PlaneDecl, String> {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     busbar_kernel::plane_driver::door::fold(registration(linked_probe(door, instance))?)
 }
@@ -161,7 +161,7 @@ pub(crate) fn folded_door(
 ///
 /// As [`folded_door`].
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
-    busbar_kernel::plane::registry::register_test_plane(folded_door(door, instance)?);
+    busbar_kernel::plane_driver::doors::register_test_plane(folded_door(door, instance)?);
     Ok(())
 }
 
@@ -551,12 +551,15 @@ pub(crate) fn door_routes(
 /// faces nothing).
 pub(crate) fn admissions(
     served: &Served,
-) -> Vec<(Vec<String>, busbar_kernel::plane::PlaneAdmission)> {
+) -> Vec<(
+    Vec<String>,
+    busbar_kernel::plane_driver::claims::PlaneAdmission,
+)> {
     served
         .planes
         .iter()
         .filter_map(|p| {
-            let admission = busbar_kernel::plane::PlaneAdmission {
+            let admission = busbar_kernel::plane_driver::claims::PlaneAdmission {
                 audience: p.snapshot.audience.clone()?,
                 resource_metadata: p.snapshot.resource_metadata.clone()?,
             };
