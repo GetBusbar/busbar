@@ -99,8 +99,8 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234.
 ///
 /// LOWERED 1234 -> 1233 on #1217: the gate's measure on 9f9813d0ff merged with dev 0f3c9caa44
-/// (`zero-file-refusal`: "1233 file(s) across 14 census-neutral root(s)"); this PR removes one
-/// neutral source file and adds none.
+/// (`zero-file-refusal`: "1233 file(s) across 14 census-neutral root(s)"); this PR deletes two
+/// neutral source files and adds one (net -1).
 pub const MIN_FILES: usize = 1233;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
