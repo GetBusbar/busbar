@@ -93,3 +93,62 @@ fn an_on_disk_store_outage_longer_than_the_queue_still_reaches_the_store_whole()
     assert_eq!(taken, expected, "in the order written");
     assert!(wal.owed_to_store().is_empty(), "and nothing is owed after");
 }
+
+/// Write `count` records numbered from `from` as one commit each.
+fn commit_each(wal: &mut Wal, from: u64, count: u64) {
+    let token = durability_token();
+    for seq in from..from + count {
+        wal.append_batch(
+            &token,
+            StepName::Meter,
+            &[Record::new(RESTART_NODE, seq, vec![seq as u8; 24])],
+        )
+        .expect("the medium is healthy; only the store is not");
+    }
+}
+
+/// The node the restart batteries write as.
+const RESTART_NODE: u64 = 11;
+
+/// A log over `factory` on a disk, shipping to `store`.
+fn on_disk(factory: &MemoryFactory, store: &Store) -> Wal {
+    Wal::with_parts(
+        Box::new(factory.clone()),
+        Box::new(store.clone()),
+        Mode::OnDisk,
+        256 * FRAME_BYTES as u64,
+        super::fixtures::wall_ms,
+    )
+    .expect("a memory segment opens")
+}
+
+/// RED before the fix: the store's debt lived only in the process, so a node restarted during a
+/// store outage opened with nothing owed, and the records the store never took never reached it.
+/// (BUSBAR-1.6.0.md section 7: the journal is the record and the store keeps its copy; on a disk
+/// the store is catch-up work, and catch-up work forgotten at a restart is a hole in that copy.)
+#[test]
+fn a_restart_during_an_on_disk_store_outage_still_owes_the_store_every_record() {
+    let factory = MemoryFactory::retaining();
+    let store = Store::default();
+    store.down.store(true, Ordering::SeqCst);
+    {
+        let mut wal = on_disk(&factory, &store);
+        // Past one segment, so the debt the restart owes is read across a roll.
+        commit_each(&mut wal, 1, 300);
+        assert!(store.taken.lock().unwrap().is_empty());
+    }
+    // The process ends; the store comes back; the node restarts over the same medium.
+    store.down.store(false, Ordering::SeqCst);
+    let mut wal = on_disk(&factory, &store);
+    commit_each(&mut wal, 301, 1);
+
+    let mut taken = store.taken.lock().unwrap().clone();
+    taken.sort_unstable();
+    taken.dedup();
+    let expected: Vec<(u64, u64)> = (1..=301).map(|seq| (RESTART_NODE, seq)).collect();
+    assert_eq!(
+        taken, expected,
+        "every record written before the restart reaches the store, and the new one after them"
+    );
+    assert!(wal.owed_to_store().is_empty(), "and nothing is owed after");
+}
