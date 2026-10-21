@@ -21,6 +21,24 @@
 //!    smallest possible one: it says who may register, and it says NOTHING about what they get,
 //!    because the ceiling above is not the policy's to move.
 //!
+//! ## Registration is bounded, and what it creates does not outlive its use
+//!
+//! An unauthenticated registration WRITES a client, and `oauth-as` gives a client no expiry, so an
+//! open endpoint is unbounded growth unless something bounds it. Two things do, and both are this
+//! plane's:
+//!
+//! 1. **A throttle.** The server is built with `oauth-as`'s shipped `FixedWindowRateLimiter`
+//!    (`plane::AsPlane::build_carrying`), carried from one config generation to the next, so a
+//!    reload hands no caller a fresh budget: at most 60 registrations a minute per process, a
+//!    refused one costing ten (the library's derivation is at its `rate_limit` module). The same
+//!    limiter bounds the authorization endpoint and client authentication at the token endpoint.
+//! 2. **Reclamation.** A self-registered client that has held nothing (no code, token, refresh
+//!    token, pushed request, device grant or consent) for [`REGISTERED_CLIENT_IDLE`] is deleted by
+//!    the sweep, in the deployment's store (`shared`) and in this process (`cimd::Records`) alike.
+//!    A client the operator provisioned (`oauth_as.clients:`) and a metadata-document client are
+//!    never stored, so neither is ever reclaimed. A reclaimed client that comes back is told
+//!    `invalid_client` and registers again, which RFC 7591 clients do.
+//!
 //! ## The escalation the ceiling alone would NOT stop
 //!
 //! A registrant cannot widen its scope, but it could try to widen its GRANT TYPES — asking for
@@ -30,6 +48,12 @@
 
 use crate::config::AsIdentity;
 use oauth_as::registration::{RegistrationAttempt, RegistrationDecision, RegistrationPolicy};
+
+/// How long a SELF-REGISTERED client may hold nothing before the sweep reclaims it: a day, so a
+/// client that registered and has not yet logged in, or whose grant just lapsed, keeps its
+/// identifier through any ordinary pause, while one nobody uses goes.
+pub(crate) const REGISTERED_CLIENT_IDLE: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
 
 /// The policy for every deployment that configured `oauth_as:`: anyone may register, and
 /// registering buys exactly the operator's `default_grant`. There is no toggle — the 1.6.0 ruling
