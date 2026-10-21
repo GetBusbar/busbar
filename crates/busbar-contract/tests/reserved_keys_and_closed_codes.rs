@@ -359,19 +359,22 @@ fn the_frame_axes_a_transport_declares_are_each_closed() {
 fn a_wire_status_answers_only_in_the_numbering_that_spelled_it() {
     // `14` is `UNAVAILABLE` in gRPC's numbering and is not a status at all in HTTP's. A reader
     // handed the number alone matches it against HTTP's bands, finds none, and calls a dead upstream
-    // the caller's fault — so neither accessor may coerce the other numbering into an answer.
+    // the caller's fault — so the accessor never coerces one numbering into another's answer.
     let http = WireStatus::new(status_ns::HTTP, 503);
-    assert_eq!(http.http(), Some(503));
-    assert_eq!(http.grpc(), None);
+    assert_eq!(http.in_namespace(status_ns::HTTP), Some(503));
+    assert_eq!(http.in_namespace(status_ns::GRPC), None);
 
     let grpc = WireStatus::new(status_ns::GRPC, 14);
-    assert_eq!(grpc.grpc(), Some(14));
-    assert_eq!(grpc.http(), None);
+    assert_eq!(grpc.in_namespace(status_ns::GRPC), Some(14));
+    assert_eq!(grpc.in_namespace(status_ns::HTTP), None);
 
     // The shared spelling, kept apart: gRPC's `5` is NOT_FOUND and HTTP has no `5`.
     assert_ne!(
         WireStatus::new(status_ns::GRPC, 5),
         WireStatus::new(status_ns::HTTP, 5)
     );
-    assert_eq!(WireStatus::new(status_ns::GRPC, 5).http(), None);
+    assert_eq!(
+        WireStatus::new(status_ns::GRPC, 5).in_namespace(status_ns::HTTP),
+        None
+    );
 }
