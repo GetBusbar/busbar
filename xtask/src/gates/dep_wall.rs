@@ -1005,6 +1005,22 @@ impl Gate for DepWallGate {
             ov,
             &["new-offender", "busbar-plane-llm", "std::net"],
         ));
+        // AN ADDRESS VALUE NAMED THROUGH `std::net` is a `std::net` path: no value exemption (#1194).
+        // A plugin names an address through the contract (`busbar_contract::net::SocketAddr`).
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-decisions/src/planted_address_value.rs",
+            "use std::net::SocketAddr;\n\
+             pub fn literal(a: &str) -> bool { a.parse::<SocketAddr>().is_ok() }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a plugin that names an address value through std::net is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-plane-decisions", "std::net"],
+        ));
         // THE SAME PLANT IN AN IN-TREE PLUGIN, whose source the wall reads off the disk.
         let mut ov = Overlay::new();
         ov.set(

@@ -96,30 +96,29 @@ fn a_comment_a_literal_a_neighbour_or_test_code_names_no_banned_path() {
     );
 }
 
+/// An address value under `std::net` is a `std::net` path like any other: the exemption that read
+/// `std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, AddrParseError}`
+/// as no banned path is gone (#1194, ARCHITECT ruling). A plugin names an address through the
+/// contract (`busbar_contract::net::SocketAddr`), which names no banned path.
 #[test]
-fn an_address_value_names_no_banned_path_and_a_socket_beside_it_still_does() {
-    // What the pinned tcp and http transports write: an address literal parsed, opening nothing.
+fn an_address_value_under_std_net_is_a_banned_path_and_the_contract_one_is_not() {
     for text in [
         "use std::net::SocketAddr; fn f(a: &str) -> bool { a.parse::<SocketAddr>().is_ok() }",
         "fn f(b: &str) { let _ = b.parse::<std::net::Ipv4Addr>(); }",
         "use std::net::{IpAddr, Ipv6Addr, SocketAddrV4, SocketAddrV6, AddrParseError};",
         "use std as s; fn f() { let _ = s::net::Ipv4Addr::LOCALHOST; }",
-    ] {
-        assert!(paths(text).is_empty(), "{text}");
-    }
-    // A socket, a resolver, the bare module or a glob beside a value is still a banned path.
-    for text in [
         "use std::net::{Ipv4Addr, TcpStream};",
-        "use std::net::{SocketAddr, ToSocketAddrs};",
-        "fn f() { let _ = std::net::UdpSocket::bind(\"a:1\"); }",
         "use std::net; fn f() -> net::Ipv4Addr { net::Ipv4Addr::LOCALHOST }",
-        "use std::net::{self, SocketAddr};",
-        "use std::net as n;",
         "use std::net::*;",
     ] {
         assert_eq!(paths(text), ["std::net"], "{text}");
     }
-    assert_eq!(paths("use tokio::net::TcpStream;"), ["tokio::net"]);
+    for text in [
+        "use busbar_contract::net::SocketAddr; fn f(a: &str) -> bool { a.parse::<SocketAddr>().is_ok() }",
+        "use busbar_contract::abi::sdk as sdk; fn f(b: &str) { let _ = b.parse::<sdk::net::Ipv4Addr>(); }",
+    ] {
+        assert!(paths(text).is_empty(), "{text}");
+    }
 }
 
 #[test]
