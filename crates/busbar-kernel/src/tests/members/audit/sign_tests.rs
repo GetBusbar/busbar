@@ -813,15 +813,28 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
             "the published record carries a stored price `{stored_price}`: {record:?}"
         );
     }
-    assert_eq!(
-        parsed["records"][0]["hooks"][0]
-            .as_object()
-            .expect("a hook is an object")
-            .keys()
-            .collect::<Vec<_>>(),
-        vec!["hook"],
-        "a hook that ran is named, never priced"
-    );
+    // A hook that ran is named, with its decision head and whether it failed (`hooks[].head`,
+    // `hooks[].failed`: docs/audit-chain-digest-v4.md rows 39-40), and never priced.
+    let hooks = parsed["records"][0]["hooks"]
+        .as_array()
+        .expect("the hooks are an array");
+    assert!(!hooks.is_empty(), "the record names the hook that ran");
+    for hook in hooks {
+        let hook = hook.as_object().expect("a hook is an object");
+        let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["failed", "head", "hook"],
+            "a hook that ran is named with its head and failure, never priced"
+        );
+        for priced in ["price", "priced", "priced_delta", "cost", "amount"] {
+            assert!(
+                !hook.keys().any(|k| k.contains(priced)),
+                "a hook entry carries a price field `{priced}`: {hook:?}"
+            );
+        }
+    }
     assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v4"));
     // The inputs a read-time price takes ARE published: the counts, the tier, the fee count and the
     // card version.
