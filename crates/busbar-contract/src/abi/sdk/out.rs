@@ -385,7 +385,7 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     /// THE PLANE'S OWN ANSWER IS AN ADMITTED CALL ([`crate::abi::plane::ROUTE_COUNTED`], on a
     /// [`Self::local`] unit): the kernel counts its request against the caller's caps.
     pub fn counted(&mut self) {
-        let flags = self.get().route_flags | crate::abi::plane::ROUTE_COUNTED;
+        let flags = self.get(|o| &o.route_flags) | crate::abi::plane::ROUTE_COUNTED;
         self.set(|o| &o.route_flags, flags);
     }
 
@@ -404,14 +404,14 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     /// THE UNIT IS SERVED AS A DUPLEX SESSION ([`crate::abi::plane::ROUTE_SESSION`]): its pieces
     /// name its stream, and its unsolicited output is named on the instance's driver ticket.
     pub fn session(&mut self) {
-        let flags = self.get().route_flags | crate::abi::plane::ROUTE_SESSION;
+        let flags = self.get(|o| &o.route_flags) | crate::abi::plane::ROUTE_SESSION;
         self.set(|o| &o.route_flags, flags);
     }
 
     /// THE CALLER ASKED FOR ITS ANSWER STREAMED ([`crate::abi::plane::ROUTE_STREAM`]): the kernel
     /// bounds the send by the stream ceiling, and a cut after the first byte is not a refund.
     pub fn stream(&mut self) {
-        let flags = self.get().route_flags | crate::abi::plane::ROUTE_STREAM;
+        let flags = self.get(|o| &o.route_flags) | crate::abi::plane::ROUTE_STREAM;
         self.set(|o| &o.route_flags, flags);
     }
 

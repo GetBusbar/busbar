@@ -121,7 +121,7 @@ fn services() -> &'static crate::abi::host::service::HostSlots {
     })
 }
 
-fn host(conns: *const ConnectorSlots) -> Host {
+fn host(conns: *const ConnectorSlots) -> Host<'static> {
     // SAFETY: test tables: their context and every table they name outlive each use of the value.
     unsafe {
         Host::from_raw(&HostTables {

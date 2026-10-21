@@ -261,7 +261,7 @@ static SLOTS: ConnectorSlots = ConnectorSlots {
     write_request: Some(write_request),
 };
 
-fn host() -> Host {
+fn host() -> Host<'static> {
     // SAFETY: test tables: their context and every table they name outlive each use of the value.
     unsafe {
         Host::from_raw(&HostTables {

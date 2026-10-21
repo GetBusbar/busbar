@@ -208,19 +208,22 @@ impl From<Verdict> for Answer {
 /// so a body that runs again from the top on its RESUME (or on the host's re-call after a short
 /// answer) and makes the same services in the same order re-issues the same handles and reads the
 /// answers the host stored (THE DESIGN, the plugin ABI: a pending service is never run twice).
+///
+/// `'t` is the lifetime of the host tables its services were read from (status row 194):
+/// `'static` for a real host's.
 #[derive(Debug)]
-pub struct VerifyOp {
-    services: Option<Services>,
+pub struct VerifyOp<'t> {
+    services: Option<Services<'t>>,
     ticket: Ticket,
     issued: Cell<u32>,
 }
 
-impl VerifyOp {
+impl<'t> VerifyOp<'t> {
     /// The op on `ticket` over `services` (`None`: the host offers none, and every service is
     /// [`ServiceError::Unserved`](crate::abi::sdk::services::ServiceError::Unserved)). The kit
     /// builds it for every `verify`; a plugin's own unit tests build one over a hand-built table.
     #[must_use]
-    pub const fn new(services: Option<Services>, ticket: Ticket) -> Self {
+    pub const fn new(services: Option<Services<'t>>, ticket: Ticket) -> Self {
         Self {
             services,
             ticket,
@@ -237,7 +240,7 @@ impl VerifyOp {
     /// The host services the instance was opened with, for a service this op has no call of its
     /// own for; issue each one [`VerifyOp::handle`]. `None` when the host offers none.
     #[must_use]
-    pub const fn services(&self) -> Option<&Services> {
+    pub const fn services(&self) -> Option<&Services<'t>> {
         self.services.as_ref()
     }
 
@@ -397,8 +400,8 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
 /// The [`VerifyOp`] of the `verify` `instance` runs, over the host tables `open` handed it.
 pub(crate) fn verify_op<T: Send + Sync + 'static>(
     instance: &Instance<'_, T>,
-    host: Option<&Host>,
-) -> VerifyOp {
+    host: Option<&Host<'static>>,
+) -> VerifyOp<'static> {
     VerifyOp::new(host.and_then(Host::services), instance.ticket())
 }
 
