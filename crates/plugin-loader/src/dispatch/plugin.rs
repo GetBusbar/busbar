@@ -1802,7 +1802,7 @@ impl<K: Kind> Plugin<K> {
         // A new op on a real ticket starts a new epoch of its stored service results; a resume
         // re-reads them (`super::services::new_op`).
         if !ticket.is_none() && !resume {
-            super::services::new_op(inst.ctx(), ticket);
+            super::services::new_op(inst.wake, ticket);
         }
         let (i, o, out_size) = frame.heads();
         let id = inst.next_call.fetch_add(1, Ordering::Relaxed);

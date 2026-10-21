@@ -415,8 +415,17 @@ fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
 /// ticket's earlier op stored are forgotten, ending their epoch, so the new op's handles (counted
 /// from 0 again) never read them and a late completion of the old op stores into nothing. A
 /// resume keeps them: the re-issued handle reads its stored result.
-pub(crate) fn new_op(ctx: HostCtx, ticket: Ticket) {
-    if let Some((served, _)) = served(ctx) {
+///
+/// THE HOST'S OWN BOOKKEEPING, read off the instance's own handle-table entry (`wake`), never a
+/// context judged as if a plugin had handed it: the op may be crossed NESTED inside another
+/// instance's crossing (a framer's `begin` on its inline ticket, driven by a plane's connection
+/// service on the plane's thread), where resolving the framer's context would read as "another
+/// instance's handle inside a crossing" and quarantine the plane, which no plugin forged.
+pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
+    let served = Waking::of(wake)
+        .and_then(|w| w.route.upgrade())
+        .and_then(|route| route.services());
+    if let Some(served) = served {
         served.store.forget(ticket);
     }
 }
