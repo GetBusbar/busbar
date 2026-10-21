@@ -449,6 +449,16 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, need, spec, programs);
         Err(ConnError::Refused)
     }
+
+    /// THE INSTANCE IS GONE (closed, replaced by a reload, or quarantined): it never crosses
+    /// again, so nothing `owner` declared outlives it. Every need it declared is dropped (an open
+    /// on one is refused as undeclared, and [`DeclaredConns::declared`] reads `None`), every
+    /// connection it still holds is closed, and every member program of its member-program needs
+    /// is retired and killed: the instance that replaces it declares its own. A table that holds
+    /// nothing per instance ignores it. Forgetting an instance twice is forgetting it once.
+    fn forget(&self, owner: InstanceId) {
+        let _ = owner;
+    }
 }
 
 /// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
