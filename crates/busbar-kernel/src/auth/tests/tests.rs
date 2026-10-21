@@ -717,7 +717,12 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path",            // unknown → fallback
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(&residual_app(), path, None));
+        let body = decode_body(unauthorized_response(
+            &residual_app(),
+            &crate::core_routes::CoreRouteTable::default(),
+            path,
+            None,
+        ));
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
