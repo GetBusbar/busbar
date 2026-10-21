@@ -27,7 +27,8 @@
 
 use core::mem::size_of;
 
-use crate::abi::mechanism::call::AbiStr;
+use crate::abi::mechanism::call::{AbiStr, Op};
+use crate::abi::mechanism::lifecycle::OpsHead;
 use crate::abi::mechanism::door::{Door, Statement};
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC};
 use crate::abi::sdk::door::{AbiIn, AbiOut, KindOps, MacroDoor};
@@ -345,6 +346,29 @@ pub struct DoorView {
 // change of its parameter to any door function breaks this line before any test runs.
 const _: fn(MacroDoor) -> DoorView = DoorView::of;
 
+/// ONE SLOT of a door read through a [`DoorView`] ([`DoorView::op`]): the only `Op`
+/// [`reply::call`] enters. Its fields are private and [`DoorView::op`] is its one maker, so safe
+/// code cannot hand `call` a raw [`Op`] or a safe `extern "C" fn` (status row 159).
+#[derive(Debug, Clone, Copy)]
+pub struct ViewOp {
+    op: Op,
+    door: &'static Door,
+    index: u32,
+}
+
+impl ViewOp {
+    /// The slot's index in its kind's table (the mechanism's SLOT LAYOUT).
+    #[must_use]
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The slot and the door it is a slot of, for [`reply`] alone.
+    pub(crate) fn parts(self) -> (Op, &'static Door, u32) {
+        (self.op, self.door, self.index)
+    }
+}
+
 impl DoorView {
     /// The door the macro built.
     ///
@@ -354,7 +378,9 @@ impl DoorView {
     /// with no Statement.
     #[must_use]
     pub fn of(door: MacroDoor) -> Self {
-        let d = (door.door_fn())();
+        // SAFETY: a `MacroDoor` is a door the contract's macro built, a compiled-in item loaded for
+        // the process's life (`MacroDoor::__from_door_macro`'s contract); it takes no argument.
+        let d = unsafe { (door.door_fn())() };
         assert!(!d.is_null(), "the door function answered NULL");
         assert!(
             d.is_aligned(),
@@ -460,6 +486,35 @@ impl DoorView {
         // SAFETY: the door is of `T`'s kind, so its tail is the `#[repr(C)]` `T` that kind states
         // (the sealed `KindTail` list), and its head says the plugin wrote all of it.
         unsafe { &*tail }
+    }
+
+    /// ONE SLOT of the door's table, as [`reply::call`] enters it: `pick` names the slot
+    /// (`|t| &t.head.open`, `|t| &t.resolve`), and the handle remembers which door and which slot
+    /// it is. `None` when the door leaves the slot absent. A [`ViewOp`] is made here and nowhere
+    /// else (status row 159), so [`reply::call`] enters only a slot a door the contract's macro
+    /// built states.
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::ops`], or `pick` answers a reference that is not a slot of the table.
+    #[must_use]
+    pub fn op<T: KindOps>(&self, pick: impl FnOnce(&'static T) -> &'static Option<Op>) -> Option<ViewOp> {
+        let table = self.ops::<T>();
+        let slot = pick(table);
+        let base = core::ptr::from_ref(table) as usize;
+        let at = core::ptr::from_ref(slot) as usize;
+        let first = base + core::mem::offset_of!(OpsHead, validate);
+        assert!(
+            at >= first
+                && at + size_of::<Option<Op>>() <= base + size_of::<T>()
+                && (at - first) % size_of::<Option<Op>>() == 0,
+            "DoorView::op: the picked reference is not a slot of the door's table"
+        );
+        (*slot).map(|op| ViewOp {
+            op,
+            door: self.door,
+            index: crate::abi::sdk::door::slot_at(at - base),
+        })
     }
 
     /// The door's ops table, as the kind's `T`.

@@ -54,7 +54,7 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
-    ("hooks", "hook_doors", "door"),
+    ("hooks", "hook_doors", "MACRO_DOOR"),
     // The node axis: a plane whose units a composition root's node drives is handed that node.
     ("node", "node", "install_node"),
     // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner
@@ -378,6 +378,30 @@ pub(crate) fn linked_source(
             .map(|(e, _)| e)
             .collect()
     };
+    // THE DOOR EACH ROW'S ENTRY MODULE EXPORTS (status row 159): every door the root hands the
+    // loader is a `MacroDoor` (only `plugin_door!` mints one, as `MACRO_DOOR` beside `door`), so a
+    // door row's entry module re-exports it. A row whose entry does not fails the build on the one
+    // line below that names it, its name and the fix in the line itself.
+    for ((entry, axes), (feature, _)) in linked.iter().zip(&on) {
+        let module = if axes.iter().any(|a| a == AUTH_AXIS) {
+            format!("{entry}::door")
+        } else {
+            entry.clone()
+        };
+        if axes.iter().any(|a| {
+            [PLANE_DOOR_AXIS, SECRET_AXIS, DOOR_AXIS, CONNECTOR_DOOR_AXIS, EXPORT_DOOR_AXIS]
+                .contains(&a.as_str())
+                || a == AUTH_AXIS
+                || a == "hooks"
+        }) {
+            out.push_str(&format!(
+                "#[allow(dead_code, non_upper_case_globals)] const __linked_row_{}__re_export_MACRO_DOOR_beside_door: \
+                 busbar_contract::abi::sdk::door::MacroDoor = {module}::MACRO_DOOR; \
+                 // linked row `{feature}`: `{module}` exports no MACRO_DOOR (re-export it beside `door`)\n",
+                ident(feature)
+            ));
+        }
+    }
 
     let planes = on_axis("plane");
     out.push_str(&format!(
@@ -399,14 +423,14 @@ pub(crate) fn linked_source(
     );
     out.push_str("    plane_doors: &[");
     for e in on_axis(PLANE_DOOR_AXIS) {
-        out.push_str(&format!("{e}::door, "));
+        out.push_str(&format!("{e}::MACRO_DOOR, "));
     }
     out.push_str("],\n");
     // THE SECRET AXIS: each linked secret plugin's memory-ABI door, loaded through the one loader
     // (`crate::root::linked::secret_rows`).
     out.push_str("    secrets: &[");
     for e in on_axis(SECRET_AXIS) {
-        out.push_str(&format!("{e}::door, "));
+        out.push_str(&format!("{e}::MACRO_DOOR, "));
     }
     out.push_str("],\n");
     // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
@@ -421,7 +445,7 @@ pub(crate) fn linked_source(
         if let Some(path) =
             metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
         {
-            out.push_str(&format!("({entry}::door, {path}), "));
+            out.push_str(&format!("({entry}::MACRO_DOOR, {path}), "));
         }
     }
     out.push_str("],\n");
@@ -455,7 +479,7 @@ pub(crate) fn linked_source(
         if let Some(path) =
             metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
         {
-            out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
+            out.push_str(&format!("({krate:?}, {entry}::MACRO_DOOR, {path}), "));
         }
     }
     out.push_str("],\n");
@@ -478,15 +502,15 @@ pub(crate) fn linked_source(
             "fn __door_build_{n}(\n    \
              settings: &busbar_contract::transport::TransportSettings,\n\
              ) -> std::sync::Arc<busbar_core_connector::wire::HostWire> {{\n    \
-             crate::root::doors::build({e}::KEY, {e}::door, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
+             crate::root::doors::build({e}::KEY, {e}::MACRO_DOOR, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
              fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
-             crate::root::doors::claims_of({e}::door)\n}}\n\
+             crate::root::doors::claims_of({e}::MACRO_DOOR)\n}}\n\
              fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
-             crate::root::doors::upgrades_of({e}::door)\n}}\n\
+             crate::root::doors::upgrades_of({e}::MACRO_DOOR)\n}}\n\
              fn __door_lines_{n}() -> Vec<&'static str> {{\n    \
-             crate::root::doors::lines_of({e}::door)\n}}\n\
+             crate::root::doors::lines_of({e}::MACRO_DOOR)\n}}\n\
              fn __door_offered_{n}() -> busbar_contract::abi::auth::AuthPoints {{\n    \
-             crate::root::doors::offered_of({e}::door)\n}}\n"
+             crate::root::doors::offered_of({e}::MACRO_DOOR)\n}}\n"
         ));
         let (build, claims, upgrades, lines, offered) = (
             format!("__door_build_{n}"),
@@ -516,7 +540,7 @@ pub(crate) fn linked_source(
             let canonical =
                 metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
                     .unwrap_or_else(|| name.clone());
-            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::door), "));
+            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::MACRO_DOOR), "));
         }
     }
     out.push_str("],\n");
@@ -532,7 +556,7 @@ pub(crate) fn linked_source(
             let c = ident(krate);
             out.push_str(&format!(
                 "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
-                 declares: {c}::DECLARES, door: {entry}::door }}, "
+                 declares: {c}::DECLARES, door: {entry}::MACRO_DOOR }}, "
             ));
         }
     }
@@ -559,7 +583,7 @@ pub(crate) fn linked_source(
     out.push_str(
         "/// Every linked memory-ABI transport door, by key, for the root's one Connector.\n\
          #[allow(dead_code)]\n\
-         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)] = &[",
+         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::sdk::door::MacroDoor)] = &[",
     );
     for (e, axes) in linked
         .iter()
@@ -569,7 +593,7 @@ pub(crate) fn linked_source(
             .iter()
             .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
         {
-            out.push_str(&format!("({e}::KEY, {e}::door), "));
+            out.push_str(&format!("({e}::KEY, {e}::MACRO_DOOR), "));
         }
     }
     out.push_str("];\n");

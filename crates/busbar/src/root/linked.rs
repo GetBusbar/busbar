@@ -52,24 +52,24 @@ pub struct Linked {
     /// The plane axis, door lane: each linked plane's door (`busbar_plugin_door`), bound through the
     /// one load on the process's dispatcher exactly as the same plane dropped into `plugins/` is
     /// (see [`crate::root::boot::load_door_planes`]).
-    pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    pub plane_doors: &'static [busbar_contract::abi::sdk::door::MacroDoor],
     /// The secret axis: each linked secret plugin's door, loaded through the one loader when a
     /// reference first names it (see [`secret_rows`]).
-    pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    pub secrets: &'static [busbar_contract::abi::sdk::door::MacroDoor],
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
     /// Each linked secret door's DECLARED METADATA, `(door, declares)`: its `declares.json` (named by
     /// `[package.metadata.busbar.linked-declares]`), read as a dropped-in copy's signed `declares`
     /// is — its disk need (THE DESIGN §11.11 R4). A door with no row declares none.
-    pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
+    pub secret_declares: &'static [(busbar_contract::abi::sdk::door::MacroDoor, &'static str)],
     /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
     /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
     /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
     /// first-party.
     pub plane_door_declares: &'static [(
         &'static str,
-        busbar_contract::abi::mechanism::door::DoorFn,
+        busbar_contract::abi::sdk::door::MacroDoor,
         &'static str,
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
@@ -94,7 +94,7 @@ pub struct Linked {
     pub stores: &'static [LinkedStore],
     /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
     /// root's hook axis (`crate::root::hooks`).
-    pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    pub hook_doors: &'static [busbar_contract::abi::sdk::door::MacroDoor],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
     pub auths: &'static [LinkedAuth],
     /// The operator credential's provider word: the key the manifest's operator row states
@@ -217,7 +217,7 @@ pub struct LinkedDoorExport {
     /// Its manifest `declares` section.
     pub declares: &'static str,
     /// Its door.
-    pub door: busbar_contract::abi::mechanism::door::DoorFn,
+    pub door: busbar_contract::abi::sdk::door::MacroDoor,
 }
 
 /// The newest export payload schema this binary speaks — what a linked sink states.
@@ -396,8 +396,8 @@ static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRow
 /// # Errors
 /// A linked secret door that does not state itself, naming why.
 pub fn link_secrets(
-    doors: &[busbar_contract::abi::mechanism::door::DoorFn],
-    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
+    doors: &[busbar_contract::abi::sdk::door::MacroDoor],
+    declares: &[(busbar_contract::abi::sdk::door::MacroDoor, &str)],
 ) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
     if let Some(rows) = SECRETS.get() {
         return Ok(rows);
@@ -827,7 +827,7 @@ pub fn declared_diagnostics(
 pub fn door_declared_diagnostics(
     doors: &[(
         &'static str,
-        busbar_contract::abi::mechanism::door::DoorFn,
+        busbar_contract::abi::sdk::door::MacroDoor,
         &'static str,
     )],
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],

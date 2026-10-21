@@ -313,7 +313,7 @@ pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>)
 pub fn install_first_party_door(
     name: &str,
     alias: &str,
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
 ) {
     install_export_axis_with(vec![busbar_plugin_loader::LinkedPlugin::first_party_door(
         "export", name, alias, door,

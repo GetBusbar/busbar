@@ -23,8 +23,7 @@
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
 //! let lent = host.lend_to(open_in); // borrows the host: it cannot outlive it
-//! // SAFETY: `open` is the door's own slot, entered before any instance.
-//! let opened = unsafe { reply::call_hosted(open, std::ptr::null_mut(), &lent, open_out) };
+//! let opened = reply::call_hosted(open, None, &lent, open_out);
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable

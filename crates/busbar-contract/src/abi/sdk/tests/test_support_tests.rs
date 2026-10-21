@@ -175,26 +175,28 @@ fn a_zeroed_struct_is_every_field_zero() {
 
 #[test]
 fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
-    let table = view().ops::<crate::abi::transport::Ops>();
-    let open = table.head.open.expect("the door states open");
-    let close = table.head.close.expect("the door states close");
+    let v = view();
+    let open = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .expect("the door states open");
+    let close = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .expect("the door states close");
 
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    // SAFETY: the door's own `open`, entered before any instance.
-    let opened = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
+    let mut opened = call(open, None, &input, zeroed::<OpenOut>());
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
+    let instance = opened.take_instance().expect("a READY open hands its instance");
+    assert!(opened.take_instance().is_none(), "an instance is taken once");
 
-    // SAFETY: the door's own `close`, on the instance its `open` answered.
-    let closed = unsafe {
-        call(
-            close,
-            opened.out.instance,
-            &in_head::<InHead>(slot::CLOSE),
-            out_head::<OutHead>(),
-        )
-    };
+    let closed = super::reply::close(
+        close,
+        instance,
+        &in_head::<InHead>(slot::CLOSE),
+        out_head::<OutHead>(),
+    );
     assert_eq!(closed.outcome, Outcome::Ready);
 }
 
@@ -365,8 +367,9 @@ fn a_plane_read_of_a_transport_door_is_refused() {
 
 #[test]
 fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
-    let table = view().ops::<crate::abi::transport::Ops>();
-    let open = table.head.open.expect("the door states open");
+    let open = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .expect("the door states open");
     let settings = b"boom: x";
     let mut reason = [0_u8; 64];
     let mut input: OpenIn = zeroed();
@@ -378,8 +381,8 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
     };
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
-    // SAFETY: the door's own `open`, entered before any instance.
-    let got = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
+    let mut got = call(open, None, &input, zeroed::<OpenOut>());
+    assert!(got.take_instance().is_none(), "a FAILED open hands no instance");
     assert_eq!(got.outcome, Outcome::Failed);
     assert_eq!(got.error.as_deref(), Some("probe open failed: x"));
     assert_eq!(
@@ -604,7 +607,7 @@ fn answered<O: Reply>(template: &mut O) -> super::reply::Called<O> {
     // SAFETY: `answer::<O>` reads its instance as the `O` template it is handed here, live for
     // the call.
     unsafe {
-        call(
+        super::reply::call_raw(
             answer::<O>,
             ptr::from_mut(template).cast(),
             &in_head::<InHead>(0),
@@ -937,7 +940,7 @@ fn the_heads_a_slot_reads_state_the_structs_call_passed() {
     // SAFETY: `heads_seen` reads its instance as the `[u32; 2]` it is handed here, live for the
     // call.
     let got = unsafe {
-        call(
+        super::reply::call_raw(
             heads_seen,
             ptr::from_mut(&mut seen).cast(),
             &lying_in,
@@ -1128,15 +1131,14 @@ fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
 
 #[test]
 fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
-    let table = view().ops::<crate::abi::transport::Ops>();
-    let open = table.head.open.expect("the door states open");
+    let open = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .expect("the door states open");
     let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
     let lent = host.lend_to(input);
-    // SAFETY: the door's own `open`, entered before any instance.
-    let opened =
-        unsafe { super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>()) };
+    let opened = super::reply::call_hosted(open, None, &lent, zeroed::<OpenOut>());
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
     drop(lent);

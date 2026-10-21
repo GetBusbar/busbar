@@ -228,8 +228,8 @@ unit-b = "beta"
     assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
-        out.contains("    plane_doors: &[busbar_fourth::linked::door, ],\n"),
-        "the plane door axis references the entry's door: {out}"
+        out.contains("    plane_doors: &[busbar_fourth::linked::MACRO_DOOR, ],\n"),
+        "the plane door axis references the entry's MACRO_DOOR: {out}"
     );
     assert!(
         !out.contains("hot_planes"),
@@ -307,7 +307,7 @@ host = "unit"
     assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
     assert!(
         out.contains(
-            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::door)\n}"
+            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::MACRO_DOOR)\n}"
         ),
         "{out}"
     );
@@ -366,7 +366,7 @@ door = "unit"
 "#;
     let (on, _) = linked_source(manifest, &|f: &str| f == "door");
     assert!(
-        on.contains("plane_doors: &[busbar_plane_door::plane_door::door, ],"),
+        on.contains("plane_doors: &[busbar_plane_door::plane_door::MACRO_DOOR, ],"),
         "{on}"
     );
     let (off, _) = linked_source(manifest, &|_: &str| false);
@@ -385,7 +385,7 @@ fn the_manifest_links_a_plane_through_its_door() {
         .find_map(|l| l.trim().strip_prefix("plane_doors: &["))
         .unwrap_or_else(|| panic!("no plane_doors table generated:\n{all}"));
     assert!(
-        doors.contains("::door, "),
+        doors.contains("::MACRO_DOOR, "),
         "no build of this manifest links a plane door: plane_doors = [{doors}"
     );
 }
@@ -425,7 +425,7 @@ fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
             .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"));
         table
             .split(", ")
-            .filter(|d| d.ends_with("::door"))
+            .filter(|d| d.ends_with("::MACRO_DOOR"))
             .map(str::to_string)
             .collect()
     };

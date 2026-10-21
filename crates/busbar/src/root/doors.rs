@@ -22,7 +22,7 @@ use super::loader::dispatch::{
     OutFrame, Plugin,
 };
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
-use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::slot;
@@ -316,7 +316,7 @@ pub fn served(
 /// configuration can repair.
 pub fn build(
     row: &str,
-    door: DoorFn,
+    door: MacroDoor,
     settings: &busbar_contract::transport::TransportSettings,
     riding: Riding,
 ) -> Arc<HostWire> {
@@ -336,7 +336,7 @@ pub fn build(
 ///
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
-pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
+pub fn claims_of(door: MacroDoor) -> Vec<&'static str> {
     super::loader::dispatch::kinds::transport::linked_facts(door)
         .map(|facts| facts.claims)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
@@ -349,7 +349,7 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 ///
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
-pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
+pub fn offered_of(door: MacroDoor) -> busbar_contract::abi::auth::AuthPoints {
     super::loader::dispatch::kinds::transport::linked_facts(door)
         .map(|facts| facts.offered)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
@@ -368,7 +368,7 @@ pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
 ///
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
-pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
+pub fn upgrades_of(door: MacroDoor) -> Vec<&'static str> {
     super::loader::dispatch::kinds::transport::linked_facts(door)
         .map(|facts| facts.upgrades)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
@@ -382,7 +382,7 @@ pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
 ///
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
-pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
+pub fn lines_of(door: MacroDoor) -> Vec<&'static str> {
     super::loader::dispatch::kinds::transport::linked_facts(door)
         .map(|facts| facts.lines)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))

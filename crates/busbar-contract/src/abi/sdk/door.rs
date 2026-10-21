@@ -825,6 +825,195 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
+/// `reply::call` enters only a slot a door view names (status row 159): a `ViewOp` is not built
+/// from a raw `Op` or a safe `extern "C" fn`; a door view's own slot is one:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
+/// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # extern "C" fn forged(
+/// #     _: *mut core::ffi::c_void,
+/// #     _: *const core::ffi::c_void,
+/// #     _: *mut core::ffi::c_void,
+/// # ) -> RawOutcome {
+/// #     RawOutcome(0)
+/// # }
+fn main() {
+    let _ = ViewOp { op: forged };
+}
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
+/// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # extern "C" fn forged(
+/// #     _: *mut core::ffi::c_void,
+/// #     _: *const core::ffi::c_void,
+/// #     _: *mut core::ffi::c_void,
+/// # ) -> RawOutcome {
+/// #     RawOutcome(0)
+/// # }
+fn main() {
+    let view = DoorView::of(plugin::MACRO_DOOR);
+    let _: Option<ViewOp> = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open);
+}
+/// ```
+///
+/// An `Instance` is no pointer and no
+/// overwritten `out.instance`; a READY `open`'s own is one:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
+/// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # extern "C" fn forged(
+/// #     _: *mut core::ffi::c_void,
+/// #     _: *const core::ffi::c_void,
+/// #     _: *mut core::ffi::c_void,
+/// # ) -> RawOutcome {
+/// #     RawOutcome(0)
+/// # }
+fn main() {
+    let view = DoorView::of(plugin::MACRO_DOOR);
+    let open = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open).unwrap();
+    let mut opened = call(open, None, &zeroed::<OpenIn>(), zeroed::<OpenOut>());
+    opened.out.instance = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+    let _: Instance = opened.out.instance;
+}
+/// ```
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
+/// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # extern "C" fn forged(
+/// #     _: *mut core::ffi::c_void,
+/// #     _: *const core::ffi::c_void,
+/// #     _: *mut core::ffi::c_void,
+/// # ) -> RawOutcome {
+/// #     RawOutcome(0)
+/// # }
+fn main() {
+    let _ = Instance { ptr: core::ptr::null_mut() };
+}
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
+/// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # extern "C" fn forged(
+/// #     _: *mut core::ffi::c_void,
+/// #     _: *const core::ffi::c_void,
+/// #     _: *mut core::ffi::c_void,
+/// # ) -> RawOutcome {
+/// #     RawOutcome(0)
+/// # }
+fn main() {
+    let view = DoorView::of(plugin::MACRO_DOOR);
+    let open = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open).unwrap();
+    let mut opened = call(open, None, &zeroed::<OpenIn>(), zeroed::<OpenOut>());
+    let _: Option<Instance> = opened.take_instance();
+}
+/// ```
+///
 /// A fake host hands safe code no table; it lends its tables to an `open` alone:
 ///
 /// ```compile_fail
