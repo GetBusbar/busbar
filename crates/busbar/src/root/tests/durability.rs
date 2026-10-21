@@ -4637,9 +4637,10 @@ fn a_held_checkpoint_sealed_without_a_retired_window_still_re_derives() {
         .expect("every held checkpoint re-derives across the retirement");
     assert_eq!(served, vec![first, second], "each as it was sealed");
     assert!(
-        durability.sealed_balances_held() <= 1,
-        "one sealed snapshot, the newest kept seal: {}",
-        durability.sealed_balances_held()
+        durability.sealed_balances_held() <= durability.ledger.book().len(),
+        "the one resident sealed copy holds {} balances, more than the {} the book holds",
+        durability.sealed_balances_held(),
+        durability.ledger.book().len()
     );
 }
 

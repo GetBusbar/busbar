@@ -137,13 +137,12 @@ impl Durability {
                 }
                 if record_checkpoint_seq(record) == Some(head.checkpoint_seq) {
                     // The chain still carries every window the book let go; the book this
-                    // seal was taken from did not (row 159's retirement).
-                    let mut totals = scratch.book().snapshot();
-                    let retired = self.retired_through(head.checkpoint_seq);
-                    if !retired.is_empty() {
-                        totals.retain(|(_, window), _| !retired.contains(window));
-                    }
-                    let checkpoint = head.with_totals(totals);
+                    // seal was taken from did not (row 159's retirement). They leave the scratch
+                    // book here, at the seal that left them out, as they left the book; a later
+                    // posting on one rebuilds it from that posting alone, as it did the book's.
+                    let left_behind = self.left_behind_at(head.checkpoint_seq, scratch.book());
+                    scratch.retire_windows(&left_behind);
+                    let checkpoint = head.with_totals(scratch.book().snapshot());
                     if !checkpoint.body_hash_verifies() {
                         return Err(CheckpointUnreadable::Diverged {
                             checkpoint_seq: head.checkpoint_seq,
