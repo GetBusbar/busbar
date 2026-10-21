@@ -766,11 +766,6 @@ each dialect translates, field by field, is listed in the generated
   `403 forbidden` a missing scope gets. `admin_scope: read-only | full` stay the 1.5.5 shorthands
   and a binding without `verbs:` behaves exactly as before. A name the table does not declare fails
   `--validate`/boot. See [the configuration reference](docs/configuration.md).
-- **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
-  operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
-  counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
-  `# HELP` and `# TYPE` lines, summed over every plugin, and is 0 on a healthy node. Nothing that
-  1.5.5 exposed changed. See [the observability guide](docs/observability.md).
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
@@ -928,6 +923,13 @@ each dialect translates, field by field, is listed in the generated
   as successes. This is tamper-evidence, not tamper-prevention, and chains are verified at boot.
   With `store: memory` nothing is persisted and nothing is claimed; the record is durable only on a
   store plugin that persists plane records.
+- **An MCP tool call that never left is not charged.** A `tools/call` that waited its turn on a stdio
+  server's child past its deadline, or whose server the live tool-list check could not reach, was
+  never sent: its caller is answered the same upstream-failure tool error (HTTP 200,
+  `isError: true`), but the plane reports no `per_request` fee unit, so the admission's fee is given
+  back, and its call-log line reads `refused` (audited rejected). A call that went out keeps its fee
+  whatever the server answered, and counts one `tool_calls` plus the answer's bytes whenever the
+  server answered at all, an HTTP 5xx included.
 - **A quarantined MCP upstream stays quarantined across a restart**, so a restarted Busbar no
   longer hands an upstream its approval back until the next sweep. The first observation that finds
   the upstream serving what you approved clears it.

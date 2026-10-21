@@ -126,7 +126,7 @@ busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory"
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "7dd2c1c947347806280f4cf635555008dc2a5a0a" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "1cdd3ea22875bb434784a00906bc10d906a1919d" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
@@ -140,13 +140,13 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "253b5b2791122f07e74647a9f21efe51aa00ab7d" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "02459b162c41109034284acfcfd6e4c51edf6c7e" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "253b5b2791122f07e74647a9f21efe51aa00ab7d" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "02459b162c41109034284acfcfd6e4c51edf6c7e" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

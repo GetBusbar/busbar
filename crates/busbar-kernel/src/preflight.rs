@@ -15,9 +15,9 @@ use crate::diagnostics::{
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, snapshot,
-    state, store, telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, snapshot, state, store,
+    telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -143,14 +143,7 @@ pub struct RootInstall {
     /// [`crate::state::App`] so the operator surface judges a plugin exactly as boot does. `None` =
     /// no trust resolves (the admin catalog lists the linked rows alone; an upload is refused).
     pub trust_policy: Option<TrustPolicyBuild>,
-    /// The host's own counters every `/metrics` scrape exposes, one described family each: the
-    /// root's dispatcher's `bb_*` counters, read when the scrape is (`None` = none).
-    pub host_counters: Option<HostCounters>,
 }
-
-/// THE HOST'S OWN COUNTERS: each counter's family name, its HELP text and its cumulative value,
-/// read at scrape time ([`RootInstall::host_counters`]).
-pub type HostCounters = fn() -> Vec<(&'static str, &'static str, u64)>;
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
 ///
@@ -187,16 +180,14 @@ const STAND_IN: RootInstall = RootInstall {
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
     trust_policy: Some(crate::test_support::trust_policy_stand_in),
-    host_counters: None,
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
-/// [`crate::test_support::hook_axis_stand_in`]): the ranking double, under its feature.
+/// [`crate::test_support::hook_axis_stand_in`]): the ranking double, in every test build (THE
+/// DESIGN l.1443: the kernel has no `hooks-ranking` feature to switch it on).
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
-    #[cfg(feature = "hooks-ranking")]
-    crate::test_support::ranking_double::door,
-];
+pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] =
+    &[crate::test_support::ranking_double::door];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
 /// compiled in, its ranking hooks) and its registry build, installed once before the first
