@@ -88,7 +88,11 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-pub const MIN_FILES: usize = 1220;
+/// Lowered 1220 -> 1218 by row 159 (kernel-egress, GetBusbar/busbar#1414): the uncalled
+/// query-parameter auth helpers and the uncalled second address guard's suites are deleted
+/// (`busbar-kernel-egress/src/query_auth.rs` and its tests, `trust/tests/dial_table_tests.rs`,
+/// `busbar-kernel/src/tests/members/egress/trust_net_tests.rs`); the gate measured 1218.
+pub const MIN_FILES: usize = 1218;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
