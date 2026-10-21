@@ -1100,6 +1100,9 @@ pub(super) fn fixture_crate() -> crate::ctx::Overlay {
 pub fn selftest<'a>(
     cx: &'a crate::ctx::Ctx,
     gate: &'a dyn crate::gates::Gate,
+    // The subject of the GREEN cases planted into [`FIXTURE_CRATE`]: the bare fixture's own
+    // findings out of view (`super::OverFixture`). Every red case keeps `gate`.
+    over_fixture: &'a dyn crate::gates::Gate,
     ship: bool,
     report: &mut crate::gates::Report<'a>,
 ) {
@@ -1302,7 +1305,7 @@ pub fn selftest<'a>(
     )];
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "an OpenAPI `\"in\": \"header\"` location is no auth instance (the HTTP word is masked)",
         &[ROW_MATRIX],
         super::fixture_files(openapi),
@@ -1334,7 +1337,7 @@ pub fn selftest<'a>(
     // attribute's `abi = "C"` name no instance.
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "an `extern \"C\"` ABI string names no secret instance",
         &[ROW_MATRIX],
         super::fixture_files(&[(
@@ -1370,7 +1373,7 @@ pub fn selftest<'a>(
     }
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "`extern \"C\"` and a one-letter `\"c\"` in a neutral crate are no secret instance (an \
          alias under three characters is no needle)",
         &[ROW_MATRIX],
@@ -1433,7 +1436,7 @@ pub fn selftest<'a>(
     let shape = "pub const PLANTED_PLACEMENT_KEY: &str = \"header\";\n";
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "a `[[shape-word]]` row reserves the one constant it names",
         &[ROW_MATRIX],
         reserved(shape, "PLANTED_PLACEMENT_KEY"),
@@ -1601,7 +1604,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "an [[instance]] row over a live cell is green, whatever the cell's size",
         &[ROW_MATRIX],
         listed_fixture(Some("")),

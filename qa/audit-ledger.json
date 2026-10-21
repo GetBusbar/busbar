@@ -132,18 +132,18 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "90048916c9eae4288d2de5befb61062cb8102325184afc7ace7afd487b7d0c38",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 2,
+   "tree_hash": "6a762ce7e43c05bbc83e8bda6b99151d939b06be2d2e1b6d334fdba40488c2fc",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 7,
-    "MEDIUM": 14,
-    "LOW": 12,
+    "HIGH": 6,
+    "MEDIUM": 19,
+    "LOW": 17,
     "NIT": 1
    },
-   "report": "With no data directory, chain reads after boot see only the newest journal segment, so corrections, the migration marker and checkpoint numbering are lost once the journal outgrows one segment. Duplex sessions seal no audit record and unit records omit hooks and slice. Serving branches on a vendor stream media type and special-cases two plane config sections. Boot binds every plane and dropped-in transport whether configured or not, and one outbound auth style loads every auth plugin. Admin units seal no record. Read in two parts, fully.",
-   "auditor": "opus-r159b-root",
+   "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully.",
+   "auditor": "opus-r159c-root-parts",
    "fixed_at": null,
    "rounds": [
     {
@@ -173,6 +173,20 @@
       "NIT": 1
      },
      "report": "With no data directory, chain reads after boot see only the newest journal segment, so corrections, the migration marker and checkpoint numbering are lost once the journal outgrows one segment. Duplex sessions seal no audit record and unit records omit hooks and slice. Serving branches on a vendor stream media type and special-cases two plane config sections. Boot binds every plane and dropped-in transport whether configured or not, and one outbound auth style loads every auth plugin. Admin units seal no record. Read in two parts, fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-root-parts",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "6a762ce7e43c05bbc83e8bda6b99151d939b06be2d2e1b6d334fdba40488c2fc",
+     "counts": {
+      "HIGH": 6,
+      "MEDIUM": 19,
+      "LOW": 17,
+      "NIT": 1
+     },
+     "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully."
     }
    ]
   },
@@ -367,18 +381,18 @@
    "paths": [
     "crates/busbar-auth-header/src"
    ],
-   "tree_hash": "5404c65467d9bbf2059c5d36a0e80d81c4c74c1caee901562696a5fe8fcd3c88",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
+   "tree_hash": "6c99f5cc16b42b5cd437c4f8cec1a3ea5b94aefa76aa9c2a3ad6031fdf9d2df8",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 1,
-    "LOW": 3,
-    "NIT": 2
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
    },
-   "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and serves the operator's or the caller's credential per request; it never pends and opens no connection, and credential values are wiped on drop. It still breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance although the safe outbound door kit exists, and two per-thread statics hold reply storage. Each request still allocates in the plugin's own code. The query-key style is never selected by any production path. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and presents the operator's or the caller's credential per request by reference, through the contract's safe outbound door. The crate forbids unsafe code, keeps all state per instance, wipes credential values on drop, never prints them, and refuses settings header names that are not tokens. It never pends and opens no connection. The query-key style is still selected by no production path. Read fully.",
+   "auditor": "opus-r159c-auth-reread",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-header/src/tests"
@@ -411,6 +425,20 @@
       "NIT": 2
      },
      "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and serves the operator's or the caller's credential per request; it never pends and opens no connection, and credential values are wiped on drop. It still breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance although the safe outbound door kit exists, and two per-thread statics hold reply storage. Each request still allocates in the plugin's own code. The query-key style is never selected by any production path. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159c-auth-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "6c99f5cc16b42b5cd437c4f8cec1a3ea5b94aefa76aa9c2a3ad6031fdf9d2df8",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and presents the operator's or the caller's credential per request by reference, through the contract's safe outbound door. The crate forbids unsafe code, keeps all state per instance, wipes credential values on drop, never prints them, and refuses settings header names that are not tokens. It never pends and opens no connection. The query-key style is still selected by no production path. Read fully."
     }
    ]
   },
@@ -420,18 +448,18 @@
    "paths": [
     "crates/busbar-auth-oauth/src"
    ],
-   "tree_hash": "186ec7f33e8700bb0aa99e9968d634a72e9041c493db5f0c7641624ea240f3a4",
-   "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
-   "round": 3,
+   "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
+    "HIGH": 0,
     "MEDIUM": 1,
-    "LOW": 2,
+    "LOW": 1,
     "NIT": 0
    },
-   "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully.",
-   "auditor": "opus-q128-auth-oauth-src-a",
+   "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully.",
+   "auditor": "opus-r159c-auth-reread",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-oauth/src/tests"
@@ -478,6 +506,20 @@
       "NIT": 0
      },
      "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159c-auth-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully."
     }
    ]
   },
@@ -719,84 +761,23 @@
    ]
   },
   {
-   "id": "crates/busbar-core-admin/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-core-admin/build.rs"
-   ],
-   "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 0,
-    "LOW": 1,
-    "NIT": 1
-   },
-   "report": "The build script still turns manifest metadata into generated tables that link a plane crate and the operator-credential auth plugin into this cleanliness crate's unit tests, and the manifest still names that plane as a dev-dependency, as metadata and in a feature forward, beside the auth plugin. The source stays clean only because the names live in the manifest; the tests do not use kind-neutral doubles. The script's doc still claims the composition root emits its table with the same functions, which it does not. Read fully.",
-   "auditor": "opus-q128-l159",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-     "counts": {
-      "HIGH": 1
-     },
-     "report": "Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully."
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-core-admin-build",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 0,
-      "LOW": 1,
-      "NIT": 1
-     },
-     "report": "The build script still turns manifest metadata into a generated table that links two plane crates and an operator-auth plugin into this cleanliness crate's unit tests, and the manifest still names those plugins (plus an export plugin) as dev-dependencies, as metadata, and through instance-named features. The source stays \"clean\" only because the names live in the manifest; the crate's tests do not use kind-neutral doubles. The generator is also copied, not shared, despite its doc claiming the composition root uses it. Read fully."
-    },
-    {
-     "round": 3,
-     "result": "findings",
-     "auditor": "opus-q128-l159",
-     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 0,
-      "LOW": 1,
-      "NIT": 1
-     },
-     "report": "The build script still turns manifest metadata into generated tables that link a plane crate and the operator-credential auth plugin into this cleanliness crate's unit tests, and the manifest still names that plane as a dev-dependency, as metadata and in a feature forward, beside the auth plugin. The source stays clean only because the names live in the manifest; the tests do not use kind-neutral doubles. The script's doc still claims the composition root emits its table with the same functions, which it does not. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-core-connector/src",
    "kind": "production",
    "paths": [
     "crates/busbar-core-connector/src"
    ],
-   "tree_hash": "76aada588a98f9d865e5e75387eea4c94350b3f73a6ce9d8df6becc721cbc5c7",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 2,
+   "tree_hash": "1eb639e4144df366fe111cb4c6c4090baec488ac20454a9c5dfa427f87205f5b",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 5,
-    "MEDIUM": 14,
-    "LOW": 12,
+    "HIGH": 1,
+    "MEDIUM": 7,
+    "LOW": 11,
     "NIT": 2
    },
-   "report": "The connector still lends a pooled connection across instances and needs regardless of the trust it was secured with, and a registration sealed with no anchors borrows another's client identity. An upstream media leg's read deadlocks on a message longer than the reader's buffer, a TLS write over 64 KiB fails its connection, and a replaced instance's member programs are never stopped. Program leases, framer auto-replies, idle pooled sockets, name-lookup threads, framer re-calls and datagram path maps are unbounded. Read fully except the test kit, sampled.",
-   "auditor": "opus-q128-l159",
+   "report": "A replaced instance's member programs keep running and every per-instance record grows with each reload. A pooled connection verified under a need's earlier operator CA is still lent after that CA is replaced. One stalled reader freezes its HTTP/2 siblings; a plugin alone turns certificate verification off; a plaintext private plugin registry is refused by default; an unpinned infrastructure need reaches any internal host or socket; a dialled media leg probes unjudged addresses; a transport's size answer can abort the host. Read fully except in-scope test code, sampled.",
+   "auditor": "opus-r159c-connector-reread",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-connector/src/tests"
@@ -829,6 +810,20 @@
       "NIT": 2
      },
      "report": "The connector still lends a pooled connection across instances and needs regardless of the trust it was secured with, and a registration sealed with no anchors borrows another's client identity. An upstream media leg's read deadlocks on a message longer than the reader's buffer, a TLS write over 64 KiB fails its connection, and a replaced instance's member programs are never stopped. Program leases, framer auto-replies, idle pooled sockets, name-lookup threads, framer re-calls and datagram path maps are unbounded. Read fully except the test kit, sampled."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-connector-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "1eb639e4144df366fe111cb4c6c4090baec488ac20454a9c5dfa427f87205f5b",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 7,
+      "LOW": 11,
+      "NIT": 2
+     },
+     "report": "A replaced instance's member programs keep running and every per-instance record grows with each reload. A pooled connection verified under a need's earlier operator CA is still lent after that CA is replaced. One stalled reader freezes its HTTP/2 siblings; a plugin alone turns certificate verification off; a plaintext private plugin registry is refused by default; an unpinned infrastructure need reaches any internal host or socket; a dialled media leg probes unjudged addresses; a transport's size answer can abort the host. Read fully except in-scope test code, sampled."
     }
    ]
   },
@@ -838,18 +833,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "f3ecc26e4bb3812d64a9a2f6db5d6b4543bdc6862a2d85c983dd4530ba44d10c",
-   "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
-   "round": 5,
+   "tree_hash": "92255a77ce823bb94fac34921eee1e51160e752f934beafd6a496f82093eea60",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 6,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 5,
-    "LOW": 5,
+    "MEDIUM": 4,
+    "LOW": 4,
     "NIT": 0
    },
-   "report": "The authorization server keeps its records in the deployment's store and files them where the linked store reads them back. Its store write rests on a version claim that lapses in two minutes and nothing fences the write to it, so a late write can bring back a spent code or overwrite a newer key. Index rows, sessions, staked answers and emptied cells are never reclaimed. The minted signing key sits in the store in clear, one slow site can hold every document fetch, and the sweep runs on its own timer. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The authorization server keeps its records in the deployment's store under fenced version claims, sweeps them on the kernel's clock, and fetches metadata documents through the root connector under per-site and global bounds. A cell the sweep retires leaves its own claim on the next version standing, so a client whose records are recreated within two minutes cannot write once it climbs back to that version. The per-site fetch bound counts each IPv6 literal as its own site, so a handful of slow addresses holds every fetch. Open registration installs no limiter and a registered client's records are never reclaimed, and the minted signing key sits in the store in clear. Read in 11 parts, fully.",
+   "auditor": "opus-r159d-core-oauth2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -922,6 +917,20 @@
       "NIT": 0
      },
      "report": "The authorization server keeps its records in the deployment's store and files them where the linked store reads them back. Its store write rests on a version claim that lapses in two minutes and nothing fences the write to it, so a late write can bring back a spent code or overwrite a newer key. Index rows, sessions, staked answers and emptied cells are never reclaimed. The minted signing key sits in the store in clear, one slow site can hold every document fetch, and the sweep runs on its own timer. Read fully."
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-r159d-core-oauth2",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "92255a77ce823bb94fac34921eee1e51160e752f934beafd6a496f82093eea60",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 4,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The authorization server keeps its records in the deployment's store under fenced version claims, sweeps them on the kernel's clock, and fetches metadata documents through the root connector under per-site and global bounds. A cell the sweep retires leaves its own claim on the next version standing, so a client whose records are recreated within two minutes cannot write once it climbs back to that version. The per-site fetch bound counts each IPv6 literal as its own site, so a handful of slow addresses holds every fetch. Open registration installs no limiter and a registered client's records are never reclaimed, and the minted signing key sits in the store in clear. Read in 11 parts, fully."
     }
    ]
   },
@@ -931,7 +940,7 @@
    "paths": [
     "crates/busbar-export-file/src"
    ],
-   "tree_hash": "b151e25227b1a5605cee12ed2b5a68817d7ad884eace6b29aef9ba7d03904d47",
+   "tree_hash": "f10863ffb3e1f8be9db4fbb6e94aa89ea8320d4b4c7f0984029bb86013ae167f",
    "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
    "round": 2,
    "result": "findings",
@@ -943,7 +952,7 @@
    },
    "report": "The request-log file sink is a push-only export plugin that never touches the filesystem itself: each delivered batch is handed unchanged to the host's bounded disk lane under the declared destination key, the call parks and resumes on the same completion handle, and the host's answer (rotation steps, then landed or dropped) is raised as warn lines under the five declared catalogue codes, with settings validated in the configuration grammar's own serde words. The ABI use, the never-open-a-path rule, the resume/replay handling and the 1.5.5 drop wording are sound. The sink's manifest declares two counter series for rotations and rotation failures that nothing ever increments: the sink observes every rotation and every failed rotation step but emits no metric (its Statement carries no metric families and the delivery discards its reply envelope), so the host renders both series at zero forever while the file rotates. Separately, any non-FAILED disk answer (no host tables, no ticket, a refused destination, a fault) is raised under the open-failed code whose operator action points at directory permissions and free disk, and the archive count in the retention warning is a hand-copied host constant rather than the contract's own. Read fully.",
    "auditor": "opus-q128-export-file-src-a",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-export-file/src/tests"
    ],
@@ -1292,17 +1301,17 @@
     "crates/busbar-kernel-audit/src"
    ],
    "tree_hash": "fa44a26c6506bedde09c3116da7dbc6f9c99789ae490ac8960b276d524e39ae9",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "MEDIUM": 0,
-    "LOW": 0,
-    "NIT": 0
+    "MEDIUM": 1,
+    "LOW": 5,
+    "NIT": 1
    },
-   "report": "The fixed record carries no content and no price, names the node that sealed it inside its digest, signature and range read, and a restart rebuilds the head history from the sealed records, so the head read and every window's anchor answer as before. The dead surface and the duplicate canonicaliser are gone. The node's amendment journal and its durable sink are still process-global statics, and the sink is a trait-object seam that the composition root installs into a kernel crate. Read fully except parts of the recipe, signing and journal modules, sampled.",
-   "auditor": "opus-q128-l159",
+   "report": "The fixed record carries counts and no content or price, names its sealing node and boot inside the digest, is signed at seal time, and a restart rebuilds the head history from the journalled records, so the head read and every window's anchor survive. The node's amendment journal and its durable sink are still process-global statics, and the sink is a trait-object seam the composition root installs into this kernel crate; the restore and bind entry points that replace or wire that journal take no audit token. The range read publishes the sealing node, a random 64-bit draw, as a bare JSON number, so a verifier whose JSON reader goes through a double rounds it and reports an honest chain as tampered. Smaller items: the seed reader's wipe claim is false on its failure path, an edited record is reported as a bad signature, a comment still blames the packaging reader for a leak it no longer has, and the journal writer silently truncates an oversized text. Read in 10 parts, fully.",
+   "auditor": "opus-r159d-kernel-audit",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-audit/src/tests"
@@ -1347,6 +1356,20 @@
       "NIT": 0
      },
      "report": "The fixed record carries no content and no price, names the node that sealed it inside its digest, signature and range read, and a restart rebuilds the head history from the sealed records, so the head read and every window's anchor answer as before. The dead surface and the duplicate canonicaliser are gone. The node's amendment journal and its durable sink are still process-global statics, and the sink is a trait-object seam that the composition root installs into a kernel crate. Read fully except parts of the recipe, signing and journal modules, sampled."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159d-kernel-audit",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "fa44a26c6506bedde09c3116da7dbc6f9c99789ae490ac8960b276d524e39ae9",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 5,
+      "NIT": 1
+     },
+     "report": "The fixed record carries counts and no content or price, names its sealing node and boot inside the digest, is signed at seal time, and a restart rebuilds the head history from the journalled records, so the head read and every window's anchor survive. The node's amendment journal and its durable sink are still process-global statics, and the sink is a trait-object seam the composition root installs into this kernel crate; the restore and bind entry points that replace or wire that journal take no audit token. The range read publishes the sealing node, a random 64-bit draw, as a bare JSON number, so a verifier whose JSON reader goes through a double rounds it and reports an honest chain as tampered. Smaller items: the seed reader's wipe claim is false on its failure path, an edited record is reported as a bad signature, a comment still blames the packaging reader for a leak it no longer has, and the journal writer silently truncates an oversized text. Read in 10 parts, fully."
     }
    ]
   },
@@ -1357,17 +1380,17 @@
     "crates/busbar-kernel-breaker/src"
    ],
    "tree_hash": "58c7c0704484ec7b4a0137cb3029f0c0213907da7041470c95fbb55525319969",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 2,
-    "MEDIUM": 1,
+    "MEDIUM": 0,
     "LOW": 5,
-    "NIT": 0
+    "NIT": 1
    },
-   "report": "The breaker's own classifier now reads facts only: the transport's stated fault reading, the kernel's fact that no answer came, and a stated wait in seconds; an answer with no reading records nothing. But the crate still ships the retiring engines' normalizer, which classifies HTTP status bands, parses the Retry-After header with a date parser, and special-cases one vendor's overload status and one dialect's error code. A second failure can still overwrite an armed cooldown, as the previous release did. The probe journal and an exhaustion helper never run, and some prose is stale. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A failure that states no wait, or a shorter one, overwrites an armed cooldown on both the single-member and the multi-member branches; that is 1.5.5 parity, not a defect: 1.5.5's cell_record_failure (crates/busbar/src/store/in_memory/breaker.rs at v1.5.5, lines 714-724) stores the cooldown unconditionally, and customer behaviour stays identical to 1.5.5 unless the owner signs a change. Read in 4 parts, fully.",
+   "auditor": "opus-r159d-kernel-breaker",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-breaker/src/tests"
@@ -1412,6 +1435,20 @@
       "NIT": 0
      },
      "report": "The breaker's own classifier now reads facts only: the transport's stated fault reading, the kernel's fact that no answer came, and a stated wait in seconds; an answer with no reading records nothing. But the crate still ships the retiring engines' normalizer, which classifies HTTP status bands, parses the Retry-After header with a date parser, and special-cases one vendor's overload status and one dialect's error code. A second failure can still overwrite an armed cooldown, as the previous release did. The probe journal and an exhaustion helper never run, and some prose is stale. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159d-kernel-breaker",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "58c7c0704484ec7b4a0137cb3029f0c0213907da7041470c95fbb55525319969",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 0,
+      "LOW": 5,
+      "NIT": 1
+     },
+     "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A failure that states no wait, or a shorter one, overwrites an armed cooldown on both the single-member and the multi-member branches; that is 1.5.5 parity, not a defect: 1.5.5's cell_record_failure (crates/busbar/src/store/in_memory/breaker.rs at v1.5.5, lines 714-724) stores the cooldown unconditionally, and customer behaviour stays identical to 1.5.5 unless the owner signs a change. Read in 4 parts, fully."
     }
    ]
   },
@@ -1421,18 +1458,18 @@
    "paths": [
     "crates/busbar-kernel-egress/src"
    ],
-   "tree_hash": "ebab6951da7d89e074a9da53a554b05c25f1ed97c90918b184bc43c746405fb9",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 2,
+   "tree_hash": "0d845ff5b3451e3525f75ca6a8ba84c992470e7cdf6f83b2f8e4ec29e14ae3ba",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 3,
    "result": "findings",
    "counts": {
     "HIGH": 1,
     "MEDIUM": 1,
-    "LOW": 4,
+    "LOW": 3,
     "NIT": 0
    },
-   "report": "The egress crate still ships a second network guard that kernel dial paths use outside the connector's one destination judge: a duplex WebSocket dial resolves, pins and opens its own socket, and plane hops judge their own addresses, under a per-caller policy with no egress class or operator allowlist. The crate's verify-step trust unit, with its own guards, lane model, ordering and weighted selector, never runs; the kernel's door decides instead. A pinned-arity reroute is never constructed, a last-resort terminal does not skip a drained member, and some prose is stale. Read fully except parts of the guard module, sampled.",
-   "auditor": "opus-q128-l159",
+   "report": "The walk, pick order, tiers, probe guards, queue wait and shed words behave as the previous release did, but the last-resort terminal ranks the pool's whole membership instead of the members the hooks kept, so a degraded dispatch can reach a member a routing policy or a required compliance restriction removed, and its retry hint is computed over the same unrestricted set. The crate still carries a complete second address guard (policy, resolve-then-pin, dial table, sealed-destination check) that no dial path calls, while its module prose says the connector and kernel call it. The query-parameter auth helpers and most client-header forwarding helpers have no caller, and several doc comments state things the code does not do. Read in 9 parts, fully.",
+   "auditor": "opus-r159d-kernel-egress",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-egress/src/tests"
@@ -1465,6 +1502,20 @@
       "NIT": 0
      },
      "report": "The egress crate still ships a second network guard that kernel dial paths use outside the connector's one destination judge: a duplex WebSocket dial resolves, pins and opens its own socket, and plane hops judge their own addresses, under a per-caller policy with no egress class or operator allowlist. The crate's verify-step trust unit, with its own guards, lane model, ordering and weighted selector, never runs; the kernel's door decides instead. A pinned-arity reroute is never constructed, a last-resort terminal does not skip a drained member, and some prose is stale. Read fully except parts of the guard module, sampled."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159d-kernel-egress",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "0d845ff5b3451e3525f75ca6a8ba84c992470e7cdf6f83b2f8e4ec29e14ae3ba",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The walk, pick order, tiers, probe guards, queue wait and shed words behave as the previous release did, but the last-resort terminal ranks the pool's whole membership instead of the members the hooks kept, so a degraded dispatch can reach a member a routing policy or a required compliance restriction removed, and its retry hint is computed over the same unrestricted set. The crate still carries a complete second address guard (policy, resolve-then-pin, dial table, sealed-destination check) that no dial path calls, while its module prose says the connector and kernel call it. The query-parameter auth helpers and most client-header forwarding helpers have no caller, and several doc comments state things the code does not do. Read in 9 parts, fully."
     }
    ]
   },
@@ -1474,18 +1525,18 @@
    "paths": [
     "crates/busbar-kernel-identity/src"
    ],
-   "tree_hash": "c0afad5ce8c263eec708461ced6cfbcca75d73bec8291ede10bb94164c5d36b0",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
+   "tree_hash": "2266f2042c68d4b88f7cfc9819ff50673e72e3f2605caecb373c5f74df233324",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 0,
+    "HIGH": 1,
     "MEDIUM": 1,
-    "LOW": 3,
+    "LOW": 4,
     "NIT": 0
    },
-   "report": "The crate holds the operator credential's words and judgement, the caller reference, and a chain walk with its module and principal types. The operator judgement now carries the identity's replay claim and the lines an auth names for stripping. The chain walk still never runs in production: the kernel runs its own chain with its own verdict, entry and keys-arm types, so the crate's walk, reserved-prefix rule and key-verifier binding are proven only by tests. The manifest and several docs describe a cache and a crate that no longer exist. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The crate holds the operator credential's words, refusal texts and judgement, the caller reference key, and a chain walk with its module, principal and key-verifier types. The root installs the build's linked auth rows, each carrying a plugin door function pointer, into a process-wide static the crate owns. The design allows only two static code seams, and the static-seam scan cannot see this one because the function pointer is hidden behind a type alias. The chain walk still never runs in production: the kernel runs its own chain, so the walk, the key-verifier binding and the revocation view are exercised only by tests. The reserved-id check has no caller although its docs say it refuses such ids, and several docs still describe a credential cache that does not exist. Read fully.",
+   "auditor": "opus-r159d-kernel-identity",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-identity/src/tests"
@@ -1532,6 +1583,20 @@
       "NIT": 0
      },
      "report": "The crate holds the operator credential's words and judgement, the caller reference, and a chain walk with its module and principal types. The operator judgement now carries the identity's replay claim and the lines an auth names for stripping. The chain walk still never runs in production: the kernel runs its own chain with its own verdict, entry and keys-arm types, so the crate's walk, reserved-prefix rule and key-verifier binding are proven only by tests. The manifest and several docs describe a cache and a crate that no longer exist. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159d-kernel-identity",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "2266f2042c68d4b88f7cfc9819ff50673e72e3f2605caecb373c5f74df233324",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The crate holds the operator credential's words, refusal texts and judgement, the caller reference key, and a chain walk with its module, principal and key-verifier types. The root installs the build's linked auth rows, each carrying a plugin door function pointer, into a process-wide static the crate owns. The design allows only two static code seams, and the static-seam scan cannot see this one because the function pointer is hidden behind a type alias. The chain walk still never runs in production: the kernel runs its own chain, so the walk, the key-verifier binding and the revocation view are exercised only by tests. The reserved-id check has no caller although its docs say it refuses such ids, and several docs still describe a credential cache that does not exist. Read fully."
     }
    ]
   },
@@ -1541,18 +1606,18 @@
    "paths": [
     "crates/busbar-kernel-ledger/src"
    ],
-   "tree_hash": "7fd337b0137e614c131629bd78a282ef31ff0425fb203294cb3a851c932ceb92",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
+   "tree_hash": "941e13b804160d04bc41b08135eb462970ed5339fae8258e3645354bb553cca9",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "MEDIUM": 0,
-    "LOW": 4,
-    "NIT": 0
+    "MEDIUM": 1,
+    "LOW": 7,
+    "NIT": 2
    },
-   "report": "Money arithmetic is exact and checked, every unpriced lane or class refuses, and the prose now states what the code does. One defect stands: neither the in-memory book nor the dual-write sums ever retire a window, so both grow by one balance per principal per day, and every checkpoint the node keeps holds a full copy of that book, so memory and seal cost grow with uptime times principals. A handful of public helpers have no production caller, and a few doc comments are stale. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "Money arithmetic is exact and checked: counts times integer rates accumulate at scale fifteen, the tier divides once with half-to-even rounding, a hole in the history or an unpriced lane or class refuses, and the statement read lists every line it cannot price. Two defects stand. The in-memory book and the dual-write sums keep one balance per principal, bucket and window for the life of the process, because the book's retirement verb has no production caller and the summed rows have none at all, so memory and the size of every sealed checkpoint grow with uptime. The sequence check between two checkpoints passes a node whose chain head vanished and a head rewritten at the same sequence. The rest is a statement sum that saturates where the money rule refuses, an identity that closes only if the caller's overdraft figure is exactly the excess, unreachable or unread fields, and doc comments that describe a rounding rule, a float-free intake and a cache the code does not have. Read in 20 parts, fully.",
+   "auditor": "opus-r159d-kernel-ledger",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-ledger/src/tests"
@@ -1597,6 +1662,20 @@
       "NIT": 0
      },
      "report": "Money arithmetic is exact and checked, every unpriced lane or class refuses, and the prose now states what the code does. One defect stands: neither the in-memory book nor the dual-write sums ever retire a window, so both grow by one balance per principal per day, and every checkpoint the node keeps holds a full copy of that book, so memory and seal cost grow with uptime times principals. A handful of public helpers have no production caller, and a few doc comments are stale. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159d-kernel-ledger",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "941e13b804160d04bc41b08135eb462970ed5339fae8258e3645354bb553cca9",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 7,
+      "NIT": 2
+     },
+     "report": "Money arithmetic is exact and checked: counts times integer rates accumulate at scale fifteen, the tier divides once with half-to-even rounding, a hole in the history or an unpriced lane or class refuses, and the statement read lists every line it cannot price. Two defects stand. The in-memory book and the dual-write sums keep one balance per principal, bucket and window for the life of the process, because the book's retirement verb has no production caller and the summed rows have none at all, so memory and the size of every sealed checkpoint grow with uptime. The sequence check between two checkpoints passes a node whose chain head vanished and a head rewritten at the same sequence. The rest is a statement sum that saturates where the money rule refuses, an identity that closes only if the caller's overdraft figure is exactly the excess, unreachable or unread fields, and doc comments that describe a rounding rule, a float-free intake and a cache the code does not have. Read in 20 parts, fully."
     }
    ]
   },
@@ -1606,9 +1685,9 @@
    "paths": [
     "crates/busbar-kernel-scope/src"
    ],
-   "tree_hash": "6d9dbce231201c1bc333f23f6e529c69b188132b2a944b6c124890b144b6f6b5",
-   "audited_at": "f49c8bf98c4d503165974cbec2435bf5a3038f0e",
-   "round": 5,
+   "tree_hash": "cccf486e5129703992362993864db13135888ecc9045f48ee8c09207918d4fb2",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 6,
    "result": "findings",
    "counts": {
     "HIGH": 0,
@@ -1616,8 +1695,8 @@
     "LOW": 0,
     "NIT": 1
    },
-   "report": "The crate is the approve step's scope half: it re-exports the two-rung Scope chain and the Grants set from their one home in the contract, re-exports the admin path prefix, and holds the single admin-API scope matrix, a pure function of method and path that answers read-only for GET and HEAD and for the two dry-run paths (config validate, plugins inspect, matched on path alone) and full for everything else, with unknown or non-canonical methods failing closed to full. Compared against the previous release's matrix it is behaviourally identical: method comparison is exact and case-sensitive, the prefix is stripped the same way, and a path outside the prefix or with a trailing slash fails closed to full; cutting the query string only restores the previous release's answer for a caller that hands the raw request target. Both the kernel's admin gate and the root's approve step call this one function, so there is no second copy of the matrix. The only defect is stale crate documentation: the header still says the crate holds the egress grant gate and links an `egress` module that no longer exists in it. Read fully.",
-   "auditor": "opus-q128-busbar-kernel-scope-src-c1",
+   "report": "The crate re-exports the two-rung scope chain, the grant set and the admin prefix from the contract and holds the one admin scope matrix: exact-case GET and HEAD and the two dry-run paths answer read-only, everything else answers full, and the query string is cut before the path is matched. The rule matches the previous release's matrix line for line, including its handling of a path outside the prefix, and both the kernel's admin gate and the root's approve step call this one copy. The crate docs no longer mention an egress gate. The only thing found is one doc-comment line that was never wrapped. Read fully.",
+   "auditor": "opus-r159d-kernel-scope",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-scope/src/tests"
@@ -1689,6 +1768,20 @@
       "NIT": 1
      },
      "report": "The crate is the approve step's scope half: it re-exports the two-rung Scope chain and the Grants set from their one home in the contract, re-exports the admin path prefix, and holds the single admin-API scope matrix, a pure function of method and path that answers read-only for GET and HEAD and for the two dry-run paths (config validate, plugins inspect, matched on path alone) and full for everything else, with unknown or non-canonical methods failing closed to full. Compared against the previous release's matrix it is behaviourally identical: method comparison is exact and case-sensitive, the prefix is stripped the same way, and a path outside the prefix or with a trailing slash fails closed to full; cutting the query string only restores the previous release's answer for a caller that hands the raw request target. Both the kernel's admin gate and the root's approve step call this one function, so there is no second copy of the matrix. The only defect is stale crate documentation: the header still says the crate holds the egress grant gate and links an `egress` module that no longer exists in it. Read fully."
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-r159d-kernel-scope",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "cccf486e5129703992362993864db13135888ecc9045f48ee8c09207918d4fb2",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 1
+     },
+     "report": "The crate re-exports the two-rung scope chain, the grant set and the admin prefix from the contract and holds the one admin scope matrix: exact-case GET and HEAD and the two dry-run paths answer read-only, everything else answers full, and the query string is cut before the path is matched. The rule matches the previous release's matrix line for line, including its handling of a path outside the prefix, and both the kernel's admin gate and the root's approve step call this one copy. The crate docs no longer mention an egress gate. The only thing found is one doc-comment line that was never wrapped. Read fully."
     }
    ]
   },
@@ -1768,24 +1861,6 @@
      },
      "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart, only the unacknowledged last commit is cut, and corrupt remainders are copied durably before any cut. A failed sync cuts the batch and opens the next segment at once. Gaps: an unverified identity from a frame whose header fails its check moves the numbering, up to a saturation where every following record is silently passed over. On a disk, the store's catch-up queue drops records past its bound and forgets all of them at a restart. Some prose and accessors are stale. Read fully."
     }
-   ]
-  },
-  {
-   "id": "crates/busbar-llm/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-llm/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-llm/src/tests"
    ]
   },
   {
@@ -1883,16 +1958,37 @@
    "paths": [
     "crates/busbar-plane-a2a-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b257ffbe4f92a0fae31e9b31037cbf160175f833e31a6a089b8bbba774c6c0bf",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "b257ffbe4f92a0fae31e9b31037cbf160175f833e31a6a089b8bbba774c6c0bf",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully."
+    }
    ]
   },
   {
@@ -2004,16 +2100,37 @@
    "paths": [
     "crates/busbar-plane-decisions-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "d094c0097f1fa143c62c8200302e4dd8ddd2c5e240f45d1cbaeb30be61761ff7",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-decisions-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "d094c0097f1fa143c62c8200302e4dd8ddd2c5e240f45d1cbaeb30be61761ff7",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully."
+    }
    ]
   },
   {
@@ -2022,18 +2139,18 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": "347b47495b11b2629d2815efbc1c92dc1d71bf4f64f1d14ecf8ff9036dc43e72",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 1,
+   "tree_hash": "eca2290e8832333d53334da59b01d7c6d36656e8eb44a53fd3cde8d5f90ddaae",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 20,
+    "HIGH": 4,
     "MEDIUM": 27,
-    "LOW": 19,
+    "LOW": 20,
     "NIT": 4
    },
-   "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled.",
-   "auditor": "opus-ledger-plane-llm-parts",
+   "report": "The llm plane's door now ships by default and the earlier billing departures from 1.5.5 are gone, but a translated answer larger than one window bills nothing when the caller leaves before its last window, Cohere billed-unit counts replace the raw token counts the key is charged, reasoning asks 1.5.5 never translated now cross Cohere both ways and Anthropic outward, and the codec keeps a second per-thread slot. Unregistered translated members, uncapped stream buffers and leaked per-unit entries remain. Read in three parts; large codec core files sampled.",
+   "auditor": "opus-r159c-plane-llm-parts",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
@@ -2052,6 +2169,20 @@
       "NIT": 4
      },
      "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-llm-parts",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "eca2290e8832333d53334da59b01d7c6d36656e8eb44a53fd3cde8d5f90ddaae",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 27,
+      "LOW": 20,
+      "NIT": 4
+     },
+     "report": "The llm plane's door now ships by default and the earlier billing departures from 1.5.5 are gone, but a translated answer larger than one window bills nothing when the caller leaves before its last window, Cohere billed-unit counts replace the raw token counts the key is charged, reasoning asks 1.5.5 never translated now cross Cohere both ways and Anthropic outward, and the codec keeps a second per-thread slot. Unregistered translated members, uncapped stream buffers and leaked per-unit entries remain. Read in three parts; large codec core files sampled."
     }
    ]
   },
@@ -2174,14 +2305,35 @@
    "paths": [
     "crates/busbar-plane-mcp/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "8a28c3037547193704f7a46f02d9ccd7ef0e38e0cf4fa02301a4db817817168b",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The build script generates nothing and links nothing: it states one address under the crate's links name, the path of the plane's own root test cells, which the composition root reads only in its test builds to compile those cells into its door-path tests. The path is derived from the crate's own manifest directory, so it holds for a path dependency and a pinned one alike, and the plane ships no black-box case directory, so stating none is correct. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "8a28c3037547193704f7a46f02d9ccd7ef0e38e0cf4fa02301a4db817817168b",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The build script generates nothing and links nothing: it states one address under the crate's links name, the path of the plane's own root test cells, which the composition root reads only in its test builds to compile those cells into its door-path tests. The path is derived from the crate's own manifest directory, so it holds for a path dependency and a pinned one alike, and the plane ships no black-box case directory, so stating none is correct. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-mcp-plugin/src",
@@ -2189,16 +2341,37 @@
    "paths": [
     "crates/busbar-plane-mcp-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "787b203850f58ec4ec4ad6182ccd89da9e69655c96d70c751281d8927005b370",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does. Its doc also names a predecessor example that no longer exists. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "787b203850f58ec4ec4ad6182ccd89da9e69655c96d70c751281d8927005b370",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does. Its doc also names a predecessor example that no longer exists. Read fully."
+    }
    ]
   },
   {
@@ -2310,16 +2483,37 @@
    "paths": [
     "crates/busbar-plane-streaming-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-streaming-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully."
+    }
    ]
   },
   {
@@ -2328,7 +2522,7 @@
    "paths": [
     "crates/busbar-secret-env/src"
    ],
-   "tree_hash": "3206563a238314972ac30f0ea860bc6fee3e1a27573351528486413f14e1c7a2",
+   "tree_hash": "f82b3fd99092f260e6da85a038919ce4a2a61c63f8669f56528e54201bfaec92",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2340,7 +2534,7 @@
    },
    "report": "The environment secret source is an ordinary secret plugin: it forbids unsafe code, depends on the contract alone, declares its module alias and its reference sugar as Statement rewrites, holds no state, never pends, hands the value back under a lease the SDK zeroes on release, and never puts the value in a refusal or a log. Its manifest's declared contract range names the secret kind's 1.5.5 version, so packing the dropped-in build is refused. It refuses a whitespace-only value that 1.5.5 resolved and words a mis-encoded variable differently, while its prose claims every refusal is 1.5.5's. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-secret-env/src/tests"
    ],
@@ -2381,7 +2575,7 @@
    "paths": [
     "crates/busbar-secret-file/src"
    ],
-   "tree_hash": "9d3b5716ef0fc632467af94f8074776dd64d3a356f678cea41a11fe31c5197b8",
+   "tree_hash": "a4509ea290f2904c7051c5eb53f0b05fae52d98e288b677871137f1d80dd846b",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2393,7 +2587,7 @@
    },
    "report": "The file secret source forbids unsafe code, depends on the contract alone, follows symlinks so projected secrets resolve, refuses non-regular, empty and blank files fail-closed, and never puts file content in a refusal or a log. The design now admits its blocking read to the host's bounded disk lane at config time, but its declares document never states the disk need, so the host still runs the read wherever the resolve is called. It refuses files over 1 MiB, which 1.5.5 read whole, judges the file type on the path rather than the opened handle, and overstates its refusal parity. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-secret-file/src/tests"
    ],
@@ -2900,18 +3094,18 @@
    "paths": [
     "crates/plugin-loader/build.rs"
    ],
-   "tree_hash": "5dd26e1b48ed06c897e8d7a9015885120213a6469443027a8b2045c39c19a33e",
-   "audited_at": "f49c8bf98c4d503165974cbec2435bf5a3038f0e",
-   "round": 5,
+   "tree_hash": "47c3eafba5088ee7c1f5d14c66188a6ac23aff0a2cd742c75d240b3cb64193dc",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 6,
    "result": "findings",
    "counts": {
     "HIGH": 0,
     "MEDIUM": 0,
-    "LOW": 2,
+    "LOW": 3,
     "NIT": 0
    },
-   "report": "The build script reads the loader crate's own manifest, turns each row of its both-ways fixture table into generated Rust (a table of hot-kind fixtures, a table of memory-ABI door fixtures with their linked doors, a per-row crate alias, and two small files for the store fixture), and fails the build loudly on a row it cannot classify or a missing store row. It is test-only wiring, reaches fixtures by kind as intended, and breaches no Law. Two latent defects remain: the rule that a fixture's door-exporting packaging crate must never be linked into the test binary is enforced only for hot-kind rows, so a memory-ABI row that names such a packaging crate (as the second auth row does today) is linked with its exported door symbol, one more such row away from a duplicate-symbol link failure; and the hot table documents its second column as the cdylib crate name while the secret row stores the logic crate name, so the generic lookup by kind returns a path to an artifact that does not exist and the one consumer has to patch the name by hand. Read fully.",
-   "auditor": "opus-q128-plugin-loader-build-rs-c2",
+   "report": "The build script reads the loader crate's own manifest, turns each both-ways row into test-only generated Rust (a hot-kind table, a memory-ABI door table, an export sink table, a crate alias per row, and the store fixture files), and stops the build on a row it cannot classify or a missing store row; it names no instance, reaches no shipped build and breaks no Law. Three latent defects remain. The rule that a door-exporting packaging crate is never linked into the test binary is applied only to hot-kind rows, so the second auth row links its packaging crate and its exported door symbol. The crate column of the hot and door tables is documented as the cdylib name but holds the logic crate for some rows and the packaging crate for others, so two consumers append the suffix by hand and the generic hot lookup returns a missing artifact for the secret row. Its comments still describe the retired lane split, with a plane kind that has no row and a linked door called a C-layout declaration. Read fully.",
+   "auditor": "opus-r159d-loader-build",
    "fixed_at": null,
    "rounds": [
     {
@@ -2981,6 +3175,20 @@
       "NIT": 0
      },
      "report": "The build script reads the loader crate's own manifest, turns each row of its both-ways fixture table into generated Rust (a table of hot-kind fixtures, a table of memory-ABI door fixtures with their linked doors, a per-row crate alias, and two small files for the store fixture), and fails the build loudly on a row it cannot classify or a missing store row. It is test-only wiring, reaches fixtures by kind as intended, and breaches no Law. Two latent defects remain: the rule that a fixture's door-exporting packaging crate must never be linked into the test binary is enforced only for hot-kind rows, so a memory-ABI row that names such a packaging crate (as the second auth row does today) is linked with its exported door symbol, one more such row away from a duplicate-symbol link failure; and the hot table documents its second column as the cdylib crate name while the secret row stores the logic crate name, so the generic lookup by kind returns a path to an artifact that does not exist and the one consumer has to patch the name by hand. Read fully."
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-r159d-loader-build",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "47c3eafba5088ee7c1f5d14c66188a6ac23aff0a2cd742c75d240b3cb64193dc",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The build script reads the loader crate's own manifest, turns each both-ways row into test-only generated Rust (a hot-kind table, a memory-ABI door table, an export sink table, a crate alias per row, and the store fixture files), and stops the build on a row it cannot classify or a missing store row; it names no instance, reaches no shipped build and breaks no Law. Three latent defects remain. The rule that a door-exporting packaging crate is never linked into the test binary is applied only to hot-kind rows, so the second auth row links its packaging crate and its exported door symbol. The crate column of the hot and door tables is documented as the cdylib name but holds the logic crate for some rows and the packaging crate for others, so two consumers append the suffix by hand and the generic hot lookup returns a missing artifact for the secret row. Its comments still describe the retired lane split, with a plane kind that has no row and a linked door called a C-layout declaration. Read fully."
     }
    ]
   },
@@ -3279,14 +3487,35 @@
    "paths": [
     "crates/busbar-auth-webhook-signature/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "019071d1e8d03954895590537a1dbab8a425f39bb8374792622bc609f475a411",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The webhook-signature auth plugin's declares document states only a contract-ABI window of three to three. That equals the auth kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plugin opens no connection, emits no metric series, raises no coded diagnostic, names no destination and reads no disk. The loader drops the stated range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "019071d1e8d03954895590537a1dbab8a425f39bb8374792622bc609f475a411",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The webhook-signature auth plugin's declares document states only a contract-ABI window of three to three. That equals the auth kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plugin opens no connection, emits no metric series, raises no coded diagnostic, names no destination and reads no disk. The loader drops the stated range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-contract/include",
@@ -3538,14 +3767,35 @@
    "paths": [
     "crates/busbar-plane-a2a/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "39e049f1492a16ef748ec20bea2926da8d126ce4ab5696f5c00c9095b2c187ca",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 2,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The agent plane's declares document states one fact, that a transient failure below the trip threshold never benches an agent's cell, and both the linked and the packed builds read it. It omits the connection needs its Statement names, http and grpc, so the host's conformance check that the two lists match fails on this file. It also declares none of the plane's thirty-six coded diagnostics, and nothing else registers them, so in no build do they join the runtime catalogue. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "39e049f1492a16ef748ec20bea2926da8d126ce4ab5696f5c00c9095b2c187ca",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 2,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The agent plane's declares document states one fact, that a transient failure below the trip threshold never benches an agent's cell, and both the linked and the packed builds read it. It omits the connection needs its Statement names, http and grpc, so the host's conformance check that the two lists match fails on this file. It also declares none of the plane's thirty-six coded diagnostics, and nothing else registers them, so in no build do they join the runtime catalogue. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-a2a/proto",
@@ -3603,14 +3853,35 @@
    "paths": [
     "crates/busbar-plane-decisions/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "d41327d763231265d9c6752d0c27c581acbbffdf1a284f23c5e97366a85cf8c0",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The decisions plane's declares document lists the http transport as its one need, which matches the single outbound provider need its Statement names, and a contract-ABI window of one to one. The window equals the plane kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plane raises no coded diagnostic, emits no declared metric series and keeps the host's default breaker posture. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "d41327d763231265d9c6752d0c27c581acbbffdf1a284f23c5e97366a85cf8c0",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The decisions plane's declares document lists the http transport as its one need, which matches the single outbound provider need its Statement names, and a contract-ABI window of one to one. The window equals the plane kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plane raises no coded diagnostic, emits no declared metric series and keeps the host's default breaker posture. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/declares.json",
@@ -3618,14 +3889,35 @@
    "paths": [
     "crates/busbar-plane-llm/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "20801eea45ac83677947af43aed87c1de9a427cad4bbf3fd75e71be94116f3c6",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The llm plane's declares document lists only the http transport as its need, which matches the six outbound provider needs its Statement names, and it correctly states no contract-ABI range and no breaker fact, since the plane keeps the host's default posture. It omits the plane's own coded diagnostics: those reach the runtime catalogue only through the linked build's separate diagnostics axis, so the declaration that a packed copy of the plane would carry names none of them. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "20801eea45ac83677947af43aed87c1de9a427cad4bbf3fd75e71be94116f3c6",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The llm plane's declares document lists only the http transport as its need, which matches the six outbound provider needs its Statement names, and it correctly states no contract-ABI range and no breaker fact, since the plane keeps the host's default posture. It omits the plane's own coded diagnostics: those reach the runtime catalogue only through the linked build's separate diagnostics axis, so the declaration that a packed copy of the plane would carry names none of them. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/dialects",
@@ -3680,14 +3972,35 @@
    "paths": [
     "crates/busbar-plane-mcp/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "007d2b81651e9d725196dc61aa6bd4979c5e6654093f8f0b93432e1087453e37",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The tool plane keeps two declares documents. This one, which the release signs into a dropped-in plane's manifest, lists the right needs, http and stdio, plus a retired contract-ABI range the host's declares gate now refuses. The breaker fact and the ten diagnostics live only in a second file the linked build reads. A dropped-in copy therefore benches a member on any transient failure below the trip threshold, where the linked plane does not, and its codes never join the catalogue. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "007d2b81651e9d725196dc61aa6bd4979c5e6654093f8f0b93432e1087453e37",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The tool plane keeps two declares documents. This one, which the release signs into a dropped-in plane's manifest, lists the right needs, http and stdio, plus a retired contract-ABI range the host's declares gate now refuses. The breaker fact and the ten diagnostics live only in a second file the linked build reads. A dropped-in copy therefore benches a member on any transient failure below the trip threshold, where the linked plane does not, and its codes never join the catalogue. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-secret-env/declares.json",
@@ -3880,14 +4193,35 @@
    "paths": [
     "crates/busbar-transport-http/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "8295448ec17878a110f12c5551c9b3168a7199ecf7d07a2a0ae70d4d07a0fa20",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The http transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "8295448ec17878a110f12c5551c9b3168a7199ecf7d07a2a0ae70d4d07a0fa20",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The http transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-stdio/declares.json",
@@ -3895,14 +4229,35 @@
    "paths": [
     "crates/busbar-transport-stdio/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "01fa645758cc104a9640dc61ac36f22b6b13355cd9bdf5299193eec421bff58e",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The stdio transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the carrier states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "01fa645758cc104a9640dc61ac36f22b6b13355cd9bdf5299193eec421bff58e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The stdio transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the carrier states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-tcp/declares.json",
@@ -3946,14 +4301,35 @@
    "paths": [
     "crates/busbar-transport-webrtc/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "65280f096bb8f6b276b087690ff9923bdc56ce620b77f220f9dff424919823b8",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The webrtc transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "65280f096bb8f6b276b087690ff9923bdc56ce620b77f220f9dff424919823b8",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The webrtc transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-ws/declares.json",
@@ -4648,68 +5024,6 @@
    ]
   },
   {
-   "id": "crates/busbar-llm/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-llm/src/tests"
-   ],
-   "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "LOW": 1
-   },
-   "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 1
-     },
-     "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-llm/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-llm/tests"
-   ],
-   "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 2
-   },
-   "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
-     "counts": {
-      "LOW": 2
-     },
-     "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-plane-a2a/src/tests",
    "kind": "test",
    "paths": [
@@ -4805,14 +5119,47 @@
    "paths": [
     "crates/busbar-plane-llm/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-llm/tests"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-llm/tests",
+    "paths": [
+     "crates/busbar-llm/tests"
+    ]
+   },
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
+     "hashed_as": {
+      "id": "crates/busbar-llm/tests",
+      "paths": [
+       "crates/busbar-llm/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-llm/tests"
+     ]
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/examples",
@@ -5525,18 +5872,18 @@
    "paths": [
     "testing/a2a-tck"
    ],
-   "tree_hash": "054209d8ac047d36a6ca2fa1b802cc6bc86c1ea7160994816be834c04cb7d3c1",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "2b6756643350ef1b0f350cb66623af87b0022f83e735c72f4594ca98fd320918",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 1,
     "MEDIUM": 0,
-    "LOW": 2,
+    "LOW": 7,
     "NIT": 0
    },
-   "report": "The subject gate now evaluates every forgiveness: each waived push-delivery failure and each justified skip carries a premise the gate checks against the run, and an unnamed skip is refused, so both earlier gate defects are gone. What remains is the plane the waiver ledger rests on: the push-delivery waiver's premise is a plane-local webhook guard, and that plane resolves DNS itself and runs its own destination guard. The ledger also cites moved source paths, and the skip premises read a report key nothing in the tree produces. Read fully.",
-   "auditor": "sonnet-ledger-a2a-tck",
+   "report": "The control legs compare the publisher's suite against a pinned third-party control and refuse any status movement, a collapsed execution count, or an empty report, and the subject ledger now evaluates a premise for every forgiveness. But the runner never clears the previous run's copied report before a run, and the wired recorder keeps the output directory in a persistent cache, so a control run that crashes before writing a report is compared against the last good run's report and matches. The control binary's version is never verified after a cached install, the baseline's recorded provenance is never compared, and several comments and ledger notes state things the tree no longer bears out (moved source paths, a pin said to be read but spelled twice, a fixture said to carry only suite branches). Read in 3 parts, fully.",
+   "auditor": "opus-r159d-a2a-tck",
    "fixed_at": null,
    "rounds": [
     {
@@ -5564,6 +5911,34 @@
       "NIT": 0
      },
      "report": "The subject gate now evaluates every forgiveness: each waived push-delivery failure and each justified skip carries a premise the gate checks against the run, and an unnamed skip is refused, so both earlier gate defects are gone. What remains is the plane the waiver ledger rests on: the push-delivery waiver's premise is a plane-local webhook guard, and that plane resolves DNS itself and runs its own destination guard. The ledger also cites moved source paths, and the skip premises read a report key nothing in the tree produces. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-harness-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "a2cdd744be9839873bbca0cdde95521d8a1f14bd20d5cc7b6944fad54666d418",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The push-delivery waiver now rests on the connector's single destination check; the plane asks the host's judge, words the refusal and resolves nothing itself. The pinned suite writes the agent card the skip premises read. What remains: a control leg whose suite writes no report is judged on the report an earlier run left, so a crashed run can match its baseline; the waiver ledger describes the deleted plane guard and cites moved paths; one control pin is kept twice, unchecked. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159d-a2a-tck",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "2b6756643350ef1b0f350cb66623af87b0022f83e735c72f4594ca98fd320918",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 7,
+      "NIT": 0
+     },
+     "report": "The control legs compare the publisher's suite against a pinned third-party control and refuse any status movement, a collapsed execution count, or an empty report, and the subject ledger now evaluates a premise for every forgiveness. But the runner never clears the previous run's copied report before a run, and the wired recorder keeps the output directory in a persistent cache, so a control run that crashes before writing a report is compared against the last good run's report and matches. The control binary's version is never verified after a cached install, the baseline's recorded provenance is never compared, and several comments and ledger notes state things the tree no longer bears out (moved source paths, a pin said to be read but spelled twice, a fixture said to carry only suite branches). Read in 3 parts, fully."
     }
    ]
   },
@@ -5678,18 +6053,18 @@
    "paths": [
     "testing/plane-copies"
    ],
-   "tree_hash": "ca12226cb59599e34633b44cf7a4270cca60cede7ced41e31da7f66407755fa9",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "eb90617b786108a401eb481785a835dd55ad629f6e13668b3417cb3c55ab6172",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 3,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 1,
+    "MEDIUM": 2,
     "LOW": 2,
     "NIT": 0
    },
-   "report": "The kernel no longer presents any vendor's credential by name: the presenter is driven by a declared scheme, and the vendor protocol constants are compiled only for tests. What remains is that the kernel crate's test for the credential fixture still builds six vendor-named twins with vendor key prefixes and header names. Two fixtures are one-sided goldens of deleted host code still described as two-copy drift guards, and the consumers that exist floor at a single row against hundreds. Read fully except bulk fixture rows.",
-   "auditor": "sonnet-ledger-plane-copies",
+   "report": "The five fixtures are internally consistent (every static credential row matches its recorded scheme, the anthropic rows match the 1.5.5 builder, the depth and classification cases are two-sided), and the plane's real dialect bindings are held to the recorded bindings by the root suite. What remains is that the root crate's credential suite still builds six vendor-named twins with vendor key prefixes and header names whose schemes the differential never presents, since it reads each binding from the fixture by the twin's name. No consumer of any fixture has a floor beyond one case, so a fixture cut to a single row or to empty lists stays green. Two fixtures and their consumers' docs still describe deleted host code as a second copy held to the same file, and the credential fixture names a host egress-auth unit that no longer exists. Every credential row was decoded and checked by script. Read in 2 parts, fully.",
+   "auditor": "opus-r159d-plane-copies",
    "fixed_at": null,
    "rounds": [
     {
@@ -5717,6 +6092,20 @@
       "NIT": 0
      },
      "report": "The kernel no longer presents any vendor's credential by name: the presenter is driven by a declared scheme, and the vendor protocol constants are compiled only for tests. What remains is that the kernel crate's test for the credential fixture still builds six vendor-named twins with vendor key prefixes and header names. Two fixtures are one-sided goldens of deleted host code still described as two-copy drift guards, and the consumers that exist floor at a single row against hundreds. Read fully except bulk fixture rows."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159d-plane-copies",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "eb90617b786108a401eb481785a835dd55ad629f6e13668b3417cb3c55ab6172",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 2,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The five fixtures are internally consistent (every static credential row matches its recorded scheme, the anthropic rows match the 1.5.5 builder, the depth and classification cases are two-sided), and the plane's real dialect bindings are held to the recorded bindings by the root suite. What remains is that the root crate's credential suite still builds six vendor-named twins with vendor key prefixes and header names whose schemes the differential never presents, since it reads each binding from the fixture by the twin's name. No consumer of any fixture has a floor beyond one case, so a fixture cut to a single row or to empty lists stays green. Two fixtures and their consumers' docs still describe deleted host code as a second copy held to the same file, and the credential fixture names a host egress-auth unit that no longer exists. Every credential row was decoded and checked by script. Read in 2 parts, fully."
     }
    ]
   },
@@ -5756,18 +6145,18 @@
    "paths": [
     "testing/voice-conformance"
    ],
-   "tree_hash": "97a3346bc37b24dffb98b00a67591191912c0ac516f9664a174bc7011d3c2647",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "10dade8e73044a718b3602ed8d43b00755cdef1fcd325280ea79c28716fb3578",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
+    "HIGH": 4,
     "MEDIUM": 2,
-    "LOW": 5,
+    "LOW": 4,
     "NIT": 0
    },
-   "report": "One leg still certifies that a client's tool reply naming a call the node is not waiting on is refused and carried on no wire, and the plane it drives still executes tools in-process through an echo executor wired into the mounted runtime. Two legs still certify the plane dialing its own provider socket under a plane-chosen destination policy. The budget hard-close check can now fail but its failure is discarded by design, a harness that dies after some results passes, the leg floor is 3 against 14 legs, and prose is stale. Read fully except fixtures and part of the harness.",
-   "auditor": "sonnet-ledger-voice-conformance",
+   "report": "The legs that certified tool execution, reply interception and plane-owned dials are gone. Three legs cannot pass against the pinned plane: one requires a model's usage report to be withheld from the caller, two expect a Twilio mark frame the plane never writes. The relay legs judge the door only through the plane's own reader, so a dropped or rewritten frame it ignores passes; the Twilio legs cannot see a frame busbar authors upstream or a dropped tool call. Read fully except the fixture files, sampled.",
+   "auditor": "opus-r159c-harness-reread",
    "fixed_at": null,
    "rounds": [
     {
@@ -5795,6 +6184,20 @@
       "NIT": 0
      },
      "report": "One leg still certifies that a client's tool reply naming a call the node is not waiting on is refused and carried on no wire, and the plane it drives still executes tools in-process through an echo executor wired into the mounted runtime. Two legs still certify the plane dialing its own provider socket under a plane-chosen destination policy. The budget hard-close check can now fail but its failure is discarded by design, a harness that dies after some results passes, the leg floor is 3 against 14 legs, and prose is stale. Read fully except fixtures and part of the harness."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-harness-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "10dade8e73044a718b3602ed8d43b00755cdef1fcd325280ea79c28716fb3578",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 2,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The legs that certified tool execution, reply interception and plane-owned dials are gone. Three legs cannot pass against the pinned plane: one requires a model's usage report to be withheld from the caller, two expect a Twilio mark frame the plane never writes. The relay legs judge the door only through the plane's own reader, so a dropped or rewritten frame it ignores passes; the Twilio legs cannot see a frame busbar authors upstream or a dropped tool call. Read fully except the fixture files, sampled."
     }
    ]
   },
@@ -5970,18 +6373,18 @@
    "paths": [
     "conformance"
    ],
-   "tree_hash": "0c69162620973ed683ff998831699077c476000ca5389f80a8ae067afafdbd49",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "026d316860d4c1a8e43439f8f2b07e24e4dae699a83475a77daad731dd5c6962",
+   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+   "round": 3,
    "result": "findings",
    "counts": {
     "HIGH": 0,
     "MEDIUM": 1,
-    "LOW": 3,
+    "LOW": 4,
     "NIT": 0
    },
-   "report": "The claim pipeline renders nothing green without a fresh passing verdict, and the committed manifest correctly shows no claim anywhere; the two committed failing verdicts are product evidence, not an instrument defect, so no blocking finding is raised for the instrument. Real defects: the suite roster, which defines the whole must-pass set, is hand-kept with no floor tying it to the five planes; the README describes built tooling as unbuilt; the registry headings and a not-run reason contradict the verdicts on disk; one verdict carries null fields its schema forbids and nothing validates verdicts against the schema. Read fully.",
-   "auditor": "sonnet-ledger-conformance",
+   "report": "The claim pipeline renders a claim only from an armed passing verdict about the commit under judgement, the committed manifest shows no claim anywhere, and every registered suite is a must, so no false green was found. The roster now has a floor derived from the shipped planes, but that floor is one suite per plane: dropping one of six language-model suites, one of three streaming suites, or any transport, auth-server or supply-chain suite shrinks the must set with nothing refusing it, although the roster says removal cannot shrink it. The roster's section headings and the jev not-run reason contradict the verdicts on disk, and a stale hand-committed verdict stays in the tree against the roster's own rule. The overview text describes built tooling as unbuilt and names files that do not exist. Verdicts are never checked against their schema, so a verdict filed under another suite's name is credited to that suite. The manifest schema calls its anchor commit the release commit, which the code says it is not. Read fully.",
+   "auditor": "opus-r159d-conformance",
    "fixed_at": null,
    "rounds": [
     {
@@ -6009,6 +6412,20 @@
       "NIT": 0
      },
      "report": "The claim pipeline renders nothing green without a fresh passing verdict, and the committed manifest correctly shows no claim anywhere; the two committed failing verdicts are product evidence, not an instrument defect, so no blocking finding is raised for the instrument. Real defects: the suite roster, which defines the whole must-pass set, is hand-kept with no floor tying it to the five planes; the README describes built tooling as unbuilt; the registry headings and a not-run reason contradict the verdicts on disk; one verdict carries null fields its schema forbids and nothing validates verdicts against the schema. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159d-conformance",
+     "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
+     "tree_hash": "026d316860d4c1a8e43439f8f2b07e24e4dae699a83475a77daad731dd5c6962",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The claim pipeline renders a claim only from an armed passing verdict about the commit under judgement, the committed manifest shows no claim anywhere, and every registered suite is a must, so no false green was found. The roster now has a floor derived from the shipped planes, but that floor is one suite per plane: dropping one of six language-model suites, one of three streaming suites, or any transport, auth-server or supply-chain suite shrinks the must set with nothing refusing it, although the roster says removal cannot shrink it. The roster's section headings and the jev not-run reason contradict the verdicts on disk, and a stale hand-committed verdict stays in the tree against the roster's own rule. The overview text describes built tooling as unbuilt and names files that do not exist. Verdicts are never checked against their schema, so a verdict filed under another suite's name is credited to that suite. The manifest schema calls its anchor commit the release commit, which the code says it is not. Read fully."
     }
    ]
   },
