@@ -712,6 +712,18 @@ pub trait LaneRuntime: Send + Sync + 'static {
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
     ) -> bool;
+    /// [`Self::record_transient_in`] at the caller's `now` (whole seconds), not the store's own
+    /// clock read: a walk records an attempt's failure at the instant its admission and its shed
+    /// read, so the cooldown it arms and the wait a shed then advertises are measured on one clock.
+    /// 1.5.5's store took the record's `now_time` the same way (`availability.rs:500-513`).
+    fn record_transient_in_at(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
+        cfg: &BreakerCfg,
+        retry_after: Option<u64>,
+    ) -> bool;
     #[cfg(any(test, feature = "test-support"))]
     fn record_rate_limit(
         &self,
