@@ -6053,7 +6053,7 @@
    "paths": [
     "testing/plane-copies"
    ],
-   "tree_hash": "eb90617b786108a401eb481785a835dd55ad629f6e13668b3417cb3c55ab6172",
+   "tree_hash": "0ca0da1ee38f86d9ea69a5f9b36dd0b2608416defdec10d20fdcbec9fa8c5d2e",
    "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
    "round": 3,
    "result": "findings",
@@ -6065,7 +6065,7 @@
    },
    "report": "The five fixtures are internally consistent (every static credential row matches its recorded scheme, the anthropic rows match the 1.5.5 builder, the depth and classification cases are two-sided), and the plane's real dialect bindings are held to the recorded bindings by the root suite. What remains is that the root crate's credential suite still builds six vendor-named twins with vendor key prefixes and header names whose schemes the differential never presents, since it reads each binding from the fixture by the twin's name. No consumer of any fixture has a floor beyond one case, so a fixture cut to a single row or to empty lists stays green. Two fixtures and their consumers' docs still describe deleted host code as a second copy held to the same file, and the credential fixture names a host egress-auth unit that no longer exists. Every credential row was decoded and checked by script. Read in 2 parts, fully.",
    "auditor": "opus-r159d-plane-copies",
-   "fixed_at": null,
+   "fixed_at": "85bbc6c821e4cbb994f104f4bc93394c8f0ed0f1",
    "rounds": [
     {
      "round": 1,
@@ -6145,7 +6145,7 @@
    "paths": [
     "testing/voice-conformance"
    ],
-   "tree_hash": "10dade8e73044a718b3602ed8d43b00755cdef1fcd325280ea79c28716fb3578",
+   "tree_hash": "4cec89d2b2297993c5164fa25589359ecc1aa78f087345e344e66905a42fd9c5",
    "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
    "round": 3,
    "result": "findings",
@@ -6157,7 +6157,7 @@
    },
    "report": "The legs that certified tool execution, reply interception and plane-owned dials are gone. Three legs cannot pass against the pinned plane: one requires a model's usage report to be withheld from the caller, two expect a Twilio mark frame the plane never writes. The relay legs judge the door only through the plane's own reader, so a dropped or rewritten frame it ignores passes; the Twilio legs cannot see a frame busbar authors upstream or a dropped tool call. Read fully except the fixture files, sampled.",
    "auditor": "opus-r159c-harness-reread",
-   "fixed_at": null,
+   "fixed_at": "6f41744c9f024d8b43e09785fb8dbf4b8cc064da",
    "rounds": [
     {
      "round": 1,
