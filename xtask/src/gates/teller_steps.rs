@@ -2219,8 +2219,8 @@ impl Plant {
         }
     }
 
-    /// Drop `step` from the declared steps AND from every row, so the matrix is internally whole
-    /// and only the kernel's roster can see what it lost.
+    /// Drop `step` from the declared steps AND from every row, plane and cleanliness alike, so the
+    /// matrix is internally whole and only the kernel's roster can see what it lost.
     fn drop_step_everywhere(&mut self, step: &str) {
         let Some(doc) = self.doc.as_object_mut() else {
             return;
@@ -2228,11 +2228,13 @@ impl Plant {
         if let Some(Json::Object(steps)) = doc.get_mut("steps") {
             steps.remove(step);
         }
-        if let Some(Json::Object(rows)) = doc.get_mut("matrix") {
-            let planes: Vec<String> = rows.keys().map(str::to_string).collect();
-            for plane in planes {
-                if let Some(Json::Object(row)) = rows.get_mut(&plane) {
-                    row.remove(step);
+        for section in ["matrix", CLEANLINESS_KEY] {
+            if let Some(Json::Object(rows)) = doc.get_mut(section) {
+                let planes: Vec<String> = rows.keys().map(str::to_string).collect();
+                for plane in planes {
+                    if let Some(Json::Object(row)) = rows.get_mut(&plane) {
+                        row.remove(step);
+                    }
                 }
             }
         }
