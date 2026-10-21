@@ -107,12 +107,18 @@ fn an_address_value_under_std_net_is_a_banned_path_and_the_contract_one_is_not()
         "fn f(b: &str) { let _ = b.parse::<std::net::Ipv4Addr>(); }",
         "use std::net::{IpAddr, Ipv6Addr, SocketAddrV4, SocketAddrV6, AddrParseError};",
         "use std as s; fn f() { let _ = s::net::Ipv4Addr::LOCALHOST; }",
+        // A socket, a resolver, the bare module, a rename or a glob, beside a value or alone.
         "use std::net::{Ipv4Addr, TcpStream};",
+        "use std::net::{SocketAddr, ToSocketAddrs};",
+        "fn f() { let _ = std::net::UdpSocket::bind(\"a:1\"); }",
         "use std::net; fn f() -> net::Ipv4Addr { net::Ipv4Addr::LOCALHOST }",
+        "use std::net::{self, SocketAddr};",
+        "use std::net as n;",
         "use std::net::*;",
     ] {
         assert_eq!(paths(text), ["std::net"], "{text}");
     }
+    assert_eq!(paths("use tokio::net::TcpStream;"), ["tokio::net"]);
     for text in [
         "use busbar_contract::net::SocketAddr; fn f(a: &str) -> bool { a.parse::<SocketAddr>().is_ok() }",
         "use busbar_contract::abi::sdk as sdk; fn f(b: &str) { let _ = b.parse::<sdk::net::Ipv4Addr>(); }",
