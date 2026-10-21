@@ -993,7 +993,7 @@ fn door_mounts_lines_route_like_1_5_5() {
         ("GET", "/api"),
         ("GET", "/api/v1/admin/keys"),
         ("POST", "/api/v1/admin/keys"),
-        ("GET", "/v1/unknown/openai"),
+        ("GET", "/v1/unknown/suffix"),
         ("PATCH", "/"),
         ("TRACE", "/files/a"),
     ] {

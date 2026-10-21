@@ -153,10 +153,10 @@ rcgen = { workspace = true, optional = true, features = ["pem"] }
 # admin auth module, the operator credential's included, resolves through the auth kind's registry by
 # the key the configuration names. The composition root links the build's auth rows
 # (`preflight::install_linked_auth`); this crate names none of them.
-default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
-# The build links the ranking hooks: the composition root registers their row (it owns the crate
-# edge); here it only decides whether a test build's stand-in rows carry that row.
-hooks-ranking = []
+# No `hooks-ranking` feature (THE DESIGN l.1443: the `hooks-ranking` kernel feature is deleted): the
+# composition root links the ranking row under its own feature, and a test build's stand-in hook
+# rows carry the kernel's ranking double in every build (`preflight::STAND_IN_HOOK_DOORS`).
+default = ["plane-mcp", "plane-a2a"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
