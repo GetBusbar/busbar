@@ -295,3 +295,13 @@ secret = "busbar-secret-env"
 # the twin as its cdylib. It is also the one wire crate this crate may take a (dev) edge on —
 # kind-isolation's transport-registration rule reads this row.
 transport = "busbar-transport-tcp-plugin"
+# The EXPORT kind's fixtures (owner FIXTURES ruling: "real plugins are the proofs"): each row names
+# a sink's LOGIC crate (its `door`, LINKED); `build.rs` emits its `<row>_fixture` alias and the name
+# of its `-plugin` crate's `cdylib` (the DROPPED-IN build), so the export tests reach each sink by
+# the proof it serves and no test source names a sink. `export` is the host-written destination (the
+# #11 test's subject), `export-carried` the host-carried outbound request, `export-scrape` the
+# recorder snapshot's render and `export-trace` the span collector with a first-party egress class.
+export = "busbar-export-file"
+export-carried = "busbar-export-webhook"
+export-scrape = "busbar-export-prometheus"
+export-trace = "busbar-export-otlp"

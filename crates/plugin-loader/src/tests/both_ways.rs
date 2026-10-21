@@ -11,8 +11,8 @@
 //! requires the two rows and the two transcripts to be byte-identical.
 //!
 //! Each kind's fixture comes from the tables `build.rs` generates out of `Cargo.toml`'s
-//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`kind_cdylib`]): the tests reach a
-//! fixture by its KIND, and no test source names a plugin instance. Every table's cdylib column is
+//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`kind_cdylib`], [`export_row`]): the
+//! tests reach a fixture by its KIND, and no test source names a plugin instance. Every table's cdylib column is
 //! the dropped-in door's crate as built; a test uses it as it stands.
 //!
 //! What is compared is the plugin's STATEMENT (its manifest, every field but the two that describe
@@ -37,6 +37,18 @@ pub(crate) fn door_fixture(
         .map(|&(_, krate, door)| (krate, door))
         .unwrap_or_else(|| {
             panic!("no `{row}` memory-ABI row in Cargo.toml's [package.metadata.busbar.both-ways]")
+        })
+}
+
+/// The export both-ways fixture of `row` (`export` or `export-<proof>`): its logic crate's name —
+/// the target its log records carry — and its `-plugin` crate's `cdylib` name.
+pub(crate) fn export_row(row: &str) -> (&'static str, &'static str) {
+    BOTH_WAYS_ROWS
+        .iter()
+        .find(|(k, ..)| *k == row)
+        .map(|&(_, logic, cdylib)| (logic, cdylib))
+        .unwrap_or_else(|| {
+            panic!("no `{row}` export row in Cargo.toml's [package.metadata.busbar.both-ways]")
         })
 }
 

@@ -86,7 +86,7 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
     let mut rows = SecretRows::new(dispatcher, || None);
     rows.link(door).expect("the env source's door links");
     assert!(rows.answers(NAME) && rows.linked(NAME));
-    assert!(!rows.answers("vault") && !rows.linked("vault"));
+    assert!(!rows.answers("absent") && !rows.linked("absent"));
     let t = transcript(&rows);
     assert_eq!(t[0], format!("ok {MATERIAL}"));
     assert!(
@@ -101,8 +101,11 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
         .expect("the linked env source has a shared instance");
     assert_eq!(resolves(shared.as_ref()), t);
     // RED: a name no linked row answers has no shared instance.
-    let refused = rows.shared("vault").err().expect("no row answers `vault`");
-    assert_eq!(refused, "no linked secret module answers to 'vault'");
+    let refused = rows
+        .shared("absent")
+        .err()
+        .expect("no row answers `absent`");
+    assert_eq!(refused, "no linked secret module answers to 'absent'");
 }
 
 /// A dropped-in plugin answers as the linked one does, is not linked, and leaves with its set.
