@@ -40,7 +40,7 @@ use super::*;
 #[cfg(feature = "root-admin")]
 const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 
-/// A directory that knows exactly the one credential these cells present, and revokes nobody.
+/// A revocation directory that revokes nobody: the cells here are about the door, not the denylist.
 #[cfg(feature = "root-admin")]
 struct ADirectoryThatMintedIt;
 
