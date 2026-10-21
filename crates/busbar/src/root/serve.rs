@@ -19,10 +19,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
-use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
@@ -48,7 +46,7 @@ use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
 // The data routes drive their units on the node: what only they name.
 use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
-use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
+use crate::root::loader::dispatch::Dispatcher;
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
@@ -2023,50 +2021,14 @@ fn open(
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let settings = handed_settings(path, section)?;
     let owned = owned_bytes(owned)?;
-    let url = public_url.unwrap_or_default();
-    // Each points into `dialects`, which outlives the call.
-    let providers = crate::root::loader::dispatch::kinds::plane::provider_facts(dialects);
-    let mut frame = Frame::new(
-        PlaneOpenIn {
-            open: OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: crate::root::loader::lend::blob(&settings, BLOB_JSON),
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            // The deployment's public base URL, which a plane states its audience and its claims
-            // against (a plane with none fronts nothing).
-            public_url: if url.is_empty() {
-                AbiStr::ABSENT
-            } else {
-                crate::root::loader::lend::str(url.as_bytes())
-            },
-            owned: if owned.is_empty() {
-                Blob::ABSENT
-            } else {
-                crate::root::loader::lend::blob(&owned, BLOB_JSON)
-            },
-            providers: if providers.is_empty() {
-                std::ptr::null()
-            } else {
-                providers.as_ptr()
-            },
-            providers_len: providers.len(),
-        },
-        PlaneOpenOut {
-            open: OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-            snapshot: std::ptr::null(),
-        },
+    // Every byte is lent to that one `open` crossing, inside the loader (status row 194).
+    let (called, snapshot) = crate::root::loader::lend::open_plane(
+        plugin,
+        &settings,
+        public_url.unwrap_or_default(),
+        &owned,
+        dialects,
     );
-    let (called, snapshot) = plugin.open(&mut frame);
     if called.outcome != AbiOutcome::Ready {
         return Err(format!("it did not open: {:?}", called.outcome));
     }

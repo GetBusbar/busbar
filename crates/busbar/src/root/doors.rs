@@ -21,10 +21,8 @@ use super::loader::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
     OutFrame, Plugin,
 };
-use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::transport::slot;
 use busbar_core_connector::{
     carrier::{Carry, Side},
@@ -131,14 +129,8 @@ impl Dispatched {
             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
         let blob = (!stated.settings_keys.is_empty())
             .then(|| settings_blob(&stated.settings_keys, settings));
-        let mut i: OpenIn = blank_in();
-        // Lent to this one `open` call (status row 194): `blob` outlives it.
-        i.settings = match &blob {
-            Some(b) => crate::root::loader::lend::blob(b, BLOB_JSON),
-            None => Blob::ABSENT,
-        };
-        let mut f = Frame::new(i, blank_out::<OpenOut>());
-        let opened = plugin.call(life::OPEN, &mut f);
+        // The settings are lent to that one `open` crossing, inside the loader (status row 194).
+        let opened = super::loader::lend::open_json(&plugin, blob.as_deref());
         if opened.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
             return Err(format!(
                 "transport `{}` would not open ({:?})",

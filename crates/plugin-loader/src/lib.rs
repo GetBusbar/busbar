@@ -62,8 +62,9 @@ mod host;
 /// connector. No TLS library: TLS stays in the connector.
 #[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod https_conns;
-/// THE HOST'S LENDING (status row 194): an `AbiStr` or a `Blob` over memory the host lends a plugin
-/// for one call, for every host crate (busbar's root, which writes no `unsafe`, among them).
+/// THE HOST'S LENDING (status row 194): an `AbiStr` or a `Blob` over memory the loader lends a
+/// plugin for one call, made only inside this crate; the whole crossings it publishes lend and call
+/// at once for a crate that writes no `unsafe` (busbar's root).
 #[allow(unsafe_code)] // REVIEWED: the host's one door for lending runtime memory to one call
 pub mod lend;
 pub mod observe;

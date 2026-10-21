@@ -782,7 +782,7 @@ struct Probe {
 /// THE PROVIDERS' DIALECT FACTS LOWERED for `PlaneOpenIn::providers`, one per entry of `dialects`,
 /// each pointing into `dialects` (which must outlive the open that lends them).
 #[must_use]
-pub fn provider_facts(
+pub(crate) fn provider_facts(
     dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Vec<busbar_contract::abi::plane::ProviderFacts> {
     use busbar_contract::abi::mechanism::call::BLOB_JSON;

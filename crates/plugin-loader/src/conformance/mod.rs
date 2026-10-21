@@ -1081,7 +1081,7 @@ pub fn output<T: OutFrame>() -> T {
 
 /// A JSON blob over `bytes`.
 #[must_use]
-pub fn json(bytes: &[u8]) -> Blob {
+pub(crate) fn json(bytes: &[u8]) -> Blob {
     crate::dispatch::lend_blob(bytes, BLOB_JSON, 0)
 }
 
