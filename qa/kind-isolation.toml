@@ -1559,48 +1559,48 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "auth"
-count = "2"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 2 -> 0 (law0 P14): the conformance and ready-witness prose name no auth plugin (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "export"
-count = "32"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 31 -> 32 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 32 there; the 31 was f830faa691's, nine hours older than the arming, so the row armed red. 32 is predev 9c0a394771's measure, at or under the arming value"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 31 -> 32 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 32 there; the 31 was f830faa691's, nine hours older than the arming, so the row armed red. 32 is predev 9c0a394771's measure, at or under the arming value; LOWERED 32 -> 0 (law0 P14): the export tests reach each real sink by the both-ways table's export rows (export, export-carried, export-scrape, export-trace; build.rs emits each row's alias and cdylib name), so no loader source names a sink (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:auth"
-count = "9"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 9 -> 0 (law0 P14): the credential-kind fixtures read a neutral kind (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:export"
-count = "2"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 2 -> 1 (law0 P14): the export-kind signing fixture uses a neutral name (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "12"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); #787's 107 -> 21 (85 extern ABI strings, durable_tests.rs's `c` directory, store_money_acceptance.rs's `c` message: each a one-letter `c` read as the secret plugin) removes hits the 107 -> 12 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); #787's 107 -> 21 (85 extern ABI strings, durable_tests.rs's `c` directory, store_money_acceptance.rs's `c` message: each a one-letter `c` read as the secret plugin) removes hits the 107 -> 12 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; LOWERED 12 -> 5 (law0 P14): the secret-module fixtures use neutral names (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "plane"
-count = "47"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 53 -> 47, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "41"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 53 -> 47, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 47 -> 41 (law0 P14): the ruling citations and the store suite's scope kinds name no plane, and the library-name check cites no plane module (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "secret"
-count = "2"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 2 -> 0 (law0 P14): the published suite's doc example names no secret plugin (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "transport"
-count = "178"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 185 -> 186, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 190: #672 (757c6bab99) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it; LOWERED 186 -> 178: the loader's test connection tables take the transport they stand in for as data (stand_in.json), KN-3a (measured)"
+count = "151"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 185 -> 186, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 190: #672 (757c6bab99) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it; LOWERED 186 -> 178: the loader's test connection tables take the transport they stand in for as data (stand_in.json), KN-3a (measured); LOWERED 178 -> 151 (law0 P14): the declared-needs, member-program and fixture prose name no transport instance; the conformance prose states each wire by its shape (law0-slack)"
 
