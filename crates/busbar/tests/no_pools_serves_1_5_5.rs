@@ -3,7 +3,7 @@
 
 //! **A 1.5.5 DOCUMENT WITH `providers:` AND `models:` AND NO `pools:` SERVES ITS MODELS** (status row
 //! 179; docs/design/BUSBAR-1.6.0.md #47: "`models:` stays its own root key beside `pools`, the 1.5.5
-//! shape; the llm plane owns both").
+//! shape; the model-serving plane owns both").
 //!
 //! The previous release required `providers:` and `models:`; `pools:` was optional (v1.5.5
 //! crates/busbar/src/config/mod.rs:2626-2632), and a model no pool names was served on its own
@@ -33,13 +33,41 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The far end's one answer: a minimal chat completion.
-const COMPLETION: &str = r#"{"id":"chatcmpl-nopools","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"served-without-pools"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+/// The document's provider catalog, its far end's port filled in per run.
+const PROVIDERS: &str = include_str!("../../../testing/root-fixtures/row179-providers.yaml");
+/// The document: one provider, one model on it, no other routing section; ports filled in per run.
+const CONFIG: &str = include_str!("../../../testing/root-fixtures/row179-config.yaml");
+/// The GREEN twin's one addition: a routing section naming the same model.
+const TWIN_SECTION: &str = include_str!("../../../testing/root-fixtures/row179-twin-section.yaml");
+/// The far end's one answer, as data.
+const FAR_END_ANSWER: &str =
+    include_str!("../../../testing/root-fixtures/row179-far-end-answer.json");
+/// The marker the far end's answer carries, which must come back to the caller.
+const MARKER: &str = "row-179-far-end-answer";
+/// The 1.5.5 golden cell recording the messages path's 405 bytes on a document like this one.
+const GOLDEN: &str = include_str!(
+    "../../../testing/shadow-oracle/golden/1.5.5/cells/neutrality__models-empty__surface.json"
+);
+
+/// The golden step answering `request` (`"<METHOD> <path>"`): its status and its JSON body.
+fn golden(request: &str) -> (u16, serde_json::Value) {
+    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+    let step = cell["body"]["json"]["steps"]
+        .as_array()
+        .expect("the cell's steps")
+        .iter()
+        .find(|s| s["request"] == request && s["status"] != 401)
+        .unwrap_or_else(|| panic!("the cell records `{request}`"));
+    (
+        u16::try_from(step["status"].as_u64().expect("a status")).expect("a u16"),
+        step["body"]["json"].clone(),
+    )
+}
 
 fn fixture_dir(tag: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let d = std::env::temp_dir().join(format!(
-        "busbar-no-pools-{tag}-{}-{}",
+        "busbar-row179-{tag}-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -47,29 +75,23 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// The document: one openai provider on the loopback far end, one model on it, and `pools` only
-/// when `pools` is `Some` (the GREEN twin).
-fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream: u16, pools: Option<&str>) {
+/// The document on the loopback far end, with the twin's section appended when `twin` holds.
+fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream: u16, twin: bool) {
     std::fs::write(
         dir.join("providers.yaml"),
-        format!("p:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream}\"\n"),
+        PROVIDERS.replace("{upstream_port}", &upstream.to_string()),
     )
     .unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!(
-            "listen: \"127.0.0.1:{data_port}\"\nadmin_listen: \"127.0.0.1:{admin_port}\"\n\
-             admin_require_mtls: false\nadvanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
-             store: {{module: memory}}\nauth:\n  chain: []\n\
-             providers:\n  p:\n    api_key: {{ env: CAP_KEY }}\n\
-             models:\n  m:\n    provider: p\n{}",
-            pools.unwrap_or_default()
-        ),
-    )
-    .unwrap();
+    let mut config = CONFIG
+        .replace("{data_port}", &data_port.to_string())
+        .replace("{admin_port}", &admin_port.to_string());
+    if twin {
+        config.push_str(TWIN_SECTION);
+    }
+    std::fs::write(dir.join("config.yaml"), config).unwrap();
 }
 
-/// A far end that counts the requests it receives and answers each with [`COMPLETION`].
+/// A far end that counts the requests it receives and answers each with [`FAR_END_ANSWER`].
 fn spawn_upstream(count: Arc<AtomicUsize>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -99,10 +121,10 @@ fn spawn_upstream(count: Arc<AtomicUsize>) -> u16 {
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
                      Connection: close\r\n\r\n",
-                    COMPLETION.len()
+                    FAR_END_ANSWER.len()
                 );
                 let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(COMPLETION.as_bytes());
+                let _ = stream.write_all(FAR_END_ANSWER.as_bytes());
                 let _ = stream.flush();
             });
         }
@@ -168,20 +190,20 @@ fn masked(body: &str) -> serde_json::Value {
     v
 }
 
-/// Boot the document (`pools` written or not) and require the 1.5.5 surface: the POST served by the
-/// far end, and each dialect path's 405 for another verb in that dialect's envelope.
-fn serves_its_models(tag: &str, pools: Option<&str>) {
+/// Boot the document (the twin's section appended or not) and require the 1.5.5 surface: the POST
+/// served by the far end, and each dialect path's 405 for another verb in that dialect's envelope.
+fn serves_its_models(tag: &str, twin: bool) {
     let dir = fixture_dir(tag);
     let received = Arc::new(AtomicUsize::new(0));
     let upstream = spawn_upstream(Arc::clone(&received));
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
-    write_configs(&dir, data_port, admin_port, upstream, pools);
+    write_configs(&dir, data_port, admin_port, upstream, twin);
     let log = std::fs::File::create(dir.join("out.log")).unwrap();
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-            .env("CAP_KEY", "oracle-cred-no-pools-0001")
+            .env("CAP_KEY", "row179-cred-0001")
             .env("RUST_LOG", "warn")
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -218,7 +240,7 @@ fn serves_its_models(tag: &str, pools: Option<&str>) {
         log_of(&dir)
     );
     assert!(
-        body.contains("served-without-pools"),
+        body.contains(MARKER),
         "{tag}: the far end's answer must come back: {body}"
     );
     assert!(
@@ -226,7 +248,7 @@ fn serves_its_models(tag: &str, pools: Option<&str>) {
         "{tag}: the far end was never reached"
     );
 
-    // The chat path read: the openai dialect's 405 (v1.5.5 crates/busbar/src/ingress/dispatch.rs
+    // The completions path read: its dialect's 405 (v1.5.5 crates/busbar/src/ingress/dispatch.rs
     // :311-318), in that dialect's envelope.
     let (status, body) =
         exchange(data_port, "GET", "/v1/chat/completions", "", "").expect("answers");
@@ -235,34 +257,29 @@ fn serves_its_models(tag: &str, pools: Option<&str>) {
         masked(&body),
         serde_json::json!({"error": {"code": null, "message": "method not allowed for this resource",
             "param": null, "type": "invalid_request_error"}}),
-        "{tag}: the openai 405 envelope"
+        "{tag}: the completions dialect's 405 envelope"
     );
 
-    // The messages path deleted: the anthropic dialect's 405, in its envelope (the bytes the
+    // The messages path deleted: its dialect's 405, in its envelope (the bytes the
     // `neutrality|models-empty|surface` golden records for the same request).
     let (status, body) = exchange(data_port, "DELETE", "/v1/messages", "", "").expect("answers");
-    assert_eq!(status, 405, "{tag}: DELETE /v1/messages: {body}");
     assert_eq!(
-        masked(&body),
-        serde_json::json!({"error": {"message": "method not allowed for this resource",
-            "type": "invalid_request_error"}, "request_id": "<ID>", "type": "error"}),
-        "{tag}: the anthropic 405 envelope"
+        (status, masked(&body)),
+        golden("DELETE /v1/messages"),
+        "{tag}: the messages dialect's 405 envelope"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED on a build whose llm plane opens only on a written `pools:`.
+/// RED on a build whose model-serving plane opens only on its own section written.
 #[test]
 fn a_1_5_5_document_with_models_and_no_pools_serves_them() {
-    serves_its_models("no-pools", None);
+    serves_its_models("bare", false);
 }
 
-/// GREEN twin: the same document with a pool written.
+/// GREEN twin: the same document with the routing section written.
 #[test]
 fn the_same_document_with_a_pool_written_serves_them_too() {
-    serves_its_models(
-        "with-pool",
-        Some("pools:\n  chat:\n    members:\n      - model: m\n"),
-    );
+    serves_its_models("twin", true);
 }
