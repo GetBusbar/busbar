@@ -613,9 +613,9 @@ A configured static egress credential contains bytes that are invalid in an HTTP
 - **Since:** 1.6.0
 - **Slug:** `egress-oauth-token-invalid-bytes`
 
-A token minted for egress contains bytes invalid in a header value, so the `Bearer` auth header is omitted and the upstream rejects the request with 401. It is raised when such a token is minted.
+An OAuth token the plugin minted for egress contains bytes invalid in an HTTP header value, so the `Bearer` auth header is omitted and the upstream rejects the request with 401. It is raised when such a token is minted.
 
-**What to do:** Investigate the token endpoint: a minted token with a control character in it is malformed. Egress to that upstream 401s until a well-formed token is minted.
+**What to do:** Investigate the OAuth token endpoint: a token with control characters in it is malformed. Egress to that upstream 401s until a well-formed token is minted.
 
 <a id="egress-oauth-empty-token"></a>
 ### BUSBAR-4015 — OAuth token endpoint returned a 200 with an empty access_token
@@ -624,20 +624,20 @@ A token minted for egress contains bytes invalid in a header value, so the `Bear
 - **Since:** 1.6.0
 - **Slug:** `egress-oauth-empty-token`
 
-The upstream OAuth token endpoint answered 200 but with an EMPTY access_token. busbar treats it as a (retryable) mint failure rather than storing it, because an empty token collides with the pre-first-mint sentinel and would wedge the lane permanently. It retries on the refresh cadence.
+The OAuth token endpoint (or an RFC 8693 exchange) answered 200 with an EMPTY or unusable access_token. The plugin treats it as a mint failure rather than storing it: a background refresh retries on its cadence, and an on-demand exchange refuses the call rather than making it unauthenticated.
 
-**What to do:** Investigate the OAuth token endpoint / client-credentials configuration — a 200 with no token usually means a misconfigured client, scope, or audience. Egress to that upstream 401s until a non-empty token is minted.
+**What to do:** Investigate the OAuth token endpoint and the client-credentials configuration. A 200 with no token usually means a misconfigured client, scope or audience. Egress to that upstream 401s until a non-empty token is minted.
 
 <a id="egress-oauth-mint-failed"></a>
-### BUSBAR-4016 — OAuth token mint (refresh) failed; retrying
+### BUSBAR-4016 — OAuth token mint failed; retrying
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-oauth-mint-failed`
 
-The background OAuth token refresh failed to mint a new token. busbar keeps serving the current token and retries soon; if retries keep failing past expiry, egress requests carry a stale/empty token and the upstream 401s. Fires on the refresh cadence, not per request.
+An OAuth token mint failed. A background refresh keeps serving the current token and retries; if retries keep failing past expiry, egress carries no valid token and the upstream 401s. An on-demand RFC 8693 exchange that fails refuses its call.
 
-**What to do:** Investigate the OAuth token endpoint — a transient outage self-heals on the next retry; sustained failures mean a credential/endpoint/network problem that will 401 egress once the current token expires.
+**What to do:** Investigate the OAuth token endpoint. A transient outage heals on the next retry; sustained failures mean a credential, endpoint or network problem that will 401 egress once the current token expires.
 
 <a id="trust-sweep-not-attempted"></a>
 ### BUSBAR-4017 — Scheduled trust sweep could not be attempted (registration not contacted)
