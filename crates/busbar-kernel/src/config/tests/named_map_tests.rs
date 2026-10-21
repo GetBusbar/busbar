@@ -60,6 +60,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "corp-ad",
             &serde_json::json!({"module": "ad", "max_admin_scope": "read-only"}),
+            crate::config::Legacy::stand_in(),
         )
         .expect("a well-formed identity-provider definition is accepted");
     assert_eq!(deploy.identity_providers["corp-ad"].module, "ad");
@@ -75,6 +76,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "metrics",
             &serde_json::json!({"module": "prometheus", "modle": {}}),
+            crate::config::Legacy::stand_in(),
         )
         .expect_err("a typo'd key must be rejected, never silently stored");
     assert!(
@@ -149,7 +151,12 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
         .expect("a section no plane declares is refused");
     assert_eq!(err, "unknown field `bays`");
     let err = section
-        .insert(&mut base_deploy(), "dock", &serde_json::json!({}))
+        .insert(
+            &mut base_deploy(),
+            "dock",
+            &serde_json::json!({}),
+            crate::config::Legacy::stand_in(),
+        )
         .expect_err("and refused on insert too");
     assert_eq!(err, "unknown field `bays`");
     assert!(!err.contains("compiled without"), "{err}");
