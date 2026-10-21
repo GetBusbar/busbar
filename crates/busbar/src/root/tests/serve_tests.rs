@@ -7095,20 +7095,28 @@ fn streamed_chat() -> serde_json::Value {
 
 /// THE STREAM CEILING, NOT THE POOL'S TIMEOUT, bounds a streamed answer (the plane states
 /// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
-/// outlives its pool's one-second failover timeout is delivered whole. Before the plane stated the
+/// outlives its pool's two-second failover timeout is delivered whole. Before the plane stated the
 /// stream, the door cut it at the pool's timeout.
+///
+/// The pool's timeout is two seconds, not one, because the walk's deadline is whole wall-clock
+/// seconds (`RequestCtx::expired`, as 1.5.5's): a one-second budget whose walk starts late in a
+/// wall second is spent at the next second boundary, so the first pick could find it expired (a
+/// 503 request-timeout shed before anything is dialled) whenever that boundary fell between the
+/// walk's start and its pick. Two seconds leaves the pick at least one whole second; the far end's
+/// three-second pause still outlives the whole budget, so a door that bounded the stream by it
+/// would cut the answer.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-outlives-timeout";
     let _published = Withdrawn(instance);
-    let far = far_end_scripted(stream_pausing(2_000)).await;
+    let far = far_end_scripted(stream_pausing(3_000)).await;
     let rig = rig(
         instance,
         RigOpts {
             members: &[(far.port, 1)],
-            failover_timeout_secs: Some(1),
+            failover_timeout_secs: Some(2),
             ..RigOpts::default()
         },
     )
