@@ -11,65 +11,13 @@
 
 mod linked;
 
-use busbar_kernel::config::{
-    deploy_from_yaml_str, merge_provider_fallback, resolve, DeployCfg, ProviderDef, ProviderDeploy,
-    SecretRef,
-};
+use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg};
 use std::collections::HashMap;
 
 /// Register every test-linked plane in the process registry, idempotent (first-wins) — needed
 /// because the kernel lifts a `tools:`/`agents:` section only when a registered plane declares it.
 fn register_planes() {
     linked::install();
-}
-
-/// A minimal ProviderDef for resolve() tests — byte-identical to the fixture this test used before
-/// the move (`src/config/tests/tests.rs::provider_def`).
-fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
-    ProviderDef {
-        protocol: protocol.to_string(),
-        base_url: base_url.to_string(),
-        error_map: HashMap::new(),
-        health: None,
-        path: None,
-        path_base: None,
-        organization: None,
-        project: None,
-        token_url: None,
-        scope: None,
-        subject: None,
-        auth: None,
-        allow_metadata_hosts: Vec::new(),
-        max_output_key: None,
-        anthropic_adaptive_thinking: None,
-        native_structured_output: None,
-        model_capabilities: Vec::new(),
-    }
-}
-
-/// A minimal ProviderDeploy whose credential is `{ env: <var> }` — byte-identical to
-/// `src/config/tests/tests.rs::provider_deploy`.
-fn provider_deploy(env_var: &str) -> ProviderDeploy {
-    ProviderDeploy {
-        api_key: SecretRef::env(env_var),
-        protocol: None,
-        base_url: None,
-        error_map: None,
-        path: None,
-        path_base: None,
-        organization: None,
-        project: None,
-        token_url: None,
-        scope: None,
-        subject: None,
-        auth: None,
-        allow_metadata_hosts: None,
-        max_output_key: None,
-        anthropic_adaptive_thinking: None,
-        native_structured_output: None,
-        model_capabilities: None,
-        health: None,
-    }
 }
 
 /// A DeployCfg parsed from `sections` through the kernel's own config entry point
@@ -82,57 +30,10 @@ fn deploy_yaml(sections: &str) -> DeployCfg {
     deploy_from_yaml_str(&text).unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
-/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge runs
-/// through `PlaneDecl::resolve_provider` when the LLM plane is installed (the shipped default) and
-/// through core's own `merge_provider_fallback` when no plane implements the hook. This test proves
-/// the two produce the IDENTICAL `ResolvedProvider` for the same inputs, so an llm-plane-absent build's
-/// merge is byte-identical to the shipped one — the guarantee `merge_provider_fallback`'s doc claims.
-#[test]
-fn resolve_provider_hook_and_core_fallback_agree() {
-    let mut def = provider_def("anthropic", "https://api.z.ai/api/model-1");
-    def.error_map
-        .insert("1113".to_string(), "billing".to_string());
-    def.error_map
-        .insert("1302".to_string(), "rate_limit".to_string());
-    let deploy_cfg = provider_deploy("ZAI_KEY");
-
-    // Every linked plane that implements the hook, read back from the registry — at least one (the
-    // shipped fallback plane does), each proven equal to core's fallback.
-    let hooks: Vec<_> = linked::planes()
-        .iter()
-        .filter_map(|d| d.resolve_provider.map(|h| (d.key, h)))
-        .collect();
-    assert!(
-        !hooks.is_empty(),
-        "a test-linked plane declares `resolve_provider`"
-    );
-    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
-    for (key, hook) in hooks {
-        let via_hook = hook(&def, &deploy_cfg);
-        assert_eq!(via_hook.table, via_fallback.table, "{key}");
-        assert_eq!(via_hook.base_url, via_fallback.base_url, "{key}");
-        assert_eq!(
-            via_hook.api_key.env_var(),
-            via_fallback.api_key.env_var(),
-            "{key}"
-        );
-        assert_eq!(
-            via_hook.health.is_some(),
-            via_fallback.health.is_some(),
-            "{key}"
-        );
-        assert_eq!(via_hook.path, via_fallback.path, "{key}");
-        assert_eq!(via_hook.path_base, via_fallback.path_base, "{key}");
-        assert_eq!(via_hook.token_url, via_fallback.token_url, "{key}");
-        assert_eq!(via_hook.scope, via_fallback.scope, "{key}");
-        assert_eq!(via_hook.subject, via_fallback.subject, "{key}");
-        assert_eq!(via_hook.auth, via_fallback.auth, "{key}");
-        assert_eq!(
-            via_hook.allow_metadata_hosts, via_fallback.allow_metadata_hosts,
-            "{key}"
-        );
-    }
-}
+// (`resolve_provider_hook_and_core_fallback_agree` is RETIRED with its subject: no plane implements
+// the `resolve_provider` hook since the retired engine crate's deletion (DEV-GREEN row 83), so the
+// served provider merge IS core's `merge_provider_fallback`, the one path; covered by
+// busbar-kernel `ir/tests/lane_caps_tests.rs` (F25 rows 485-487) and `config/tests/tests.rs`.)
 
 #[test]
 fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
@@ -183,7 +84,7 @@ tools:
 /// the door's `validate`; GREEN for the same section with distinct names.
 #[test]
 fn a_door_sections_effective_registry_is_judged_whole_at_resolve() {
-    use busbar_kernel::plane::config::PlaneCfg;
+    use busbar_kernel::config::plane_sections::PlaneCfg;
     register_planes();
     let effective = |publish: &str| -> serde_yaml::Value {
         serde_yaml::from_str(&format!(
@@ -200,19 +101,20 @@ other:
         ))
         .expect("yaml")
     };
-    let section = busbar_kernel::plane::door::DoorSection::new("tools", effective("foo_bar"));
+    let section =
+        busbar_kernel::plane_driver::door::DoorSection::new("tools", effective("foo_bar"));
     let refused = section
         .validate_registry()
         .expect_err("an effective registry whose published names collide is refused");
     assert!(refused.contains("published as `foo_bar`"), "{refused}");
-    busbar_kernel::plane::door::DoorSection::new("tools", effective("other_name"))
+    busbar_kernel::plane_driver::door::DoorSection::new("tools", effective("other_name"))
         .validate_registry()
         .expect("distinct published names pass");
 }
 
 /// A member naming nothing is an operator believing a request has somewhere to go when it does not.
-/// 1.6.0: the pool lives in the ONE neutral `pools:` map; kind is INFERRED from the resolvable
-/// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.
+/// 1.6.0: a plane's pool lives under its own verb (`tools.pools:`), so the dangling `search-us` is
+/// named against `tools:`.
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
     register_planes();
@@ -220,9 +122,9 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
         r#"
 tools:
   search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
-pools:
-  search:
-    members: [search-eu, search-us]
+  pools:
+    search:
+      members: [search-eu, search-us]
 "#,
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
@@ -233,8 +135,8 @@ pools:
     );
 }
 
-/// KIND IS INFERRED, SO A POOL MUST BE HOMOGENEOUS: a pool whose members span two nouns cannot be
-/// assigned a single plane and is refused with the homogeneity error.
+/// THE SECTION A POOL IS WRITTEN IN IS ITS PLANE: an `agents:` registration named in a `tools.pools`
+/// pool is refused, and the message names the section the member actually lives in.
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
     register_planes();
@@ -244,18 +146,91 @@ agents:
   planner: { url: "https://a.example/card", pin: { mechanism: unpinned } }
 tools:
   search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
-pools:
-  mixed:
-    members: [planner, search-eu]
+  pools:
+    mixed:
+      members: [planner, search-eu]
 "#,
     );
     let errs =
         resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
     assert!(
         errs.iter()
-            .any(|e| e.contains("more than one plane") && e.contains("same kind")),
-        "the message says the pool's members are not all one kind: {errs:?}"
+            .any(|e| e.contains("`planner`") && e.contains("`agents:`") && e.contains("straddle")),
+        "the message says the member lives in another plane's section: {errs:?}"
     );
+}
+
+/// A plane's pool written in the top-level `pools:` is the model plane's pool there, so its members
+/// are refused as unknown models, as 1.5.5 refused any pool member that named no model.
+#[test]
+fn a_plane_pool_in_the_top_level_pools_is_refused() {
+    register_planes();
+    let deploy = deploy_yaml(
+        r#"
+tools:
+  search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
+  search-us: { url: "https://us.example/t", pin: { mechanism: unpinned } }
+pools:
+  search:
+    members: [search-eu, search-us]
+"#,
+    );
+    let refused = match resolve(&deploy, &HashMap::new()) {
+        Err(errs) => errs,
+        Ok(cfg) => busbar_kernel::config_validate::validate(&cfg).expect_err("refused"),
+    };
+    assert!(
+        refused.iter().any(|e| e.contains("search-eu")),
+        "the top-level pool's tool member is refused: {refused:?}"
+    );
+}
+
+/// A pool named after a registration of its own plane would alias that registration's breaker cell
+/// (the two share the keyspace), so it is refused.
+#[test]
+fn a_pool_named_like_a_registration_of_its_plane_is_refused() {
+    register_planes();
+    let deploy = deploy_yaml(
+        r#"
+tools:
+  search: { url: "https://s.example/t", pin: { mechanism: unpinned } }
+  search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
+  search-us: { url: "https://us.example/t", pin: { mechanism: unpinned } }
+  pools:
+    search:
+      members: [search-eu, search-us]
+"#,
+    );
+    let errs = resolve(&deploy, &HashMap::new()).expect_err("an aliasing pool must refuse boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("`search` is also the id of a `tools:` registration")),
+        "{errs:?}"
+    );
+}
+
+/// A MALFORMED `pools:` UNDER ANY PLANE'S SECTION REFUSES BOOT, as 1.5.5 refused a malformed pool:
+/// the reserved sub-key is read for every declared section alike (R1#5, Law 1), and the refusal
+/// names where it was written.
+#[test]
+fn a_malformed_pools_block_under_any_plane_section_is_refused() {
+    register_planes();
+    for section in ["tools", "agents"] {
+        for pools in [
+            "[a, b]",
+            "{ p: { members: not-a-list } }",
+            "{ p: { members: [a, b], unknown_knob: 1 } }",
+        ] {
+            let deploy = deploy_yaml(&format!("{section}:\n  pools: {pools}\n"));
+            let errs = resolve(&deploy, &HashMap::new())
+                .expect_err("a malformed pools block must refuse boot");
+            assert!(
+                errs.iter()
+                    .any(|e| e.starts_with(&format!("{section}.pools: "))),
+                "`{section}.pools: {pools}` is refused naming where it was written: {errs:?}"
+            );
+        }
+    }
 }
 
 /// A one-member pool changes nothing, so writing one is a mistake and is named as one.
@@ -266,9 +241,9 @@ fn a_failover_pool_needs_two_members() {
         r#"
 agents:
   only-one: { url: "https://a.example/card", pin: { mechanism: unpinned } }
-pools:
-  planner:
-    members: [only-one]
+  pools:
+    planner:
+      members: [only-one]
 "#,
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");

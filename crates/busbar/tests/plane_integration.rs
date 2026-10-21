@@ -95,8 +95,7 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
         .filter_map(|decl| {
             let ctx = BuildCtx {
                 endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                agent_defs: cfg.agent_defs.as_any(),
-                tool_defs: cfg.tool_defs.as_any(),
+                plane_defs: &cfg.plane_defs,
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
                 providers: None,
@@ -157,7 +156,7 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
 /// door arm judged, by the composition root at the data router's construction (ARCHITECT
 /// Q-L3B-KHARNESS), so the kernel's router mounts none of them.
 fn served_by_root(slot: &Arc<dyn std::any::Any + Send + Sync>) -> bool {
-    slot.downcast_ref::<busbar_kernel::plane::door::DoorSlot>()
+    slot.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>()
         .is_some()
 }
 
@@ -327,8 +326,8 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         "fixture control: no endpoint door configured"
     );
     assert!(
-        cfg.agent_defs.def_names().is_empty(),
-        "fixture control: no agents: entries"
+        cfg.plane_defs.values().all(|d| d.def_names().is_empty()),
+        "fixture control: no plane entries"
     );
     assert!(
         cfg.plane_sections.is_empty(),
@@ -356,70 +355,9 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     }
 }
 
-/// A pool name used by NOTHING else in this binary. The test process shares one global recorder and
-/// runs tests in parallel, so an exact-delta assertion has to be made on a label set no other test
-/// can touch; `"unresolved"` would not be one.
-const POOL: &str = "observe-residual-exactness-pool";
-
-/// A MODEL-plane request is counted EXACTLY ONCE with the door plane mounted alongside it.
-///
-/// The residual plane is the one the boundary must not touch: it labels its own requests from
-/// `ingress::finish_inner`, which also owns the non-2xx flat-fee refund and therefore cannot be
-/// replaced by the layer. If the layer ever stops asking the mount table and starts counting
-/// everything, this goes to 2 and says so.
-#[tokio::test]
-async fn a_model_plane_request_is_counted_exactly_once() {
-    busbar_kernel::snapshot::init();
-    // The linked roster registers the fallback plane (as the composition root does in production),
-    // so the neutral residual-key derivation recognises it as the residual — otherwise the
-    // model-plane boundary would not know this request rides the residual and would double-count it.
-    linked::install();
-    assert!(
-        linked::fallback().fallback,
-        "the roster carries the fallback plane"
-    );
-    let app = configured(
-        TestApp::new()
-            .lane(LaneSpec::new(
-                "observe-residual-model",
-                busbar_kernel::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            ))
-            .pool(POOL, &[(0, 1)]),
-        &door_section_yaml("gateway.example.com"),
-        None,
-    )
-    .build();
-    let router = busbar_kernel::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); this
-    // pool name is unique to this test, so it alone pins the delta.
-    let labels = [("pool", POOL)];
-    let before = metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
-    // The upstream is a closed port, so this fails to forward — which is fine and deliberate. What
-    // is under test is HOW MANY TIMES the request is counted, not what it returned.
-    let _ = reqwest::Client::new()
-        .post(format!("http://{addr}/v1/chat/completions"))
-        .json(&serde_json::json!({
-            "model": POOL,
-            "messages": [{ "role": "user", "content": "hi" }],
-        }))
-        .send()
-        .await
-        .unwrap();
-    let after = metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
-    server.abort();
-
-    assert_eq!(
-        (after - before).round() as u64,
-        1,
-        "one model-plane request must produce ONE count, not one from `finish_inner` plus one from \
-         the plane ingress boundary"
-    );
-}
+// (`a_model_plane_request_is_counted_exactly_once` MOVED, assertions unchanged, to the root's door
+// suite, `crates/busbar/src/root/tests/serve_tests.rs`: a model request is served by the door that
+// serves the `pools` map, which the kernel's router alone does not mount (DEV-GREEN row 83).)
 
 #[cfg(test)]
 mod metrics_scrape {
@@ -519,20 +457,9 @@ mod metrics_scrape {
             .status()
             .as_u16();
 
-        // ── MODEL-PLANE TRAFFIC, so the three planes are compared on ONE scrape ─────────────────────
-        // An unroutable model is deliberate: it reaches `ingress::finish_inner` without needing an
-        // upstream, which is all this assertion needs. The point is the SERIES SHAPE, not the status.
-        let model_status = client
-            .post(format!("{base}/v1/chat/completions"))
-            .json(&serde_json::json!({
-                "model": "no-such-model",
-                "messages": [{ "role": "user", "content": "hi" }],
-            }))
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16();
+        // (The MODEL-plane traffic and its v1.5.4-shape assertions MOVED, unchanged, to the root's
+        // door suite: `the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape`. The byte-identity
+        // guard below still holds over every model-family line this scrape carries.)
 
         // ── THE SCRAPE, through the real `/metrics` route ───────────────────────────────────────────
         let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
@@ -556,7 +483,7 @@ mod metrics_scrape {
             assert!(
                 !counters.is_empty(),
                 "no `{}` series for plane=\"{plane}\" after driving real traffic \
-                 (door {door_status}, agents {agents_status}, model {model_status}). \
+                 (door {door_status}, agents {agents_status}). \
                  Exposition:\n{exposition}",
                 busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
             );
@@ -585,32 +512,6 @@ mod metrics_scrape {
             }
         }
 
-        // THE MODEL PLANE STAYS v1.5.4-IDENTICAL. `busbar_requests_total` carries the exact 1.5.4 label
-        // set {ingress_protocol, pool, outcome} and NO `plane` label — the whole point of the split.
-        // (The recorder is process-global and shared across the whole test binary, so other tests'
-        // model-plane series are present too; the positive claim is that a correctly-shaped one exists,
-        // and the byte-identity guard below then holds for EVERY model-family line regardless of origin.)
-        let model_counters = lines_for(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
-        assert!(
-            model_counters.iter().any(|line| keys_of(line)
-                == vec![
-                    "ingress_protocol".to_string(),
-                    "outcome".to_string(),
-                    "pool".to_string()
-                ]),
-            "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
-             (model {model_status}). Exposition:\n{exposition}",
-            busbar_kernel::snapshot::REQUESTS_TOTAL,
-        );
-        assert!(
-            !lines_for(
-                &exposition,
-                busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
-            )
-            .is_empty(),
-            "no `{}` series after driving model traffic. Exposition:\n{exposition}",
-            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
-        );
         // BYTE-IDENTITY GUARD: the two model families never carry a `plane` label anywhere in the whole
         // exposition. This is the assertion that fails if the BI-2 regression (a `plane` label on these
         // pre-existing families) is ever reintroduced by any emission site.
@@ -794,25 +695,24 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
              RouteAuth::None — the bypass set this names is not the one the router built"
         );
     }
-    // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface): the kernel mounts them only where a
-    // plane installed body ingress (`busbar_kernel::ingress::arrival::any_body_ingress`), and this
-    // app's linked planes install it, as the default build's boot does. So both are mounted here,
-    // each guarded (a key's bar, never `RouteAuth::None`), and the walk below must reach both: an
-    // anonymous caller refused, a keyed caller admitted.
+    // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface, `/{name}/v1/messages`,
+    // `/{provider}/{model}/v1/messages`): OBSERVATION POINT MOVED (DEV-GREEN row 83, ARCHITECT
+    // option (a) on #1161). No plane installs a kernel body-model arrival any more, so the kernel's
+    // router mounts neither path: the door that serves the `pools` map serves both through its `/`
+    // claim, mounted by the composition root. The confinement this walk held on them (an
+    // audience-bound token buys nothing there, its plain sibling is admitted) is walked where that
+    // door is mounted: `root::door_steps::tests::door_boundary::
+    // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`, over every
+    // guarded route of the door's data router. Here, the kernel's half: it mounts neither.
     assert!(
-        busbar_kernel::ingress::arrival::any_body_ingress(),
-        "the linked planes installed no body ingress, so the convenience routes are not mounted \
-         and this walk proves nothing about them"
+        !busbar_kernel::ingress::arrival::any_body_ingress(),
+        "a kernel body-model arrival is installed again: the convenience routes would be the \
+         kernel's, and this walk would owe them the confinement assertions"
     );
     for pattern in BODY_INGRESS_ROUTES {
         assert!(
-            core_routes
-                .iter()
-                .any(|(path, method, auth)| path == pattern
-                    && method == "POST"
-                    && *auth != busbar_contract::abi::mechanism::route::RouteAuth::None),
-            "{pattern} is a body-ingress convenience route, mounted guarded on POST wherever body \
-             ingress is installed; the router built none: {core_routes:?}"
+            !core_routes.iter().any(|(path, _, _)| path == pattern),
+            "{pattern} is the pools door's (its `/` claim), never a kernel route: {core_routes:?}"
         );
     }
     let boot_plugin_paths: Vec<String> = busbar_kernel::boot_route_paths_of(&app);
@@ -864,7 +764,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     .to_string();
 
     let mut checked = 0usize;
-    let mut body_walked: Vec<String> = Vec::new();
     let mut door_checked = 0usize;
     for route in &core_routes {
         let path = concrete(&route.0);
@@ -998,28 +897,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             route.1,
             path
         );
-        if BODY_INGRESS_ROUTES.contains(&route.0.as_str()) {
-            assert_eq!(
-                anon, 401,
-                "an anonymous caller is refused on the convenience route {} {}",
-                route.1, path
-            );
-            assert!(
-                plain.status() != 401 && plain.status() != 403,
-                "a keyed caller is admitted on the convenience route {} {}: {}",
-                route.1,
-                path,
-                plain.status()
-            );
-            body_walked.push(route.0.clone());
-        }
         checked += 1;
-    }
-    for pattern in BODY_INGRESS_ROUTES {
-        assert!(
-            body_walked.iter().any(|p| p == pattern),
-            "the convenience route {pattern} was never walked: {body_walked:?}"
-        );
     }
     assert_eq!(
         door_checked,
@@ -1034,10 +912,28 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         by_root || door_checked > 0,
         "no door-plane route was walked, so the reciprocal half of the boundary was never asserted"
     );
+    // THE KERNEL'S GUARDED SURFACE, WALKED WHOLE. The floor was 4 while the kernel mounted the
+    // list-models routes (`/v1/models`, `/v1beta/models`) and the two 1.5.5 convenience routes;
+    // those are the pools door's claims now (ARCHITECT 2026-10-16 3b C; DEV-GREEN row 83), walked,
+    // with the same assertions and a floor of 3, over the door's data router
+    // (`root::door_steps::tests::door_boundary::
+    // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`). OBSERVATION
+    // POINT MOVED: here, every guarded core route the table names is walked (none skipped), and
+    // the kernel's own `/stats` is among them, so an enumeration that sees no router stays red.
+    let guarded_core = core_routes
+        .iter()
+        .filter(|(path, _, auth)| {
+            *auth != busbar_contract::abi::mechanism::route::RouteAuth::None
+                && !admissible.contains(path)
+        })
+        .count();
     assert!(
-        checked >= 4,
-        "the walk covered only {checked} guarded core routes, which is fewer than the surface this \
-         binary mounts — the enumeration is not seeing the router"
+        checked == guarded_core
+            && checked >= 1
+            && core_routes.iter().any(|(path, _, auth)| path == "/stats"
+                && *auth != busbar_contract::abi::mechanism::route::RouteAuth::None),
+        "the walk covered {checked} of {guarded_core} guarded core routes, and must cover the \
+         kernel's guarded `/stats` — the enumeration is not seeing the router: {core_routes:?}"
     );
 
     // The plugin surface is enumerable through the same boot capture. This app loads no plugins,

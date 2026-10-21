@@ -116,6 +116,9 @@ pub struct Measurement {
     /// scan matched it. The listed segment-only hits are already gone from the forward lists above.
     pub segment_debt: Vec<segment_debt::Debt>,
     pub segment_debt_matched: Vec<bool>,
+    /// The rows of the list this change wrote over the base's copy ([`segment_debt::minted`]), or
+    /// why no base could be read.
+    pub segment_debt_minted: Result<Vec<String>, String>,
 }
 
 impl Measurement {
@@ -212,6 +215,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
     // the debt is drained out of them once, here, and a segment hit nobody listed stays in as the
     // DIALECT hit it is.
     let segment_debt = segment_debt::load(cx)?;
+    let segment_debt_minted = segment_debt::minted(cx, &segment_debt);
     let mut segment_debt_matched = vec![false; segment_debt.len()];
     let prod_forward =
         segment_debt::drain_listed(&segment_debt, &mut segment_debt_matched, prod_forward);
@@ -230,6 +234,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         vocab,
         segment_debt,
         segment_debt_matched,
+        segment_debt_minted,
     })
 }
 
@@ -361,8 +366,12 @@ fn segment_debt_row(m: &Measurement) -> Row {
         })
         .map(|(d, _)| format!("{} `{}`", d.site(), d.text))
         .collect();
+    let (minted, no_base) = match &m.segment_debt_minted {
+        Ok(rows) => (rows.clone(), None),
+        Err(e) => (Vec::new(), Some(e.clone())),
+    };
     let title = "no neutral crate names a dialect as an identifier segment beyond the listed debt";
-    if unlisted.is_empty() && stale.is_empty() {
+    if unlisted.is_empty() && stale.is_empty() && minted.is_empty() && no_base.is_none() {
         return Row::pass(
             ROW_SEGMENT_DEBT,
             title,
@@ -388,6 +397,17 @@ fn segment_debt_row(m: &Measurement) -> Row {
             segment_debt::SEGMENT_DEBT_TOML,
             stale.join("; ")
         ));
+    }
+    if !minted.is_empty() {
+        detail.push(format!(
+            "{} MINTED row(s) — written by this change beside the hit they forgive; the list is \
+             drain-only, so name the dialect in its plane instead: {}",
+            minted.len(),
+            minted.join("; ")
+        ));
+    }
+    if let Some(e) = no_base {
+        detail.push(e);
     }
     Row::fail(ROW_SEGMENT_DEBT, title, detail.join(" | "))
 }
@@ -533,7 +553,11 @@ impl Gate for PlanePurityGate {
         // and stays RED on `cargo xtask gate plane-purity`; what changes is that each case now has
         // a green row to move. The set-aside is DERIVED from the gate's own hits, so a standing red
         // that is drained shrinks it and a new one grows it — nothing here names a file.
-        let base = cx.with_overlay(standing_red_set_aside(cx));
+        //
+        // The set-aside is laid over `cx` with its base PINNED to `HEAD`: the segment-debt row
+        // compares the list with the base's copy, and a detached battery checkout has no other.
+        let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+        let base = pinned.with_overlay(layered(&pinned).layered(&standing_red_set_aside(cx)));
         let cx: &Ctx = &base;
 
         report.push(prove_green(
@@ -562,14 +586,17 @@ impl Gate for PlanePurityGate {
 
         // The OTHER dual-compile spelling. It used to fall through to the vocabulary rules, which
         // sit BELOW the pragma gate — so one trailing comment spliced a plane's source into a
-        // neutral crate under a clean report. The pragma is on the fixture on purpose.
+        // neutral crate under a clean report. The pragma is on the fixture on purpose. Its target
+        // is a plane directory the tree still derives (the one the `#[path]` case above proves
+        // live): the instance directories are derived, so a plant naming a deleted crate
+        // (`busbar-a2a/`, gone with the a2a extraction) names no plane and proves nothing.
         report.push(create(
             cx,
             self,
             "an include! dual-compile, carrying a pragma that must not launder it",
             &[ROW_PATH_INCLUDE],
             &plant_at,
-            "include!(\"../../../busbar-plane-a2a/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
+            "include!(\"../../../busbar-plane-mcp/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
             &[ROW_PATH_INCLUDE, "planted_plane_purity.rs:1"],
         ));
 
@@ -930,7 +957,9 @@ impl Gate for PlanePurityGate {
             ));
         }
 
-        let mut ov = layered(cx);
+        // THE LIST AGAINST ITS BASE (Law 9). The same listed hit, twice: once with its row on the
+        // base's copy of the list too (debt the base already carried: green), and once with the row
+        // written by this change alone (a new dialect segment forgiven by a data edit: RED).
         let mut rows = debt_now;
         rows.push(segment_debt::Debt {
             file: plant_at.clone(),
@@ -939,17 +968,38 @@ impl Gate for PlanePurityGate {
             dialect: "anthropic".to_string(),
             owner: "kernel-neutrality lane".to_string(),
         });
-        ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&rows));
-        if Edit::Create(format!("{seg_line}\n"))
-            .apply(cx, &plant_at, &mut ov)
-            .is_ok()
-        {
+        let listed = segment_debt::render(&rows);
+        let unlisted = segment_debt::render(&rows[..rows.len() - 1]);
+        let on_base = |was: &str| {
+            let mut ov =
+                layered(cx).layered(&crate::gates::construction::ceilings::synthetic_base(
+                    "zz-segment-debt-base",
+                    segment_debt::SEGMENT_DEBT_TOML,
+                    was,
+                ));
+            ov.set(segment_debt::SEGMENT_DEBT_TOML, listed.clone());
+            Edit::Create(format!("{seg_line}\n"))
+                .apply(cx, &plant_at, &mut ov)
+                .ok()
+                .map(|()| ov)
+        };
+        if let Some(ov) = on_base(&listed) {
             report.push(prove_rows_green(
                 cx,
                 self,
                 "a listed segment-only hit is debt, not a DIALECT hit: both rows stay green",
                 &[ROW_SEGMENT_DEBT, ROW_DIALECT],
                 ov,
+            ));
+        }
+        if let Some(ov) = on_base(&unlisted) {
+            report.push(prove_red(
+                cx,
+                self,
+                "a segment-debt row the base's list does not carry is MINTED, and refused",
+                &[ROW_SEGMENT_DEBT],
+                ov,
+                &[ROW_SEGMENT_DEBT, "MINTED", "planted_plane_purity.rs"],
             ));
         }
 
@@ -1139,7 +1189,12 @@ impl PlanePurityStrictGate {
 
     /// The two measured tables: the six categories over production+test scope combined, and the
     /// BACKWARDS class broken out per plane crate over test scope only.
-    fn counts(m: &Measurement) -> StrictTables {
+    ///
+    /// A [`planes::PLANE_KEYS`] key whose crate is not on disk (`missing`, from
+    /// [`planes::missing_plane_key_roots`]) gets NO reach measurement, so its row reads "no
+    /// measurement" and is RED: a key pointing at a deleted directory would otherwise measure zero
+    /// hits and pass by judging nothing (row 115).
+    fn counts(m: &Measurement, missing: &[String]) -> StrictTables {
         let mut cats: BTreeMap<String, u64> = BTreeMap::new();
         for c in scanner::CATEGORIES {
             let n = if c == "BACKWARDS" {
@@ -1152,7 +1207,10 @@ impl PlanePurityStrictGate {
         }
         let mut reach: BTreeMap<String, u64> = BTreeMap::new();
         for k in planes::PLANE_KEYS {
-            let prefix = format!("crates/busbar-{k}/");
+            if missing.contains(&planes::plane_key_src(k)) {
+                continue;
+            }
+            let prefix = format!("crates/{}/", planes::plane_key_crate(k));
             reach.insert(
                 k.to_string(),
                 m.test_reverse
@@ -1201,9 +1259,12 @@ fn strict_rows(
         let Some(measured) = reach.get(k) else {
             rows.push(Row::fail(
                 id,
-                format!("busbar-{k}'s test-reach was measured"),
-                "no measurement for this plane crate — an uncompared row reads as a ceiling met"
-                    .to_string(),
+                format!("{}'s test-reach was measured", planes::plane_key_crate(k)),
+                format!(
+                    "no measurement for this plane crate ({} is not on disk, or was not read) — \
+                     an uncompared row reads as a ceiling met",
+                    planes::plane_key_src(k)
+                ),
             ));
             continue;
         };
@@ -1215,7 +1276,10 @@ fn strict_rows(
                 crate::ledger::Status::Pass
             },
             id,
-            format!("busbar-{k}'s own test code reaches busbar_core:: within its ceiling"),
+            format!(
+                "{}'s own test code reaches busbar_core:: within its ceiling",
+                planes::plane_key_crate(k)
+            ),
             d.detail(),
         ));
     }
@@ -1249,7 +1313,7 @@ impl Gate for PlanePurityStrictGate {
             Ok(m) => m,
             Err(e) => return Verdict::of(unscannable(&self.owed(), &e)),
         };
-        let (cats, reach) = Self::counts(&m);
+        let (cats, reach) = Self::counts(&m, &planes::missing_plane_key_roots(cx));
         Verdict::of(strict_rows(&ceilings, &cats, &reach))
     }
 
@@ -1263,7 +1327,7 @@ impl Gate for PlanePurityStrictGate {
         // happen to be today would make this case report on the tree's debt rather than on the
         // ratchet — so it would go red for a reason that says nothing about the gate. The ceilings
         // are set to the measured counts and the SAME counts are then pushed under them below.
-        let measured = measure(cx).map(|m| Self::counts(&m));
+        let measured = measure(cx).map(|m| Self::counts(&m, &planes::missing_plane_key_roots(cx)));
         match &measured {
             Ok((cats, reach)) => {
                 let mut at = Overlay::new();
@@ -1295,6 +1359,25 @@ impl Gate for PlanePurityStrictGate {
             ov,
             &["not a bare integer"],
         ));
+
+        // A PLANE KEY WHOSE CRATE IS NOT ON DISK IS REFUSED, NOT MEASURED AS ZERO (row 115; the
+        // coordinator's ruling on the llm key, 2026-10-18). The key's root is planted absent over a
+        // fixture that holds every ceiling at its measure, so the only red is the unmeasured key.
+        if let Ok((cats, reach)) = &measured {
+            for key in planes::PLANE_KEYS {
+                let mut ov = Overlay::new();
+                ov.set(strict::STRICT_TOML, ceilings_at(&base, cats, reach));
+                ov.remove(planes::plane_key_src(key));
+                report.push(prove_red(
+                    cx,
+                    self,
+                    format!("{key}: a plane key whose crate is not on disk is refused"),
+                    &[&strict_reach_row(key)],
+                    ov,
+                    &[&planes::plane_key_src(key), "not on disk"],
+                ));
+            }
+        }
 
         // ONE MORE HIT THAN THE CEILING ALLOWS is the ratchet doing its job, and it is planted as
         // a real violation in test scope rather than as a lowered number — a case that only edits
@@ -1375,7 +1458,12 @@ fn ceilings_at(base: &str, cats: &BTreeMap<String, u64>, reach: &BTreeMap<String
 /// which is what puts them in the scope `--strict` adds and `--check` deliberately does not see.
 fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
     let neutral_test = |leaf: &str| format!("crates/busbar-kernel/src/tests/{leaf}");
-    let plane_test = |key: &str| format!("crates/busbar-{key}/src/tests/planted_strict_reach.rs");
+    let plane_test = |key: &str| {
+        format!(
+            "{}/tests/planted_strict_reach.rs",
+            planes::plane_key_src(key)
+        )
+    };
     let mut out: Vec<(&'static str, String, &'static str)> = vec![
         (
             "PATH-INCLUDE",
