@@ -772,7 +772,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=b2eda8a33db4ab2a7bbcaa5fc45cc4f31f5d9a16#b2eda8a33db4ab2a7bbcaa5fc45cc4f31f5d9a16"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=5ccb73b98e1413c6add2be3bf2f1da1825e19050#5ccb73b98e1413c6add2be3bf2f1da1825e19050"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -791,7 +791,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b3e74232c96e1403b6c4c42ac1dfd5a19c12b344#b3e74232c96e1403b6c4c42ac1dfd5a19c12b344"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=80ac328887bfa81845d287ea82c985a86ab1d967#80ac328887bfa81845d287ea82c985a86ab1d967"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -2535,16 +2535,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prettyplease"
-version = "0.2.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
-dependencies = [
- "proc-macro2",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2574,11 +2564,9 @@ dependencies = [
  "log",
  "multimap",
  "petgraph",
- "prettyplease",
  "prost",
  "prost-types",
  "regex",
- "syn 2.0.117",
  "tempfile",
 ]
 
