@@ -899,30 +899,23 @@ impl FakeHost {
     /// through its `Deref` here and by value once #1469 and #1471 make `of` take the `Lent`
     /// itself; the same `X::of(&tables)` compiles on both.
     ///
-    /// `unsafe` while a `Lent` has its `Deref` (#1471 removes it and makes this safe): through it
-    /// safe code would reach the tables' raw entries, which no safe code of this test support
-    /// reaches. A plugin calls it as `unsafe { fake.lent() }` under `#[allow(unused_unsafe)]`, and
-    /// the same line compiles before and after.
+    /// SOUND here, where a `Lent` still has its `Deref` (#1471 removes it): through it safe code
+    /// reaches the tables, but every entry of them is a raw pointer (the services, connector and
+    /// I/O tables) or the wake the test itself installed, so calling into the host still needs
+    /// `unsafe`. The leak scan (`table_leaks`) admits this one return type at its exact path.
     ///
     /// ```
     /// use busbar_contract::abi::mechanism::ticket::Ticket;
     /// use busbar_contract::abi::sdk::conn::Host;
     /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
     /// let fake = FakeHost::new();
-    /// // SAFETY: the tables go to `Host::of` alone; no entry is read through them.
-    /// let tables = unsafe { fake.lent() };
+    /// let tables = fake.lent();
     /// let host = Host::of(&tables);
     /// host.wake(Ticket::NONE);
     /// drop(fake);
     /// ```
-    ///
-    /// # Safety
-    ///
-    /// The caller reads no entry of the tables through the `Lent`'s `Deref` (no `wake`, no table
-    /// pointer); it hands the `Lent` only to the SDK's `of` readers, which hold their handles to the
-    /// host's own rules.
     #[must_use]
-    pub unsafe fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {
+    pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {
         // SAFETY: the tables are this host's own, every pointer in them one of its own boxed
         // tables, all alive and unmoved while `self` is borrowed (`link` points them only when
         // `self` is owned mutably).

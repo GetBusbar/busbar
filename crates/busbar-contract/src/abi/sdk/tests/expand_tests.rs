@@ -466,8 +466,7 @@ fn a_fake_host_lends_its_own_tables() {
     use crate::abi::sdk::services::{Services, Wake};
     use crate::abi::sdk::test_support::fake::FakeHost;
     let fake = FakeHost::new();
-    // SAFETY: the tables go to the `of` readers alone (and to a pointer comparison).
-    let tables = unsafe { fake.lent() };
+    let tables = fake.lent();
     assert!(ptr::eq(tables.lent, fake.tables_for_tests()));
     // The spelling a plugin moves to compiles before and after #1469: `of(&tables)`.
     let host = Host::of(&tables);
@@ -501,8 +500,7 @@ fn a_kept_handle_is_named_by_its_static_alias() {
         wake: Option<StaticWake>,
     }
     let fake = FakeHost::new();
-    // SAFETY: the tables go to the `of` readers alone (and to a pointer comparison).
-    let tables = unsafe { fake.lent() };
+    let tables = fake.lent();
     let kept = Kept {
         host: Host::of(&tables),
         services: Host::of(&tables).services(),
