@@ -150,12 +150,6 @@ count = 3
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/test_support/fixtures.rs"
-item = "http"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/test_support/fixtures.rs"
 item = "https"
 count = 1
 
