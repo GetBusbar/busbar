@@ -1604,7 +1604,7 @@ mod hook_orders {
     #[test]
     fn an_undeclared_hook_must_still_produce_a_long_order() {
         let none = [abstains()];
-        let e = recall_request(true, &none).expect_err("no long order");
+        let e = recall_request(true, &none).err().expect("no long order");
         assert!(e.contains("longer than hook.order_cap"), "{e}");
         let both = [abstains(), long_order()];
         let found = recall_request(true, &both)
@@ -1620,7 +1620,9 @@ mod hook_orders {
             .expect("abstain-only")
             .is_none());
         let both = [abstains(), long_order()];
-        let e = recall_request(false, &both).expect_err("an expected order");
+        let e = recall_request(false, &both)
+            .err()
+            .expect("an expected order");
         assert!(
             e.contains("`hook.orders: false`") && e.contains("'long'"),
             "{e}"
