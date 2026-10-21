@@ -2284,6 +2284,8 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+/// The rate holder and dater a test binary hands in, in place of the root's install record's.
+pub mod rate_holders;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
@@ -2396,6 +2398,13 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
+
+/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
+/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
+/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
+pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
+}
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
 /// by the names its pinned table spells them with — one read and two mutations — so a kernel test of

@@ -860,6 +860,14 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_CredentialUnavailable ((bb_plane_RefusalCode)43)
 #define BB_PLANE_RefusalCode_MethodNotAllowed ((bb_plane_RefusalCode)44)
 #define BB_PLANE_RefusalCode_Internal ((bb_plane_RefusalCode)45)
+#define BB_PLANE_RefusalCode_UnsentNoAttempt ((bb_plane_RefusalCode)46)
+#define BB_PLANE_RefusalCode_UnsentNoRoute ((bb_plane_RefusalCode)47)
+#define BB_PLANE_RefusalCode_UnsentNeedUnbound ((bb_plane_RefusalCode)48)
+#define BB_PLANE_RefusalCode_UnsentTargetNotPath ((bb_plane_RefusalCode)49)
+#define BB_PLANE_RefusalCode_UnsentFieldName ((bb_plane_RefusalCode)50)
+#define BB_PLANE_RefusalCode_UnsentUnrecorded ((bb_plane_RefusalCode)51)
+#define BB_PLANE_RefusalCode_UnsentAuthFailed ((bb_plane_RefusalCode)52)
+#define BB_PLANE_RefusalCode_UnsentOpenRefused ((bb_plane_RefusalCode)53)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
