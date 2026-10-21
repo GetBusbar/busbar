@@ -297,7 +297,7 @@ impl Subject {
     ///
     /// # Panics
     /// When the door fails its head checks (NULL, its magic, its mechanism or kind ABI version,
-    /// a kind no kind has).
+    /// a door too short to reach its ops (`DoorSize`), a kind no kind has).
     #[must_use]
     pub fn kind(&self) -> KindCode {
         let (_, kind) =
@@ -580,7 +580,8 @@ pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf
 pub(crate) fn exports_door(answer: &Result<Option<(usize, usize)>, LoadError>) -> bool {
     match answer {
         Ok(Some(_)) => true,
-        Ok(None) | Err(LoadError::Open(_)) => false,
+        // Not exporting: the image does not load, or states no door symbol.
+        Ok(None) | Err(LoadError::Open(_) | LoadError::NoDoor(_)) => false,
         Err(_) => true,
     }
 }
@@ -665,7 +666,8 @@ pub(crate) fn choose_cdylib_by(
 /// binary itself picked as the image, would compare a door with itself).
 ///
 /// # Panics
-/// When the library exports no door, or its door or ops table is the linked door's.
+/// When the library exports no door, the dropped or linked door fails its head checks, or its door
+/// or ops table is the linked door's.
 pub fn distinct_images(s: &Subject) {
     distinct(s.door, &s.cdylib()).unwrap_or_else(|e| panic!("{e}"));
 }
@@ -673,7 +675,8 @@ pub fn distinct_images(s: &Subject) {
 /// [`distinct_images`] of the linked `door` and the library at `path`.
 ///
 /// # Errors
-/// The library does not load, exports no door, or answers the linked door or its ops table.
+/// The library does not load, exports no door, the dropped or linked door fails its head checks,
+/// or the library answers the linked door or its ops table.
 pub(crate) fn distinct(door: LoadedDoor, path: &Path) -> Result<(), String> {
     let (dropped, ops) = match crate::dispatch::load::door_addresses_of_library(path) {
         Ok(Some(at)) => at,

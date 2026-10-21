@@ -1252,6 +1252,10 @@ mod dropped_image {
             !exports_door(&Err(crate::dispatch::LoadError::Open("x".into()))),
             "an image that does not load exports nothing"
         );
+        assert!(
+            !exports_door(&Err(crate::dispatch::LoadError::NoDoor("x".into()))),
+            "an image with no door symbol exports nothing"
+        );
         let p = Profile::new("null-head");
         let uplifted = p.put("deps", "plug", None, b"null door");
         p.put("deps", "plug", Some("aaaa"), b"an older build");
