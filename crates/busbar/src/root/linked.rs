@@ -376,13 +376,15 @@ pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
     })
 }
 
-/// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
+/// THE STORE, HOOK AND SECRET AXES: the root's INSTALL RECORD — the linked store and hook rows for
+/// the kernel's cold-kind axis, and the secret axis ([`secret_rows`]) — which the root owns and
+/// lends to every reader (the configuration it resolves carries it to the validation, the preflight
+/// and the build; the kernel keeps no copy). No row is a default store: the store is the one config
 /// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
 /// before anything resolves a store or a secret.
-pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets, linked.secret_declares) {
-        Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+pub fn register_stores(linked: &Linked) -> RootInstall {
+    let root = match link_secrets(linked.secrets, linked.secret_declares) {
+        Ok(secrets) => RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
@@ -392,19 +394,31 @@ pub fn register_stores(linked: &Linked) {
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
-        }),
+        },
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
-    }
+    };
     // A member program's `env` secret references resolve through the same linked secret plugins
     // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
     // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
     // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
-    busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
+    busbar_core_connector::compose::install_spawn_secrets(spawn_secret);
+    root
+}
+
+/// A program environment's secret reference, resolved at config time through the linked secret
+/// plugins ([`secret_rows`], the axis [`register_stores`] lends the kernel).
+fn spawn_secret(
+    secret: &busbar_kernel::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    busbar_kernel::config::secret::resolve_linked_string_at_config(
+        Some(secret_rows()),
+        secret,
+        scope,
+    )
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's

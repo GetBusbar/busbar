@@ -57,7 +57,11 @@ fn the_metrics_instance_is_the_scrape_sink() {
     )
     .expect("parses");
     let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
+    let cfg = resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:?}");
     let scraped: Vec<_> = cfg
         .plugins
@@ -82,7 +86,11 @@ fn the_metrics_instance_is_the_scrape_sink() {
 #[test]
 fn metrics_route_declared_only_when_configured() {
     assert!(
-        crate::export::route_decls(&ExportCfg::default()).is_empty(),
+        crate::export::route_decls(
+            crate::preflight::RootInstall::STAND_IN.export_axis,
+            &ExportCfg::default()
+        )
+        .is_empty(),
         "no scrape sink configured ⇒ no /metrics route (zero-config default unchanged)"
     );
     let sink = scrape_sink();

@@ -1245,7 +1245,11 @@ pools: {}
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
         .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &built_ins(&deploy.export),
+        &mut errs,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 1);
     assert!(export.recorder.is_some() && export.plugins.iter().any(|p| p.def.module == "otlp"));
@@ -1534,7 +1538,11 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &built_ins(&deploy.export),
+        &mut errs,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 2);
     assert!(export.recorder.is_some());
@@ -2448,7 +2456,11 @@ export:
         serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
             .expect("the migrated export block must parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&defs), &mut errs);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &built_ins(&defs),
+        &mut errs,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     // The webhook instance's projection is the sink's own to resolve (it is an export-axis module);
     // what the migration writes for it is `logs`, the stream it carries.

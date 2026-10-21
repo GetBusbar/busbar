@@ -156,8 +156,11 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
     let linked = Arc::new(
-        busbar_kernel::preflight::linked(crate::root::legacy::table())
-            .expect("the linked registry"),
+        busbar_kernel::preflight::linked(
+            &busbar_kernel::preflight::RootInstall::STAND_IN,
+            crate::root::legacy::table(),
+        )
+        .expect("the linked registry"),
     );
     let axis = crate::root::dispatch::auth_axis(linked);
     assert_eq!(
@@ -324,6 +327,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
         serde_yaml::from_str("module: oidc").expect("a provider definition");
     providers.insert("oracle-oidc".to_string(), def);
     let err = busbar_kernel::preflight::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         None,
         &providers,
@@ -958,6 +962,7 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     let op = op();
     let registry = Arc::new(
         busbar_kernel::preflight::plugins_preflight(
+            &busbar_kernel::preflight::RootInstall::STAND_IN,
             None,
             None,
             &config::IdentityProviders::new(),

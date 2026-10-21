@@ -805,7 +805,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
             // degrade (the same compliance-by-compilation stance as the pool strategy rule).
             if crate::config::is_strategy_name(current) {
-                if !crate::preflight::builtin_ranking_known(current) {
+                if !crate::preflight::builtin_ranking_known(&cfg.root, current) {
                     errors.push(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
@@ -1075,7 +1075,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // works — it's the engine's inline SWRR floor, not a plugin.)
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
+        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(&cfg.root, n)) {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
@@ -1223,6 +1223,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key = crate::config::secret::resolve_linked_string_at_config(
+                    cfg.root.secret_axis,
                     &provider_cfg.api_key,
                     &busbar_contract::config_time::ConfigScope::config_time(),
                 )
@@ -1254,9 +1255,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // instances share (a webhook sink's in-flight bound) AMONG the limits' checks, each instance's
     // own (a webhook's delivery deadline) after them.
     use crate::export::plugin::check;
-    let sinks = &mut |e: &mut Vec<String>| check(&cfg.export, CheckPhase::Limits, e);
+    let exports = cfg.root.export_axis;
+    let sinks = &mut |e: &mut Vec<String>| check(exports, &cfg.export, CheckPhase::Limits, e);
     validate_limits_with(&cfg.limits, &mut errors, sinks);
-    check(&cfg.export, CheckPhase::Instances, &mut errors);
+    check(exports, &cfg.export, CheckPhase::Instances, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1898,7 +1900,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
     // shared `plugins_preflight` verifies against the registry at boot.
     for module in cfg.secrets.keys() {
-        if crate::config::secret::is_linked_secret(module) {
+        if crate::config::secret::is_linked_secret(cfg.root.secret_axis, module) {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
                  config; its settings (`key` / `path`) belong on each individual secret reference, \
@@ -2400,6 +2402,7 @@ fn validate_providers_with(
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
             let cred = crate::config::secret::resolve_linked_string_at_config(
+                cfg.root.secret_axis,
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
@@ -2414,6 +2417,7 @@ fn validate_providers_with(
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
                 for e in outbound_credential_refusals(
+                    &cfg.root,
                     "oauth-client-credentials",
                     &cred,
                     &params,
@@ -2446,13 +2450,14 @@ fn validate_providers_with(
             }
             let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
+                cfg.root.secret_axis,
                 &provider_cfg.api_key,
                 &config_time,
             )
             .unwrap_or_default();
             // A credential naming its key file is read as the build reads it, in the same words.
             let cred = match service_account_json(cred.into_bytes(), |file| {
-                crate::config::secret::SecretResolver::builtins_only()
+                crate::config::secret::SecretResolver::linked_only(cfg.root.secret_axis)
                     .resolve_at_config(file, &config_time)
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
@@ -2485,6 +2490,7 @@ fn validate_providers_with(
                             params.insert("scope".into(), serde_json::Value::String(scope.clone()));
                         }
                         outbound_credential_refusals(
+                            &cfg.root,
                             "jwt-bearer",
                             &cred,
                             &serde_json::Value::Object(params),
@@ -2548,14 +2554,15 @@ impl MetadataPosture {
 
 /// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
 /// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
-/// text only). None when no plugin this build reaches serves the style.
+/// text only). None when no plugin `root` links serves the style.
 fn outbound_credential_refusals(
+    root: &crate::preflight::RootInstall,
     style: &str,
     credential: &str,
     params: &serde_json::Value,
     legacy: crate::config::Legacy,
 ) -> Vec<String> {
-    let Some(axis) = crate::preflight::linked_auth_axis(legacy) else {
+    let Some(axis) = crate::preflight::linked_auth_axis(root, legacy) else {
         return Vec::new();
     };
     axis.check_outbound(style, credential.as_bytes(), params)

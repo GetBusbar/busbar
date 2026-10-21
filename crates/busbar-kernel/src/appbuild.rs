@@ -623,9 +623,12 @@ pub fn build_app_from_config(
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
-    // The root legacy table this configuration was resolved under (`config::resolve` was lent it):
-    // every reader below, and the generation built here, reads that table.
+    // The root legacy table this configuration was resolved under (`config::resolve_in` was lent
+    // it): every reader below, and the generation built here, reads that table.
     let legacy = cfg.legacy;
+    // The install record the composition root lent this configuration: every root row and axis the
+    // build reads below is read off it, and the snapshot carries it on (`App::root`).
+    let root = cfg.root;
     // The planes this configuration writes that the process did not open at boot: restart-to-apply,
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
@@ -685,7 +688,7 @@ pub fn build_app_from_config(
         }
         // The root fetches and downloads, through the connector (row 130 E6: the kernel dials
         // nothing); the operator's metadata denylist extends the download's SSRF pre-check.
-        let fetch = crate::preflight::root_rows()
+        let fetch = root
             .plugins_fetch
             .ok_or("plugins.fetch failed:\n  - no composition root installed the plugins fetch")?;
         let outcomes = fetch(&dir, &targets, prior.is_none(), &cfg.blocked_metadata_hosts)
@@ -714,6 +717,7 @@ pub fn build_app_from_config(
     // resolver - and the store open below - both draw on the same validated registry. A non-memory
     // store, an unresolvable secret plugin, or any invalid tarball fails boot here.
     let plugin_registry = Arc::new(plugins_preflight(
+        &root,
         cfg.store.as_ref(),
         cfg.auth.as_ref(),
         &cfg.identity_providers,
@@ -734,6 +738,7 @@ pub fn build_app_from_config(
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
     // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
     let secret_resolver = Arc::new(build_secret_resolver(
+        root.secret_axis,
         plugin_registry.clone(),
         &cfg.secrets,
     )?);
@@ -1194,7 +1199,7 @@ pub fn build_app_from_config(
     // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
     // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
     // registry refuses the build here, naming the rebuild.
-    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
+    let hook_env = hooks::HookEnv::new(&root, plugin_registry.clone(), secret_resolver.clone())?;
 
     // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
@@ -1377,7 +1382,7 @@ pub fn build_app_from_config(
         // in, one path.
         let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
         let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
-        let axis = crate::preflight::root_rows()
+        let axis = root
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
         let opened = axis()
@@ -1618,7 +1623,7 @@ pub fn build_app_from_config(
     // paths the router actually has, so a config mutation can SAY so instead of
     // reporting success for a route that will keep 404ing.
     let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
-        crate::export::route_decls(&cfg_export),
+        crate::export::route_decls(root.export_axis, &cfg_export),
     )?);
     // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
     // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
@@ -2040,7 +2045,8 @@ pub fn build_app_from_config(
         cost,
         plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
         plugins_cfg,
-        plugin_trust: crate::preflight::root_rows().trust_policy,
+        plugin_trust: root.trust_policy,
+        root,
         // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg

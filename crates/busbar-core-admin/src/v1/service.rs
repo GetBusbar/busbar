@@ -686,13 +686,15 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
 }
 
 /// The removable hook plugins COMPILED INTO this binary: the hook rows this build LINKS, by the name
-/// every surface prints, read off the composition root's install record
-/// (`busbar_kernel::preflight::RootInstall::hook_names`) as the store catalog reads its `stores`.
-/// This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is the
-/// root's data. Excludes the always-present, non-removable weighted SWRR floor, which is reported
-/// separately (as `weighted_floor` / the `weighted` compiled-in entry).
-pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    busbar_kernel::preflight::root_rows().hook_names.to_vec()
+/// every surface prints, read off the install record the composition root lent the snapshot
+/// (`root`, `busbar_kernel::state::App::root`'s `hook_names`) as the store catalog reads its
+/// `stores`. This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is
+/// the root's data. Excludes the always-present, non-removable weighted SWRR floor, which is
+/// reported separately (as `weighted_floor` / the `weighted` compiled-in entry).
+pub(crate) fn hook_plugins_compiled_in(
+    root: &busbar_kernel::preflight::RootInstall,
+) -> Vec<&'static str> {
+    root.hook_names.to_vec()
 }
 
 /// Longest a plugin filename may be — generous headroom over any real tarball name, guarding the

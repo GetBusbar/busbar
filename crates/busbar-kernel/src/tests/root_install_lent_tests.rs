@@ -99,3 +99,27 @@ fn the_root_install_is_lent_by_the_compose_not_held_in_a_static() {
         hits.join("\n")
     );
 }
+
+/// The registry link reads the record it is LENT, not one a process holds: the stand-in record's
+/// linked store answers by its key through the link that record is lent to, and a record that lends
+/// no store (nothing installed, [`Default`]) links none, in the same process.
+#[test]
+fn the_registry_link_reads_the_record_it_is_lent() {
+    use crate::preflight::{linked, RootInstall};
+    let stand_in = RootInstall::STAND_IN;
+    let (key, ..) = stand_in.stores[0];
+    assert!(
+        linked(&stand_in, crate::config::Legacy::stand_in())
+            .expect("the stand-in's rows link")
+            .resolve(key)
+            .is_some(),
+        "the lent record's store `{key}` is linked"
+    );
+    assert!(
+        linked(&RootInstall::default(), crate::config::Legacy::stand_in())
+            .expect("no rows link")
+            .resolve(key)
+            .is_none(),
+        "a record that lends no store links none, whatever another record lent"
+    );
+}

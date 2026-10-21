@@ -82,6 +82,7 @@ pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
     // Asked at CONFIG TIME, as boot and an apply ask it (R4, BUSBAR-1.6.0.md l.1464-1469): a request
     // path's form is refused by a disk-reading source before the source says anything of its own.
     let text = busbar_kernel::config::secret::resolve_linked_string_at_config(
+        busbar_kernel::preflight::RootInstall::STAND_IN.secret_axis,
         secret,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -130,11 +131,20 @@ pub(super) fn missing(case: &str) -> String {
 
 /// A member program's `env` secret reference resolves through the linked secret plugins at
 /// CONFIG TIME (its need's declaration, the connector's refresher) and is held for its spawns, as
-/// the root's boot installs them (the first install holds; this is the same one).
+/// the root's boot installs them: through the secret axis this test build's install record lends
+/// (the first install holds).
 fn member_secrets_installed() {
-    let _ = busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
+    fn lent(
+        secret: &SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<String, String> {
+        busbar_kernel::config::secret::resolve_linked_string_at_config(
+            busbar_kernel::preflight::RootInstall::STAND_IN.secret_axis,
+            secret,
+            scope,
+        )
+    }
+    let _ = busbar_core_connector::compose::install_spawn_secrets(lent);
 }
 
 /// The tool door's `tools:` section: one member, `fs`, that is the program

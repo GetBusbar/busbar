@@ -108,12 +108,18 @@ pub type PluginsFetch = fn(
     &[String],
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
-/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
+/// WHAT THE COMPOSITION ROOT LENDS the kernel, by name: its linked entries and its registry
 /// build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
 /// the root, never the loader). A field is added by name; nothing is positional. Nothing
-/// installed ([`Default`]): no linked rows, and a build and a fetch that refuse, naming the missing
+/// lent ([`Default`]): no linked rows, and a build and a fetch that refuse, naming the missing
 /// root.
+///
+/// THE COMPOSE OWNS IT (status row 82, D2; THE DESIGN l.1560: no kernel `OnceLock` seam beyond the
+/// two R6 exempts): the root builds its record once and lends it to every reader — the
+/// configuration it resolves ([`config::resolve_in`], which carries it on [`config::RootCfg::root`]
+/// to the validation, the preflight and the build), the registry link ([`linked`]) and the admin
+/// surface (through [`crate::state::App::root`]). The kernel keeps no copy of its own.
 #[derive(Clone, Copy, Default)]
 pub struct RootInstall {
     /// The build's linked in-process stores.
@@ -164,23 +170,47 @@ pub type HookAxisBuild =
 pub type TrustPolicyBuild =
     fn(&config::PluginsCfg, &str) -> Result<busbar_plugin_loader::sign::TrustPolicy, String>;
 
-/// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
-/// double stand in for the root's entries, the in-crate secret double
-/// ([`crate::test_support::secrets`]) as the secret axis, and the test axis for the exports.
+impl std::fmt::Debug for RootInstall {
+    /// The rows a reader can name (the linked stores by key, the linked hooks by name) and which
+    /// axes the root lent; an axis is a port and prints as its presence alone.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootInstall")
+            .field(
+                "stores",
+                &self.stores.iter().map(|s| s.0).collect::<Vec<_>>(),
+            )
+            .field("hook_names", &self.hook_names)
+            .field("registry_build", &self.registry_build.is_some())
+            .field("plugins_fetch", &self.plugins_fetch.is_some())
+            .field("hook_axis", &self.hook_axis.is_some())
+            .field("store_axis", &self.store_axis.is_some())
+            .field("secret_axis", &self.secret_axis.is_some())
+            .field("export_axis", &self.export_axis.is_some())
+            .field("trust_policy", &self.trust_policy.is_some())
+            .finish()
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
-const STAND_IN: RootInstall = RootInstall {
-    stores: &[crate::test_support::store_double::STORE],
-    registry_build: Some(crate::test_support::registry_stand_in),
-    plugins_fetch: Some(crate::test_support::fetch_stand_in),
-    hook_axis: Some(crate::test_support::hook_axis_stand_in),
-    // A test build links no hook row of the root's: the operator surface lists none, unless the
-    // root's own test binary hands its names in (`test_support::install_root_hook_names`).
-    hook_names: &[],
-    store_axis: Some(crate::test_support::store_axis_stand_in),
-    secret_axis: Some(&crate::test_support::SecretsStandIn),
-    export_axis: Some(&crate::test_support::export_axis::STAND_IN),
-    trust_policy: Some(crate::test_support::trust_policy_stand_in),
-};
+impl RootInstall {
+    /// A test build has no root: its store double ([`crate::test_support::store_double`]) and
+    /// ranking double stand in for the root's entries, the in-crate secret double
+    /// ([`crate::test_support::secrets`]) as the secret axis, and the test axis for the exports. A
+    /// test lends it where the root lends its own record; a root test binary lends the root's.
+    pub const STAND_IN: RootInstall = RootInstall {
+        stores: &[crate::test_support::store_double::STORE],
+        registry_build: Some(crate::test_support::registry_stand_in),
+        plugins_fetch: Some(crate::test_support::fetch_stand_in),
+        hook_axis: Some(crate::test_support::hook_axis_stand_in),
+        // A test build links no hook row of the root's: the operator surface lists none, unless the
+        // root's own test binary lends a record carrying its names.
+        hook_names: &[],
+        store_axis: Some(crate::test_support::store_axis_stand_in),
+        secret_axis: Some(&crate::test_support::SecretsStandIn),
+        export_axis: Some(&crate::test_support::export_axis::STAND_IN),
+        trust_policy: Some(crate::test_support::trust_policy_stand_in),
+    };
+}
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
 /// [`crate::test_support::hook_axis_stand_in`]): the ranking double, in every test build (THE
@@ -189,42 +219,12 @@ const STAND_IN: RootInstall = RootInstall {
 pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] =
     &[crate::test_support::ranking_double::door];
 
-/// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks) and its registry build, installed once before the first
-/// resolution.
-static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
+/// The secret axis an install record lends: every secret plugin the root admitted, or `None` (no
+/// root lent one: only a cold-lane plugin resolves).
+pub type LinkedSecrets = Option<&'static dyn busbar_contract::secret::SecretAxis>;
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
-/// root's registry build (the first install stands). The kernel names none of the plugins it
-/// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
-pub fn install_linked_rows(rows: RootInstall) {
-    let _ = ROOT_ROWS.set(rows);
-}
-
-/// The installed root rows (a test build stands its fixtures in). Admin's store catalog lists
-/// `stores`, the stores this build links.
-pub fn root_rows() -> RootInstall {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let _ = ROOT_ROWS.set(STAND_IN);
-        if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
-            return RootInstall {
-                hook_names,
-                ..ROOT_ROWS.get().copied().unwrap_or_default()
-            };
-        }
-    }
-    ROOT_ROWS.get().copied().unwrap_or_default()
-}
-
-/// The hook names the composition root's OWN test binary hands in, in the root's words (its
-/// generated linked-hook list): a test build's install record reports them in place of the
-/// stand-in's none, whichever read came first, so a document that test binary renders names the
-/// hooks the shipped binary names ([`crate::test_support::install_root_hook_names`]). The first
-/// hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static str]> =
-    std::sync::OnceLock::new();
+/// The export axis an install record lends, or `None` (no export module resolves).
+pub type LinkedExports = Option<&'static dyn busbar_contract::export_calls::ExportAxis>;
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
 /// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
@@ -271,21 +271,22 @@ pub(crate) fn auth_axis(
     AUTH_AXIS.get().map(|open| open(registry))
 }
 
-/// This build's auth axis over its LINKED rows alone (no plugins directory): what `--validate`
-/// asks a style's plugin to judge a credential through, its rows answering the former names
-/// `legacy` gives them ([`linked`]).
+/// This build's auth axis over the LINKED rows `root` lends alone (no plugins directory): what
+/// `--validate` asks a style's plugin to judge a credential through, its rows answering the former
+/// names `legacy` gives them ([`linked`]).
 pub(crate) fn linked_auth_axis(
+    root: &RootInstall,
     legacy: config::Legacy,
 ) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
-    auth_axis(Arc::new(linked(legacy).ok()?))
+    auth_axis(Arc::new(linked(root, legacy).ok()?))
 }
 
-/// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
-/// stores and the root's hooks — a test build (no root) stands its
-/// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
-/// takes (DECISIONS #2 rule (1)).
-fn linked_rows(legacy: config::Legacy) -> Vec<LinkedPlugin> {
-    let RootInstall { stores, .. } = root_rows();
+/// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the stores
+/// `root` lends and the root's auth rows — a test build (no root) lends its stand-in's fixture
+/// entries. Registered through `PluginRegistry::link`, the admission a dropped-in row takes
+/// (DECISIONS #2 rule (1)).
+fn linked_rows(root: &RootInstall, legacy: config::Legacy) -> Vec<LinkedPlugin> {
+    let RootInstall { stores, .. } = *root;
     let auths = busbar_kernel_identity::operator::linked().iter();
     let rows = stores.iter().map(|s| linked_store_row(s, legacy));
     rows.chain(auths.map(|a| linked_auth_row(a, legacy)))
@@ -322,41 +323,44 @@ pub fn answering_former_names(row: LinkedPlugin, legacy: config::Legacy) -> Link
     row.with_former_names(former)
 }
 
-/// The hook axis over this build's LINKED rows alone (no plugins directory): where a pool strategy
-/// word resolves. The linked hook rows are the root's hook doors, which the axis states itself; a
-/// registry hands a hook axis only its DROPPED-IN hook rows (`HookRows::new` reads
+/// The hook axis `root` lends, over its LINKED rows alone (no plugins directory): where a pool
+/// strategy word resolves. The linked hook rows are the root's hook doors, which the axis states
+/// itself; a registry hands a hook axis only its DROPPED-IN hook rows (`HookRows::new` reads
 /// `PluginRegistry::dropped_hooks`), and with no plugins directory there are none, so the axis is
 /// built over the empty registry and reads none of the linked store and auth rows.
-fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>> {
-    let build = root_rows().hook_axis?;
+fn linked_hook_axis(
+    root: &RootInstall,
+) -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>> {
+    let build = root.hook_axis?;
     build(&std::sync::Arc::new(PluginRegistry::empty())).ok()
 }
 
-/// Whether this build links a ranking hook that claims the strategy word `name` (a hook word mark
-/// of a linked `kind: hook` row).
-pub(crate) fn builtin_ranking_known(name: &str) -> bool {
-    linked_hook_answers(name)
+/// Whether `root` links a ranking hook that claims the strategy word `name` (a hook word mark of a
+/// linked `kind: hook` row).
+pub(crate) fn builtin_ranking_known(root: &RootInstall, name: &str) -> bool {
+    linked_hook_answers(root, name)
 }
 
-/// Whether a `kind: hook` row this build LINKS answers `module` on the hook axis (its Statement
-/// name, an alias, a former name the root legacy table gives it, or a hook word it claims): the
-/// linked half of the claim table boot opens hooks through (ARCHITECT Q-P4-13).
-pub(crate) fn linked_hook_answers(module: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| axis.linked(module))
+/// Whether a `kind: hook` row `root` LINKS answers `module` on the hook axis (its Statement name,
+/// an alias, a former name the root legacy table gives it, or a hook word it claims): the linked
+/// half of the claim table boot opens hooks through (ARCHITECT Q-P4-13).
+pub(crate) fn linked_hook_answers(root: &RootInstall, module: &str) -> bool {
+    linked_hook_axis(root).is_some_and(|axis| axis.linked(module))
 }
 
 /// The built-in ranking strategy `name` names on the hook axis — the linked row that claims the
 /// word, opened with `{"policy": "<name>"}` (ARCHITECT 2026-10-02, the hook-ranking opener) and
 /// called through the hook seam — with its deadline: the dispatcher's Call class budget (ARCHITECT
 /// Q-SO9), never the gate default. Ranking is pure compute and answers on its first poll, so, as in
-/// 1.5.5, it cannot time out. `None` when this build links no ranking row claiming the word.
+/// 1.5.5, it cannot time out. `None` when `root` links no ranking row claiming the word.
 pub(crate) fn builtin_ranking(
+    root: &RootInstall,
     name: &str,
 ) -> Option<(
     std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
     std::time::Duration,
 )> {
-    let axis = linked_hook_axis()?;
+    let axis = linked_hook_axis(root)?;
     if !axis.linked(name) {
         return None;
     }
@@ -424,12 +428,11 @@ fn require_plugin(
     }
 }
 
-/// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has —
-/// each answering the former names the root legacy table the composition root lent (`legacy`)
-/// gives it. No directory is read and no root is needed: the kernel's own built-in secret modules
-/// resolve in any build.
-pub fn linked(legacy: config::Legacy) -> Result<PluginRegistry, String> {
-    PluginRegistry::empty().link(linked_rows(legacy))
+/// A registry holding only the [`linked_rows`] `root` lends — what a build with the plugins
+/// directory off has — each answering the former names the root legacy table the composition root
+/// lent (`legacy`) gives it. No directory is read.
+pub fn linked(root: &RootInstall, legacy: config::Legacy) -> Result<PluginRegistry, String> {
+    PluginRegistry::empty().link(linked_rows(root, legacy))
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
@@ -458,7 +461,11 @@ pub fn linked(legacy: config::Legacy) -> Result<PluginRegistry, String> {
 ///
 /// Returns the validated registry (empty when plugins are disabled and no plugin is referenced).
 /// NO plugin code runs in this function (manifest-only; `dlopen` happens later, at store open).
+// Six configuration blocks and the two tables the composition root lends (`root`, `legacy`): each
+// is read by a different step above, and none is a field of another.
+#[allow(clippy::too_many_arguments)]
 pub fn plugins_preflight(
+    root: &RootInstall,
     store_cfg: Option<&config::StoreCfg>,
     auth_cfg: Option<&config::AuthCfg>,
     identity_providers: &config::IdentityProviders,
@@ -481,7 +488,8 @@ pub fn plugins_preflight(
     let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = store_cfg.is_some() && linked(legacy)?.resolve(&store_ref).is_none();
+    let store_is_plugin =
+        store_cfg.is_some() && linked(root, legacy)?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -544,7 +552,7 @@ pub fn plugins_preflight(
         let mut v: Vec<String> = hooks_cfg
             .values()
             .map(|h| h.plugin.clone())
-            .filter(|m| !linked_hook_answers(m))
+            .filter(|m| !linked_hook_answers(root, m))
             .collect();
         v.sort();
         v.dedup();
@@ -618,11 +626,11 @@ pub fn plugins_preflight(
     //    first-party verdict counts, and the mark only ever rises). A failure to persist is NOT
     //    fatal: the in-memory marks still floor this process.
     let build = RegistryIn {
-        linked: linked_rows(legacy),
+        linked: linked_rows(root, legacy),
         plugins: Some(plugins_cfg),
         data_dir: data_dir.as_deref(),
     };
-    let registry_build = root_rows()
+    let registry_build = root
         .registry_build
         .ok_or("no composition root installed the plugin registry build")?;
     let registry = registry_build(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
@@ -740,8 +748,11 @@ pub fn plugins_preflight(
     // cannot register GET /metrics — already registered by "prometheus"`. The manifest-only
     // mirror this replaced read routes from a signed-manifest field that was never defined, so it
     // checked the built-in set alone and could not collide.
-    crate::plugin_routes::build_route_table(crate::export::route_decls(export_cfg))
-        .map_err(|e| format!("plugin route registration conflict: {e}"))?;
+    crate::plugin_routes::build_route_table(crate::export::route_decls(
+        root.export_axis,
+        export_cfg,
+    ))
+    .map_err(|e| format!("plugin route registration conflict: {e}"))?;
 
     Ok(registry)
 }
@@ -922,10 +933,11 @@ pub(crate) fn resolve_signing_key(
 /// `--validate` pre-flight so both apply the identical policy (a mistyped/aliased
 /// `secrets:` key must never silently open a plugin with `{}`).
 pub(crate) fn validate_secret_module(
+    linked: LinkedSecrets,
     registry: &busbar_plugin_loader::PluginRegistry,
     module: &str,
 ) -> Result<String, String> {
-    if config::secret::is_linked_secret(module) {
+    if config::secret::is_linked_secret(linked, module) {
         return Err(format!(
             "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
              module-level configuration. Remove this `secrets:` entry (reference it inline as \
@@ -1024,6 +1036,7 @@ pub fn preflight_plugins_and_secrets(
     cfg: &config::RootCfg,
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
     let registry = plugins_preflight(
+        &cfg.root,
         deploy.store.as_ref(),
         cfg.auth.as_ref(),
         &cfg.identity_providers,
@@ -1032,7 +1045,7 @@ pub fn preflight_plugins_and_secrets(
         &cfg.export,
         cfg.legacy,
     )?;
-    validate_secret_modules(&registry, &cfg.secrets)?;
+    validate_secret_modules(cfg.root.secret_axis, &registry, &cfg.secrets)?;
     validate_secret_refs(&registry, cfg)?;
     Ok(registry)
 }
@@ -1040,11 +1053,12 @@ pub fn preflight_plugins_and_secrets(
 /// Validate EVERY `secrets:` block entry against the registry (the `--validate` counterpart of the
 /// per-entry check `build_secret_resolver` runs at boot). Returns the FIRST offending entry's error.
 pub(crate) fn validate_secret_modules(
+    linked: LinkedSecrets,
     registry: &busbar_plugin_loader::PluginRegistry,
     secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
 ) -> Result<(), String> {
     for module in secret_modules.keys() {
-        validate_secret_module(registry, module)?;
+        validate_secret_module(linked, registry, module)?;
     }
     Ok(())
 }
@@ -1062,7 +1076,7 @@ pub(crate) fn validate_secret_refs(
     cfg: &config::RootCfg,
 ) -> Result<(), String> {
     for (what, r) in config_validate::secret_refs(cfg) {
-        if config::secret::is_linked_secret(&r.module)
+        if config::secret::is_linked_secret(cfg.root.secret_axis, &r.module)
             // `none` names no module at all — it declares the ABSENCE of a credential — so there is
             // nothing here for the registry to resolve, and it must never be looked up as though a
             // `kind: secret` plugin called `none` could back it. WHERE it is permitted is
@@ -1117,9 +1131,9 @@ pub(crate) fn validate_secret_refs(
 /// (see `boot_resolved_secret_refs`). The exhaustive walk stays in use for the structural and
 /// module-existence checks, which cost nothing to run over a reference boot never reads.
 pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
-    let builtins = config::secret::SecretResolver::builtins_only();
+    let builtins = config::secret::SecretResolver::linked_only(cfg.root.secret_axis);
     for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
-        if !config::secret::is_linked_secret(&r.module) {
+        if !config::secret::is_linked_secret(cfg.root.secret_axis, &r.module) {
             // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
             // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
             // be loadable here, and pre-flight covers it.
@@ -1140,6 +1154,7 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
 /// module no door answers is an unresolvable secret, refused in the registry's words. When the plugin subsystem is off the registry is empty and every non-built-in reference
 /// is a fail-closed error at resolve time.
 pub(crate) fn build_secret_resolver(
+    linked: LinkedSecrets,
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
     secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
 ) -> Result<config::secret::SecretResolver, String> {
@@ -1150,11 +1165,11 @@ pub(crate) fn build_secret_resolver(
     // SecretRef — multiplying secret exposure and defeating the open-vs-resolve separation the ABI
     // is designed around.
     //
-    // The module config is resolved against the BUILT-IN env/file resolvers ONLY (a `builtins_only`
+    // The module config is resolved against the BUILT-IN env/file resolvers ONLY (a `linked_only`
     // resolver). A secret module cannot resolve its OWN `open()` config through a secret plugin —
     // that would be a bootstrap cycle — so `{ token: { env: VAULT_TOKEN } }` resolves but
     // `{ token: { module: some-other-secret-plugin } }` is a fail-closed error.
-    let builtins = config::secret::SecretResolver::builtins_only();
+    let builtins = config::secret::SecretResolver::linked_only(linked);
     // Key the open-config map by the plugin's CANONICAL name, not by the literal `secrets:` block
     // key: a `SecretRef` may name the plugin by EITHER its canonical name or its alias, and
     // the registry resolves both — but a bare string-equality lookup on the block key would MISS the
@@ -1175,7 +1190,7 @@ pub(crate) fn build_secret_resolver(
     for (module, mcfg) in secret_modules {
         // Validate + canonicalize the block key against the registry (shared with --validate). A
         // reserved built-in name, an unknown module, or a non-secret plugin is a hard error here.
-        let canonical = validate_secret_module(&registry, module)?;
+        let canonical = validate_secret_module(linked, &registry, module)?;
         // TWO SPELLINGS, ONE MODULE: a `secrets:` block written under BOTH a plugin's alias and its
         // canonical name canonicalizes to the same key, and the second insert silently DROPPED the
         // first entry's open() config — one of the two blocks (address, token, CA) just vanished,
@@ -1202,25 +1217,26 @@ pub(crate) fn build_secret_resolver(
     // resolved through the linked plugins and lent to `open`, never substituted into the settings.
     let opened = OpenedSecrets::default();
     Ok(config::secret::SecretResolver::with_scoped_plugin(
+        linked,
         Box::new(
             move |module: &str,
                   settings: &str,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
                   -> Result<Vec<u8>, String> {
-                if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
+                if let Some(axis) = linked.filter(|a| a.answers(module)) {
                     // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
                     // open the plugin once.
                     let canonical = registry.resolve(module).map(|p| p.key().to_string());
                     let key = canonical.as_deref().unwrap_or(module);
                     return opened.resolve(key, settings, scope, || {
                         let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
-                        let linked = config::secret::SecretResolver::builtins_only();
+                        let lent = config::secret::SecretResolver::linked_only(linked);
                         axis.open(
                             module,
                             raw.unwrap_or(&serde_json::Value::Null),
                             &|r| match scope {
-                                Some(scope) => linked.resolve_at_config(r, scope),
-                                None => linked.resolve(r),
+                                Some(scope) => lent.resolve_at_config(r, scope),
+                                None => lent.resolve(r),
                             },
                         )
                     });

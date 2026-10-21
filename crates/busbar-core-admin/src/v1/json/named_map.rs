@@ -532,8 +532,12 @@ async fn apply(
                     &doc,
                     snapshot.legacy,
                 );
-                let mut cfg =
-                    busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, snapshot.legacy)
+                let mut cfg = busbar_kernel::config::resolve_in(
+                    snapshot.root,
+                    &loaded.deploy,
+                    &loaded.defs,
+                    snapshot.legacy,
+                )
                         .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();

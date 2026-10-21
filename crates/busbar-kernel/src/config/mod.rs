@@ -420,10 +420,10 @@ fn mapping_key_repr(key: &serde_yaml::Value) -> String {
 }
 
 /// The fully-resolved runtime config. NOT deserialized from YAML: the on-disk shape is `DeployCfg`
-/// (+ provider definitions), and `RootCfg` is constructed exclusively by [`resolve`]. It therefore
-/// carries no `Deserialize` derive and no field-level serde defaults — those would be inert, and
-/// implying a YAML parse path here would mislead a reader into reasoning about defaults that never
-/// fire.
+/// (+ provider definitions), and `RootCfg` is constructed exclusively by [`resolve_in`]. It
+/// therefore carries no `Deserialize` derive and no field-level serde defaults — those would be
+/// inert, and implying a YAML parse path here would mislead a reader into reasoning about defaults
+/// that never fire.
 #[derive(Debug)]
 pub struct RootCfg {
     pub listen: String,
@@ -555,10 +555,16 @@ pub struct RootCfg {
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.
     pub plane_sections: std::collections::BTreeSet<&'static str>,
-    /// THE ROOT LEGACY TABLE this configuration was resolved under: the one [`resolve`] was lent,
-    /// kept so every reader of the resolved configuration (validation, the build, the generation it
-    /// builds) reads the composition root's table and no static holds it ([`legacy::Legacy`]).
+    /// THE ROOT LEGACY TABLE this configuration was resolved under: the one [`resolve_in`] was
+    /// lent, kept so every reader of the resolved configuration (validation, the build, the
+    /// generation it builds) reads the composition root's table and no static holds it
+    /// ([`legacy::Legacy`]).
     pub legacy: Legacy,
+    /// THE INSTALL RECORD THE COMPOSITION ROOT LENT this configuration's resolution
+    /// ([`resolve_in`]): its linked store rows, hook names and axes. The compose owns it; every
+    /// reader of a resolved configuration — its validation, the plugin preflight, the build and
+    /// the snapshot it builds ([`crate::state::App::root`]) — reads it here, never from a static.
+    pub root: crate::preflight::RootInstall,
 }
 
 impl RootCfg {
@@ -1266,7 +1272,8 @@ pub struct DeployCfg {
     pub per_request_fee: i64,
     /// Every OTHER plane's own card (#47), keyed by plane registry key: the reserved `rate_card:`
     /// sub-key of that plane's section, stripped off it before the plane parses the rest (#43).
-    /// A lifted CARRIER, like the plane sections below; [`resolve`] composes it beside `rate_card:`.
+    /// A lifted CARRIER, like the plane sections below; [`resolve_in`] composes it beside
+    /// `rate_card:`.
     #[serde(skip)]
     pub plane_rate_cards: PlaneRateCards,
     /// Every OTHER plane's own fees (#47): the reserved `fees:` sub-key of that plane's section,
@@ -1276,8 +1283,8 @@ pub struct DeployCfg {
     /// THE GENERIC CARRIER: every REGISTERED plane's declaring section that no other carrier holds
     /// (a named one, or the generic singular one) and core does not own — lifted by the pre-pass off
     /// the plane registry, card and fees stripped, the remainder kept RAW for the plane to read.
-    /// [`resolve`] hands each present one to its plane's `build` as its section-keyed resource. A
-    /// section no registered plane declares is still refused as an unknown field.
+    /// [`resolve_in`] hands each present one to its plane's `build` as its section-keyed resource.
+    /// A section no registered plane declares is still refused as an unknown field.
     #[serde(skip)]
     pub plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     /// Every declaring section its plane owns the grammar of ([`DeployCfg::declared`]), AS WRITTEN
@@ -1829,7 +1836,11 @@ pub struct PrometheusSettings {
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
 ///   a pinned field, and `durable: true` are all LOUD errors here rather than a sink that validates
 ///   and delivers nothing.
-pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
+pub fn resolve_export(
+    exports: crate::preflight::LinkedExports,
+    defs: &ExportDefs,
+    errors: &mut Vec<String>,
+) -> ExportCfg {
     let mut out = ExportCfg::default();
     // The `one_instance` modules already configured once, and those whose refusal is already in.
     let mut seen_once: Vec<&str> = Vec::new();
@@ -1840,7 +1851,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         let module = def.module.trim();
         // The module is asked of the export axis: the streams its sink declares (so the projection
         // is resolved against them now) and its own verdict on the settings.
-        let axis = crate::export::plugin::probe(name, module, &settings);
+        let axis = crate::export::plugin::probe(exports, name, module, &settings);
         let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,
@@ -1853,7 +1864,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         );
         // A `one_instance` module configured again: its own `check` (limits phase) words the
         // refusal, once, over every instance of it; the extra instance is not resolved.
-        if crate::export::plugin::one_instance(module) {
+        if crate::export::plugin::one_instance(exports, module) {
             if seen_once.contains(&module) {
                 if !refused.contains(&module) {
                     refused.push(module);
@@ -1863,7 +1874,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                         .map(|(n, d)| (n.clone(), serde_json::Value::Object(d.settings.clone())))
                         .collect();
                     errors.extend(crate::export::plugin::check_one_instance(
-                        module, &instances,
+                        exports, module, &instances,
                     ));
                 }
                 continue;
@@ -1878,7 +1889,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             other if axis.is_some() => {
                 let metrics = busbar_contract::abi::export::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
-                let first_party = crate::export::plugin::first_party(other);
+                let first_party = crate::export::plugin::first_party(exports, other);
                 let scrape = carries && first_party && projection.wants_stream(metrics);
                 // The first scrape-sink instance renders `/metrics`; no other takes it over.
                 let scrape = scrape && !out.plugins.iter().any(|p| p.scrape);
@@ -1899,7 +1910,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
                  {}",
-                crate::export::plugin::linked_modules().join(" | ")
+                crate::export::plugin::linked_modules(exports).join(" | ")
             )),
         }
     }
@@ -1993,9 +2004,29 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
     ResolvedProvider::merge(def, deploy_cfg)
 }
 
+/// A test build's [`resolve_in`], lent the stand-in install record
+/// ([`crate::preflight::RootInstall::STAND_IN`]) where a composition root lends its own.
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolve(
+    deploy: &DeployCfg,
+    defs: &HashMap<String, ProviderDef>,
+    legacy: Legacy,
+) -> Result<RootCfg, Vec<String>> {
+    resolve_in(
+        crate::preflight::RootInstall::STAND_IN,
+        deploy,
+        defs,
+        legacy,
+    )
+}
+
+/// Resolve `deploy` (with the provider definitions `defs`) under the install record the
+/// composition root lends (`root`) and its legacy table (`legacy`), which the resolved
+/// configuration carries on [`RootCfg::root`] and [`RootCfg::legacy`] to every reader.
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
-pub fn resolve(
+pub fn resolve_in(
+    root: crate::preflight::RootInstall,
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
     legacy: Legacy,
@@ -2004,7 +2035,7 @@ pub fn resolve(
 
     // Lower the `export:` NAMED-DEFINITION map into the typed per-module projection. Unknown modules,
     // bad settings, and duplicate singleton instances land in `errors` here.
-    let export = resolve_export(&deploy.export, &mut errors);
+    let export = resolve_export(root.export_axis, &deploy.export, &mut errors);
 
     // (A scrape sink's zero retention window — recording at full cost, reporting nothing — is its
     // own settings refusal, raised by the sink while `resolve_export` validates it.)
@@ -2433,6 +2464,7 @@ pub fn resolve(
         // An absent `security:` block is the all-default one: no extra hosts, no allow-all.
         let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
+            root,
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
             endpoint_resources,

@@ -211,6 +211,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     );
     let cfg = chain_with("ref-auth", settings);
     let registry = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
@@ -289,6 +290,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let cfg = chain_with("sec-auth", settings);
 
     let registry = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
@@ -358,6 +360,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 
     // Manifest-only preflight resolves the auth plugin (the `--validate`/boot gate).
     let registry = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),

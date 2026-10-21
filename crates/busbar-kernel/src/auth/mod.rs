@@ -2768,9 +2768,12 @@ fn test_inbound_style() -> Vec<HeaderName> {
         return header_names(&crate::test_support::outbound_auth::double_inbound_style());
     }
     header_names(
-        &crate::preflight::linked_auth_axis(crate::config::Legacy::stand_in())
-            .and_then(|axis| axis.default_inbound_style().ok())
-            .unwrap_or_default(),
+        &crate::preflight::linked_auth_axis(
+            &crate::preflight::RootInstall::STAND_IN,
+            crate::config::Legacy::stand_in(),
+        )
+        .and_then(|axis| axis.default_inbound_style().ok())
+        .unwrap_or_default(),
     )
 }
 

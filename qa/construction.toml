@@ -1508,12 +1508,17 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # (`root::legacy::table`) and lends it as a `config::Legacy` value to the config load, the overlay's
 # typed parse, `resolve` (kept on `RootCfg::legacy` and `App::legacy` for the build, validation, the
 # login page and every apply), `--migrate-config`, the registry link and the metrics recorder.
+# DRAINED 3 -> 2 (status row 82, D2): preflight.rs::ROOT_ROWS is deleted with its installer
+# (`install_linked_rows`), its reader (`root_rows`) and the test-gated TEST_ROOT_HOOK_NAMES hand-in
+# it carried for a root test binary. The root's `main` owns its RootInstall and lends it:
+# `config::resolve_in` carries it on `RootCfg::root` to the validation, the preflight and the
+# build, the snapshot keeps it on `App::root` for the admin surface, and `preflight::linked` takes
+# it for the registry link.
 debt_stores = [
   "crates/busbar-kernel/src/plane_driver/door.rs::DOORS -- the root-folded door registrations, found by plane key (`fold`, `is_door`, `provider_keys`); drain: `fold` answers the folded row to the compose, which owns the set and lends it with the door set",
   "crates/busbar-kernel/src/plane_driver/doors.rs::INSTALLED -- the root-installed PlaneDecl table, looked up by plane key (`plane_decl_for`); drain: the compose owns the decl table and lends it to every reader (D2, the next PR of this stack)",
-  "crates/busbar-kernel/src/preflight.rs::ROOT_ROWS -- the root's linked store rows (by store key and canonical name) and hook names; drain: the compose owns its RootInstall and lends it to the build and the registry link",
 ]
-max_debt = 3
+max_debt = 2
 # Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
 # fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
 # re-measure added are stores the narrower row did not see, not new ones.
@@ -1543,7 +1548,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_driver/serve.rs::TABLES -- the published serve tables per config snapshot; routes, not plane, dialect or protocol identities",
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
   "crates/busbar-kernel/src/preflight.rs::AUTH_AXIS -- one opener fn pointer the root binds (the auth axis over a registry); holds no table",
-  "crates/busbar-kernel/src/preflight.rs::TEST_ROOT_HOOK_NAMES -- compiled only under test / test-support: the hook names a root test binary hands in",
   "crates/busbar-kernel/src/rate_apply.rs::APPLY -- one rate-holder object (a port) the root installs; holds no table",
   "crates/busbar-kernel/src/rate_apply.rs::EPOCH -- one rate-epoch object (a port) the root installs; holds no table",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",

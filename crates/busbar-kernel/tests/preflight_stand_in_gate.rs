@@ -37,6 +37,7 @@ fn a_test_support_build_accepts_the_identity_provider_stand_ins_its_auth_chain_r
             },
         );
         if let Err(refusal) = busbar_kernel::plugins_preflight(
+            &busbar_kernel::preflight::RootInstall::STAND_IN,
             None,
             None,
             &providers,
@@ -69,6 +70,7 @@ fn a_real_plugin_module_is_still_refused_with_plugins_off() {
         },
     );
     let refusal = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         None,
         &providers,

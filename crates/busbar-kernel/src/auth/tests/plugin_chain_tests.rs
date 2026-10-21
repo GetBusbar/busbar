@@ -200,6 +200,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
     let cfg = chain_with("test-idp-double", settings());
     // Preflight refuses (names the module + carries the trust opt-in to set).
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
@@ -256,6 +257,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let cfg = chain_with("test-idp-double", settings());
 
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
@@ -313,6 +315,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     };
     let cfg = chain_with("test-idp-double", settings());
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
@@ -342,6 +345,7 @@ fn keys_module_is_not_a_plugin_ref() {
     // No plugins dir, plugins disabled: keys must not be treated as a plugin ref.
     let plugins = PluginsCfg::default();
     let registry = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
