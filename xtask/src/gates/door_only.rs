@@ -34,16 +34,6 @@ pub const EXEMPT_SEAMS: &[&str] = &[
     "crates/busbar-kernel/src/admin/seam.rs",
 ];
 
-/// NAMED STATIC EXEMPTIONS, by file and item: statics the architect ruled the install path, not
-/// debt. Each must still be declared where it is named, or the scan errors: an exemption whose
-/// static is gone forgives nothing and is struck with it.
-///
-/// `ROOT_ROWS`: the composition root's one install record (ARCHITECT WIRE-STORE Q8 and the
-/// opener-seam ruling, "installed via RootRows"; the #1202 ruling: the linked table `linked_gen`
-/// emits names only `<crate>::door`, so every plugin row the record carries is a door).
-pub const EXEMPT_STATICS: &[(&str, &str)] =
-    &[("crates/busbar-kernel/src/preflight.rs", "ROOT_ROWS")];
-
 pub const SPEC: Spec = Spec {
     gate: "door-only",
     ledger: "qa/door-only.toml",
@@ -321,13 +311,20 @@ fn paths(text: &str) -> Vec<Vec<String>> {
     out
 }
 
-/// Is this file test code as a whole: an inner `#![cfg(...)]` naming `test` (and not `not(test)`)?
+/// The two inner attributes that make a whole file test code, matched exactly: the plain test cfg
+/// and the test-or-`test-support` cfg the kernel's test fixtures carry. Anything else that merely
+/// mentions `test` (`any(test, fuzzing)`) is shipped by some build, so its statics are scanned.
+const TEST_ONLY_FILE_ATTRS: &[&str] = &[
+    "#![cfg(test)]",
+    "#![cfg(any(test, feature = \"test-support\"))]",
+];
+
+/// Is this file test code as a whole: one of [`TEST_ONLY_FILE_ATTRS`], exactly, on a line of its
+/// own?
 fn test_only_file(text: &str) -> bool {
-    text.lines().map(str::trim_start).any(|t| {
-        t.starts_with("#![cfg(")
-            && (t.contains("(test") || t.contains(" test,") || t.contains(" test)"))
-            && !t.contains("not(test")
-    })
+    text.lines()
+        .map(str::trim)
+        .any(|t| TEST_ONLY_FILE_ATTRS.contains(&t))
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
@@ -341,7 +338,6 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     // The closure's aliases first, `busbar-contract`'s included (the door type is declared there):
     // a static anywhere in scope may name one.
     let mut aliases = Aliases::default();
-    let mut exempt_seen: Vec<(&str, &str)> = Vec::new();
     for m in members.iter().filter(|m| closure.contains(&m.name)) {
         match one_abi::rs_files(cx, &m.dir) {
             Ok(files) => {
@@ -410,13 +406,6 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                     continue;
                 }
                 if let Some((name, mut ty)) = static_decl(&sl.counted) {
-                    if let Some(&ex) = EXEMPT_STATICS
-                        .iter()
-                        .find(|(f, i)| *f == rel.as_str() && *i == name.as_str())
-                    {
-                        exempt_seen.push(ex);
-                        continue;
-                    }
                     for more in lines.iter().skip(idx + 1).take(6) {
                         if ty.contains('=') || sl.counted.contains('=') || sl.counted.contains(';')
                         {
@@ -439,13 +428,6 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                     }
                 }
             }
-        }
-    }
-    for (file, item) in EXEMPT_STATICS {
-        if !exempt_seen.contains(&(*file, *item)) {
-            errors.push(format!(
-                "named exemption {file} {item}: no such static in the tree; strike the exemption"
-            ));
         }
     }
     (findings, errors)
@@ -525,11 +507,56 @@ impl Gate for DoorOnlyGate {
              pub static PLANTED_CELL: std::sync::Mutex<std::cell::Cell<u8>> =\n    \
              std::sync::Mutex::new(std::cell::Cell::new(0));\n",
         );
-        // THE NAMED EXEMPTION IS ONE STATIC IN ONE FILE: the same name elsewhere is a finding.
-        let mut exempt_elsewhere = Overlay::new();
-        exempt_elsewhere.set(
+        // NO NAME IS EXEMPT: the root's install record retyped in place to hold a fn pointer, and
+        // a second fn-pointer static of the same name in an inline module of the same file, are
+        // both findings.
+        let preflight = "crates/busbar-kernel/src/preflight.rs";
+        let real = match cx.read(preflight) {
+            Ok(text) => text,
+            Err(e) => {
+                let mut report = Report::new();
+                report.note_infra_failure(format!("door-only selftest: {preflight}: {e}"));
+                return report;
+            }
+        };
+        let declared = "static ROOT_ROWS: std::sync::OnceLock<RootInstall> =";
+        if !real.contains(declared) {
+            let mut report = Report::new();
+            report.note_infra_failure(format!(
+                "door-only selftest: {preflight} no longer declares `{declared}`"
+            ));
+            return report;
+        }
+        let mut retyped = Overlay::new();
+        retyped.set(
+            preflight,
+            real.replace(
+                declared,
+                "static ROOT_ROWS: std::sync::OnceLock<fn() -> u8> =",
+            ),
+        );
+        let mut inline = Overlay::new();
+        inline.set(
+            preflight,
+            format!(
+                "{real}\nmod planted_inline {{\n    \
+                 pub static ROOT_ROWS: std::sync::OnceLock<fn() -> u8> =\n        \
+                 std::sync::OnceLock::new();\n}}\n"
+            ),
+        );
+        // THE TEST-ONLY FILE SKIP IS EXACT: a file gated `any(test, fuzzing)` ships in a fuzzing
+        // build, so its fn static is a finding; one gated exactly test-or-`test-support` is not.
+        let fuzzing_static =
+            "pub static PLANTED_FUZZ: std::sync::OnceLock<fn() -> u8> = std::sync::OnceLock::new();\n";
+        let mut fuzzing = Overlay::new();
+        fuzzing.set(
             file,
-            "pub static ROOT_ROWS: std::sync::OnceLock<fn() -> u8> = std::sync::OnceLock::new();\n",
+            format!("#![cfg(any(test, fuzzing))]\n{fuzzing_static}"),
+        );
+        let mut test_support = Overlay::new();
+        test_support.set(
+            file,
+            format!("#![cfg(any(test, feature = \"test-support\"))]\n{fuzzing_static}"),
         );
         let mut seam = Overlay::new();
         seam.set(
@@ -566,9 +593,21 @@ impl Gate for DoorOnlyGate {
                 ),
                 (
                     ROW_SEAM,
-                    "a static named like the ROOT_ROWS exemption, in another file, is RED",
-                    exempt_elsewhere,
-                    vec![file, "ROOT_ROWS"],
+                    "the root's install record retyped to a fn pointer is RED, naming it",
+                    retyped,
+                    vec![preflight, "ROOT_ROWS"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a fn-pointer ROOT_ROWS in an inline module of preflight.rs is RED, naming it",
+                    inline,
+                    vec![preflight, "ROOT_ROWS"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a fn static in an `any(test, fuzzing)` file is RED, naming it",
+                    fuzzing,
+                    vec![file, "PLANTED_FUZZ"],
                 ),
                 (
                     ROW_SEAM,
@@ -592,6 +631,13 @@ impl Gate for DoorOnlyGate {
              findings",
             &[ROW_SEAM],
             data,
+        ));
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "a fn static in a file gated exactly test-or-`test-support` is test code, not a finding",
+            &[ROW_SEAM],
+            test_support,
         ));
         report
     }

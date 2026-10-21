@@ -8,9 +8,9 @@
 # function pointer or trait object named through a type alias passed it. The scan now resolves
 # aliases. Four rows below were in the tree, unseen, before the scan could see them:
 # SPAWN_SECRETS, CONFIG_PROJECTION, AUTH_AXIS and HELD. They are drain-only architecture debt at
-# today's measured count (ARCHITECT ruling, row 159: honest measurement of debt already there; Law
+# today's measured count (honest measurement of debt already there, not a narrowing; Law
 # 9: the ceiling only falls); each names its drain PR.
-# drain PR: #1426
+# drain PR: #1426 (at e9565f359d)
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-core-connector/src/spawn_env.rs"
@@ -64,7 +64,7 @@ file = "crates/busbar-kernel/src/rate_apply.rs"
 item = "EPOCH"
 count = 1
 
-# drain PR: #1426
+# drain PR: #1426 (at e9565f359d)
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar/src/root/durability/store_identity.rs"
