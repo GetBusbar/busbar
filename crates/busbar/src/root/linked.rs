@@ -17,7 +17,7 @@
 //! Nothing here asks where a row came from.
 //!
 //! What a plugin STATES about itself (its plane declaration) is contract data; what the kernel RUNS
-//! for it is typed by the kernel's own seams (its plane hooks, protocol declarations, arrivals,
+//! for it is typed by the kernel's own seams (its plane hooks, arrivals,
 //! diagnostics) — the split `PlaneDeclaration` / `PlaneHooks` already has, joined kernel-side by
 //! `PlaneDecl::assemble` in the generated plane table. The kernel defines nothing for this path.
 //!
@@ -72,10 +72,6 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-    /// Each linked plane's dialect declarations (contract data, its entry's `PROTOCOLS`). The kernel
-    /// holds no protocol set (a plane resolves its own dialects, spec Part 1, Law 5); the root reads
-    /// only the stream media these rows state ([`stream_media`]).
-    pub protocols: &'static [&'static [&'static busbar_contract::protocol::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -313,8 +309,8 @@ pub struct BookCtx<'a> {
 
 /// THE PROTOCOL AXIS: every entry's body-model arrivals, then each entry's protocol-axis seams. A
 /// dialect whose model rides the URL has no arrival here: its plane's door claims and serves those
-/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). The entries' dialect declarations install nowhere:
-/// a plane resolves its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
+/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). No dialect declaration installs anywhere: a plane
+/// resolves its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
 /// hand their units to: every entry on it is handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let body_ingress: Vec<BodyIngressEntry> = linked
@@ -333,32 +329,59 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
-/// THE STREAM MEDIA the linked planes' dialect rows state (`ProtocolDecl::streaming_content_type`),
-/// sorted and deduped: the `Content-Type` heads a door reply relays piece by piece, read off the
-/// declared rows and never spelled by the root (Law 1).
-pub fn stream_media(linked: &Linked) -> Vec<&'static str> {
-    let mut media: Vec<&'static str> = linked
-        .protocols
+/// THE STREAM MEDIA the root relays piece by piece: the contract's event stream
+/// ([`busbar_contract::protocol::TEXT_EVENT_STREAM`], every host's default) and each `Content-Type`
+/// a loaded plane states under its `declares` section's `stream_media` (ARCHITECT ruling on the
+/// stream-media carrier; BUSBAR-1.6.0.md l.246, l.236: derived from what the plane states, never
+/// spelled by the root, Law 1) — a linked door's in its row's `declares.json`
+/// ([`Linked::plane_door_declares`]), a dropped-in plane's in its signed manifest (`dropped`),
+/// through the one declares reader. Sorted and deduped.
+///
+/// # Errors
+///
+/// A linked door's `declares` section that does not read.
+pub fn stream_media(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> Result<Vec<String>, String> {
+    let mut media = vec![busbar_contract::protocol::TEXT_EVENT_STREAM.to_string()];
+    for (row, _, json) in linked.plane_door_declares {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        media.extend(declares.stream_media);
+    }
+    let plane = |p: &&crate::root::loader::LoadablePlugin| {
+        p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE
+    };
+    for p in dropped
         .iter()
-        .flat_map(|decls| decls.iter().filter_map(|d| d.streaming_content_type))
-        .collect();
+        .flat_map(|r| r.loadable().iter())
+        .filter(plane)
+    {
+        media.extend(p.manifest.declares.stream_media.iter().cloned());
+    }
     media.sort_unstable();
     media.dedup();
-    media
+    Ok(media)
 }
 
-/// The dialect the linked planes' declarations claim `path` for by its shape alone
-/// (`ProtocolDecl::residual_claims`, the tightest claim kept): a test's way to name a dialect a
-/// linked plane states without spelling one.
+/// The dialect a linked plane door's claims mount `path` under (its facing's claim on exactly that
+/// target, BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): a test's way to
+/// name a dialect a linked plane states without spelling one.
 #[cfg(test)]
 pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
-    linked
-        .protocols
-        .iter()
-        .flat_map(|decls| decls.iter())
-        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
-        .min_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, name)| name)
+    use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+    linked.plane_doors.iter().find_map(|door| {
+        let reg = registration(linked_probe(*door, "dialect-for-path")).ok()?;
+        let facing = (reg.facing)(b"{}", b"", None, &[]).ok()?;
+        facing
+            .claims
+            .into_iter()
+            .find(|(target, _)| target == path)
+            .map(|(_, dialect)| dialect)
+    })
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,

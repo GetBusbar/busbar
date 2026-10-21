@@ -283,24 +283,21 @@ fn every_plane_key_answers_from_its_declaration() {
     }
 }
 
-/// THE FALLBACK PLANE'S WIRE-FORMAT LIST IS ITS OWN DIALECTS: the dialects its door states are the
-/// codec dialects its own declarations carry (the kernel holds no protocol set; a plane resolves its
-/// own dialects, spec Part 1, Law 5). It is what keeps the superset-IR rule a RULE: a seventh
+/// THE FALLBACK PLANE'S WIRE-FORMAT LIST IS ITS OWN DIALECTS: the kernel's folded row names exactly
+/// the dialects its door's Statement tail states (the kernel holds no protocol set; a plane resolves
+/// its own dialects, spec Part 1, Law 5). That the tail's dialects are the plane's codec dialects is
+/// the plane's own cell (`busbar-plane-llm`, `declared_dialects_tests`). It is what keeps the superset-IR rule a RULE: a seventh
 /// dialect moves this list with nothing edited on the plane axis.
 #[test]
 fn the_fallback_decl_states_its_own_dialects() {
     linked::install();
-    let declared: Vec<&'static str> = linked::dialect_rows()
-        .into_iter()
-        .filter(|d| d.codec.is_some())
-        .map(|d| d.name)
-        .collect();
+    let declared: Vec<&'static str> = linked::fallback_dialects();
     assert_eq!(
         busbar_kernel::plane_driver::doors::wire_format_names(
             busbar_kernel::plane_driver::doors::fallback_key()
         ),
         declared.as_slice(),
-        "the fallback plane's dialects are its declarations' codec dialects, not a literal"
+        "the fallback plane's dialects are its door's stated dialects, not a literal"
     );
     assert!(
         busbar_kernel::plane_driver::doors::wire_formats(

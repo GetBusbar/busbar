@@ -4480,25 +4480,27 @@ fn whole_answer(fields: &HeadFields) -> bool {
         && !named(b"content-type").is_some_and(|v| streamed_media(&v))
 }
 
-/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
-/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or the stream `Content-Type` a linked plane's dialect row states on its `ProtocolDecl`
-/// ([`declared_stream_media`]).
+/// Whether `content_type` is a stream's, read off what the planes DECLARE and never spelled here
+/// (Law 1; BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract
+/// names, or a stream `Content-Type` a loaded plane states under its `declares` section's
+/// `stream_media` ([`declared_stream_media`]).
 fn streamed_media(content_type: &str) -> bool {
-    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied())
-        .any(|media| {
-            content_type
-                .get(..media.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(media))
-        })
+    declared_stream_media().iter().any(|media| {
+        content_type
+            .get(..media.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(media))
+    })
 }
 
-/// The stream media the linked planes' dialect rows state ([`crate::root::linked::stream_media`]),
-/// folded once.
-fn declared_stream_media() -> &'static [&'static str] {
-    static MEDIA: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    MEDIA.get_or_init(|| crate::root::linked::stream_media(&crate::LINKED))
+/// The stream media the loaded planes declare beside the contract's event stream
+/// ([`crate::root::linked::stream_media`]), folded once. Every `declares` section it reads was read
+/// at boot, which refuses one that does not read (`root::linked::register_diagnostics`).
+fn declared_stream_media() -> &'static [String] {
+    static MEDIA: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    MEDIA.get_or_init(|| {
+        crate::root::linked::stream_media(&crate::LINKED, crate::root::linked::dropped())
+            .expect("the boot read every plane's `declares` section")
+    })
 }
 
 /// A whole answer's head without its stated length: the response states the length of what was

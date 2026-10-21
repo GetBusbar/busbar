@@ -30,34 +30,62 @@ use busbar_kernel::test_support::seam::{
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
-/// The test-linked planes' own dialect declarations (each door row's `protocols` axis), in the
-/// linked order. The kernel holds no protocol set (a plane resolves its own dialects, spec Part 1,
-/// Law 5); a test that needs a dialect's name reads it here, off the plane's own statement.
-pub fn dialect_rows() -> Vec<&'static busbar_contract::protocol::ProtocolDecl> {
-    TEST_LINKED_PROTOCOLS
+/// The test-linked fallback plane's door registration: the one `door:` row whose Statement tail
+/// flags it the fallback (`TAIL_FALLBACK`), bound through the loader's one load as the composition
+/// root binds it. The kernel holds no protocol set (a plane resolves its own dialects, spec Part 1,
+/// Law 5); a test that needs a dialect reads it here, off the plane's door (BUSBAR-1.6.0.md
+/// l.4965: kernel and root users go via the plane ABI).
+pub fn fallback_registration() -> busbar_contract::plane_calls::PlaneRegistration {
+    use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
+    let mut fallbacks: Vec<_> = TEST_LINKED_DOORS
         .iter()
-        .flat_map(|decls| decls.iter().copied())
-        .collect()
+        .map(|&(label, door)| {
+            registration(linked_probe(door, label))
+                .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"))
+        })
+        .filter(|reg| reg.fallback)
+        .collect();
+    assert_eq!(
+        fallbacks.len(),
+        1,
+        "one test-linked door is the fallback plane (`[package.metadata.busbar.test-linked] planes`)"
+    );
+    fallbacks.remove(0)
 }
 
-/// The dialect a linked plane declares its residual default (`ProtocolDecl::residual_default`):
-/// the name a fixture lane or provider uses where any provider dialect will do.
+/// The fallback door's dialects, in its Statement tail's order.
+pub fn fallback_dialects() -> Vec<&'static str> {
+    fallback_registration().dialects
+}
+
+/// The fallback door's operation classes, in its Statement tail's order: the verbs its units are
+/// priced and labelled by.
+pub fn fallback_op_classes() -> Vec<&'static str> {
+    use busbar_plugin_loader::dispatch::kinds::plane::linked_probe;
+    TEST_LINKED_DOORS
+        .iter()
+        .map(|&(label, door)| {
+            linked_probe(door, label)()
+                .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"))
+                .served()
+        })
+        .find(|served| served.fallback)
+        .map(|served| served.op_classes)
+        .expect("one test-linked door is the fallback plane")
+}
+
+/// The dialect the fallback door's catch-all claim wears (its claim on `/`, the previous release's
+/// fallback; BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): the name a fixture
+/// lane or provider uses where any provider dialect will do.
 pub fn residual_default_dialect() -> &'static str {
-    dialect_rows()
+    let facing = (fallback_registration().facing)(b"{}", b"", None, &[])
+        .unwrap_or_else(|e| panic!("the fallback door faces the world: {e}"));
+    facing
+        .claims
         .into_iter()
-        .find(|d| d.residual_default)
-        .map(|d| d.name)
-        .expect("a test-linked plane declares a residual-default dialect")
-}
-
-/// The dialect a linked plane's declarations claim `path` for, by its shape alone
-/// (`ProtocolDecl::residual_claims`, the tightest claim kept).
-pub fn dialect_for_path(path: &str) -> Option<&'static str> {
-    dialect_rows()
-        .into_iter()
-        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
-        .min_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, name)| name)
+        .find(|(target, _)| target == "/")
+        .map(|(_, dialect)| dialect)
+        .expect("the fallback door claims `/` for a dialect")
 }
 
 /// Install every test-linked plane exactly as the composition root installs it in production

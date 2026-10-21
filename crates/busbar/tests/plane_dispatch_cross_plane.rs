@@ -60,14 +60,10 @@ fn door(key: &str) -> String {
     format!("/{key}")
 }
 
-/// The codec dialects the linked planes' own declarations carry, in their order: what the fallback
-/// plane's door states as its dialects (the kernel holds no protocol set).
+/// The dialects the fallback plane's door states in its Statement tail, in their order (read
+/// through the plane ABI, BUSBAR-1.6.0.md l.4965; the kernel holds no protocol set).
 fn declared_codec_dialects() -> Vec<&'static str> {
-    linked::dialect_rows()
-        .into_iter()
-        .filter(|d| d.codec.is_some())
-        .map(|d| d.name)
-        .collect()
+    linked::fallback_dialects()
 }
 
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config

@@ -198,7 +198,7 @@ three = "busbar-third"
 four = "busbar-fourth"
 
 [package.metadata.busbar.linked-axes]
-one = "plane protocols"
+one = "plane body-ingress"
 two = "plane egress"
 three = "plane diagnostics egress"
 four = "plane-door"
@@ -225,7 +225,11 @@ unit-b = "beta"
     );
     assert!(out.contains("PlaneDecl; 2] = ["), "two plane rows: {out}");
     assert!(out.contains("assemble(crate::root::third_half::PLANE_DECLARATION, crate::root::third_half::PLANE_HOOKS)"));
-    assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
+    assert!(out.contains("    body_ingress: &[busbar_first::linked::BODY_INGRESS, ],\n"));
+    assert!(
+        !out.contains("protocols:"),
+        "the protocol axis is deleted: no LINKED table carries a plane's dialect rows: {out}"
+    );
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
         out.contains("    plane_doors: &[busbar_fourth::linked::door, ],\n"),
@@ -256,6 +260,9 @@ unit-b = "beta"
         manifest.replace("plane diagnostics egress", "plane diagnostics teleport"),
         // RED: the deleted HOT plane lane's axis is an unknown axis, refused.
         manifest.replace("four = \"plane-door\"", "four = \"hot-plane\""),
+        // RED: the deleted protocol axis is an unknown axis, refused (a plane's facts are read off
+        // its door, BUSBAR-1.6.0.md l.4965).
+        manifest.replace("one = \"plane body-ingress\"", "one = \"plane protocols\""),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &enabled));
         assert!(refused.is_err(), "must be refused:\n{broken}");

@@ -44,7 +44,6 @@ pub(crate) const NODE_UNIT: &str = "node";
 /// that registers on it exports. The plane axis is the one exception, built below (two items,
 /// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
-    ("protocols", "protocols", "PROTOCOLS"),
     ("body-ingress", "body_ingress", "BODY_INGRESS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),

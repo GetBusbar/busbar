@@ -18,15 +18,14 @@ fn register_planes() {
     linked::install();
 }
 
-/// Every verb a linked plane's dialect declarations serve, in the linked order, deduped: the half of
-/// the operation vocabulary the planes declare (the kernel owns `OpVerb::ALL`, the shape verbs).
-fn declared_verbs() -> Vec<OpVerb> {
-    let mut verbs: Vec<OpVerb> = Vec::new();
-    for d in linked::dialect_rows() {
-        for v in d.verbs {
-            if !verbs.contains(v) {
-                verbs.push(*v);
-            }
+/// Every verb the fallback plane's door states (its Statement tail's operation classes, read through
+/// the plane ABI, BUSBAR-1.6.0.md l.4965), deduped: the half of the operation vocabulary the planes
+/// declare (the kernel owns `OpVerb::ALL`, the shape verbs).
+fn declared_verbs() -> Vec<&'static str> {
+    let mut verbs: Vec<&'static str> = Vec::new();
+    for v in linked::fallback_op_classes() {
+        if !verbs.contains(&v) {
+            verbs.push(v);
         }
     }
     verbs
@@ -42,9 +41,8 @@ fn the_metric_label_surface_is_exactly_these_thirteen() {
     register_planes();
     let mut labels: Vec<&str> = OpVerb::ALL
         .iter()
-        .copied()
-        .chain(declared_verbs())
         .map(|o| o.name())
+        .chain(declared_verbs())
         .collect();
     labels.sort_unstable();
     labels.dedup();
@@ -82,10 +80,10 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
         "the registered roster declares at least three plane keys: {plane_keys:?}"
     );
     let mut identities: Vec<&'static str> = plane_keys.clone();
-    identities.extend(linked::dialect_rows().iter().map(|d| d.name));
-    let verbs: Vec<OpVerb> = OpVerb::ALL
+    identities.extend(linked::fallback_dialects());
+    let verbs: Vec<&'static str> = OpVerb::ALL
         .iter()
-        .copied()
+        .map(|o| o.name())
         .chain(declared_verbs())
         .collect();
     assert!(
@@ -93,8 +91,7 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
         "the declared verbs folded in: {} verbs",
         verbs.len()
     );
-    for verb in verbs {
-        let name = verb.name();
+    for name in verbs {
         for forbidden in &identities {
             assert!(
                 !name.contains(forbidden),
