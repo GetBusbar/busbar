@@ -273,7 +273,12 @@ fn a_pool_members_tier_is_read_off_its_member() {
         owned("t", &["b", "a", "c", "d"])
     );
     assert_eq!(
-        (p.tier("t", 0), p.tier("t", 1), p.tier("t", 2), p.tier("t", 3)),
+        (
+            p.tier("t", 0),
+            p.tier("t", 1),
+            p.tier("t", 2),
+            p.tier("t", 3)
+        ),
         (2, 0, 1, 0)
     );
     assert_eq!(p.tier("absent", 0), 0);
