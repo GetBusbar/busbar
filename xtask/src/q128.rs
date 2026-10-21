@@ -550,6 +550,28 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
     Report { findings, json }
 }
 
+/// Everything `q128 record` reads, so the record it writes can be judged without a repository.
+pub struct RecordInputs<'a> {
+    /// The committed record's text, whose `about` is carried over; `None` when there is none.
+    pub existing: Option<&'a str>,
+    /// The commit the auditor read, already resolved to its full id (`None` when it did not).
+    pub candidate: Option<&'a str>,
+    pub auditor: &'a str,
+    /// The auditor's findings: a JSON array of findings in the record's format (`[]` for none).
+    pub findings: &'a str,
+    pub record_path: &'a str,
+    pub head_tree: Option<&'a str>,
+    pub tree_of: &'a dyn Fn(&str) -> Option<String>,
+    pub changed: &'a dyn Fn(&str) -> Option<Vec<String>>,
+}
+
+/// THE RECORD, WRITTEN BY THE COMMAND AND NEVER BY HAND. Refused, naming why, when the candidate
+/// does not resolve or its tree is not this tree in every path but the record, when no auditor is
+/// named, or when a finding breaks the record's format.
+pub fn record_text(_inp: &RecordInputs<'_>) -> Result<String, String> {
+    Err("q128 record is not written yet".to_string())
+}
+
 /// One finding of the auditor's record, held to the format. A finding that breaks it becomes a BLOCK
 /// naming what is wrong; it is never read as whatever it might have meant.
 fn read_finding(record_path: &str, i: usize, f: &Value) -> Value {
@@ -790,6 +812,77 @@ mod tests {
         }
         let r = run(Some("{not json"), clean_ledger());
         assert_eq!(titles(&r, "BLOCK"), ["the audit record is unreadable"]);
+    }
+
+    const ABOUT: &str =
+        r#"{"about": "the record", "candidate": null, "auditor": null, "findings": []}"#;
+
+    fn record_with(
+        candidate: Option<&str>,
+        auditor: &str,
+        findings: &str,
+    ) -> Result<String, String> {
+        record_text(&RecordInputs {
+            existing: Some(ABOUT),
+            candidate,
+            auditor,
+            findings,
+            record_path: RECORD_REL,
+            head_tree: Some(TREE),
+            tree_of: &tree_of,
+            changed: &changed,
+        })
+    }
+
+    #[test]
+    fn record_writes_the_candidate_the_judge_then_passes() {
+        // GREEN: the commit read, with only the record on top of it, is this tree.
+        let fs = r#"[{"id":"A1","severity":"LOW","status":"open","scope":"crates/x/src","evidence":"crates/x/src/lib.rs:1","cite":"Law 8"}]"#;
+        for c in [HEAD, READ] {
+            let text = record_with(Some(c), "fresh-auditor", fs).expect("a record on this tree");
+            let v: Value = serde_json::from_str(&text).expect("the record is JSON");
+            assert_eq!(v["candidate"], c);
+            assert_eq!(v["auditor"], "fresh-auditor");
+            assert_eq!(v["about"], "the record");
+            assert_eq!(v["findings"][0]["id"], "A1");
+            let r = run(Some(&text), clean_ledger());
+            assert_eq!(r.verdict(), "PASS", "{:#}", r.json);
+        }
+    }
+
+    #[test]
+    fn record_refuses_another_tree_an_unresolved_commit_no_auditor_and_a_bad_finding() {
+        // RED arms: each is a record the judge would hold BLOCK, refused before it is written.
+        let e = record_with(Some(OTHER), "a", "[]").unwrap_err();
+        assert!(e.contains("crates/x/src/lib.rs"), "{e}");
+        let e = record_with(Some(READ_THEN_LEDGER), "a", "[]").unwrap_err();
+        assert!(e.contains("qa/audit-ledger.json"), "{e}");
+        let e = record_with(Some(UNLISTED), "a", "[]").unwrap_err();
+        assert!(e.contains("git could not list"), "{e}");
+        let e = record_with(None, "a", "[]").unwrap_err();
+        assert!(e.contains("does not resolve"), "{e}");
+        let e =
+            record_with(Some("3333333333333333333333333333333333333333"), "a", "[]").unwrap_err();
+        assert!(e.contains("does not resolve"), "{e}");
+        let e = record_with(Some(HEAD), "  ", "[]").unwrap_err();
+        assert!(e.contains("auditor"), "{e}");
+        let e = record_with(Some(HEAD), "a", "{}").unwrap_err();
+        assert!(e.contains("array"), "{e}");
+        let bad = r#"[{"id":"A1","severity":"SEVERE","status":"open","scope":"s","evidence":"e","cite":"c"}]"#;
+        let e = record_with(Some(HEAD), "a", bad).unwrap_err();
+        assert!(e.contains("SEVERE"), "{e}");
+        let e = record_text(&RecordInputs {
+            existing: None,
+            candidate: Some(HEAD),
+            auditor: "a",
+            findings: "[]",
+            record_path: RECORD_REL,
+            head_tree: Some(TREE),
+            tree_of: &tree_of,
+            changed: &changed,
+        })
+        .unwrap_err();
+        assert!(e.contains("about"), "{e}");
     }
 
     #[test]
