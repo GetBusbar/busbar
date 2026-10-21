@@ -107,14 +107,10 @@ impl LoadablePlugin {
     /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
     /// one; `None` when it states none (a cold row, a door that will not state itself).
     pub fn statement(&self) -> Option<Vec<u8>> {
-        match self.entry {
-            Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => {
-                crate::dispatch::LinkedRow::of(door)
-                    .ok()
-                    .map(|row| row.statement)
-            }
-            #[cfg(test)]
-            Some(LinkedEntry::Unstated) => None,
+        match self.loaded_door() {
+            Some(door) => crate::dispatch::LinkedRow::of_loaded(door)
+                .ok()
+                .map(|row| row.statement),
             None => self.manifest.stated_rendering().ok().flatten(),
         }
     }
@@ -130,6 +126,19 @@ impl LoadablePlugin {
         match self.entry {
             Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => Some(door),
             _ => None,
+        }
+    }
+
+    /// A compiled-in row's door as the loader enters it ([`LinkedRow::of_loaded`]): its
+    /// `MacroDoor`, or a test's restated door; `None` for a dropped-in row.
+    ///
+    /// [`LinkedRow::of_loaded`]: crate::dispatch::LinkedRow::of_loaded
+    pub(crate) fn loaded_door(&self) -> Option<crate::dispatch::LoadedDoor> {
+        match self.entry {
+            Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => Some(door.into()),
+            #[cfg(test)]
+            Some(LinkedEntry::Restated(door)) => Some(door),
+            None => None,
         }
     }
 
@@ -197,10 +206,10 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::sdk::door::MacroDoor),
-    /// TEST ONLY: a linked row whose door states nothing and is never opened (a linked row's door
-    /// is a `MacroDoor`, which always states itself).
+    /// TEST ONLY: a linked row over a test's restated door (a NULL door, a door that states
+    /// nothing): a shipped row's door is a `MacroDoor`, which always states itself.
     #[cfg(test)]
-    Unstated,
+    Restated(crate::dispatch::LoadedDoor),
 }
 
 impl LinkedPlugin {
@@ -626,7 +635,7 @@ impl PluginRegistry {
                 LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
                 LinkedEntry::Door(_) => Err(no_door()),
                 #[cfg(test)]
-                LinkedEntry::Unstated => Err(no_door()),
+                LinkedEntry::Restated(_) => Err(no_door()),
             };
         }
         let named = |e: String| format!("plugin '{}': {e}", p.key());

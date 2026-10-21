@@ -662,19 +662,42 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
 /// THE LINKED AUTH ROW UNDER ITS CANONICAL NAME (ARCHITECT C'): the root names a built-in auth row
 /// canonically beside its key; the axis answers, opens and counts it as linked by EITHER name, and
 /// a row that will not load is refused in its KEY's words, as before the canonical name existed
-/// (the load error and its sink's `plugin=` field are one binding: `AuthRows::load`'s `name`).
+/// (the load error and its sink's `plugin=` field are one binding: `AuthRows::load`'s `name`). The
+/// broken row's door answers NULL: entered through the loader's `LoadedDoor` (status row 159), it
+/// is refused at its door, as before.
 #[test]
 fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
+    refuses_in_its_key(LinkedPlugin::built_in(
+        "busbar-auth-broken",
+        &["broken"],
+        busbar_contract::abi::mechanism::kind::AUTH,
+        crate::registry::supported_abi(busbar_contract::abi::mechanism::kind::AUTH)
+            .first()
+            .copied()
+            .unwrap_or_default(),
+        crate::registry::LinkedEntry::Restated(crate::dispatch_tests::NULL_DOOR),
+        false,
+    ));
+}
+
+/// The same, the broken row's door a door the auth kind does not load: the contract macro's own
+/// door of another kind.
+#[test]
+fn a_linked_auth_row_of_another_kind_refuses_in_its_key() {
+    refuses_in_its_key(LinkedPlugin::auth_door_named(
+        "busbar-auth-broken",
+        "broken",
+        crate::dispatch::ready::ready_plugins::without_ready::MACRO_DOOR,
+    ));
+}
+
+/// The judge under its canonical name beside `broken`, a row that will not load: the judge answers
+/// and opens by either name; `broken` is refused by either, in its key's words.
+fn refuses_in_its_key(broken: LinkedPlugin) {
     let registry = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::MACRO_DOOR),
-            // A door the auth kind does not load: the macro's own door of another kind (a linked
-            // row's door is a `MacroDoor`, so a NULL door is no row).
-            LinkedPlugin::auth_door_named(
-                "busbar-auth-broken",
-                "broken",
-                crate::dispatch::ready::ready_plugins::without_ready::MACRO_DOOR,
-            ),
+            broken,
         ])
         .expect("the linked doors register");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
@@ -690,7 +713,7 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     );
     for word in ["busbar-auth-broken", "broken"] {
         let Err(refused) = rows.open(word, word, &serde_json::json!("ok")) else {
-            panic!("{word}: a door the auth kind does not load does not open");
+            panic!("{word}: a door that will not load does not open");
         };
         assert!(
             refused.starts_with("auth plugin 'broken': "),

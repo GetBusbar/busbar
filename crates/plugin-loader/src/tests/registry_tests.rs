@@ -913,11 +913,11 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
 
 // ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load UNCHANGED) ─────────────────────────────
 
-/// A linked row over `m` whose door states nothing and that these tests never open.
+/// A linked row over `m` whose door (NULL) states nothing and that these tests never open.
 fn unopened(m: Manifest) -> LinkedPlugin {
     LinkedPlugin {
         manifest: m,
-        entry: LinkedEntry::Unstated,
+        entry: LinkedEntry::Restated(crate::dispatch_tests::NULL_DOOR),
         ephemeral: false,
         keyed_by_alias: false,
     }
@@ -1318,7 +1318,7 @@ fn the_one_version_rule_compares_statement_versions_only() {
             &[],
             "store",
             supported_abi("store").first().copied().unwrap_or_default(),
-            LinkedEntry::Unstated,
+            LinkedEntry::Restated(crate::dispatch_tests::NULL_DOOR),
             false,
         )])
         .expect_err("a linked row whose door states nothing cannot be compared");
@@ -1341,7 +1341,7 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
                 &["tok"],
                 "auth",
                 supported_abi("auth").first().copied().unwrap_or_default(),
-                LinkedEntry::Unstated,
+                LinkedEntry::Restated(crate::dispatch_tests::NULL_DOOR),
                 false,
             ),
         ])

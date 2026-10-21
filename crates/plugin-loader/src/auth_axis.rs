@@ -147,8 +147,8 @@ impl AuthRows {
                 ConnTable::Probe
             },
         };
-        let loaded = match row.door() {
-            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
+        let loaded = match row.loaded_door() {
+            Some(door) => LinkedRow::of_loaded(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None => match row.manifest.stated_rendering().map_err(refused)? {
                 None => return Err(refused(NO_DOOR.to_string())),
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
@@ -387,8 +387,8 @@ impl AuthRows {
 /// Statement): a linked door's own rendering, a dropped plugin's signed one.
 /// A rendering that does not read back names nothing here; the load refuses it.
 fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
-    let stated = match row.door() {
-        Some(door) => LinkedRow::of(door).ok().map(|r| r.statement),
+    let stated = match row.loaded_door() {
+        Some(door) => LinkedRow::of_loaded(door).ok().map(|r| r.statement),
         None => row.manifest.stated_rendering().ok().flatten(),
     };
     stated
