@@ -4847,6 +4847,12 @@ include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
+// The accepted data door answers alike both ways (`root::accepted`): through the linked and the
+// dropped-in framer, and handed up and framed, over the test plane's door composed here.
+#[cfg(test)]
+#[path = "tests/accepted_both_ways.rs"]
+mod accepted_both_ways;
+
 #[cfg(all(test, linked_driver_proofs, linked_section_pools))]
 #[path = "tests/serve_hook_seats.rs"]
 pub(crate) mod hook_seat_tests;

@@ -326,6 +326,27 @@ impl DataDoor {
         }
     }
 
+    /// THE DOOR A CELL BINDS: over the door planes' `routes`, the data `router` (without its
+    /// admission cap), its `handle`, its guest list owned by `owner`; in the clear, no timing field,
+    /// no switch target.
+    #[cfg(test)]
+    pub(crate) fn over(
+        routes: Option<Arc<DataRoutes>>,
+        router: axum::Router,
+        handle: Arc<busbar_kernel::state::AppHandle>,
+        owner: u64,
+    ) -> Self {
+        Self {
+            routes,
+            router,
+            handle,
+            owner,
+            secured: false,
+            server_timing: false,
+            framer_for: Arc::new(|_: &str| -> Option<Arc<dyn FramerDoor>> { None }),
+        }
+    }
+
     /// The same door, a switch finding its framer through `framer_for`.
     #[must_use]
     pub fn finding_framers(mut self, framer_for: FramerFor) -> Self {
@@ -610,6 +631,8 @@ struct Inflow {
     body: Option<mpsc::UnboundedSender<Result<Bytes, BodyError>>>,
     sent: usize,
     task: tokio::task::AbortHandle,
+    /// Whether whoever answered the request read its body to its end.
+    drained: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A connection SWITCHED to a session's framer: the session's stream, the caller's messages on
@@ -649,6 +672,7 @@ async fn serve_conn(
         tasks: tokio::task::JoinSet::new(),
         session: None,
         read_done: false,
+        closing: false,
         stopping: *stop.borrow(),
     };
     loop {
@@ -674,6 +698,9 @@ struct Conn {
     session: Option<Session>,
     read_done: bool,
     stopping: bool,
+    /// A request was answered with its body not read to its end: the connection closes once
+    /// nothing is in flight, as the hyper loop closed one whose request body was left unread.
+    closing: bool,
 }
 
 /// What applying one op came to.
@@ -744,7 +771,7 @@ impl Conn {
                 }
             }
             let idle = self.tasks.is_empty() && self.pending.is_empty() && self.session.is_none();
-            if idle && (self.read_done || self.stopping) {
+            if idle && (self.read_done || self.stopping || self.closing) {
                 self.close();
                 return Poll::Ready(());
             }
@@ -827,18 +854,18 @@ impl Conn {
             stream,
             tx: self.tx.clone(),
         };
-        let task = self.tasks.spawn(serve_stream(
-            Arc::clone(&self.door),
-            handed,
-            InboundBody::new(body_rx, end),
-            out,
-        ));
+        let body = InboundBody::new(body_rx, end);
+        let drained = Arc::clone(&body.drained);
+        let task = self
+            .tasks
+            .spawn(serve_stream(Arc::clone(&self.door), handed, body, out));
         self.inflows.insert(
             stream,
             Inflow {
                 body: (!end).then_some(body_tx),
                 sent: 0,
                 task,
+                drained,
             },
         );
     }
@@ -882,7 +909,10 @@ impl Conn {
                 .is_ok(),
             Op::Switch { door, .. } => conn.switch(stream, Arc::clone(door)).is_ok(),
             Op::Ended => {
-                self.inflows.remove(&stream);
+                if let Some(inflow) = self.inflows.remove(&stream) {
+                    let drained = inflow.drained.load(std::sync::atomic::Ordering::Acquire);
+                    let _ = drained;
+                }
                 true
             }
         };
@@ -979,6 +1009,8 @@ struct InboundBody {
     started: Option<std::time::Instant>,
     bytes: u64,
     ended: bool,
+    /// Raised when the body was read to its end (at once, for a request that carries none).
+    drained: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl InboundBody {
@@ -991,6 +1023,7 @@ impl InboundBody {
             started: None,
             bytes: 0,
             ended,
+            drained: Arc::new(std::sync::atomic::AtomicBool::new(ended)),
         }
     }
 }
@@ -1029,6 +1062,8 @@ impl http_body::Body for InboundBody {
             }
             Poll::Ready(None) => {
                 this.ended = true;
+                this.drained
+                    .store(true, std::sync::atomic::Ordering::Release);
                 Poll::Ready(None)
             }
             Poll::Pending => {
@@ -1488,9 +1523,3 @@ impl Answer for ConnAnswer {
             .await
     }
 }
-
-// The data door answered alike both ways: through the linked and the dropped-in framer, and handed
-// up and framed, over the carrier and the data listener's framer this build links.
-#[cfg(test)]
-#[path = "tests/accepted_both_ways.rs"]
-mod accepted_both_ways;

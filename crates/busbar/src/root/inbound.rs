@@ -282,6 +282,28 @@ pub fn install_listeners(
     door_refusals: &[busbar_kernel::plane_routes::PlaneRefusalSpec],
     app: &Arc<busbar_kernel::state::App>,
 ) -> Result<(), &'static str> {
+    let gate = admission();
+    install_gated(
+        inbound,
+        owners,
+        generation,
+        guests,
+        door_refusals,
+        app,
+        gate,
+    )
+}
+
+/// [`install_listeners`] with the admission gate `gate` (the process's one, in production).
+fn install_gated(
+    inbound: &Inbound,
+    owners: &[u64],
+    generation: u64,
+    guests: &busbar_kernel::guest::GuestList,
+    door_refusals: &[busbar_kernel::plane_routes::PlaneRefusalSpec],
+    app: &Arc<busbar_kernel::state::App>,
+    gate: Option<Arc<kin::AdmissionGate>>,
+) -> Result<(), &'static str> {
     if owners.contains(&0) {
         return Err(ROOT_IS_NO_TRANSPORT);
     }
@@ -316,7 +338,7 @@ pub fn install_listeners(
             door_refusals: door_refusals.to_vec(),
             ids,
             signed_ingress: kin::signed_by_dialect(),
-            admission: admission(),
+            admission: gate.clone(),
             door_refuser: door_refuser().clone(),
         };
         inbound.install(owner, generation, listener)?;
@@ -374,6 +396,28 @@ pub fn serve_under(owner: u64) -> Result<(), &'static str> {
         return Ok(());
     };
     install_listeners(host(), &[owner], generation, &guests, &door_refusals, &app)
+}
+
+/// THE STAGED LIST REINSTALLED under `owner` at the published generation behind an admission gate
+/// of `slots` (`0` = none): a cell's own small gate, in place of the process's one.
+#[cfg(test)]
+pub(crate) fn reinstall_gated(owner: u64, slots: usize) -> Result<(), &'static str> {
+    let _one = installing();
+    let generation = auth_handle::generation();
+    let (Some(app), Some((guests, door_refusals))) = (published_app().clone(), staged().clone())
+    else {
+        return Err(kin::NO_LIST);
+    };
+    let gate = kin::admission_gate(slots);
+    install_gated(
+        host(),
+        &[owner],
+        generation,
+        &guests,
+        &door_refusals,
+        &app,
+        gate,
+    )
 }
 
 /// THE GUEST LIST `owner`'s LISTENER LENDS at `generation`, off `inbound`'s table for that owner:

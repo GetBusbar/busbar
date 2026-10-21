@@ -45,8 +45,7 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
-    ENV_CONFIG,
+    build_app_from_config, build_data_routers, load_config_from_disk, LoadedConfig, ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 // The root's own binds listen through the connector's listener (the one listener source).
@@ -1069,7 +1068,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
+    // The data router twice over one handle: as the hand-up's hyper loop serves it (its outermost
+    // layer the inbound admission cap), and without that cap for the framed data door, whose
+    // requests took their one slot at the kernel's inbound gate (1.5.5 held one slot a request).
+    let routers = build_data_routers(
         app,
         doors,
         sessions,
@@ -1078,6 +1080,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    let (data_router, ungated_data_router, admin_router, app_handle) =
+        (routers.data, routers.ungated, routers.admin, routers.handle);
     // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
     // 2026-10-16, 3b B).
     if let Some(refuse) = refuse_by_path {
@@ -1394,7 +1398,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 .unwrap_or_else(|e| die(e));
             root::accepted::framed_door(
                 framer,
-                data_router.clone(),
+                ungated_data_router.clone(),
                 std::sync::Arc::clone(&app_handle),
                 tls_cfg.is_some(),
                 response_headers_cfg.server_timing,
@@ -1452,7 +1456,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
 
         // The framed data door binds per data worker, a unix topology; this platform serves the
         // data door through its own socket listener.
-        let _ = (&door_carriers, root::accepted::DATA_DOOR_FRAMED);
+        let _ = (
+            &door_carriers,
+            &ungated_data_router,
+            root::accepted::DATA_DOOR_FRAMED,
+        );
         let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
         let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
         tokio::join!(

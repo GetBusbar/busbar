@@ -10,7 +10,9 @@
 //! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). A unit
 //! on `/call/local` answers its caller itself (an echo of the body), as does one on
 //! `/call/local-counted`, `/call/local-quiet` and `/call/local-estimated` (routed `ROUTE_LOCAL`:
-//! counted as an admitted call, not, and stating expected units); a unit on `/call/nest:<target>`
+//! counted as an admitted call, not, and stating expected units); `/call/local-whole` echoes the
+//! body under its stated length and `/call/local-events` as one event of an event stream (both
+//! `ROUTE_LOCAL`, counted); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
 //! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
 //! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
@@ -832,6 +834,12 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 o.route = ROUTE_LOCAL;
                 vec![]
             }
+            // A LOCAL ANSWER IN A STATED SHAPE (whole, or an event stream), counted.
+            b"/call/local-whole" | b"/call/local-events" => {
+                o.route = ROUTE_LOCAL;
+                o.route_flags = ROUTE_COUNTED;
+                vec![]
+            }
             b"/call/local-estimated" => {
                 o.route = ROUTE_LOCAL;
                 vec![estimate(0, i.body.len as u64)]
@@ -1031,6 +1039,38 @@ extern "C" fn on_piece(
                     let Some(reply) = in_session(me, t, &u.body) else {
                         return say(out, Outcome::Pending);
                     };
+                    o.reply_status = 200;
+                    let n = reply.len().min(i.reply_cap);
+                    std::ptr::copy_nonoverlapping(reply.as_ptr(), i.reply_buf, n);
+                    o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return say(out, Outcome::Ready);
+                }
+                if head.as_slice() == b"/call/local-whole"
+                    || head.as_slice() == b"/call/local-events"
+                {
+                    // A LOCAL ANSWER IN A STATED SHAPE: WHOLE (its length stated), or an EVENT
+                    // STREAM (the echo as one event), each one head field.
+                    let events = head.as_slice() == b"/call/local-events";
+                    let reply = if events {
+                        [b"data: ".as_slice(), &u.body, b"\n\n".as_slice()].concat()
+                    } else {
+                        u.body.clone()
+                    };
+                    let (name, value) = if events {
+                        (b"content-type".to_vec(), b"text/event-stream".to_vec())
+                    } else {
+                        (
+                            b"content-length".to_vec(),
+                            reply.len().to_string().into_bytes(),
+                        )
+                    };
+                    let mut at = 0;
+                    let name = put(i, &mut at, &name);
+                    let value = put(i, &mut at, &value);
+                    *i.fields_buf = OutField { name, value };
+                    o.fields_written = 1;
+                    o.arena_written = at as u64;
                     o.reply_status = 200;
                     let n = reply.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(reply.as_ptr(), i.reply_buf, n);

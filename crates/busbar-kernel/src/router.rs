@@ -1365,6 +1365,51 @@ pub fn build_split_routers_serving_doors(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    let routers = build_data_routers(
+        app,
+        doors,
+        sessions,
+        refusals,
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    );
+    (routers.data, routers.admin, routers.handle)
+}
+
+/// THE ROUTERS ONE GENERATION HANDLE SERVES ([`build_data_routers`]): the data router as the
+/// hand-up's hyper loop serves it, the SAME data router with no inbound admission layer, the
+/// admin router, and the handle.
+pub struct DataRouters {
+    /// The data router, its outermost layer the inbound admission cap.
+    pub data: Router,
+    /// The same data router WITHOUT the inbound admission cap (row 192 C): what a listener whose
+    /// requests already took their slot at the kernel's inbound gate (`inbound::admission_gate`, a
+    /// unit's first kernel touch) calls in process, so a request holds ONE slot, as 1.5.5's did.
+    pub ungated: Router,
+    /// The admin router.
+    pub admin: Router,
+    /// The generation handle both data routers and the admin router read.
+    pub handle: std::sync::Arc<state::AppHandle>,
+}
+
+impl std::fmt::Debug for DataRouters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataRouters").finish_non_exhaustive()
+    }
+}
+
+/// [`build_split_routers_serving_doors`], answering the data router with and without its inbound
+/// admission cap ([`DataRouters`]).
+pub fn build_data_routers(
+    app: std::sync::Arc<state::App>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> DataRouters {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -1387,6 +1432,7 @@ pub fn build_split_routers_serving_doors(
         server_timing_enabled,
     );
     let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
+    let ungated = data.clone();
     // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface +
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
     // `/healthz` bypasses auth so probes work on the admin port too; every `/api/v1/admin/*` route
@@ -1408,7 +1454,12 @@ pub fn build_split_routers_serving_doors(
         request_body_max_bytes,
         server_timing_enabled,
     );
-    (data, admin, handle)
+    DataRouters {
+        data,
+        ungated,
+        admin,
+        handle,
+    }
 }
 
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin
