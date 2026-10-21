@@ -806,6 +806,12 @@ pub struct GovState {
     caller_refs: crate::plane_driver::CallerRefs,
     /// The deployment keyset's caller-reference material, once the book binds the keyset.
     deployment_caller_ref: RwLock<Option<[u8; 32]>>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404): every hook or export content access and every root
+    /// count correction. Held here because this state lives as long as the node does and is reused
+    /// across every config apply, and because the budget book's reads price the counts AS
+    /// CORRECTED by it (Q51) — an instance the node owns, never a process static. Every `App`
+    /// generation carries the same `Arc` (`App::amendments`).
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

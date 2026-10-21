@@ -38,7 +38,7 @@ fn a_subject_value_that_does_not_re_render_is_refused_in_a_sealed_body() {
     let mut inputs = super::sign_tests::rich_inputs(1);
     inputs.subject = busbar_kernel_audit::record::Subject::Node(7);
     let record = busbar_kernel_audit::record::Audit::seal(&mut chain, inputs, &token());
-    let body = journal_body(&record);
+    let body = journal_body(&record).expect("the body fits");
     assert_eq!(
         from_journal_body(&body, &declared)
             .expect("the sealed body decodes")

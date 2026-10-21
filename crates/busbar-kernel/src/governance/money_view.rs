@@ -65,12 +65,13 @@ impl PartialEq for Inputs {
 
 impl Inputs {
     /// The inputs of pricing `cell` (the bucket's current-window cell, live or durable) for
-    /// `period`, now.
+    /// `period`, now, with `corrections` the count of corrections the node's journal has sealed.
     pub(in crate::governance) fn of(
         cost: &crate::cost::CostModel,
         period: &str,
         include_fee: bool,
         cell: &BudgetCell,
+        corrections: usize,
     ) -> Self {
         let history = crate::rate_apply::dated_history().map(|h| {
             let now_ms = wall_ms();
@@ -92,7 +93,7 @@ impl Inputs {
             },
             card: cost.generation(),
             history,
-            corrections: crate::audit::amend::node_corrections().len(),
+            corrections,
         }
     }
 }

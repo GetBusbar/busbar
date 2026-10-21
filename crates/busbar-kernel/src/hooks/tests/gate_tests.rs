@@ -17,6 +17,9 @@ use crate::hooks::{
 use busbar_contract::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
+/// A firing site's access-amendment seat that records nowhere: the tests that read no journal.
+fn no_reads(_: &str, _: Option<&str>, _: &str, _: bool) {}
+
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
 /// through the contract's own `hook_wire::build`, so what this test reads is what a plugin would receive
 /// across the ABI rather than a second rendering of the same struct.
@@ -110,6 +113,7 @@ async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
     assert!(
         matches!(decide(&gates, &subject).await, GateVerdict::Reject { .. }),
@@ -129,6 +133,7 @@ async fn a_totally_malformed_reply_applies_on_error() {
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
 
     let closed = gate(
@@ -166,6 +171,7 @@ async fn a_malformed_reply_honors_a_non_reject_on_error() {
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
     assert!(
         matches!(decide(&open, &subject).await, GateVerdict::Proceed),
@@ -187,6 +193,7 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
     for reply in [
         serde_json::json!({}),
@@ -228,6 +235,7 @@ async fn a_well_formed_reject_still_rejects() {
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
     match decide(&gates, &subject).await {
         GateVerdict::Reject { status, .. } => assert_eq!(status, 451),
@@ -309,6 +317,7 @@ async fn an_invocation_is_projected_whole() {
             key: Some(&k),
             session: None,
             incremental: None,
+            reads: &no_reads,
         },
     )
     .await;
@@ -373,6 +382,7 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
             key: Some(&key()),
             session: None,
             incremental: None,
+            reads: &no_reads,
         },
     )
     .await;
@@ -423,6 +433,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
                 key: None,
                 session: None,
                 incremental: None,
+                reads: &no_reads,
             },
         )
         .await
@@ -467,6 +478,7 @@ async fn a_broken_gate_applies_its_own_on_error() {
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
     assert!(
         matches!(decide(&open, &subject).await, GateVerdict::Proceed),
@@ -519,6 +531,7 @@ async fn no_attached_gate_builds_no_projection() {
             key: None,
             session: None,
             incremental: None,
+            reads: &no_reads,
         },
     )
     .await;
@@ -568,6 +581,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
                 session,
                 now_ms: 0,
             }),
+            reads: &no_reads,
         },
     )
     .await;
@@ -602,6 +616,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
                 session,
                 now_ms: 0,
             }),
+            reads: &no_reads,
         },
     )
     .await;
@@ -647,6 +662,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
                 session,
                 now_ms: 0,
             }),
+            reads: &no_reads,
         },
     )
     .await;
@@ -677,6 +693,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
                 session,
                 now_ms: 0,
             }),
+            reads: &no_reads,
         },
     )
     .await;
@@ -745,6 +762,7 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
                     session,
                     now_ms: 0,
                 }),
+                reads: &no_reads,
             },
         )
         .await;
@@ -781,10 +799,10 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
 
 use crate::audit::amend;
 
-/// The access amendments sealed for one operation label, oldest first. The journal is
-/// process-wide, so each test below fires under a label no other test uses and reads only its own.
-fn accesses_under(op: &str) -> Vec<amend::Access> {
-    amend::node_recent()
+/// The access amendments `journal` sealed for one operation label, oldest first.
+fn accesses_under(journal: &amend::NodeAmendments, op: &str) -> Vec<amend::Access> {
+    journal
+        .recent()
         .into_iter()
         .filter_map(|a| match a.body {
             amend::AmendBody::Access(x) if x.op_class.as_str() == op => Some(x),
@@ -800,6 +818,11 @@ fn accesses_under(op: &str) -> Vec<amend::Access> {
 async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
     let facts = tool_call();
     let k = key();
+    // The node's journal, as the firing site's seat on it records: this test's own.
+    let journal = amend::NodeAmendments::new();
+    let reads = |hook: &str, principal: Option<&str>, op: &str, identity: bool| {
+        amend::hook_read(&journal, hook, principal, op, identity);
+    };
     for (op, send_prompt) in [("p2-404-shape-only", false), ("p2-404-hook-read", true)] {
         let spy = Arc::new(Spy {
             reply: RoutingDecision::Abstain,
@@ -814,15 +837,16 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
             key: Some(&k),
             session: None,
             incremental: None,
+            reads: &reads,
         };
         assert!(matches!(
             decide(&gates, &subject).await,
             GateVerdict::Proceed
         ));
     }
-    assert!(accesses_under("p2-404-shape-only").is_empty());
+    assert!(accesses_under(&journal, "p2-404-shape-only").is_empty());
 
-    let rows = accesses_under("p2-404-hook-read");
+    let rows = accesses_under(&journal, "p2-404-hook-read");
     assert_eq!(rows.len(), 1, "one content read, one amendment: {rows:?}");
     assert_eq!(rows[0].reader, amend::Reader::Hook);
     assert_eq!(rows[0].name, "spy");
@@ -906,6 +930,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
                     generation,
                     now_ms: 0,
                 }),
+                reads: &no_reads,
             };
             matches!(decide_door(gates, &door).await, GateVerdict::Proceed)
         }
@@ -977,6 +1002,7 @@ async fn a_broken_load_bearing_door_gate_answers_the_shared_refusal() {
         key: None,
         session: None,
         incremental: None,
+        reads: &no_reads,
     };
     match decide(&closed, &subject).await {
         GateVerdict::Reject {
@@ -1029,6 +1055,7 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
             key: None,
             session: None,
             incremental: None,
+            reads: &no_reads,
         },
     )
     .await;

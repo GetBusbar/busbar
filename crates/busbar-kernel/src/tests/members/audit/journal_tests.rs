@@ -43,7 +43,7 @@ fn sealed(n: u64) -> Vec<busbar_kernel_audit::record::AuditRecord> {
 #[test]
 fn a_signed_record_round_trips_through_its_journal_body() {
     for record in sealed(3) {
-        let back = from_journal_body(&journal_body(&record), &declared)
+        let back = from_journal_body(&journal_body(&record).expect("the body fits"), &declared)
             .expect("the body decodes")
             .expect("the body is an audit record");
         assert_eq!(back, record, "the journal lost or changed a field");
@@ -53,7 +53,7 @@ fn a_signed_record_round_trips_through_its_journal_body() {
     let back: Vec<_> = sealed(3)
         .iter()
         .map(|r| {
-            from_journal_body(&journal_body(r), &declared)
+            from_journal_body(&journal_body(r).expect("the body fits"), &declared)
                 .unwrap()
                 .unwrap()
         })
@@ -67,7 +67,7 @@ fn a_signed_record_round_trips_through_its_journal_body() {
 #[test]
 fn a_body_that_is_not_an_audit_record_is_none_and_a_torn_one_is_an_error() {
     assert_eq!(from_journal_body(b"posting/counts", &declared), Ok(None));
-    let body = journal_body(&sealed(1)[0]);
+    let body = journal_body(&sealed(1)[0]).expect("the body fits");
     assert!(body.starts_with(&(JOURNAL_TAG.len() as u32).to_be_bytes()));
     assert!(from_journal_body(&body[..body.len() - 1], &declared).is_err());
     let mut longer = body.clone();
@@ -78,7 +78,7 @@ fn a_body_that_is_not_an_audit_record_is_none_and_a_torn_one_is_an_error() {
 /// A CLASS THE VOCABULARY DOES NOT HOLD IS AN ERROR, never a line dropped: the reader names it.
 #[test]
 fn a_class_nobody_declares_here_is_an_error_naming_it() {
-    let body = journal_body(&sealed(1)[0]);
+    let body = journal_body(&sealed(1)[0]).expect("the body fits");
     let err = from_journal_body(&body, &|_| None).expect_err("no class resolves");
     assert!(err.contains("tokens_out"), "{err}");
 }
@@ -88,7 +88,7 @@ fn a_class_nobody_declares_here_is_an_error_naming_it() {
 #[test]
 fn an_edited_journal_body_decodes_to_a_record_the_chain_walk_refuses() {
     let records = sealed(1);
-    let mut body = journal_body(&records[0]);
+    let mut body = journal_body(&records[0]).expect("the body fits");
     // The first usage line's quantity (120) is a big-endian u64 somewhere in the body; edit it.
     let needle = 120u64.to_be_bytes();
     let at = body
@@ -111,7 +111,7 @@ fn an_edited_journal_body_decodes_to_a_record_the_chain_walk_refuses() {
 /// same name. This half seals a record and checks that the body carrying a forged tag is refused too.
 #[test]
 fn an_outcome_tag_that_does_not_re_render_is_refused_never_remapped_in_a_sealed_body() {
-    let body = journal_body(&sealed(1)[0]);
+    let body = journal_body(&sealed(1)[0]).expect("the body fits");
     let tag = b"Refused(Admit, OverBudget)";
     let at = body
         .windows(tag.len())

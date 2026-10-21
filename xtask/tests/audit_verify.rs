@@ -3,7 +3,8 @@
 
 use serde_json::{json, Value};
 use xtask::audit_verify::{
-    digest, fields_of, is_small_order, key_id_of, verify, SIGNATURE_DOMAIN, SMALL_ORDER, V4_FIELDS,
+    decimal_u64, digest, fields_of, is_small_order, key_id_of, verify, SIGNATURE_DOMAIN,
+    SMALL_ORDER, V4_FIELDS,
 };
 
 /// The RFC 8032 test seed the v4 page's worked example is sealed with.
@@ -97,11 +98,39 @@ fn an_edited_field_is_a_digest_mismatch() {
     red_with(&range, &keys, None, "its digest recomputes to");
 }
 
+/// A recipe number goes out as its decimal text, so a JSON number in its place (which a reader
+/// mapping numbers to doubles may already have rounded) is refused, not coerced.
 #[test]
-fn a_number_published_as_text_is_refused_not_coerced() {
+fn a_recipe_number_published_as_a_json_number_is_refused_not_coerced() {
     let (mut range, keys) = (example(4, "range"), example(4, "keys"));
-    range["records"][0]["tier_bp"] = json!("9000");
+    range["records"][0]["tier_bp"] = json!(9000);
     red_with(&range, &keys, None, "`tier_bp`: a number field carries");
+    // A group's count is read the same way.
+    let (mut range, keys) = (example(4, "range"), example(4, "keys"));
+    range["records"][0]["lines_count"] = json!(0);
+    red_with(&range, &keys, None, "`lines_count`: a number field");
+}
+
+/// Only the canonical decimal spelling is a recipe number: a sign, a leading zero or whitespace
+/// would let two texts frame the same bytes.
+#[test]
+fn a_recipe_number_in_non_canonical_decimal_is_refused() {
+    for bad in [
+        "09000",
+        "+9000",
+        " 9000",
+        "9000 ",
+        "",
+        "-1",
+        "18446744073709551616",
+    ] {
+        let (mut range, keys) = (example(4, "range"), example(4, "keys"));
+        range["records"][0]["tier_bp"] = json!(bad);
+        red_with(&range, &keys, None, "`tier_bp`: a number field carries");
+    }
+    assert_eq!(decimal_u64("0"), Some(0));
+    assert_eq!(decimal_u64("18446744073709551615"), Some(u64::MAX));
+    assert_eq!(decimal_u64("00"), None);
 }
 
 #[test]
@@ -173,7 +202,7 @@ fn a_two_record_run_links_and_a_broken_link_or_gap_is_red() {
     let pair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&unhex(RFC8032_SEED)).unwrap();
     let first = range["records"][0].clone();
     let mut second = first.clone();
-    second["seq"] = json!(2);
+    second["seq"] = json!("2");
     second["prev_hash"] = first["hash"].clone();
     second["op_class"] = json!("embeddings");
     let reseal = |r: &mut Value| {
@@ -203,7 +232,7 @@ fn a_two_record_run_links_and_a_broken_link_or_gap_is_red() {
     );
 
     let mut gapped = second;
-    gapped["seq"] = json!(3);
+    gapped["seq"] = json!("3");
     reseal(&mut gapped);
     range["records"] = json!([first, gapped]);
     red_with(&range, &keys, None, "not contiguous");

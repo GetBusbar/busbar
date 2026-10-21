@@ -73,8 +73,12 @@ impl Durability {
         if record.key_id.is_some() && self.audit_signed_from.is_none() {
             self.audit_signed_from = Some(record.seq);
         }
-        let entry = audit_entry(&record);
-        let appended = self.journal.append(token, StepName::Audit, &[entry]);
+        // A record whose body cannot be written whole is a durability loss, reported as one: the
+        // journal never holds a record cut to fit.
+        let appended = match audit_entry(&record) {
+            Ok(entry) => self.journal.append(token, StepName::Audit, &[entry]),
+            Err(_) => Err(DurabilityLost::observed(token, StepName::Audit)),
+        };
         self.audit_records.push(record.clone());
         if self.audit_records.len() > AUDIT_RING {
             let over = self.audit_records.len() - AUDIT_RING;

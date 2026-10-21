@@ -41,6 +41,7 @@ impl CallerFacts for Nobody {
     fn budget(&self, _: &str) -> Vec<BudgetBucketState> {
         Vec::new()
     }
+    fn hook_read(&self, _: &str, _: Option<&str>, _: &str, _: bool) {}
 }
 
 fn bound(

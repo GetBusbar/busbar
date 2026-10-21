@@ -107,7 +107,13 @@ pub(crate) struct GateSubject<'a> {
     /// The request's session, opaque octets the plane named, shown to every hook on its request
     /// view ([`RoutingRequest::session`]); `None` = the request names none.
     pub(crate) session: Option<&'a [u8]>,
+    /// Where a gate handed the content leaves its access amendment: `(hook, principal, op,
+    /// identity)` onto the node's amendment journal, through the firing site's own seat on it.
+    pub(crate) reads: &'a HookReads<'a>,
 }
+
+/// The access-amendment seat a gate records through: `(hook, principal, op, identity)`.
+pub(crate) type HookReads<'a> = dyn Fn(&str, Option<&str>, &str, bool) + Send + Sync + 'a;
 
 /// The gate's tenant of the session substrate: a per-`(session, hook)` set of the content-piece
 /// digests already screened clean, so a long session re-screens only NEW content instead of the whole
@@ -270,7 +276,7 @@ pub(crate) async fn decide(
         let content: &ScreenedContent = screened.as_ref().unwrap_or(&all);
         let req = project(subject, content, *send_prompt, *send_user);
         if *send_prompt {
-            crate::audit::amend::hook_read(
+            (subject.reads)(
                 policy.name(),
                 subject.key.map(|k| k.id.as_str()),
                 subject.ingress_protocol,
@@ -464,6 +470,8 @@ pub(crate) struct DoorSubject<'a> {
     pub(crate) session: Option<&'a [u8]>,
     /// The incremental scan's substrate, under the operator's opt-in.
     pub(crate) scan: Option<ScanSubstrate<'a>>,
+    /// Where a gate handed the content leaves its access amendment ([`GateSubject::reads`]).
+    pub(crate) reads: &'a HookReads<'a>,
 }
 
 /// FIRE THE GATES OF A REQUEST SERVED THROUGH A PLANE'S DOOR (ARCHITECT RULING 2026-10-03,
@@ -510,6 +518,7 @@ pub(crate) async fn decide_door(
         key: door.key,
         incremental,
         session,
+        reads: door.reads,
     };
     decide(gates, &subject).await
 }

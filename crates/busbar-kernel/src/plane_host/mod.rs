@@ -354,6 +354,10 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
 }
 
 impl busbar_kernel::plane_host::HookConfigHost for EngineHostImpl {
+    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
+        crate::audit::amend::hook_read(&self.app.amendments, name, principal, op, identity);
+    }
+
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {
         // Fold the `&App::groups_registry` argument host-side; the walk itself is byte-identical.
         crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
@@ -902,6 +906,9 @@ pub fn admission_gates_decide<H: HookConfigHost + ?Sized>(
                 session: IncrementalScan::derive_session_key(sid, principal_id, *generation),
                 now_ms: crate::store::now_ms(),
             });
+        let reads = |hook: &str, principal: Option<&str>, op: &str, identity: bool| {
+            host.hook_read(hook, principal, op, identity);
+        };
         let subject = GateSubject {
             facts: &facts,
             container,
@@ -910,6 +917,7 @@ pub fn admission_gates_decide<H: HookConfigHost + ?Sized>(
             key: key.as_ref(),
             incremental,
             session: (!sid.is_empty()).then_some(sid.as_bytes()),
+            reads: &reads,
         };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -974,7 +982,8 @@ pub fn admission_transform<H: HookConfigHost + ?Sized>(
     args_json: &[u8],
 ) -> TransformVerdict {
     let chain = host.plane_rewrites_of(plane_key, container);
-    transform_chain(&chain, plane_key, request_id, method, args_json)
+    let reads = |hook: &str| host.hook_read(hook, None, plane_key, false);
+    transform_chain(&chain, plane_key, request_id, method, args_json, &reads)
 }
 
 /// [`admission_transform`] over a live [`App`]'s own resolved rewrite map: the same chain, the same
@@ -994,7 +1003,10 @@ pub fn transform_over_over(
         .and_then(|m| m.get(container))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    transform_chain(chain, plane_key, request_id, tool, args_json)
+    let reads = |hook: &str| {
+        crate::audit::amend::hook_read(&app.amendments, hook, None, plane_key, false);
+    };
+    transform_chain(chain, plane_key, request_id, tool, args_json, &reads)
 }
 
 /// Run one resolved REQUEST-ADMISSION TRANSFORM chain over the `InvokeReq` projection of a request.
@@ -1008,12 +1020,16 @@ pub fn transform_over_over(
 /// and screened the request), so a hook that errors, times out or abstains — or a runtime that will
 /// not start — proceeds with the ORIGINAL payload, byte-for-byte. Only an explicit `reject` stops the
 /// request, and only a committed `rewrite` changes a byte.
+///
+/// `reads` leaves each hook's access amendment (the hook's name) on the node's amendment journal,
+/// through the caller's own seat on it.
 fn transform_chain(
     chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)],
     plane_key: &str,
     request_id: u64,
     tool: &str,
     args_json: &[u8],
+    reads: &dyn Fn(&str),
 ) -> TransformVerdict {
     // Empty ⇒ nothing attached ⇒ byte-identical no-op. A caller normally guards on
     // `admission_tap_attached`; the re-check keeps the run correct if invoked directly.
@@ -1055,7 +1071,7 @@ fn transform_chain(
             extra: Default::default(),
         };
         let req = build_invoke_rewrite_request(&facts, ingress, request_id);
-        crate::audit::amend::hook_read(hook.name(), None, ingress, false);
+        reads(hook.name());
         let outcome = rt.block_on(hook.transform(&req, *timeout));
         drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
         match outcome {
@@ -2042,12 +2058,10 @@ pub trait HookConfigHost: Send + Sync {
     fn any_content_hook(&self) -> bool;
 
     /// A hook was handed a unit's content (and the caller's identity, when `identity`): leave the
-    /// one access amendment the kernel's own gate and rewrite seams leave, on the node journal.
-    /// `principal` is whose content it was; `op` the ingress label — data, never branched on.
-    /// PROVIDED, so a plane's own hook call sites record through the same seam as the kernel's.
-    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
-        crate::audit::amend::hook_read(name, principal, op, identity);
-    }
+    /// one access amendment the kernel's own gate and rewrite seams leave, on the node's amendment
+    /// journal. `principal` is whose content it was; `op` the ingress label — data, never branched
+    /// on. A plane's own hook call sites record through this same seam as the kernel's.
+    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool);
 
     /// The DECISION GATES the plane `plane_key` attached to its entry `container` this generation
     /// (the plane's per-entry `hooks:`), as resolved; empty = none. A gate-first plane's units

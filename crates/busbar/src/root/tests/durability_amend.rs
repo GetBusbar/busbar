@@ -3,15 +3,13 @@
 
 //! Tests for `durability/amend.rs`: the node amendment journal survives a restart.
 //!
-//! The node journal is ONE per process, so a restart is proven with two real processes rather than
-//! by resetting it under the other tests of this binary: the parent test runs this same test binary
-//! twice over one data directory, filtered to [`restart_phase`] — first to seal a correction and an
-//! access, then, in a fresh process whose node journal starts empty, to read them back.
+//! A restart is proven with two real processes over one data directory, as a node restarts: the
+//! parent test runs this same test binary twice, filtered to [`restart_phase`] — first to seal a
+//! correction and an access on the booted node's journal, then, in a fresh process whose node
+//! journal starts empty, to read them back off the one its boot rebuilt.
 
 use super::*;
-use busbar_kernel::audit::amend::{
-    correct_counts, counts_now, node_recent, CountCorrection, Reader,
-};
+use busbar_kernel::audit::amend::{correct_counts, CountCorrection, NodeAmendments, Reader};
 use busbar_kernel_ledger::cost::{
     nanos_of_exact, whole, Count, LaneClass, RateCard, Tally, STANDARD_TIER_BP,
 };
@@ -52,9 +50,9 @@ fn priced(c: &ClassCounts) -> u128 {
     nanos_of_exact(tally.exact().expect("in range")).expect("in range")
 }
 
-/// The node's boot, as `root::boot::compose_book` and `root::boot::book` run it: build over the data
-/// directory, rebuild the node amendment journal, share the book, bind it.
-fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
+/// The node's boot, as `root::boot::book` runs it: build over the data directory, rebuild the node
+/// amendment journal (the one its `App` carries) from the chain, share the book, bind it.
+fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<NodeAmendments>) {
     let mut durability = build_for_node(
         &DurabilityConfig {
             data_dir: Some(dir.to_path_buf()),
@@ -64,10 +62,12 @@ fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("the directory is writable");
-    durability.restore_amendments();
+    let journal = Arc::new(NodeAmendments::new());
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    durability.restore_amendments(&journal, &token);
     let book = Arc::new(Mutex::new(durability));
-    bind_amendments(&book);
-    book
+    bind_amendments(&book, &journal);
+    (book, journal)
 }
 
 /// ONE HALF OF THE RESTART, run only in a child process the restart tests below start
@@ -83,11 +83,12 @@ fn restart_phase() {
         store_phase();
         return;
     }
-    let book = boot(std::path::Path::new(&dir));
+    let (book, journal) = boot(std::path::Path::new(&dir));
     let recorded = counts(1_000);
     match phase.as_str() {
         "seal" => {
             correct_counts(
+                &journal,
                 busbar_contract::authz::Scope::Full,
                 &recorded,
                 CountCorrection {
@@ -103,6 +104,7 @@ fn restart_phase() {
             )
             .expect("a root correction to a non-negative count lands");
             correct_counts(
+                &journal,
                 busbar_contract::authz::Scope::Full,
                 &recorded,
                 CountCorrection {
@@ -117,7 +119,9 @@ fn restart_phase() {
                 },
             )
             .expect("a pooled root correction lands");
-            let app = busbar_kernel::test_support::TestApp::new().build();
+            // The node's host records on the journal its `App` carries: this node's.
+            let mut app = busbar_kernel::test_support::TestApp::new().build();
+            Arc::get_mut(&mut app).expect("sole owner").amendments = Arc::clone(&journal);
             busbar_kernel::plane_host::engine_host(&app).hook_read(
                 HOOK,
                 Some("pseudonym-1"),
@@ -132,15 +136,14 @@ fn restart_phase() {
                 "{:?}",
                 durability.restart_findings
             );
-            let now = counts_now(ENTRY, &recorded);
+            let now = journal.counts_now(ENTRY, &recorded);
             assert_eq!(now, counts(800), "the correction survived the restart");
             assert_eq!(
                 priced(&now),
                 2_000_000,
                 "and its money with it: 800 x 2,500 nano-units, not the recorded 2,500,000"
             );
-            let accesses: Vec<_> = node_recent()
-                .into_iter()
+            let accesses: Vec<_> = (journal.recent().into_iter())
                 .filter_map(|a| match a.body {
                     AmendBody::Access(x) if x.reader == Reader::Hook && x.name == HOOK => Some(x),
                     _ => None,
@@ -148,7 +151,7 @@ fn restart_phase() {
                 .collect();
             assert_eq!(accesses.len(), 1, "the content access survived the restart");
             // Q64/Q67: the pool rides the journal record; the unscoped one reads back unscoped.
-            let pools: Vec<_> = (busbar_kernel::audit::amend::node_corrections().into_iter())
+            let pools: Vec<_> = (journal.corrections().into_iter())
                 .filter_map(|a| match a.body {
                     AmendBody::Adjust(x) => Some((x.amends_hash, x.pool)),
                     AmendBody::Access(_) => None,
@@ -166,11 +169,11 @@ fn restart_phase() {
         }
         // U15: the on-demand verify sees an edit to the HELD amendment run. One correction is
         // sealed and `/verify` reports nothing; the held run is then edited in place, and `/verify`
-        // names the amendment chain. A process of its own, because the node journal is the
-        // process's one journal.
+        // names the amendment chain. A process of its own, as every phase is.
         #[cfg(feature = "root-admin")]
         "tamper" => {
             correct_counts(
+                &journal,
                 busbar_contract::authz::Scope::Full,
                 &recorded,
                 CountCorrection {
@@ -190,14 +193,16 @@ fn restart_phase() {
             };
             let clean = crate::root::units_admin::bound::verify_effect(
                 &crate::root::units_admin::UnopenedLedger,
+                Some(&journal),
             )
             .expect("verify answers");
             let clean = findings(clean);
             assert!(!clean.contains("amendment chain"), "{clean}");
-            tamper_node_for_test();
+            journal.tamper_for_test();
             let tampered = findings(
                 crate::root::units_admin::bound::verify_effect(
                     &crate::root::units_admin::UnopenedLedger,
+                    Some(&journal),
                 )
                 .expect("verify answers"),
             );
@@ -221,7 +226,9 @@ const PAD_BODY: usize = 100_000;
 /// The node's boot with NO DATA DIRECTORY over the configured store, as `root::boot` runs it: build
 /// over the store (resuming the chain it kept), rebuild the node amendment journal, share the
 /// book, bind it.
-fn store_boot(slots: &crate::root::store_double::RecordSlots) -> Arc<Mutex<Durability>> {
+fn store_boot(
+    slots: &crate::root::store_double::RecordSlots,
+) -> (Arc<Mutex<Durability>>, Arc<NodeAmendments>) {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
     let mut durability = build_on_store(
         &DurabilityConfig { data_dir: None },
@@ -232,10 +239,12 @@ fn store_boot(slots: &crate::root::store_double::RecordSlots) -> Arc<Mutex<Durab
         None,
     )
     .expect("the store reads back");
-    durability.restore_amendments();
+    let journal = Arc::new(NodeAmendments::new());
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    durability.restore_amendments(&journal, &token);
     let book = Arc::new(Mutex::new(durability));
-    bind_amendments(&book);
-    book
+    bind_amendments(&book, &journal);
+    (book, journal)
 }
 
 /// Wait until the store took everything the book's lane holds.
@@ -250,9 +259,10 @@ fn store_drained(book: &Arc<Mutex<Durability>>) {
     );
 }
 
-/// A root correction of the entry `amends` from 1,000 input units to 800.
-fn correct(amends: &str) {
+/// A root correction of the entry `amends` from 1,000 input units to 800, on `journal`.
+fn correct(journal: &NodeAmendments, amends: &str) {
     correct_counts(
+        journal,
         busbar_contract::authz::Scope::Full,
         &counts(1_000),
         CountCorrection {
@@ -286,13 +296,13 @@ fn store_phase() {
         rate_card_version: 5,
     };
     {
-        let book = store_boot(&slots);
+        let (book, journal) = store_boot(&slots);
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
             .migration_records(&token, StepName::Meter)
             .write_marker(&sealed)
             .expect("the marker goes on the chain");
-        correct(ENTRY);
+        correct(&journal, ENTRY);
         let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
         for _ in 0..pads {
             book.lock()
@@ -305,7 +315,7 @@ fn store_phase() {
                 )
                 .expect("the padding goes on the chain");
         }
-        correct(POOLED_ENTRY);
+        correct(&journal, POOLED_ENTRY);
         store_drained(&book);
         assert!(
             book.lock()
@@ -318,7 +328,7 @@ fn store_phase() {
         );
     }
 
-    let restarted = store_boot(&slots);
+    let (restarted, journal) = store_boot(&slots);
     let mut durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
     assert_eq!(
         durability.migration_marker(),
@@ -334,12 +344,12 @@ fn store_phase() {
         "the migration step reads the marker, so it does not seal a second opening"
     );
     assert_eq!(
-        counts_now(ENTRY, &counts(1_000)),
+        journal.counts_now(ENTRY, &counts(1_000)),
         counts(800),
         "the correction sealed before the roll survived the restart"
     );
     assert_eq!(
-        counts_now(POOLED_ENTRY, &counts(1_000)),
+        journal.counts_now(POOLED_ENTRY, &counts(1_000)),
         counts(800),
         "the correction sealed after the roll survived the restart"
     );
@@ -432,7 +442,9 @@ fn without_a_data_dir_the_amendment_journal_is_neither_rebuilt_nor_bound() {
         Box::new(|| None),
     )
     .expect("a memory-buffered journal cannot fail to open");
-    durability.restore_amendments();
+    let journal = NodeAmendments::new();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    durability.restore_amendments(&journal, &token);
     assert_eq!(durability.amendments_through, None);
     assert!(durability.restart_findings.is_empty());
 }

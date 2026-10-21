@@ -2861,7 +2861,8 @@ fn verify_names_a_refused_balance_and_every_other_finding() {
         ));
     post_a_refused_counts_row_on(&node_book.durability, "vk_refused");
 
-    let answer = crate::root::units_admin::bound::verify_effect(&view)
+    let journal = busbar_kernel::audit::amend::NodeAmendments::new();
+    let answer = crate::root::units_admin::bound::verify_effect(&view, Some(&journal))
         .expect("a refused counts row must not take /admin/verify down");
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]
@@ -5482,7 +5483,7 @@ fn adjust_through_route(
         .map_err(|refusal| refusal.reason())
 }
 
-/// A binding over `book`'s node ledger.
+/// A binding over `book`'s node ledger and a node amendment journal of its own.
 #[cfg(feature = "root-admin")]
 fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBinding {
     let legacy: Arc<dyn LegacyRowsRead> = book.rows.clone();
@@ -5492,12 +5493,27 @@ fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBindin
             legacy,
         )))
         .with_pools(Arc::new(|pool| pool == "pool-a"))
+        .with_node_amendments(Arc::new(busbar_kernel::audit::amend::NodeAmendments::new()))
 }
 
-/// What the recorded unit costs at its card epoch over the counts the node journal stands it at
-/// NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
+/// The node amendment journal `binding` seals `adjust` on.
 #[cfg(feature = "root-admin")]
-fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &RecordedCounts) -> u128 {
+fn node_journal(binding: &AdminBinding) -> &busbar_kernel::audit::amend::NodeAmendments {
+    binding
+        .node_amendments
+        .as_deref()
+        .expect("the adjusting binding has a node journal")
+}
+
+/// What the recorded unit costs at its card epoch over the counts `journal` (the node's) stands it
+/// at NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
+#[cfg(feature = "root-admin")]
+fn priced_now_at_two_and_a_half_micro(
+    journal: &busbar_kernel::audit::amend::NodeAmendments,
+    lane: &str,
+    digest: &str,
+    recorded: &RecordedCounts,
+) -> u128 {
     let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         [(
             busbar_kernel_ledger::cost::LaneClass::new(
@@ -5517,7 +5533,8 @@ fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &Recor
         author: busbar_kernel_ledger::cost::Author::Opening,
     });
     let pinned = crate::root::kernel::PinnedHistory::for_test(Arc::new(history), seq);
-    let entry = busbar_kernel::audit::amend::counts_now(digest, &recorded.classes)
+    let entry = journal
+        .counts_now(digest, &recorded.classes)
         .into_iter()
         .fold(
             busbar_kernel_ledger::cost::LedgerEntry::new(lane, recorded.card_epoch_ms),
@@ -5548,7 +5565,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
     assert_eq!(recorded.lane, lane);
     assert_eq!(recorded.card_epoch_ms, ADJUST_ARRIVED_MS);
     assert_eq!(
-        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        priced_now_at_two_and_a_half_micro(node_journal(&binding), lane, &digest, &recorded),
         2_500_000,
         "before: 1,000 input units at 2.5 micro-units"
     );
@@ -5575,7 +5592,8 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
         "the answer carries counts, never money"
     );
 
-    let sealed: Vec<_> = busbar_kernel::audit::amend::node_corrections()
+    let sealed: Vec<_> = node_journal(&binding)
+        .corrections()
         .into_iter()
         .filter_map(|a| match a.body {
             busbar_kernel::audit::amend::AmendBody::Adjust(adj) if adj.amends_hash == digest => {
@@ -5597,7 +5615,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
         "the pool is sealed (Q64/Q67)"
     );
     assert_eq!(
-        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        priced_now_at_two_and_a_half_micro(node_journal(&binding), lane, &digest, &recorded),
         2_000_000,
         "after: 800 input units at 2.5 micro-units"
     );
@@ -5667,12 +5685,14 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
             busbar_contract::authz::Scope::ReadOnly,
             "admin",
             &|_| true,
+            binding.node_amendments.as_deref(),
             |_| binding.ledger.recorded_counts(&digest),
         ),
         Err(busbar_core_admin::GovernanceError::Validation)
     ));
     assert!(
-        busbar_kernel::audit::amend::node_corrections()
+        node_journal(&binding)
+            .corrections()
             .iter()
             .all(|a| !matches!(
                 &a.body,
@@ -5708,7 +5728,8 @@ fn an_adjust_naming_no_pool_or_an_unknown_pool_is_refused_and_seals_nothing() {
         )
     };
     let sealed = || {
-        busbar_kernel::audit::amend::node_corrections()
+        node_journal(&binding)
+            .corrections()
             .iter()
             .filter(|a| {
                 matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)

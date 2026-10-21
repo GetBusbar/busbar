@@ -6,12 +6,6 @@
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel-audit/src/amend.rs"
-item = "SINK"
-count = 1
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/config/plane_sections.rs"
 item = "PLANE_SECTIONS"
 count = 1

@@ -7,7 +7,8 @@
 //!
 //! It links nothing from the product. The field order below is transcribed from the pages, the
 //! framing is the pages' (big-endian eight-byte length, then the bytes; a number is its big-endian
-//! eight-byte form), the hash is this crate's own SHA-256, and the signature is checked with `ring`
+//! eight-byte form, published as its canonical decimal text in a JSON string and refused as a JSON
+//! number), the hash is this crate's own SHA-256, and the signature is checked with `ring`
 //! (the workspace's one crypto backend). A verifier that called the code that seals the chain would
 //! agree with any build whose field order had drifted from the page, which is the one failure worth
 //! catching.
@@ -214,6 +215,28 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// A recipe number's published text, read back: canonical decimal digits of a `u64` (no sign, no
+/// leading zero but `"0"` itself, no whitespace), or `None`. The pages publish every recipe number
+/// this way, never as a JSON number, so a reader that maps JSON numbers to doubles cannot round one.
+#[must_use]
+pub fn decimal_u64(s: &str) -> Option<u64> {
+    let canonical =
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
+    if canonical {
+        s.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// A record's recipe number by name (its decimal text), or `None` when absent or not canonical.
+fn record_num(record: &Value, name: &str) -> Option<u64> {
+    record
+        .get(name)
+        .and_then(Value::as_str)
+        .and_then(decimal_u64)
+}
+
 fn frame(out: &mut Vec<u8>, kind: Kind, value: &Value) -> Result<(), String> {
     match (kind, value) {
         (Text, Value::String(s)) => {
@@ -221,16 +244,20 @@ fn frame(out: &mut Vec<u8>, kind: Kind, value: &Value) -> Result<(), String> {
             out.extend_from_slice(s.as_bytes());
             Ok(())
         }
-        (Num, Value::Number(n)) => {
-            let v = n
-                .as_u64()
-                .ok_or_else(|| format!("{n} is not an unsigned 64-bit number"))?;
-            out.extend_from_slice(&8u64.to_be_bytes());
-            out.extend_from_slice(&v.to_be_bytes());
-            Ok(())
-        }
+        (Num, Value::String(s)) => match decimal_u64(s) {
+            Some(v) => {
+                out.extend_from_slice(&8u64.to_be_bytes());
+                out.extend_from_slice(&v.to_be_bytes());
+                Ok(())
+            }
+            None => Err(format!(
+                "a number field carries {value}, not canonical decimal"
+            )),
+        },
         (Text, other) => Err(format!("a text field carries {other}")),
-        (Num, other) => Err(format!("a number field carries {other}")),
+        (Num, other) => Err(format!(
+            "a number field carries {other}, not its decimal text in a string"
+        )),
     }
 }
 
@@ -265,9 +292,7 @@ pub fn digest(record: &Value, recipe: &str) -> Result<String, String> {
             .get(group)
             .and_then(Value::as_array)
             .ok_or_else(|| format!("no `{group}` array"))?;
-        let count = record
-            .get(format!("{group}_count").as_str())
-            .and_then(Value::as_u64);
+        let count = record_num(record, &format!("{group}_count"));
         if count != Some(elements.len() as u64) {
             return Err(format!(
                 "`{group}` holds {} element(s) but `{group}_count` says {count:?}",
@@ -370,7 +395,7 @@ pub fn verify(range: &Value, keys: &Value, head: Option<&Value>) -> Verdict {
     let mut prev: Option<(u64, String)> = None;
     for record in records {
         v.records += 1;
-        let seq = record.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        let seq = record_num(record, "seq").unwrap_or(0);
         let hash = record.get("hash").and_then(Value::as_str).unwrap_or("");
         let prev_hash = record
             .get("prev_hash")
@@ -446,8 +471,7 @@ pub fn verify(range: &Value, keys: &Value, head: Option<&Value>) -> Verdict {
         let want = to.min(head_seq);
         let last = records
             .last()
-            .and_then(|r| r.get("seq"))
-            .and_then(Value::as_u64)
+            .and_then(|r| record_num(r, "seq"))
             .unwrap_or(0);
         let from = range.get("from").and_then(Value::as_u64).unwrap_or(1);
         if want >= from && last < want {
@@ -463,9 +487,7 @@ pub fn verify(range: &Value, keys: &Value, head: Option<&Value>) -> Verdict {
 fn check_head(v: &mut Verdict, records: &[Value], head: &Value, which: &str) {
     let seq = head.get("seq").and_then(Value::as_u64).unwrap_or(0);
     let hash = head.get("hash").and_then(Value::as_str).unwrap_or("");
-    let at = records
-        .iter()
-        .find(|r| r.get("seq").and_then(Value::as_u64) == Some(seq));
+    let at = records.iter().find(|r| record_num(r, "seq") == Some(seq));
     if let Some(r) = at {
         if r.get("hash").and_then(Value::as_str) != Some(hash) {
             v.find(

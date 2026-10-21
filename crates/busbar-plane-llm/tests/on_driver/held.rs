@@ -14,7 +14,7 @@ use busbar_contract::hooks::{
     Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest, TransformOutcome,
 };
-use busbar_kernel::audit::amend::{node_recent, Access, AmendBody, Reader};
+use busbar_kernel::audit::amend::{Access, AmendBody, NodeAmendments, Reader};
 use busbar_kernel::config::PolicyOnError;
 use busbar_kernel::hooks::{FallbackHook, ResolvedPolicy};
 use serde_json::{json, Value};
@@ -24,10 +24,10 @@ use crate::rig::{member, Answered, Hooks, Pool, Rig};
 
 // ── the access amendment ─────────────────────────────────────────────────────────────────────────
 
-/// Every hook access the node journal holds for `name` (the journal is process-wide: every hook
-/// here carries a name no other test uses).
-fn accesses(name: &str) -> Vec<Access> {
-    node_recent()
+/// Every hook access `journal` (the rig's node journal) holds for `name`.
+fn accesses(journal: &NodeAmendments, name: &str) -> Vec<Access> {
+    journal
+        .recent()
         .into_iter()
         .filter_map(|a| match a.body {
             AmendBody::Access(access) if access.reader == Reader::Hook && access.name == name => {
@@ -104,7 +104,8 @@ fn one() -> Pool {
     }
 }
 
-async fn decide(resolved: ResolvedPolicy) {
+/// Fire one unit through a rig whose route policy is `resolved`; answer the rig's node journal.
+async fn decide(resolved: ResolvedPolicy) -> Arc<NodeAmendments> {
     let rig = Rig::new(
         one(),
         None,
@@ -114,18 +115,19 @@ async fn decide(resolved: ResolvedPolicy) {
         },
     );
     rig.fire(&access_body()).await;
+    rig.amendments()
 }
 
 #[tokio::test]
 async fn a_decision_gate_handed_the_prompt_leaves_exactly_one_access_amendment() {
-    decide(policy(
+    let journal = decide(policy(
         named("access-decide-prompt"),
         true,
         true,
         Vec::new(),
     ))
     .await;
-    let seen = accesses("access-decide-prompt");
+    let seen = accesses(&journal, "access-decide-prompt");
     assert_eq!(seen.len(), 1, "one access per hand-over: {seen:?}");
     assert_eq!(seen[0].op_class.as_str(), "anthropic");
     assert_eq!(
@@ -137,14 +139,14 @@ async fn a_decision_gate_handed_the_prompt_leaves_exactly_one_access_amendment()
 
 #[tokio::test]
 async fn a_decision_gate_handed_only_the_shape_leaves_no_access_amendment() {
-    decide(policy(
+    let journal = decide(policy(
         named("access-decide-shape"),
         false,
         true,
         Vec::new(),
     ))
     .await;
-    assert!(accesses("access-decide-shape").is_empty());
+    assert!(accesses(&journal, "access-decide-shape").is_empty());
 }
 
 #[tokio::test]
@@ -160,9 +162,9 @@ async fn an_on_error_fallback_handed_the_prompt_leaves_its_own_access_amendment(
         send_user: false,
         on_empty: PolicyOnError::Reject,
     };
-    decide(policy(primary, true, false, vec![fallback])).await;
-    assert_eq!(accesses("access-primary-fails").len(), 1);
-    let seen = accesses("access-fallback-prompt");
+    let journal = decide(policy(primary, true, false, vec![fallback])).await;
+    assert_eq!(accesses(&journal, "access-primary-fails").len(), 1);
+    let seen = accesses(&journal, "access-fallback-prompt");
     assert_eq!(
         seen.len(),
         1,
@@ -184,8 +186,8 @@ async fn an_on_error_fallback_without_the_prompt_grant_leaves_no_access_amendmen
         send_user: false,
         on_empty: PolicyOnError::Reject,
     };
-    decide(policy(primary, true, false, vec![fallback])).await;
-    assert!(accesses("access-fallback-shape").is_empty());
+    let journal = decide(policy(primary, true, false, vec![fallback])).await;
+    assert!(accesses(&journal, "access-fallback-shape").is_empty());
 }
 
 #[tokio::test]
@@ -199,7 +201,7 @@ async fn a_rewrite_hook_handed_the_prompt_leaves_exactly_one_access_amendment() 
         },
     );
     rig.fire(&access_body()).await;
-    let seen = accesses("access-rewrite");
+    let seen = accesses(&rig.amendments(), "access-rewrite");
     assert_eq!(seen.len(), 1, "one access per hand-over: {seen:?}");
     assert_eq!(seen[0].fields, vec!["content".to_string()]);
 }
@@ -219,8 +221,9 @@ async fn a_global_tap_leaves_an_access_amendment_only_when_handed_the_prompt() {
         "max_tokens": 10
     }))
     .await;
-    assert_eq!(accesses("access-tap-prompt").len(), 1);
-    assert!(accesses("access-tap-shape").is_empty());
+    let journal = rig.amendments();
+    assert_eq!(accesses(&journal, "access-tap-prompt").len(), 1);
+    assert!(accesses(&journal, "access-tap-shape").is_empty());
 }
 
 // ── the operation-general projection ─────────────────────────────────────────────────────────────

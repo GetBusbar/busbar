@@ -188,10 +188,13 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
     );
 }
 
-/// The hook accesses the node journal holds under one ingress label, oldest first. The journal is
-/// process-wide, so each test below uses a label no other test uses.
-fn hook_accesses_under(op: &str) -> Vec<crate::audit::amend::Access> {
-    crate::audit::amend::node_recent()
+/// The hook accesses a node's journal holds under one ingress label, oldest first.
+fn hook_accesses_under(
+    journal: &crate::audit::amend::NodeAmendments,
+    op: &str,
+) -> Vec<crate::audit::amend::Access> {
+    journal
+        .recent()
         .into_iter()
         .filter_map(|a| match a.body {
             crate::audit::amend::AmendBody::Access(x) if x.op_class.as_str() == op => Some(x),
@@ -240,20 +243,26 @@ fn the_plane_rewrite_leg_leaves_one_access_amendment_per_hook_handed_the_argumen
         .insert(PLANE, containers);
     let verdict = transform_over_over(&app, PLANE, "c", 1, "tool", br#"{"path":"/x"}"#);
     assert!(matches!(verdict, TransformVerdict::Proceed { .. }));
-    let seen = hook_accesses_under(PLANE);
+    let seen = hook_accesses_under(&app.amendments, PLANE);
     assert_eq!(seen.len(), 1, "one access per hand-over: {seen:?}");
     assert_eq!(seen[0].name, "abstaining-rewrite");
 }
 
-/// THE PORT A PLANE'S OWN HOOK CALL SITES RECORD THROUGH: the host's provided `hook_read` seals the
-/// access on the node journal, naming the hook, the caller and the fields that crossed.
+/// THE PORT A PLANE'S OWN HOOK CALL SITES RECORD THROUGH: the host's `hook_read` seals the access
+/// on ITS node's journal (the one its `App` carries), naming the hook, the caller and the fields
+/// that crossed — and on no other node's.
 #[test]
 fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
     const OP: &str = "access-host-port";
     let app = crate::test_support::TestApp::new().build();
+    let other = crate::test_support::TestApp::new().build();
     let host = crate::test_support::engine_host(&app);
     host.hook_read("port-hook", Some("key-1"), OP, true);
-    let seen = hook_accesses_under(OP);
+    assert!(
+        hook_accesses_under(&other.amendments, OP).is_empty(),
+        "another node's journal recorded this node's hook read"
+    );
+    let seen = hook_accesses_under(&app.amendments, OP);
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0].name, "port-hook");
     assert_eq!(
