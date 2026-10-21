@@ -278,20 +278,12 @@ pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
 /// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
 pub type AuthAxisOpener = fn(Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
 
-/// The auth-axis opener the composition root's OWN test binary hands in (`install_auth_axis`): a
-/// test build's install record reports it in place of the stand-in's, whichever read came first.
-/// The first hand-in stands.
+/// The auth-axis opener the composition root's OWN test binary hands in
+/// ([`crate::test_support::install_root_auth_axis`]): a test build's install record reports it in
+/// place of the stand-in's, whichever read came first. The first hand-in stands.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) static TEST_ROOT_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
     std::sync::OnceLock::new();
-
-/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
-/// ([`root_rows`]) then reports as a shipped root's install record (`RootInstall::auth_axis`) does.
-/// The first hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub fn install_auth_axis(open: AuthAxisOpener) {
-    let _ = TEST_ROOT_AUTH_AXIS.set(open);
-}
 
 /// This build's auth axis over `registry`, through the opener on the root's install record
 /// ([`RootInstall::auth_axis`]); `None` (no opener installed, no stand-in): no auth row answers
