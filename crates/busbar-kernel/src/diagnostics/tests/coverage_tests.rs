@@ -54,7 +54,8 @@ const MIGRATED_FILES: &[&str] = &[
     // enforces this); each plane crate enforces its own uncoded-diagnostic floor. So none of those
     // plugin sources are listed here.
     "src/ir/mod.rs",
-    "src/proto/mod.rs",
+    // `proto/mod.rs` is DELETED (status row 82 D2, #1376): the protocol registry left the kernel and
+    // each plane resolves its own dialects, so no diagnostic of it moved anywhere.
     // `plane/approvals.rs` is DELETED (status row 82): the spent-approval ledger redeemed nothing,
     // and approval redemption is `records.claim` alone, so no diagnostic of it moved anywhere.
     "src/trust/demotion.rs",

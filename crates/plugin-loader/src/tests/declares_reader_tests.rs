@@ -42,6 +42,36 @@ fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
     }
 }
 
+/// A destination's retention (`keep`, THE DESIGN: `disk.append` rotation declared per
+/// destination) reads for a declared destination and rides the section; unstated, the section
+/// carries none (the manifest's canonical bytes are unchanged). RED ARM: a `keep` naming a key that
+/// is not a declared destination is refused.
+#[test]
+fn a_declared_keep_reads_for_a_declared_destination_only() {
+    let read = Declares::from_declares_json(br#"{"destinations": ["path"], "keep": {"path": 0}}"#)
+        .expect("a keep for a declared destination reads");
+    assert_eq!(read.keep.get("path"), Some(&0));
+    assert_eq!(
+        serde_json::to_value(&read).unwrap(),
+        serde_json::json!({"destinations": ["path"], "keep": {"path": 0}})
+    );
+    assert!(!Declares {
+        keep: read.keep.clone(),
+        ..Declares::default()
+    }
+    .is_empty());
+    let none = Declares::from_declares_json(br#"{"destinations": ["path"]}"#).expect("reads");
+    assert!(none.keep.is_empty());
+    assert_eq!(
+        serde_json::to_value(&none).unwrap(),
+        serde_json::json!({"destinations": ["path"]})
+    );
+    assert!(
+        Declares::from_declares_json(br#"{"destinations": ["path"], "keep": {"other": 0}}"#)
+            .is_err()
+    );
+}
+
 /// A SIGNED manifest's `declares` is not a declares document: the manifest never carries `needs`,
 /// so one that states it is refused like any other unknown key.
 #[test]
@@ -164,4 +194,41 @@ fn no_site_but_the_one_reader_deserializes_declares_bytes() {
         "declares bytes are read only by Declares::from_declares_json:\n{}",
         offenders.join("\n")
     );
+}
+
+/// A plane's `auth_labels` read whole and keep their canonical bytes; the first rule whose path
+/// match holds names a path's label, every stated condition holding; an unknown key in a rule or a
+/// path match is refused.
+#[test]
+fn declared_auth_labels_read_and_match_by_their_first_holding_rule() {
+    let doc = br#"{"auth_labels": {"rules": [
+        {"path": {"prefix": "/a/", "last_segment_suffix": [":x"]}, "label": "one"},
+        {"path": {"prefix": "/a/"}, "label": "two"},
+        {"path": {"prefix": "/m/", "suffix": ["/c", "/cs"]}, "label": "three"},
+        {"path": {"exact": "/e"}, "methods": ["GET"], "label": "four"}
+    ], "default": "zero"}}"#;
+    let read = Declares::from_declares_json(doc).expect("auth labels read");
+    assert!(!read.is_empty());
+    let labels = read.auth_labels.as_ref().expect("stated");
+    assert_eq!(labels.default.as_deref(), Some("zero"));
+    assert_eq!(labels.label("/a/b:x"), Some("one"));
+    assert_eq!(labels.label("/a/b:y"), Some("two"));
+    assert_eq!(labels.label("/m/k/c"), Some("three"));
+    assert_eq!(labels.label("/m/k/cs"), Some("three"));
+    assert_eq!(labels.label("/m/k/d"), None);
+    assert_eq!(labels.label("/e"), Some("four"));
+    assert_eq!(labels.label("/e/"), None);
+    assert_eq!(labels.rules[3].methods, vec!["GET".to_string()]);
+    let again =
+        Declares::from_declares_json(serde_json::to_string(&read).expect("encodes").as_bytes())
+            .expect("the encoding reads");
+    assert_eq!(again, read);
+    assert!(Declares::from_declares_json(
+        br#"{"auth_labels": {"rules": [{"path": {"glob": "/a/*"}, "label": "x"}]}}"#
+    )
+    .is_err());
+    assert!(Declares::from_declares_json(
+        br#"{"auth_labels": {"rules": [{"path": {}, "label": "x", "verb": "GET"}]}}"#
+    )
+    .is_err());
 }

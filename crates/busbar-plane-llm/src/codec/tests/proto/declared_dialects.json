@@ -9,7 +9,8 @@
     "mandatory_header: [path, [[header, value]], protocol] — a mandatory header beats path ordering.",
     "residual: [path, protocol] — the headerless residual classifier.",
     "residual_live: [path, protocol] — the positive control that proves the residual fold is live.",
-    "residual_none: paths that name no dialect (the paths other planes mount at among them)."
+    "residual_none: paths that name no dialect (the paths other planes mount at among them).",
+    "auth_label_paths: paths the `declares.auth_labels` rules are held to the residual fold over."
   ],
   "resolver": [
     ["/v1/chat/completions", [], ["openai", "chat"]],
@@ -51,5 +52,6 @@
     ["/v1/models/gemini-pro:countTokens", "gemini"]
   ],
   "residual_live": ["/v1/models/gpt-4o", "openai"],
-  "residual_none": ["/", "/stats", "/tools", "/tools/anything", "/agents", "/totally/unknown/path", "/model/foo/bar"]
+  "residual_none": ["/", "/stats", "/tools", "/tools/anything", "/agents", "/totally/unknown/path", "/model/foo/bar"],
+  "auth_label_paths": ["/v1/messages", "/claude-3/v1/messages", "/model/v1/messages", "/v2/chat", "/v2/chat/x", "/v1/models/m:generateContent", "/v1/models/a/b:countTokens", "/v1/models/gemini:generateContentX", "/v1/models", "/v1beta/models", "/v1beta/models/x:predict", "/model/x/invoke", "/model/x/converse", "/model/x/converse-stream", "/model/converse", "/x/model/a/converse", "/v1/chat/completions", "/v1/chat/completions/", "/v1/responses", "/v1/embeddings", "/healthz", ""]
 }

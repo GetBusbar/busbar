@@ -187,8 +187,8 @@ pub type ClaimsOf = fn() -> Vec<&'static str>;
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
-/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
-/// door over.
+/// A wire's build: handed the deployment's settings, it opens the row's door and answers the boot's
+/// admission of it (`HostWire::new`: a claim, no layer).
 pub type BuildTransport = fn(
     &busbar_contract::transport::TransportSettings,
 ) -> Arc<busbar_core_connector::wire::HostWire>;
@@ -309,10 +309,18 @@ pub struct BookCtx<'a> {
 
 /// THE PROTOCOL AXIS: every entry's body-model arrivals, then each entry's protocol-axis seams. A
 /// dialect whose model rides the URL has no arrival here: its plane's door claims and serves those
-/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). No dialect declaration installs anywhere: a plane
-/// resolves its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
+/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). No dialect declaration installs anywhere but as
+/// the path labels an authentication refusal's tap is told ([`path_dialects`]): a plane resolves
+/// its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
 /// hand their units to: every entry on it is handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
+    match path_dialects(linked) {
+        Ok(dialects) => busbar_kernel::ingress::native::install_path_dialects(dialects),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -384,10 +392,69 @@ pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
     })
 }
 
+/// THE PATH LABELS an authentication refusal's tap is told
+/// (`busbar_kernel::ingress::native::PathDialects`), read off the path alone as v1.5.5 read it
+/// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path`): every linked plane's
+/// `declares.auth_labels` (ARCHITECT ruling on the tap label: the plane states its own labels,
+/// the root folds them), its rules in the plane's order and the planes in the linked order, the
+/// first rule whose path match holds naming the label; the first plane's `default` labels a path
+/// no rule matches. The root spells no label (Law 1).
+///
+/// # Errors
+///
+/// A linked door's `declares` section that does not read, or a rule that names verbs: the label is
+/// read with no verb in hand.
+pub fn path_dialects(
+    linked: &Linked,
+) -> Result<busbar_kernel::ingress::native::PathDialects, String> {
+    let mut rules: Vec<(crate::root::loader::sign::PathMatch, &'static str)> = Vec::new();
+    let mut residual: Option<&'static str> = None;
+    for (row, _, json) in linked.plane_door_declares {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        let Some(labels) = declares.auth_labels else {
+            continue;
+        };
+        for rule in labels.rules {
+            if !rule.methods.is_empty() {
+                return Err(format!(
+                    "plugin '{row}' states an `auth_labels` rule for the verbs {:?}: an \
+                     authentication refusal's label is read off its path alone",
+                    rule.methods
+                ));
+            }
+            rules.push((rule.path, leak_label(rule.label)));
+        }
+        if residual.is_none() {
+            residual = labels.default.map(leak_label);
+        }
+    }
+    Ok(busbar_kernel::ingress::native::PathDialects {
+        claimed: Arc::new(move |path: &str| {
+            rules
+                .iter()
+                .find(|(path_match, _)| path_match.matches(path))
+                .map(|(_, label)| *label)
+        }),
+        residual,
+    })
+}
+
+/// A declared label as the `&'static str` the kernel's labels are: read once, at link time, and
+/// kept for the process.
+fn leak_label(label: String) -> &'static str {
+    Box::leak(label.into_boxed_str())
+}
+
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
-/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
-/// before anything resolves a store or a secret.
+/// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
+/// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
+/// taken of every configuration as it is built (`crate::root::door_steps::door_config`), so a
+/// config apply refreshes them onto the new generation. No row is a default store: the store is
+/// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
+/// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
@@ -398,21 +465,21 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            // The root's card repricer is the kernel's rate holder and dater (the node unit, in
+            // every build's root-unit table, arms its journal before the boot resolution:
+            // `crate::root::kernel::install_card_repricer`).
+            rate_apply: Some(&crate::root::kernel::CardRepricer),
+            rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
-    // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
-    // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
-    // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
-    busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's

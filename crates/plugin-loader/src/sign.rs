@@ -290,6 +290,15 @@ pub struct Declares {
     /// the plugin's host ops name the key, never a path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub destinations: Vec<String>,
+    /// How many archives the host's disk lane keeps when it rolls a declared destination over
+    /// (THE DESIGN: `disk.append` rotation is declared per destination, `{path_key,
+    /// rotate_size_key, keep}`), keyed by the destination's settings key; the host turns it into
+    /// its rotation ([`busbar_contract::services::DiskRotate::declared`]). `0`: no archive — a due
+    /// file is truncated in place, 1.5.5's request-log rollover. A destination not named here takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`]. Left off the wire when empty, so every
+    /// manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keep: BTreeMap<String, u32>,
     /// The EGRESS POLICY the host applies to every request the plugin asks it to admit or carry
     /// (K9e-2, export ABI minor 10) — see [`EgressPolicy`]. Granted to a first-party plugin only
     /// when it is not the default; the default is left off the wire, so every manifest packed
@@ -317,6 +326,87 @@ pub struct Declares {
     /// empty, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stream_media: Vec<String>,
+    /// THE AUTHENTICATION-REFUSAL LABELS a plane states for the paths of its dialects (ARCHITECT
+    /// ruling on the tap label, row 82 D2): the `ingress_protocol` a `rejected_by_auth` response
+    /// tap is told for a request the auth chain refused, read off the path alone, as v1.5.5 read it
+    /// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path`). Data the root folds into
+    /// the kernel's neutral path labels at link time ([`AuthLabels`]). Left off the wire when
+    /// absent, so every manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_labels: Option<AuthLabels>,
+}
+
+/// A plane's AUTHENTICATION-REFUSAL LABELS (`declares.auth_labels`): ordered rules, the first whose
+/// path match holds naming the label, and the label of a path no rule matches.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthLabels {
+    /// The rules, in the order they are tried; the first that matches names the label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<AuthLabelRule>,
+    /// The label of a path no rule matches; `None` names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+/// One AUTHENTICATION-REFUSAL LABEL RULE: a path match, the verbs it holds for, and its label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthLabelRule {
+    /// The paths the rule holds for.
+    pub path: PathMatch,
+    /// The verbs the rule holds for (upper-case HTTP methods); empty holds for any verb.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    /// The label a request the rule holds for is told.
+    pub label: String,
+}
+
+/// A PATH MATCH over a request path, every stated condition holding: `exact` the whole path,
+/// `prefix` its start, `suffix` its end (any one of them), `last_segment_suffix` the end of its
+/// last `/`-separated segment (any one of them). A match that states no condition holds for every
+/// path.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathMatch {
+    /// The whole path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<String>,
+    /// The path's start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// The path's end: any one of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suffix: Vec<String>,
+    /// The end of the path's last `/`-separated segment: any one of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_segment_suffix: Vec<String>,
+}
+
+impl PathMatch {
+    /// Whether every condition this match states holds for `path`.
+    pub fn matches(&self, path: &str) -> bool {
+        let last = path.rsplit('/').next().unwrap_or("");
+        self.exact.as_deref().is_none_or(|e| path == e)
+            && self.prefix.as_deref().is_none_or(|p| path.starts_with(p))
+            && (self.suffix.is_empty() || self.suffix.iter().any(|s| path.ends_with(s.as_str())))
+            && (self.last_segment_suffix.is_empty()
+                || self
+                    .last_segment_suffix
+                    .iter()
+                    .any(|s| last.ends_with(s.as_str())))
+    }
+}
+
+impl AuthLabels {
+    /// The label the first rule that holds for `path` names, whatever the verb; `None` when no rule
+    /// holds (the [`Self::default`] is the caller's to apply).
+    pub fn label(&self, path: &str) -> Option<&str> {
+        self.rules
+            .iter()
+            .find(|r| r.path.matches(path))
+            .map(|r| r.label.as_str())
+    }
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -400,7 +490,15 @@ impl Declares {
         if let Some(m) = doc.as_object_mut() {
             m.remove("contract_abi");
         }
-        serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
+        let read: Self =
+            serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))?;
+        // A retention is stated for a declared destination only.
+        if let Some(key) = read.keep.keys().find(|k| !read.destinations.contains(k)) {
+            return Err(format!(
+                "not a `declares` section: `keep` names `{key}`, which is not a declared destination"
+            ));
+        }
+        Ok(read)
     }
 
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
@@ -408,10 +506,12 @@ impl Declares {
         self.metrics.is_empty()
             && self.diagnostics.is_empty()
             && self.destinations.is_empty()
+            && self.keep.is_empty()
             && self.egress.is_default()
             && self.breaker.is_none()
             && !self.disk
             && self.stream_media.is_empty()
+            && self.auth_labels.is_none()
     }
 }
 
