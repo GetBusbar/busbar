@@ -65,6 +65,10 @@ pub struct Knobs {
     pub echo: bool,
     /// Every answer the framing gives says it owes more (`YIELD_MORE`), whatever it wrote.
     pub spin: bool,
+    /// Every byte the framing ingests is ALSO kept unanswered, and its `detach` hands back what it
+    /// kept, then whatever it still holds: as an http framer hands up an upgrade request's head
+    /// (and the bytes that followed it) unanswered for the framer that adopts the connection.
+    pub holds: bool,
 }
 
 #[derive(Default)]
@@ -81,6 +85,8 @@ struct State {
     declared_len: Option<u64>,
     echo: bool,
     spin: bool,
+    holds: bool,
+    kept: Vec<u8>,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -111,6 +117,10 @@ pub struct TestDoor {
     pub begun_lines: Mutex<Vec<Vec<GuestLine>>>,
     /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
     pub dialled_keys: Mutex<Vec<u64>>,
+    /// The status (`EmitIn::status`) every `emit` crossing that carried bytes stated, in order.
+    pub emitted_statuses: Mutex<Vec<u32>>,
+    /// The leftover bytes every `adopt` crossing was handed (`AdoptIn::leftover`), in order.
+    pub adopted: Mutex<Vec<Vec<u8>>>,
 }
 
 impl TestDoor {
@@ -133,7 +143,8 @@ impl TestDoor {
             || knobs.fields
             || knobs.silence.is_some()
             || knobs.authority.is_some()
-            || knobs.messages.is_some();
+            || knobs.messages.is_some()
+            || knobs.holds;
         Self {
             facts: DoorFacts {
                 name: name.to_owned(),
@@ -161,6 +172,8 @@ impl TestDoor {
             begun_targets: Mutex::new(Vec::new()),
             begun_lines: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
+            emitted_statuses: Mutex::new(Vec::new()),
+            adopted: Mutex::new(Vec::new()),
         }
     }
 
@@ -422,6 +435,7 @@ impl FramerDoor for TestDoor {
                     declared_len: self.knobs.declared_len,
                     echo: self.knobs.echo,
                     spin: self.knobs.spin,
+                    holds: self.knobs.holds,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);
@@ -450,6 +464,10 @@ impl FramerDoor for TestDoor {
             Call::Adopt(i, o) => {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
                 let mut st = State::default();
+                self.adopted
+                    .lock()
+                    .unwrap()
+                    .push(raw(i.leftover, i.leftover_len).to_vec());
                 st.inbound.extend(raw(i.leftover, i.leftover_len));
                 answer(&mut st, &i.sink, o, silence);
                 framings.insert(token, st);
@@ -462,6 +480,9 @@ impl FramerDoor for TestDoor {
                     let bytes = raw(i.bytes, i.len);
                     st.heard |= !bytes.is_empty();
                     st.inbound.extend(bytes);
+                    if st.holds {
+                        st.kept.extend_from_slice(bytes);
+                    }
                     if st.echo {
                         st.outbound.extend(bytes);
                     }
@@ -473,6 +494,9 @@ impl FramerDoor for TestDoor {
             Call::Emit(i, o) => match framings.get_mut(&i.framing) {
                 None => ("emit", failed("no such framing")),
                 Some(st) => {
+                    if i.len != 0 {
+                        self.emitted_statuses.lock().unwrap().push(i.status);
+                    }
                     st.outbound.extend(raw(i.bytes, i.len));
                     answer(st, &i.sink, o, silence);
                     // A text emit is counted as its own op, so a test sees the bit cross.
@@ -524,6 +548,11 @@ impl FramerDoor for TestDoor {
             Call::Detach(i, o) => match framings.remove(&i.framing) {
                 None => ("detach", failed("no such framing")),
                 Some(mut st) => {
+                    // A framing that keeps what it ingested hands back all of it (what it still
+                    // holds was ingested, so it is kept too); any other, what it still holds.
+                    if st.holds {
+                        st.inbound = std::mem::take(&mut st.kept).into();
+                    }
                     let n = st.inbound.len().min(i.sink.frame_cap);
                     put(i.sink.frame, &mut st.inbound, n);
                     o.yielded.frame_len = n as u64;
