@@ -97,7 +97,7 @@ pub struct StoreCfg {
 }
 
 /// The store a 1.5.x config with no `store:` block ran on (v1.5.5:crates/busbar/src/config/mod.rs:3026,
-/// `GOVERNANCE_STORE_MEMORY`, read by its `default_governance_store`). 1.6.0 holds no default:
+/// its default-governance-store constant, read by its `default_governance_store`). 1.6.0 holds no default:
 /// `busbar --migrate-config` writes this module into a config that has none, which is exactly 1.5.5's
 /// implicit behaviour made explicit, and [`store_required`] names it (Q-STORE = (B)).
 pub const MIGRATED_STORE_MODULE: &str = "memory";
@@ -404,7 +404,7 @@ pub struct OverlayBackend {
 /// converts them ONCE, exactly, to integer nano-units per token, and nothing past it carries a float.
 ///
 /// `units:` (item 123) prices the OPEN meter classes a plane declares on this lane — a rerank's
-/// `search_units`, an a2a `hops` — keyed by the class string, each rate in micro-units per unit like
+/// `search_units`, a relay `hops` — keyed by the class string, each rate in micro-units per unit like
 /// the four above but parsed EXACTLY, with no float, straight into the card's integer nano-unit
 /// representation ([`UnitRate`]). Absent ⇒ no open class is priced
 /// here, and a hit on one refuses (#42). A reserved class named under `units:` is refused at boot

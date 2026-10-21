@@ -1069,7 +1069,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
-    // Rule (compliance-by-compilation): the non-weighted ranking strategies are the `hooks-ranking`
+    // Rule (compliance-by-compilation): the non-weighted ranking strategies are the ranking
     // plugin. When it's compiled OUT (`--no-default-features`), a pool `policy: <non-weighted>` is a
     // BOOT ERROR — never a silent degrade to weighted. (Inert in the default build; `weighted` always
     // works — it's the engine's inline SWRR floor, not a plugin.)
@@ -1154,7 +1154,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // registry lookup to know `tokens`/`static-tokens` will never resolve to a plugin). Every
         // other name is deferred to the plugin-aware check, not rejected here — an earlier version
         // of this rule hard-rejected every non-`keys` name unconditionally, which meant NO `kind:
-        // auth` plugin (auth-oidc included) could ever pass config_validate, since this check ran
+        // auth` plugin (a browser-login module included) could ever pass config_validate, since this check ran
         // first and always lost before the plugin-aware one got a chance. FAIL-CLOSED is still
         // preserved: an unresolvable name still hard-fails, just at the check that can actually
         // tell whether it resolves.
@@ -1836,7 +1836,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // fail-closed errors.
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
-        // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
+        // `api_key` (a keyless local upstream) and meaningless everywhere else: a
         // TLS cert, a signing key or an admin token has no credential-free mode, so accepting
         // `none` there would silently disarm the thing the secret protects. Which paths may be
         // keyless is decided in the walk that mints them — see `keyless_credential_allowed`.
@@ -2189,7 +2189,7 @@ fn validate_providers_with(
         //
         // SCHEME — keyed off whether the host is PRIVATE/LOOPBACK, not off a flag. A PUBLIC host MUST
         // use `https://` (cleartext would leak the API key on the wire to an off-box wiretap); a
-        // PRIVATE/LOOPBACK host (a local Ollama / vLLM / LM Studio on `localhost`, `127.0.0.1`,
+        // PRIVATE/LOOPBACK host (a locally hosted model server on `localhost`, `127.0.0.1`,
         // RFC-1918, or a Tailscale CGNAT address) MAY use plain `http://` — local models rarely
         // terminate TLS and there is no off-box hop to wiretap. So `http://localhost:11434` and
         // `http://10.0.0.5:8000` validate with NO flag, while `http://api.example.com` is rejected.

@@ -46,7 +46,7 @@ pub struct PoolCfg {
     /// NEUTRAL ROUTING KNOB (1.6.0): pool-level member weights, `{ member-name: weight }`. When
     /// present, the pool load-balances by these weights; when absent, the pool fails over in member
     /// order (first = primary). This is the uniform-grammar way to weight members without per-member
-    /// rich objects; on the LLM plane a per-member `weight:` still wins for byte-identity, and this
+    /// rich objects; on a weighted-pool plane a per-member `weight:` still wins for byte-identity, and this
     /// map refines any member the operator did not weight inline. Empty ⇒ ordered failover.
     pub weights: std::collections::BTreeMap<String, u32>,
     /// NEUTRAL ROUTING KNOB (1.6.0): the pool's routing tier label (`large`/`small`/…), a plane-neutral
@@ -199,10 +199,10 @@ pub enum PoolPolicy {
 }
 
 impl PoolPolicy {
-    /// The ranking-registry name for this strategy (`plugins::hooks::ranking::native_policy`).
+    /// The ranking-registry name for this strategy (the ranking policy constructor).
     /// `weighted` returns `None` — it IS the zero-cost inline-SWRR default and constructs no policy
     /// object. Engine-level `STRATEGY_*` consts (not the ranking plugin's constants) so this
-    /// compiles when the `hooks-ranking` plugin is removed; the plugin matches the same names.
+    /// compiles when the ranking plugin is removed; the plugin matches the same names.
     pub fn native_name(&self) -> Option<&'static str> {
         match self {
             PoolPolicy::Weighted => None,

@@ -191,7 +191,7 @@ pub enum Permit {
 
 // ── The RESOLVED runtime breaker configuration the FSM evaluates. Neutral DATA (no serde, no config
 //    grammar attached — the serialized `config::BreakerCfg` grammar and the config->runtime lowering
-//    stay in core). Relocated DOWN here so the LLM plane names the breaker cfg in its money-path
+//    stay in core). Relocated DOWN here so the provider plane names the breaker cfg in its money-path
 //    signatures and reconstructs it via `from_breaker_input` without reaching into `busbar-core`; core's `store`
 //    re-exports `BreakerCfg`/`TripConfig`/`TripMode` at their historical `crate::store::*` paths (the
 //    breaker FSM, `appbuild`, and the store tests are untouched), and core owns the
@@ -234,8 +234,8 @@ pub struct BreakerCfg {
     pub honor_retry_after: bool,
     pub trip: TripConfig,
     /// Whether a transient failure that did NOT breach the trip threshold still benches the cell
-    /// for a cooldown. See ADR-0002 / `docs/circuit-breaker.md`: `true` on a walked (LLM) pool with
-    /// siblings, `false` on a degenerate single-member cell (MCP client leg / A2A relay) that would
+    /// for a cooldown. See ADR-0002 / `docs/circuit-breaker.md`: `true` on a walked (multi-member) pool with
+    /// siblings, `false` on a degenerate single-member cell (a single-endpoint client leg or relay) that would
     /// otherwise refuse every caller after one blip.
     pub bench_below_trip_threshold: bool,
 }
@@ -247,16 +247,16 @@ impl Default for BreakerCfg {
             max_cooldown_secs: 120,
             honor_retry_after: true, // default to honoring Retry-After header
             trip: TripConfig::default(),
-            // The LLM plane's pools, which is what every `Default` here builds, DO fail over.
+            // The provider plane's pools, which is what every `Default` here builds, DO fail over.
             bench_below_trip_threshold: true,
         }
     }
 }
 
 impl BreakerCfg {
-    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the LLM plane's
+    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the provider plane's
     /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
-    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
+    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the provider path,
     /// carried anyway so a future divergence cannot silently drop.
     pub fn to_breaker_input(&self) -> crate::plane_host::BreakerInput {
         crate::plane_host::BreakerInput {
@@ -278,7 +278,7 @@ impl BreakerCfg {
     }
 
     /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_breaker_input`],
-    /// called IN-PLANE by the LLM plane's `build_runtime` (the allowed plane->core edge; the plane
+    /// called IN-PLANE by the provider plane's `build_runtime` (the allowed plane->core edge; the plane
     /// names only this pub constructor and the neutral input type).
     ///
     /// [`to_breaker_input`]: Self::to_breaker_input
@@ -303,7 +303,7 @@ impl BreakerCfg {
 }
 
 // ── App-retype WEDGE 1 (1.6.0): the `LaneRuntime` type family relocated DOWN from `busbar-core`'s
-//    `store` so the LLM plane names the lane-runtime seam via the ABI instead of reaching back into
+//    `store` so the provider plane names the lane-runtime seam via the ABI instead of reaching back into
 //    `busbar_kernel::store::LaneRuntime`. `Admit`/`LaneSnapshot`/`LaneHealthSnapshot`(+its per-pool
 //    `PoolCellHealthSnapshot`) travel with the trait because its method signatures name them; every
 //    other type they name (`Permit`/`BreakerState`/`Unavailable`/`BreakerCfg`) already lives here.
@@ -435,7 +435,7 @@ pub struct PoolCellHealthSnapshot {
 /// Operations, NOT field access. `lane: usize` identifies a member.
 ///
 /// The in-memory breaker engine (`busbar_kernel::store::HealthState`) is the sole implementer; the
-/// LLM plane's money path names `&dyn LaneRuntime` here so it drives lane admission/health without
+/// provider plane's money path names `&dyn LaneRuntime` here so it drives lane admission/health without
 /// reaching into `busbar-core`. Its method signatures name only substrate types
 /// (`Permit`/`BreakerCfg`/`Admit`/`LaneSnapshot`/`LaneHealthSnapshot`/`BreakerState`/`Unavailable`),
 /// so nothing here is a private interface.

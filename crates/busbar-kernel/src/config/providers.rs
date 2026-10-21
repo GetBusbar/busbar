@@ -22,7 +22,7 @@
 //! the config-schema snapshot are byte-identical.
 //!
 //! `ModelCfg` (the per-entry config) lives in `busbar-contract` (DECISIONS #40/#38) because a
-//! plugin crate (`busbar-plane-decisions`) reuses it verbatim for its own `decisions.models.<name>`;
+//! plugin crate reuses it verbatim for its own per-section `models.<name>` map;
 //! it is re-exported below at its historical path.
 //!
 //! This file is config grammar: the config-schema gate tracks it, so every `Deserialize` shape below
@@ -73,10 +73,10 @@ pub struct ProviderCfg {
     /// See `organization`.
     #[serde(default)]
     pub project: Option<String>,
-    /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
+    /// OAuth token endpoint for the client-credentials auth style (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
-    /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
+    /// OAuth scope for the client-credentials auth style (see ProviderDef::scope).
     #[serde(default)]
     pub scope: Option<String>,
     /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (see ProviderDef::subject).
@@ -112,7 +112,7 @@ pub struct ProviderCfg {
     /// `security.allow_metadata_hosts`; for a full disable use `security.allow_all_metadata`.
     /// Loopback / RFC-1918 / CGNAT / public targets are allowed regardless — a client never chooses a
     /// provider URL (model NAME → operator pool → operator URL), so private upstreams pose no
-    /// client-driven SSRF and local models (Ollama / vLLM) "just work" with no entry. Default empty
+    /// client-driven SSRF and local self-hosted models "just work" with no entry. Default empty
     /// (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
@@ -179,12 +179,12 @@ pub struct ProviderDef {
     /// See `organization`.
     #[serde(default)]
     pub project: Option<String>,
-    /// OAuth token endpoint for `auth: oauth-client-credentials` — the URL busbar POSTs the client
+    /// OAuth token endpoint for the client-credentials auth style — the URL busbar POSTs the client
     /// credentials to for a bearer. Required for that auth style; ignored otherwise. E.g. Azure Entra:
     /// `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`.
     #[serde(default)]
     pub token_url: Option<String>,
-    /// OAuth scope for `auth: oauth-client-credentials`. Required for that auth style; ignored
+    /// OAuth scope for the client-credentials auth style. Required for that auth style; ignored
     /// otherwise. E.g. Azure OpenAI: `https://cognitiveservices.azure.com/.default`.
     #[serde(default)]
     pub scope: Option<String>,
@@ -258,10 +258,10 @@ pub struct ProviderDeploy {
     /// See `organization`.
     #[serde(default)]
     pub project: Option<String>,
-    /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
+    /// OAuth token endpoint for the client-credentials auth style (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
-    /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
+    /// OAuth scope for the client-credentials auth style (see ProviderDef::scope).
     #[serde(default)]
     pub scope: Option<String>,
     /// JWT-bearer assertion `sub` claim for `auth: jwt-bearer` (see ProviderDef::subject). Opt-in;

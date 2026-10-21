@@ -381,8 +381,8 @@ fn model_deltas<'r>(
 }
 
 /// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
-/// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
-/// an LLM's `input`). The one predicate every token total in this module reads.
+/// plane declares in the token family (a media plane's `audio_tokens_in` is as much a token as
+/// a text plane's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
     use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
     busbar_contract::records::RESERVED_UNITS.contains(&class)
@@ -1292,7 +1292,7 @@ pub use busbar_contract::records::UsageLedger;
 // `UsageLedger` above.
 #[cfg(test)]
 pub use busbar_contract::records::ScopeRef;
-/// The lane qualifier a non-llm plane keys its budget rows with, so the view resolves THAT plane's
+/// The lane qualifier a non-provider plane keys its budget rows with, so the view resolves THAT plane's
 /// card (#42/#47) — keying, not pricing: the plane names its own lane, the ledger crate prices it.
 pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
 

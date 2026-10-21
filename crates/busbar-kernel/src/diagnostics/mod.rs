@@ -2848,7 +2848,7 @@ pub const SIGNING_KEY_GENERATION_FAILED: Diagnostic = Diagnostic {
 };
 
 /// The NEUTRAL, plane-agnostic built-in diagnostics, in ascending code order. Plane-specific
-/// diagnostics (`MCP_*`/`A2A_*`) are NOT here — each plane crate owns its consts and registers them
+/// diagnostics (the plane-prefixed codes) are NOT here — each plane crate owns its consts and registers them
 /// via [`install_diagnostics`]; the full runtime catalog is [`all`] (`REGISTRY ∪ installed`). The
 /// tests assert uniqueness and class alignment over this neutral half; each plane crate asserts the
 /// same over its own `DIAGNOSTICS`. There is no cross-half code collision because numbering was

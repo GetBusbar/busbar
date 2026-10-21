@@ -46,7 +46,7 @@ pub const REQUEST_BODY_MAX_BYTES_CEIL: usize = 1024 * 1024 * 1024;
 /// history below still holds for the LOWER bound (the former 64 forced hot-path churn); this
 /// raises the ceiling to the one resource bound that is real. Idle-socket cost stays bounded:
 /// an idle keep-alive is far cheaper than the live request the admission cap already permits,
-/// `pool_idle_timeout`/`tcp_keepalive` bound its lifetime, and the OS reclaims under pressure.
+/// `pool_idle_timeout` and the socket keepalive bound its lifetime, and the OS reclaims under pressure.
 /// Operators with many distinct upstream hosts can lower it, exactly as before.
 pub const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = DEFAULT_MAX_INBOUND_CONCURRENT;
 // THE COUPLING IS THE CONTRACT, enforced at compile time: the idle cap's default must never sit
@@ -59,10 +59,10 @@ const _: () = assert!(
 /// Default idle keep-alive lifetime (seconds) for pooled upstream connections.
 ///
 /// EXPLICIT 300s, replacing reqwest's implicit 90s default: under a bursty upstream workload the warm
-/// working set (`pool_max_idle_per_host` sockets, each carrying an amortized TCP+TLS handshake and
+/// working set (`pool_max_idle_per_host` sockets, each carrying an amortized transport+TLS handshake and
 /// — on h2 — an established multiplexed session) should SURVIVE inter-burst gaps of a few minutes
 /// instead of being reaped at 90s and re-paid as cold handshakes on the hot path when the next
-/// burst lands. Safe to hold that long because `tcp_keepalive(60s)` actively validates every idle
+/// burst lands. Safe to hold that long because the 60s socket keepalive actively validates every idle
 /// socket — a middlebox silently dropping a long-idle connection is detected by the keepalive
 /// probe, not discovered as a spurious request failure — so the longer lifetime adds warm-socket
 /// retention without adding stale-socket risk. Bounded: the OS reclaims idle sockets under

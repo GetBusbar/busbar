@@ -84,7 +84,7 @@ use serde::Deserialize;
 ///
 /// This type lives OUTSIDE `config/` on purpose: `cargo xtask gate config-schema` fingerprints the
 /// `config/` directory, and the `#[cfg(feature = "plane-<x>")]` twin field (declared LAST) is what
-/// that fingerprint records — so the `tools:`/`mcp:`/`agents:` schema is unchanged by this capture. A
+/// that fingerprint records — so the plane-section schema is unchanged by this capture. A
 /// `RawPlaneSection` type declared under `config/` would add a new fingerprinted type and drift the
 /// committed snapshot; declared here it never enters the config surface.
 ///
@@ -156,7 +156,7 @@ impl PlaneCfg for RawPlaneSection {
     }
 }
 
-// The `mcp:` ENDPOINT carrier when the plane that owns it is compiled out: a present `mcp:` block
+// The ENDPOINT carrier when the plane that owns it is compiled out: a present endpoint block
 // names a plane this build cannot serve, refused at resolve (the deletion-gate leg) exactly as a
 // present `tools:` section is.
 impl PlaneEndpointCfg for RawPlaneSection {
@@ -230,7 +230,7 @@ where
     }
 }
 
-/// Deserialize this plane's top-level ENDPOINT block (the owning plane's `mcp:` door) through its
+/// Deserialize this plane's top-level ENDPOINT block (the owning plane's endpoint door) through its
 /// `parse_endpoint` seam hook — the twin of [`deserialize_plane_section`] for the one plane section
 /// that is an endpoint rather than a registry. Compiled out ⇒ raw capture, refused at `resolve`.
 fn deserialize_plane_endpoint<'de, D>(
@@ -627,7 +627,7 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// the fully-qualified operator-facing key (`decisions.models.<m>.provider`), matching
     /// `container_gates`'s own convention.
     ///
-    /// Empty default: a section with no `models:` map of its own (`tools:`/`agents:`/`streams:`
+    /// Empty default: a section with no `models:` map of its own (any other plane section,
     /// today) makes no such reference and this is a no-op for it — adding this method breaks no
     /// existing implementor.
     fn model_provider_refs(&self) -> Vec<(String, String)> {
@@ -685,7 +685,7 @@ pub struct ContainerGateInputs {
 /// section shape.
 pub trait PlaneEndpointCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// True when the operator wrote CONTENT for this endpoint block — read by the config
-    /// deletion-gate leg to refuse a present `mcp:` block that names a compiled-out plane.
+    /// deletion-gate leg to refuse a present endpoint block that names a compiled-out plane.
     fn is_present(&self) -> bool;
     /// This endpoint as `&dyn Any`, so the plane's own module downcasts it back to its concrete
     /// endpoint config to LOWER it into the validated resource.
@@ -829,7 +829,7 @@ pub fn plane_sections() -> Vec<&'static str> {
 
 /// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
 /// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
-/// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's
+/// `tools`/`agents` are plane-owned sections, listed here too so a fold matches core's
 /// `NamedMapSection::sections()` tail whether or not those planes are registered.
 ///
 /// This is the STATIC NOUN SOURCE the deletion-gate and every `.key()` repoint read after the

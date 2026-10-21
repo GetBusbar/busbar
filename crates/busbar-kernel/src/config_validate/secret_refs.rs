@@ -307,7 +307,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // destructure that forces a secret/not-secret decision on every new field of either section has
     // moved OUT of this walk and INTO each plane's `PlaneCfg::secret_refs` impl, beside the fields it
     // guards (`ToolsCfg`, `AgentsCfg`). Core no longer names the plane's credential-bearing types —
-    // `McpServerDefCfg`, `TokenExchangeCfg`, `AgentDefCfg`, `OutboundCredential`, `ClientIdentityCfg`
+    // the plane's server, token-exchange, agent, outbound-credential and client-identity config types
     // — to enumerate them; it loops the trait over the section bindings the RootCfg destructure
     // above already forced a decision on. Each impl returns FULLY-QUALIFIED paths
     // (`tools.<name>.…`, `agents.<name>.…`), so nothing is prefixed here. Order within the returned

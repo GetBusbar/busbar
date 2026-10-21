@@ -724,7 +724,7 @@ pub fn plugins_preflight(
     // (`crate::export::plugin::open`, which runs before the first app is built) — namespace-confined
     // and collision-checked by the SAME `build_route_table` the live table is built with, so a sink
     // claiming a path another already owns fails LOUD here, naming both: e.g. `plugin "datadog"
-    // cannot register GET /metrics — already registered by "prometheus"`. The manifest-only
+    // cannot register GET /metrics — already registered by "sink-a"`. The manifest-only
     // mirror this replaced read routes from a signed-manifest field that was never defined, so it
     // checked the built-in set alone and could not collide.
     crate::plugin_routes::build_route_table(crate::export::route_decls(export_cfg))

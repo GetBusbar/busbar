@@ -325,7 +325,7 @@ pub struct LimitCfg {
     /// becomes per `(group, scope)`. `None` = group-wide (every request charges it). ALWAYS
     /// `None` for `concurrent`. On the WIRE this is still the `pool: <name>` YAML key (under the
     /// generic-admission-topology generalization: a future scope kind gets its own YAML key,
-    /// e.g. `mcp_server: <name>`, never a generic `scope: {kind, value}` object) and always
+    /// e.g. `<scope-kind>: <name>`, never a generic `scope: {kind, value}` object) and always
     /// decodes to `kind: "pool"`. The pool's existence is validated against the config's `pools:`
     /// at the door - generalized discipline: "validated against the config's registered universe
     /// for that scope's kind."

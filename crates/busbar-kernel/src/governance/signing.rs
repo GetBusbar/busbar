@@ -181,7 +181,7 @@ impl TokenSigner {
     /// A DOMAIN-SEPARATED SUBKEY SEED derived from this signer's secret.
     ///
     /// busbar holds one long-lived ed25519 secret and other planes need a signing key of their own
-    /// (the A2A plane signs the agent cards it serves, so an external caller has something to pin
+    /// (a document-serving plane signs the cards it serves, so an external caller has something to pin
     /// busbar by). Handing them THIS key would put the credential-minting secret on a path that
     /// signs documents somebody else largely authored. Handing them a second CONFIGURED key would
     /// be a second secret an operator can fail to generate, hold or rotate — and a zero-config
@@ -190,7 +190,7 @@ impl TokenSigner {
     /// A one-way derivation is the answer to both: the subkey is not this key, and compromise of a
     /// subkey does not walk back to this one, while a deployment still holds exactly one secret and
     /// a rotation of it rotates every subkey with it. `domain` MUST be a versioned constant — see
-    /// [`crate::a2a::sign::CARD_SIGNING_DOMAIN`] — so that changing a derivation is a new key
+    /// the plane's card-signing domain constant — so that changing a derivation is a new key
     /// rather than a silently different one under the same name.
     ///
     /// The secret NEVER leaves this method: callers get 32 derived bytes, not

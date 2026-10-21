@@ -463,7 +463,7 @@ pub struct App {
     ///
     /// It is deliberately NOT `plugin_routes.paths()` of the current snapshot: each declared path is
     /// registered on the axum router once, at boot, and a config apply swaps only `Arc<App>` — the
-    /// router is never rebuilt. So a config that ADDS a path (an `export:` prometheus instance where
+    /// router is never rebuilt. So a config that ADDS a path (an `export:` scrape instance where
     /// none existed at boot) is durably stored and live on the snapshot, yet the path keeps 404ing
     /// until a restart. This is the only thing that knows the difference, and it is what lets a config
     /// mutation tell the operator "restart required" instead of silently no-opping
@@ -810,7 +810,7 @@ pub struct AppHandle {
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
     /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
-    /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
+    /// the plane-apply ruling; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
     appliers: std::sync::Mutex<Vec<Applier>>,
     /// THE DOOR PLANES' RENDERING of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16, 3b B),
     /// bound once by the composition root that built the doors; unbound, the kernel answers its own.
@@ -1024,7 +1024,7 @@ where
 // The whole `crate::state::…` re-export block is DELETED: the composition root now targets
 // `busbar_kernel::detached::…` directly, after which four of the five names
 // (`set_worker_detached`, `set_worker_shutdown`, `DetachedTasks`, `DETACHED_DRAIN_GRACE`) had no
-// caller left anywhere, and the fifth (`spawn_detached`) had exactly one — `export/webhook.rs` —
+// caller left anywhere, and the fifth (`spawn_detached`) had exactly one — one export sink module —
 // which now names the substrate directly.
 
 #[cfg(test)]

@@ -366,7 +366,7 @@ pub(crate) fn is_linked_secret(module: &str) -> bool {
 }
 
 /// Resolve `secret` to a UTF-8 string through the linked secret plugins alone (no `secrets:` block,
-/// no cold lane). OWED: a plane still calls this (the mcp stdio child's environment and its
+/// no cold lane). OWED: a plane still calls this (a plane's child-process environment and its
 /// token-exchange subject token) until those sites move to host-held replacements; the
 /// plane-secret-blindness gate lists them.
 pub fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {

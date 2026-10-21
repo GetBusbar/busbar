@@ -23,7 +23,7 @@ use busbar_contract::secret_ref::SecretRef;
 ///   corp-ad:      { module: ad, settings: { server: "ldaps://corp" }, max_admin_scope: read-only }
 /// auth:
 ///   chain:      [keys, corp-ad]     # ← bare NAMES
-///   admin_auth: [admin-tokens, corp-ad]
+///   admin_auth: [token-auth-a, corp-ad]
 ///   role_bindings: { corp-ad: { platform: { admin_scope: full } } }
 /// ```
 ///
@@ -308,7 +308,7 @@ pub struct AuthPolicyCfg {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserLoginCfg {
-    /// The OAuth/OIDC confidential-client secret, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
+    /// The confidential-client secret of a redirect login, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
     /// (OAuth-family) flow is a confidential client that needs one — a CREDENTIAL method (LDAP/AD-bind)
     /// has none. Enforced per the method's `login_kind` at build (`login_kind == Redirect` ⇒ REQUIRED;
     /// `== Credential` ⇒ must be ABSENT). Resolved and LENT to the plugin at `open` (the Statement's

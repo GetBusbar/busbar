@@ -1598,12 +1598,12 @@ pub fn build_app_from_config(
     // the plane's own probe-schedule type here.
 
     // Plugin HTTP routes: the BUILT-IN exporters (`crate::export`) declare their routes
-    // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
+    // into the snapshot — today a scrape exporter's `GET /metrics` when a scrape sink is
     // configured. Rebuilt on every config apply. A collision (a future loaded export/hook plugin
     // claiming a built-in's path) is a LOUD build failure naming the owner, never last-writer-wins.
     //
     // The rebuilt TABLE is not the same thing as what the ROUTER serves: each path is registered on
-    // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING `export.prometheus`
+    // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING the scrape sink
     // takes effect immediately (`plugin_route_dispatch` resolves the owner from the current snapshot
     // and 404s), while ADDING it needs a RESTART. `boot_route_paths` below is what remembers which
     // paths the router actually has, so a config mutation can SAY so instead of
@@ -1745,7 +1745,7 @@ pub fn build_app_from_config(
     // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
     // the runtime read from two registry snapshots could name two different planes — the runtime then
     // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
-    // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
+    // key names no plane (no slot is inserted under it) and the plane runtime accessor reads the empty
     // default — byte-identical to the featureless zero-plane boot.
     let fallback = crate::plane::fallback_decl();
     let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
@@ -1845,7 +1845,7 @@ pub fn build_app_from_config(
         tslots,
         // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the bundle itself was composed
         // above into `plane_slots` under this interned key through that plane's `build_runtime`
-        // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
+        // seam; the snapshot names only the `&'static str` key, and the plane runtime accessor downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
         fallback_runtime_key,
         config_tables,

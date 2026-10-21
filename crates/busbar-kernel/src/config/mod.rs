@@ -1172,11 +1172,11 @@ pub struct DeployCfg {
     /// references.
     #[serde(default)]
     pub providers_file: Option<String>,
-    /// The top-level `mcp:` block (1.6.0): this section's owning plane's own endpoint, as an OAuth 2.1
+    /// The top-level endpoint block (1.6.0): this section's owning plane's own endpoint, as an OAuth 2.1
     /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
     /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
     /// See that plane's own endpoint config type.
-    // Type-erased through the neutral `EndpointSection` seam: the `mcp:` block deserializes into
+    // Type-erased through the neutral `EndpointSection` seam: the endpoint block deserializes into
     // its owning plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
     // plane-specific endpoint type. The plane compiled out captures it raw and refuses a present block
     // at `resolve` (the deletion-gate leg).
@@ -1193,7 +1193,7 @@ pub struct DeployCfg {
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
     ///
-    /// A lifted CARRIER, exactly as `mcp:` above is.
+    /// A lifted CARRIER, exactly as the endpoint block above is.
     #[serde(skip)]
     pub oauth_as: Option<serde_yaml::Value>,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
@@ -1299,7 +1299,7 @@ pub struct DeployCfg {
     /// that compiled the plane out declares nothing for it, so its section is refused at parse as an
     /// unknown field (Option A, S11b (c) / Q67).
     ///
-    /// A lifted CARRIER, exactly as `mcp:` above is: one field for every such section.
+    /// A lifted CARRIER, exactly as the endpoint block above is: one field for every such section.
     #[serde(skip)]
     pub declared: DeclaredSections,
     // 1.6.0 POOLS UNDER THEIR VERB: the unreleased `tool_pools:` and `agent_pools:` sections are
@@ -1811,7 +1811,7 @@ pub struct PrometheusSettings {
 ///   the configuration's errors, before any sink opens), and renders its findings verbatim — the
 ///   plugin words it (1.5.5's text for the scrape and trace sinks); the extra instance is not
 ///   resolved;
-/// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
+/// - the instance's PROJECTION (the stream list, `fields:` and `durable:`) is resolved + validated by
 ///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
 ///   a pinned field, and `durable: true` are all LOUD errors here rather than a sink that validates
@@ -1972,7 +1972,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// implementing the hook: [`ResolvedProvider::merge`], the neutral merge (the kernel-owned keys
 /// typed, the plane's table by [`busbar_kernel::config::providers::merge_tables`]). `providers:`/
 /// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
-/// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
+/// on plane presence, unlike the plane-owned sections), so a build without the provider plane keeps merging
 /// providers exactly as every prior release has rather than silently dropping configured providers
 /// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
 /// why this section never evicts.
@@ -1996,12 +1996,12 @@ pub fn resolve(
     // own settings refusal, raised by the sink while `resolve_export` validates it.)
     let mut resolved_providers: HashMap<String, ResolvedProvider> = HashMap::new();
 
-    // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
+    // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the provider
     // plane's own logic (`PlaneDecl::resolve_provider`), resolved ONCE here — not per-provider — since
     // it is a pure fn pointer and every iteration of the loop below reads the identical value. `None`
-    // when no plane implements the hook (an llm-plane-absent build): `providers:`/`pools:` are
-    // `CORE_OWNED_CONCRETE_SECTIONS` (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`),
-    // so a build compiled without the LLM plane must keep merging providers exactly as every prior
+    // when no plane implements the hook (a build without the provider plane): `providers:`/`pools:` are
+    // `CORE_OWNED_CONCRETE_SECTIONS` (never gated on plane presence, unlike the plane-owned sections),
+    // so a build compiled without the provider plane must keep merging providers exactly as every prior
     // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
     // kept for exactly that build.
     let resolve_provider_hook =
@@ -2237,7 +2237,7 @@ pub fn resolve(
     // GENERIC MODEL → `providers:` CROSS-REFERENCE CHECK (P2-243/P2-decvalidate), the model-serving
     // twin of the hook blocks above: every plane-owned section's own `PlaneCfg::model_provider_refs`
     // lists its `models:`-shaped provider references, fully qualified — today only `decisions:`
-    // answers non-empty (`tools:`/`agents:`/`streams:` inherit the trait's empty default, so this is
+    // answers non-empty (the other plane sections inherit the trait's empty default, so this is
     // a no-op for them) — checked for EXISTENCE against the RESOLVED `providers:` catalog, and, when
     // it exists, its resolved protocol checked against the plane's own `PlaneCfg::known_dialects`
     // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
@@ -2348,19 +2348,19 @@ pub fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
-    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: its owning
+    // The endpoint block is validated HERE, into `errors`, rather than at first request: its owning
     // plane's endpoint, whose canonical URI is malformed, would advertise one audience in its
     // metadata document and expect another in its verifier, and every correctly-behaved client in
     // the world would obtain a token this server then refuses. A boot refusal names the field and
     // what to type; a runtime one is discovered by a caller that cannot connect and cannot say why.
-    // The `mcp:` endpoint is LOWERED through the plane seam into its validated resource, type-erased
+    // The endpoint is LOWERED through the plane seam into its validated resource, type-erased
     // as `Option<Arc<dyn Any>>` — so `RootCfg` names no plane-specific resource type. The plane's
     // `lower_endpoint` hook returns the SAME `Display` string boot produced for that error type,
     // collected verbatim. With that plane compiled out nothing declares the block, so the pre-pass
     // never lifts it: it is refused at parse as an unknown field (Option A, S11b (c) / Q67).
     let endpoint_block = deploy.endpoint.0.as_ref();
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
-    // `mcp:` door), so no plane key is named here.
+    // endpoint door), so no plane key is named here.
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
@@ -2538,7 +2538,7 @@ pub enum PolicyOnError {
     First,
 }
 
-/// Per-provider auth-style override — the LLM plane's selector, declared with the rest of the
+/// Per-provider auth-style override — the provider plane's selector, declared with the rest of the
 /// `providers:` shapes in `config::providers` (architect ruling PROVIDERS-MOVE; home since #83a SD-8)
 /// and re-exported here at its historical `config::ProviderAuth` path.
 pub use providers::ProviderAuth;
