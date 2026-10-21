@@ -660,12 +660,12 @@ pub fn linked_declaring_section(
         .map(|s| kept(s.name)))
 }
 
-/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
-/// name, its declaring section and its tail's words, read off the facts kept at its bind, and its
-/// own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe instance
-/// of the door through the one load (a linked and a dropped door alike); one is bound here for the
-/// facts and the section judge, and one more per public base URL its facing is asked for (a plane
-/// states its audience and claims against the URL it was opened with).
+/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
+/// Statement name, its declaring section and its tail's words, read off the facts kept at its bind,
+/// and its own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe
+/// instance of the door through the one load (a linked and a dropped door alike); one is bound here
+/// for the facts and the section judge, and one more per public base URL its facing is asked for (a
+/// plane states its audience and claims against the URL it was opened with).
 ///
 /// # Errors
 ///
@@ -1838,10 +1838,11 @@ fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
 /// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
 /// passed (its size, generation, lists and strings), and the claims, admin routes and listed names
 /// are judged here by the contract's element checks before any element string is read: a claim's
-/// refusal dialect against the `dialects` its tail declares.
+/// refusal dialect against the `dialects` its tail declares. Each claim's target text is judged by
+/// the claim grammar once read (`check_claim_target`).
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
     use busbar_contract::abi::plane::check::{
-        check_admin_routes, check_arrival_spans, check_claims, check_listed,
+        check_admin_routes, check_arrival_spans, check_claim_target, check_claims, check_listed,
     };
     if p.is_null() {
         return None;
@@ -1887,9 +1888,13 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
             .iter()
             .enumerate()
             .map(|(i, c)| {
+                // The target's TEXT, judged by the claim grammar once read (`check_claim_target`):
+                // a claim no request can match refuses the snapshot, never loads as a dead route.
+                let target = text(c.target)?;
+                check_claim_target(&target, c.flags).ok()?;
                 Some(OwnedClaim {
                     verb: text(c.verb)?,
-                    target: text(c.target)?,
+                    target,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
                     refusal_dialect: c.refusal_dialect,
