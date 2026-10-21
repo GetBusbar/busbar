@@ -97,7 +97,10 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `plane_host/tests/{build_input,mod,plane_answer,residual}_tests.rs`) and adds 7
 /// (`plane_driver/{answer,host,route_input}.rs`, `plane_driver/tests/{answer,host,route_input}_tests.rs`,
 /// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234.
-pub const MIN_FILES: usize = 1234;
+///
+/// LOWERED 1234 -> 1232 on #1287: the gate's measure on bfce9f17e4 merged with dev 0f3c9caa44
+/// (`zero-file-refusal`: "1232 file(s) across 14 census-neutral root(s)"); this PR deletes ingress/arrival_host.rs and ingress/tests/terminal_tests.rs and adds none.
+pub const MIN_FILES: usize = 1232;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
