@@ -277,14 +277,29 @@ pub(crate) fn metadata_rows(manifest: &str, table: &str) -> Vec<(String, String)
 /// forwarder (`crate::<door_root_fn>`), else `<entry>::door` (`entry` the row's transitional entry
 /// module).
 pub(crate) fn door_of(manifest: &str, krate: &str, entry: &str) -> (String, bool) {
-    if metadata_rows(manifest, DOOR_ROOT)
-        .iter()
-        .any(|(k, _)| k == krate)
+    match metadata_rows(manifest, DOOR_ROOT)
+        .into_iter()
+        .find(|(k, _)| k == krate)
     {
-        (format!("crate::{}", door_root_fn(krate)), true)
-    } else {
-        (format!("{entry}::door"), false)
+        Some((_, door)) => {
+            // A door-root crate's only public item is `door`, at its root (l.3560): the table names
+            // exactly that, and nothing else of the crate.
+            assert_eq!(
+                door,
+                format!("{}::door", ident(krate)),
+                "Cargo.toml: `[{DOOR_ROOT}]` names `{door}` for `{krate}`; a door-root crate's \
+                 door is `{}::door`, its only public item",
+                ident(krate)
+            );
+            (format!("crate::{}", door_root_fn(krate)), true)
+        }
+        None => (format!("{entry}::door"), false),
     }
+}
+
+/// The name of the generated cell a door-root crate's door's Statement is read into, once.
+pub(crate) fn door_root_cell(krate: &str) -> String {
+    format!("__DOOR_ROOT_FACTS_{}", ident(krate).to_uppercase())
 }
 
 /// A DOOR-ROOT ROW'S MANIFEST CHECKS: it names only axes that read its door
@@ -294,7 +309,9 @@ pub(crate) fn check_door_root(manifest: &str, feature: &str, krate: &str, axes: 
     for axis in axes {
         assert!(
             DOOR_ROOT_AXES.contains(&axis.as_str()),
-            "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): its rows read its `door` and              nothing else, but `{feature}` names the `{axis}` axis, which reads a kernel-typed item              of the crate's; a plugin talks to the host only over its door"
+            "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): its rows read its `door` and \
+             nothing else, but `{feature}` names the `{axis}` axis, which reads a kernel-typed item \
+             of the crate's; a plugin talks to the host only over its door"
         );
     }
     for table in [
@@ -304,7 +321,8 @@ pub(crate) fn check_door_root(manifest: &str, feature: &str, krate: &str, axes: 
         let rows = metadata_rows(manifest, table);
         assert!(
             !rows.iter().any(|(k, _)| k == feature || k == krate),
-            "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): `[{table}]` names an item of              the crate's beside its `door`; what it would read is the door's Statement's"
+            "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): `[{table}]` names an item of \
+             the crate's beside its `door`; what it would read is the door's Statement's"
         );
     }
 }
@@ -524,7 +542,14 @@ pub(crate) fn linked_source(
         // A door-root crate is the loader's edge: the root names it nowhere, and holds its door
         // through a generated forwarder instead.
         if door_root_rows.iter().any(|(k, _)| k == krate) {
-            let line = door_root_forwarder(krate);
+            let line = format!(
+                "{}/// What door-root crate `{krate}`'s door states, read once.\n\
+                 #[allow(dead_code)]\n\
+                 static {}: ::std::sync::OnceLock<crate::root::door_root::Stated> =\n    \
+                 ::std::sync::OnceLock::new();\n",
+                door_root_forwarder(krate),
+                door_root_cell(krate)
+            );
             if !externs.contains(&line) {
                 out.push_str(&line);
                 externs.push(line);
@@ -601,7 +626,8 @@ pub(crate) fn linked_source(
                 metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
                     .unwrap_or_else(|| krate.clone());
             out.push_str(&format!(
-                "crate::root::door_root::store_row({door}, {canonical:?}), "
+                "crate::root::door_root::store_row(&crate::{}, {door}, {canonical:?}), ",
+                door_root_cell(krate)
             ));
         } else {
             // A store crate's `STORE` in either shape (`busbar_kernel::preflight::StoreRow`): its
@@ -622,7 +648,10 @@ pub(crate) fn linked_source(
             continue;
         }
         if *root {
-            out.push_str(&format!("crate::root::door_root::export_row({door}), "));
+            out.push_str(&format!(
+                "crate::root::door_root::export_row(&crate::{}, {door}), ",
+                door_root_cell(krate)
+            ));
         } else {
             let c = ident(krate);
             out.push_str(&format!(
@@ -789,7 +818,8 @@ pub(crate) fn linked_source(
             };
             out.push_str(&format!(
                 "crate::root::door_root::DoorRoot {{ row: {krate:?}, axis: {axis:?}, door: {door}, \
-                 name: {name:?} }}, "
+                 facts: &crate::{}, name: {name:?} }}, ",
+                door_root_cell(krate)
             ));
         }
     }

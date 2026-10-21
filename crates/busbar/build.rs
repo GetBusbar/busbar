@@ -104,8 +104,8 @@ fn main() {
     // THE DOOR-ROOT TABLE lives with the crates' edges, in the loader's manifest (status row 195):
     // appended here, so every table below reads one manifest.
     println!("cargo:rerun-if-changed=../plugin-loader/Cargo.toml");
-    let loader =
-        std::fs::read_to_string("../plugin-loader/Cargo.toml").expect("read the loader's Cargo.toml");
+    let loader = std::fs::read_to_string("../plugin-loader/Cargo.toml")
+        .expect("read the loader's Cargo.toml");
     let manifest = with_door_root_table(&manifest, &loader);
     let on = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));

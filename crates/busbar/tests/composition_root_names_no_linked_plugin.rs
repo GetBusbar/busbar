@@ -448,11 +448,11 @@ busbar-hook-x = "busbar_hook_x::door"
             "the auth row",
         ),
         (
-            "crate::root::door_root::export_row(crate::__door_root_busbar_export_x)",
+            "crate::root::door_root::export_row(&crate::__DOOR_ROOT_FACTS_BUSBAR_EXPORT_X, crate::__door_root_busbar_export_x)",
             "the export row",
         ),
         (
-            "crate::root::door_root::store_row(crate::__door_root_busbar_store_x, \"busbar-store-x\")",
+            "crate::root::door_root::store_row(&crate::__DOOR_ROOT_FACTS_BUSBAR_STORE_X, crate::__door_root_busbar_store_x, \"busbar-store-x\")",
             "the store row",
         ),
         ("hook_doors: &[crate::__door_root_busbar_hook_x, ],", "the hook row"),
@@ -481,9 +481,9 @@ busbar-hook-x = "busbar_hook_x::door"
     // Every door-root row is listed for the boot's check, with the name its row states where its
     // axis names one.
     for want in [
-        "row: \"busbar-auth-x\", axis: \"auths\", door: crate::__door_root_busbar_auth_x, name: Some(\"busbar-auth-x\")",
-        "row: \"busbar-store-x\", axis: \"stores\", door: crate::__door_root_busbar_store_x, name: None",
-        "row: \"busbar-plane-x\", axis: \"plane-door\", door: crate::__door_root_busbar_plane_x, name: None",
+        "row: \"busbar-auth-x\", axis: \"auths\", door: crate::__door_root_busbar_auth_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_AUTH_X, name: Some(\"busbar-auth-x\")",
+        "row: \"busbar-store-x\", axis: \"stores\", door: crate::__door_root_busbar_store_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_STORE_X, name: None",
+        "row: \"busbar-plane-x\", axis: \"plane-door\", door: crate::__door_root_busbar_plane_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_PLANE_X, name: None",
     ] {
         assert!(out.contains(want), "`{want}` not in\n{out}");
     }
@@ -503,30 +503,62 @@ busbar-hook-x = "busbar_hook_x::door"
     );
     assert!(out.contains("extern crate busbar_store_old as _;"), "{out}");
 
-    for broken in [
+    for (broken, says) in [
         // RED: a door-root door plane naming a kernel-typed axis (its PROTOCOLS).
-        manifest.replace("plane-x = \"plane-door\"", "plane-x = \"plane-door protocols\""),
+        (
+            manifest.replace("plane-x = \"plane-door\"", "plane-x = \"plane-door protocols\""),
+            "names the `protocols` axis, which reads a kernel-typed item",
+        ),
         // RED: a door-root row on the plane axis (PLANE_DECLARATION + PLANE_HOOKS).
-        manifest.replace("plane-x = \"plane-door\"", "plane-x = \"plane\""),
+        (
+            manifest.replace("plane-x = \"plane-door\"", "plane-x = \"plane\""),
+            "names the `plane` axis, which reads a kernel-typed item",
+        ),
         // RED: a door-root crate with an entry module beside its door.
-        manifest.replace(
-            "busbar-export-old = \"busbar_export_old\"",
-            "busbar-export-old = \"busbar_export_old\"\nbusbar-store-x = \"busbar_store_x::linked\"",
+        (
+            manifest.replace(
+                "busbar-export-old = \"busbar_export_old\"",
+                "busbar-export-old = \"busbar_export_old\"\nbusbar-store-x = \"busbar_store_x::linked\"",
+            ),
+            "`[package.metadata.busbar.linked-entry]` names an item of the crate's beside its `door`",
         ),
         // RED: a door-root crate with a `declares` path beside its door.
-        manifest.replace(
-            "[package.metadata.busbar.root-units]",
-            "[package.metadata.busbar.linked-declares]\nsecret-x = \"busbar_secret_x::DECLARES\"\n\n\
-             [package.metadata.busbar.root-units]",
+        (
+            manifest.replace(
+                "[package.metadata.busbar.root-units]",
+                "[package.metadata.busbar.linked-declares]\nsecret-x = \"busbar_secret_x::DECLARES\"\n\n\
+                 [package.metadata.busbar.root-units]",
+            ),
+            "`[package.metadata.busbar.linked-declares]` names an item of the crate's beside its `door`",
         ),
         // RED: a door-root row for a crate no linked row links.
-        format!("{manifest}busbar-nowhere = \"busbar_nowhere::door\"\n"),
+        (
+            format!("{manifest}busbar-nowhere = \"busbar_nowhere::door\"\n"),
+            "names `busbar-nowhere`, which no linked row links",
+        ),
         // RED: a door-root crate whose loader feature the root never turns on, under no feature
         // of its own: a row no build links.
-        manifest.replace(", \"linked-busbar-hook-x\"", ""),
+        (
+            manifest.replace(", \"linked-busbar-hook-x\"", ""),
+            "linked feature `hook-x` is not declared under [features]",
+        ),
+        // RED: a door-root table naming anything but the crate's root `door`.
+        (
+            manifest.replace(
+                "busbar-hook-x = \"busbar_hook_x::door\"",
+                "busbar-hook-x = \"busbar_hook_x::linked::door\"",
+            ),
+            "a door-root crate's door is `busbar_hook_x::door`, its only public item",
+        ),
     ] {
-        let refused = std::panic::catch_unwind(|| linked_source(&broken, &|_: &str| false));
-        assert!(refused.is_err(), "must be refused:\n{broken}");
+        let refused = std::panic::catch_unwind(|| linked_source(&broken, &|_: &str| false))
+            .expect_err("must be refused");
+        let said = refused
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| refused.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .unwrap_or_default();
+        assert!(said.contains(says), "refused, saying `{says}`:\n{said}\n{broken}");
     }
 }
 

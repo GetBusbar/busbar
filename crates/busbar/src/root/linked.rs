@@ -406,12 +406,6 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
 /// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    // A DOOR-ROOT ROW whose door's Statement disagrees with its row refuses the boot before any
-    // row registers (status row 195).
-    if let Err(refusal) = crate::root::door_root::check(linked.door_roots) {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    }
     let declared: Vec<(busbar_contract::abi::mechanism::door::DoorFn, &str)> = linked
         .secret_declares
         .iter()

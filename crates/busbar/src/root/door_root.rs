@@ -3,72 +3,65 @@
 
 //! THE DOOR-ROOT ROWS (status row 195; `BUSBAR-1.6.0.md` Part 4 A.1, l.3560: every kind's logic
 //! crate has `fn door()` as its only public item; l.3561: a linked row holds the same `door` pointer
-//! and reaches the same `'static` table a dropped-in copy does).
+//! and reaches the same `'static` table a dropped-in copy does; coordinator ruling (a), l.272-274:
+//! this root is `forbid(unsafe_code)`, and the loader holds the one `unsafe` entry).
 //!
-//! A linked row is DOOR-ROOT when the manifest's `[package.metadata.busbar.door-root]` table names
-//! its crate's `door` (`src/linked_gen.rs`): the generated table reads that `door` and nothing else
-//! of the crate's, and every fact the row's axis needs is read here, off the door's Statement (A.2,
-//! l.3564-3577), by the loader's one validation ([`LinkedRow::of`]) and the one rendering reader
-//! (`rendering::read`), the reader a dropped-in copy's signed Statement is read by:
+//! A DOOR-ROOT crate is the one the loader's `[package.metadata.busbar.door-root]` table names: its
+//! edge is the loader's, which admits its door through `open_linked` (the `dlopen` path's own
+//! checks) and hands this root only the admitted door (`busbar_plugin_loader::linked`). The root
+//! names nothing of the crate: the generated tables hold a forwarder of the admitted door
+//! (`src/linked_gen.rs`), and every fact a row's axis needs is read here, off that door's Statement
+//! (A.2, l.3564-3577), through the loader's validation ([`LinkedRow::of`]) and the one rendering
+//! reader (`rendering::read`), the reader a dropped-in copy's signed Statement is read by:
 //!
 //! * every row: its kind, which must be its axis's kind;
 //! * a transport row: its key, layers and session (`crate::root::doors::row_facts`);
-//! * an auth row: its Statement name, which must be the canonical name the manifest states for it;
-//! * a store row: its key (its name, or the name the manifest states, which must be its name) and
-//!   whether it is ephemeral (`MARK_EPHEMERAL`);
-//! * an export row: its name and its alias (its `REWRITE_ALIAS`), and its `declares`;
-//! * a secret or plane door row: its `declares` (`EXT_DECLARES`, #1399).
+//! * an auth row: its Statement name, which must be the canonical name its row states;
+//! * a store row: its key (its Statement name, which must be the `linked-name` its row states, if
+//!   any) and whether it is ephemeral (`MARK_EPHEMERAL`); its canonical name is its row's
+//!   (`linked-canonical`, else its crate's package name: the Statement has no home for it);
+//! * an export row: its name, its one alias (`REWRITE_ALIAS`) and its `declares` (`EXT_DECLARES`);
+//! * a secret or plane door row: its `declares` (`EXT_DECLARES`), where it states one.
 //!
-//! A row whose crate is not in the table is TRANSITIONAL: it keeps the reads it has today (its
-//! `linked` items), so a fleet that has not converged on door-root still links. The transitional arm
-//! exists only for that convergence; it is no home for a kernel-typed item (Part 2 #2: a plugin talks
-//! only over the ABI), and a door-root row may name no axis that reads one (`src/linked_gen.rs`
-//! refuses it). Its removal is row 195's last step.
+//! What a door states is read ONCE into its row's own `static` cell (a `OnceLock<Stated>` the
+//! generated table declares beside the forwarder) and borrowed from there for the process.
+//!
+//! A crate not in the table is TRANSITIONAL: it keeps the reads it has today (its `linked` items),
+//! so a fleet that has not converged on door-root still links. The transitional arm exists only for
+//! that convergence; it is no home for a kernel-typed item (Part 2 #2), and a door-root row may name
+//! no axis that reads one (`src/linked_gen.rs` refuses it). Its removal is row 195's last step.
 //!
 //! [`LinkedRow::of`]: crate::root::loader::dispatch::LinkedRow::of
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::OnceLock;
 
 use busbar_contract::abi::mechanism::door::{DoorFn, MARK_EPHEMERAL, REWRITE_ALIAS};
 use busbar_contract::abi::mechanism::KindCode;
 
 use crate::root::linked::LinkedDoorExport;
 
-/// What a door-root row's door states, read once off its Statement and held for the process.
+/// What a door states, as its rows read it: owned, held in its row's cell for the process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stated {
     /// Its kind's number (`KindCode`).
     pub kind: u32,
     /// Its Statement name.
-    pub name: &'static str,
+    pub name: String,
     /// The other names config may call it by (its `REWRITE_ALIAS` rewrites), in order.
-    pub aliases: Vec<&'static str>,
+    pub aliases: Vec<String>,
     /// Whether what it holds is lost on restart (`MARK_EPHEMERAL`).
     pub ephemeral: bool,
     /// The `declares` document its extensions state (`EXT_DECLARES`); `None` when they state none.
-    pub declares: Option<&'static str>,
+    pub declares: Option<String>,
 }
 
-/// Every door read so far, by its address: a door is read once, and what it states is held for the
-/// process (a linked door's Statement is `'static`; so is what is read off it).
-static READ: Mutex<Vec<(usize, &'static Stated)>> = Mutex::new(Vec::new());
-
-/// What `door` states.
+/// What `door` states, read off its Statement.
 ///
 /// # Errors
 ///
-/// The loader refuses the door or its Statement, its rendering does not read back, or its
-/// `declares` document is not UTF-8.
-pub fn stated(door: DoorFn) -> Result<&'static Stated, String> {
-    let at = door as *const () as usize;
-    if let Some((_, stated)) = READ
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .find(|(a, _)| *a == at)
-    {
-        return Ok(stated);
-    }
+/// The loader refuses the door or its Statement, its rendering does not read back, its extensions
+/// blob is not whole entries, or its `declares` document is not JSON.
+pub fn read(door: DoorFn) -> Result<Stated, String> {
     let row = crate::root::loader::dispatch::LinkedRow::of(door).map_err(|e| e.to_string())?;
     let read = busbar_contract::abi::mechanism::rendering::read(&row.statement).map_err(|e| {
         format!(
@@ -76,58 +69,93 @@ pub fn stated(door: DoorFn) -> Result<&'static Stated, String> {
             e.at
         )
     })?;
-    let declares = busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
+    let blob = &read.extensions.bytes;
+    // Every entry whole: a blob whose entries do not add up to its length is malformed, never
+    // read past (a reader would stop at the cut and miss what follows).
+    let whole: usize = busbar_contract::abi::mechanism::extensions::entries(blob)
+        .map(|(k, v)| 2 + k.len() + 4 + v.len())
+        .sum();
+    if whole != blob.len() {
+        return Err(format!(
+            "`{}`'s Statement extensions are malformed: {} of {} bytes are whole entries",
+            read.name,
+            whole,
+            blob.len()
+        ));
+    }
+    let declares = busbar_contract::abi::mechanism::extensions::declares(blob)
         .map(|bytes| {
-            std::str::from_utf8(bytes)
-                .map(|text| &*Box::leak(text.to_owned().into_boxed_str()))
-                .map_err(|_| format!("`{}`'s `declares` document is not UTF-8", read.name))
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| format!("`{}`'s `declares` document is not UTF-8", read.name))?;
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|e| format!("`{}`'s `declares` document is not JSON: {e}", read.name))?;
+            Ok::<_, String>(text.to_owned())
         })
         .transpose()?;
-    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
-    let stated: &'static Stated = Box::leak(Box::new(Stated {
+    Ok(Stated {
         kind: read.kind,
         aliases: read
             .rewrites
             .into_iter()
             .filter(|(class, _, _)| *class == REWRITE_ALIAS)
-            .map(|(_, from, _)| leak(from))
+            .map(|(_, from, _)| from)
             .collect(),
         ephemeral: read.marks & MARK_EPHEMERAL != 0,
         declares,
-        name: leak(read.name),
-    }));
-    let mut held = READ.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, first)) = held.iter().find(|(a, _)| *a == at) {
-        return Ok(first);
-    }
-    held.push((at, stated));
-    Ok(stated)
+        name: read.name,
+    })
 }
 
-/// What `door` states, as a boot reads it.
+/// What `door` states, read once into `cell`.
+///
+/// # Errors
+///
+/// As [`read`], the first time.
+pub fn stated(cell: &'static OnceLock<Stated>, door: DoorFn) -> Result<&'static Stated, String> {
+    if let Some(stated) = cell.get() {
+        return Ok(stated);
+    }
+    let read = read(door)?;
+    Ok(cell.get_or_init(|| read))
+}
+
+/// [`stated`], as a boot reads it.
 ///
 /// # Panics
 ///
-/// The build's own door is refused ([`stated`]): the binary was built with a broken plugin, which
-/// no configuration can repair, so the boot is refused.
+/// The build's own door is refused: the binary was built with a broken plugin, which no
+/// configuration can repair ([`check_door_roots`] refuses the boot on it first, exit 2).
 #[must_use]
-pub fn stated_or_refused(door: DoorFn) -> &'static Stated {
-    stated(door).unwrap_or_else(|e| panic!("a linked door is refused: {e}"))
+pub fn stated_or_refused(cell: &'static OnceLock<Stated>, door: DoorFn) -> &'static Stated {
+    stated(cell, door).unwrap_or_else(|e| panic!("a linked door is refused: {e}"))
 }
 
-/// ONE DOOR-ROOT ROW, as the generated table states it: the manifest row, the axis it registers on,
-/// its door, and the name the manifest states for it where its axis names one (an auth row's
-/// canonical name, a store's key), which its Statement must state.
+/// ONE DOOR-ROOT ROW, as the generated table states it: the crate, the axis it registers on, the
+/// forwarder of its admitted door, its cell, and the name its row states where its axis names one
+/// (an auth row's canonical name, a store's `linked-name`), which its Statement must state.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorRoot {
-    /// The manifest row (its crate, as every refusal names it).
+    /// The crate (as the loader's table and every refusal name it).
     pub row: &'static str,
     /// The axis it registers on (`linked-axes`).
     pub axis: &'static str,
-    /// Its door.
+    /// Its door: the forwarder of the door the loader admitted.
     pub door: DoorFn,
-    /// The name the manifest states for it, which its Statement must state.
+    /// The cell its door's Statement is read into, once.
+    pub facts: &'static OnceLock<Stated>,
+    /// The name its row states, which its Statement must state.
     pub name: Option<&'static str>,
+}
+
+impl DoorRoot {
+    /// What its door states.
+    ///
+    /// # Errors
+    ///
+    /// As [`read`].
+    pub fn stated(&self) -> Result<&'static Stated, String> {
+        stated(self.facts, self.door)
+    }
 }
 
 /// The kind each door-root axis registers.
@@ -144,9 +172,9 @@ fn kind_of(axis: &str) -> Option<KindCode> {
     })
 }
 
-/// THE BOOT'S CHECK OF EVERY DOOR-ROOT ROW: its crate's door admitted by the loader
-/// (`busbar_plugin_loader::linked::door`: `open_linked`, the `dlopen` path's own checks, and the
-/// same refusal word for word), then [`check_statements`].
+/// THE BOOT'S CHECK OF EVERY DOOR-ROOT ROW (`main.rs` runs it before anything registers): its
+/// crate's door admitted by the loader (`busbar_plugin_loader::linked::door`: `open_linked`, the
+/// `dlopen` path's checks, and the same refusal word for word), then [`check_statements`].
 ///
 /// # Errors
 ///
@@ -161,14 +189,16 @@ pub fn check(rows: &[DoorRoot]) -> Result<(), String> {
 
 /// EACH DOOR-ROOT ROW'S DOOR AGAINST ITS ROW: each door's Statement is read, and it must be the
 /// kind its axis registers, state the name its row states, and state what its axis reads (a
-/// transport its own claim as its name, an export its alias).
+/// transport its own claim as its name; an export one alias and a `declares` document).
 ///
 /// # Errors
 ///
 /// The first row whose door is refused or whose Statement disagrees with its row, naming both.
 pub fn check_statements(rows: &[DoorRoot]) -> Result<(), String> {
     for row in rows {
-        let stated = stated(row.door).map_err(|e| format!("plugin '{}': {e}", row.row))?;
+        let stated = row
+            .stated()
+            .map_err(|e| format!("plugin '{}': {e}", row.row))?;
         let want = kind_of(row.axis).ok_or_else(|| {
             format!(
                 "plugin '{}': `{}` is no axis a door-root row registers on",
@@ -195,17 +225,36 @@ pub fn check_statements(rows: &[DoorRoot]) -> Result<(), String> {
                 crate::root::doors::stated_row(row.door)
                     .map_err(|e| format!("plugin '{}': {e}", row.row))?;
             }
-            KindCode::Export if stated.aliases.is_empty() => {
-                return Err(format!(
-                    "plugin '{}': its door's Statement states no alias (`REWRITE_ALIAS`), the \
-                     module name an `export:` instance names it by",
-                    row.row
-                ));
+            KindCode::Export => {
+                if stated.aliases.len() != 1 {
+                    return Err(format!(
+                        "plugin '{}': its door's Statement states {} aliases (`REWRITE_ALIAS`); an \
+                         export states exactly one, the module name an `export:` instance names it by",
+                        row.row,
+                        stated.aliases.len()
+                    ));
+                }
+                if stated.declares.is_none() {
+                    return Err(format!(
+                        "plugin '{}': its door's Statement states no `declares` document \
+                         (`EXT_DECLARES`), which an export's registry row is built from",
+                        row.row
+                    ));
+                }
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// THE BOOT'S DOOR-ROOT STEP: [`check`] over the build's door-root rows, refusing the boot (exit 2)
+/// with its words.
+pub fn check_door_roots(rows: &[DoorRoot]) {
+    if let Err(refusal) = check(rows) {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    }
 }
 
 /// The `(row, door, declares)` of every door-root row on `axis` whose door states a `declares`
@@ -215,8 +264,9 @@ pub fn declared(rows: &[DoorRoot], axis: &str) -> Vec<(&'static str, DoorFn, &'s
     rows.iter()
         .filter(|row| row.axis == axis)
         .filter_map(|row| {
-            stated_or_refused(row.door)
+            stated_or_refused(row.facts, row.door)
                 .declares
+                .as_deref()
                 .map(|json| (row.row, row.door, json))
         })
         .collect()
@@ -225,29 +275,41 @@ pub fn declared(rows: &[DoorRoot], axis: &str) -> Vec<(&'static str, DoorFn, &'s
 /// A door-root STORE row: its key (its Statement name), whether it is ephemeral, its door, and the
 /// canonical name its row states (`linked-canonical`, else its crate's package name).
 #[must_use]
-pub fn store_row(door: DoorFn, canonical: &'static str) -> busbar_kernel::preflight::LinkedStore {
-    let stated = stated_or_refused(door);
-    (stated.name, stated.ephemeral, door, canonical)
+pub fn store_row(
+    facts: &'static OnceLock<Stated>,
+    door: DoorFn,
+    canonical: &'static str,
+) -> busbar_kernel::preflight::LinkedStore {
+    let stated = stated_or_refused(facts, door);
+    (stated.name.as_str(), stated.ephemeral, door, canonical)
 }
 
-/// A door-root EXPORT row: its name, its alias (its first `REWRITE_ALIAS`) and its `declares`
-/// (`{}` when it states none), each its Statement's, and its door.
+/// A door-root EXPORT row: its name, its one alias and its `declares`, each its Statement's, and
+/// its door.
 ///
 /// # Panics
 ///
-/// The door is refused, or states no alias ([`check`] refuses the boot on either first).
+/// The door is refused, or states other than one alias or no `declares` ([`check_door_roots`]
+/// refuses the boot on each first).
 #[must_use]
-pub fn export_row(door: DoorFn) -> LinkedDoorExport {
-    let stated = stated_or_refused(door);
+pub fn export_row(facts: &'static OnceLock<Stated>, door: DoorFn) -> LinkedDoorExport {
+    let stated = stated_or_refused(facts, door);
+    let [alias] = stated.aliases.as_slice() else {
+        panic!(
+            "a linked door is refused: `{}` states {} aliases, not one",
+            stated.name,
+            stated.aliases.len()
+        );
+    };
     LinkedDoorExport {
-        name: stated.name,
-        alias: stated.aliases.first().copied().unwrap_or_else(|| {
+        name: stated.name.as_str(),
+        alias: alias.as_str(),
+        declares: stated.declares.as_deref().unwrap_or_else(|| {
             panic!(
-                "a linked door is refused: `{}` states no alias",
+                "a linked door is refused: `{}` states no `declares` document",
                 stated.name
             )
         }),
-        declares: stated.declares.unwrap_or("{}"),
         door,
     }
 }
