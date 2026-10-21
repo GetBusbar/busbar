@@ -346,9 +346,7 @@ heads!(
     ReserveOut,
     SliceReleaseOut,
     HeadsOut,
-    OpenOut,
-    TickOut,
-    CancelOut
+    OpenOut
 );
 impl Head for OutHead {
     fn head(&mut self) -> &mut OutHead {
