@@ -1401,9 +1401,8 @@ impl TestApp {
     /// something a chain module would have admitted.
     ///
     /// The stand-in's role is BOUND (all pools, no group) under `role_bindings`, as a deployed IdP's
-    /// must be: an identified principal that earns no key is refused `NoGrant`, so an
-    /// unbound stand-in would admit nothing and every "core refused it" assertion would pass against
-    /// a closed door.
+    /// is: the principal is admitted under a governance key, so every "core refused it" assertion
+    /// judges a governed admission, never a keyless one.
     pub fn idp_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare("test-idp-module")],
@@ -2094,6 +2093,25 @@ pub mod ranking_double;
 /// The store double (R-FIX3): the door that stands in for the root's linked store row in a test
 /// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
 pub mod store_double;
+
+/// The manifest `needs` a dropped-in hook declares, built from its two axes so a caller names no field
+/// of the value (the value's type is the kernel kit's to change).
+pub fn hook_needs(
+    prompt: busbar_plugin_loader::sign::NeedLevel,
+    user: busbar_plugin_loader::sign::NeedLevel,
+) -> busbar_plugin_loader::sign::HookNeeds {
+    busbar_plugin_loader::sign::HookNeeds { prompt, user }
+}
+
+/// Install a test build's linked auth rows and the operator credential's words, as boot does
+/// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
+/// result nor the types behind it.
+pub fn install_linked_auth(
+    rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
+    words: busbar_kernel_identity::operator::OperatorWords,
+) {
+    crate::preflight::install_linked_auth(rows, words);
+}
 
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
 /// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the

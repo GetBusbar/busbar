@@ -12827,7 +12827,7 @@
     },
     "/api/v1/admin/store-restore": {
       "post": {
-        "description": "The body names the backup; there is no default. A body that names none is refused before it reaches the store. Otherwise admitted through the same gates as every other new verb, then handed to the store.",
+        "description": "Refused, always: the configured store has no restore operation, so this node restores nothing, records nothing and changes nothing. Restores happen off-node, with the store's own tooling. A body that names no `backup_ref` is refused 400 before anything else; an admitted call is refused 503 `unavailable`, and the node logs one error line naming the verb.",
         "operationId": "PostStoreRestore",
         "requestBody": {
           "content": {
@@ -12841,7 +12841,7 @@
         },
         "responses": {
           "204": {
-            "description": "Applied: the store is restored. No body"
+            "description": "Never answered: this build has no restore operation (an admitted call is refused 503)"
           },
           "400": {
             "content": {
@@ -12881,7 +12881,7 @@
                 }
               }
             },
-            "description": "`not_found`: the store holds no backup under `backup_ref`"
+            "description": "`not_found`: never answered: there is no restore operation to look `backup_ref` up in"
           },
           "503": {
             "content": {
@@ -12891,7 +12891,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the configured store has no restore operation, so nothing was restored (restores happen off-node), or the node could not take the unit. The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -12902,7 +12902,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Restore the store from a named backup (disaster recovery)",
+        "summary": "Refused: the configured store has no restore operation (disaster recovery)",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }

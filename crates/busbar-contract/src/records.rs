@@ -42,8 +42,8 @@
 /// repeat the exact mistake this type exists to fix one level up (a hardcoded field per new thing
 /// routed through admission). Each admission call site that cares about a specific kind (pool
 /// admission, budget scoping) is the thing that knows which kind string it expects; `ScopeRef`
-/// itself stays kind-agnostic, structurally unable to privilege "pool" over any future kind (an
-/// MCP tool, an MCP server, an A2A delegate-target agent, …).
+/// itself stays kind-agnostic, structurally unable to privilege "pool" over any future kind (a
+/// tool plane's tool or server, an agent plane's delegate-target agent, …).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScopeRef {
     pub kind: String,
@@ -62,11 +62,11 @@ impl ScopeRef {
 }
 
 /// THE SCOPE-KIND WIRE CONVENTION. A [`ScopeRef`] kind beyond the built-in `pool` (core's own
-/// admission kind) is a plane's own (`mcp_server`, `mcp_tool`, an A2A `agent`, …) and is DATA off
-/// its `PlaneDecl.scope_kinds`; this crate names no concrete plane kind and holds no registry of
-/// them. The wire-field NAME for a kind is the frozen convention `allowed_{kind}s`
-/// (`pool`→`allowed_pools`, `mcp_server`→`allowed_mcp_servers`, …), so the config grammar keys
-/// stay byte-identical.
+/// admission kind) is a plane's own (a tool plane's server or tool kind, an agent plane's `agent`,
+/// …) and is DATA off its `PlaneDecl.scope_kinds`; this crate names no concrete plane kind and
+/// holds no registry of them. The wire-field NAME for a kind is the frozen convention
+/// `allowed_{kind}s` (`pool`→`allowed_pools`, a plane's `agent`→`allowed_agents`, …), so the config
+/// grammar keys stay byte-identical.
 ///
 /// ## The wire is a carrier, and holds no process state (THE DESIGN A.8)
 ///
@@ -95,13 +95,12 @@ pub mod scope_kinds {
     }
 }
 
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each scope kind
-/// gets its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`),
-/// `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools` (kind `mcp_tool`) — each a plain
-/// array of bare value strings, never a `{kind, value}` object. The in-memory
-/// `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read. The kind is
-/// the entry's own data, named by the [`scope_kinds`] convention, NOT hard-coded here — so this
-/// crate names no concrete plane.
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each scope kind gets
+/// its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`), `allowed_agents`
+/// (kind `agent`), and one field per kind every other plane declares — each a plain array of bare
+/// value strings, never a `{kind, value}` object. The in-memory `Option<Vec<ScopeRef>>` is
+/// partitioned by kind on write and reassembled on read. The kind is the entry's own data, named by
+/// the [`scope_kinds`] convention, NOT hard-coded here — so this crate names no concrete plane.
 ///
 /// Wire-compat invariants, all pinned by tests:
 /// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
@@ -110,11 +109,11 @@ pub mod scope_kinds {
 ///   sees them;
 /// - EVERY non-`pool` kind, registered or not, is written to its OWN `allowed_{kind}s` field and
 ///   read back as the same kind - never silently remapped into `allowed_pools` (the pre-P0 defect:
-///   an `mcp_server` grant became a POOL grant on any store round-trip - a lost MCP grant AND a
-///   pool-access escalation) and never silently dropped (which would WIDEN a `Some([unknown])` =
-///   no-scopes grant toward the `None` = all wildcard). The wire consults no registry, so a
-///   dropped-in store plugin (whose registry copy is empty) round-trips exactly what a compiled-in
-///   one does;
+///   a plane-declared kind's grant became a POOL grant on any store round-trip - a lost plane grant
+///   AND a pool-access escalation) and never silently dropped (which would WIDEN a
+///   `Some([unknown])` = no-scopes grant toward the `None` = all wildcard). The wire consults no
+///   registry, so a dropped-in store plugin (whose registry copy is empty) round-trips exactly what
+///   a compiled-in one does;
 /// - reassembly is canonical-by-kind (pools, then the remaining kinds in wire-field order).
 ///   `scope_allowed` is a pure membership test, so cross-kind order is never consulted.
 ///
@@ -136,7 +135,7 @@ mod virtual_key_wire {
         pub allowed_pools: Option<Vec<String>>,
         /// The per-kind plane scope grants, each under its `allowed_{kind}s` wire field. Flattened
         /// so a registered kind's field sits inline exactly where its named field used to
-        /// (`allowed_mcp_servers`/`allowed_mcp_tools`/…), and an empty map emits nothing — so a
+        /// (`allowed_agents`/…, one per plane-declared kind), and an empty map emits nothing — so a
         /// pool-only key's wire shape is byte-identical to the pre-generalization one.
         #[serde(flatten)]
         pub allowed_by_kind: BTreeMap<String, Vec<String>>,
@@ -296,12 +295,12 @@ pub struct VirtualKey {
     /// double as a lookup key for was retired in 1.5.0; see `docs/migration-1.5.md`.)
     pub generation_hash: String,
     pub name: String,
-    /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind
-    /// (the grant was omitted at mint); `Some(list)` = exactly those scopes; `Some([])` = NO
-    /// scopes (an empty list is the empty set, never "all"). On the WIRE this partitions by kind
-    /// into `allowed_pools` / `allowed_mcp_servers` / `allowed_mcp_tools` (the pool-only shape
-    /// stays byte-identical to the pre-generalization `allowed_pools: Option<Vec<String>>`):
-    /// see [`virtual_key_wire`].
+    /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind (the
+    /// grant was omitted at mint); `Some(list)` = exactly those scopes; `Some([])` = NO scopes (an
+    /// empty list is the empty set, never "all"). On the WIRE this partitions by kind into
+    /// `allowed_pools` / `allowed_agents` / one field per plane-declared kind (the pool-only shape
+    /// stays byte-identical to the pre-generalization `allowed_pools: Option<Vec<String>>`): see
+    /// [`virtual_key_wire`].
     pub allowed_scopes: Option<Vec<ScopeRef>>,
     pub enabled: bool,
     pub created_at: u64,
@@ -357,10 +356,11 @@ impl VirtualKey {
     ///
     /// # Cross-kind semantics are fail-closed, and frozen
     ///
-    /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
-    /// When a later release introduces a new kind (`mcp_server` and `agent`, both in 1.6.0), an
-    /// existing key that named only pools does not silently acquire access to every server or agent —
-    /// it acquires access to NONE of them, and an operator must add entries to grant any.
+    /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other
+    /// kind. When a release introduces a new kind (each plane-declared server and `agent` kind, in
+    /// 1.6.0), an existing key that named only pools does not silently acquire access to every
+    /// server or agent — it acquires access to NONE of them, and an operator must add entries to
+    /// grant any.
     ///
     /// The alternative reading — an unlisted kind is "unconstrained", therefore allowed — is
     /// fail-OPEN: it would turn every existing pool-scoped key into a wildcard over a brand-new

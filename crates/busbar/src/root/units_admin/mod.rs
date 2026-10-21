@@ -3347,8 +3347,8 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
 
 /// What an operation that changed something and has nothing to say answers with.
 ///
-/// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
-/// resealed. There is no document to return and none was ever specified, so the answer carries no
+/// A recovery verb's whole result is its effect: the chain broke, or the floor resealed (a restore
+/// is refused, never answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
 /// body and declares no content type — inventing a document here would put a schema on the wire that
 /// nothing describes and that a client would then be entitled to depend on.
 fn applied_answer() -> AdminAnswer {
