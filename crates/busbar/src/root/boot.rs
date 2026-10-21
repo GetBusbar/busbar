@@ -789,11 +789,7 @@ pub fn dropped_transports(
                         let composes_over = facts.composes_over;
                         let offered = facts.offered;
                         let upgrades = facts.upgrades;
-                        let (door, wire) = crate::root::doors::served(
-                            plugin,
-                            settings,
-                            Some(crate::root::connector::address_carrier()),
-                        )?;
+                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
@@ -984,8 +980,10 @@ pub fn book(
         None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // The lease is held on the lane to the store it is held in, the lane this book keeps: its
+    // checkpoint flush tick refreshes it and the clean shutdown releases it.
     if let Some(lease) = taken.lease {
-        super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
+        lane.hold_lease(lease);
     }
     let node = taken.id;
     let mig = super::migration::MigrationConfig {

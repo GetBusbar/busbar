@@ -19,23 +19,25 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
-    let built = process::build(
+    let built = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
-    let second = process::build(
+    let second = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
@@ -324,12 +326,13 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
         .build()
         .expect("a runtime");
     rt.block_on(async {
-        let c = process::build(
+        let c = process::build_with_secrets(
             || entries(doors, &TransportSettings::default()),
             judge(),
             &[],
             Arc::new(|_, _| {}),
             PoolPosture::NONE,
+            busbar_kernel::config::secret::resolve_linked_string_at_config,
         )
         .expect("the linked doors build a connector");
         let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({

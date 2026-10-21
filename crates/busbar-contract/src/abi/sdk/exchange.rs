@@ -233,11 +233,11 @@ impl Exchange {
         let (m, t) = (request.method.len(), request.target.len());
         let head_piece = Box::new(RequestPiece {
             kind: REQUEST_HEAD,
-            _reserved: 0,
             method: span(0, m),
             target: span(m, t),
             fields: span(block_at, head.len() - block_at),
             timeout_ms: request.timeout_ms,
+            ..RequestPiece::ZERO
         });
         Ok(Self::over(Sending::Framed {
             head: head.into_boxed_slice(),

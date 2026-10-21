@@ -118,6 +118,18 @@ impl PinnedHistory {
         self.history.snapshot(self.at)
     }
 
+    /// The history as it stood at `at`, never past this pin: a sealed checkpoint's totals are
+    /// re-derived against the snapshot they were sealed at ([`Checkpoint::history_seq`]).
+    ///
+    /// [`Checkpoint::history_seq`]: busbar_kernel_ledger::checkpoint::Checkpoint::history_seq
+    #[must_use]
+    pub fn view_at(
+        &self,
+        at: busbar_kernel_ledger::cost::HistorySeq,
+    ) -> busbar_kernel_ledger::cost::HistoryView<'_> {
+        self.history.snapshot(at.min(self.at))
+    }
+
     /// The snapshot's own number — the figure a posting records so a reader can reproduce it.
     #[must_use]
     pub fn seq(&self) -> busbar_kernel_ledger::cost::HistorySeq {
@@ -2074,6 +2086,17 @@ pub trait RegisteredUnits: Send + Sync {
         refusal: &Refusal,
     ) -> SeatVerdict<Audit>;
 
+    /// The plane's audit door handed back its facts and pass. See [`Units::audited`]: the unit's
+    /// one record is sealed from them. The default drops both, as the kernel's does.
+    fn audited(
+        &self,
+        _root: &ProductionUnits,
+        _ctx: &UnitCtx,
+        _facts: busbar_contract::caps::AuditFacts,
+        _pass: Pass<Audit>,
+    ) {
+    }
+
     /// The plane's Encode step. See [`Units::encode`].
     fn encode(
         &self,
@@ -2283,6 +2306,14 @@ impl Units for ProductionUnits {
                 refusal.reason(),
             )),
         )
+    }
+
+    /// The audit door's facts and pass go to the plane that claims the unit, which seals its one
+    /// record (THE DESIGN §1, U14). A unit no plane claims keeps the kernel's default: dropped.
+    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            plane.audited(self, ctx, facts, pass);
+        }
     }
 
     fn encode(

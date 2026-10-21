@@ -1151,6 +1151,7 @@ pub struct UnparseableNamedDef {
 /// partial patch can produce is a less precise ERROR STRING for a name that genuinely failed for
 /// some other reason. The flag itself is correct either way.
 pub fn unparseable_named_map_entries(
+    doors: crate::plane_driver::doors::Doors,
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,
 ) -> BTreeMap<String, UnparseableNamedDef> {
@@ -1162,7 +1163,7 @@ pub fn unparseable_named_map_entries(
         return out;
     };
     for (name, def) in entries {
-        if let Err(error) = section.validate_def(name, def) {
+        if let Err(error) = section.validate_def(doors, name, def) {
             out.insert(
                 name.clone(),
                 UnparseableNamedDef {
