@@ -3534,8 +3534,9 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         Ok(missed) => offenders.extend(missed.into_iter().map(|m| {
             format!(
                 "missed-member\t{m}\t`{m}` is in [workspace.members] and the census did not read \
-                 it: no manifest with a [package] name at {m}/Cargo.toml. Every rule here is \
-                 silent about a crate the census never saw."
+                 it: no manifest with a [package] name at {m}/Cargo.toml. The member list is the \
+                 census's floor (it replaced the crate-count floor), and a census below its floor \
+                 is silent about every crate it never saw."
             )
         })),
     }
@@ -8593,9 +8594,32 @@ impl Gate for KindIsolationGate {
                 }
                 ov
             };
+            // THE CONTROL IS THE BARE PLANTED CRATE: `busbar-planted-clean` is a new core-neutral
+            // crate, and one that measures 0 on every Law 0 axis is `law0-unarmed` on the matrix
+            // row with or without the dev-edge. That finding is about the crate existing, so the green
+            // claim is judged over the crate with its manifest and registration and nothing else
+            // (`matrix::OverFixture`); the two red cases below keep `subject`.
+            let bare_clean = {
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-planted-clean/Cargo.toml",
+                    "[package]\nname = \"busbar-planted-clean\"\nversion = \"0.0.0\"\n".to_string(),
+                );
+                ov.set(
+                    REGISTRY_FILE,
+                    manifest_plus(
+                        cx,
+                        REGISTRY_FILE,
+                        "[[registered]]\ncrate = \"busbar-planted-clean\"\nkind = \"cleanliness\"\n\
+                         reason = \"planted\"\n",
+                    ),
+                );
+                ov
+            };
+            let over_clean: &'a dyn Gate = matrix::OverFixture::leak_over(cx, subject, bare_clean);
             report.push(prove_rows_green(
                 cx,
-                subject,
+                over_clean,
                 "a cleanliness crate's dev-edge to the loader, used only by its own \
                  `tests/universal_needs.rs`, is its universal-needs witness: no edge, closure reach \
                  or cell",
@@ -10591,17 +10615,22 @@ impl Gate for KindIsolationGate {
         // table, so the finding names the step the loop expected. The subject is a plane with the
         // legacy face only: a plane that also serves through its door (the flipped ones) is judged
         // by its door's slots instead, so removing its legacy file leaves the door face standing.
-        // The a2a plane is the one left with the legacy face only (FLIP-STREAMING deleted the
-        // streaming plane's `plane.rs`; it serves through its door alone).
+        // RE-TARGETED: the a2a plane flipped to its door (FLIP-A2A) and its pinned checkout has
+        // no `plane.rs`, so removing one removed nothing. The subject is now the decisions plane
+        // (its pinned checkout, mounted beneath the battery), which still carries BOTH faces:
+        // removing its legacy `plane.rs` AND its door leaves a plane with neither, and a plane with
+        // neither owes every step of the list and runs none. Removing `plane.rs` alone is the door
+        // plane's green case below.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-a2a/src/plane.rs");
+        ov.remove("crates/busbar-plane-decisions/src/plane.rs");
+        ov.remove("crates/busbar-plane-decisions/src/plane_door.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-a2a"],
+            &["missing-step", "busbar-plane-decisions"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
@@ -10668,10 +10697,12 @@ impl Gate for KindIsolationGate {
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
         // which is the case the presence check alone cannot see. Planted in a plane that still has
-        // a legacy face (the mcp plane is a door plane only: its unserved `Plane` impl is deleted).
+        // a legacy face: the decisions plane's `impl Plane for DecisionPlane` (the mcp and a2a
+        // planes are door planes only, and a door plane's steps are the kernel driver's, so a
+        // short circuit planted in either is a step this rule never reads).
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-a2a/src/planted_step.rs",
+            "crates/busbar-plane-decisions/src/planted_step.rs",
             "impl Foo {\n    fn route(&self) -> RoutePlan {\n        todo!()\n    }\n}\n",
         );
         report.push(prove_rows_red(
