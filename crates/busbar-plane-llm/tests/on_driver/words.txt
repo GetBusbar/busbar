@@ -17,6 +17,8 @@ untranslatable_answer = {"id":"msg_1","type":"message","role":"assistant","model
 messages_dialect = anthropic
 messages_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}
 # Each caller dialect's own path onto pool `p`, and a request body in that dialect.
+chat_path = /v1/chat/completions
+chat_body = {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}
 messages_path = /v1/messages
 respond_path = /v1/responses
 respond_body = {"model":"p","input":"hi"}
