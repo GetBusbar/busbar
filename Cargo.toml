@@ -91,15 +91,15 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
-# sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`,
-# each secret-named field typed `Held<Zeroizing<String>>` (busbar-auth-oauth #26; secret-hygiene
-# check1, #1192).
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "99204a73421d5cb02e71a3451803494b31600bf7" }
+# sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
+# busbar-auth-oauth dev types its secret-named fields `Secret<String, Own>` (secret-hygiene check1,
+# #1192); that pin follows busbar #1263 (contract step 2), which the oauth dev head builds against.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "6359886bde3bff6223c306f10969a1e073b5e880" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
