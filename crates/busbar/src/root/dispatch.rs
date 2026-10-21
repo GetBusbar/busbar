@@ -46,17 +46,6 @@ pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
     dispatcher
 }
 
-/// THE DISPATCHER'S `bb_*` COUNTERS for the kernel's `/metrics` scrape
-/// (`busbar_kernel::preflight::RootInstall::host_counters`): every family its stats hold
-/// (`DispatchStats::families`), none before the dispatcher is built — a scrape never builds one.
-#[must_use]
-pub fn host_counters() -> Vec<(&'static str, &'static str, u64)> {
-    DISPATCHER
-        .get()
-        .map(|d| d.stats().families().to_vec())
-        .unwrap_or_default()
-}
-
 /// The process's dispatcher (built at boot; built with one worker and no installed services on
 /// first use where no boot ran).
 #[must_use]
@@ -65,16 +54,21 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 }
 
 /// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher
-/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Installed on the kernel as its auth-axis opener
-/// (`busbar_kernel::preflight::install_auth_axis`), so the kernel opens every auth instance through
-/// the contract's `AuthAxis` and names neither the loader's rows nor this dispatcher.
+/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Handed to the kernel as its auth-axis opener on the
+/// root's install record (`busbar_kernel::preflight::RootInstall::auth_axis`), so the kernel opens
+/// every auth instance through the contract's `AuthAxis` and names neither the loader's rows nor
+/// this dispatcher.
 ///
 /// Its outbound half ([`busbar_contract::auth_calls::AuthAxis::serving`]) is the process's one set
 /// of outbound auth instances ([`crate::root::door_steps::process_auths`]): an outbound style is
 /// served by the same opened instance whichever build binds it, its tick schedule running once.
 pub fn auth_axis(
-    registry: Arc<crate::root::loader::PluginRegistry>,
+    registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    // The rows the kernel holds, read back as the registry this root built them as; rows this root
+    // did not build (a test build's rows double) are answered over this build's linked rows.
+    let registry = crate::root::loader::rows::registry_arc(registry)
+        .unwrap_or_else(|| Arc::new(crate::root::boot::linked_registry()));
     Arc::new(RootAuthAxis(
         crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher())
             .with_conns(conns)
@@ -113,6 +107,10 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
 
     fn credential_readers(&self) -> Vec<String> {
         self.0.credential_readers()
+    }
+
+    fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        self.0.issued_credential()
     }
 
     fn carriers(&self, module: &str) -> Vec<String> {

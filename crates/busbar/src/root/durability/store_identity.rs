@@ -72,7 +72,7 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditRecord};
 
-use super::store_chain::{off_runtime, read_chain, wait_for};
+use super::store_chain::{off_runtime, read_chain, read_chain_beside, wait_for, JournalLane};
 
 /// The record schema of the node registry: host to node id.
 pub(super) const NODE_SCHEMA: &str = "busbar.node.v1";
@@ -396,6 +396,23 @@ fn put_lease(calls: &dyn StoreCalls, host: &str, row: LeaseRow) -> Result<(), St
         .map_err(|f| format!("the store would not keep this host's lease: {f}"))
 }
 
+/// `host`'s lease row as the store holds it: its holder and when it lapses (0 = released). A
+/// test-only read, so a cell asserts what a hand-driven refresh or release left in the store.
+#[cfg(test)]
+pub(super) fn lease_row(calls: &dyn StoreCalls, host: &str) -> Option<([u8; 16], u64)> {
+    read_lease(calls, host)
+        .expect("the lease reads")
+        .map(|row| (row.holder, row.expires_ms))
+}
+
+/// Put `host`'s held lease back to lapse at `expires_ms`, its holder kept: a test-only write, so a
+/// cell tells a refresh by the expiry it moves without reading the wall clock.
+#[cfg(test)]
+pub(super) fn set_lease_expiry(calls: &dyn StoreCalls, host: &str, expires_ms: u64) {
+    let (holder, _) = lease_row(calls, host).expect("a lease is held");
+    put_lease(calls, host, LeaseRow { holder, expires_ms }).expect("the lease is kept");
+}
+
 /// Whether another process holds `host`'s lease live now.
 fn held_live(row: Option<LeaseRow>, holder: &[u8; 16], now: u64) -> bool {
     row.is_some_and(|row| row.holder != *holder && row.expires_ms > now)
@@ -550,64 +567,62 @@ pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String
     Ok(TakenNode { id, lease: None })
 }
 
-/// The lease this process holds on its host name, and the store it is held in: refreshed on the
-/// checkpoint flush tick, released on a clean shutdown.
-type Held = (std::sync::Arc<dyn StoreCalls>, NodeLease);
-
-/// THE PROCESS'S LEASE, once its boot took one ([`hold_lease`]).
-static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
-
-/// Keep `lease`, held in `calls`, as this process's: what [`refresh_held_lease`] and
-/// [`release_held_lease`] act on.
-pub fn hold_lease(calls: std::sync::Arc<dyn StoreCalls>, lease: NodeLease) {
-    *HELD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((calls, lease));
+/// THE LEASE A BOOK'S LANE HOLDS on its host name (`JournalLane::hold_lease`): taken by the boot
+/// that opened the lane, refreshed on the checkpoint flush tick, released on a clean shutdown. It is
+/// kept on the lane to the store it is held in, the value the boot hands the book, never in a
+/// process-wide static.
+#[derive(Debug, Default)]
+pub struct HeldLease {
+    lease: std::sync::Mutex<Option<NodeLease>>,
+    /// The checkpoint flush ticks counted since the lease was last refreshed.
+    ticks: std::sync::atomic::AtomicU32,
 }
 
-/// The held lease, cloned out of the lock so no store call waits under it.
-fn held() -> Option<Held> {
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-/// The checkpoint flush ticks counted since the lease was last refreshed.
-static LEASE_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// REFRESH this process's lease, if it holds one, on every [`LEASE_REFRESH_TICKS`]-th call: run on
-/// the checkpoint flush tick, off any runtime worker. A lease another process took (this one went
-/// unrefreshed past its lapse) is logged.
-pub fn refresh_held_lease() {
-    let tick = LEASE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
-        return;
+impl HeldLease {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<NodeLease>> {
+        self.lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    let Some((calls, lease)) = held() else {
-        return;
-    };
-    match lease.refresh(calls.as_ref()) {
-        Ok(true) => {}
-        Ok(false) => tracing::error!(
-            host = %lease.host,
-            "this node's lease on its host name lapsed and another process took it"
-        ),
-        Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
-    }
-}
 
-/// RELEASE this process's lease, if it holds one: run on a clean shutdown once the journal's lane
-/// drained, so the next boot of the host resumes the whole chain at once.
-pub fn release_held_lease() {
-    let Some((calls, lease)) = HELD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    else {
-        return;
-    };
-    if let Err(why) = lease.release(calls.as_ref()) {
-        tracing::warn!(reason = %why, "this node's lease was not released");
+    /// Keep `lease` as the one [`HeldLease::refresh`] and [`HeldLease::release`] act on.
+    pub fn hold(&self, lease: NodeLease) {
+        *self.lock() = Some(lease);
+    }
+
+    /// REFRESH the lease in `calls`, if one is held, on every [`LEASE_REFRESH_TICKS`]-th call: run
+    /// on the checkpoint flush tick, off any runtime worker. A lease another process took (this one
+    /// went unrefreshed past its lapse) is logged. The lease is cloned out of the lock, so no store
+    /// call waits under it.
+    pub fn refresh(&self, calls: &dyn StoreCalls) {
+        let tick = self
+            .ticks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
+            return;
+        }
+        let Some(lease) = self.lock().clone() else {
+            return;
+        };
+        match lease.refresh(calls) {
+            Ok(true) => {}
+            Ok(false) => tracing::error!(
+                host = %lease.host,
+                "this node's lease on its host name lapsed and another process took it"
+            ),
+            Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
+        }
+    }
+
+    /// RELEASE the lease in `calls`, if one is held: run on a clean shutdown once the journal's lane
+    /// drained, so the next boot of the host resumes the whole chain at once.
+    pub fn release(&self, calls: &dyn StoreCalls) {
+        let Some(lease) = self.lock().take() else {
+            return;
+        };
+        if let Err(why) = lease.release(calls) {
+            tracing::warn!(reason = %why, "this node's lease was not released");
+        }
     }
 }
 
@@ -711,8 +726,8 @@ fn write_atomically(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    busbar_kernel::durable::create_dir_all(dir)?;
-    busbar_kernel::durable::write(path, bytes)
+    crate::root::loader::durable::create_dir_all(dir)?;
+    crate::root::loader::durable::write(path, bytes)
 }
 
 /// Every node the registry names: `(host, node id)`, in key order.
@@ -782,9 +797,13 @@ pub struct StoredWalk {
 
 /// WALK EVERY CHAIN THE STORE KEEPS — every node the registry names, and `own` — verifying each
 /// journal chain and the audit records on it, signatures included, against `keys`. Off any runtime
-/// worker where one is waiting: this reads the whole of every chain.
+/// worker where one is waiting: this reads the whole of every chain. `own`'s chain is read beside
+/// `lane`, which may be putting to it ([`read_chain_beside`]): its record mid-put is not torn.
+/// Another node's chain has no lane here, so a record missing a part there is.
 #[must_use]
-pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) -> StoredWalk {
+pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> StoredWalk {
+    let calls = lane.calls();
+    let calls = calls.as_ref();
     off_runtime(|| {
         let mut walk = StoredWalk::default();
         let mut nodes = match registered(calls) {
@@ -799,7 +818,12 @@ pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) 
         nodes.dedup();
         for node in nodes {
             walk.chains.push(node);
-            let records = match read_chain(calls, node) {
+            let read = if node == own {
+                read_chain_beside(lane, node)
+            } else {
+                read_chain(calls, node)
+            };
+            let records = match read {
                 Ok(records) => records,
                 Err(why) => {
                     walk.findings.push(format!("node {node}: {why}"));

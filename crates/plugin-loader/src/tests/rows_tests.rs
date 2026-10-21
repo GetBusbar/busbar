@@ -69,6 +69,7 @@ fn the_root_gets_its_registry_back() {
     let owned = crate::rows::registry_arc(rows).expect("owned, too");
     assert!(owned.resolve("the-store").is_some());
 
+    #[derive(Debug)]
     struct NotARegistry;
     impl PluginRows for NotARegistry {
         fn resolve(&self, _: &str) -> Option<busbar_contract::plugin_rows::Row> {
@@ -90,6 +91,9 @@ fn the_root_gets_its_registry_back() {
             Err(String::new())
         }
         fn secret_refusal(&self, _: &str) -> String {
+            String::new()
+        }
+        fn kind_refusal(&self, _: &str, _: &str, _: &str) -> String {
             String::new()
         }
         fn as_any(&self) -> &dyn std::any::Any {

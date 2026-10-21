@@ -306,7 +306,7 @@ pub(crate) async fn remove_plugin(
 ///
 /// It re-runs the exact fail-closed plugin pipeline boot runs (re-read `config.yaml` + the persisted
 /// overlay → resolve → three-phase `scan_and_validate` → open the hook transports) to build a FRESH
-/// `App` snapshot carrying a NEW `PluginRegistry` and NEW hook-plugin instances, then `handle.swap`s
+/// `App` snapshot carrying a NEW plugin registry and NEW hook-plugin instances, then `handle.swap`s
 /// it. New requests immediately use the new plugin instances; in-flight requests finish on the OLD
 /// snapshot, and when that snapshot drops its instances drop, their `Arc`-held `Library` handles drop,
 /// and the old shared libraries unmap — no process restart. The core never goes down: any pipeline
@@ -2071,26 +2071,19 @@ pub(crate) async fn put_auth(
                 )));
             }
         }
-        if req.admin_auth.is_empty() {
-            // FAIL-CLOSED: opening the admin API to the anonymous, full-authority dev posture is a
-            // config.yaml + restart decision (which fires the loud boot banner), NOT a thing the
-            // live admin API flips on. Applying `[]` here would swing the door open to the whole
-            // network on this one call — and the dry-run lock-out guard below can no longer catch it
-            // for us (an empty chain now truthfully earns THIS caller no full grant, so it would
-            // 409 with a misleading "would lock you out" message). Refuse it here with the honest
-            // reason and route the operator to the explicit, boot-warned opt-in.
+        let empty = req.admin_auth.is_empty();
+        if empty {
+            // PENDING OWNER (SECURITY), Q128 core-admin u19: 1.5.5 applied an empty chain live (the
+            // open, anonymous full-authority posture) with a warning, and so does this build until
+            // the owner signs the fail-closed refusal; signing it is `EMPTY_CHAIN_REFUSED_LIVE = true`.
+            if EMPTY_CHAIN_REFUSED_LIVE {
+                return Err(empty_chain_refusal(operator));
+            }
             diag_warn!(
                 ADMIN_AUTH_CHAIN_EMPTY,
-                "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
-                 (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
-                 restart, not through the live admin API"
+                "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
+                 now the open (anonymous, full-authority) dev posture"
             );
-            return Err(AdminError::Validation(format!(
-                "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
-                 cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
-                 and restart to opt in. Otherwise name at least one admin module (e.g. \
-                 `{operator}`)"
-            )));
         }
         // Candidate app with the new chain, built off the FRESH post-lock snapshot — so a config
         // mutation that landed while this request was parsing cannot be clobbered by a candidate
@@ -2099,8 +2092,11 @@ pub(crate) async fn put_auth(
         next.config_version = current.config_version.wrapping_add(1);
         next.admin_chain = req.admin_auth;
         // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
-        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
-            .contains(crate::v1::contract::Scope::Full);
+        // 1.5.5's guard read the open posture as full scope for the caller (an empty chain is
+        // `Open`), so an applied empty chain never answered "would lock you out".
+        let survives = empty
+            || busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
+                .contains(crate::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -2418,11 +2414,11 @@ pub(crate) async fn restart(
 ///
 /// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
 /// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
-/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
-/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
-/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
-/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
-/// with no restart).
+/// plane sections (each linked plane's declared section key) are lifted before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused
+/// every plane section as an unknown field, so a config that boots could not be applied (ARCHITECT,
+/// agent-plane flip: apply accepts exactly the boot config shape, plane sections included, and they
+/// flow to each plane's refresh with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
@@ -3384,16 +3380,15 @@ pub(crate) async fn plugin_schema(
         // conservative label (never assert trust the manifest catalog can't back up).
         let loadable = current.hook_env.registry.resolve(&hook.plugin);
         let trust = loadable
-            .map(|p| verdict_trust(&p.verdict))
+            .as_ref()
+            .map(|p| verdict_trust(&p.trust))
             .unwrap_or("unverified");
         // `kind`/`restart_required_default`: the kind-derived restart-scoping default, so
         // busbar-ui does not have to hardcode the kind->default table itself. `None` when the
         // plugin cannot even be resolved to a manifest — same posture `trust: "unverified"`
         // already takes for the identical case.
-        let kind = loadable.map(|p| p.manifest.kind.clone());
-        let restart_required_default = kind
-            .as_deref()
-            .map(busbar_kernel::plugin_admission::sign::kind_restart_default);
+        let kind = loadable.as_ref().map(|p| p.kind.clone());
+        let restart_required_default = kind.as_deref().map(|k| kind_restart_default(&current, k));
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
@@ -3404,7 +3399,8 @@ pub(crate) async fn plugin_schema(
         // baseline, same as a never-loaded plugin, rather than reporting "no schema available"
         // when the manifest actually has one.
         let (schema, schema_error) = loadable
-            .map(|p| manifest_schema(p.manifest.settings_schema.as_deref()))
+            .as_ref()
+            .map(|p| manifest_schema(p.settings_schema.as_deref()))
             .unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
@@ -3414,8 +3410,8 @@ pub(crate) async fn plugin_schema(
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.verdict);
-    let (schema, schema_error) = manifest_schema(loadable.manifest.settings_schema.as_deref());
+    let trust = verdict_trust(&loadable.trust);
+    let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
         &json!({
@@ -3424,8 +3420,8 @@ pub(crate) async fn plugin_schema(
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "kind": loadable.manifest.kind,
-            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&loadable.manifest.kind),
+            "kind": loadable.kind,
+            "restart_required_default": kind_restart_default(&current, &loadable.kind),
         }),
     )
 }
@@ -3451,16 +3447,25 @@ fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>,
 }
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
-/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// [`busbar_kernel::plugin_admission::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
-/// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
-/// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
-/// variant is a compile error here, not a silently-missing label.
-fn verdict_trust(v: &busbar_kernel::plugin_admission::sign::Verdict) -> &'static str {
+/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s trust mapping), applied to a row's
+/// [`busbar_contract::plugin_rows::Trust`]. An admitted row (what `PluginRows::resolve` returns) is
+/// never `"rejected"` — a rejected artifact is a skipped plugin, not a row — but the mapping stays
+/// total (not a partial match on `Trusted`/`Allowed` alone) so a future trust variant is a compile
+/// error here, not a silently-missing label.
+fn verdict_trust(v: &busbar_contract::plugin_rows::Trust) -> &'static str {
     match v {
-        busbar_kernel::plugin_admission::sign::Verdict::Trusted { .. } => "trusted",
-        busbar_kernel::plugin_admission::sign::Verdict::Allowed { .. } => "unverified",
+        busbar_contract::plugin_rows::Trust::Trusted { .. } => "trusted",
+        busbar_contract::plugin_rows::Trust::Allowed { .. } => "unverified",
     }
+}
+
+/// The binding lifecycle default for a `kind` plugin's settings change (whether it needs a process
+/// restart), as the root's admission answers it. With no admission installed this build cannot say
+/// what the kind's default is, so it answers `true` — a restart — the SAFE default: an operator told
+/// to restart when a hot apply would have done loses a restart, while one told a change applies hot
+/// when it does not is left running the old settings.
+fn kind_restart_default(app: &busbar_kernel::state::App, kind: &str) -> bool {
+    app.plugin_admission.is_none_or(|a| a.restart_default(kind))
 }
 
 /// `GET /api/v1/admin/hooks/{name}/schema` — proxy the hook's self-described settings JSON Schema
@@ -5388,6 +5393,28 @@ pub(crate) async fn validate_config(
             .validate_config(deploy, req.providers)
             .await,
     )
+}
+
+/// Whether a live `PUT /api/v1/admin/admin-auth` REFUSES an empty chain (PENDING OWNER, SECURITY,
+/// Q128 core-admin u19). `false` is 1.5.5: the chain is applied (the open dev posture) with a warning.
+/// `true` is the fail-closed refusal proposed for the owner's signature: the open posture becomes a
+/// config.yaml + restart opt-in only. Flipping it is the whole change.
+const EMPTY_CHAIN_REFUSED_LIVE: bool = false;
+
+/// The fail-closed refusal of a live empty admin chain ([`EMPTY_CHAIN_REFUSED_LIVE`]).
+fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
+    diag_warn!(
+        ADMIN_AUTH_CHAIN_EMPTY,
+        "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
+         (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
+         restart, not through the live admin API"
+    );
+    AdminError::Validation(format!(
+        "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
+         cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
+         and restart to opt in. Otherwise name at least one admin module (e.g. \
+         `{operator}`)"
+    ))
 }
 
 #[cfg(test)]

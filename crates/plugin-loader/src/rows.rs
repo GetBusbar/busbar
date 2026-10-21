@@ -20,6 +20,7 @@ fn row(p: &LoadablePlugin) -> Row {
     let m = &p.manifest;
     Row {
         file: p.file.clone(),
+        key: p.key().to_string(),
         name: m.name.clone(),
         alias: m.alias.clone(),
         kind: m.kind.clone(),
@@ -86,6 +87,10 @@ impl PluginRows for PluginRegistry {
 
     fn secret_refusal(&self, name_or_alias: &str) -> String {
         PluginRegistry::secret_refusal(self, name_or_alias)
+    }
+
+    fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String {
+        PluginRegistry::kind_refusal(self, kind, purpose, name_or_alias)
     }
 
     fn as_any(&self) -> &dyn Any {

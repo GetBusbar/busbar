@@ -129,7 +129,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
         restricts: vec![Restrict {
             tags_any: vec![tag.to_string()],
             on_empty,
-            name,
+            name: name.into(),
         }],
         ..Constraint::default()
     };
@@ -1756,6 +1756,51 @@ async fn completion_tap_carries_no_response_tokens_out_as_in_1_5_5() {
         undeclared["request"].get("response_tokens_out").is_none(),
         "an undeclared signal adds no key to the payload"
     );
+}
+
+/// Q128 arch u58 (HIGH): AN AD-HOC ROUTE THAT MISNAMES ITS MODEL'S PROVIDER is refused behind the
+/// caller's identity and grant, as 1.5.5's `adhoc()` ran its governance guard before it answered the
+/// mismatch. The plane's `arrive` names the entry its refusal concerns (abi/plane "A refused
+/// arrival", rule 6), so a caller the grant refuses hears the grant's refusal, and a granted one
+/// hears the mismatch's own 400 at admission, with nothing sent upstream.
+#[tokio::test]
+async fn an_adhoc_provider_mismatch_is_judged_behind_the_callers_grant() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    let rig = Rig::new(one(), None, Hooks::default());
+    let body = serde_json::to_vec(&body()).unwrap();
+    // `m0` is served by `ant`; the path names `oai`.
+    let target = "/oai/m0/v1/messages";
+    let fields = super::wire::FIRE_FIELDS;
+
+    let ungranted = rig
+        .fire_with(
+            &crate::common::TestUnits::refusing(StepName::Approve, ReasonCode::ScopeDenied),
+            target,
+            fields,
+            &body,
+        )
+        .await;
+    assert_eq!(
+        ungranted.outcome,
+        Outcome::Refused(StepName::Approve, ReasonCode::ScopeDenied),
+        "the caller's grant is judged before the mismatch is answered"
+    );
+    assert!(ungranted.sent.is_empty(), "nothing goes upstream");
+
+    let granted = rig
+        .fire_with(&crate::common::TestUnits::passing(), target, fields, &body)
+        .await;
+    assert_eq!(granted.status, 400, "the mismatch keeps 1.5.5's status");
+    assert_eq!(
+        granted.json()["error"]["message"],
+        "The model 'm0' does not exist or you do not have access to it."
+    );
+    assert!(
+        matches!(granted.outcome, Outcome::Refused(StepName::Admit, _)),
+        "a granted caller's mismatch is rendered at admission, before anything is charged: {:?}",
+        granted.outcome
+    );
+    assert!(granted.sent.is_empty(), "nothing goes upstream");
 }
 
 /// THE FOUR 503 WORDS ARE FOUR: a gate that could not complete, a gate's restriction that left no

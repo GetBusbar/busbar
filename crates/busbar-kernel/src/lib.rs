@@ -208,10 +208,9 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
-// The durable-write choke point lives in `busbar-plugin-loader` (which names the contract alone, Part 2
-// #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
-// so every existing `crate::durable::*` call site in this binary resolves unchanged.
-pub use busbar_plugin_loader::durable;
+// THE DURABLE-WRITE SEAM: the one durable-write primitive is the composition root's to install
+// (the kernel never names the loader); every `crate::durable::*` call site writes through it.
+pub mod durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client and the egress-trust seam. See the
 // module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
@@ -258,6 +257,12 @@ pub mod operation {
 }
 
 // The kernel member crates' minting tests (ARCHITECT ruling A): minting is legal only here.
+/// THE PLUGIN-ADMISSION SEAM the operator surface drives (upload, inspect, rollback, inventory),
+/// in the kernel's own words: the composition root answers it over its loader
+/// ([`preflight::RootInstall::admission`]). The admin cleanliness crate reaches it through the
+/// kernel it serves, its one-way dependency (BUSBAR-1.6.0.md:3780, R2/#37); neither names the
+/// loader (THE DESIGN l.322).
+pub mod admission;
 #[cfg(test)]
 #[path = "tests/members/mod.rs"]
 mod member_tests;
@@ -265,21 +270,7 @@ mod member_tests;
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
 pub mod plane;
-pub mod plane_host;
 pub mod plugin_routes;
-/// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
-/// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
-/// admin cleanliness crate reaches them through the kernel it serves, never by naming the loader
-/// (`cleanliness -> plugin-tooling` is not granted). `kernel -> plugin-tooling` is not granted
-/// either: "The kernel never names the loader" (BUSBAR-1.6.0.md:321-322; l.4869
-/// "kernel×plugin-loader REFUSED, drain"). This re-export is the recorded `busbar-kernel -> busbar-plugin-loader` debt in
-/// `qa/kind-isolation.toml`, drained by status row 190 (RootInstall and the contract axes).
-pub mod plugin_admission {
-    pub use busbar_plugin_loader::{
-        inventory_tarballs, scan_and_validate, sign, supported_abi, tarball, LoadablePlugin,
-        PluginRegistry,
-    };
-}
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
 // implementation's own instrument — a second honest implementation could bucket differently, or not
@@ -338,6 +329,18 @@ pub mod test_support;
 /// kernel's own test binary reads its protocol set.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
+// FINAL-REPIN: delete with a2a path move
+/// THE HOST SEAM'S OLD TEST PATH, kept for the door cells a pinned plane crate compiles into the
+/// root's test binary (`crates/<crate>/tests/root/mod.rs`): a plane's root cells mint their hook
+/// stage's host as `busbar_kernel::plane_host::engine_host`, and the plane's pin moves on that
+/// plane's own line, not this one. The kernel's plane hosting is deleted (status row 82); this module
+/// holds no code, only the plane driver's own `engine_host` under the name those cells spell, and
+/// only where `test_support` is (`test-support`), so no shipped build carries it.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod plane_host {
+    pub use crate::plane_driver::engine_host;
+}
 pub mod tls;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.

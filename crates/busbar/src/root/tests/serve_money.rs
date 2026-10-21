@@ -92,8 +92,8 @@ fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
 /// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
 /// read the prompt.
 fn screen_env() -> busbar_kernel::hooks::HookEnv {
-    let needs = crate::root::loader::sign::HookNeeds {
-        prompt: crate::root::loader::sign::NeedLevel::Ro,
+    let needs = busbar_kernel::test_support::HookNeeds {
+        prompt: busbar_contract::plugin_rows::NeedLevel::Ro,
         ..Default::default()
     };
     busbar_kernel::test_support::test_hook_env(&["test-hook"], needs)
@@ -271,7 +271,7 @@ fn governed_full(
     let reads = Arc::clone(&current);
     let hooks = super::HookStage {
         host: Arc::new(move || {
-            busbar_kernel::plane_host::engine_host(&reads.lock().expect("unpoisoned"))
+            busbar_kernel::plane_driver::engine_host(&reads.lock().expect("unpoisoned"))
         }),
         gov: Arc::clone(&gov),
     };
@@ -702,6 +702,15 @@ async fn node_boot_hooks_arm() {
         include_str!(concat!(env!("OUT_DIR"), "/linked.rs"))
             .contains("&crate::root::plane_node::ROOT_UNIT,"),
         "this build's generated ROOT_UNITS does not carry the node's root unit"
+    );
+    // THE INSTALL RECORD, as main.rs installs it (`register_planes`: `root::linked::register_stores`),
+    // before anything reads the record: the card repricer reaches the kernel as the record's holder
+    // and dater, not through a static of its own.
+    crate::root::linked::register_stores(&crate::LINKED);
+    let rows = busbar_kernel::preflight::root_rows();
+    assert!(
+        rows.rate_apply.is_some() && rows.rate_epoch.is_some(),
+        "the root's install record carries neither half (holder, dater) of the rate seam"
     );
     // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
     // holder's opening entry.
