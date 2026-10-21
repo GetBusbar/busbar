@@ -1231,10 +1231,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             );
             return Err(fault_veto());
         }
-        // A FAULT the plane answered, with no rewrite configured or carried, is no 500: the caller
-        // judges the request as 1.5.5 judged a body it could not parse, a Null body
-        // (`proxy/engine/mod.rs:957-961`). A FAULT the host minted (a broken plane) is unreadable.
-        if busbar_contract::abi::plane::project_fault_answered(outcome, &o) {
+        // The plane's own FAULT over a body it could not parse (`PROJECT_FAULT_UNPARSEABLE`), with
+        // no rewrite configured or carried, is no 500: the caller judges the request as 1.5.5
+        // judged a body it could not parse, a Null body (`proxy/engine/mod.rs:957-961`). Every
+        // other FAULT (a panic, no crossing, a quarantined or broken plane, no mark) is unreadable.
+        if busbar_contract::abi::plane::project_fault_unparseable(outcome, &o) {
             return Err(Stopped::Unparseable);
         }
         if outcome != AbiOutcome::Ready {

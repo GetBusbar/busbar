@@ -1071,65 +1071,72 @@ async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
     }
 }
 
-/// RED (lead ruling on #1500): only a FAULT the PLANE answered over a body it cannot parse takes the
-/// Null-view path. A FAULT the HOST minted (the plane answered READY and its answer broke the kind's
-/// rule) is a broken plane: on a gate-only route it is still refused as unreadable, 400, before any
-/// gate judges it and before any attempt; the same at a gate-first screen.
+/// RED (lead rulings on #1500): only the plane's own FAULT marked `PROJECT_FAULT_UNPARSEABLE` takes
+/// the Null-view path. Every other FAULT on a gate-only route is a broken plane and fails closed,
+/// unreadable (400), before any gate judges it and before any attempt: a slot that panicked (its
+/// door writes nothing but the outcome), a frame refused before the crossing or a quarantined
+/// instance (the `out` as the host lent it), a FAULT the plane answered without the mark, and a
+/// READY answer the host's kind check refused (a FAULT the host minted, the mark's bit among the
+/// plane's own view flags even). The same at a gate-first screen.
 #[tokio::test]
-async fn a_host_minted_fault_on_a_gate_only_route_is_refused_400_not_served() {
-    let (seen, g) = gate(None);
-    let r = rig_with_hooks(
-        Way::Double,
-        BufferCaps::default(),
-        Book::default(),
-        Some(bound(Vec::new(), vec![(0, g)])),
-    );
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["ok"], &[b"done"]),
-        Caller::default(),
-    );
-    let units = r.driver.unit(
-        &steps,
-        &far,
-        &caller,
-        arrival("/broken-answer", b"user:hello"),
-        0,
-    );
-    let outcome = drive(&units).await;
-    assert!(
-        matches!(outcome, Outcome::Failed(_, ReasonCode::DecodeFailed)),
-        "{outcome:?}"
-    );
-    assert_eq!(units.take_rendered().map(|r| r.status), Some(400));
-    assert!(seen.lock().unwrap().is_empty(), "no gate judged it");
-    assert!(far.sent().is_empty(), "never dialled");
+async fn every_fault_but_the_marked_unparseable_one_on_a_gate_only_route_is_refused_400() {
+    for target in [
+        "/panics",
+        "/no-crossing",
+        "/fault-unmarked",
+        "/broken-answer",
+    ] {
+        let (seen, g) = gate(None);
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(Vec::new(), vec![(0, g)])),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::DecodeFailed)),
+            "{target}: {outcome:?}"
+        );
+        assert_eq!(
+            units.take_rendered().map(|r| r.status),
+            Some(400),
+            "{target}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{target}: no gate judged it"
+        );
+        assert!(far.sent().is_empty(), "{target}: never dialled");
 
-    let (seen, g) = gate_granted(None, false);
-    let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-    let driver = r.driver.with_hooks(Arc::new(GatedGates {
-        gates: vec![(0, g)],
-    }));
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["ok"], &[b"done"]),
-        Caller::default(),
-    );
-    let units = driver.unit(
-        &steps,
-        &far,
-        &caller,
-        arrival("/broken-answer", b"user:hello"),
-        0,
-    );
-    let outcome = drive(&units).await;
-    assert!(
-        !matches!(outcome, Outcome::Completed),
-        "gate-first: refused, {outcome:?}"
-    );
-    assert!(
-        seen.lock().unwrap().is_empty(),
-        "gate-first: no gate judged it"
-    );
-    assert!(far.sent().is_empty(), "gate-first: never dialled");
+        let (seen, g) = gate_granted(None, false);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r.driver.with_hooks(Arc::new(GatedGates {
+            gates: vec![(0, g)],
+        }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            !matches!(outcome, Outcome::Completed),
+            "{target}, gate-first: refused, {outcome:?}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{target}, gate-first: no gate judged it"
+        );
+        assert!(far.sent().is_empty(), "{target}, gate-first: never dialled");
+    }
 }
