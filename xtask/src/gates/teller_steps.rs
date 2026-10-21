@@ -788,17 +788,8 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
                 continue;
             }
             let test = r.str_or("test", "");
-            // The leg's own file, OR a test file that file declares through `#[path]`: the same
-            // module one file further down, as `crates/busbar/tests/capability_equality.rs` holds
-            // its root column (`serve_tests.rs`'s `#[path = "serve_door_money_gaps.rs"] mod
-            // door_money_gaps;`). Evidence from a file the leg does not declare still fails.
-            let owned = std::iter::once(file.clone())
-                .chain(path_declarations(cx, file))
-                .find_map(|f| {
-                    let func = test.strip_prefix(&format!("{f}::"))?.to_string();
-                    Some((f, func))
-                });
-            let Some((cell_file, func)) = owned else {
+            let prefix = format!("{file}::");
+            let Some(func) = test.strip_prefix(&prefix) else {
                 p.column.push(format!(
                     "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {}, which does not \
                      live in {}'s own file {file} -- a leg is proven by its own cells",
@@ -809,7 +800,7 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
             };
             // THE NAMED CELL MUST STILL EXIST. A renamed `fn` leaves a row claiming a proof the
             // binary cannot run, which is the same green as a proof that passed.
-            let body = cx.read(&cell_file).unwrap_or_default();
+            let body = cx.read(file).unwrap_or_default();
             if !body.contains(&format!("fn {func}(")) {
                 p.column.push(format!(
                     "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {test}, but no `fn \
@@ -837,33 +828,6 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
         ));
     }
     p
-}
-
-/// The repo-relative files `file` declares through `#[path = ".."]` (relative to `file`'s own
-/// directory): the test files a leg's evidence may sit in beside the leg file itself.
-fn path_declarations(cx: &Ctx, file: &str) -> Vec<String> {
-    let Ok(src) = cx.read(file) else {
-        return Vec::new();
-    };
-    let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
-    crate::libtest_path::file_items(&src)
-        .decls
-        .into_iter()
-        .filter_map(|(_, _, at)| at)
-        .map(|rel| {
-            let mut parts: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
-            for seg in rel.split('/') {
-                match seg {
-                    ".." => {
-                        parts.pop();
-                    }
-                    "." | "" => {}
-                    seg => parts.push(seg),
-                }
-            }
-            parts.join("/")
-        })
-        .collect()
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1744,21 +1708,6 @@ impl Gate for TellerStepsGate {
                         "test",
                         Json::Str(format!(
                             "{ROOT_DIR}tests/serve_tests.rs::a_fn_that_was_renamed_away"
-                        )),
-                    );
-                }),
-            ),
-            (
-                "root evidence in a file the leg's own file does not declare",
-                ROW_ROOT_COLUMN,
-                "a leg is proven by its own cells",
-                Box::new(|p: &mut Plant| {
-                    p.set_root_field(
-                        "llm",
-                        "meter",
-                        "test",
-                        Json::Str(format!(
-                            "{ROOT_DIR}tests/plane_node_money.rs::a_late_arm_with_no_reading_writes_the_exits_own_line"
                         )),
                     );
                 }),

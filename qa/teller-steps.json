@@ -132,7 +132,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape",
-          "note": "all 24 legs of the six caller dialects the plane states (read from its door words, held equal to the dialects it declares) driven through the door: 17 answered at decode and asserted with their own sentence (six named reach the door and are served, six malformed are the arrival's 400, four body-model requests with no model are the ladder's 400, the generate dialect's unserved action is its 404), plus 7 proven to resolve before decode to the answer 1.5.5 gave (five other methods on a dialect path are its 405, v1.5.5 ingress/dispatch.rs:311-318, golden http.crosscut|wrong-method|GET-messages; the two URL-model dialects' URLs naming no model are generate's Invalid resource path 404, ingress/mod.rs:838-858, and converse's model-not-found 404 after admission, ingress/dispatch.rs:199 and :220-233)"
+          "note": "all 24 legs of the six caller dialects the plane states (read from its door words, held equal to the dialects it declares) driven through the door and held field by field with their money, breaker and admissibility: each named request against the oracle's 1.5.5 golden of that dialect served (llm|<dialect>|openai|request|ok), each malformed one against its golden (llm|<dialect>|<dialect>|request|malformed), the four body-model requests naming no model against that envelope with the missing-model words (v1.5.5 ingress/dispatch.rs:112-117 and :147-153), and the six unsupported-verb and two URL-model legs by their 1.5.5 status and exact sentence (ingress/dispatch.rs:311-318, ingress/mod.rs:838-858, dispatch.rs:220-233)"
         }
       },
       "authenticate": {
@@ -164,8 +164,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing",
-          "note": "the 1.5.5 order on the door: a unit is admitted and charged, then its gate is asked, then a veto refunds its fee (v1.5.5 crates/busbar/src/ingress/dispatch.rs:199 governance_guard admits and charges, :248 forward_with_pool_parsed, crates/busbar/src/proxy/engine/mod.rs:946 the gate chain fires and :1005 a reject returns, dispatch.rs:275 finish_admitted with ingress/mod.rs:469 refunds a non-2xx). A vetoing gate answers its 451, dials nothing, meters nothing, keeps the admission and refunds the fee; a passing gate is asked and the unit is served. The gate-first arm, a plane whose screen stops a unit before the door with nothing admitted, is crates/busbar/src/root/tests/plane_node_money.rs:2645 a_screened_veto_through_the_node_admits_nothing"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_gates_a_unit_in_1_5_5s_order_and_a_passing_gate_changes_nothing",
+          "note": "the gate in 1.5.5's order on the door: a unit is admitted and charged, its gate is asked, and a veto refunds its fee (v1.5.5 crates/busbar/src/ingress/dispatch.rs:199 governance_guard admits and charges, :248 forward_with_pool_parsed, crates/busbar/src/proxy/engine/mod.rs:946 the gate chain fires and :1005 a reject returns, dispatch.rs:275 finish_admitted with ingress/mod.rs:469 refunds a non-2xx). A passing gate is asked and the unit answers what 1.5.5 answered field for field (status, headers by value, body, dials, admissions, spend, tokens, metering row, breaker, admissibility); a vetoing gate answers its own refusal in the caller's dialect, dials and meters nothing, keeps the admission, refunds the fee and seals one link on the chain. The gate-first arm, a plane whose screen stops a unit before the door with nothing admitted, is crates/busbar/src/root/tests/plane_node_money.rs:2645 a_screened_veto_through_the_node_admits_nothing"
         }
       },
       "admit": {
@@ -176,7 +176,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it",
-          "note": "the OverBudget fixture: the door refuses a spent group budget and nothing lands on the key's bucket or its metering, asserted beside the money every other fixture leaves (a post-door refusal keeps the admission it drew)"
+          "note": "the OverBudget fixture: the door refuses a spent group budget and the key's bucket holds no admission, no tokens and no spend, with no metering row, asserted beside the money every other fixture leaves (a post-door refusal keeps the admission it drew and has its fee refunded)"
         }
       },
       "route": {
@@ -187,7 +187,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
-          "note": "the walk the route step drives on all six fixtures, its response head held to the oracle's recorded 1.5.5 capture of the same request (header names framing aside and content type: llm|openai|openai|request|ok, |ok_stream, |malformed, |over_budget_total, |out_of_scope, and the POST /v1/chat/completions step of neutrality|models-empty|surface): each delivered unit dials once and a refused one never, the same-dialect answer is relayed byte for byte, admissions and fees are drawn where 1.5.5 drew them, and the member's breaker stays closed"
+          "note": "the walk on all six fixtures held to 1.5.5 byte for byte: the answer against the oracle's recorded capture of the same request (status, every header by value but the wire's own framing, body member for member and a streamed body byte for byte: llm|openai|openai|request|ok, |ok_stream, |malformed, |over_budget_total, |out_of_scope, and the POST /v1/chat/completions step of neutrality|models-empty|surface), and 1.5.5's dials, admissions, spend, tokens, metering rows, breaker and admissibility"
         }
       },
       "meter": {
@@ -198,7 +198,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it",
-          "note": "the delivered fixtures' usage on the door: the streamed unit accrues its reported 11 in and 7 out at stream end, the buffered one its 1 in and 1 out, each with exactly one metering row of lane m0"
+          "note": "the delivered fixtures' usage and spend on the door, compared field by field: the streamed unit accrues its reported 11 in and 7 out at stream end and pays its one-cent fee, the buffered one the same, each with exactly one metering row of lane m0"
         }
       },
       "audit": {
