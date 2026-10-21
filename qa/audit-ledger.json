@@ -449,18 +449,18 @@
     "crates/busbar-auth-oauth/src"
    ],
    "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
-   "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
-   "round": 3,
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
+    "HIGH": 0,
     "MEDIUM": 1,
-    "LOW": 2,
+    "LOW": 1,
     "NIT": 0
    },
-   "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully.",
-   "auditor": "opus-q128-auth-oauth-src-a",
-   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
+   "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully.",
+   "auditor": "opus-r159c-auth-reread",
+   "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-oauth/src/tests"
    ],
@@ -506,6 +506,20 @@
       "NIT": 0
      },
      "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159c-auth-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully."
     }
    ]
   },
@@ -1370,12 +1384,12 @@
    "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 0,
-    "LOW": 6,
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 5,
     "NIT": 1
    },
-   "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A single-member cell can have a stated wait shortened by a concurrent failure that asks for less. Read in 4 parts, fully.",
+   "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A concurrent failure that states no wait, or a shorter one, can cut short an armed stated wait on both the single-member and the multi-member branches, because the cooldown is stored rather than raised. Read in 4 parts, fully.",
    "auditor": "opus-r159d-kernel-breaker",
    "fixed_at": null,
    "exclude": [
@@ -1429,12 +1443,12 @@
      "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
      "tree_hash": "58c7c0704484ec7b4a0137cb3029f0c0213907da7041470c95fbb55525319969",
      "counts": {
-      "HIGH": 1,
-      "MEDIUM": 0,
-      "LOW": 6,
+      "HIGH": 2,
+      "MEDIUM": 1,
+      "LOW": 5,
       "NIT": 1
      },
-     "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A single-member cell can have a stated wait shortened by a concurrent failure that asks for less. Read in 4 parts, fully."
+     "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A concurrent failure that states no wait, or a shorter one, can cut short an armed stated wait on both the single-member and the multi-member branches, because the cooldown is stored rather than raised. Read in 4 parts, fully."
     }
    ]
   },
@@ -1597,8 +1611,8 @@
    "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 0,
-    "MEDIUM": 2,
+    "HIGH": 1,
+    "MEDIUM": 1,
     "LOW": 7,
     "NIT": 2
    },
@@ -1656,8 +1670,8 @@
      "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
      "tree_hash": "941e13b804160d04bc41b08135eb462970ed5339fae8258e3645354bb553cca9",
      "counts": {
-      "HIGH": 0,
-      "MEDIUM": 2,
+      "HIGH": 1,
+      "MEDIUM": 1,
       "LOW": 7,
       "NIT": 2
      },
