@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **EVERY LINKED EXPORT SINK LOADS AS ITS OWN KIND, IN THE SHIPPED BINARY.** Driven through the real
-//! binary, with every first-party export sink this build links configured at once, and the tcp wire
+//! binary, with every first-party export sink this build links configured at once, and the stream wire
 //! under the data door (linked where the build links it, dropped in where it does not).
 //!
 //! The regression this guards: a binary that links several `["cdylib", "rlib"]` plugins used to carry
 //! one strong `#[no_mangle] busbar_plugin_kind` per plugin crate. Where the linker kept a single
 //! definition (a non-LTO link warns and picks one), a linked entry that answered its kind through that
 //! global symbol answered the OTHER plugin's kind, and the boot refused a metrics export with
-//! "plugin 'busbar-export-prometheus' exports kind 'transport' but is being loaded as 'export'".
+//! "plugin '<the scrape sink>' exports kind 'transport' but is being loaded as 'export'".
 //! The frozen symbols are now defined once, in the plugin SDK, and a binary's linked rows answer
 //! through their own entries (`BUSBAR_COLD_ENTRY`). The link-level half of that is proven in
 //! `crates/busbar-contract/tests/one_link_many_plugins.rs` (two plugins in one image compile, their
@@ -37,6 +37,9 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
+
+/// The key of the wire the data door rides.
+const WIRE: &str = "tcp";
 
 /// Every first-party export module and the instance line that configures it. `{dir}` is the fixture
 /// directory (the file sink's path).
@@ -199,11 +202,11 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
         .collect();
     write_configs(&dir, data_port, admin_port, &export);
 
-    // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
+    // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp") {
-        let (lib, _) = common::plugins::transport_cdylib_under(&["tcp"]).unwrap_or_else(|| {
-            common::plugins::missing("tcp transport", common::plugins::BUILD_PINNED)
+    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+        let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
+            common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });
         drop_in_wire(&dir, &lib);
     }
