@@ -31,6 +31,14 @@ Each plane is inert until its section is written. An `mcp:` block with an empty 
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
 wildcard grants over every registered server: close the data-plane chain, or drop the block.
 
+A plane is opened once, at start, when its section is configured. A config apply, reload or named
+definition write that first writes the section of a plane this process started without is accepted,
+validated and stored, but that plane serves nothing until the next restart. The answer says so the
+way 1.5.5 named a newly declared plugin route: `reload_to_apply` lists the section and `note`
+explains, on `POST /config/apply`, `POST /config/reload` and the named-definition write. `GET
+/config` lists the same sections under `reload_to_apply`. Every field is omitted when nothing is
+pending, so a 1.5.5 configuration's answers are unchanged.
+
 ### Behaviour identical to 1.5.5
 
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
@@ -381,8 +389,8 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
   still never refunded.
 - **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.** New reads
-  `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new operator-signed write
-  `POST /api/v1/admin/ledger/amend-rate-history`, and an optional `?as_of=<history_seq>`
+  `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new write
+  `POST /api/v1/admin/ledger/amend-rate-history` (a plain `full`-scope admin verb), and an optional `?as_of=<history_seq>`
   on the existing ledger reads. Money stays unitless, exactly as in 1.5.5: a rate card is plain
   numbers and busbar attaches no currency. No 1.5.5 path or field is changed; the new operations are
   described in the one administrative OpenAPI document served at `GET /api/v1/admin/openapi.json`.
@@ -509,12 +517,12 @@ minted secret carries over.
   be <= 64 characters". **Migration:** a client that relied on the 404 for an overlong rotate id
   must expect a 400 instead, matching every other `/keys/{id}` handler; no config change is needed.
 - 1.6.0 Changed: rate cards are now a dated history, not a single mutable price. Publishing a card
-  with an effective date leaves every posting before that date priced exactly as it was; a signed
+  with an effective date leaves every posting before that date priced exactly as it was; a
   back-dated correction reprices exactly the window it names — `[effective_from, effective_until)`
   — and nothing outside it, posted as an attributed, append-only entry rather than an edit to a
   booked row. 1.5.5 derived every row's spend at read time from the current cost model, so a `PUT
   /config/settings` rate-card edit re-priced every past row with no restart and no boundary; that
-  blanket repricing is now available only as an explicit, signed correction naming its own window,
+  blanket repricing is now available only as an explicit correction naming its own window,
   never as a side effect of publishing a new card. `GET /admin/usage` resolves each metering row
   through that history at the row's own instant, so publishing a card no longer moves what an
   earlier window reports, and a card edit inside a UTC day splits that day's row at the edit with
@@ -523,11 +531,12 @@ minted secret carries over.
   `GET /admin/groups/{group}/usage`) still derive spend from the CURRENT card, because the
   enforcement ledger they read carries no price instant yet — so after a rate-card edit they and
   `/admin/usage` can report different money for the same consumption until that lands. To correct
-  what a past window was charged, post a signed correction through the new
+  what a past window was charged, post a correction through the new
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 
 - 1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.
+- 1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
 - 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
   A request that arrives just before a window boundary can be charged on a group bucket another
   request has already rolled into the next window. 1.5.5 refunded such a request only against a
@@ -554,7 +563,7 @@ minted secret carries over.
   1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
   edited to one micro-unit per token made requests served earlier under a dearer card read 18
   micro-units each; 1.6.0 reads them at the card they were served under (2,500,000 each on the
-  oracle's card). **Migration:** none; to change what an earlier window was charged, post a signed
+  oracle's card). **Migration:** none; to change what an earlier window was charged, post a
   correction through `POST /api/v1/admin/ledger/amend-rate-history`.
 - 1.6.0 Changed: applying a config no longer reprices spend already recorded in the `/metrics` spend series.
   In 1.5.5, `POST /api/v1/admin/config/apply` with a config that drops the rate card moved
@@ -608,6 +617,13 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
   registration may also set its own `allow_private: true`), as a provider on an internal DNS name
   already needs.
+- 1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.
+  1.5.5 had no such route, and its router answered the path `404 not_found`; a 1.6.0 node answers
+  with the verb's own result, so a malformed correction is `400 invalid_request`. No admin verb
+  carries an operator key, an operator signature or dual control (spec #24 and #77(9)), so the
+  `auth.operator_pub` key is gone and the request's `operator_fingerprint` and `signature` members
+  are not read. **Migration:** a config that set `auth.operator_pub` must drop it (it is now an
+  unknown key, as it was in 1.5.5); a client stops signing corrections.
 
 ### Deprecated env vars still honoured
 
@@ -743,6 +759,13 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
+- **Admin authority can be granted verb by verb.** A role binding
+  (`auth.role_bindings.<provider>.<role>`) takes `verbs:`, either `"*"` (every verb, exactly
+  `admin_scope: full`) or a list of admin operation names from the closed verb table (`[get_keys,
+  post_keys]`), each admitted whatever scope it needs; a verb outside the list is the same
+  `403 forbidden` a missing scope gets. `admin_scope: read-only | full` stay the 1.5.5 shorthands
+  and a binding without `verbs:` behaves exactly as before. A name the table does not declare fails
+  `--validate`/boot. See [the configuration reference](docs/configuration.md).
 - **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
   operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
   counts plugin instances the crossing watchdog quarantined. Each is one counter family with its

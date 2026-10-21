@@ -76,7 +76,9 @@ pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
     Arc::new(RootAuthAxis(
-        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher()).with_conns(conns),
+        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher())
+            .with_conns(conns)
+            .with_logs(|| crate::root::boot::plugin_logs().clone()),
     ))
 }
 

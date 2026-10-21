@@ -109,10 +109,12 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "auth_modules must contain the built-in `keys` verifier: {auth_modules:?}"
     );
     assert_eq!(
-        auth_modules.iter().any(|m| m == "admin-tokens"),
+        auth_modules
+            .iter()
+            .any(|m| m == busbar_kernel::config::operator_provider()),
         busbar_kernel::preflight::linked_auth_names()
             .contains(&busbar_kernel::config::operator_provider()),
-        "auth_modules must contain `admin-tokens` iff its row is linked: {auth_modules:?}"
+        "auth_modules must contain the operator credential iff its row is linked: {auth_modules:?}"
     );
     // RED with a hook name spelled here rather than read off the root's install record (Law 1).
     assert_eq!(
@@ -537,7 +539,7 @@ async fn test_admin_v1_admin_auth_read() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|m| m == "admin-tokens"));
+        .any(|m| m == busbar_kernel::config::operator_provider()));
 
     handle.abort();
 }
@@ -1235,7 +1237,10 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
@@ -1366,7 +1371,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         "a role bound under another module grants nothing through this one"
     );
 
-    // The operator token is still full (admin-tokens is exempt from module ceilings).
+    // The operator token is still full (the operator credential is exempt from module ceilings).
     let r = with(
         "admintok",
         client.post(format!("http://{addr}/api/v1/admin/keys")),
@@ -1391,7 +1396,10 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         // A role bound FULL so the second principal can also mint keys.
         let mut table = std::collections::BTreeMap::new();
         table.insert(
@@ -1503,7 +1511,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let door = Arc::new(CachingDoor(std::sync::atomic::AtomicUsize::new(0)));
     // The operator credential's provider, named once: the chain lists it and a flush addresses it.
-    let operator = "admin-tokens";
+    let operator = busbar_kernel::config::operator_provider();
     let mut app = crate::new_test_app()
         .governance(gov)
         .admin_door("ext-idp", door.clone())
@@ -1588,8 +1596,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
 }
 
 /// `PUT /api/v1/admin/admin-auth` judges a name by its module, as the boot chain does: a provider
-/// defined under another name with the operator credential's module (`ops: { module: admin-tokens
-/// }`) is the operator credential, so a chain naming it applies and the operator token still admits
+/// defined under another name with the operator credential's module (`ops: { module: <operator> }`) is the operator credential, so a chain naming it applies and the operator token still admits
 /// through it. A name that resolves to no admin module is still refused with the same 400.
 #[tokio::test]
 async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
@@ -1659,7 +1666,10 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         // Chain starts as BOTH modules (so both credentials work); a role binding + an explicit
         // full ceiling make `grp:admins` a full principal through the external stand-in.
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "admins".to_string(),
@@ -1703,7 +1713,10 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .header("if-match", "\"999\"")
-        .body(serde_json::json!({"admin_auth": ["admin-tokens"]}).to_string())
+        .body(
+            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -1857,7 +1870,10 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"admin_auth": ["admin-tokens"]}).to_string())
+        .body(
+            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -3069,7 +3085,13 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
     // A RESERVED name (an on_error terminal / built-in) rejects on the register path too —
     // previously only boot validation checked this, so a runtime hook named `reject` could
     // shadow the terminal and make every consumer's on_error parse ambiguous.
-    for reserved in ["reject", "weighted", "nothing", "cheapest", "admin-tokens"] {
+    for reserved in [
+        "reject",
+        "weighted",
+        "nothing",
+        "cheapest",
+        busbar_kernel::config::operator_provider(),
+    ] {
         let shadow = client
             .post(format!("http://{addr}/api/v1/admin/hooks"))
             .header("x-admin-token", "admintok")
@@ -4127,7 +4149,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         }
     };
 
-    // auth: `keys` (engine-handled) is always listed; `admin-tokens` iff its row is linked.
+    // auth: `keys` (engine-handled) is always listed; the operator credential iff its row is linked.
     let auth: serde_json::Value = get("auth").await.json().await.unwrap();
     let a_items = auth["items"].as_array().unwrap();
     let keys = a_items
@@ -4136,12 +4158,14 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         .expect("the built-in keys verifier is always listed");
     assert_eq!(keys["loader"], "compiled-in");
     assert_eq!(keys["type"], "auth");
-    let admin_tokens = a_items.iter().find(|p| p["name"] == "admin-tokens");
+    let admin_tokens = a_items
+        .iter()
+        .find(|p| p["name"] == busbar_kernel::config::operator_provider());
     assert_eq!(
         admin_tokens.is_some(),
         busbar_kernel::preflight::linked_auth_names()
             .contains(&busbar_kernel::config::operator_provider()),
-        "admin-tokens listed iff linked"
+        "the operator credential is listed iff linked"
     );
     if let Some(admin_tokens) = admin_tokens {
         assert_eq!(admin_tokens["loader"], "compiled-in");
@@ -5898,6 +5922,67 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         exp < t0 + busbar_kernel::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
         "the clamped exp is strictly below the unclamped 90-day default"
     );
+}
+
+/// THE MINT POLICY'S LIFETIME CEILING HOLDS ON ROTATION (`auth.policy.max_ttl`): `POST
+/// /keys/{id}/rotate` re-mints the key's token, and a re-minted token is a mint — its lifetime is
+/// the default a mint with no expiry gets, CLAMPED to the ceiling exactly as `POST /keys` clamps it.
+///
+/// RED while rotation stamped the fixed 90-day default whatever the policy said: a deployment that
+/// caps keys at a day handed out a 90-day token on every rotate.
+#[tokio::test]
+async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
+    busbar_kernel::snapshot::init();
+    const CEIL: u64 = 24 * 3600; // auth.policy.max_ttl = "24h"
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
+        self_mint: None,
+        block_max_ttl_secs: Some(CEIL),
+        block_binding_modes: None,
+        ceilings: Default::default(),
+    };
+    let app = crate::new_test_app()
+        .governance(gov)
+        .mint_policy(policy)
+        .build();
+    let router = crate::build_router(app);
+    let (addr, handle, client) = spin_up(router).await;
+    let admin = |req: reqwest::RequestBuilder| {
+        req.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    let created: serde_json::Value = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
+        .body(serde_json::json!({"name": "rotated-under-ceiling"}).to_string())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"]
+        .as_str()
+        .expect("the mint answers an id")
+        .to_string();
+    let t0 = busbar_kernel::store::now();
+    let rotated = admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rotated.status().as_u16(), 200, "the rotate answers");
+    let rotated: serde_json::Value = rotated.json().await.unwrap();
+    let exp = rotated["expires_at"]
+        .as_u64()
+        .expect("a signed-token rotate answers expires_at");
+    assert!(
+        exp <= busbar_kernel::store::now() + CEIL,
+        "the rotated token outlives the 24h max_ttl ceiling: exp={exp}, now={t0}, ceiling={CEIL}"
+    );
+    assert!(
+        exp >= t0 + CEIL,
+        "the rotated token's default lifetime is clamped TO the ceiling, not below it: exp={exp}"
+    );
+    handle.abort();
 }
 
 /// The per-role POOL/TTL mint ceiling (`auth.policy.mint_ceilings.<role>`) bounds a DELEGATED
@@ -10727,7 +10812,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         ),
     )
     .unwrap();
-    // `auth.admin_auth` DECLARES the admin-tokens module with a file-backed ref — the precondition
+    // `auth.admin_auth` DECLARES the operator module with a file-backed ref — the precondition
     // (main.rs's `declares_admin_tokens`) for `build_app_from_config` to re-resolve and queue a
     // rotation on every apply.
     std::fs::write(
@@ -10748,8 +10833,9 @@ pools:
       - model: m0
 auth:
   admin_auth:
-    - admin-tokens: {{ token: {{ file: {token_path:?} }} }}
-"
+    - {operator}: {{ token: {{ file: {token_path:?} }} }}
+",
+            operator = busbar_kernel::config::operator_provider()
         ),
     )
     .unwrap();
@@ -11481,7 +11567,10 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
@@ -11904,12 +11993,12 @@ fn free_open_units() -> serde_json::Value {
 fn auth_modules_list_inbound_rows_only() {
     // A canonical name apart from the key, so the listing is seen to be by key.
     let inbound: busbar_kernel::preflight::LinkedAuth = (
-        "admin-tokens",
+        "inbound-row",
         "canonical-name",
-        busbar_auth_admin_tokens_plugin::door::door,
+        busbar_kernel::test_support::operator_double::door,
     );
     assert_eq!(
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),
-        vec!["admin-tokens"]
+        vec!["inbound-row"]
     );
 }

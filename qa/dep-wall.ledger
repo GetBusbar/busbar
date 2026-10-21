@@ -11,9 +11,3 @@
 # A transport CARRIER, whose whole job is the socket, is exempt by its declared KIND (`transport`),
 # never by a row here: a `carrier<TAB>crate` row is refused. The connector is a cleanliness crate and
 # never in scope.
-busbar-llm	hyper-util
-busbar-llm	reqwest
-busbar-llm	rustls
-busbar-llm	socket2
-busbar-llm	tokio (net)
-busbar-llm	tokio-rustls

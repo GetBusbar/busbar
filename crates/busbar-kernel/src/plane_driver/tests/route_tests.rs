@@ -121,7 +121,7 @@ fn every_piece_says_whether_the_attempts_member_relays_the_callers_credential() 
     }
 }
 
-/// F25 row 628: rehomed from crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::
+/// F25 row 628: rehomed from the retired engine crate's src/engine/tests/usage_tap_tests.rs::
 /// test_stable_hash_is_deterministic. The walk's affinity hash is stable across calls AND processes
 /// (unlike `DefaultHasher`) so session affinity survives restarts: FNV-1a pinned to a precomputed
 /// golden, so an algorithm or offset/prime swap is caught directly.
@@ -141,7 +141,7 @@ fn a_node_without_signing_material_lends_no_caller_reference() {
     assert!(i.caller_ref.ptr.is_null() && i.caller_ref.len == 0);
 }
 
-// ── F25 rows 630-633: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs. The
+// ── F25 rows 630-633: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs. The
 // route-policy transparency pair as the pump stamps it
 // (`route_policy_fields`, 1.5.5's `maybe_attach_route_policy_gated`), over the full 2x2 matrix of
 // the outer (operator opt-in) and inner (a non-default policy chose) gates.
@@ -170,7 +170,7 @@ fn built_route_fields(enabled: bool, policy: Option<&str>, member: &[u8]) -> (St
     )
 }
 
-/// F25 row 630: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// F25 row 630: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::
 /// route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_name. Even with a
 /// policy name present, the outer gate off suppresses BOTH fields.
 #[test]
@@ -186,7 +186,7 @@ fn route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_n
     );
 }
 
-/// F25 row 631: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// F25 row 631: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::
 /// route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled. With the outer
 /// gate ON, a default routing decision (no policy name) attaches nothing.
 #[test]
@@ -202,7 +202,7 @@ fn route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled
     );
 }
 
-/// F25 row 632: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// F25 row 632: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::
 /// route_policy_headers_present_only_when_both_gates_open. Both gates open is the only combination
 /// that emits the pair, carrying the exact policy name and target member.
 #[test]
@@ -222,7 +222,7 @@ fn route_policy_headers_present_only_when_both_gates_open() {
     );
 }
 
-/// F25 row 633: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// F25 row 633: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::
 /// route_policy_headers_absent_when_both_gates_closed. The fourth combination (outer off, inner off)
 /// is also silent, completing the 2x2 matrix.
 #[test]
