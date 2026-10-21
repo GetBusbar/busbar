@@ -31,12 +31,13 @@ pub trait DoorSet: Send + Sync {
     fn rows(&self) -> &[&'static PlaneDecl];
 }
 
-/// The set the composition root installed, before the plane list was first read.
-static INSTALLED: std::sync::OnceLock<&'static dyn DoorSet> = std::sync::OnceLock::new();
+/// The rows of the set the composition root installed, read once at install: data, never a seam
+/// another crate installs code into (door-only:static-seam).
+static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
 
 /// The rows the composition root installed; empty before it installs.
 fn installed() -> &'static [&'static PlaneDecl] {
-    INSTALLED.get().map_or(&[], |set| set.rows())
+    INSTALLED.get().copied().unwrap_or(&[])
 }
 
 /// INSTALL THE OPENED DOOR SET — the composition root's one write into the plane axis. `pub`: the
@@ -49,7 +50,7 @@ fn installed() -> &'static [&'static PlaneDecl] {
 ///   empty set, so installing now would leave two layers disagreeing about which doors exist.
 pub fn install_doors(set: &'static dyn DoorSet) {
     assert!(
-        INSTALLED.set(set).is_ok(),
+        INSTALLED.set(set.rows()).is_ok(),
         "install_doors called twice: there is one composition root, and it installs once"
     );
     #[cfg(not(any(test, feature = "test-support")))]
