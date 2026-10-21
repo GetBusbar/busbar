@@ -1211,6 +1211,131 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
         .expect("the journal takes the posting");
 }
 
+/// **1.5.5'S 31-DAY SWEEP, PINNED.** A window that opened 31 days and one day ago is gone from
+/// everything the totals read answers from — the book's balance and the counted lines the
+/// read-time totals price — once the seal after the one that holds it is taken, while a window
+/// inside the horizon reads exactly what it read before. The journal is not swept: the posting is
+/// still on the chain, and a restart rebuilds it.
+///
+/// The boundary is 1.5.5's: `v1.5.5:crates/store-memory/src/lib.rs` keeps a row while
+/// `window_start + MAX_RETENTION_SECS > now` (line 256, `MAX_RETENTION_SECS = 31 * 86_400` at line
+/// 23), and `v1.5.5:crates/busbar/src/governance/state.rs:1713-1716` keeps a budget cell on the same
+/// rule.
+#[test]
+fn a_window_a_day_past_the_31_day_horizon_leaves_the_totals_and_stays_on_the_journal() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let mut durability = memory_node();
+    let old_key = totals_key("vk_old");
+    let new_key = totals_key("vk_new");
+    let old = 86_400;
+    let now = old + WINDOW_RETENTION_SECS + 86_400;
+    let recent = now / 86_400 * 86_400;
+    settle_one(&mut durability, &old_key, 1_000, 900, 1);
+    settle_in(&mut durability, &new_key, recent, 1_000, 700, 2);
+
+    let lines_in = |durability: &Durability, window: u64| -> usize {
+        durability
+            .booked_lines()
+            .expect("every line carries counts")
+            .iter()
+            .filter(|line| line.window_start == window)
+            .count()
+    };
+    let recent_before = durability.ledger.book().get(&new_key, recent);
+    assert_eq!(lines_in(&durability, old), 1);
+    assert_eq!(lines_in(&durability, recent), 1);
+    assert_eq!(durability.ledger.book().get(&old_key, old).settled, 900);
+
+    let token = token();
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the first seal goes down");
+    assert_eq!(
+        lines_in(&durability, old),
+        1,
+        "no seal before it: nothing is retired yet"
+    );
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the second seal goes down");
+
+    assert_eq!(
+        lines_in(&durability, old),
+        0,
+        "the old window left the totals"
+    );
+    assert_eq!(
+        durability.ledger.book().get(&old_key, old),
+        Totals::zero(),
+        "and the book"
+    );
+    assert_eq!(lines_in(&durability, recent), 1);
+    assert_eq!(
+        durability.ledger.book().get(&new_key, recent),
+        recent_before,
+        "a window inside the horizon is unchanged"
+    );
+    assert!(
+        durability
+            .read_back()
+            .iter()
+            .any(|posting| posting.window == old && posting.kind == PostingKind::Settlement),
+        "the journal still holds the old window's posting"
+    );
+    assert!(durability
+        .read_back()
+        .iter()
+        .any(|posting| posting.window == recent && posting.kind == PostingKind::Settlement));
+}
+
+/// [`settle_one`] in a named window.
+fn settle_in(
+    durability: &mut Durability,
+    key: &TotalsKey,
+    window: u64,
+    reserved: u64,
+    used: u64,
+    mono: u64,
+) {
+    use busbar_contract::caps::{
+        Admittance, Consumption, Hold, MeterClassId, Posted, PrincipalId, QuantitySource, Usage,
+        UsageLine, WriteMoney,
+    };
+    let principal = PrincipalId::new(key.bucket.as_str());
+    let durability_token = token();
+    let mut at = settling(key, &durability_token);
+    at.window = window;
+    at.stamp.mono = mono;
+    durability
+        .open_hold(&at, &principal, &inputs(reserved), ARRIVED_MS)
+        .expect("the journal takes the hold");
+    let hold = Hold::open(
+        &busbar_kernel::test_support::tokens::grant::<Admittance>(),
+        principal,
+        reserved,
+    );
+    let usage = Usage::report(
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
+        vec![UsageLine {
+            class: MeterClassId::new("input"),
+            quantity: used,
+            source: QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line");
+    let posted = Posted::settle(
+        hold,
+        u128::from(used),
+        &usage,
+        &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
+    );
+    durability
+        .settle_counted(&at, posted, &inputs(used), ARRIVED_MS)
+        .expect("the journal takes the posting");
+}
+
 /// PB-58: A SPEND PAST THE RESERVATION IS CARRIED OUT AS AN OVERDRAFT — the unit runs to its end
 /// and settles, and the part nothing reserved is carried, DERIVED AT READ (#71).
 ///
