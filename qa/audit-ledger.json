@@ -2748,7 +2748,7 @@
    "paths": [
     "crates/busbar-transport-http/src"
    ],
-   "tree_hash": "d3b4e97741baf3cd642f9e119987506486520e8e8ab63babd0f901c5cd08e689",
+   "tree_hash": "e2ecdfd5aad0a6f0448991168a11b4a43640c6a27a2d01e1700b47c2c4b5dff8",
    "audited_at": "1eaf96738fa5fa89813726c36eb55bc50c06e0c8",
    "round": 4,
    "result": "findings",
@@ -2760,7 +2760,7 @@
    },
    "report": "This crate is the http transport: a sans-IO framer that runs hyper's HTTP/1.1 and HTTP/2 client over host-supplied bytes. It renders an outbound envelope as one HTTP/1.1 message, re-reads it and hands it to hyper. It also answers the target's authority, verified name and ALPN offer, frames the response as a head piece with a body and an end piece, and states the status and breaker fault tables for its `http` and `sse` claims. The framing is careful: CR/LF/NUL injection, duplicate or conflicting framing headers, a body over the cap, the one deadline per attempt and the request-target encoding are all handled and tested. Two parts depart from the design. The framer deliberately writes no `accept: */*` default when the caller sets none, and a test pins that, although the design says the http transport owns that client default. The Statement claims `http` and `sse` but not `https`, which the design lists among this transport's claims. Beyond that there are two pieces of hygiene: a dead branch names a sibling transport's secured scheme, and two doc comments describe behaviour the code does not have. Read fully.",
    "auditor": "opus-q128-busbar-transport-http-src-a",
-   "fixed_at": null,
+   "fixed_at": "96f308001981607b223ab726ba781fc97477c761",
    "exclude": [
     "crates/busbar-transport-http/src/tests"
    ],
@@ -4193,7 +4193,7 @@
    "paths": [
     "crates/busbar-transport-http/declares.json"
    ],
-   "tree_hash": "8295448ec17878a110f12c5551c9b3168a7199ecf7d07a2a0ae70d4d07a0fa20",
+   "tree_hash": "44f7cf4cc762684e008d433205261342fec80bfcdf9bff5ee63080d2c10db606",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -4205,7 +4205,7 @@
    },
    "report": "The http transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
    "auditor": "opus-r159c-declares",
-   "fixed_at": null,
+   "fixed_at": "96f308001981607b223ab726ba781fc97477c761",
    "rounds": [
     {
      "round": 1,
