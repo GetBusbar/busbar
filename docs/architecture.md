@@ -459,14 +459,14 @@ on A2A. Three identities, one state machine:
 | plane | breaker target | live on the dispatch path? |
 |---|---|---|
 | LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
-| MCP | one registered tool server | yes: the kernel's walk admits each member through the host's `breaker_admit` slot (`crates/busbar-kernel/src/plane_host/breaker.rs`) before every leg |
+| MCP | one registered tool server | yes: the MCP door is a door plane, so the root seals its egress with the breaker over every member's cell (`compose_egress`, `crates/busbar/src/root/door_steps.rs`), and the kernel's plane driver walks each `tools/call` through those cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
 | A2A | one registered agent | yes: the door plane states the agent as its unit's route at `arrive` (its `agent_door.rs`, in GetBusbar/busbar-plane-a2a), and the kernel's plane driver walks that route through the same breaker cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
 
 **One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
 `breaker:` key under `tools:` or `agents:`, and both sections `deny_unknown_fields`, so
 a config that writes one fails at boot. On MCP and A2A the breaker therefore runs on
-built-in defaults, through the kernel's failover walk (`crates/busbar-kernel/src/failover/mod.rs`),
+built-in defaults, through the kernel's route walk (`crates/busbar-kernel-egress/src/walk.rs`),
 which reaches the same breaker cells the LLM plane uses and adds no second state machine.
 
 **What generalises, and what it took to generalise it.** The state machine and the cause
