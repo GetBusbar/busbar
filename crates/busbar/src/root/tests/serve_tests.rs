@@ -8810,9 +8810,10 @@ mod pools_door_money {
     /// `admit::over_budget_refuses_with_no_charge_and_nothing_to_refund`): group `bgrp`'s all-time
     /// bucket seeded with 250 requests at a one-cent fee (250 cents, over its 100-cent cap); its key
     /// is refused 429, and afterwards the group's bucket still reads 250 requests, 250 cents, 250 on
-    /// its durable row and 250 billable, the key's own ledger 0 throughout; the refusal is sealed as
-    /// `OverBudget` at the Admit step. RED: any counter moved by the refusal, or the refusal stamped
-    /// at another step or reason.
+    /// its durable row and 250 billable, the key's own ledger 0 throughout, compared field by field
+    /// after the refusal (no admission, no spend, no tokens, nothing billable, no metering row);
+    /// the refusal is sealed as `OverBudget` at the Admit step. RED: any counter, token or spend
+    /// moved by the refusal, a row metered for it, or the refusal stamped at another step or reason.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_without_charging_anything() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8838,6 +8839,8 @@ mod pools_door_money {
         );
         let key_before = rig.ledger_after(0).await;
         assert_eq!(key_before, (0, 0, 0, 0), "the key has been charged nothing");
+        assert_eq!(rig.tokens_after().await, 0, "the key has accrued no tokens");
+        let charged_at = busbar_kernel::store::now();
         let (status, _, _) = rig.chat().await;
         assert_eq!(status, 429, "an exhausted budget is a 429");
         assert_eq!(
@@ -8850,6 +8853,24 @@ mod pools_door_money {
             key_before,
             "nor on the key's own"
         );
+        // FIELD BY FIELD, the key's money after the refusal: no admission, no spend, no tokens,
+        // nothing billable and no metering row.
+        let (admitted, spend, _, billable) = rig.ledger_after(0).await;
+        let tokens = rig.tokens_after().await;
+        assert_eq!(
+            (admitted, spend, tokens, billable),
+            (0, 0, 0, 0),
+            "(admissions, spend in cents, tokens, billable) after the refusal"
+        );
+        rig.gov.flush_metering();
+        let rows: Vec<_> = rig
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read")
+            .into_iter()
+            .filter(|row| row.key_id == rig.key_id)
+            .collect();
+        assert_eq!(rows.len(), 0, "a refusal at the door is metered nowhere");
         assert_eq!(far.served(), 0);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         while rig.audit_records() == 0 && tokio::time::Instant::now() < deadline {
@@ -11326,13 +11347,14 @@ mod model_door_root_cells {
     }
 
     /// One caller dialect the plane's door words state (`caller.<name> = <path> | <body> |
-    /// body|path`): its name, its path onto pool `p`, a request in it, and whether its model rides
-    /// the body.
+    /// body|path | <golden dialect>`): its name, its path onto pool `p`, a request in it, whether
+    /// its model rides the body, and the dialect the oracle's 1.5.5 goldens name it by.
     struct Caller {
         name: &'static str,
         path: &'static str,
         request: serde_json::Value,
         body_model: bool,
+        golden: &'static str,
     }
 
     /// EVERY CALLER DIALECT THE PLANE STATES, read off its door words rather than listed here, so a
@@ -11348,14 +11370,15 @@ mod model_door_root_cells {
                 let cols: Vec<&'static str> = row.split(" | ").map(str::trim).collect();
                 assert_eq!(
                     cols.len(),
-                    3,
-                    "caller.{name}: `<path> | <body> | body|path`"
+                    4,
+                    "caller.{name}: `<path> | <body> | body|path | <golden dialect>`"
                 );
                 Caller {
                     name,
                     path: cols[0],
                     request: serde_json::from_str(cols[1]).expect("a JSON request body"),
                     body_model: cols[2] == "body",
+                    golden: cols[3],
                 }
             })
             .collect()
@@ -11368,6 +11391,223 @@ mod model_door_root_cells {
             .iter()
             .map(|decls| decls.len())
             .sum()
+    }
+
+    /// The wire's own framing, which the router's answer carries no counterpart of and the oracle
+    /// normalises (`hdr.date`, `hdr.length`): `content-length` and `transfer-encoding` are set by
+    /// the HTTP server when it writes the body, `connection` by its connection handling, and `date`
+    /// by its clock. Every other header of a 1.5.5 answer is compared by value.
+    const WIRE_ONLY: [&str; 4] = ["content-length", "transfer-encoding", "connection", "date"];
+
+    /// One answer 1.5.5 gave, as the oracle's golden capture records it.
+    struct Golden {
+        status: u16,
+        headers: serde_json::Map<String, serde_json::Value>,
+        body: serde_json::Value,
+        /// The oracle's normalisations of this cell (`ts.unix`: a timestamp read as 0).
+        applied: Vec<String>,
+    }
+
+    /// A door word naming a 1.5.5 golden cell file, its `{ingress}` and `{egress}` filled (the
+    /// egress is the members' own dialect).
+    fn golden_file(key: &str, ingress: &str) -> String {
+        door_word(key)
+            .replace("{ingress}", ingress)
+            .replace("{egress}", door_word("golden_egress"))
+    }
+
+    /// THE 1.5.5 ANSWER recorded at repo-relative `rel`, or at the step of a multi-request capture
+    /// whose request is `step`.
+    fn golden_at(rel: &str, step: Option<&str>) -> Golden {
+        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel);
+        let cell: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&at)
+                .unwrap_or_else(|e| panic!("the 1.5.5 golden {} reads: {e}", at.display())),
+        )
+        .expect("the golden is JSON");
+        let applied = cell["applied"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let answer = match step {
+            None => cell,
+            Some(step) => cell["body"]["json"]["steps"]
+                .as_array()
+                .expect("a capture's steps")
+                .iter()
+                .find(|s| s["request"] == *step)
+                .unwrap_or_else(|| panic!("the capture has a `{step}` step"))
+                .clone(),
+        };
+        Golden {
+            status: u16::try_from(answer["status"].as_u64().expect("a status")).expect("a status"),
+            headers: answer["headers"]
+                .as_object()
+                .expect("the golden records the head")
+                .clone(),
+            body: answer["body"].clone(),
+            applied,
+        }
+    }
+
+    /// A door word's golden: `<repo-relative cell> [| <step request>]`.
+    fn golden_word(key: &str) -> Golden {
+        let row: Vec<&str> = door_word(key).split(" | ").map(str::trim).collect();
+        golden_at(row[0], row.get(1).copied())
+    }
+
+    /// A golden value the oracle normalised (`<ID>`, `req_<ID>`, `<UUID>`, `<LEN>`, `<RETRY>`).
+    fn normalised(v: &serde_json::Value) -> bool {
+        v.as_str()
+            .is_some_and(|s| s.contains('<') && s.contains('>'))
+    }
+
+    /// Whether `door` is `golden` field for field, a normalised golden value standing for any value
+    /// of its kind and, where the cell applied `ts.unix`, a golden `0` timestamp for any number.
+    fn same(
+        golden: &serde_json::Value,
+        door: &serde_json::Value,
+        at: &str,
+        unix: bool,
+        out: &mut Vec<String>,
+    ) {
+        use serde_json::Value;
+        match (golden, door) {
+            (g, Value::String(_)) if normalised(g) => {}
+            (Value::Object(g), Value::Object(d)) => {
+                let gk: std::collections::BTreeSet<&String> = g.keys().collect();
+                let dk: std::collections::BTreeSet<&String> = d.keys().collect();
+                if gk != dk {
+                    out.push(format!("{at}: members {dk:?}, 1.5.5 had {gk:?}"));
+                }
+                for (k, gv) in g {
+                    if let Some(dv) = d.get(k) {
+                        let stamp = unix
+                            && gv.as_u64() == Some(0)
+                            && dv.is_number()
+                            && (k == "created" || k == "created_at");
+                        if !stamp {
+                            same(gv, dv, &format!("{at}.{k}"), unix, out);
+                        }
+                    }
+                }
+            }
+            (Value::Array(g), Value::Array(d)) => {
+                if g.len() == d.len() {
+                    for (i, (gv, dv)) in g.iter().zip(d).enumerate() {
+                        same(gv, dv, &format!("{at}[{i}]"), unix, out);
+                    }
+                } else {
+                    out.push(format!("{at}: {} item(s), 1.5.5 had {}", d.len(), g.len()));
+                }
+            }
+            (g, d) if g == d => {}
+            (g, d) => out.push(format!("{at}: {d}, 1.5.5 had {g}")),
+        }
+    }
+
+    /// AN ANSWER HELD TO THE ANSWER 1.5.5 GAVE: the status; every header 1.5.5 sent (the wire's
+    /// own framing aside, [`WIRE_ONLY`]) by value, `Retry-After` as the whole seconds the oracle
+    /// normalised, and no header 1.5.5 did not send; and the body, a JSON body member for member, a
+    /// text body byte for byte.
+    fn held_to(
+        golden: &Golden,
+        status: u16,
+        head: &HeaderMap,
+        body: &[u8],
+        what: &str,
+        out: &mut Vec<String>,
+    ) {
+        if status != golden.status {
+            out.push(format!(
+                "{what}: status {status}, 1.5.5 answered {}",
+                golden.status
+            ));
+        }
+        for (name, want) in &golden.headers {
+            let name = name.to_ascii_lowercase();
+            if WIRE_ONLY.contains(&name.as_str()) {
+                continue;
+            }
+            let got = head.get(name.as_str()).and_then(|v| v.to_str().ok());
+            match got {
+                None => out.push(format!("{what}: no `{name}`, 1.5.5 sent {want}")),
+                Some(got) if name == "retry-after" => {
+                    if !matches!(got.parse::<u64>(), Ok(s) if s > 0) {
+                        out.push(format!("{what}: retry-after {got:?} is not whole seconds"));
+                    }
+                }
+                Some(_) if normalised(want) => {}
+                Some(got) => {
+                    if want.as_str() != Some(got) {
+                        out.push(format!("{what}: `{name}: {got}`, 1.5.5 sent {want}"));
+                    }
+                }
+            }
+        }
+        for name in head.keys() {
+            let name = name.as_str().to_ascii_lowercase();
+            if !WIRE_ONLY.contains(&name.as_str()) && !golden.headers.contains_key(&name) {
+                out.push(format!("{what}: `{name}` is a header 1.5.5 did not send"));
+            }
+        }
+        let unix = golden.applied.iter().any(|a| a == "ts.unix");
+        if let Some(json) = golden.body.get("json") {
+            match serde_json::from_slice::<serde_json::Value>(body) {
+                Ok(door) => same(json, &door, &format!("{what} body"), unix, out),
+                Err(_) => out.push(format!(
+                    "{what}: the body is not JSON: {}",
+                    String::from_utf8_lossy(body)
+                )),
+            }
+        } else if let Some(text) = golden.body.get("text").and_then(serde_json::Value::as_str) {
+            if body != text.as_bytes() {
+                out.push(format!(
+                    "{what}: the body {:?}, 1.5.5 sent {text:?}",
+                    String::from_utf8_lossy(body)
+                ));
+            }
+        }
+    }
+
+    /// The far end's answer: the 1.5.5 oracle's own far end's answer, as its golden records it
+    /// relayed same-dialect.
+    fn golden_answer() -> &'static str {
+        static ANSWER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        ANSWER.get_or_init(|| {
+            let golden = golden_at(&golden_file("golden_ok", door_word("golden_egress")), None);
+            Box::leak(
+                serde_json::to_string(&golden.body["json"])
+                    .expect("the answer serialises")
+                    .into_boxed_str(),
+            )
+        })
+    }
+
+    /// The far end's streamed answer: the 1.5.5 oracle's own far end's events, as its golden records
+    /// them relayed, with the usage event it held back before the end (the caller asked for none).
+    fn golden_stream() -> SeatScript {
+        let golden = golden_word("route_golden.streamed");
+        let text = golden.body["text"].as_str().expect("a streamed body");
+        let mut pieces = Vec::new();
+        for event in text.split("\n\n").filter(|e| !e.is_empty()) {
+            let data = event.strip_prefix("data: ").expect("an event-stream event");
+            if data == "[DONE]" {
+                pieces.push((0, frame(door_word("golden_stream_usage_event"))));
+            }
+            pieces.push((0, frame(data)));
+        }
+        SeatScript {
+            head: STREAM_HEAD.to_string(),
+            pieces,
+            finish: Some(b"0\r\n\r\n".to_vec()),
+        }
     }
 
     /// One request through the door as the keyed caller, its body sent as these very bytes.
@@ -11472,6 +11712,12 @@ mod model_door_root_cells {
         PoolAcl,
         /// A model that resolves to no pool and no lane: refused AFTER the door, so it is charged.
         UnknownModel,
+        /// A delivered unit whose gate vetoes it with a status of its own, 451 (the approve cell;
+        /// no route fixture).
+        GateVeto,
+        /// A delivered unit whose gate vetoes it at the reject default, 403, which 1.5.5 answers
+        /// as the dialect's permission refusal (the approve cell; no route fixture).
+        GateDeny,
     }
 
     /// The six, in the original's order.
@@ -11485,8 +11731,9 @@ mod model_door_root_cells {
     ];
 
     /// Everything one fixture's leg left behind: the caller's answer and head, the far end's dials,
-    /// the walk's dispatch records, the key's admissions, spend and tokens, its metering rows, and
-    /// the member's breaker after the walk.
+    /// the walk's dispatch records, the key's admissions, spend and tokens, its metering rows, the
+    /// member's breaker and admissibility after the walk, whether the gate was asked, and the audit
+    /// records sealed.
     #[derive(Debug)]
     struct Observed {
         status: u16,
@@ -11500,31 +11747,44 @@ mod model_door_root_cells {
         rows: Vec<String>,
         breaker_closed: bool,
         admissible: bool,
+        asked_gate: bool,
+        records: Vec<busbar_kernel_audit::AuditRecord>,
     }
 
     /// ONE FIXTURE, DRIVEN THROUGH THE DOOR on a deployment of its own: the caller's chat on pool
-    /// `p` in the door words' own dialect, the member's far end answering it.
+    /// `p` in the door words' own dialect, the member's far end answering what the 1.5.5 oracle's
+    /// far end answered.
     async fn observe(tag: &str, fixture: Fixture) -> Observed {
         let instance = deployment(format!("root-door-{tag}-{fixture:?}"));
         let _published = Withdrawn(instance);
         let far: FarEnd = if fixture == Fixture::StreamedOk {
-            far_end_scripted(stream_pausing(0)).await
+            far_end_scripted(golden_stream()).await
         } else {
-            seat_far_end(200, SERVED_BY_TWIN).await
+            seat_far_end(200, golden_answer()).await
         };
         let members = [(far.port, 1)];
-        // Group `bgrp`'s all-time bucket already holds 250 one-cent requests, over its 100-cent cap.
-        let over_cap = [limit(LimitMetric::Budget, 100, LimitWindow::Total)];
+        // The golden deployment's group, its day's budget at nothing.
+        let spent = [limit(LimitMetric::Budget, 0, LimitWindow::Day)];
         let opts = match fixture {
             Fixture::OverBudget => RigOpts {
                 members: &members,
-                group: Some(("bgrp", &over_cap)),
-                seed: &[("group:bgrp@total", 250)],
+                group: Some(("broke-quota", &spent)),
                 ..RigOpts::default()
             },
             Fixture::PoolAcl => RigOpts {
                 members: &members,
                 allowed_pools: Some(&["denied-elsewhere"]),
+                ..RigOpts::default()
+            },
+            Fixture::GateVeto => RigOpts {
+                members: &members,
+                reject_at_gate: true,
+                ..RigOpts::default()
+            },
+            Fixture::GateDeny => RigOpts {
+                members: &members,
+                reject_at_gate: true,
+                gate_status: Some(403),
                 ..RigOpts::default()
             },
             _ => RigOpts {
@@ -11540,7 +11800,7 @@ mod model_door_root_cells {
             Fixture::StreamedOk => rig.send("POST", path, Some(streamed_chat())).await,
             Fixture::UnknownModel => {
                 let mut request = body_word("chat_body");
-                request["model"] = serde_json::Value::from("no-such-model");
+                request["model"] = serde_json::Value::from("m");
                 rig.send("POST", path, Some(request)).await
             }
             _ => rig.send("POST", path, Some(body_word("chat_body"))).await,
@@ -11561,6 +11821,8 @@ mod model_door_root_cells {
             busbar_kernel::store::BreakerState::Closed
         );
         let admissible = rig.app.store.lane_admissible(0);
+        // Every fixture is one unit and seals one record; give its end the time to seal it.
+        let _ = sealed(&rig, 1).await;
         Observed {
             status,
             head,
@@ -11573,12 +11835,70 @@ mod model_door_root_cells {
             rows,
             breaker_closed,
             admissible,
+            asked_gate: rig.seats().iter().any(|seat| seat == "gate"),
+            records: rig.records(),
         }
     }
 
-    /// A head field as text.
-    fn field<'h>(head: &'h HeaderMap, name: &str) -> &'h str {
-        head.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
+    /// The golden of a route fixture: the oracle's recorded 1.5.5 answer to the same request.
+    fn golden_of(fixture: Fixture) -> Golden {
+        golden_word(match fixture {
+            Fixture::BufferedOk => "route_golden.buffered",
+            Fixture::StreamedOk => "route_golden.streamed",
+            Fixture::Malformed => "route_golden.malformed",
+            Fixture::OverBudget => "route_golden.over_budget",
+            Fixture::PoolAcl => "route_golden.pool_acl",
+            Fixture::UnknownModel => "route_golden.unknown_model",
+            Fixture::GateVeto | Fixture::GateDeny => {
+                unreachable!("the veto is held to the gate's own answer")
+            }
+        })
+    }
+
+    /// What 1.5.5 left beside the answer, per fixture: (far-end dials, admissions, spend in
+    /// cents, tokens, the one metering row's counts or none). A delivered unit pays the one-cent
+    /// flat fee and its far end's 11 in and 7 out; a unit refused at or before the door is charged
+    /// and metered nothing; one refused after the door keeps its admission and its fee comes back.
+    fn money_of(fixture: Fixture) -> (usize, u64, i64, u64, Option<&'static str>) {
+        match fixture {
+            Fixture::BufferedOk | Fixture::StreamedOk => {
+                (1, 1, 1, 18, Some("in=11 out=7 cr=0 cw=0 req=1 billable=1"))
+            }
+            Fixture::Malformed | Fixture::OverBudget | Fixture::PoolAcl => (0, 0, 0, 0, None),
+            Fixture::UnknownModel | Fixture::GateVeto | Fixture::GateDeny => (0, 1, 0, 0, None),
+        }
+    }
+
+    /// The findings of one observation against 1.5.5's money and the member's state.
+    fn money_held(seen: &Observed, fixture: Fixture, what: &str, out: &mut Vec<String>) {
+        let (dialled, admitted, spend, tokens, row) = money_of(fixture);
+        let got = (seen.dialled, seen.admitted, seen.spend, seen.tokens);
+        if got != (dialled, admitted, spend, tokens) {
+            out.push(format!(
+                "{what}: (dialled, admitted, spend, tokens) = {got:?}, 1.5.5 left \
+                 ({dialled}, {admitted}, {spend}, {tokens})"
+            ));
+        }
+        let rows_ok = match row {
+            Some(tail) => {
+                seen.rows.len() == 1
+                    && seen.rows[0].starts_with("m0/")
+                    && seen.rows[0].ends_with(&format!(" {tail}"))
+            }
+            None => seen.rows.is_empty(),
+        };
+        if !rows_ok {
+            out.push(format!(
+                "{what}: metering rows {:?}, 1.5.5 wrote {row:?}",
+                seen.rows
+            ));
+        }
+        if !seen.breaker_closed || !seen.admissible {
+            out.push(format!(
+                "{what}: the member's breaker closed {} and admissible {} after the walk",
+                seen.breaker_closed, seen.admissible
+            ));
+        }
     }
 
     /// THE SIX FIXTURE ENDS, ON THE DOOR. Door successor of
@@ -11616,207 +11936,37 @@ mod model_door_root_cells {
         );
     }
 
-    /// The framing a wire adds and the oracle normalises (`hdr.date`, `hdr.length`): what the
-    /// router's own answer carries no counterpart of, so it is not part of the compared head.
-    const FRAMING: [&str; 4] = ["content-length", "transfer-encoding", "connection", "date"];
-
-    /// THE 1.5.5 HEAD OF ONE FIXTURE, from the oracle's recorded golden capture the plane's door
-    /// words name (`route_golden.<fixture> = <repo-relative cell file> [| <step request>]`): its
-    /// header names, framing aside, and its content type.
-    fn golden_head(fixture: Fixture) -> (std::collections::BTreeSet<String>, String) {
-        let key = match fixture {
-            Fixture::BufferedOk => "route_golden.buffered",
-            Fixture::StreamedOk => "route_golden.streamed",
-            Fixture::Malformed => "route_golden.malformed",
-            Fixture::OverBudget => "route_golden.over_budget",
-            Fixture::PoolAcl => "route_golden.pool_acl",
-            Fixture::UnknownModel => "route_golden.unknown_model",
-        };
-        let row: Vec<&str> = door_word(key).split(" | ").map(str::trim).collect();
-        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(row[0]);
-        let cell: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&at)
-                .unwrap_or_else(|e| panic!("the 1.5.5 golden {} reads: {e}", at.display())),
-        )
-        .expect("the golden is JSON");
-        let headers = match row.get(1) {
-            None => cell["headers"].clone(),
-            Some(step) => cell["body"]["json"]["steps"]
-                .as_array()
-                .expect("a capture's steps")
-                .iter()
-                .find(|s| s["request"] == *step)
-                .unwrap_or_else(|| panic!("the capture has a `{step}` step"))["headers"]
-                .clone(),
-        };
-        let headers = headers.as_object().expect("the golden records the head");
-        let names = headers
-            .keys()
-            .map(|k| k.to_ascii_lowercase())
-            .filter(|k| !FRAMING.contains(&k.as_str()))
-            .collect();
-        let media = headers["content-type"]
-            .as_str()
-            .expect("a content type")
-            .to_string();
-        (names, media)
-    }
-
-    /// THE 1.5.5 BODY OF A FIXTURE THE ORACLE RECORDED IN THE CALLER'S DIALECT (`route_golden.*`'s
-    /// cell file, its body as the dialect's writer serializes it: compact, keys in order) and the
-    /// byte count its `content-length` held.
-    fn golden_body(key: &str) -> (Vec<u8>, usize) {
-        let row: Vec<&str> = door_word(key).split(" | ").map(str::trim).collect();
-        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(row[0]);
-        let cell: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&at)
-                .unwrap_or_else(|e| panic!("the 1.5.5 golden {} reads: {e}", at.display())),
-        )
-        .expect("the golden is JSON");
-        let body = serde_json::to_vec(&cell["body"]["json"]).expect("a recorded JSON body");
-        let length = cell["headers"]["content-length"]
-            .as_str()
-            .and_then(|n| n.parse().ok())
-            .expect("a recorded content-length");
-        (body, length)
-    }
-
-    /// A refusal in the caller dialect's error envelope as 1.5.5's writer shaped it: `type` the
-    /// kind, `code` paired with it, `param` null.
-    fn refusal_body(kind: &str, code: Option<&str>, message: &str) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({"error": {
-            "code": code, "message": message, "param": null, "type": kind}}))
-        .expect("JSON")
-    }
-
-    /// THE WALK ON EVERY FIXTURE, ON THE DOOR, ANCHORED TO 1.5.5. Door successor of
+    /// THE WALK ON EVERY FIXTURE, ON THE DOOR, HELD TO 1.5.5 BYTE FOR BYTE. Door successor of
     /// `plane_node.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture`, whose second leg,
-    /// the shipped entry point, is the door itself since #1161, so each field the original compared
-    /// is held to the value 1.5.5 left. THE HEAD is held to the oracle's recorded 1.5.5 capture of
-    /// the same request (`route_golden.*` in the plane's door words; the PARITY group replays the
-    /// same cells on the wire): the same header names, framing aside, and the same content type,
-    /// the budget refusal's `Retry-After` among them. Beside it: the caller's status; the far end
-    /// dialled once by each delivered unit and never by a refused one; the buffered answer relayed
-    /// as the far end's very bytes (same dialect, so byte for byte); THE BODY of every other fixture
-    /// byte for byte against 1.5.5: the streamed answer as 1.5.5's same-dialect stream re-emitted
-    /// the far end's frames (the usage chunk the caller did not ask for withheld), the malformed
-    /// and pool-ACL refusals as the oracle recorded them (byte count included), and the spent
-    /// budget's and the unknown model's refusals in 1.5.5's writer's envelope and sentences for
-    /// these fixtures (the envelope checked against 1.5.5's recorded quota refusal); the key's
-    /// admissions (drawn by each delivered unit and by the unit refused after the door, never by
-    /// one refused at or before it) and its spend (the one-cent fee of each delivered unit, nothing
-    /// for a refusal); and the member's lane after every walk, its breaker closed and the lane
-    /// still admissible (neither marked dead nor out of budget), as 1.5.5 left both.
+    /// the shipped entry point, is the door itself since #1161, so every field the original
+    /// compared is held to what 1.5.5 left for the same request. THE ANSWER against the oracle's
+    /// recorded 1.5.5 capture (`route_golden.*` in the plane's door words; the PARITY group replays
+    /// the same cells on the wire): the status, every header 1.5.5 sent by value (the wire's own
+    /// framing aside, [`WIRE_ONLY`]) and none it did not, and the body member for member (a
+    /// streamed body byte for byte). The member's far end answers what the oracle's far end
+    /// answered, the over-budget key is in the golden deployment's spent group and the unknown model
+    /// is the golden request's, so nothing of the answer is this rig's own. BESIDE IT, 1.5.5's
+    /// money and state ([`money_of`]): the far end's dials, the key's admissions, its spend and its
+    /// tokens, the metering row, and the member's breaker and admissibility after the walk.
     ///
-    /// RED: a head that names a field 1.5.5 did not send or drops one it did, another media type, a
-    /// body that differs from 1.5.5's by one byte, a walk that dials a refused unit or dials twice,
-    /// an admission or a fee drawn or skipped against the fixture, or a member benched or made
-    /// inadmissible by a walk.
+    /// RED: any byte of the answer, any header, any count or the member's state off what 1.5.5
+    /// left.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave() {
         let _one = ONE_PUBLISHER.lock().await;
         let mut failures: Vec<String> = Vec::new();
-        // The envelope is spelled as 1.5.5 recorded it, so the two refusals spelled below are in
-        // 1.5.5's bytes and not this file's.
-        let (quota_recorded, quota_length) = golden_body("route_golden.over_budget");
-        let quota_spelled = refusal_body(
-            "insufficient_quota",
-            Some("insufficient_quota"),
-            "You have exceeded your current quota (group 'broke-quota' budget per day exhausted). \
-             Please check your plan and billing details.",
-        );
-        assert_eq!(
-            (quota_spelled.as_slice(), quota_spelled.len()),
-            (quota_recorded.as_slice(), quota_length),
-            "the refusal envelope is spelled as 1.5.5 recorded it"
-        );
-        let (malformed, malformed_length) = golden_body("route_golden.malformed");
-        let (acl, acl_length) = golden_body("route_golden.pool_acl");
-        assert_eq!(
-            (malformed.len(), acl.len()),
-            (malformed_length, acl_length),
-            "each recorded body is its recorded byte count"
-        );
-        let streamed = format!(
-            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-            FRAMES[0], FRAMES[1]
-        );
-        let over_budget = refusal_body(
-            "insufficient_quota",
-            Some("insufficient_quota"),
-            "You have exceeded your current quota (group 'bgrp' budget per total exhausted). \
-             Please check your plan and billing details.",
-        );
-        let unknown = refusal_body(
-            "not_found_error",
-            None,
-            "The model 'no-such-model' does not exist or you do not have access to it.",
-        );
-        let answers: [(Fixture, &[u8]); 6] = [
-            (Fixture::BufferedOk, SERVED_BY_TWIN.as_bytes()),
-            (Fixture::StreamedOk, streamed.as_bytes()),
-            (Fixture::Malformed, &malformed),
-            (Fixture::OverBudget, &over_budget),
-            (Fixture::PoolAcl, &acl),
-            (Fixture::UnknownModel, &unknown),
-        ];
-        for (fixture, status, dialled, admitted, spend) in [
-            (Fixture::BufferedOk, 200, 1, 1, 1),
-            (Fixture::StreamedOk, 200, 1, 1, 1),
-            (Fixture::Malformed, 400, 0, 0, 0),
-            (Fixture::OverBudget, 429, 0, 0, 0),
-            (Fixture::PoolAcl, 403, 0, 0, 0),
-            (Fixture::UnknownModel, 404, 0, 1, 0),
-        ] {
+        for fixture in FIXTURES {
             let seen = observe("walk", fixture).await;
-            if (seen.status, seen.dialled, seen.admitted, seen.spend)
-                != (status, dialled, admitted, spend)
-            {
-                failures.push(format!(
-                    "{fixture:?}: (status, dialled, admitted, spend) = ({}, {}, {}, {}), \
-                     expected ({status}, {dialled}, {admitted}, {spend})",
-                    seen.status, seen.dialled, seen.admitted, seen.spend
-                ));
-            }
-            let (names, media) = golden_head(fixture);
-            let door: std::collections::BTreeSet<String> = seen
-                .head
-                .keys()
-                .map(|k| k.as_str().to_ascii_lowercase())
-                .filter(|k| !FRAMING.contains(&k.as_str()))
-                .collect();
-            if door != names {
-                failures.push(format!(
-                    "{fixture:?}: the head names {door:?}, 1.5.5 sent {names:?}"
-                ));
-            }
-            if field(&seen.head, "content-type") != media {
-                failures.push(format!(
-                    "{fixture:?}: content-type {:?}, 1.5.5 sent {media:?}",
-                    field(&seen.head, "content-type")
-                ));
-            }
-            if !seen.breaker_closed {
-                failures.push(format!("{fixture:?}: the member's breaker left closed"));
-            }
-            if !seen.admissible {
-                failures.push(format!("{fixture:?}: the member's lane left inadmissible"));
-            }
-            let answer = answers
-                .iter()
-                .find_map(|(f, bytes)| (*f == fixture).then_some(*bytes))
-                .expect("every fixture has its 1.5.5 answer");
-            if seen.body != answer {
-                failures.push(format!(
-                    "{fixture:?}: the answer is not 1.5.5's byte for byte\n  1.5.5: {}\n  door:  {}",
-                    String::from_utf8_lossy(answer),
-                    String::from_utf8_lossy(&seen.body)
-                ));
-            }
+            let what = format!("{fixture:?}");
+            held_to(
+                &golden_of(fixture),
+                seen.status,
+                &seen.head,
+                &seen.body,
+                &what,
+                &mut failures,
+            );
+            money_held(&seen, fixture, &what, &mut failures);
         }
         assert!(
             failures.is_empty(),
@@ -11827,73 +11977,186 @@ mod model_door_root_cells {
         );
     }
 
-    /// One metering row for the key, of lane `m0`, reading `tail`.
-    fn one_row(rows: &[String], tail: &str, what: &str) {
-        assert_eq!(rows.len(), 1, "{what}: one metering row: {rows:?}");
-        assert!(
-            rows[0].starts_with("m0/") && rows[0].ends_with(&format!(" {tail}")),
-            "{what}: the row reads `m0/<provider> {tail}`, got {}",
-            rows[0]
-        );
-    }
-
-    /// THE MONEY, SPELLED OUT, ON THE DOOR. Door successor of
+    /// THE MONEY, SPELLED OUT, ON THE DOOR: USAGE AND SPEND, FIELD BY FIELD. Door successor of
     /// `plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`, assertion for
-    /// assertion. A STREAMED unit accrues at stream end rather than at the buffered tap, so it is
-    /// asserted in its own right: one admission, the reported split (11 in, 7 out, 18 tokens) on
-    /// the key, and its one metering row. A delivered buffered unit: one admission and its row
-    /// (the far end's 1 in, 1 out). The door refused a spent budget: nothing on the key's bucket and
-    /// no row. The pre-admission guard refused: nothing charged either. Refused after the door: the
+    /// assertion, spend beside every count. A STREAMED unit accrues at stream end rather than at the
+    /// buffered tap, so it is asserted in its own right: one admission, the one-cent fee, the
+    /// reported split (11 in, 7 out, 18 tokens) and its one metering row. A delivered buffered unit:
+    /// the same. The door refused a spent budget: nothing on the key's bucket, no tokens, no spend,
+    /// no row. The pre-admission guard refused: nothing either. Refused after the door: the
     /// admission slot is drawn and never released (the rule that makes a request cap impossible to
-    /// escape by failing), and no row is metered.
+    /// escape by failing), its fee comes back, and no row is metered.
     ///
-    /// RED: a stream metering nothing, a refusal that charged, or a post-door refusal that released
-    /// its admission.
+    /// RED: a stream metering nothing, a refusal that charged or spent, or a post-door refusal that
+    /// released its admission or kept its fee.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it() {
         let _one = ONE_PUBLISHER.lock().await;
+        for fixture in [
+            Fixture::StreamedOk,
+            Fixture::BufferedOk,
+            Fixture::OverBudget,
+            Fixture::PoolAcl,
+            Fixture::UnknownModel,
+        ] {
+            let seen = observe("money", fixture).await;
+            let (_, admitted, spend, tokens, row) = money_of(fixture);
+            assert_eq!(
+                (seen.admitted, seen.spend, seen.tokens),
+                (admitted, spend, tokens),
+                "{fixture:?}: (admissions, spend in cents, tokens)"
+            );
+            match row {
+                Some(tail) => {
+                    assert_eq!(
+                        seen.rows.len(),
+                        1,
+                        "{fixture:?}: one metering row: {:?}",
+                        seen.rows
+                    );
+                    assert!(
+                        seen.rows[0].starts_with("m0/")
+                            && seen.rows[0].ends_with(&format!(" {tail}")),
+                        "{fixture:?}: the row reads `m0/<provider> {tail}`, got {}",
+                        seen.rows[0]
+                    );
+                }
+                None => assert_eq!(seen.rows, Vec::<String>::new(), "{fixture:?}: no row"),
+            }
+        }
+    }
 
-        let streamed = observe("money", Fixture::StreamedOk).await;
-        assert_eq!(streamed.admitted, 1, "the streamed unit drew its admission");
-        assert_eq!(
-            streamed.tokens, 18,
-            "the stream-end tap accrued the reported split"
-        );
-        one_row(
-            &streamed.rows,
-            "in=11 out=7 cr=0 cw=0 req=1 billable=1",
-            "streamed",
-        );
+    /// **THE GATE IN 1.5.5'S ORDER, BOTH WAYS, ON THE DOOR.** Door successor of
+    /// `plane_node.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing`,
+    /// at the order 1.5.5 ran (ARCHITECT ruling on #1342): a unit is admitted and charged
+    /// (v1.5.5 `crates/busbar/src/ingress/dispatch.rs:199`, `governance_guard`), forwarded
+    /// (`:248`), its gate chain fires (`crates/busbar/src/proxy/engine/mod.rs:946`) and a reject
+    /// returns the gate's answer (`:1005`), and its finish refunds a non-2xx (`dispatch.rs:275`,
+    /// `ingress/mod.rs:469`). The gate-first arm, a plane whose screen stops a unit before the
+    /// door with nothing admitted, is `plane_node_money.rs`'s
+    /// `a_screened_veto_through_the_node_admits_nothing`.
+    ///
+    /// * A GATE THAT DOES NOT VETO is asked, and the unit answers what the shipped path answers,
+    ///   field for field: the 1.5.5 answer to the same request (status, every header by value,
+    ///   body) and 1.5.5's money and state (dials, admissions, spend, tokens, metering row,
+    ///   breaker, admissibility), its one record sealed `Completed`.
+    /// * A GATE THAT VETOES is asked, and the unit answers the gate's own refusal in the caller's
+    ///   dialect (the gate's 451 and words, in the envelope 1.5.5's `ingress_error` writes for the
+    ///   dialect, its kind `invalid_request_error` as v1.5.5 `proxy/hooks.rs:624-633` maps 451,
+    ///   head as that envelope's), dials nothing, meters nothing, keeps its admission, has its fee
+    ///   refunded, and seals ONE link on the chain, which verifies, ending `Failed(Route,
+    ///   HookVeto)`.
+    /// * A GATE THAT VETOES AT THE REJECT DEFAULT (403) answers the plane's own permission refusal
+    ///   in the caller's dialect: the oracle's recorded 1.5.5 permission refusal of this dialect
+    ///   (`route_golden.pool_acl`, kind `permission_error`, as `reject_kind_for_status` keeps 403)
+    ///   with the gate's words, and leaves the same money and the same one link.
+    ///
+    /// RED: a passing gate that changes a byte or a count, a veto that dials, meters, keeps its fee,
+    /// answers outside the caller's dialect or seals other than one link, or a gate never asked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_model_door_gates_a_unit_in_1_5_5s_order_and_a_passing_gate_changes_nothing() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let mut failures: Vec<String> = Vec::new();
 
-        let delivered = observe("money", Fixture::BufferedOk).await;
-        assert_eq!(
-            delivered.admitted, 1,
-            "the buffered unit drew its admission"
+        let passed = observe("approve-pass", Fixture::BufferedOk).await;
+        if !passed.asked_gate {
+            failures.push("a passing gate was never asked".to_string());
+        }
+        held_to(
+            &golden_of(Fixture::BufferedOk),
+            passed.status,
+            &passed.head,
+            &passed.body,
+            "a passing gate",
+            &mut failures,
         );
-        assert_eq!(delivered.tokens, 2, "the far end's reported 1 in, 1 out");
-        one_row(
-            &delivered.rows,
-            "in=1 out=1 cr=0 cw=0 req=1 billable=1",
-            "buffered",
+        money_held(
+            &passed,
+            Fixture::BufferedOk,
+            "a passing gate",
+            &mut failures,
         );
+        let ends: Vec<_> = passed.records.iter().map(|r| r.outcome.unit_end).collect();
+        if ends != [busbar_contract::caps::Outcome::Completed] {
+            failures.push(format!(
+                "a passing gate: the unit sealed {ends:?}, not the one served end (Completed)"
+            ));
+        }
 
-        // The door refused: nothing was charged, so there is nothing on the key's bucket at all.
-        let refused = observe("money", Fixture::OverBudget).await;
-        assert_eq!(refused.admitted, 0, "the door's refusal charged nothing");
-        assert_eq!(refused.rows, Vec::<String>::new(), "and metered nothing");
-
-        // The pre-admission guard refused: charged nothing either, and never reached the door.
-        let guarded = observe("money", Fixture::PoolAcl).await;
-        assert_eq!(guarded.admitted, 0, "the guard's refusal charged nothing");
-        assert_eq!(guarded.rows, Vec::<String>::new(), "and metered nothing");
-
-        // Refused after the door: the admission slot is drawn and NEVER released.
-        let post_door = observe("money", Fixture::UnknownModel).await;
-        assert_eq!(
-            post_door.admitted, 1,
-            "a unit refused after the door keeps the admission it drew"
+        let vetoed = observe("approve-veto", Fixture::GateVeto).await;
+        if !vetoed.asked_gate {
+            failures.push("the vetoing gate was never asked".to_string());
+        }
+        // The gate's refusal in the caller's dialect: the envelope 1.5.5 writes for an
+        // invalid-request refusal in this dialect, with the gate's status and words.
+        let mut refusal = golden_word("route_golden.malformed");
+        refusal.status = 451;
+        refusal.body["json"]["error"]["message"] = serde_json::Value::from("the gate says no");
+        held_to(
+            &refusal,
+            vetoed.status,
+            &vetoed.head,
+            &vetoed.body,
+            "a vetoing gate",
+            &mut failures,
         );
-        assert_eq!(post_door.rows, Vec::<String>::new(), "and meters nothing");
+        money_held(&vetoed, Fixture::GateVeto, "a vetoing gate", &mut failures);
+        vetoed_once(&vetoed, "a vetoing gate", &mut failures);
+
+        // THE REJECT DEFAULT: a gate that vetoes without a status of its own answers 403, which
+        // 1.5.5 wrote as the plane's own permission refusal in the caller's dialect (v1.5.5
+        // `proxy/hooks.rs` `reject_kind_for_status`: 403 stays a permission error), the envelope
+        // the oracle recorded for this dialect's permission refusal with the gate's words.
+        let denied = observe("approve-deny", Fixture::GateDeny).await;
+        if !denied.asked_gate {
+            failures.push("the denying gate was never asked".to_string());
+        }
+        let mut permission = golden_word("route_golden.pool_acl");
+        permission.body["json"]["error"]["message"] = serde_json::Value::from("the gate says no");
+        held_to(
+            &permission,
+            denied.status,
+            &denied.head,
+            &denied.body,
+            "a gate denying at the reject default",
+            &mut failures,
+        );
+        money_held(
+            &denied,
+            Fixture::GateDeny,
+            "a gate denying at the reject default",
+            &mut failures,
+        );
+        vetoed_once(&denied, "a gate denying at the reject default", &mut failures);
+        assert!(
+            failures.is_empty(),
+            "{} finding(s) at the approve seat:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// A vetoed unit's chain: ONE link, which verifies, sealed as its veto after the admission
+    /// charge (`Failed(Route, HookVeto)`: the gate sits at the route leg's head, where 1.5.5 ran
+    /// it).
+    fn vetoed_once(seen: &Observed, what: &str, out: &mut Vec<String>) {
+        if seen.records.len() != 1 {
+            out.push(format!(
+                "{what}: the vetoed unit seals {} link(s) on the chain, not one",
+                seen.records.len()
+            ));
+        }
+        if busbar_kernel_audit::AuditChain::verify_window(&seen.records).is_err() {
+            out.push(format!("{what}: the vetoed unit's link does not verify"));
+        }
+        let ends: Vec<_> = seen.records.iter().map(|r| r.outcome.unit_end).collect();
+        let veto = busbar_contract::caps::Outcome::Failed(
+            busbar_contract::caps::StepName::Route,
+            busbar_contract::caps::ReasonCode::HookVeto,
+        );
+        if ends != [veto] {
+            out.push(format!("{what}: the unit sealed {ends:?}, not its veto {veto:?}"));
+        }
     }
 
     /// **THE ROUTE SEAM'S COUNT, ON THE DOOR.** Door successor of
@@ -11969,29 +12232,32 @@ mod model_door_root_cells {
         Empty,
     }
 
-    /// One decode leg's request and the answer it is held to.
-    struct Leg {
-        shape: &'static str,
-        method: &'static str,
-        path: &'static str,
-        payload: Payload,
+    /// What one decode leg was answered and left: its answer, the far end's dials, the key's
+    /// admissions, spend and tokens, and the member's breaker and admissibility.
+    struct Answer {
         status: u16,
-        sentence: Option<&'static str>,
-        dials: usize,
-        admits: u64,
+        head: HeaderMap,
+        body: Vec<u8>,
+        dialled: usize,
+        admitted: u64,
+        spend: i64,
+        tokens: u64,
+        breaker_closed: bool,
+        admissible: bool,
     }
 
-    /// One decode leg on a deployment of its own: (status, body, far-end dials, admissions).
+    /// One decode leg on a deployment of its own, its far end answering what the 1.5.5 oracle's
+    /// far end answered.
     async fn decode_leg(
         label: &str,
         method: &str,
         path: &str,
         payload: Payload,
         served: bool,
-    ) -> (u16, String, usize, u64) {
+    ) -> Answer {
         let instance = deployment(format!("root-door-decode-{label}"));
         let _published = Withdrawn(instance);
-        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let far = seat_far_end(200, golden_answer()).await;
         let rig = rig(
             instance,
             RigOpts {
@@ -12000,24 +12266,34 @@ mod model_door_root_cells {
             },
         )
         .await;
-        let (status, _, body) = match payload {
+        let (status, head, body) = match payload {
             Payload::Json(request) => rig.send(method, path, Some(request)).await,
             Payload::Raw(bytes) => send_raw(&rig, path, bytes).await,
             Payload::Empty => rig.send(method, path, None).await,
         };
-        let admitted = if served {
-            rig.ledger_after(1).await.0
+        let (admitted, spend) = if served {
+            let ledger = rig.ledger_after(1).await;
+            (ledger.0, ledger.1)
         } else {
             // A refusal's money settles at the unit's end, where there is one: give it the time.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            rig.ledger_after(0).await.0
+            let ledger = rig.ledger_after(0).await;
+            (ledger.0, ledger.1)
         };
-        (
+        Answer {
             status,
-            String::from_utf8_lossy(&body).into_owned(),
-            far.served(),
+            head,
+            body,
+            dialled: far.served(),
             admitted,
-        )
+            spend,
+            tokens: rig.tokens_after().await,
+            breaker_closed: matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                busbar_kernel::store::BreakerState::Closed
+            ),
+            admissible: rig.app.store.lane_admissible(0),
+        }
     }
 
     /// A door word's row of `<path> | <status> | <sentence> | <admissions>`: one request a caller can
@@ -12045,35 +12321,50 @@ mod model_door_root_cells {
         ))
     }
 
+    /// Whether some string of `v` is exactly `sentence`.
+    fn says(v: &serde_json::Value, sentence: &str) -> bool {
+        match v {
+            serde_json::Value::String(s) => s == sentence,
+            serde_json::Value::Array(a) => a.iter().any(|v| says(v, sentence)),
+            serde_json::Value::Object(o) => o.values().any(|v| says(v, sentence)),
+            _ => false,
+        }
+    }
+
+    /// One decode leg's request and what it is held to: a 1.5.5 golden answer, or (a leg 1.5.5's
+    /// oracle recorded no cell for) its status and the exact sentence its envelope carries; and the
+    /// money it leaves (dials, admissions, spend, tokens).
+    struct Leg {
+        shape: &'static str,
+        method: &'static str,
+        path: &'static str,
+        payload: Payload,
+        golden: Option<Golden>,
+        status: u16,
+        sentence: Option<&'static str>,
+        money: (usize, u64, i64, u64),
+    }
+
     /// **THE DECODE STEP ON EVERY DIALECT THE PLANE STATES, ALL FOUR SHAPES.** Door successor of
     /// `plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`: each
     /// caller dialect the plane's door words state (as many as the plane declares on the protocol
     /// axis, read rather than listed) in each of the four shapes, every leg on its own deployment,
-    /// the end each reaches asserted with the answer's own sentence. Twenty-four legs for six
-    /// dialects:
+    /// each held field by field (status, every header by value, body, and the money and the
+    /// member's breaker and admissibility it leaves):
     ///
-    /// * `Named` (each dialect) reaches the door and is served (200, one dial, one admission): the
-    ///   model WAS resolved, and the dialect is mounted;
-    /// * `Malformed` (each dialect) is refused 400 at arrival with the parse sentence, charged
-    ///   nothing and dialled nowhere;
-    /// * NO MODEL. A dialect whose model rides the body: the ladder's own 400 with the
-    ///   missing-model sentence. A dialect whose model rides the URL has no body member to leave
-    ///   out, so the request a caller can send is the URL naming no model (`no_url_model.<name>`),
-    ///   answered as 1.5.5 answered it before decode: the generate dialect's own `Invalid resource
-    ///   path` 404 (v1.5.5 `crates/busbar/src/ingress/mod.rs:838-858`), the converse dialect's
-    ///   model-not-found 404 naming the empty model after its admission (v1.5.5
-    ///   `ingress/dispatch.rs:199` admits, `:220-233` answers `not_found_message`,
-    ///   `ingress/mod.rs:1005-1013`);
-    /// * UNSUPPORTED VERB. Where the door words name an action the dialect has and the door does
-    ///   not serve (`unserved_action.<name>`), its own 404. Every other dialect resolves no
-    ///   operation on its path that lacks a handler, on 1.5.5 as on the door (v1.5.5
-    ///   `ingress/dispatch.rs:325-336`), so the request a caller can send for a verb its path does
-    ///   not take is another method on that path, answered as 1.5.5 answered it before decode:
-    ///   the dialect's 405 (v1.5.5 `ingress/dispatch.rs:311-318`; the oracle's golden
-    ///   `http.crosscut|wrong-method|GET-messages`).
+    /// * `Named` reaches the door and is served: held to the oracle's 1.5.5 golden of the same
+    ///   dialect over the members' dialect (`golden_ok`), the far end answering what 1.5.5's did;
+    /// * `Malformed` is refused at arrival: held to the oracle's 1.5.5 golden of the dialect's
+    ///   malformed request (`golden_malformed`);
+    /// * NO MODEL, a dialect whose model rides the body: the ladder's 400, held to the same
+    ///   envelope 1.5.5 wrote its parse refusal in with the missing-model words (v1.5.5
+    ///   `ingress/dispatch.rs:112-117` and `:147-153` write both through one `ingress_error` of
+    ///   one kind and status); a dialect whose model rides the URL: the URL naming no model
+    ///   (`no_url_model.<name>`), its 1.5.5 status and sentence;
+    /// * UNSUPPORTED VERB: the unserved action the door words name (`unserved_action.<name>`), or
+    ///   another method on the dialect's path, its 1.5.5 status and sentence.
     ///
-    /// RED: a dialect that does not reach the door, a model-less request that does, a refusal that
-    /// is charged or dialled against 1.5.5, or an answer in another status or sentence.
+    /// RED: any field of a leg off what 1.5.5 answered and left.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_decodes_every_dialect_it_mounts_in_every_shape() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -12084,32 +12375,35 @@ mod model_door_root_cells {
             "the door words state one caller row per dialect the plane declares"
         );
         let missing_model = door_word("missing_model_sentence");
-        let unparsable = door_word("unparsable_sentence");
         let wrong_verb = door_word("wrong_verb");
         let wrong_verb_sentence = door_word("wrong_verb_sentence");
         let mut failures: Vec<String> = Vec::new();
         let mut legs = 0usize;
         for caller in &callers {
+            let malformed = golden_at(&golden_file("golden_malformed", caller.golden), None);
             let mut shapes = vec![
                 Leg {
                     shape: "named",
                     method: "POST",
                     path: caller.path,
                     payload: Payload::Json(caller.request.clone()),
+                    golden: Some(golden_at(&golden_file("golden_ok", caller.golden), None)),
                     status: 200,
                     sentence: None,
-                    dials: 1,
-                    admits: 1,
+                    money: (1, 1, 1, 18),
                 },
                 Leg {
                     shape: "malformed",
                     method: "POST",
                     path: caller.path,
                     payload: Payload::Raw("{not json"),
+                    golden: Some(golden_at(
+                        &golden_file("golden_malformed", caller.golden),
+                        None,
+                    )),
                     status: 400,
-                    sentence: Some(unparsable),
-                    dials: 0,
-                    admits: 0,
+                    sentence: None,
+                    money: (0, 0, 0, 0),
                 },
             ];
             if caller.body_model {
@@ -12118,15 +12412,19 @@ mod model_door_root_cells {
                     .as_object_mut()
                     .expect("a body-model request is a JSON object")
                     .remove("model");
+                let mut refusal = malformed;
+                let mut body = refusal.body["json"].clone();
+                swap_sentence(&mut body, door_word("unparsable_sentence"), missing_model);
+                refusal.body["json"] = body;
                 shapes.push(Leg {
                     shape: "no-model",
                     method: "POST",
                     path: caller.path,
                     payload: Payload::Json(bare),
+                    golden: Some(refusal),
                     status: 400,
-                    sentence: Some(missing_model),
-                    dials: 0,
-                    admits: 0,
+                    sentence: None,
+                    money: (0, 0, 0, 0),
                 });
             } else {
                 let (path, status, sentence, admits) =
@@ -12137,10 +12435,10 @@ mod model_door_root_cells {
                     method: "POST",
                     path,
                     payload: Payload::Json(caller.request.clone()),
+                    golden: None,
                     status,
                     sentence: Some(sentence),
-                    dials: 0,
-                    admits,
+                    money: (0, admits, 0, 0),
                 });
             }
             shapes.push(
@@ -12150,43 +12448,72 @@ mod model_door_root_cells {
                         method: "POST",
                         path,
                         payload: Payload::Json(caller.request.clone()),
+                        golden: None,
                         status,
                         sentence: Some(sentence),
-                        dials: 0,
-                        admits,
+                        money: (0, admits, 0, 0),
                     },
                     None => Leg {
                         shape: "wrong-verb",
                         method: wrong_verb,
                         path: caller.path,
                         payload: Payload::Empty,
+                        golden: None,
                         status: 405,
                         sentence: Some(wrong_verb_sentence),
-                        dials: 0,
-                        admits: 0,
+                        money: (0, 0, 0, 0),
                     },
                 },
             );
             for leg in shapes {
                 legs += 1;
                 let (shape, method, path) = (leg.shape, leg.method, leg.path);
+                let what = format!("{} {method} {path} ({shape})", caller.name);
                 let label = format!("{}-{shape}", caller.name);
-                let (status, body, dialled, admitted) =
-                    decode_leg(&label, method, path, leg.payload, shape == "named").await;
-                if (status, dialled, admitted) != (leg.status, leg.dials, leg.admits) {
+                let seen = decode_leg(&label, method, path, leg.payload, shape == "named").await;
+                match &leg.golden {
+                    Some(golden) => {
+                        held_to(
+                            golden,
+                            seen.status,
+                            &seen.head,
+                            &seen.body,
+                            &what,
+                            &mut failures,
+                        );
+                    }
+                    None => {
+                        if seen.status != leg.status {
+                            failures.push(format!(
+                                "{what}: status {}, 1.5.5 answered {}",
+                                seen.status, leg.status
+                            ));
+                        }
+                        let says_it = leg.sentence.is_some_and(|sentence| {
+                            serde_json::from_slice::<serde_json::Value>(&seen.body)
+                                .is_ok_and(|body| says(&body, sentence))
+                        });
+                        if !says_it {
+                            failures.push(format!(
+                                "{what}: the answer does not carry {:?} as one of its strings: {}",
+                                leg.sentence,
+                                String::from_utf8_lossy(&seen.body)
+                            ));
+                        }
+                    }
+                }
+                let money = (seen.dialled, seen.admitted, seen.spend, seen.tokens);
+                if money != leg.money {
                     failures.push(format!(
-                        "{method} {path} ({shape}): (status, dialled, admitted) = ({status}, \
-                         {dialled}, {admitted}), expected ({}, {}, {}): {body}",
-                        leg.status, leg.dials, leg.admits
+                        "{what}: (dialled, admitted, spend, tokens) = {money:?}, 1.5.5 left {:?}",
+                        leg.money
                     ));
                 }
-                if let Some(sentence) = leg.sentence {
-                    if !body.contains(sentence) {
-                        failures.push(format!(
-                            "{method} {path} ({shape}): the answer does not say {sentence:?}: \
-                             {body}"
-                        ));
-                    }
+                if !seen.breaker_closed || !seen.admissible {
+                    failures.push(format!(
+                        "{what}: the member's breaker closed {} and admissible {}",
+                        seen.breaker_closed, seen.admissible
+                    ));
                 }
             }
         }
@@ -12202,6 +12529,16 @@ mod model_door_root_cells {
             callers.len(),
             failures.join("\n")
         );
+    }
+
+    /// Every string of `v` that is exactly `from`, made `to`.
+    fn swap_sentence(v: &mut serde_json::Value, from: &str, to: &str) {
+        match v {
+            serde_json::Value::String(s) if s == from => *s = to.to_string(),
+            serde_json::Value::Array(a) => a.iter_mut().for_each(|v| swap_sentence(v, from, to)),
+            serde_json::Value::Object(o) => o.values_mut().for_each(|v| swap_sentence(v, from, to)),
+            _ => {}
+        }
     }
 
     /// EVERY UNIT END SEALS EXACTLY ONE AUDIT RECORD ON ONE CHAIN, AND A UNIT WHOSE AUDIT DOOR IS

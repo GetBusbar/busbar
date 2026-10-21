@@ -164,8 +164,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_seated_gate_stops_a_unit_and_a_passing_gate_changes_nothing",
-          "note": "a gate seated on the door's live mount driven both ways, in 1.5.5's order (ARCHITECT-ACCEPTED: a unit is admitted and charged, then its gate is asked, then a veto refunds its fee -- v1.5.5 crates/busbar/src/ingress/dispatch.rs:199 governance_guard admits and charges, :248 forward_with_pool_parsed, crates/busbar/src/proxy/engine/mod.rs:946 the gate chain fires and :1005 a reject returns, dispatch.rs:275 finish_admitted with ingress/mod.rs:469 refunding a non-2xx): a vetoing gate stops the unit with its 451 in the caller's JSON envelope, dials nothing, meters nothing, keeps its admission with the fee refunded and seals one record ending at Route for the veto; a passing gate is asked and the unit reaches, field by field, the served end a gateless unit reaches (the far end's bytes, the media type, one dial, the ledger, one metering row, the breaker, a Completed record). The gate-first arm, a screen that stops a unit before the door with nothing admitted, is crates/busbar/src/root/tests/plane_node_money.rs::a_screened_veto_through_the_node_admits_nothing"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_gates_a_unit_in_1_5_5s_order_and_a_passing_gate_changes_nothing",
+          "note": "the gate in 1.5.5's order on the door (ARCHITECT-ACCEPTED): a unit is admitted and charged, its gate is asked, and a veto refunds its fee (v1.5.5 crates/busbar/src/ingress/dispatch.rs:199 governance_guard admits and charges, :248 forward_with_pool_parsed, crates/busbar/src/proxy/engine/mod.rs:946 the gate chain fires and :1005 a reject returns, dispatch.rs:275 finish_admitted with ingress/mod.rs:469 refunds a non-2xx). A passing gate is asked and the unit answers what 1.5.5 answered field for field (status, headers by value, body, dials, admissions, spend, tokens, metering row, breaker, admissibility) and seals one Completed record; a vetoing gate answers its own 451 refusal in the caller's dialect, and a gate vetoing at the reject default (403) answers the plane's own permission refusal in the caller's dialect (the oracle's recorded 1.5.5 permission refusal, llm|openai|openai|request|out_of_scope, with the gate's words); each veto dials and meters nothing, keeps the admission, refunds the fee and seals one link on the chain, verified, ending Failed(Route, HookVeto). The gate-first arm, a plane whose screen stops a unit before the door with nothing admitted, is crates/busbar/src/root/tests/plane_node_money.rs::a_screened_veto_through_the_node_admits_nothing"
         }
       },
       "admit": {
@@ -176,7 +176,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_spent_budget_without_charging_anything",
-          "note": "the door's admission refuses an over-budget group 429, moves nothing on the blocking bucket or the key's own ledger, dials nothing, and seals the refusal as OverBudget at the Admit step"
+          "note": "the door's admission refuses an over-budget group 429, moves nothing on the blocking bucket or the key's own ledger, and leaves the key's money field by field where 1.5.5 left it: no admission, no spend, no tokens, nothing billable and no metering row; it dials nothing and seals the refusal as OverBudget at the Admit step"
         }
       },
       "route": {
@@ -187,7 +187,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
-          "note": "the walk the route step drives, compared with 1.5.5's answer on all six fixtures: every answer's body byte for byte (the buffered and streamed answers as 1.5.5 relayed and re-emitted them, the malformed and pool-ACL refusals as the oracle recorded them, the over-budget and unknown-model refusals in 1.5.5's writer's envelope and sentences), its response head held to the oracle's recorded 1.5.5 capture of the same request (header names framing aside, and content type), each delivered unit dialled once and a refused one never, admissions and fees drawn where 1.5.5 drew them, and the member's lane left with its breaker closed and still admissible"
+          "note": "the walk on all six fixtures held to 1.5.5 byte for byte: the answer against the oracle's recorded capture of the same request (status, every header by value but the wire's own framing, body member for member and a streamed body byte for byte: llm|openai|openai|request|ok, |ok_stream, |malformed, |over_budget_total, |out_of_scope, and the POST /v1/chat/completions step of neutrality|models-empty|surface), the member's far end answering what the oracle's far end answered, and 1.5.5's dials, admissions, spend, tokens, metering rows, breaker and admissibility"
         }
       },
       "meter": {
@@ -198,7 +198,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it",
-          "note": "the delivered fixtures' usage and spend, field by field at the shipped path's values: the streamed unit accrues its reported 11 in and 7 out at stream end and the buffered one its 1 in and 1 out, each one admission and exactly one metering row (in, out, cache read, cache write, requests, billable); the refused fixtures meter nothing and a post-door refusal keeps its admission"
+          "note": "the delivered fixtures' usage and spend on the door, compared field by field: the streamed unit accrues its reported 11 in and 7 out at stream end and pays its one-cent fee, the buffered one the same, each one admission and exactly one metering row of lane m0 (in, out, cache read, cache write, requests, billable); the refused fixtures meter nothing, spend nothing and accrue no tokens, and a post-door refusal keeps its admission with its fee refunded"
         }
       },
       "audit": {

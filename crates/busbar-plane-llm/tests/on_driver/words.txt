@@ -31,13 +31,14 @@ converse_path = /model/p/converse
 converse_body = {"messages":[{"role":"user","content":[{"text":"hi"}]}]}
 # EVERY CALLER DIALECT THIS PLANE MOUNTS, one row each, read by the composition root's decode cell
 # (one row per dialect the plane declares on the protocol axis): `caller.<name> = <path onto pool
-# p> | <a request in that dialect> | body` (its model rides the body) or `| path` (the URL).
-caller.chat = /v1/chat/completions | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body
-caller.messages = /v1/messages | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body
-caller.chat_v2 = /v2/chat | {"model":"p","messages":[{"role":"user","content":"hi"}]} | body
-caller.respond = /v1/responses | {"model":"p","input":"hi"} | body
-caller.generate = /v1beta/models/p:generateContent | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | path
-caller.converse = /model/p/converse | {"messages":[{"role":"user","content":[{"text":"hi"}]}]} | path
+# p> | <a request in that dialect> | body` (its model rides the body) or `| path` (the URL)
+# `| <the dialect's name in the oracle's 1.5.5 golden cells>`.
+caller.chat = /v1/chat/completions | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body | openai
+caller.messages = /v1/messages | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body | anthropic
+caller.chat_v2 = /v2/chat | {"model":"p","messages":[{"role":"user","content":"hi"}]} | body | cohere
+caller.respond = /v1/responses | {"model":"p","input":"hi"} | body | responses
+caller.generate = /v1beta/models/p:generateContent | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | path | gemini
+caller.converse = /model/p/converse | {"messages":[{"role":"user","content":[{"text":"hi"}]}]} | path | bedrock
 # The decode step's refusal sentences, as 1.5.5 wrote them: a body naming no model, and a body that
 # is not JSON.
 missing_model_sentence = Missing required parameter: 'model'.
@@ -55,6 +56,14 @@ wrong_verb = GET
 wrong_verb_sentence = method not allowed for this resource
 no_url_model.generate = /v1beta/models/:generateContent | 404 | Invalid resource path: models/:generateContent is not found for API version v1beta. | 0
 no_url_model.converse = /model//converse | 404 | The model '' does not exist or you do not have access to it. | 1
+# THE 1.5.5 GOLDENS the decode cell holds each dialect's answers to: the served request over the
+# members' dialect, and the malformed one ({ingress}: the caller row's golden name; {egress}:
+# `golden_egress`, the members' own dialect, `dialect` above), and the usage event the oracle's far
+# end streamed before its end (the 1.5.5 relay held it back from a caller that asked for none).
+golden_ok = testing/shadow-oracle/golden/1.5.5/cells/llm__{ingress}__{egress}__request__ok.json
+golden_malformed = testing/shadow-oracle/golden/1.5.5/cells/llm__{ingress}__{ingress}__request__malformed.json
+golden_egress = openai
+golden_stream_usage_event = {"choices":[],"created":0,"id":"chatcmpl-oracle","model":"m-openai-chat","object":"chat.completion.chunk","usage":{"completion_tokens":7,"prompt_tokens":11,"total_tokens":18}}
 # THE 1.5.5 GOLDEN CAPTURES the root's route cell holds each fixture's response head to: the oracle's
 # recorded cell (repo-relative), and for a capture of several requests the step's own request.
 route_golden.buffered = testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__ok.json

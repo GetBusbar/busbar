@@ -476,6 +476,9 @@ pub(crate) struct RigOpts<'a> {
     pub members: &'a [(u16, u32)],
     /// The global gate rejects with 451.
     pub reject_at_gate: bool,
+    /// The status the rejecting gate answers with instead of 451 (`Some(403)`: the reject
+    /// default, which 1.5.5 answers as a permission refusal).
+    pub gate_status: Option<u16>,
     /// The key's group holds this many cents a day (a flat 1-cent fee per request).
     pub budget_cents: Option<u64>,
     /// How many of the members (the first ones) pool `p` holds; the rest are models no pool
@@ -1111,7 +1114,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     // The pool's ranking policy, which is shown the candidates (an abstaining ranker).
     let ranker = Arc::new(SeatProbe::new("ranker", &log));
     if opts.reject_at_gate {
-        gate_probe.reject = Some((451, "the gate says no"));
+        gate_probe.reject = Some((opts.gate_status.unwrap_or(451), "the gate says no"));
     }
     {
         let a = Arc::get_mut(&mut app).expect("sole owner");
