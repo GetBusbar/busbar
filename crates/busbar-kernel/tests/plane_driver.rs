@@ -911,7 +911,7 @@ impl PlaneCalls for Double {
             .lock()
             .unwrap()
             .push((body.clone(), rewrite.clone()));
-        if target == b"/faults-rewrite" && !rewrite.is_empty() {
+        if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
             return Outcome::Fault;
         }
         if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {

@@ -129,7 +129,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
     /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
-        let mut view: Projection = self.project(None)?;
+        let first = self.project(None, false);
         let (principal, recorded, route) = {
             let st = self.lock();
             (
@@ -137,6 +137,25 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().and_then(|d| d.pool.clone()),
                 st.decoded.as_ref().map_or(0, |d| d.route),
             )
+        };
+        let mut view: Projection = match first {
+            Ok(view) => view,
+            // The plane answered FAULT to the unit's first `project`: where the entry the kernel
+            // recorded has a rewrite hook configured, v1.5.5 materialized the document before any
+            // hook ran (`proxy/engine/mod.rs:728`, `:749`) and answered the shared 500, no hook
+            // invoked; anywhere else the unit is as unreadable as any other refused `project`.
+            Err(Stopped::Unparseable) => {
+                let configured = std::str::from_utf8(recorded.as_deref().unwrap_or_default())
+                    .ok()
+                    .and_then(|entry| binder.bind_gated(entry, principal.as_deref()))
+                    .is_some_and(|hooks| !hooks.rewrites.is_empty());
+                return Err(if configured {
+                    super::fault_veto()
+                } else {
+                    Stopped::Unreadable
+                });
+            }
+            Err(other) => return Err(other),
         };
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
@@ -207,7 +226,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let next = match self.project(Some(&bytes)) {
+                    let next = match self.project(Some(&bytes), true) {
                         Ok(next) => next,
                         // A FAULT project: the shared 500, never the hook's `on_error`.
                         Err(fault @ Stopped::Veto(_)) => return Err(fault),

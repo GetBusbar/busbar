@@ -675,6 +675,11 @@ pub(crate) enum Stopped {
     Veto(Veto),
     /// The plane could not read the request a hook had to see.
     Unreadable,
+    /// The plane answered FAULT to a `project` where no rewrite hook was known to be configured
+    /// (the gate-first stage's first `project`, made before its entry is bound): the caller decides
+    /// whether a configured rewrite hook makes it the shared 500 ([`fault_veto`]) or the unit is
+    /// as unreadable as any other refused `project`.
+    Unparseable,
 }
 
 /// A hook's refusal, clamped and sanitised.
@@ -691,6 +696,14 @@ pub(crate) struct Veto {
 #[path = "../gated.rs"]
 pub mod gated;
 pub use gated::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
+
+/// The shared refusal of a FAULT `project` (`busbar_contract::abi::plane::PROJECT_FAULT_*`).
+fn fault_veto() -> Stopped {
+    veto(
+        busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE,
+    )
+}
 
 fn veto(status: u16, text: impl Into<String>) -> Stopped {
     Stopped::Veto(Veto {
@@ -1131,8 +1144,10 @@ const MESSAGES_CAP: usize = 64;
 
 impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// `project`, ticketless, with the one re-call a short answer earns; `rewrite` is a
-    /// request-stage hook's rewrite for the plane to apply first.
-    fn project(&self, rewrite: Option<&[u8]>) -> Result<Projection, Stopped> {
+    /// request-stage hook's rewrite for the plane to apply first. `faultable`: a rewrite hook is
+    /// configured for the unit (or this call carries a rewrite), so the plane's FAULT is the shared
+    /// 500; otherwise a FAULT is [`Stopped::Unparseable`].
+    fn project(&self, rewrite: Option<&[u8]>, faultable: bool) -> Result<Projection, Stopped> {
         let a = &self.arrival;
         let unit = self.lock().unit;
         let body = self.lock().body.clone().unwrap_or_else(|| a.body.clone());
@@ -1204,18 +1219,19 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 i.arena_buf = bufs.arena.as_mut_ptr();
                 i.arena_cap = bufs.arena.len();
             });
-        // FAULT on a project that carried a rewrite: always the shared 500, whatever the hook's
+        // FAULT where a rewrite hook is configured (v1.5.5 `proxy/engine/mod.rs:728`, `:749`: the
+        // document is materialized before any hook runs, and a body that will not parse is the
+        // shared 500) or the call carried a rewrite: always the shared 500, whatever the hook's
         // `on_error` says, and the body is never forwarded (`abi::plane::project_faults`).
-        if busbar_contract::abi::plane::project_faults(outcome, rewrite.is_some()) {
+        if busbar_contract::abi::plane::project_faults(outcome, true) {
+            if !faultable && rewrite.is_none() {
+                return Err(Stopped::Unparseable);
+            }
             tracing::error!(
                 "the plane could not apply a request rewrite it must not leave unapplied; \
                  rejecting rather than forwarding the body un-rewritten"
             );
-            return Err(Stopped::Veto(Veto {
-                status: u32::from(busbar_contract::abi::plane::PROJECT_FAULT_STATUS),
-                text: busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE.to_string(),
-                hook: None,
-            }));
+            return Err(fault_veto());
         }
         if outcome != AbiOutcome::Ready {
             return Err(Stopped::Unreadable);
@@ -1374,7 +1390,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // same value every hook payload and tap of the unit carries.
         let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
         span.record("request_id", hooks.request_id);
-        let mut view = match self.project(None) {
+        // A rewrite hook configured for the unit (a global or the pool's: v1.5.5 `:728`) has the
+        // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
+        // shared 500 and no hook is invoked.
+        let faultable = !hooks.rewrites.is_empty();
+        let mut view = match self.project(None, faultable).map_err(|e| match e {
+            Stopped::Unparseable => Stopped::Unreadable,
+            other => other,
+        }) {
             Ok(view) => view,
             // A request the plane cannot read is the request's failure where a hook must judge
             // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
@@ -1418,7 +1441,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
-                    match self.project(Some(&bytes)) {
+                    match self.project(Some(&bytes), true) {
                         Ok(next) => {
                             if let Some(body) = &next.rewritten {
                                 self.lock().body = Some(Arc::from(body.as_slice()));

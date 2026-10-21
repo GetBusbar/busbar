@@ -657,3 +657,219 @@ async fn a_gate_first_faulted_rewrite_project_is_always_the_shared_500() {
         assert!(far.sent().is_empty(), "on_error: {on_error}: never dialled");
     }
 }
+
+/// A rewrite hook that counts its invocations and abstains, fails or rejects as told: whichever it
+/// does, it must never run over a body the plane could not parse.
+struct CountingRewriter {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    answer: fn() -> TransformOutcome,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for CountingRewriter {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "counting-rewriter"
+    }
+    async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (self.answer)()
+    }
+}
+
+type Answers = [(&'static str, fn() -> TransformOutcome); 3];
+
+/// How a configured rewrite hook may answer: abstain, fail, reject.
+const ANSWERS: Answers = [
+    ("abstains", || TransformOutcome::Abstain),
+    ("fails", || TransformOutcome::Failed {
+        message: "down".to_string(),
+    }),
+    ("rejects", || TransformOutcome::Reject {
+        status: 403,
+        message: "no".to_string(),
+    }),
+];
+
+fn counting(
+    answer: fn() -> TransformOutcome,
+) -> (
+    Arc<std::sync::atomic::AtomicUsize>,
+    Vec<(Duration, Arc<dyn RoutingPolicy>)>,
+) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook: Arc<dyn RoutingPolicy> = Arc::new(CountingRewriter {
+        calls: calls.clone(),
+        answer,
+    });
+    (calls, vec![(Duration::from_millis(500), hook)])
+}
+
+fn shared_500() -> Vec<u8> {
+    format!(
+        "refused:500:{}",
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+    )
+    .into_bytes()
+}
+
+/// RED (v1.5.5 `proxy/engine/mod.rs:728`, `:749`): a rewrite hook CONFIGURED for the route has the
+/// document materialized before any hook runs, so a body that will not parse is the shared 500 even
+/// when the hook would have abstained, failed or rejected: the hook is never invoked and nothing is
+/// dialled.
+#[tokio::test]
+async fn an_unparseable_body_with_a_configured_rewrite_hook_is_the_shared_500_and_no_hook_runs() {
+    for (how, answer) in ANSWERS {
+        let (calls, chain) = counting(answer);
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(chain, Vec::new())),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+            "{how}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the plane rendered the 500");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{how}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{how}: no hook ran"
+        );
+        assert!(far.sent().is_empty(), "{how}: never dialled");
+    }
+}
+
+/// RED: the same for a rewrite the POOL configures, with no global rewrite hook.
+#[tokio::test]
+async fn an_unparseable_body_with_a_pool_rewrite_is_the_shared_500() {
+    for (how, answer) in ANSWERS {
+        let (calls, chain) = counting(answer);
+        let mut hooks = bound(Vec::new(), Vec::new());
+        hooks.pool_rewrites.insert("pool-a".to_string(), chain);
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(hooks),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+            "{how}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the plane rendered the 500");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{how}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{how}");
+        assert!(far.sent().is_empty(), "{how}: never dialled");
+    }
+}
+
+/// The gate-first twin: the entry's configured rewrite hook, the first `project` FAULTs, no hook
+/// runs, the shared 500, nothing dialled.
+#[tokio::test]
+async fn a_gate_first_unparseable_body_with_a_configured_rewrite_is_the_shared_500() {
+    for (how, answer) in ANSWERS {
+        let (calls, chain) = counting(answer);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r
+            .driver
+            .with_hooks(Arc::new(GatedRewrites { rewrites: chain }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+            "{how}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the 500 is rendered");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{how}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{how}");
+        assert!(far.sent().is_empty(), "{how}: never dialled");
+    }
+}
+
+/// GREEN twin: no rewrite hook configured (nothing bound at all), so `project` is not called up
+/// front and the body passes through to the far end.
+#[tokio::test]
+async fn with_no_rewrite_configured_project_is_not_called_up_front() {
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(bound(Vec::new(), Vec::new())),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        arrival("/unparseable", b"user:hello"),
+        0,
+    );
+    let outcome = drive(&units).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert!(r.projects().is_empty(), "project was never asked");
+    assert_eq!(far.sent().len(), 1, "the body went through");
+}
