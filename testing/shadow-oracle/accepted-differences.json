@@ -2474,7 +2474,7 @@
       "id": "#62 a stream whose translation aborts after its first byte bills what streamed",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "by": "ruling:#62 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
       "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_translate_abort$",
       "expected_cells": 0,
       "classes": [
@@ -2486,7 +2486,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#62",
         "when": "2026-09-20",
         "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied to the translate abort by ARCHITECT ruling 2026-10-17"
       },
@@ -3341,7 +3341,7 @@
       "id": "#24/#77(9) amend_rate_history is served on a node with no operator key",
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.",
-      "by": "owner (Matthew Jackson), OWNER-LOCKED #24 (BUSBAR-1.6.0.md l.2202) and #77(9) (l.2279); applied by the coordinator 2026-10-19 (u18 BLOCK ruling)",
+      "by": "ruling:#24 (registered under a standing ruling; no owner signature on this entry); OWNER-LOCKED #24 (BUSBAR-1.6.0.md l.2202) and #77(9) (l.2279); applied by the coordinator 2026-10-19 (u18 BLOCK ruling)",
       "cells": "^ledger\\|amend\\|(adjusting-entries|refused-unsigned)$",
       "expected_cells": 2,
       "classes": [
@@ -3372,7 +3372,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#24",
         "when": "2026-09-08",
         "ruling": "#24 and #77(9) OWNER-LOCKED (the admin API is dumb, owner 2026-09-08): amend_rate_history is additive admin surface and no verb carries operator signatures; this scope applied by the coordinator 2026-10-19"
       },
