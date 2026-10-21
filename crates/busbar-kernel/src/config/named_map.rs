@@ -211,9 +211,11 @@ impl NamedMapSection {
         deploy: &mut DeployCfg,
         name: &str,
         def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
         legacy: Legacy,
     ) -> Result<(), String> {
-        self.parse_def(name, def, legacy)?.install(deploy, name)
+        self.parse_def(name, def, root, legacy)?
+            .install(deploy, name)
     }
 
     /// THE ONE typed parse of a raw definition document — `deny_unknown_fields`, so a typo'd or
@@ -232,12 +234,14 @@ impl NamedMapSection {
     /// enforces run here too, through the same functions boot calls — see the `max_admin_scope`
     /// check below ([`parse_ceiling`](crate::config::parse::parse_ceiling)).
     ///
-    /// `legacy` is the root legacy table the composition root lent: the operator credential's
-    /// former names it gives are read by the token-placement rule exactly as `resolve` reads them.
+    /// `root` is the install record and `legacy` the root legacy table the composition root lent:
+    /// the operator credential's provider and linked rows `root` lends, and the former names
+    /// `legacy` gives it, are read by the token-placement rule exactly as `resolve` reads them.
     pub fn parse_def(
         self,
         name: &str,
         def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
         legacy: Legacy,
     ) -> Result<NamedDef, String> {
         match self {
@@ -261,6 +265,7 @@ impl NamedMapSection {
                         name,
                         cfg.module.trim(),
                         cfg.token.is_some(),
+                        root,
                         legacy,
                     )?;
                     Ok(NamedDef::IdentityProvider(cfg))
@@ -297,9 +302,10 @@ impl NamedMapSection {
         self,
         name: &str,
         def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
         legacy: Legacy,
     ) -> Result<(), String> {
-        self.parse_def(name, def, legacy).map(|_| ())
+        self.parse_def(name, def, root, legacy).map(|_| ())
     }
 
     /// Every OTHER config site that still references `name` BY BARE NAME, as human path strings.
@@ -309,8 +315,14 @@ impl NamedMapSection {
     ///
     /// `export:` names are referenced from nowhere in 1.5.3 (an exporter is a leaf), so it returns
     /// empty — the check is not skipped for it, it simply has nothing to find. A plane section that
-    /// gains its own reference sites will add them here.
-    pub fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
+    /// gains its own reference sites will add them here. An absent `auth.admin_auth:` references the
+    /// operator credential's provider the install record `root` lends, as `resolve` reads it.
+    pub fn referents(
+        self,
+        deploy: &DeployCfg,
+        root: &crate::preflight::RootInstall,
+        name: &str,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         match self {
             NamedMapSection::IdentityProviders => {
@@ -320,7 +332,11 @@ impl NamedMapSection {
                 if auth.chain.iter().any(|n| n == name) {
                     out.push("auth.chain".to_string());
                 }
-                if auth.admin_auth.iter().any(|n| n == name) {
+                let admin_auth = auth
+                    .admin_auth
+                    .clone()
+                    .unwrap_or_else(|| crate::config::default_admin_auth_names(root));
+                if admin_auth.iter().any(|n| n == name) {
                     out.push("auth.admin_auth".to_string());
                 }
                 if auth.role_bindings.contains_key(name) {

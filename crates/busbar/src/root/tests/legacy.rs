@@ -40,7 +40,8 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
     );
 
     // `--migrate-config`: the rewrite and its change line, byte for byte.
-    let out = busbar_kernel::config::migrate::migrate_config(&raw, table()).expect("migrates");
+    let out = busbar_kernel::config::migrate::migrate_config(&raw, &root_record(), table())
+        .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(doc["store"]["module"].as_str(), Some(module.as_str()));
     assert_eq!(
@@ -128,7 +129,8 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     let text = |k: &str| field(&g, k);
     let raw = text("config");
 
-    let out = busbar_kernel::config::migrate::migrate_config(&raw, table()).expect("migrates");
+    let out = busbar_kernel::config::migrate::migrate_config(&raw, &root_record(), table())
+        .expect("migrates");
     let changes = bullets(&text("migrate_stderr"), "CHANGES (", "  - ");
     assert!(
         !changes.is_empty(),
@@ -495,4 +497,13 @@ fn every_legacy_row_cites_v1_5_5() {
     let doc: serde_yaml::Value = serde_yaml::from_str(REGISTRY).expect("plugins.yaml parses");
     assert_eq!(n, doc["legacy"].as_mapping().expect("`legacy:`").len());
     assert!(n > 0);
+}
+
+/// The record the root lends its migrator: this build's linked auth rows and the operator words off
+/// the root legacy table, as `root::linked::register_stores` builds it.
+fn root_record() -> busbar_kernel::preflight::RootInstall {
+    busbar_kernel::test_support::lending_auth(
+        crate::LINKED.auths,
+        crate::root::auth_bindings::operator_words(),
+    )
 }

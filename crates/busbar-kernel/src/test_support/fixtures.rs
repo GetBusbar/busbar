@@ -77,7 +77,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         models: std::collections::HashMap::new(),
         pools: std::collections::HashMap::new(),
         hooks: std::collections::HashMap::new(),
-        admin_auth: crate::config::default_admin_auth_names(),
+        admin_auth: crate::config::default_admin_auth_names(&crate::test_support::lent_stand_in()),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
@@ -93,8 +93,9 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         export: Default::default(),
         identity_providers: Default::default(),
         export_defs: Default::default(),
-        // A test build has no root: the stand-in install record is lent in its place.
-        root: crate::preflight::RootInstall::STAND_IN,
+        // A test build has no root: the record a test lends when it lends none of its own (the
+        // stand-in install record) is lent in its place.
+        root: crate::test_support::lent_stand_in(),
     }
 }
 

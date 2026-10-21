@@ -276,13 +276,9 @@ fn register_protocols() {
 /// every root unit's seal. Answers the root's INSTALL RECORD, which `main` owns and lends to every
 /// reader (the CLI flags and the boot).
 fn register_planes() -> busbar_kernel::preflight::RootInstall {
-    // The linked store and hook rows for the kernel's cold-kind axis, on the install record the
-    // root lends, and its auth rows onto the auth axis, before anything resolves one.
+    // The linked store, auth and hook rows for the kernel's cold-kind axis, with the operator
+    // credential's words, on the install record the root lends, before anything resolves one.
     let lent = root::linked::register_stores(&LINKED);
-    busbar_kernel::preflight::install_linked_auth(
-        LINKED.auths,
-        root::auth_bindings::operator_words(),
-    );
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
@@ -581,7 +577,7 @@ async fn run(
     // hooks + groups overlay sections merge POST-resolve (below). `--safe-mode` clears `overlay_doc`,
     // so the root overrides are quarantined too — the whole overlay is one on/off switch.
     if let Some(doc) = overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut deploy, doc, legacy);
+        config::overlay::apply_root_to_deploy(&mut deploy, doc, &lent, legacy);
     }
 
     // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE

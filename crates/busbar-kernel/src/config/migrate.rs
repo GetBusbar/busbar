@@ -340,10 +340,17 @@ pub struct MigrateOutput {
 
 /// Mechanically migrate a 1.4.x config document to the 1.5.0 shape. Deterministic changes
 /// are applied; judgment calls become TODO entries; the `allowed_pools: []` semantic flip gets a
-/// LOUD warning per occurrence. Total and side-effect free.
+/// LOUD warning per occurrence. Total and side-effect free. `lent` is the install record the
+/// composition root lent (the operator credential's provider the rewrite names) and `legacy` its
+/// legacy table.
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
-pub fn migrate_config(raw: &str, legacy: Legacy) -> Result<MigrateOutput, String> {
+pub fn migrate_config(
+    raw: &str,
+    lent: &crate::preflight::RootInstall,
+    legacy: Legacy,
+) -> Result<MigrateOutput, String> {
+    let operator = lent.operator.provider;
     let doc: Value =
         serde_yaml::from_str(raw).map_err(|e| format!("input is not valid YAML: {e}"))?;
     let Value::Mapping(mut root) = doc else {
@@ -353,8 +360,8 @@ pub fn migrate_config(raw: &str, legacy: Legacy) -> Result<MigrateOutput, String
     let mut todos: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    migrate_governance(&mut root, &mut changes, &mut todos, legacy);
-    migrate_auth(&mut root, &mut changes, &mut todos, &mut warnings);
+    migrate_governance(&mut root, &mut changes, &mut todos, operator, legacy);
+    migrate_auth(&mut root, &mut changes, &mut todos, &mut warnings, operator);
     // Runs AFTER migrate_governance/migrate_auth: both may have populated `auth.admin_auth` (the
     // governance.admin_token secret ref), and this folds the 1.4.x TOP-LEVEL `admin_auth:` list in
     // on top, letting the token-bearing entry win over a bare duplicate.
@@ -925,6 +932,7 @@ fn migrate_governance(
     root: &mut Mapping,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
+    operator: &str,
     legacy: Legacy,
 ) {
     // Take-on-match (see `Taken`): `as_map` on a taken value silently turned a non-mapping
@@ -1093,7 +1101,6 @@ fn migrate_governance(
     if let Some(token) = take(&mut gov, "admin_token") {
         // The old field held the (env-interpolated) token VALUE. The 1.5.0 shape is a secret
         // reference on the operator credential's module; a `${VAR}` reference converts mechanically.
-        let operator = crate::config::operator_provider();
         let auth = root
             .entry("auth".into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
@@ -1143,6 +1150,7 @@ fn migrate_auth(
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
     warnings: &mut Vec<String>,
+    operator: &str,
 ) {
     // `group_map:` lived TOP-LEVEL in the shipped 1.4.x `DeployCfg` (NOT under `auth:`). Pull it
     // from the top level first, then fall back to the nested `auth.group_map` an earlier
@@ -1329,7 +1337,7 @@ fn migrate_auth(
                     }
                     _ => None,
                 })
-                .filter(|m| m != "keys" && m != "tokens" && m != crate::config::operator_provider())
+                .filter(|m| m != "keys" && m != "tokens" && m != operator)
                 .collect()
         })
         .unwrap_or_default();

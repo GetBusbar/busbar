@@ -226,3 +226,97 @@ fn two_apps_in_one_process_answer_to_their_own_rate_holders() {
         "each App's book prices its reads through its own dater's history"
     );
 }
+
+/// TWO RECORDS IN ONE PROCESS, EACH LENDING ITS OWN AUTH ROWS AND OPERATOR WORDS (row 159,
+/// kernel-identity HIGH): the linked auth rows, each carrying its plugin's door, and the operator
+/// credential's words ride the record the composition root lends, so a registry linked from one
+/// record serves that record's rows and a reader judges the operator credential by that record's
+/// words, whatever another record in the same process lent. No static of the kernel or of the
+/// identity crate holds either.
+///
+/// RED on a kernel that reads the rows and words off a process-wide install (the identity crate's
+/// `LINKED` static, or a test hand-in beside the record): the record has no `auths` or `operator`
+/// to lend, and both registries serve the one table the process holds.
+#[test]
+fn two_records_in_one_process_lend_their_own_auth_rows_and_operator_words() {
+    use crate::preflight::{linked, RootInstall};
+    use busbar_kernel_identity::operator::OperatorWords;
+    let legacy = crate::config::Legacy::stand_in();
+    let with_row = crate::test_support::operator_double::RECORD;
+    let without_row = RootInstall {
+        auths: &[],
+        ..with_row
+    };
+    let (key, ..) = with_row.auths[0];
+    assert!(
+        linked(&with_row, legacy)
+            .expect("the record's rows link")
+            .resolve(key)
+            .is_some(),
+        "the registry linked from a record lending the auth row `{key}` serves it"
+    );
+    assert!(
+        linked(&without_row, legacy)
+            .expect("the record's rows link")
+            .resolve(key)
+            .is_none(),
+        "a record lending no auth row links none, whatever another record lent"
+    );
+    assert_eq!(
+        crate::preflight::linked_auth_names(&with_row),
+        [key],
+        "the record's own auth rows, by key"
+    );
+    assert!(crate::preflight::linked_auth_names(&without_row).is_empty());
+
+    let other_words = RootInstall {
+        operator: OperatorWords {
+            provider: "another-operator",
+            principal_id: "another-principal",
+        },
+        ..with_row
+    };
+    assert!(
+        crate::config::names_operator(key, &with_row, legacy),
+        "the operator credential is the provider its own record names"
+    );
+    assert!(
+        !crate::config::names_operator(key, &other_words, legacy),
+        "another record's words name another provider"
+    );
+    assert!(crate::config::names_operator(
+        "another-operator",
+        &other_words,
+        legacy
+    ));
+    assert_eq!(
+        crate::config::default_admin_auth_names(&other_words),
+        ["another-operator"],
+        "an omitted `admin_auth:` is the operator credential of the record the configuration is \
+         resolved under"
+    );
+    assert!(crate::config::is_reserved_hook_name(
+        "another-operator",
+        &other_words
+    ));
+    assert!(!crate::config::is_reserved_hook_name(
+        "another-operator",
+        &with_row
+    ));
+}
+
+/// No static of the kernel's non-test sources holds a linked auth row, the door type it carries, or
+/// the operator credential's words, and no fn installs them (row 159, kernel-identity HIGH: the
+/// type alias hid the door from the static-seam scan, so the scan here names the alias itself).
+#[test]
+fn no_static_holds_the_linked_auth_rows_or_the_operator_words() {
+    let hits = holders_and_installers(
+        &["LinkedAuth", "AuthDoor", "OperatorWords"],
+        &["install_linked", "install_row", "install_root_auth"],
+    );
+    assert!(
+        hits.is_empty(),
+        "the kernel holds the root's auth rows or operator words in a static, or installs them:\n{}",
+        hits.join("\n")
+    );
+}

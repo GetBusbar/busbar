@@ -591,9 +591,10 @@ impl RootCfg {
 pub use busbar_kernel::config::sections::TlsCfg;
 
 pub use busbar_kernel::config::auth::{
-    builtin_identity_providers, is_builtin_identity_module, names_operator, operator_module,
-    operator_principal_id, operator_provider,
+    builtin_identity_providers, is_builtin_identity_module, names_operator,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use busbar_kernel::config::auth::{operator_principal_id, operator_provider};
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
 /// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the
 /// WIRE/RESOLVED `auth:` block itself: plain data with serde derives and pure accessors — nothing
@@ -625,15 +626,17 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Errors are ACCUMULATED into `errors`:
 /// - a name with no definition that is not a bare built-in (a dangling reference — fail closed, never
 ///   a silently-skipped auth module);
-/// - a `token:` on a provider whose module is not the [`operator_provider`] (meaningless there);
+/// - a `token:` on a provider whose module is not the operator credential's (meaningless there);
 /// - a definition with an empty `module:`.
 ///
 /// The `max_admin_scope` DEFAULT is applied here, once, so every downstream reader sees the resolved
 /// ceiling rather than re-deriving it: absent ⇒ [`DEFAULT_MAX_ADMIN_SCOPE`] for every provider except
-/// the operator credential ([`operator_provider`]), which stays `None` (exempt, full by definition) —
+/// the operator credential (the provider `root` lends), which stays `None` (exempt, full by
+/// definition) —
 /// byte-identical to the pre-1.5.3 semantics.
 /// THE ONE `identity-providers.<name>.token:` PLACEMENT RULE. `token:` is the operator credential
-/// ([`operator_provider`]); on any other module it is inert, so it is almost certainly a MISPLACED
+/// (the provider of the record `root` lends); on any other module it is inert, so it is almost
+/// certainly a MISPLACED
 /// SECRET and must fail loud rather than sit in config doing nothing.
 ///
 /// Shared by [`resolve_auth`] (which sees only providers REFERENCED from a chain) and by
@@ -646,10 +649,11 @@ pub fn validate_token_placement(
     name: &str,
     module: &str,
     has_token: bool,
+    root: &crate::preflight::RootInstall,
     legacy: Legacy,
 ) -> Result<(), String> {
-    if has_token && !names_operator(module, legacy) {
-        let op = operator_provider();
+    if has_token && !names_operator(module, root, legacy) {
+        let op = root.operator.provider;
         return Err(busbar_kernel_identity::operator::misplaced_definition_token(op, name, module));
     }
     Ok(())
@@ -659,6 +663,7 @@ pub fn resolve_auth(
     auth: &AuthDeployCfg,
     providers: &IdentityProviders,
     errors: &mut Vec<String>,
+    root: &crate::preflight::RootInstall,
     legacy: Legacy,
 ) -> AuthCfg {
     let mut resolve_one = |plane: &str, name: &String| -> AuthChainEntry {
@@ -670,12 +675,14 @@ pub fn resolve_auth(
                         "identity-providers.{name}.module must be a non-empty module name"
                     ));
                 }
-                if let Err(e) = validate_token_placement(name, &module, def.token.is_some(), legacy)
+                if let Err(e) =
+                    validate_token_placement(name, &module, def.token.is_some(), root, legacy)
                 {
                     errors.push(e);
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
-                    (!names_operator(&module, legacy)).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
+                    (!names_operator(&module, root, legacy))
+                        .then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
                 });
                 AuthChainEntry {
                     name: name.clone(),
@@ -686,7 +693,7 @@ pub fn resolve_auth(
                 }
             }
             // A BARE BUILT-IN needs no definition. Anything else is a dangling reference.
-            None if builtin_identity_providers().contains(&name.as_str()) => {
+            None if builtin_identity_providers(root).contains(&name.as_str()) => {
                 AuthChainEntry::bare(name.clone())
             }
             None => {
@@ -694,7 +701,7 @@ pub fn resolve_auth(
                     "auth.{plane} references '{name}', which is not defined in \
                      `identity-providers:` (and is not a built-in: {}). Define it, or reference a \
                      built-in by its bare name.",
-                    builtin_identity_providers().join(" / ")
+                    builtin_identity_providers(root).join(" / ")
                 ));
                 AuthChainEntry::bare(name.clone())
             }
@@ -706,8 +713,11 @@ pub fn resolve_auth(
         .iter()
         .map(|n| resolve_one("chain", n))
         .collect::<Vec<_>>();
+    // An absent `admin_auth:` is the operator credential `root` lends, referenced bare.
     let admin_auth = auth
         .admin_auth
+        .clone()
+        .unwrap_or_else(|| default_admin_auth_names(root))
         .iter()
         .map(|n| resolve_one("admin_auth", n))
         .collect::<Vec<_>>();
@@ -718,7 +728,7 @@ pub fn resolve_auth(
     // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
     let methods: AuthMethods = providers
         .iter()
-        .filter(|(_, def)| !is_builtin_identity_module(def.module.trim(), legacy))
+        .filter(|(_, def)| !is_builtin_identity_module(def.module.trim(), root, legacy))
         .map(|(name, def)| {
             (
                 name.clone(),
@@ -2004,20 +2014,16 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
     ResolvedProvider::merge(def, deploy_cfg)
 }
 
-/// A test build's [`resolve_in`], lent the stand-in install record
-/// ([`crate::preflight::RootInstall::STAND_IN`]) where a composition root lends its own.
+/// A test build's [`resolve_in`], lent the record a test lends when it lends none of its own (the
+/// stand-in install record, [`crate::preflight::RootInstall::STAND_IN`]) where a composition root
+/// lends its own.
 #[cfg(any(test, feature = "test-support"))]
 pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
     legacy: Legacy,
 ) -> Result<RootCfg, Vec<String>> {
-    resolve_in(
-        crate::preflight::RootInstall::STAND_IN,
-        deploy,
-        defs,
-        legacy,
-    )
+    resolve_in(crate::test_support::lent_stand_in(), deploy, defs, legacy)
 }
 
 /// Resolve `deploy` (with the provider definitions `defs`) under the install record the
@@ -2193,7 +2199,7 @@ pub fn resolve_in(
         }
     }
     for (name, def) in &deploy.hooks {
-        if is_reserved_hook_name(name) {
+        if is_reserved_hook_name(name, &root) {
             errors.push(format!(
                 "hooks.{name}: '{name}' is a reserved name (an on_error terminal, built-in ranking \
                  strategy, or built-in auth module) and cannot name a hook definition"
@@ -2382,10 +2388,10 @@ pub fn resolve_in(
     let resolved_auth = deploy
         .auth
         .as_ref()
-        .map(|a| resolve_auth(a, &deploy.identity_providers, &mut errors, legacy));
+        .map(|a| resolve_auth(a, &deploy.identity_providers, &mut errors, &root, legacy));
     let admin_auth_names: Vec<String> = resolved_auth.as_ref().map_or_else(
         || {
-            default_admin_auth()
+            default_admin_auth(&root)
                 .iter()
                 .map(|e| e.name.clone())
                 .collect()

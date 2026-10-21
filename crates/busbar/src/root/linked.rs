@@ -376,8 +376,8 @@ pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
     })
 }
 
-/// THE STORE, HOOK AND SECRET AXES: the root's INSTALL RECORD — the linked store and hook rows for
-/// the kernel's cold-kind axis, the secret axis ([`secret_rows`]), the auth-axis opener
+/// THE STORE, AUTH, HOOK AND SECRET AXES: the root's INSTALL RECORD — the linked store, auth and
+/// hook rows for the kernel's cold-kind axis, the operator credential's words, the secret axis ([`secret_rows`]), the auth-axis opener
 /// (`crate::root::dispatch::auth_axis`), the rate holder and dater, and the projection the door
 /// planes are sealed over, taken of every configuration as it is built
 /// (`crate::root::door_steps::door_config`) — which the root owns and lends to every reader (the
@@ -389,6 +389,10 @@ pub fn register_stores(linked: &Linked) -> RootInstall {
     let root = match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => RootInstall {
             stores: linked.stores,
+            // The build's linked auth rows and the operator credential's words off the root legacy
+            // table: the record holds them, as it holds the stores.
+            auths: linked.auths,
+            operator: crate::root::auth_bindings::operator_words(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),

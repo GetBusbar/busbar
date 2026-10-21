@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::config::operator_provider;
 use busbar_kernel_identity::operator;
 use std::collections::{HashMap, HashSet};
 
@@ -737,7 +736,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // a built-in answers to or an `on_error` terminal word. Registry uniqueness + the closed
     // `on_error` string union (see the const's doc). A collision is a boot error naming the offender.
     for hook_name in cfg.hooks.keys() {
-        if crate::config::is_reserved_hook_name(hook_name) {
+        if crate::config::is_reserved_hook_name(hook_name, &cfg.root) {
             errors.push(format!(
                 "hook '{hook_name}' uses a reserved name (a built-in ranking strategy, auth module, \
                  or on_error terminal); rename the hook — a hook can never shadow a reserved word"
@@ -973,7 +972,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 ));
             }
             for (role, binding) in roles {
-                if reserved_operator_principal_id(role) {
+                if reserved_operator_principal_id(role, &cfg.root) {
                     errors.push(format!(
                         "role_bindings.{module} binds role '{role}', which shadows the reserved \
                          operator principal id; choose another role name"
@@ -1047,9 +1046,11 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && !crate::config::names_operator(&entry.module, cfg.legacy) {
+            if entry.token.is_some()
+                && !crate::config::names_operator(&entry.module, &cfg.root, cfg.legacy)
+            {
                 errors.push(operator::misplaced_token(
-                    operator_provider(),
+                    cfg.root.operator.provider,
                     &entry.module,
                 ));
             }
@@ -1198,8 +1199,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // see `AuthCfg::usable_mint_path`. An explicit OPEN admin (`admin_auth: []`) counts as a mint
         // path but is dev-only — WARN that anyone can mint. `oidc`/plugin chains never set
         // `keys_in_chain`, so they never trigger this (their identities are externally issued).
-        if verifies_signed_keys && !auth.usable_mint_path(cfg.legacy) {
-            errors.push(operator::no_mint_path(operator_provider()));
+        if verifies_signed_keys && !auth.usable_mint_path(&cfg.root, cfg.legacy) {
+            errors.push(operator::no_mint_path(cfg.root.operator.provider));
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
             diag_warn!(
@@ -1896,9 +1897,10 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     let token = cfg
         .auth
         .as_ref()
-        .and_then(|a| a.admin_token_ref(cfg.legacy));
-    if token.is_some() && !operator::answered(operator_provider()) {
-        errors.push(operator::unanswered_token(operator_provider()));
+        .and_then(|a| a.admin_token_ref(&cfg.root, cfg.legacy));
+    let op = cfg.root.operator.provider;
+    if token.is_some() && !operator::answered(cfg.root.auths, op) {
+        errors.push(operator::unanswered_token(op));
     }
 }
 
@@ -1949,7 +1951,8 @@ fn admin_root_segment() -> &'static str {
 }
 
 /// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID
-/// ([`crate::config::operator_principal_id`], the id the operator credential's module mints).
+/// (the principal id of the operator credential `root` lends, [`crate::preflight::RootInstall::operator`]:
+/// the id the operator credential's module mints).
 ///
 /// A DIFFERENT reservation from [`reserved_admin_name`], and split from it deliberately: that one
 /// guards a URL path SEGMENT (`api`), this one guards an identity string (`admin`). They shared one
@@ -1957,8 +1960,8 @@ fn admin_root_segment() -> &'static str {
 /// to `/api` a single shared check would have silently moved the principal-id reservation to `api`
 /// as well. With no auth row linked under the operator credential's provider there is no operator
 /// principal to shadow, so nothing is reserved.
-fn reserved_operator_principal_id(role: &str) -> bool {
-    role == crate::config::operator_principal_id() && operator::answered(operator_provider())
+fn reserved_operator_principal_id(role: &str, root: &crate::preflight::RootInstall) -> bool {
+    role == root.operator.principal_id && operator::answered(root.auths, root.operator.provider)
 }
 
 /// True when a pool / provider / model `name` would collide with the built-in native-API operator

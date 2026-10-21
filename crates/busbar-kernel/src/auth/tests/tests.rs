@@ -1789,7 +1789,14 @@ fn the_operator_credential_opens_from_the_axis() {
     );
     let none = Default::default();
     let open = |digest| {
-        open_operator(&linked, digest, &none, crate::config::Legacy::stand_in()).expect("opens")
+        open_operator(
+            &linked,
+            digest,
+            &none,
+            &crate::test_support::lent_stand_in(),
+            crate::config::Legacy::stand_in(),
+        )
+        .expect("opens")
     };
     assert!(matches!(
         *open(Some(digest)),
@@ -1898,7 +1905,13 @@ pub(super) fn operator_app(
     let operator = Operator::open(
         op,
         std::iter::empty(),
-        &|m: &str| crate::config::names_operator(m, crate::config::Legacy::stand_in()),
+        &|m: &str| {
+            crate::config::names_operator(
+                m,
+                &crate::test_support::lent_stand_in(),
+                crate::config::Legacy::stand_in(),
+            )
+        },
         true,
         Some("digest".to_string()),
         |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),

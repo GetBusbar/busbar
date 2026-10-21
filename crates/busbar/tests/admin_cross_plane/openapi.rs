@@ -104,7 +104,7 @@ pub(crate) fn openapi_doc_seamed() -> serde_json::Value {
     crate::ensure_seam();
     // The root's own hook names, as the install record it lends carries them
     // (`root::linked::register_stores`).
-    openapi_doc(crate::LINKED_HOOK_NAMES)
+    openapi_doc(crate::LINKED_HOOK_NAMES, crate::ROOT_WORDS.provider)
 }
 
 /// GOLDEN + DRIFT GUARD: the committed `openapi.json` (served live via `include_str!`) MUST equal the

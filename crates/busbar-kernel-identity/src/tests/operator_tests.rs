@@ -242,3 +242,41 @@ fn the_linked_rows_are_read_from_what_the_caller_hands_in() {
         "the bare key is always its own"
     );
 }
+
+/// NO WORDS IS NO OPERATOR. A record that lends no operator words (`RootInstall::default()`, a
+/// build no root lent its record) reads its provider and principal id as the empty string; the
+/// operator credential built over that answers for no provider and mints nobody, so an admin chain
+/// position named `""` that identified `""` is not the operator. RED before: `Operator::new("")`
+/// answered for `""` and minted `""`.
+#[test]
+fn no_words_make_no_operator() {
+    let none = crate::operator::Operator::new("");
+    assert!(
+        !none.is(""),
+        "an empty provider is not the operator credential"
+    );
+    assert!(
+        !none.mints(Some(""), "", ""),
+        "with no words lent, nothing is minted as the operator"
+    );
+    let op = crate::operator::Operator::new("op");
+    assert!(op.is("op"));
+    assert!(op.mints(Some("op"), "root", "root"));
+    assert!(
+        !op.mints(Some("op"), "", ""),
+        "an empty principal id is minted by nobody, even by the operator credential"
+    );
+    let opened = crate::operator::Operator::open(
+        "",
+        [("", "")].into_iter(),
+        &|_: &str| true,
+        false,
+        None,
+        |_: &str| Err("not opened".to_string()),
+    )
+    .expect("an unanswered credential opens");
+    assert!(
+        !opened.is(""),
+        "an opened credential with no words answers for nothing"
+    );
+}

@@ -472,7 +472,7 @@ async fn apply(
                     // DANGLING-REFERENCE GUARD: refuse to remove a definition another config site
                     // still names, rather than letting the rebuild fail with a less actionable
                     // "references X, which is not defined" further down the pipeline.
-                    let referents = txn_section.referents(&loaded.deploy, &txn_name);
+                    let referents = txn_section.referents(&loaded.deploy, &snapshot.root, &txn_name);
                     if !referents.is_empty() {
                         return Ok(Outcome::Value(Err((
                             AdminError::Conflict(format!(
@@ -496,7 +496,7 @@ async fn apply(
             // for config that never took effect. Runs BEFORE anything is persisted or swapped, and
             // covers PATCH …/settings too (its composed document is the thing that must parse).
             if let Some(def) = next_def.as_ref() {
-                if let Err(e) = txn_section.validate_def(&txn_name, def, snapshot.legacy) {
+                if let Err(e) = txn_section.validate_def(&txn_name, def, &snapshot.root, snapshot.legacy) {
                     return Ok(Outcome::Value(Err((
                         AdminError::Validation(e),
                         Cond::InvalidConfig,
@@ -530,6 +530,7 @@ async fn apply(
                 busbar_kernel::config::overlay::apply_root_to_deploy(
                     &mut loaded.deploy,
                     &doc,
+                    &snapshot.root,
                     snapshot.legacy,
                 );
                 let mut cfg = busbar_kernel::config::resolve_in(

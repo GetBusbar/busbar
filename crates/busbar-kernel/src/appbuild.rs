@@ -1117,9 +1117,14 @@ pub fn build_app_from_config(
     // aborts the build rather than silently disabling the admin plane.
     // The operator credential's module is opened once its token has resolved (below, beside the
     // governance credentials it has always been resolved with).
-    let mut admin_modules =
-        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver, legacy)
-            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    let mut admin_modules = crate::auth::AdminAuthChain::build(
+        &auth_cfg,
+        &plugin_registry,
+        &secret_resolver,
+        &root,
+        legacy,
+    )
+    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     // HOSTED-LOGIN methods (1.5.2): resolve every `auth.methods:` entry as a login-capable
     // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
@@ -1286,7 +1291,7 @@ pub fn build_app_from_config(
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| crate::config::names_operator(&e.module, legacy))
+                    .any(|e| crate::config::names_operator(&e.module, &root, legacy))
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
@@ -1295,7 +1300,7 @@ pub fn build_app_from_config(
                     // Declared with no token ref resolves to `None`: the admin API is credential-less
                     // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
                     Some(
-                        resolve_admin_token(auth, &secret_resolver, legacy)
+                        resolve_admin_token(auth, &secret_resolver, &root, legacy)
                             .map_err(|e| format!("{e} (nothing was changed)"))?,
                     )
                 } else {
@@ -1395,7 +1400,7 @@ pub fn build_app_from_config(
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<busbar_contract::redacted::Secret<String>> =
-            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver, legacy)?;
+            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver, &root, legacy)?;
         // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
@@ -1477,9 +1482,14 @@ pub fn build_app_from_config(
     // The operator credential judges the token this build declares, or — when it declares none —
     // the one the governance state holds (that live credential stands, as it does for the rotation).
     let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
-    admin_modules.operator =
-        open_operator(&plugin_registry, digest, &cfg.identity_providers, legacy)
-            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    admin_modules.operator = open_operator(
+        &plugin_registry,
+        digest,
+        &cfg.identity_providers,
+        &root,
+        legacy,
+    )
+    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     let admin_modules = Arc::new(admin_modules);
 
     // Resolve the global rewrite hooks (prompt: rw gates in global_hooks) into priority-ordered

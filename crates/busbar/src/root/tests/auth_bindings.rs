@@ -47,10 +47,10 @@ fn an_unbound_node_binds_no_authority() {
 // run on a kind-neutral double; these run on the words this root hands in at boot.
 // ------------------------------------------------------------------------------------------------
 
-/// Hand the root's words in with its linked auth rows, as `register_planes` does at boot (the first
-/// install stands, and every install in this binary is this one).
-fn hand_in_the_root_words() {
-    busbar_kernel::test_support::install_root_auth(crate::LINKED.auths, operator_words());
+/// The record lending the root's words with its linked auth rows, as `register_stores` builds the
+/// record `main` lends at boot.
+fn the_root_record() -> busbar_kernel::preflight::RootInstall {
+    busbar_kernel::test_support::lending_auth(crate::LINKED.auths, operator_words())
 }
 
 /// THE OPERATOR'S PROVIDER WORD IS THE MANIFEST'S: the registry key of the row the manifest's
@@ -117,8 +117,8 @@ fn word_1_5_5(key: &str) -> String {
 }
 
 #[test]
-fn the_kernel_answers_to_the_root_words_once_handed_in() {
-    hand_in_the_root_words();
+fn the_kernel_answers_to_the_root_words_its_record_lends() {
+    let lent = the_root_record();
     let words = operator_words();
     assert_eq!(
         words.provider,
@@ -130,18 +130,15 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
         word_1_5_5("principal"),
         "1.5.5's operator principal"
     );
-    assert_eq!(busbar_kernel::config::operator_provider(), words.provider);
-    assert_eq!(
-        busbar_kernel::config::operator_principal_id(),
-        words.principal_id
-    );
+    assert_eq!(lent.operator.provider, words.provider);
+    assert_eq!(lent.operator.principal_id, words.principal_id);
     // The `auth.admin_auth:` default: the operator credential, referenced bare.
     assert_eq!(
-        busbar_kernel::config::default_admin_auth_names(),
+        busbar_kernel::config::default_admin_auth_names(&lent),
         [words.provider]
     );
     assert_eq!(
-        busbar_kernel::config::builtin_identity_providers(),
+        busbar_kernel::config::builtin_identity_providers(&lent),
         ["keys", words.provider]
     );
 }
@@ -151,7 +148,7 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
 /// (v1.5.5:crates/busbar/src/config/mod.rs:1891, held as DATA).
 #[test]
 fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
-    hand_in_the_root_words();
+    let lent = the_root_record();
     let op = operator_words().provider;
     for word in busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE
         .iter()
@@ -159,7 +156,7 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
         .chain([op])
     {
         assert!(
-            busbar_kernel::config::is_reserved_hook_name(word),
+            busbar_kernel::config::is_reserved_hook_name(word, &lent),
             "`{word}` is reserved"
         );
     }
@@ -167,9 +164,10 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
         !busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.contains(&op),
         "the operator word is the root's, never the kernel's"
     );
-    assert!(!busbar_kernel::config::is_reserved_hook_name(&format!(
-        "{op}-2"
-    )));
+    assert!(!busbar_kernel::config::is_reserved_hook_name(
+        &format!("{op}-2"),
+        &lent
+    ));
     // Exactly 1.5.5's set (v1.5.5:crates/busbar/src/config/mod.rs:1891), as DATA.
     let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     space.push(op);
@@ -196,11 +194,12 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
 /// `auth.admin_auth: [<operator word>]` and the secret ref on `identity-providers.<operator word>`.
 #[test]
 fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
-    hand_in_the_root_words();
+    let lent = the_root_record();
     let raw = "governance:\n  enabled: true\n  admin_token: \"${BUSBAR_ADMIN_TOKEN}\"\n\
                providers: {}\nmodels: {}\n";
-    let out = busbar_kernel::config::migrate::migrate_config(raw, crate::root::legacy::table())
-        .expect("migrates");
+    let out =
+        busbar_kernel::config::migrate::migrate_config(raw, &lent, crate::root::legacy::table())
+            .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"])
@@ -228,14 +227,15 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
 /// chain keeps the bare name, as 1.5.5 wrote it.
 #[test]
 fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
-    hand_in_the_root_words();
+    let lent = the_root_record();
     let op = operator_words().provider;
     let raw = format!(
         "auth:\n  admin_auth:\n    - {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
          providers: {{}}\nmodels: {{}}\n"
     );
-    let out = busbar_kernel::config::migrate::migrate_config(&raw, crate::root::legacy::table())
-        .expect("migrates");
+    let out =
+        busbar_kernel::config::migrate::migrate_config(&raw, &lent, crate::root::legacy::table())
+            .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
         .and_then(|v| v.as_sequence())

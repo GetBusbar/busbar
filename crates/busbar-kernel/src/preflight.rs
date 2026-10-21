@@ -124,6 +124,16 @@ pub type PluginsFetch = fn(
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
+    /// The build's linked auth rows, in registration order: the rows every auth module — the
+    /// operator credential's included — resolves through, by the key configuration names
+    /// (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW). Each carries its plugin's door,
+    /// so the record holds them and no static does (THE DESIGN l.1560).
+    pub auths: &'static [LinkedAuth],
+    /// The operator credential's words, off the root legacy table (ARCHITECT 2026-09-30,
+    /// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173, "sit in the root legacy table"): the provider
+    /// configuration names it by and the principal id it identifies the operator as. Nothing lent:
+    /// no words, and no operator credential.
+    pub operator: busbar_kernel_identity::operator::OperatorWords,
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
@@ -186,7 +196,8 @@ pub type TrustPolicyBuild =
     fn(&config::PluginsCfg, &str) -> Result<busbar_plugin_loader::sign::TrustPolicy, String>;
 
 impl std::fmt::Debug for RootInstall {
-    /// The rows a reader can name (the linked stores by key, the linked hooks by name) and which
+    /// The rows a reader can name (the linked stores and auth rows by key, the linked hooks by
+    /// name), the operator credential's words, and which
     /// axes the root lent; an axis is a port and prints as its presence alone.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RootInstall")
@@ -194,6 +205,8 @@ impl std::fmt::Debug for RootInstall {
                 "stores",
                 &self.stores.iter().map(|s| s.0).collect::<Vec<_>>(),
             )
+            .field("auths", &self.auths.iter().map(|a| a.0).collect::<Vec<_>>())
+            .field("operator", &self.operator)
             .field("hook_names", &self.hook_names)
             .field("registry_build", &self.registry_build.is_some())
             .field("plugins_fetch", &self.plugins_fetch.is_some())
@@ -218,6 +231,10 @@ impl RootInstall {
     /// test lends it where the root lends its own record; a root test binary lends the root's.
     pub const STAND_IN: RootInstall = RootInstall {
         stores: &[crate::test_support::store_double::STORE],
+        auths: STAND_IN_AUTHS,
+        // A test build has no root: it answers to the kind-neutral stand-in words
+        // (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles").
+        operator: busbar_kernel_identity::operator::STAND_IN,
         registry_build: Some(crate::test_support::registry_stand_in),
         plugins_fetch: Some(crate::test_support::fetch_stand_in),
         hook_axis: Some(crate::test_support::hook_axis_stand_in),
@@ -247,6 +264,12 @@ const STAND_IN_AUTH_AXIS: Option<AuthAxisOpener> = if cfg!(feature = "test-suppo
     None
 };
 
+/// The auth rows a test build links in place of the root's: none. A test that wants the operator
+/// credential's kind-neutral double ([`crate::test_support::operator_double::RECORD`]) or a root's
+/// own rows lends a record carrying them.
+#[cfg(any(test, feature = "test-support"))]
+const STAND_IN_AUTHS: &[LinkedAuth] = &[];
+
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
 /// [`crate::test_support::hook_axis_stand_in`]): the ranking double, in every test build (THE
 /// DESIGN l.1443: the kernel has no `hooks-ranking` feature to switch it on).
@@ -261,14 +284,24 @@ pub type LinkedSecrets = Option<&'static dyn busbar_contract::secret::SecretAxis
 /// The export axis an install record lends, or `None` (no export module resolves).
 pub type LinkedExports = Option<&'static dyn busbar_contract::export_calls::ExportAxis>;
 
-/// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
-/// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
-/// credential's included — resolves through this axis by the key configuration names; the kernel
-/// names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW).
-pub use busbar_kernel_identity::operator::{
-    install_linked as install_linked_auth, linked as linked_auth_rows,
-    linked_names as linked_auth_names,
-};
+/// The names of the auth rows `root` lends, in registration order. Every admin auth module — the
+/// operator credential's included — resolves through the auth axis by the key configuration names;
+/// the kernel names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27
+/// AUTH-ROW).
+#[must_use]
+pub fn linked_auth_names(root: &RootInstall) -> Vec<&'static str> {
+    root.auths.iter().map(|r| r.0).collect()
+}
+
+// FINAL-REPIN: delete with `install_auth_axis` when the pinned door root cells lend their TestApp a
+// record of their own
+/// THE PINNED DOOR ROOT CELLS' NAME for the root test binary's auth rows and operator words, kept
+/// until their pin moves: a [`crate::test_support::TestApp`] lent no record of its own lends the
+/// stand-in with these in place of the stand-in's (`test_support::hand_in_root_auth_rows`). Nothing
+/// else reads them, and never a shipped build (`test-support`).
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use crate::test_support::hand_in_root_auth_rows as install_linked_auth;
 
 /// The names of the INBOUND auth-chain modules among `rows`: those whose Statement declares an
 /// inbound capability and is not a host-held credentials' verifier (that one serves the `keys`
@@ -324,14 +357,13 @@ pub(crate) fn linked_auth_axis(
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the stores
-/// `root` lends and the root's auth rows — a test build (no root) lends its stand-in's fixture
+/// `root` lends and the auth rows it lends — a test build (no root) lends its stand-in's fixture
 /// entries. Registered through `PluginRegistry::link`, the admission a dropped-in row takes
 /// (DECISIONS #2 rule (1)).
 fn linked_rows(root: &RootInstall, legacy: config::Legacy) -> Vec<LinkedPlugin> {
-    let RootInstall { stores, .. } = *root;
-    let auths = busbar_kernel_identity::operator::linked().iter();
+    let RootInstall { stores, auths, .. } = *root;
     let rows = stores.iter().map(|s| linked_store_row(s, legacy));
-    rows.chain(auths.map(|a| linked_auth_row(a, legacy)))
+    rows.chain(auths.iter().map(|a| linked_auth_row(a, legacy)))
         .collect()
 }
 
@@ -577,7 +609,7 @@ pub fn plugins_preflight(
         // An EMPTY module is `resolve_auth`'s rule ("must be a non-empty module name"), reported
         // there in its own words; do not shadow it with a less specific "no such plugin".
         .filter(|(_, m)| {
-            !m.is_empty() && is_real_identity_provider_plugin_ref(m, stand_ins, legacy)
+            !m.is_empty() && is_real_identity_provider_plugin_ref(m, stand_ins, root, legacy)
         })
         .collect();
     let idp_refs_human = |refs: &[(&str, &str)]| {
@@ -652,7 +684,7 @@ pub fn plugins_preflight(
              plugins.enabled: true and place the signed `kind: auth` plugin tarball(s) in the \
              plugins directory ('{}'), or name a built-in.",
             idp_refs_human(&idp_plugin_refs),
-            config::builtin_identity_providers().join(" | "),
+            config::builtin_identity_providers(root).join(" | "),
             plugins_cfg.dir
         ));
     }
@@ -763,7 +795,7 @@ pub fn plugins_preflight(
                      `kind: auth` plugin; the modules available right now are: {}.",
                     p.key(),
                     p.manifest.kind,
-                    valid_identity_provider_modules(&registry)
+                    valid_identity_provider_modules(&registry, root)
                 ));
             }
             None => {
@@ -780,7 +812,7 @@ pub fn plugins_preflight(
                          spelling against the plugin's manifest name/alias (see --list-plugins), \
                          add the signed tarball to the plugins directory, or name a built-in.",
                         plugins_cfg.dir,
-                        valid_identity_provider_modules(&registry)
+                        valid_identity_provider_modules(&registry, root)
                     ),
                 });
             }
@@ -889,13 +921,14 @@ fn log_build(n: boot::Note<'_>, dir: &str) {
 pub(crate) fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
+    root: &RootInstall,
     legacy: config::Legacy,
 ) -> Result<Option<busbar_contract::redacted::Secret<String>>, String> {
-    let Some(r) = auth.and_then(|a| a.admin_token_ref(legacy)) else {
+    let Some(r) = auth.and_then(|a| a.admin_token_ref(root, legacy)) else {
         return Ok(None);
     };
     use busbar_kernel_identity::operator::{blank_token, unresolved_token};
-    let op = config::operator_provider();
+    let op = root.operator.provider;
     let token = resolver
         .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
         .map_err(|e| unresolved_token(op, &e))?;
@@ -1050,9 +1083,10 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
 pub(crate) fn is_real_identity_provider_plugin_ref(
     m: &str,
     is_test_build: bool,
+    root: &RootInstall,
     legacy: config::Legacy,
 ) -> bool {
-    !config::is_builtin_identity_module(m, legacy)
+    !config::is_builtin_identity_module(m, root, legacy)
         && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
 }
 
@@ -1061,8 +1095,9 @@ pub(crate) fn is_real_identity_provider_plugin_ref(
 /// "name the whole valid vocabulary" discipline the `export.<n>.streams:` diagnostic follows.
 pub(crate) fn valid_identity_provider_modules(
     registry: &busbar_plugin_loader::PluginRegistry,
+    root: &RootInstall,
 ) -> String {
-    let mut names: Vec<String> = config::builtin_identity_providers()
+    let mut names: Vec<String> = config::builtin_identity_providers(root)
         .iter()
         .map(|s| (*s).to_string())
         .collect();
