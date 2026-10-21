@@ -324,6 +324,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: vec!["b".to_string(), "a".to_string()],
                 repeatable: vec!["read".to_string()],
+                breaker: None,
             },
         )]
         .into();
@@ -348,6 +349,53 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
     );
     assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
     assert_eq!(handed["a"], section["a"], "every other key as written");
+}
+
+/// A PLANE'S POOL CARRIES ITS `breaker:` BLOCK TO ITS DOOR'S EGRESS, AND ONLY THERE (BUSBAR-1.6.0.md
+/// THE DESIGN §1: "Any plugin gets all functionality"; §5: the breaker is the host's valve). The
+/// root writes the pool's block beside its members, the door's egress reads it back as the same
+/// block, and the plane is handed its section without it — byte-identical to a pool that states
+/// none. A pool with no block reads `None`, the defaults every default config runs under.
+#[test]
+fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
+    let block = busbar_kernel::config::BreakerCfg {
+        base_cooldown_secs: 30,
+        max_cooldown_secs: 300,
+        ..Default::default()
+    };
+    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [
+        (
+            "tuned".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: Some(block.clone()),
+            },
+        ),
+        (
+            "plain".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: None,
+            },
+        ),
+    ]
+    .into();
+    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    crate::root::serve::pools_into(&mut section, &stated);
+    let p = DoorPools::of(&section).expect("the pools");
+    assert_eq!(
+        p.breaker("tuned"),
+        Some(&block),
+        "the pool's own block, as stated"
+    );
+    assert_eq!(p.breaker("plain"), None, "no block: the defaults");
+    let handed = crate::root::serve::plane_settings(&section);
+    assert_eq!(
+        handed["pools"]["tuned"], handed["pools"]["plain"],
+        "the plane is handed the same pool whether or not the host tunes its breaker"
+    );
 }
 
 /// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
@@ -2643,7 +2691,7 @@ pub(crate) mod tool_door {
                 host: {
                     let live_app = Arc::clone(&live_app);
                     Arc::new(move || {
-                        busbar_kernel::plane_host::engine_host(
+                        busbar_kernel::plane_driver::engine_host(
                             live_app
                                 .get()
                                 .expect("the rig's App is built before any unit"),
@@ -2684,7 +2732,7 @@ pub(crate) mod tool_door {
             // attaches it over its live snapshot.
             if let Some(kernel) = late.kernel() {
                 let _attached = kernel
-                    .attach_standing(busbar_kernel::plane_host::standing_over(Arc::clone(&app)));
+                    .attach_standing(busbar_kernel::plane_driver::standing_over(Arc::clone(&app)));
             }
             // Its tick schedule and ready-session fan-out, as the process spawns them.
             served.spawn_ticks();
@@ -8045,6 +8093,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
         1,
     )
     .expect("the egress composes");
@@ -8651,4 +8700,42 @@ fn red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its
         );
         assert!(!refused.contains(bad), "the value is not echoed: {refused}");
     }
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20
+/// on root#7 / loader#9): serving one configured outbound style binds the one linked auth row that
+/// states it, and no other. Which row states a style is read off each row's static Statement
+/// (reading, not loading), never by binding every row to ask.
+#[test]
+fn serving_a_style_binds_only_the_linked_row_that_states_it() {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let linked = crate::LINKED.auths;
+    assert!(
+        linked.len() > 1,
+        "the default build links more than one auth row: {}",
+        linked.len()
+    );
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let served = auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("the serving row opens");
+    assert!(served.is_some(), "a linked row states `bearer`");
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        bound.len(),
+        1,
+        "only the row serving the style is bound, once: {bound:?}"
+    );
 }

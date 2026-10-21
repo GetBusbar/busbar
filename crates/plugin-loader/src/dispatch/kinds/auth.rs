@@ -132,6 +132,21 @@ pub fn operator_principal(door: busbar_contract::abi::sdk::door::MacroDoor) -> O
         .and_then(|f| f.operator_principal)
 }
 
+/// EVERYTHING the auth plugin behind `door` states (its Statement's auth tail, carriers and
+/// families), as a bind copies it out, read WITHOUT binding it: reading a linked row's static
+/// declaration is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
+/// `'static` Statement only; nothing is bound or opened.
+///
+/// # Errors
+///
+/// The door's Statement does not read as an auth Statement, or its tail is one a bind refuses.
+pub fn stated_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<AuthFacts, String> {
+    let v = crate::dispatch::load::validate::<Auth>(door).map_err(|e| e.to_string())?;
+    facts(&v.statement)
+}
+
 /// A `'static` Statement string, copied; `None` when malformed.
 fn owned(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
