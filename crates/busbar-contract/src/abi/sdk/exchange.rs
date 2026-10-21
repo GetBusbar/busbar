@@ -435,10 +435,13 @@ fn send_and_read(
         }
         let p = got.piece;
         let applied = apply(state, p, got.len, fresh);
-        // The piece's bytes are in the reply now (or were, on the entry that first read them):
-        // the read buffer keeps no copy of them into the next read.
-        if let Some(used) = state.buf.get_mut(..got.len) {
-            used.zeroize();
+        // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
+        // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
+        // the read this entry has yet to apply (the one that pended on the last entry).
+        if fresh {
+            if let Some(used) = state.buf.get_mut(..got.len) {
+                used.zeroize();
+            }
         }
         if let Err(text) = applied {
             return failed(text);
