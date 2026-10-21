@@ -92,6 +92,14 @@ pub const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
 pub const IDS_REFUSED: &str =
     "a line's handle id is 0, carries the binding bit, repeats, or the ids do not cover the lines";
 
+/// THE REFUSAL OF A LISTENER TABLE WHOSE SIZE GATE IS 0 while a line holds the body point: 1.5.5
+/// refused a request-body limit below its floor at config load, 0 included
+/// (`crates/busbar/src/config_validate/mod.rs:1440-1445` at v1.5.5), and this is that refusal's
+/// text for 0. A body-point line is never lent a 0 limit (`check::check_lines`).
+pub const BODY_LIMIT_ZERO: &str =
+    "limits.request_body_max_bytes (0) is below the 65536-byte floor \
+     — too small to admit a minimal request";
+
 /// The top bit of the ref-id space: every outbound binding's handle id carries it and no inbound
 /// line's does (the loader's `auth_handle::RefSpace`; one rule both ways, #74).
 pub const BINDING_BIT: u64 = 1 << 63;
