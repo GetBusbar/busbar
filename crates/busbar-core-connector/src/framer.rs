@@ -553,7 +553,9 @@ impl Buffers {
         }
         into.ended |= y.flags & YIELD_ENDED != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
-        // RED: the agreed protocol is not read.
+        if y.agreed != 0 {
+            into.agreed = y.agreed;
+        }
         Ok(y.flags & YIELD_MORE == 0)
     }
 }

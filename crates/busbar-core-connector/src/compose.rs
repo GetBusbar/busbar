@@ -1031,9 +1031,8 @@ impl Connection {
     /// dial).
     #[must_use]
     pub fn agreed(&self) -> Option<&[u8]> {
-        // RED: no agreed protocol is resolved.
-        let _ = (&self.offer, self.agreed);
-        None
+        let at = usize::try_from(self.agreed).ok()?.checked_sub(1)?;
+        self.offer.get(at).map(Vec::as_slice)
     }
 
     /// Whether an op is parked on the framing's ticket, waiting for its wake.
