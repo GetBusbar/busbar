@@ -5815,6 +5815,83 @@ mod pools_door_walk_and_breaker {
         assert!(wait >= 1, "at least one second: {wait}");
     }
 
+    /// A SINGLE-MEMBER POOL BENCHES ITS MEMBER ON ONE FAILURE BELOW THE TRIP, AS 1.5.5 DID: one 429
+    /// against the sole member of pool `p` (the default breaker: an error-rate trip over at least
+    /// five outcomes, so one failure stays below it) leaves the cell Closed, but cooling; the next
+    /// call is refused 503 without reaching the far end, naming the cooldown as its `Retry-After`.
+    ///
+    /// The wait, derived from v1.5.5:
+    /// - `crates/busbar/src/store/in_memory/breaker.rs:714-724`: every Closed failure that does not
+    ///   trip stores `now + compute_cooldown_with_retry_after(..)`; there is no single-member arm.
+    /// - `breaker.rs:281-388`: the streak is bumped to 1 first, so the backoff is `15 * 2^1 = 30`,
+    ///   jittered by `±(30 / 10) = ±3` and clamped to `[15, 120]`: 27..=33. A stated wait `W` is a
+    ///   floor over it: `max(27..=33, W)`.
+    /// - `crates/busbar/src/proxy/engine/walk.rs:49-64`: the shed advertises the soonest genuine
+    ///   cooldown remaining among the admissible members, at least 1: here the sole member's.
+    ///
+    /// The bounds below allow one clock second to tick between the failure and the refusal.
+    /// A REGRESSION GUARD of that parity, run without and with a stated wait (60 s).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
+        for (instance, stated, band) in [
+            ("rehome-walk-single-bench-unstated", None, 26..=33),
+            ("rehome-walk-single-bench-stated", Some(60), 59..=60),
+        ] {
+            let _one = ONE_PUBLISHER.lock().await;
+            let _published = Withdrawn(instance);
+            let (state, server) = mock(vec![
+                MockResponse::RateLimit {
+                    status: StatusCode::TOO_MANY_REQUESTS,
+                    provider_signal: None,
+                    retry_after: stated,
+                },
+                MockResponse::default(),
+            ])
+            .await;
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(port_of(&server), 1)],
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+
+            let (status, _, _) = rig.chat().await;
+            assert_ne!(status, 200, "{instance}: the far end's one 429");
+            assert!(
+                matches!(
+                    rig.app.store.breaker_state_in("p", 0),
+                    busbar_kernel::store::BreakerState::Closed
+                ),
+                "{instance}: one failure is below the trip"
+            );
+            let cooling = rig.app.store.cooldown_remaining_in("p", 0, now());
+            assert!(
+                band.contains(&cooling),
+                "{instance}: the member is benched for 1.5.5's cooldown {band:?}: {cooling}"
+            );
+
+            let (status, head, _) = rig.chat().await;
+            assert_eq!(status, 503, "{instance}: the benched sole member sheds");
+            let wait: u64 = head
+                .get("retry-after")
+                .expect("a Retry-After")
+                .to_str()
+                .expect("text")
+                .parse()
+                .expect("whole seconds");
+            assert!(
+                band.contains(&wait),
+                "{instance}: the Retry-After 1.5.5 advertised, {band:?}: {wait}"
+            );
+            assert!(
+                state.next_response().is_some(),
+                "{instance}: the refused call never reached the far end"
+            );
+        }
+    }
+
     /// A SESSION PINNED TO A TRIPPED MEMBER YIELDS (F25 row 187; legacy
     /// `forward_pool_integration_tests::test_sticky_yields_when_tripped`): with member 0's cell
     /// open (cooldown 600 s) before the requests, every session is served 200 by the healthy member
