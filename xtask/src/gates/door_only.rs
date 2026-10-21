@@ -93,6 +93,34 @@ fn holds_code(ty: &str) -> bool {
         || one_abi::has_word(ty, "dyn")
 }
 
+/// EVERY NAME A PLUGIN CRATE IS REACHED BY in the binary closure's source, as a Rust path head.
+///
+/// The plugins this binary links are not only the workspace members: most are pinned from their
+/// own repositories, and a manifest can rename a dependency (`x = { package = "busbar-…" }`), after
+/// which the source spells `x::`, never the crate's own name. BUSBAR-1.6.0.md l.3875 puts "fleet
+/// `plugins.yaml`" in this gate's scope, so the needles are: every plugin crate the workspace holds
+/// or pins ([`one_abi::members_with_pinned`]), and every key a member's manifest declares a plugin
+/// crate under, renamed or not (its `-plugin` twin included). Sorted and once each.
+///
+/// # Errors
+/// As [`one_abi::members_with_pinned`]: a pinned plugin that cannot be read is a scan gone blind.
+pub fn plugin_idents(cx: &Ctx, members: &[one_abi::Member]) -> Result<Vec<String>, String> {
+    let mut out: std::collections::BTreeSet<String> = one_abi::members_with_pinned(cx)?
+        .iter()
+        .filter(|m| one_abi::is_plugin_crate(&m.name))
+        .map(|m| m.name.replace('-', "_"))
+        .collect();
+    for m in members {
+        for d in &m.decls {
+            if one_abi::is_plugin_crate(&d.pkg) {
+                out.insert(d.pkg.replace('-', "_"));
+                out.insert(d.key.replace('-', "_"));
+            }
+        }
+    }
+    Ok(out.into_iter().collect())
+}
+
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
@@ -101,11 +129,10 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         Err(e) => return (findings, vec![e]),
     };
     let closure = one_abi::binary_closure(&members);
-    let plugin_idents: Vec<String> = members
-        .iter()
-        .filter(|m| one_abi::is_plugin_crate(&m.name))
-        .map(|m| m.name.replace('-', "_"))
-        .collect();
+    let plugin_idents = match plugin_idents(cx, &members) {
+        Ok(p) => p,
+        Err(e) => return (findings, vec![e]),
+    };
     let scope: Vec<_> = members
         .iter()
         .filter(|m| {
