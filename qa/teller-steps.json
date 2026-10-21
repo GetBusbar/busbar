@@ -463,7 +463,7 @@
       "decode": {
         "cell": "voice.rig|spec-per-dialect",
         "status": "mapped",
-        "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks",
+        "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks, driven through the door both ways; the plane codec's own decode round trip over the same corpus is GetBusbar/busbar-plane-streaming plane-streaming/src/tests/voice_corpus_tests.rs::every_corpus_fixture_round_trips_to_an_ir_fixpoint (the door-root made the codecs private)",
         "root": {
           "state": "proven",
           "leg": "root-streaming",
