@@ -48,11 +48,13 @@ fn the_linked_stream_media_are_the_declared_event_content_types() {
 /// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path(path)`), so neither the verb nor
 /// the route a request matched moved it. Each fixture row is a request and that function's answer
 /// for it, verbatim; the kernel computes the label with no verb and no route in hand
-/// ([`busbar_kernel::ingress::native::labelled_dialect`]), over the path dialects this root installs
-/// ([`crate::root::linked::path_dialects`]), on a path no plane is mounted at.
+/// ([`busbar_kernel::ingress::native::labelled_dialect`]), over the path labels this root folds
+/// from the linked planes' `declares.auth_labels` ([`crate::root::linked::path_dialects`]), on a
+/// path no plane is mounted at.
 #[test]
 fn an_auth_denial_is_tapped_under_the_1_5_5_label_of_its_path_whatever_the_verb() {
-    let dialects = crate::root::linked::path_dialects(&crate::LINKED);
+    let dialects =
+        crate::root::linked::path_dialects(&crate::LINKED).expect("every linked `declares` reads");
     let rows = FIXTURE["auth_denial_label"]
         .as_array()
         .expect("auth_denial_label");

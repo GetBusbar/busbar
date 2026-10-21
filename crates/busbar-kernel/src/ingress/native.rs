@@ -21,24 +21,23 @@ use crate::plane_driver::claims::Ingress;
 /// THE DIALECTS A PATH NAMES BY ITS SHAPE ALONE, as the linked declarations state them: the label
 /// an authentication refusal's `response` tap is told (`ingress_protocol`). v1.5.5 labelled that
 /// tap off the path alone (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path(path)`),
-/// whatever the verb. The table is not the kernel's: each dialect states its own path claim
-/// (`busbar_contract::protocol::ProtocolDecl::residual_claims`) and which dialect answers a path no
-/// claim takes (`ProtocolDecl::residual_default`), and the composition root folds the linked
-/// declarations into this value and installs it ([`install_path_dialects`]). The kernel names none.
+/// whatever the verb. The table is not the kernel's: each plane states the labels of its own
+/// paths in its `declares` document (`auth_labels`: ordered path rules and a default), and the
+/// composition root folds the linked planes' into this value and installs it
+/// ([`install_path_dialects`]). The kernel names none.
 #[derive(Clone)]
 pub struct PathDialects {
-    /// The dialect the declarations claim `path` for by its shape alone, the tightest claim kept
-    /// and a tie broken by the linked order; `None` when no declaration claims it.
+    /// The label the planes' rules give `path` by its shape alone, the first rule that holds in
+    /// the linked order; `None` when no rule holds.
     pub claimed: std::sync::Arc<dyn Fn(&str) -> Option<&'static str> + Send + Sync>,
-    /// The dialect a path no declaration claims is labelled in, when one declares itself the
-    /// residual default.
+    /// The label of a path no rule holds for, when a plane states one.
     pub residual: Option<&'static str>,
 }
 
 /// The installed path dialects ([`install_path_dialects`]).
 static PATH_DIALECTS: std::sync::OnceLock<PathDialects> = std::sync::OnceLock::new();
 
-/// Install the linked declarations' path dialects, once, from the composition root. A second
+/// Install the linked planes' path labels, once, from the composition root. A second
 /// install is ignored: there is one composition root.
 pub fn install_path_dialects(dialects: PathDialects) {
     let _ = PATH_DIALECTS.set(dialects);

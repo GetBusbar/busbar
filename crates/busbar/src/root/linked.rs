@@ -314,7 +314,13 @@ pub struct BookCtx<'a> {
 /// its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
 /// hand their units to: every entry on it is handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    busbar_kernel::ingress::native::install_path_dialects(path_dialects(linked));
+    match path_dialects(linked) {
+        Ok(dialects) => busbar_kernel::ingress::native::install_path_dialects(dialects),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -386,14 +392,60 @@ pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
     })
 }
 
-/// THE PATH LABELS an authentication refusal's tap is told (`busbar_kernel::ingress::native::PathDialects`),
-/// read off the path alone: none until the linked planes' `declares` sections state them.
-pub fn path_dialects(linked: &Linked) -> busbar_kernel::ingress::native::PathDialects {
-    let _ = linked;
-    busbar_kernel::ingress::native::PathDialects {
-        claimed: Arc::new(|_: &str| None),
-        residual: None,
+/// THE PATH LABELS an authentication refusal's tap is told
+/// (`busbar_kernel::ingress::native::PathDialects`), read off the path alone as v1.5.5 read it
+/// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path`): every linked plane's
+/// `declares.auth_labels` (ARCHITECT ruling on the tap label: the plane states its own labels,
+/// the root folds them), its rules in the plane's order and the planes in the linked order, the
+/// first rule whose path match holds naming the label; the first plane's `default` labels a path
+/// no rule matches. The root spells no label (Law 1).
+///
+/// # Errors
+///
+/// A linked door's `declares` section that does not read, or a rule that names verbs: the label is
+/// read with no verb in hand.
+pub fn path_dialects(
+    linked: &Linked,
+) -> Result<busbar_kernel::ingress::native::PathDialects, String> {
+    let mut rules: Vec<(crate::root::loader::sign::PathMatch, &'static str)> = Vec::new();
+    let mut residual: Option<&'static str> = None;
+    for (row, _, json) in linked.plane_door_declares {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        let Some(labels) = declares.auth_labels else {
+            continue;
+        };
+        for rule in labels.rules {
+            if !rule.methods.is_empty() {
+                return Err(format!(
+                    "plugin '{row}' states an `auth_labels` rule for the verbs {:?}: an \
+                     authentication refusal's label is read off its path alone",
+                    rule.methods
+                ));
+            }
+            rules.push((rule.path, leak_label(rule.label)));
+        }
+        if residual.is_none() {
+            residual = labels.default.map(leak_label);
+        }
     }
+    Ok(busbar_kernel::ingress::native::PathDialects {
+        claimed: Arc::new(move |path: &str| {
+            rules
+                .iter()
+                .find(|(path_match, _)| path_match.matches(path))
+                .map(|(_, label)| *label)
+        }),
+        residual,
+    })
+}
+
+/// A declared label as the `&'static str` the kernel's labels are: read once, at link time, and
+/// kept for the process.
+fn leak_label(label: String) -> &'static str {
+    Box::leak(label.into_boxed_str())
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
