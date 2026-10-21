@@ -272,7 +272,7 @@ owner = "kernel-neutrality lane"
 
 [[segment-debt]]
 file = "crates/busbar/tests/admin_cross_plane/keys.rs"
-line = 2868
+line = 2865
 text = "protocol: {PROTO_ANTHROPIC}"
 dialect = "anthropic"
 owner = "kernel-neutrality lane"
