@@ -11,7 +11,7 @@
 //! included) can make one. Each caller in the loader builds the call's `in` with it and makes the
 //! crossing while still holding the bytes. A crate that may not write `unsafe` (busbar's root)
 //! lends through the WHOLE CROSSINGS below instead ([`validate_json`], [`open_json`],
-//! [`open_plane`]): each takes the borrowed bytes, builds the `in`, makes the call and returns only
+//! [`refresh_json`], [`open_plane`]): each takes the borrowed bytes, builds the `in`, makes the call and returns only
 //! the copied answer, so the lent value is born and dies inside the call that borrows its bytes.
 //!
 //! THE CALL-LENDING CONTRACT the raw lenders' callers keep: the bytes stay alive, unmoved and
@@ -44,7 +44,9 @@
 //! ```
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, OutHead, BLOB_JSON};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ValidateIn};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot as life, OpenIn, OpenOut, RefreshIn, ValidateIn,
+};
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::plane_calls::DialectFacts;
@@ -90,6 +92,22 @@ pub fn open_json<K: Kind>(plugin: &Plugin<K>, settings: Option<&[u8]>) -> Called
     i.settings = settings.map_or(Blob::ABSENT, |s| blob(s, BLOB_JSON));
     let mut f = Frame::new(i, blank_out::<OpenOut>());
     plugin.call(life::OPEN, &mut f)
+}
+
+/// The lifecycle `refresh` of `plugin` to `generation` over `settings` (JSON; `None` = absent),
+/// lent to that one call.
+#[must_use]
+pub fn refresh_json<K: Kind>(
+    plugin: &Plugin<K>,
+    generation: u64,
+    settings: Option<&[u8]>,
+) -> Called {
+    let mut i: RefreshIn = blank_in();
+    i.generation = generation;
+    // `settings` outlives the call below, the only one this `in` is lent to.
+    i.settings = settings.map_or(Blob::ABSENT, |s| blob(s, BLOB_JSON));
+    let mut f = Frame::new(i, blank_out::<OutHead>());
+    plugin.call(life::REFRESH, &mut f)
 }
 
 /// A plane's `open`, generation 1: its `settings` (JSON), the deployment's `public_url` (empty =

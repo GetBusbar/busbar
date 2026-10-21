@@ -50,7 +50,7 @@ use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot
 const SECTIONS: &[Section] = &[Section {
     name: abi_str("door"),
     flags: SECTION_DECLARING,
-    _reserved: 0,
+    ..Section::ZERO
 }];
 const DIALECTS: &[AbiStr] = &[abi_str("door/1")];
 const OP_CLASSES: &[OpClass] = &[OpClass {
@@ -264,9 +264,9 @@ slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
 slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     let mut units = input.units_buf();
     units.push(UnitCount {
-        class: 0,
         source: UNITS_ESTIMATED,
         amount: input.body().bytes().len() as u64,
+        ..UnitCount::ZERO
     });
     if !units.fits() {
         out.set(|o| &o.units_needed, units.needed() as u32);
@@ -293,7 +293,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
                 let handle = |seq| CompletionHandle {
                     ticket: input.head().ticket(),
                     seq,
-                    _reserved: 0,
+                    ..CompletionHandle::ZERO
                 };
                 let member = input.member().as_str().unwrap_or_default();
                 // A service the host does not serve gates nothing.
@@ -338,16 +338,16 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
                 value: arena.span(b"door"),
             });
             records.push(RecordWrite {
-                kind: 0,
                 op: RECORD_PUT,
                 key: arena.span(b"k"),
                 value: arena.span(b"v"),
+                ..RecordWrite::ZERO
             });
             let lane = arena.span(b"lane");
             units.push(UnitCount {
-                class: 0,
                 source: UNITS_REPORTED,
                 amount: piece.len() as u64,
+                ..UnitCount::ZERO
             });
             // One short answer for every buffer (the multi-buffer rule).
             let short = !(fields.fits() && records.fits() && units.fits() && arena.fits());

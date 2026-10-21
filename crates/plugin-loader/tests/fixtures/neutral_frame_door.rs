@@ -79,16 +79,14 @@ const CLAIMS: &[Claim] = &[{
 /// The claim's numbering: `0` a stream that ended whole, `1..=9` any other end.
 const STATUS_ROWS: &[StatusRow] = &[
     StatusRow {
-        claim: 0,
-        lo: 0,
-        hi: 0,
         class: STATUS_SUCCESS as u32,
+        ..StatusRow::ZERO
     },
     StatusRow {
-        claim: 0,
         lo: 1,
         hi: 9,
         class: STATUS_OTHER as u32,
+        ..StatusRow::ZERO
     },
 ];
 
@@ -96,10 +94,10 @@ const STATUS_ROWS: &[StatusRow] = &[
 /// (`check_fault_cover`). Every end but the whole one is the caller's, so this neutral door trips
 /// nothing, as it read before the table was appended.
 const FAULT_ROWS: &[FaultRow] = &[FaultRow {
-    claim: 0,
     lo: 1,
     hi: 9,
     fault: FAULT_CALLER as u32,
+    ..FaultRow::ZERO
 }];
 
 const TAIL: TransportTail = {
@@ -545,12 +543,8 @@ impl Framing {
                     stream: 1,
                     offset: at as u64,
                     len: len as u64,
-                    code: 0,
-                    status_class: 0,
                     flags: PIECE_END_OF_FRAME,
-                    fault: 0,
-                    retry_after_secs: 0,
-                    declared_len: 0,
+                    ..FramePiece::ZERO
                 });
             }
             at += len;
@@ -580,15 +574,9 @@ impl Framing {
             // SAFETY: a host buffer of `pieces_cap >= 1` pieces.
             unsafe {
                 sink.pieces.write(FramePiece {
-                    stream: 0,
-                    offset: 0,
                     len: n as u64,
-                    code: 0,
-                    status_class: 0,
                     flags,
-                    fault: 0,
-                    retry_after_secs: 0,
-                    declared_len: 0,
+                    ..FramePiece::ZERO
                 });
             }
             y.frame_len = n as u64;

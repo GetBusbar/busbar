@@ -11,7 +11,8 @@
 //! use busbar_contract::abi::sdk::test_support::reply::call;
 //!
 //! let resolve = view.op::<Ops>(|t| &t.resolve).expect("the door states resolve");
-//! let resolved = call(resolve, Some(&instance), &input, out);
+//! // SAFETY: `input`'s fields are this test's own live buffers; the host outlives `instance`.
+//! let resolved = unsafe { call(resolve, Some(&instance), &input, out) };
 //! assert_eq!(resolved.owned.material(), b"s3cret");
 //! release(instance, resolved.out.head.lease); // the copy is already taken
 //! ```
@@ -79,9 +80,11 @@ pub trait Reply: AbiOut + sealed::Take {
 /// names the door it was opened on, and [`close`] takes it by value: no slot is entered on a
 /// forged pointer, another door's instance, or one already closed.
 ///
-/// TIED TO WHAT ITS `open` WAS LENT (status row 194): `'h` is the borrow of the [`TestIn`] (and,
-/// through [`call_hosted`], of the [`FakeHost`](super::fake::FakeHost)) its `open` ran over, so an
-/// instance that holds the fake host's tables cannot outlive the host.
+/// TIED TO WHAT ITS `open` WAS LENT (status row 194): an `open` through [`call_hosted`] runs over
+/// a [`FakeHost`](super::fake::FakeHost)'s tables, and its instance keeps them; `'h` is that
+/// borrow of the host (and of the [`TestIn`] lent with it), so the instance cannot outlive the
+/// host. An `open` through [`call`] is lent no host tables (a `TestIn` names none), so its
+/// instance borrows nothing: `Instance<'static>`.
 ///
 /// ```compile_fail,E0505
 /// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
@@ -194,15 +197,17 @@ impl<'h, O: Reply> Called<'h, O> {
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field. Or the
 /// instance is missing, present where none is taken, another door's, or `op` is `close`.
-pub fn call<'h, I: AbiIn, O: Reply>(
+pub fn call<I: AbiIn, O: Reply>(
     op: super::ViewOp,
-    instance: Option<&Instance<'h>>,
-    input: &TestIn<'h, I>,
+    instance: Option<&Instance<'_>>,
+    input: &TestIn<'_, I>,
     out: O,
-) -> Called<'h, O> {
+) -> Called<'static, O> {
     let at = on(op, instance);
     // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`; every
-    // pointer in the `TestIn` borrows memory that lives for `'h`, past this call.
+    // pointer in the `TestIn` borrows memory that outlives this call. An instance this opens was
+    // lent no host tables (a `TestIn` names none: only `FakeHost::lend_to` does, through
+    // `call_hosted`), so it borrows nothing and is `'static`.
     unsafe { run(op, at, input.input, out) }
 }
 
@@ -345,13 +350,11 @@ unsafe fn run_op<'h, I: AbiIn, O: Reply>(
     let opened = out.opened(Token(()));
     out.clear(Token(()));
     let instance = match opens {
-        Some(door) if outcome == Outcome::Ready && !opened.is_null() => {
-            Some(Instance {
-                ptr: opened,
-                door,
-                lent: PhantomData,
-            })
-        }
+        Some(door) if outcome == Outcome::Ready && !opened.is_null() => Some(Instance {
+            ptr: opened,
+            door,
+            lent: PhantomData,
+        }),
         _ => None,
     };
     Called {

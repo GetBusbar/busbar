@@ -344,7 +344,7 @@ mod tests;
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
-/// The cold kinds' both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
+/// The both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
 /// linked door and the dropped-in door, its rows and its opened instance compared.
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]

@@ -334,7 +334,7 @@ pub struct ClaimRow {
 /// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
 /// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
 /// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
+/// closed by status row 194 (#1471, branch `lane-row194-abi-private-fields`: the ABI's ptr/len
 /// fields private behind `const` constructors from `'static` slices and strs).
 #[derive(Debug, Clone, Copy)]
 pub struct DoorView {

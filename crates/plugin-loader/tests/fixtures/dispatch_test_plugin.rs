@@ -223,16 +223,15 @@ static METRICS: Shared<[MetricEntry; 5]> = Shared([
 ]);
 static DIAGS: Shared<[Diag; 2]> = Shared([
     Diag {
-        id_idx: 0,
         severity: 1,
-        _reserved: [0; 3],
         text: s(b"answered"),
+        ..Diag::ZERO
     },
     Diag {
         id_idx: 5,
         severity: 1,
-        _reserved: [0; 3],
         text: s(b"no such id"),
+        ..Diag::ZERO
     },
 ]);
 
@@ -345,8 +344,7 @@ unsafe fn gauges(me: &Inst, t: Ticket, out: *mut c_void, values: &[(u32, u32)]) 
         (*out.cast::<OutHead>()).envelope = Envelope {
             metrics: ptr,
             metrics_len: len,
-            diags: std::ptr::null(),
-            diags_len: 0,
+            ..Envelope::ZERO
         };
     }
 }
@@ -580,10 +578,8 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             }
             BAD_ENVELOPE => {
                 (*out.cast::<OutHead>()).envelope = Envelope {
-                    metrics: std::ptr::null(),
                     metrics_len: 3,
-                    diags: std::ptr::null(),
-                    diags_len: 0,
+                    ..Envelope::ZERO
                 };
                 say(out, Outcome::Ready)
             }

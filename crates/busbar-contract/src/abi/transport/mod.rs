@@ -575,6 +575,11 @@ impl Claim {
         _reserved: 0,
     };
 
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). Its pointer and
+    /// length fields are private (status row 194), so a plugin builds from it through its setters,
+    /// never with `..ZERO`.
+    pub const ZERO: Self = Self::EMPTY;
+
     abi_lists! {
         facts, facts_len: AbiStr => facts_ptr, with_facts, with_raw_facts;
     }
@@ -593,6 +598,18 @@ pub struct StatusRow {
     pub hi: u32,
     /// The class (`STATUS_*`).
     pub class: u32,
+}
+
+impl StatusRow {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `StatusRow { …, ..StatusRow::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        claim: 0,
+        lo: 0,
+        hi: 0,
+        class: 0,
+    };
 }
 
 /// One fault-table row: a code range of a claim's numbering and the fault reading it means to the
@@ -615,6 +632,18 @@ pub struct FaultRow {
     pub fault: u32,
 }
 
+impl FaultRow {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `FaultRow { …, ..FaultRow::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        claim: 0,
+        lo: 0,
+        hi: 0,
+        fault: 0,
+    };
+}
+
 /// One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to
 /// the plugin's `validate`/`open`).
 #[repr(C)]
@@ -628,6 +657,18 @@ pub struct SettingDecl {
     pub _reserved: u32,
     /// Its default, as text.
     pub default: AbiStr,
+}
+
+impl SettingDecl {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `SettingDecl { …, ..SettingDecl::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        path: AbiStr::ZERO,
+        kind: 0,
+        _reserved: 0,
+        default: AbiStr::ZERO,
+    };
 }
 
 /// THE TRANSPORT'S STATEMENT TAIL: static facts, `'static` data.
@@ -738,6 +779,14 @@ impl TransportTail {
         _reserved: 0,
     };
 
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). Its pointer and
+    /// length fields are private (status row 194), so a plugin builds from it through its setters,
+    /// never with `..ZERO`.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        ..Self::EMPTY
+    };
+
     abi_lists! {
         composes_over, composes_over_len: AbiStr
             => composes_over_ptr, with_composes_over, with_raw_composes_over;
@@ -803,6 +852,23 @@ pub struct ConnFacts {
     pub local_certificate: AbiStr,
 }
 
+impl ConnFacts {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ConnFacts { …, ..ConnFacts::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        _reserved: 0,
+        offered_name: AbiStr::ZERO,
+        agreed_protocol: AbiStr::ZERO,
+        peer_subject: AbiStr::ZERO,
+        peer_issuer: AbiStr::ZERO,
+        peer_fingerprint: AbiStr::ZERO,
+        claim: AbiStr::ZERO,
+        local_certificate: AbiStr::ZERO,
+    };
+}
+
 /// One frame piece a framer produced, in [`FramerSink::pieces`]; its bytes are
 /// `frame[offset..offset + len]`.
 #[repr(C)]
@@ -832,6 +898,23 @@ pub struct FramePiece {
     pub declared_len: u64,
 }
 
+impl FramePiece {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `FramePiece { …, ..FramePiece::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        stream: 0,
+        offset: 0,
+        len: 0,
+        code: 0,
+        status_class: 0,
+        fault: 0,
+        flags: 0,
+        retry_after_secs: 0,
+        declared_len: 0,
+    };
+}
+
 /// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A
 /// [`HeadSlots`] slot is one of these, a range of [`FramerSink::frame`] a framer wrote.
 #[repr(C)]
@@ -841,6 +924,13 @@ pub struct FrameSpan {
     pub offset: u64,
     /// How many bytes.
     pub len: u64,
+}
+
+impl FrameSpan {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `FrameSpan { …, ..FrameSpan::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self { offset: 0, len: 0 };
 }
 
 // The piece's size and its flags' place are fixed: a framer built against another layout is refused

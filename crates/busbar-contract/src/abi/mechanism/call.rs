@@ -226,6 +226,9 @@ impl AbiStr {
         len: 0,
     };
 
+    /// THE EMPTY DECLARATION: every field zero (a NULL pointer, zero length): [`AbiStr::ABSENT`].
+    pub const ZERO: Self = Self::ABSENT;
+
     /// `s`, which lives for the program. An empty `s` is present and empty, never absent.
     ///
     /// ```
@@ -344,6 +347,13 @@ pub struct Span {
     pub len: u32,
 }
 
+impl Span {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Span { …, ..Span::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self { offset: 0, len: 0 };
+}
+
 /// One named field borrowed for the call: a name and its value (any bytes). THE one field of
 /// every kind.
 #[repr(C)]
@@ -392,6 +402,18 @@ impl Blob {
     };
 }
 const _: &[(&str, usize)] = Blob::LAYOUT;
+
+impl Blob {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). Its pointer and
+    /// length fields are private (status row 194), so a plugin builds from it through its setters,
+    /// never with `..ZERO`.
+    pub const ZERO: Self = Self {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: 0,
+        flags: 0,
+    };
+}
 
 impl Blob {
     /// No payload.
@@ -577,6 +599,18 @@ pub struct Diag {
     pub text: AbiStr,
 }
 
+impl Diag {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Diag { …, ..Diag::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        id_idx: 0,
+        severity: 0,
+        _reserved: [0; 3],
+        text: AbiStr::ZERO,
+    };
+}
+
 /// [`Diag::id_idx`]: a log record the plugin emitted during the call. Its text is
 /// `target: message`, followed by any other fields as ` key=value`.
 pub const DIAG_LOG: u32 = u32::MAX;
@@ -610,6 +644,18 @@ pub struct Envelope {
     pub diags: *const Diag,
     /// How many.
     pub diags_len: usize,
+}
+
+impl Envelope {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Envelope { …, ..Envelope::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        metrics: std::ptr::null(),
+        metrics_len: 0,
+        diags: std::ptr::null(),
+        diags_len: 0,
+    };
 }
 
 /// The head of every `out` of every kind. Host-owned. THE HOST ZEROES THE WHOLE `out` BEFORE EVERY

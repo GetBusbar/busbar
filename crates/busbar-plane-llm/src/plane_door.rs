@@ -122,7 +122,7 @@ const fn section(name: &'static str, flags: u32) -> Section {
     Section {
         name: abi_str(name),
         flags,
-        _reserved: 0,
+        ..Section::ZERO
     }
 }
 
@@ -656,8 +656,7 @@ impl LlmDoor {
 /// op's ticket (the host runs a ticketless call fresh every time and stores nothing).
 const UNTICKETED: CompletionHandle = CompletionHandle {
     ticket: Ticket::NONE,
-    seq: 0,
-    _reserved: 0,
+    ..CompletionHandle::ZERO
 };
 
 /// THE DOOR'S CODEC HOST: the [`CodecHost`](busbar_contract::codec::CodecHost) this plane's codecs
@@ -1796,7 +1795,7 @@ slot!(
         out.set(|o| &o.arena_written, aw as u64);
         out.set(|o| &o.arena_needed, and as u64);
         out.set(|o| &o.messages_needed, tnd as u32);
-        out.set(|o| &o.body, Span { offset: SPAN_ABSENT, len: 0 });
+        out.set(|o| &o.body, Span { offset: SPAN_ABSENT, ..Span::ZERO });
         if short {
             // The driver re-calls once with the buffers this named, the same rewrite with it:
             // applying it again to the request it already rewrote writes the same body.
@@ -1831,7 +1830,7 @@ slot!(
         }
         out.set(
             |o| &o.rewritten,
-            body.unwrap_or(Span { offset: SPAN_ABSENT, len: 0 }),
+            body.unwrap_or(Span { offset: SPAN_ABSENT, ..Span::ZERO }),
         );
         Outcome::Ready
     }

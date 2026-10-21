@@ -157,6 +157,8 @@ mod virtual_key_wire {
         pub binding_mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub minted_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub idp_provider: Option<String>,
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
@@ -240,6 +242,7 @@ mod virtual_key_wire {
                 idp_subject: self.idp_subject.clone(),
                 binding_mode: self.binding_mode.clone(),
                 minted_by: self.minted_by.clone(),
+                idp_provider: self.idp_provider.clone(),
             }
             .serialize(s)
         }
@@ -266,6 +269,7 @@ mod virtual_key_wire {
                 idp_subject: w.idp_subject,
                 binding_mode: w.binding_mode,
                 minted_by: w.minted_by,
+                idp_provider: w.idp_provider,
             })
         }
     }
@@ -345,6 +349,13 @@ pub struct VirtualKey {
     /// accounting can count how many an app-admin has minted. `None` for self-minted personal tokens
     /// and pre-field keys. Provenance, NOT an automatic revocation trigger.
     pub minted_by: Option<String>,
+    /// KERNEL-ONLY PROVENANCE (Q128 u31): the identity-provider instance that minted a self-serve
+    /// key, so another provider asserting the same subject is refused. Persisted with the row and
+    /// NEVER served: no admin key view carries it, and the key's `labels` stay exactly what the
+    /// operator set (1.5.5 wrote a self-serve key with empty labels, v1.5.5
+    /// crates/busbar/src/governance/state.rs:487). `None` for every other key and for a self-serve
+    /// key minted before the field existed (it adopts the first provider that logs in).
+    pub idp_provider: Option<String>,
 }
 
 impl VirtualKey {
@@ -421,6 +432,7 @@ impl std::fmt::Debug for VirtualKey {
             .field("idp_subject", &self.idp_subject)
             .field("binding_mode", &self.binding_mode)
             .field("minted_by", &self.minted_by)
+            .field("idp_provider", &self.idp_provider)
             .finish()
     }
 }
@@ -967,6 +979,39 @@ pub enum PlaneDisposition {
     Terminal,
 }
 
+/// WHICH rows a plane-record purge may drop: every row older than the cutoff ([`Retention::Age`]),
+/// or only the rows whose [`PlaneDisposition`] is [`PlaneDisposition::Terminal`]
+/// ([`Retention::TerminalOnly`]). The kind's own retention contract picks it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Retention {
+    /// Every row older than the cutoff.
+    #[default]
+    Age,
+    /// Only TERMINAL rows older than the cutoff; an ACTIVE row is kept regardless of age.
+    TerminalOnly,
+}
+
+impl Retention {
+    /// The retention as its wire code: [`Retention::Age`] `0`, [`Retention::TerminalOnly`] `1`.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        match self {
+            Retention::Age => 0,
+            Retention::TerminalOnly => 1,
+        }
+    }
+
+    /// The retention a wire code names; an unknown code names none.
+    #[must_use]
+    pub const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            0 => Some(Retention::Age),
+            1 => Some(Retention::TerminalOnly),
+            _ => None,
+        }
+    }
+}
+
 /// One durable PLANE RECORD — the neutral envelope the eight kind-tagged verbs read and write. Only
 /// [`PlaneRecord::body`] is opaque (the protocol-specific row, serialized by the caller); every other
 /// field is a TYPED sidecar column so the store can index, order and retention-sweep without ever
@@ -1475,6 +1520,24 @@ pub trait RecordStore: Send + Sync + 'static {
     /// DEFAULTED to `Ok(0)`.
     fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
+    }
+
+    /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
+    /// `retention`, returning how many went.
+    ///
+    /// DEFAULTED: [`Retention::Age`] is [`RecordStore::purge_plane_records_before`];
+    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
+    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => self.purge_plane_records_before(kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
     }
 
     /// DELETE the record identified by `(kind, id)`; absent is a no-op. DEFAULTED to `Ok(())`.

@@ -251,6 +251,17 @@ pub struct StyleDecl {
     pub points: u32,
 }
 
+impl StyleDecl {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `StyleDecl { …, ..StyleDecl::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        name: AbiStr::ZERO,
+        flags: 0,
+        points: 0,
+    };
+}
+
 /// THE AUTH STATEMENT TAIL: `Statement.kind_tail` of an auth plugin. Plain `'static` data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -327,6 +338,24 @@ impl AuthTail {
         credential_kinds, credential_kinds_len: AbiStr
             => credential_kinds_ptr, with_credential_kinds, with_raw_credential_kinds;
     }
+}
+
+impl AuthTail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). Its pointer and
+    /// length fields are private (status row 194), so a plugin builds from it through its setters,
+    /// never with `..ZERO`.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        caps: 0,
+        facts: 0,
+        login_kind: 0,
+        inbound_points: 0,
+        styles: std::ptr::null(),
+        styles_len: 0,
+        operator_principal: AbiStr::ZERO,
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
+    };
 }
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the

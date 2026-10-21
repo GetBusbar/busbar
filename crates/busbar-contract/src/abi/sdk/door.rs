@@ -561,44 +561,29 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
     Statement {
-        size: 0,
-        kind: 0,
-        kind_abi: 0,
         max_inflight,
         name: abi_str(name),
         version: abi_str(version),
         families: ptr::null::<MetricFamily>(),
-        families_len: 0,
         diag_ids: ptr::null::<AbiStr>(),
-        diag_ids_len: 0,
         secret_refs: ptr::null::<AbiStr>(),
-        secret_refs_len: 0,
         settings_schema: Blob::ABSENT,
         kind_tail: ptr::null::<KindTailHead>(),
         extensions: Blob::ABSENT,
-        marks: 0,
         mark_words: ptr::null::<MarkWord>(),
-        mark_words_len: 0,
         rewrites: ptr::null::<Rewrite>(),
-        rewrites_len: 0,
         sections: ptr::null::<Section>(),
-        sections_len: 0,
         needs: ptr::null::<Need>(),
-        needs_len: 0,
         target_from: ABSENT,
         trust_from: ABSENT,
         answers: ptr::null::<AbiStr>(),
-        answers_len: 0,
         claims: ptr::null::<AbiStr>(),
-        claims_len: 0,
+        ..Statement::ZERO
     }
 }
 
 /// An absent string.
-const ABSENT: AbiStr = AbiStr {
-    ptr: ptr::null(),
-    len: 0,
-};
+const ABSENT: AbiStr = AbiStr::ZERO;
 
 /// `statement` with `size`, `kind` and `kind_abi` stamped from `T`, so the Statement and the door
 /// can never disagree on them.
@@ -640,7 +625,7 @@ pub const fn door<T: KindOps>(
 /// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
 /// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
 /// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
+/// closed by status row 194 (#1471, branch `lane-row194-abi-private-fields`: the ABI's ptr/len
 /// fields private behind `const` constructors from `'static` slices and strs).
 ///
 /// THE SAFE SURFACE OF THE TEST SUPPORT, PROVED IN PAIRS. Each `compile_fail` below has a twin
@@ -857,9 +842,9 @@ pub const fn door<T: KindOps>(
 /// # ) -> RawOutcome {
 /// #     RawOutcome(0)
 /// # }
-fn main() {
-    let _ = ViewOp { op: forged };
-}
+/// fn main() {
+///     let _ = ViewOp { op: forged };
+/// }
 /// ```
 ///
 /// ```
@@ -893,10 +878,10 @@ fn main() {
 /// # ) -> RawOutcome {
 /// #     RawOutcome(0)
 /// # }
-fn main() {
-    let view = DoorView::of(plugin::MACRO_DOOR);
-    let _: Option<ViewOp> = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open);
-}
+/// fn main() {
+///     let view = DoorView::of(plugin::MACRO_DOOR);
+///     let _: Option<ViewOp> = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open);
+/// }
 /// ```
 ///
 /// An `Instance` is no pointer and no
@@ -933,15 +918,15 @@ fn main() {
 /// # ) -> RawOutcome {
 /// #     RawOutcome(0)
 /// # }
-fn main() {
-    let view = DoorView::of(plugin::MACRO_DOOR);
-    let open = view
-        .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
-        .unwrap();
-    let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
-    opened.out.instance = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
-    let _: Instance = opened.out.instance;
-}
+/// fn main() {
+///     let view = DoorView::of(plugin::MACRO_DOOR);
+///     let open = view
+///         .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
+///         .unwrap();
+///     let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
+///     opened.out.instance = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+///     let _: Instance = opened.out.instance;
+/// }
 /// ```
 ///
 /// ```compile_fail
@@ -975,11 +960,11 @@ fn main() {
 /// # ) -> RawOutcome {
 /// #     RawOutcome(0)
 /// # }
-fn main() {
-    let _ = Instance {
-        ptr: core::ptr::null_mut(),
-    };
-}
+/// fn main() {
+///     let _ = Instance {
+///         ptr: core::ptr::null_mut(),
+///     };
+/// }
 /// ```
 ///
 /// ```
@@ -1013,14 +998,14 @@ fn main() {
 /// # ) -> RawOutcome {
 /// #     RawOutcome(0)
 /// # }
-fn main() {
-    let view = DoorView::of(plugin::MACRO_DOOR);
-    let open = view
-        .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
-        .unwrap();
-    let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
-    let _: Option<Instance> = opened.take_instance();
-}
+/// fn main() {
+///     let view = DoorView::of(plugin::MACRO_DOOR);
+///     let open = view
+///         .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
+///         .unwrap();
+///     let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
+///     let _: Option<Instance> = opened.take_instance();
+/// }
 /// ```
 ///
 /// A fake host hands safe code no table; it lends its tables to an `open` alone:
@@ -1079,8 +1064,8 @@ impl MacroDoor {
     /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
     /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
     /// stated counts of live `'static` entries. That last part is the content of the Statement the
-    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and the root
-    /// unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` closes it.
+    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and status row
+    /// 194 (#1471, branch `lane-row194-abi-private-fields`) closes it.
     #[doc(hidden)]
     #[must_use]
     pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
@@ -1099,9 +1084,9 @@ impl MacroDoor {
 ///
 /// Beside `door` it expands `MACRO_DOOR`, the [`MacroDoor`] the contract's test support reads the
 /// door through. The `statement` it is given is the caller's own `const` data: its lists, strings,
-/// blobs and kind tail are stated through the ABI's public pointer/length fields, which the
-/// root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` puts behind `const` constructors
-/// from `'static` slices and strs.
+/// blobs and kind tail are stated through the ABI's public pointer/length fields, which status
+/// row 194 (#1471, branch `lane-row194-abi-private-fields`) puts behind `const` constructors from
+/// `'static` slices and strs.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
 /// `pub unsafe extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
 /// The door is a [`DoorFn`](crate::abi::mechanism::door::DoorFn), so it is `unsafe` (status row
@@ -1300,8 +1285,8 @@ macro_rules! plugin_door {
             // SAFETY: `door` is the function this macro expanded just above: it answers the
             // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's
             // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
-            // that its counts match its storage is closed by the root unsafe-ABI change on branch
-            // `lane-row159-abi-unsafe-fn`.
+            // that its counts match its storage is closed by status row 194 (#1471, branch
+            // `lane-row194-abi-private-fields`).
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
     };
 }

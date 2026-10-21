@@ -12,6 +12,7 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr;
 
+use super::test_in::TestIn;
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use crate::abi::mechanism::door::KindTailHead;
@@ -183,8 +184,7 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
         .op::<crate::abi::transport::Ops>(|t| &t.head.close)
         .expect("the door states close");
 
-    let mut input: OpenIn = zeroed();
-    input.head = in_head::<OpenIn>(slot::OPEN);
+    let input = TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
     let mut opened = call(open, None, &input, zeroed::<OpenOut>());
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
@@ -199,7 +199,7 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
     let closed = super::reply::close(
         close,
         instance,
-        &in_head::<InHead>(slot::CLOSE),
+        &TestIn::<InHead>::new().set(|h| &h.op, slot::CLOSE),
         out_head::<OutHead>(),
     );
     assert_eq!(closed.outcome, Outcome::Ready);
@@ -377,15 +377,14 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
         .expect("the door states open");
     let settings = b"boom: x";
     let mut reason = [0_u8; 64];
-    let mut input: OpenIn = zeroed();
-    input.head = in_head::<OpenIn>(slot::OPEN);
-    input.settings = crate::abi::mechanism::call::Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        ..crate::abi::mechanism::call::Blob::ABSENT
-    };
-    input.err_buf = reason.as_mut_ptr();
-    input.err_cap = reason.len();
+    let input = TestIn::<OpenIn>::new()
+        .set(|i| &i.head.op, slot::OPEN)
+        .blob(
+            |i| &i.settings,
+            settings,
+            crate::abi::mechanism::call::BLOB_ABSENT,
+        )
+        .buffer(|i| &i.err_buf, |i| &i.err_cap, &mut reason);
     let mut got = call(open, None, &input, zeroed::<OpenOut>());
     assert!(
         got.take_instance().is_none(),
@@ -565,11 +564,15 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     let call = |host: &FakeHost, input: &RecordsGetIn| {
         let mut out: ServiceOut = zeroed();
         let f = host.slots_for_tests().0.records_get.expect("served");
-        f(
-            HostCtx::NONE,
-            ptr::from_ref(input).cast(),
-            ptr::from_mut(&mut out).cast(),
-        )
+        // SAFETY: the fake host's own trampoline, which checks the head before it reads; `input`
+        // names this test's own live buffers and `out` is a local `ServiceOut`.
+        unsafe {
+            f(
+                HostCtx::NONE,
+                ptr::from_ref(input).cast(),
+                ptr::from_mut(&mut out).cast(),
+            )
+        }
         .outcome()
     };
     // An `in` whose head names another op: the double never runs.
@@ -1014,9 +1017,16 @@ fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
     }
 }
 
-fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
+/// `f` over `input`.
+///
+/// # Safety
+///
+/// `f` is a fake host's own trampoline and `input` NULL or a live `in` of at least the size its
+/// head states.
+unsafe fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
     let mut out: ServiceOut = zeroed();
-    f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()).outcome()
+    // SAFETY: the caller's contract; `out` is a local `ServiceOut`.
+    unsafe { f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()) }.outcome()
 }
 
 #[test]
@@ -1029,7 +1039,8 @@ fn a_double_writes_only_the_regions_its_op_lends_for_writing() {
     let input = io_in(conn_abi::service::READ, &mut buf);
     let read = host.slots_for_tests().2.read.expect("served");
     assert_eq!(
-        served_by(read, ptr::from_ref(&input).cast()),
+        // SAFETY: the fake host's own trampoline over this test's own live `in`.
+        unsafe { served_by(read, ptr::from_ref(&input).cast()) },
         Outcome::Ready
     );
     assert_eq!(&buf[..4], b"pong");
@@ -1038,7 +1049,8 @@ fn a_double_writes_only_the_regions_its_op_lends_for_writing() {
     let input = io_in(conn_abi::service::WRITE, &mut sent);
     let write = host.slots_for_tests().2.write.expect("served");
     assert_eq!(
-        served_by(write, ptr::from_ref(&input).cast()),
+        // SAFETY: the fake host's own trampoline over this test's own live `in`.
+        unsafe { served_by(write, ptr::from_ref(&input).cast()) },
         Outcome::Fault
     );
     assert_eq!(sent, [7; 8]);
@@ -1058,7 +1070,8 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
     };
     let read = host.slots_for_tests().1.read.expect("served");
     assert_eq!(
-        served_by(read, ptr::from_ref(&input).cast()),
+        // SAFETY: the fake host's own trampoline over this test's own live `in`.
+        unsafe { served_by(read, ptr::from_ref(&input).cast()) },
         Outcome::Fault
     );
 
@@ -1076,7 +1089,11 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
         },
     };
     let get = host.slots_for_tests().0.records_get.expect("served");
-    assert_eq!(served_by(get, ptr::from_ref(&input).cast()), Outcome::Fault);
+    // SAFETY: the fake host's own trampoline over this test's own live `in`.
+    assert_eq!(
+        unsafe { served_by(get, ptr::from_ref(&input).cast()) },
+        Outcome::Fault
+    );
     assert_eq!(bytes, [9; 4], "nothing was written");
 }
 
@@ -1140,7 +1157,9 @@ fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
     // A crate-private accessor behind `#[cfg(test)]` is not safe code's to call.
     assert!(table_leaks("#[cfg(test)]\npub fn slots(&self) -> &HostSlots {").is_empty());
     // GREEN: the sealed lend of the tables is no leak; RED: a bare reference beside it still is.
-    assert!(table_leaks("pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {").is_empty());
+    assert!(
+        table_leaks("pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {").is_empty()
+    );
     assert_eq!(
         table_leaks("pub fn lent(&self) -> (Lent<'_, HostTables>, &HostTables) {").len(),
         1
@@ -1153,15 +1172,30 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
         .op::<crate::abi::transport::Ops>(|t| &t.head.open)
         .expect("the door states open");
     let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-    let mut input: OpenIn = zeroed();
-    input.head = in_head::<OpenIn>(slot::OPEN);
-    // The lent `in` lives only in this block: it borrows the host, and its borrow ends here.
-    let opened = {
+    let input = TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
+    // The lent `in` lives only in this block; the instance it opens borrows the host for as long
+    // as it lives (`Instance<'h>`).
+    let mut opened = {
         let lent = host.lend_to(input);
         super::reply::call_hosted(open, None, &lent, zeroed::<OpenOut>())
     };
-    // Nothing the host lent is left, so the host may go.
-    drop(host);
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
+    // The instance keeps the tables it was opened over, so it is closed while the host lives; only
+    // then may the host go.
+    let instance = opened
+        .take_instance()
+        .expect("a READY open hands its instance");
+    let close = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .expect("the door states close");
+    let closed = super::reply::close(
+        close,
+        instance,
+        &TestIn::<InHead>::new().set(|h| &h.op, slot::CLOSE),
+        out_head::<OutHead>(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
+    drop(closed);
+    drop(host);
 }

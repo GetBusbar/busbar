@@ -72,7 +72,7 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
     let doors = both(
         row,
         both_ways::export_scrape_fixture::door::MACRO_DOOR,
-        both_ways::export_row(row).1,
+        both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher());
@@ -121,7 +121,7 @@ fn the_trace_sink_answers_the_same_through_either_door() {
     let doors = both(
         row,
         both_ways::export_trace_fixture::door::MACRO_DOOR,
-        both_ways::export_row(row).1,
+        both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
         // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
@@ -156,7 +156,7 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
     let doors = both(
         row,
         both_ways::export_carried_fixture::MACRO_DOOR,
-        both_ways::export_row(row).1,
+        both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
         // The webhook sink declares an http need: opened to deliver, it binds over a table (one that

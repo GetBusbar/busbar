@@ -27,7 +27,11 @@
 //! Its `tick` asks for the next tick `/tick-every:<ms>` after the one it ran (`0`, the default, asks
 //! for none); after `/tick-read` its next `tick` ESTABLISHes its one need and READs it on the
 //! ticket `tick` was handed (a READ that pends makes that `tick` answer PENDING), and a `drive`
-//! reads that stream again on its driver ticket. `/ticks`
+//! reads that stream again on its driver ticket. Each `/tick-hold` arms one HELD EXCHANGE for a
+//! coming `tick` to start ([`hold_step`]): ESTABLISH then READ on the driver ticket, under handles
+//! of its own; one that pends is held, its `tick` answers PENDING, and every `drive` carries each
+//! held exchange on, answering PENDING while one still waits; `/tick-reuse` makes the next one
+//! issue the first exchange's handles instead of its own (a plane bug the host refuses). `/ticks`
 //! answers the tick counters, in [`Ticked`] order.
 //!
 //! A DUPLEX SESSION's pieces (those with a stream) are answered by [`session_piece`]: a caller piece
@@ -121,9 +125,15 @@ pub enum Ticked {
     DriveRead = 4,
     /// The `next_tick_ns` the last `tick` asked for.
     Next = 5,
+    /// Held exchanges `tick` started (`/tick-hold`).
+    HoldStarted = 6,
+    /// The held exchanges whose READ answered: bit `k` for the `k`th started.
+    HoldDone = 7,
+    /// Calls of held exchanges the host answered FAULT.
+    HoldFaulted = 8,
 }
 /// How many counters `/ticks` answers.
-pub const TICKED: usize = 6;
+pub const TICKED: usize = 9;
 
 /// The counters `/sessions` answers, in this order.
 #[derive(Debug, Clone, Copy)]
@@ -156,12 +166,11 @@ static SECTIONS: Shared<[Section; 2]> = Shared([
     Section {
         name: s(b"test_plane"),
         flags: SECTION_DECLARING,
-        _reserved: 0,
+        ..Section::ZERO
     },
     Section {
         name: s(b"test_plane_owned"),
-        flags: 0,
-        _reserved: 0,
+        ..Section::ZERO
     },
 ]);
 static DIALECTS: Shared<[AbiStr; 1]> = Shared([s(b"plain")]);
@@ -333,25 +342,21 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
         verb: s(b"POST"),
         target: s(b"/call"),
         carrier: s(b"inbound"),
-        flags: 0,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
     Claim {
         verb: s(b"POST"),
         target: s(b"/open"),
         carrier: s(b"inbound"),
         flags: CLAIM_OPEN | CLAIM_EXACT,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
     Claim {
         verb: s(b"POST"),
         target: s(b"/framed"),
         carrier: s(b"frame"),
         flags: CLAIM_OPEN,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
 ]);
 
@@ -424,6 +429,13 @@ struct Inst {
     tick_read: AtomicBool,
     /// The stream a `tick`'s READ left pending (`0` = none).
     stream: AtomicU64,
+    /// Held exchanges armed for the coming ticks (`/tick-hold`), one per `tick`.
+    holds: AtomicU64,
+    /// The held exchanges still waiting, by the order they started: each one's index and first
+    /// handle.
+    held: Mutex<Vec<(u32, u32)>>,
+    /// The next held exchange issues the first one's handles (`/tick-reuse`).
+    reuse: AtomicBool,
     ticked: [AtomicU64; TICKED],
     /// The instance's driver ticket, as its last `tick` was handed it.
     driver: Mutex<Ticket>,
@@ -496,7 +508,7 @@ extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
         let o = &mut *out.cast::<ProjectOut>();
         let absent = Span {
             offset: SPAN_ABSENT,
-            len: 0,
+            ..Span::ZERO
         };
         o.body = absent;
         o.rewritten = absent;
@@ -605,6 +617,9 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             tick_every_ms: AtomicU64::new(0),
             tick_read: AtomicBool::new(false),
             stream: AtomicU64::new(0),
+            holds: AtomicU64::new(0),
+            held: Mutex::new(Vec::new()),
+            reuse: AtomicBool::new(false),
             ticked: Default::default(),
             driver: Mutex::new(Ticket::NONE),
             outbox: Mutex::new(HashMap::new()),
@@ -651,6 +666,15 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
                 me.stream.store(0, Ordering::SeqCst);
             }
         }
+        // Every held exchange carried on, on the driver ticket: PENDING while one still waits.
+        let driver = (*input.cast::<DriveIn>()).driver;
+        let held = std::mem::take(&mut *me.held.lock().unwrap());
+        let waiting: Vec<(u32, u32)> = held
+            .into_iter()
+            .filter(|(k, base)| !hold_step(me, driver, *k, *base))
+            .collect();
+        let pending = !waiting.is_empty();
+        me.held.lock().unwrap().extend(waiting);
         let head = &*input.cast::<busbar_contract::abi::mechanism::call::InHead>();
         if head.size as usize >= std::mem::size_of::<PlaneDriveIn>() {
             let i = &*input.cast::<PlaneDriveIn>();
@@ -671,7 +695,14 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
         let o = &mut *out.cast::<OutHead>();
         o.envelope.metrics = &*metric as *const MetricEntry;
         o.envelope.metrics_len = 1;
-        say(out, Outcome::Ready)
+        say(
+            out,
+            if pending {
+                Outcome::Pending
+            } else {
+                Outcome::Ready
+            },
+        )
     }
 }
 
@@ -756,8 +787,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                         op: service_op::CLOCK_NOW,
                         handle: CompletionHandle {
                             ticket: Ticket::NONE,
-                            seq: 0,
-                            _reserved: 0,
+                            ..CompletionHandle::ZERO
                         },
                     },
                     reading: &mut reading,
@@ -785,6 +815,14 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 .collect(),
             b"/tick-read" => {
                 me.tick_read.store(true, Ordering::SeqCst);
+                vec![estimate(0, 0)]
+            }
+            b"/tick-hold" => {
+                me.holds.fetch_add(1, Ordering::SeqCst);
+                vec![estimate(0, 0)]
+            }
+            b"/tick-reuse" => {
+                me.reuse.store(true, Ordering::SeqCst);
                 vec![estimate(0, 0)]
             }
             t if t.starts_with(b"/tick-every:") => {
@@ -1135,10 +1173,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         return Some(b"nest-refused:unserved".to_vec());
     };
     let mut buf = vec![0u8; 1 << 16];
-    let blank = ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    };
+    let blank = ItemSpan::ZERO;
     let mut spans = [blank; 32];
     let call = UnitNestIn {
         head: ServiceHead {
@@ -1146,8 +1181,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             op: service_op::UNIT_NEST,
             handle: CompletionHandle {
                 ticket: t,
-                seq: 0,
-                _reserved: 0,
+                ..CompletionHandle::ZERO
             },
         },
         verb: s(b"POST"),
@@ -1188,14 +1222,11 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
         handle: CompletionHandle {
             ticket: t,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
     };
     let mut buf = vec![0u8; 1 << 12];
-    let blank = ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    };
+    let blank = ItemSpan::ZERO;
     let mut spans = [blank; 4];
     let mut into = || ServiceBufs {
         buf: buf.as_mut_ptr(),
@@ -1367,9 +1398,9 @@ unsafe fn session_piece(
         _ => {
             emit(i, o, &[b"far-said:".as_slice(), piece].concat());
             *i.units_buf = UnitCount {
-                class: 0,
                 source: UNITS_REPORTED,
                 amount: o.emitted,
+                ..UnitCount::ZERO
             };
             o.units_written = 1;
             if i.flags & PIECE_LAST != 0 {
@@ -1425,8 +1456,8 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
         *i.fields_buf = OutField {
             name: Span {
-                offset: 0,
                 len: name.len() as u32,
+                ..Span::ZERO
             },
             value: Span {
                 offset: name.len() as u32,
@@ -1492,8 +1523,8 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
         std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
         *i.fields_buf = OutField {
             name: Span {
-                offset: 0,
                 len: name.len() as u32,
+                ..Span::ZERO
             },
             value: Span {
                 offset: name.len() as u32,
@@ -1558,7 +1589,24 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         if i.now_ns < n(Ticked::Next).load(Ordering::SeqCst) {
             n(Ticked::Early).fetch_add(1, Ordering::SeqCst);
         }
-        let pended = me.tick_read.swap(false, Ordering::SeqCst) && establish_and_read(me, t);
+        let mut pended = me.tick_read.swap(false, Ordering::SeqCst) && establish_and_read(me, t);
+        // One armed held exchange started; held when it pends.
+        let armed = me
+            .holds
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if armed {
+            let k = n(Ticked::HoldStarted).fetch_add(1, Ordering::SeqCst) as u32;
+            let base = if me.reuse.swap(false, Ordering::SeqCst) {
+                hold_base(0)
+            } else {
+                hold_base(k)
+            };
+            if !hold_step(me, t, k, base) {
+                me.held.lock().unwrap().push((k, base));
+                pended = true;
+            }
+        }
         let every = me.tick_every_ms.load(Ordering::SeqCst);
         let next = if every == 0 {
             0
@@ -1595,7 +1643,7 @@ unsafe fn conn_call<I>(
         handle: CompletionHandle {
             ticket,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
     };
     me.count(Stat::HostCalls);
@@ -1629,8 +1677,62 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     true
 }
 
+/// The first handle held exchange `k` issues: each counts on from its own, so no two exchanges
+/// held side by side on the one driver ticket ever issue the same handle.
+fn hold_base(k: u32) -> u32 {
+    100 + 10 * k
+}
+
+/// ONE ENTRY OF HELD EXCHANGE `k` on `ticket`: ESTABLISH its need (handle `base`, its
+/// [`hold_base`]), then READ it (the next handle), the same calls in the same order on every entry
+/// (the replay rule: a kept ESTABLISH answers its stream again without a second dial). `true` once
+/// it is over: its READ answered (bit `k` of [`Ticked::HoldDone`]), or a call failed (a FAULT
+/// counted in [`Ticked::HoldFaulted`]).
+unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32, base: u32) -> bool {
+    let faulted = |o: &ServiceOut| {
+        if o.outcome.outcome() == Outcome::Fault {
+            me.ticked[Ticked::HoldFaulted as usize].fetch_add(1, Ordering::SeqCst);
+        }
+    };
+    let Some(slots) = me.conns.as_ref() else {
+        return true;
+    };
+    let mut est = EstablishIn {
+        head: std::mem::zeroed(),
+        need: 0,
+        timeout_ms: 0,
+        target: s(b"far"),
+        within: NO_STR,
+        member: NO_STR,
+    };
+    let Some(o) = conn_call(
+        me,
+        slots.establish,
+        &mut est,
+        ticket,
+        base,
+        service::ESTABLISH,
+    ) else {
+        return true;
+    };
+    faulted(&o);
+    if o.outcome.outcome() != Outcome::Ready {
+        return true;
+    }
+    if read_at(me, ticket, o.value, base + 1).is_none() {
+        return false;
+    }
+    me.ticked[Ticked::HoldDone as usize].fetch_or(1 << k, Ordering::SeqCst);
+    true
+}
+
 /// READ `stream` on `ticket`: the bytes, or `None` while it pends.
 unsafe fn read(me: &Inst, ticket: Ticket, stream: u64) -> Option<u64> {
+    read_at(me, ticket, stream, 2)
+}
+
+/// READ `stream` on `ticket` under handle `seq`: the bytes, or `None` while it pends.
+unsafe fn read_at(me: &Inst, ticket: Ticket, stream: u64, seq: u32) -> Option<u64> {
     let slots = me.conns.as_ref()?;
     let mut buf = [0u8; 64];
     let mut io = IoIn {
@@ -1639,6 +1741,6 @@ unsafe fn read(me: &Inst, ticket: Ticket, stream: u64) -> Option<u64> {
         buf: buf.as_mut_ptr(),
         len: buf.len(),
     };
-    let o = conn_call(me, slots.read, &mut io, ticket, 2, service::READ)?;
+    let o = conn_call(me, slots.read, &mut io, ticket, seq, service::READ)?;
     (o.outcome.outcome() == Outcome::Ready).then_some(o.len)
 }

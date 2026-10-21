@@ -45,7 +45,6 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::ptr;
 use std::task::Poll;
 
 use zeroize::Zeroizing;
@@ -59,7 +58,7 @@ use crate::abi::mechanism::call::{Blob, OutHead, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::KindTailHead;
 use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::auth_door::{verify_answer, VerifyPlugin};
+use crate::abi::sdk::auth_door::{verify_answer, verify_op, VerifyPlugin};
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::exchange::Op;
@@ -360,7 +359,7 @@ impl<'a> FieldsWriter<'a> {
                 name,
                 value,
                 flags: f.flags,
-                _reserved: 0,
+                ..FieldSpan::ZERO
             });
         }
         out.set(
@@ -862,7 +861,8 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
     }
 }
 
-/// `verify` on a [`Both`] door: [`VerifyPlugin::verify`], written as the verify door writes it.
+/// `verify` on a [`Both`] door: [`VerifyPlugin::verify_ticketed`] on the call's ticket, written as
+/// the verify door writes it; PENDING while a service it made pends.
 #[derive(Debug)]
 pub struct VerifyBoth<T>(PhantomData<T>);
 impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
@@ -877,7 +877,12 @@ impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        verify_answer(h.life().plugin(), input, out)
+        verify_answer(
+            h.life().plugin(),
+            &verify_op(&instance, h.host()),
+            input,
+            out,
+        )
     }
 }
 
@@ -1024,17 +1029,15 @@ pub const fn outbound_tail(facts: u32, styles: &'static [StyleDecl]) -> AuthTail
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
-            _reserved: 0,
+            ..KindTailHead::ZERO
         },
         caps: crate::abi::auth::CAP_OUTBOUND,
         facts,
         login_kind: crate::abi::auth::LOGIN_KIND_NONE,
-        inbound_points: 0,
         styles: styles.as_ptr(),
         styles_len: styles.len(),
         operator_principal: crate::abi::sdk::door::abi_str(""),
-        credential_kinds: ptr::null(),
-        credential_kinds_len: 0,
+        ..AuthTail::ZERO
     }
 }
 

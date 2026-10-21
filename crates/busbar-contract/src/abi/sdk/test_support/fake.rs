@@ -22,8 +22,10 @@
 //!     }
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-//! let lent = host.lend_to(open_in); // borrows the host: it cannot outlive it
-//! let opened = reply::call_hosted(open, None, &lent, open_out);
+//! // SAFETY: `open_in`'s fields are this test's own; the host outlives the instance.
+//! let lent = unsafe { host.lend_to(open_in) }; // borrows the host: it cannot outlive it
+//! // SAFETY: as above.
+//! let opened = unsafe { reply::call_hosted(open, None, &lent, open_out) };
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable

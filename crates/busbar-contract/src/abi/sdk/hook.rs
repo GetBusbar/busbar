@@ -815,7 +815,7 @@ pub const fn tail(kind_class: u32, prompt_access: u32, user_access: u32) -> Tail
     Tail {
         head: KindTailHead {
             size: std::mem::size_of::<Tail>() as u32,
-            _reserved: 0,
+            ..KindTailHead::ZERO
         },
         kind_class,
         prompt_access,

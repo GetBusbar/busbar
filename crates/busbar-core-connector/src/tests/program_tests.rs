@@ -405,9 +405,8 @@ fn a_members_program_inherits_only_its_stated_environment() {
 fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
     std::env::set_var(VAR, "spawn-value");
-    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
-        let c = connector();
+        let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
         let env = Program {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
@@ -459,9 +458,8 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
 /// (fail-closed); the declaration itself stands.
 #[test]
 fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
-    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
-        let c = connector();
+        let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
         let env = Program {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
@@ -811,4 +809,62 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
             "the changed member is new, with a new key: {keys:?}"
         );
     });
+}
+
+/// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (row 159; BUSBAR-1.6.0.md Part 0, no
+/// process-global static seam): a connector the root handed no resolver resolves no reference,
+/// whatever another connector in the same process was handed, so its member is not spawned
+/// (fail-closed); the connector handed one spawns the same member with the value.
+#[test]
+fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
+    const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_OWN_RESOLVER";
+    std::env::set_var(VAR, "own-resolver-value");
+    worker().block_on(async {
+        let program = Program {
+            command: "/usr/bin/env".to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            env_refs: vec![(
+                "HELD".to_owned(),
+                busbar_contract::secret_ref::SecretRef::env(VAR),
+            )],
+        };
+        let handed = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
+        declare(&handed, &[("member", program.clone())]).unwrap();
+        let id = open(&handed, "member", b"").unwrap();
+        generation(&handed, id).await;
+        let mut held = Vec::new();
+        let mut lines = Vec::new();
+        while let Some(l) = line(&handed, id, &mut held).await {
+            lines.push(l);
+        }
+        assert_eq!(lines, vec!["HELD=own-resolver-value".to_owned()]);
+        handed.close(OWNER, id).unwrap();
+
+        let bare = connector();
+        declare(&bare, &[("member", program)]).unwrap();
+        assert!(
+            open(&bare, "member", b"").is_err(),
+            "a connector handed no resolver spawned a member that states a reference"
+        );
+    });
+}
+
+/// RED (row 159): NO STATIC HOLDS THE SPAWN SECRET RESOLVER. Before, `spawn_env.rs` kept it in a
+/// process-wide `OnceLock` the root installed into, the first install standing for every connector
+/// of the process; it is now handed to the connector at its construction.
+#[test]
+fn no_static_holds_the_spawn_secret_resolver() {
+    let held: Vec<&str> = include_str!("../spawn_env.rs")
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .filter(|code| {
+            code.contains("SPAWN_SECRETS")
+                || (code.contains("static ") && code.contains("SpawnSecretFn"))
+        })
+        .collect();
+    assert!(
+        held.is_empty(),
+        "a static holds the spawn secret resolver: {held:?}"
+    );
 }

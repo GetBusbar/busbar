@@ -29,7 +29,7 @@ use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
 use crate::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 mod op;
@@ -631,6 +631,27 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         kind: &str,
         before: u64,
     ) -> Step<RecordStoreResult<u64>>;
+
+    /// RETENTION, with the predicate named (no slot of its own yet).
+    ///
+    /// DEFAULTED: [`Retention::Age`] is [`StoreSlots::purge_plane_records_before`];
+    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
+    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+    ///
+    /// # Errors
+    /// The store's refusal, as [`StoreSlots::purge_plane_records_before`] states it.
+    fn purge_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        match retention {
+            Retention::Age => self.purge_plane_records_before(cx, kind, before),
+            Retention::TerminalOnly => Step::Ready(Ok(0)),
+        }
+    }
 
     /// `delete_plane_record` (slot 30); absent is `Ok`.
     ///
