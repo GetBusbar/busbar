@@ -17,7 +17,7 @@
 //!
 //! The ROLE is the export the plugin's door makes, never a reading of what it composes over: a framer
 //! states an EMPTY `composes_over` too, because the carrier under it is the connector's choice
-//! (BUSBAR-1.6.0.md THE DESIGN §2).
+//! (BUSBAR-1.6.0.md THE DESIGN, "Plugins").
 //!
 //! Core stacks a connection as `carrier -> [connection security, when the binding says so] ->
 //! framer`, and moves the byte stream on an upgrade; no transport holds, dials or names another.
@@ -26,7 +26,8 @@
 //!
 //! These traits are NOT how a transport reaches the host: a transport plugin reaches the host only
 //! through its door and the transport kind's ops table (`abi::transport`), the one memory ABI every
-//! kind speaks (THE DESIGN §11.1). The door is the source of truth.
+//! kind speaks (THE DESIGN, the plugin ABI: "Plugins speak the memory ABI only"). The door is
+//! the source of truth.
 
 use std::task::{Context, Poll};
 
