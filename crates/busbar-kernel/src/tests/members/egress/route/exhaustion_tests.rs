@@ -1566,3 +1566,50 @@ fn the_wait_terminals_shed_advertises_only_the_kept_members_cooldown() {
         .shed();
     assert_eq!(shed.retry_after_secs, Some(300));
 }
+
+// ── the GREEN twins of the restriction cells (row 159, kernel-egress round 3 HIGH) ──────────────
+//
+// Each twin is its RED cell's world with a restriction that keeps every member: the hooks run, the
+// terminals read what they kept, and what they kept is the whole pool. So the last resort and the
+// shed answer exactly what the unrestricted cells above answer. A walk that ignored the hooks
+// passes these and fails the RED cells; a walk that dropped members the hooks kept fails these.
+
+/// GREEN twin of `the_last_resort_never_reaches_a_member_the_restriction_excludes`: kept, the
+/// soonest-cooldown member is the last resort.
+#[test]
+fn the_last_resort_takes_the_soonest_cooldown_among_members_the_restriction_keeps_all_of() {
+    let node = least_bad_node();
+    bench(&node, &[10, 300, 120]);
+
+    let taken = node
+        .walker("primary")
+        .shaped(Restrict(vec![
+            DestinationId::new(0),
+            DestinationId::new(1),
+            DestinationId::new(2),
+        ]))
+        .take();
+    assert_eq!(
+        taken.member.destination,
+        DestinationId::new(0),
+        "a restriction that keeps every member ranks every member: {taken:?}"
+    );
+    assert!(taken.degraded);
+}
+
+/// GREEN twin of `the_shed_advertises_only_the_kept_members_cooldown`: kept, the soonest member's
+/// cooldown is the advertised wait.
+#[test]
+fn the_shed_advertises_the_soonest_cooldown_when_the_restriction_keeps_every_member() {
+    let node = exhausted_pool(3, &[10, 300, 120]);
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![
+            DestinationId::new(0),
+            DestinationId::new(1),
+            DestinationId::new(2),
+        ]))
+        .shed();
+    assert_eq!(shed.detail, DETAIL_OVERLOADED);
+    assert_eq!(shed.retry_after_secs, Some(10));
+}
