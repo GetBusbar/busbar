@@ -103,17 +103,18 @@ fn allowing(allow: &[&str]) -> Arc<dyn DialJudge> {
 
 /// `authority` (`host:port`, as the http framer locates it out of the collector URL), dialled
 /// `secure` or in plaintext by a plugin-named need in `class`, judged as the connector's open
-/// judges it: the endpoint check, open-web's plaintext refusal, the dial judgement (waiting out a
-/// resolution), the class's scheme rule on the pinned address. The endpoint check's refusal reads
-/// as [`DEST_METADATA`], the scheme rule's as [`DEST_PLAINTEXT`].
+/// judges it: the endpoint check (the target names a host), open-web's plaintext refusal, the dial
+/// judgement (waiting out a resolution; the guard's metadata and link-local refusal reads as
+/// [`DEST_METADATA`]), the class's scheme rule on the pinned address. A hostless authority reads as
+/// [`DEST_NO_HOST`], the scheme rule's refusal as [`DEST_PLAINTEXT`].
 fn open(
     j: &Arc<dyn DialJudge>,
     authority: &str,
     secure: bool,
     class: u32,
 ) -> Result<SocketAddr, Verdict> {
-    if crate::endpoint::check(authority).is_err() {
-        return Err(DEST_METADATA);
+    if crate::endpoint::named(authority).is_err() {
+        return Err(DEST_NO_HOST);
     }
     if class == EGRESS_OPEN_WEB && !secure {
         return Err(DEST_PLAINTEXT);

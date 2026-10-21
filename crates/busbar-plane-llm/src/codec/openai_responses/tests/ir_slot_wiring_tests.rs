@@ -503,6 +503,38 @@ fn ir17_reasoning_summary_stays_a_summary() {
     assert_eq!(items[1]["content"][0]["text"], "long", "{out}");
 }
 
+/// Q128 arch u58 (IR-17 buffered): a BUFFERED answer places a summary-kind thought where the
+/// stream does, in `summary[]` as a `summary_text` part with no `content`; a full one keeps the
+/// `reasoning_text` part. RED: `write_response` always wrote `summary: []` plus `content[]`, so a
+/// Gemini thought reached a Responses client in one place streamed and another buffered.
+#[test]
+fn ir17_a_buffered_summary_thought_is_written_as_a_summary() {
+    let resp = serde_json::json!({"id": "resp_1", "object": "response", "created_at": 1,
+        "status": "completed", "model": "gpt", "output": [
+            {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "short"}]},
+            {"type": "reasoning", "id": "rs_2", "summary": [],
+             "content": [{"type": "reasoning_text", "text": "long"}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}});
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &resp)
+        .expect("read");
+    let w = ResponsesWriter;
+    let out = w.write_response(crate::codec::test_host::HOST, &ir);
+    let items: Vec<&serde_json::Value> = out["output"]
+        .as_array()
+        .expect("output")
+        .iter()
+        .filter(|i| i["type"] == "reasoning")
+        .collect();
+    assert_eq!(
+        items[0]["summary"],
+        serde_json::json!([{"type": "summary_text", "text": "short"}]),
+        "{out}"
+    );
+    assert!(items[0].get("content").is_none(), "{out}");
+    assert_eq!(items[1]["content"][0]["text"], "long", "{out}");
+}
+
 // ─────────────────────────────── SHR-03 OpenAI file ids ───────────────────────────────
 
 /// SHR-03: an OpenAI Files id a Chat reader tagged (`"openai"`) reaches the Responses writer as
