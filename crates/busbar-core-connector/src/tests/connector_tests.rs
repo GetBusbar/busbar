@@ -2418,18 +2418,25 @@ mod transport_pin {
         anchor: &[u8],
         judge: Arc<dyn crate::DialJudge>,
     ) -> (Connector, Arc<tokio::sync::Notify>) {
-        let view = Transports::new(vec![Entry {
-            door: Arc::new(TestDoor::new(
-                "sec",
-                &["sec"],
-                &[],
-                crate::support::Knobs {
-                    secure_name: Some(name),
-                    ..crate::support::Knobs::default()
-                },
-            )),
-            alpn: Vec::new(),
-        }])
+        // The framer rides the address carrier, so one is loaded beside it.
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some(name),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
         .unwrap();
         let tls = crate::tls::client::build_client_config(&EgressTrust {
             extra_anchors: vec![anchor.to_vec()],
