@@ -528,7 +528,7 @@ fn test_is_ready_any_cell_false_when_every_cell_open() {
     );
     // Recover ONE per-pool cell: the lane is serviceable again via that pool, so healthz must flip
     // back to ready — proving the all-cells check, not a default-cell-only read.
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.is_ready_any_cell(0, now),
         "after recovery the lane is serviceable in some cell → is_ready_any_cell must be ready"
@@ -561,7 +561,7 @@ fn test_is_ready_any_cell_false_when_pool_cells_open_default_untouched() {
              default cell must NOT make is_ready_any_cell report ready"
     );
     // Recover one per-pool cell → the lane can serve via that pool again → ready.
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.is_ready_any_cell(0, now),
         "after recovery a per-pool cell admits → is_ready_any_cell must be ready"
@@ -581,7 +581,7 @@ fn test_is_ready_any_cell_falls_back_to_default_when_no_pool_cells() {
         !store.is_ready_any_cell(0, now),
         "no pool cells + default cell Open → lane is unserviceable → not ready"
     );
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.is_ready_any_cell(0, now),
         "default cell recovered (only routed cell) → ready"
@@ -1057,7 +1057,13 @@ fn test_probe_failure_honors_retry_after_floor() {
     // (un-escalated) ~15s backoff — small enough that a retry_after=90 clearly dominates,
     // isolating the floor from cooldown escalation.
     set_state(&store, 0, 2);
-    store.record_probe_failure_all_cells(0, "health-probe", &|_pool| cfg.clone(), Some(90));
+    store.record_probe_failure_all_cells(
+        0,
+        "health-probe",
+        &|_pool| cfg.clone(),
+        Some(90),
+        HealthState::now_secs(),
+    );
     let until = store.get_lane(0).cell.cooldown_until();
     assert!(
             until >= 50_000 + 90,
@@ -1069,7 +1075,13 @@ fn test_probe_failure_honors_retry_after_floor() {
     set_now_for_test(50_000);
     poke(&store2, 0, |c| c.streak = 0);
     set_state(&store2, 0, 2);
-    store2.record_probe_failure_all_cells(0, "health-probe", &|_pool| cfg.clone(), None);
+    store2.record_probe_failure_all_cells(
+        0,
+        "health-probe",
+        &|_pool| cfg.clone(),
+        None,
+        HealthState::now_secs(),
+    );
     let until_no_ra = store2.get_lane(0).cell.cooldown_until();
     assert!(
             until_no_ra < 50_000 + 90,
@@ -1525,7 +1537,11 @@ fn test_concurrent_success_racing_hard_down_never_drops_sticky_cooldown() {
         let barrier_b = Arc::clone(&barrier);
         let b = std::thread::spawn(move || {
             barrier_b.wait();
-            store_b.record_hard_down_all_cells(0, "billing / insufficient balance");
+            store_b.record_hard_down_all_cells(
+                0,
+                "billing / insufficient balance",
+                HealthState::now_secs(),
+            );
         });
 
         a.join().expect("A must not panic");
@@ -1604,7 +1620,7 @@ fn test_pool_breaker_isolation() {
     );
 
     // A successful health probe recovers EVERY cell for the lane.
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         !store.lane_needs_probe(0, 8000),
         "recover_lane must clear every cell (probe tests the shared upstream)"
@@ -1686,7 +1702,7 @@ fn test_default_cell_recovery_does_not_zero_lane_err() {
     // that previously zeroed err.
     let cooled = 1000 + store.cooldown_remaining(0, 1000) + 1;
     set_now_for_test(cooled);
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
 
     // The breaker FSM health is reset (the lane is usable again)…
     assert!(
@@ -2196,7 +2212,7 @@ fn test_record_hard_down_all_cells_trips_default_and_every_pool() {
     assert!(store.usable_in("B", 0, 9000), "pool B starts usable");
 
     // A hard-down classified on a pool-routed request must trip ALL cells, not just one pool.
-    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance", HealthState::now_secs());
 
     assert!(
         !store.usable(0, 9000),
@@ -2228,7 +2244,7 @@ fn hard_down_all_cells_records_a_logical_trip() {
     set_now_for_test(9000);
 
     assert_eq!(store.snapshot(0, 9000).trips, 0, "no trip yet");
-    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance", HealthState::now_secs());
     let snap = store.snapshot(0, 9000);
     assert_eq!(
         snap.trips, 1,
@@ -2243,7 +2259,7 @@ fn hard_down_all_cells_records_a_logical_trip() {
     // the lane is still Open must NOT re-count — this is what makes the `default_was_closed` gate
     // load-bearing, not the trip-counting itself.
     set_now_for_test(9100);
-    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance", HealthState::now_secs());
     assert_eq!(
         store.snapshot(0, 9100).trips,
         1,
@@ -2444,7 +2460,7 @@ fn test_soft_cooldown_is_probeable_and_recoverable() {
         "dead-mode probing must see a soft-cooldown lane"
     );
 
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.usable(0, 9000),
         "a successful probe must clear the soft cooldown"
@@ -3135,7 +3151,7 @@ fn test_probe_success_all_cells_resets_swrr_on_half_open_close() {
 
     // Probe success across all cells. With the bug, each cell closes (HalfOpen→Closed) but its
     // current_weight is never zeroed; with the fix, the gated reset zeroes both.
-    store.record_probe_success_all_cells(0);
+    store.record_probe_success_all_cells(0, HealthState::now_secs());
 
     assert_eq!(
         store.breaker_state(0),

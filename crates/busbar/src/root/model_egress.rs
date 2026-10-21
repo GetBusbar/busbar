@@ -475,7 +475,7 @@ impl Breaker for DirectCells {
                 store.record_transient_in_at(cell, lane, now, cfg, retry_after)
             }
             Outcome::HardDown => {
-                store.record_hard_down_all_cells(lane, reason.unwrap_or("hard_down"))
+                store.record_hard_down_all_cells(lane, reason.unwrap_or("hard_down"), now)
             }
             // Counted as the caller's fault above.
             Outcome::RecordNothing => false,
@@ -525,24 +525,34 @@ impl Breaker for DirectCells {
     /// A health probe's answer, recorded as 1.5.5's prober recorded it (`engine/health.rs`): a
     /// success recovers the lane in every cell, then joins every cell's window; a transient failure
     /// joins every cell's window under its own pool's ladder; a hard-down parks the lane in every
-    /// cell; a client fault records nothing.
+    /// cell; a client fault records nothing. Every write is at the walk's `now`, the one clock the
+    /// walk's own records and reads take (BUSBAR-1.6.0.md l.161).
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, _token: &Pass<Route>) {
         let (app, lane) = ((self.app)(), lane_of(destination));
         let store = &app.store;
         match outcome {
             Outcome::Success => {
                 if store.lane_needs_probe(lane, now) {
-                    store.recover_lane(lane);
+                    store.recover_lane(lane, now);
                 }
-                store.record_probe_success_all_cells(lane);
+                store.record_probe_success_all_cells(lane, now);
             }
             Outcome::Transient { retry_after } => {
                 let resolve = |pool: &str| self.records.get(pool).cloned().unwrap_or_default();
-                store.record_probe_failure_all_cells(lane, "health-probe", &resolve, retry_after);
+                store.record_probe_failure_all_cells(
+                    lane,
+                    "health-probe",
+                    &resolve,
+                    retry_after,
+                    now,
+                );
             }
             Outcome::HardDown => {
-                let _ =
-                    store.record_hard_down_all_cells(lane, "health-probe hard-down (auth/billing)");
+                let _ = store.record_hard_down_all_cells(
+                    lane,
+                    "health-probe hard-down (auth/billing)",
+                    now,
+                );
             }
             Outcome::RecordNothing => {}
         }
