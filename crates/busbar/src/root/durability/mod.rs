@@ -265,7 +265,9 @@ pub struct Durability {
     /// needs to re-derive it across the book's retirement ([`SealHorizon`]). One entry per seal the
     /// ring holds, pruned with the ring; each holds only the windows that seal carried past its
     /// horizon (one the retirement could not take yet: figures that moved since the seal before, an
-    /// open hold, an unconfirmed settlement, or the first seal after a boot). Never balances.
+    /// open hold, an unconfirmed settlement, the first seal after a boot, or a wall clock that
+    /// stepped back behind `retire_clock`, since the retirement asks at the seal's own instant).
+    /// Never balances.
     seal_horizons: std::collections::BTreeMap<u64, SealHorizon>,
     /// The latest seal instant this process has sealed at: every horizon is measured from it, so
     /// a clock that steps back never brings a retired window inside the horizon of a seal after it.
