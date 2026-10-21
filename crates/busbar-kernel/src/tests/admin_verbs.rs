@@ -57,6 +57,7 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
         principal: None,
         consumed: None,
         query: None,
+        serve: crate::plane_driver::serve::ServeTables::default(),
     };
     let reply = connect_reply::<NanPlane>(ctx).await;
     assert!(

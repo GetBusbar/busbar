@@ -1547,12 +1547,18 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # (`root::linked::register_diagnostics`) into a `Catalogue` it lends by value: to the plugin
 # observer (`KernelPluginObserver::lent`), to the main log's declared-diagnostic line
 # (`OutboundAuths`, `MainLogSink`) and to the rendered page's reader.
+# DRAINED 3 -> 2 (status row 82, D2, lane-d2-drain-serve-tables): plane_driver/serve.rs::TABLES is
+# deleted, and the free `publish`, `withdraw`, `answer`, `answer_public` and `served_at` with it.
+# The published instances' admin table is a value (`ServeTables`): the boot generation is built
+# with one and every generation after it carries it (`App::serve_tables`); the composition root
+# publishes its door planes into the boot generation's (`compose_served`), the admin router's
+# fallback and a stated admin route read it off the live generation, and the data listener's
+# public mount holds the one it published into (`Served::tables`).
 debt_stores = [
   "crates/busbar-kernel/src/config/legacy.rs::ROWS -- the root legacy table, looked up by plugin identity (`former.<alias>`, `retired.<kind>.<word>`); drain: a064's drain fixers (row 159 drain lanes), the compose owns the rows and lends them to the config parse, migrate and registry-link paths",
-  "crates/busbar-kernel/src/plane_driver/serve.rs::TABLES -- each plane instance's published serve table, holding its Arc<dyn PlaneCalls>: filled by the root (`publish`, crates/busbar/src/root/serve.rs:1591), replaced and withdrawn by plane instance label (plane_driver/serve.rs:131-160); drain: lane-d2-drain-installed-doors, the same App-owned seam as INSTALLED (the tables on App, a config-time parameter from compose)",
   "crates/busbar-kernel/src/preflight.rs::ROOT_ROWS -- the root's linked store rows (by store key and canonical name) and hook names; drain: a064's drain fixers (row 159 drain lanes), the compose owns its RootInstall and lends it to the build and the registry link",
 ]
-max_debt = 3
+max_debt = 2
 # Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
 # fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
 # re-measure added are stores the narrower row did not see, not new ones.

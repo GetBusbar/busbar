@@ -957,6 +957,7 @@ async fn run(
                 )
             })
         }),
+        &app.serve_tables,
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());

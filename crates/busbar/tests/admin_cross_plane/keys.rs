@@ -6,6 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::plane_driver::serve::ServeTables;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -150,17 +151,6 @@ const COND_WITNESS_DEBT: &[(
         (Put, "/hooks/{name}", Validation, MalformedBody),
     ]
 };
-
-/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
-/// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
-/// routes for as long as the guard lives. The door is the one whose folded row owns `section`.
-struct PublishedDoor(String);
-
-impl Drop for PublishedDoor {
-    fn drop(&mut self) {
-        busbar_kernel::plane_driver::serve::withdraw(&self.0);
-    }
-}
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
@@ -2945,7 +2935,21 @@ async fn named_map_app(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    named_map_app_opts(tag, reference_corp_ad, true).await
+    named_map_app_opts(tag, reference_corp_ad, true, ServeTables::default()).await
+}
+
+/// [`named_map_app`] whose generation is lent `tables`, the admin table a door was published into
+/// ([`publish_door`]), as the composition root lends the boot generation its own.
+async fn named_map_app_serving(
+    tag: &str,
+    tables: ServeTables,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+) {
+    named_map_app_opts(tag, false, true, tables).await
 }
 
 /// [`named_map_app`] with the base `export:` entry made OPTIONAL. `base_export == false` is the
@@ -2956,6 +2960,7 @@ async fn named_map_app_opts(
     tag: &str,
     reference_corp_ad: bool,
     base_export: bool,
+    tables: ServeTables,
 ) -> (
     std::path::PathBuf,
     std::path::PathBuf,
@@ -2979,6 +2984,7 @@ async fn named_map_app_opts(
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut builder = crate::new_test_app()
         .governance(gov)
+        .serve_tables(tables)
         .overlay_path(overlay.clone())
         .disk_paths(config_path, providers_path)
         .identity_provider(
@@ -3428,7 +3434,8 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     linked_export_axis();
     // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
-    let (dir, _overlay, addr, handle) = named_map_app_opts("bootfrozen", false, false).await;
+    let (dir, _overlay, addr, handle) =
+        named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
         r.header("x-admin-token", "admintok")
@@ -3784,7 +3791,11 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn publish_door(section: &str, settings: &str) -> PublishedDoor {
+/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on an admin table of
+/// its own as the composition root publishes it (K-SERVE): the table, to lend the generation whose
+/// admin router serves the instance's stated admin routes. The door is the one whose folded row
+/// owns `section`.
+fn publish_door(section: &str, settings: &str) -> ServeTables {
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -3828,19 +3839,21 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
     let calls = Arc::new(
         busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
     );
-    busbar_kernel::plane_driver::serve::publish(
-        busbar_kernel::plane_driver::serve::ServeTable {
-            instance: instance.clone(),
-            audit_kind,
-            calls,
-            caps: busbar_kernel::plane_driver::BufferCaps::default(),
-            routes,
-            records: None,
-        },
-        &[],
-    )
-    .expect("its admin routes publish");
-    PublishedDoor(instance)
+    let tables = ServeTables::default();
+    tables
+        .publish(
+            busbar_kernel::plane_driver::serve::ServeTable {
+                instance: instance.clone(),
+                audit_kind,
+                calls,
+                caps: busbar_kernel::plane_driver::BufferCaps::default(),
+                routes,
+                records: None,
+            },
+            &[],
+        )
+        .expect("its admin routes publish");
+    tables
 }
 
 /// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
@@ -3849,11 +3862,11 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
 /// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
 /// operator's refresh has none).
 async fn drive_door_verb_errors() {
-    let _published = publish_door(
+    let tables = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
-    let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
+    let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |method: reqwest::Method, path: &str| {
         client
@@ -3913,8 +3926,8 @@ async fn drive_agent_door_verb_errors() {
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
-    let _published = publish_door("agents", &section.to_string());
-    let (_dir, _overlay, addr, handle) = named_map_app("agent-door-verbs", false).await;
+    let tables = publish_door("agents", &section.to_string());
+    let (_dir, _overlay, addr, handle) = named_map_app_serving("agent-door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {
         client

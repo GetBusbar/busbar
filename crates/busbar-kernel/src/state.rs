@@ -85,6 +85,11 @@ pub struct App {
     /// THE OPENED DOOR TABLE this generation was built from, lent by the composition root
     /// ([`crate::plane_driver::doors::Doors`]): every plane read the generation answers reads it.
     pub doors: crate::plane_driver::doors::Doors,
+    /// THE PUBLISHED INSTANCES' ADMIN TABLE ([`crate::plane_driver::serve::ServeTables`]): the one
+    /// the composition root publishes its door planes into, created with the boot generation and
+    /// carried onto every generation built after it (a clone shares the one table). The admin
+    /// router's fallback and every stated admin route answer off it.
+    pub serve_tables: crate::plane_driver::serve::ServeTables,
     /// The composition root's rules this generation was built under
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.

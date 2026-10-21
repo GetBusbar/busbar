@@ -212,23 +212,25 @@ impl AuditSink for Rows {
 #[tokio::test]
 async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_the_actor() {
     let echo = std::sync::Arc::new(Echo::default());
-    publish(
-        ServeTable {
-            instance: "served-at-red".to_string(),
-            audit_kind: "door".to_string(),
-            calls: echo.clone(),
-            caps: BufferCaps::default(),
-            routes: vec![ServeRoute {
-                verb: "GET".to_string(),
-                target: "/served-at-red/{name}/health".to_string(),
-                flags: 0,
-                audit_verb: String::new(),
-            }],
-            records: None,
-        },
-        &[],
-    )
-    .expect("publishes");
+    let tables = ServeTables::default();
+    tables
+        .publish(
+            ServeTable {
+                instance: "served-at-red".to_string(),
+                audit_kind: "door".to_string(),
+                calls: echo.clone(),
+                caps: BufferCaps::default(),
+                routes: vec![ServeRoute {
+                    verb: "GET".to_string(),
+                    target: "/served-at-red/{name}/health".to_string(),
+                    flags: 0,
+                    audit_verb: String::new(),
+                }],
+                records: None,
+            },
+            &[],
+        )
+        .expect("publishes");
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec![crate::config::operator_provider().to_string()])
         .build();
@@ -246,20 +248,21 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
     }
     let principal = AuthPrincipal(Some(busbar_contract::auth::Principal::from_id("op")));
     let rows = Rows::default();
-    let served = served_at_to(
-        &rows,
-        AdminServe {
-            method: "GET",
-            path: "/served-at-red/a/health",
-            query: Some("x=1"),
-            headers: &headers,
-            consumed: Some(&consumed),
-            principal: Some(&principal),
-        },
-        Bytes::new(),
-    )
-    .await;
-    withdraw("served-at-red");
+    let served = tables
+        .served_at_to(
+            &rows,
+            AdminServe {
+                method: "GET",
+                path: "/served-at-red/a/health",
+                query: Some("x=1"),
+                headers: &headers,
+                consumed: Some(&consumed),
+                principal: Some(&principal),
+            },
+            Bytes::new(),
+        )
+        .await;
+    tables.withdraw("served-at-red");
     assert_eq!(
         served
             .expect("an instance names it")
@@ -289,4 +292,87 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
         rows.0.lock().unwrap().as_slice(),
         [("door.check".to_string(), "op".to_string())]
     );
+}
+
+/// One admin request at `path`, no query, no credential consumed, no principal.
+fn asked<'a>(path: &'a str, headers: &'a axum::http::HeaderMap) -> AdminServe<'a> {
+    AdminServe {
+        method: "GET",
+        path,
+        query: None,
+        headers,
+        consumed: None,
+        principal: None,
+    }
+}
+
+/// TWO APPS IN ONE PROCESS, EACH LENT ITS ROOT'S TABLE, SERVE ONLY THEIR OWN INSTANCE (status row
+/// 82, D2: the kernel holds no admin table; the root that publishes owns it and lends it). Two
+/// generations, each lent the table one root published one instance into, serve that instance's
+/// admin route and answer the other's as no published instance names it; a generation lent none
+/// serves neither. RED while the table was the kernel's one process static: both instances were on
+/// every generation's table.
+#[tokio::test]
+async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
+    let echo = std::sync::Arc::new(Echo::default());
+    let table = |instance: &str| ServeTable {
+        instance: instance.to_string(),
+        audit_kind: "door".to_string(),
+        calls: echo.clone(),
+        caps: BufferCaps::default(),
+        routes: vec![ServeRoute {
+            verb: "GET".to_string(),
+            target: format!("/{instance}/{{name}}/health"),
+            flags: 0,
+            audit_verb: String::new(),
+        }],
+        records: None,
+    };
+    let (lent_a, lent_b) = (ServeTables::default(), ServeTables::default());
+    lent_a.publish(table("lent-a"), &[]).expect("publishes");
+    lent_b.publish(table("lent-b"), &[]).expect("publishes");
+    let app = |tables: ServeTables| {
+        crate::test_support::TestApp::new()
+            .serve_tables(tables)
+            .build()
+    };
+    let (a, b, unlent) = (
+        app(lent_a),
+        app(lent_b),
+        crate::test_support::TestApp::new().build(),
+    );
+    let headers = axum::http::HeaderMap::new();
+    let rows = Rows::default();
+    for (on, own, other) in [(&a, "lent-a", "lent-b"), (&b, "lent-b", "lent-a")] {
+        let (own, other) = (format!("/{own}/x/health"), format!("/{other}/x/health"));
+        let served = on
+            .serve_tables
+            .served_at_to(&rows, asked(&own, &headers), Bytes::new())
+            .await;
+        assert_eq!(
+            served
+                .expect("its own instance names it")
+                .expect("served")
+                .status,
+            200
+        );
+        let theirs = on
+            .serve_tables
+            .served_at_to(&rows, asked(&other, &headers), Bytes::new())
+            .await;
+        assert!(
+            theirs.is_none(),
+            "{other}: the other root's instance is not on this table"
+        );
+    }
+    for path in ["/lent-a/x/health", "/lent-b/x/health"] {
+        let none = unlent
+            .serve_tables
+            .served_at_to(&rows, asked(path, &headers), Bytes::new())
+            .await;
+        assert!(
+            none.is_none(),
+            "{path}: a generation lent no table serves nothing"
+        );
+    }
 }

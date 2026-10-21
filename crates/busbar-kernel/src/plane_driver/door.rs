@@ -968,7 +968,7 @@ async fn admin_reply(
         consumed: ctx.consumed.as_ref(),
         principal: ctx.principal.as_ref(),
     };
-    match crate::plane_driver::serve::served_at(req, ctx.body).await {
+    match ctx.serve.served_at(req, ctx.body).await {
         None => AdminReply::Refused(PlaneVerbError::NotFound),
         Some(Err(unserved)) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
             "the plane did not serve `{verb} {path}`: {unserved:?}"

@@ -1839,6 +1839,11 @@ pub fn build_app_from_config(
 
     let app = App {
         doors,
+        // The boot generation's admin table is a new one; every generation after it carries its
+        // prior's, so the instances the root published stay served across an apply.
+        serve_tables: prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
+            p.serve_tables.clone()
+        }),
         root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),

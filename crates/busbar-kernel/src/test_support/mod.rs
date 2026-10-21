@@ -953,6 +953,10 @@ pub struct TestApp {
     /// its own to `appbuild`: every plane read the built `App` answers reads it. The neutral test
     /// table ([`neutral_test_doors`]) when a test lends none.
     doors: crate::plane_driver::doors::Doors,
+    /// THE ADMIN TABLE this generation is lent ([`TestApp::serve_tables`]), as the composition root
+    /// lends the boot generation the table it publishes its door planes into. An empty one when a
+    /// test lends none.
+    serve_tables: crate::plane_driver::serve::ServeTables,
 }
 
 impl Default for TestApp {
@@ -967,6 +971,14 @@ impl TestApp {
     #[must_use]
     pub fn doors(mut self, doors: crate::plane_driver::doors::Doors) -> Self {
         self.doors = doors;
+        self
+    }
+
+    /// LEND this generation `tables`, the admin table its stated admin routes and the admin
+    /// router's fallback answer off — the one a test's composed door planes were published into.
+    #[must_use]
+    pub fn serve_tables(mut self, tables: crate::plane_driver::serve::ServeTables) -> Self {
+        self.serve_tables = tables;
         self
     }
 
@@ -1028,6 +1040,7 @@ impl TestApp {
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
             doors: neutral_test_doors(),
+            serve_tables: crate::plane_driver::serve::ServeTables::default(),
         }
     }
 
@@ -1590,6 +1603,7 @@ impl TestApp {
         // The door table this generation is lent, as production's `appbuild` reads it off the
         // configuration it was lent: every plane read below is a read of it.
         let doors = self.doors;
+        let serve_tables = self.serve_tables.clone();
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
@@ -1888,6 +1902,7 @@ impl TestApp {
         };
         let app = std::sync::Arc::new(crate::state::App {
             doors,
+            serve_tables,
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
