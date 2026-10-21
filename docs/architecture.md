@@ -396,14 +396,15 @@ field is rewritten to the selected lane's model.
 
 ### 7. Two-stage failure disposition
 
-Every non-2xx upstream response is run through a pipeline that decides **who is at
+Every attempt's answer is run through a pipeline that decides **who is at
 fault** and therefore what to do (`crates/busbar-kernel/src/breaker.rs`, over the breaker unit's
-`crates/busbar-kernel-breaker/src/normalize.rs` and `crates/busbar-kernel-breaker/src/classify.rs`):
+`crates/busbar-kernel-breaker/src/classify.rs`). The breaker reads facts, never a wire: the
+transport states its own fault reading on the answer's frame, the kernel adds the one fact only
+it holds (no answer came at all), and what a body means is the plane's verdict.
 
 ```
-Stage 1a  proto.reader().extract_error(status, body)  → RawUpstreamError
-Stage 1b  normalize_raw_error(raw, provider.error_map) → CanonicalSignal (StatusClass)
-Stage 2   classify(signal)                             → Disposition
+Stage 1   the transport's fault reading, or no answer at all     → Reading
+Stage 2   classify(reading)                                      → Disposition
 ```
 
 `Disposition` is matched **exhaustively** (a project invariant: no `_ =>` catch-all
