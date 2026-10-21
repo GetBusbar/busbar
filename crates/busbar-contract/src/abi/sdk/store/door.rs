@@ -1517,14 +1517,29 @@ slot!(
 macro_rules! store_door {
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
         $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0);
+            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0,
+            $crate::abi::mechanism::call::Blob::ABSENT);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
         const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
         $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len());
+            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len(),
+            $crate::abi::mechanism::call::Blob::ABSENT);
     };
-    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr) => {
+    // THE STATEMENT'S EXTENSIONS (its `declares` document under `EXT_DECLARES`, ARCHITECT ruling
+    // 2026-10-21; BUSBAR-1.6.0.md l.246): a `Blob` built by `statement_extensions!`.
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(,)?) => {
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0, $ext);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        extensions: $ext:expr $(,)?) => {
+        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len(), $ext);
+    };
+    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr,
+        $ext:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 2] =
@@ -1539,6 +1554,7 @@ macro_rules! store_door {
                 marks: $crate::abi::sdk::store::door::marks::<$store>(),
                 needs: $needs,
                 needs_len: $needs_len,
+                extensions: $ext,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
             lifecycle: {
