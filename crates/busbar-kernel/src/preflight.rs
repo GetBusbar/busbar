@@ -186,9 +186,6 @@ pub struct RootInstall {
     /// exactly as boot does. `None` = no trust resolves (the admin catalog lists the linked rows
     /// alone; an upload is refused).
     pub admission: Option<&'static dyn crate::admission::PluginAdmission>,
-    /// The host's own counters every `/metrics` scrape exposes, one described family each: the
-    /// root's dispatcher's `bb_*` counters, read when the scrape is (`None` = none).
-    pub host_counters: Option<HostCounters>,
     /// The ONE durable-write primitive ([`crate::durable`]). `None` = no durable write: every write
     /// through the seam answers an error naming the missing root.
     pub durable: Option<&'static dyn crate::durable::DurableFs>,
@@ -219,10 +216,6 @@ pub type HookAnswers = fn(&dyn PluginRows, &str) -> bool;
 /// THE ROOT'S READING of a linked auth door's Statement ([`RootInstall::auth_chain_module`]).
 pub type AuthChainModule = fn(busbar_contract::abi::mechanism::door::DoorFn) -> bool;
 
-/// THE HOST'S OWN COUNTERS: each counter's family name, its HELP text and its cumulative value,
-/// read at scrape time ([`RootInstall::host_counters`]).
-pub type HostCounters = fn() -> Vec<(&'static str, &'static str, u64)>;
-
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
 ///
 /// # Errors
@@ -249,7 +242,6 @@ const STAND_IN: RootInstall = RootInstall {
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
     admission: Some(&crate::test_support::AdmissionStandIn),
-    host_counters: None,
     durable: Some(&crate::test_support::DurableStandIn),
     plugin_logs: None,
     hook_answers: None,

@@ -353,7 +353,6 @@ pub fn register_stores(linked: &Linked) {
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
             admission: Some(&crate::root::admission::ADMISSION),
-            host_counters: Some(crate::root::dispatch::host_counters),
             durable: Some(&crate::root::admission::DURABLE),
             plugin_logs: Some(crate::root::admission::plugin_logs),
             hook_answers: Some(crate::root::admission::hook_answers),
