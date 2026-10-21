@@ -49,7 +49,7 @@ pub(super) fn identity_provider_view(
 
 /// Project one `export:` DEFINITION onto the shared named-map view. An exporter carries neither a
 /// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
-/// `settings:` bag routinely carries one (a `generic-webhook`'s `auth_header.value`), so the bag is
+/// `settings:` bag routinely carries one (a webhook sink's header credential value), so the bag is
 /// projected as KEY NAMES exactly as the identity-provider view projects it.
 pub(super) fn export_def_view(
     name: &str,
