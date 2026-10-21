@@ -490,24 +490,35 @@ impl AuthCfg {
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
 /// The operator credential's `module:` word, under the name the admin surface reads it by (the
-/// OpenAPI description of `admin_auth`): the same function as [`operator_provider`].
-pub use busbar_kernel_identity::operator::provider as operator_module;
+/// OpenAPI description of `admin_auth`): the same word as [`operator_provider`].
+#[must_use]
+pub fn operator_module() -> &'static str {
+    operator_provider()
+}
+
 /// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
-/// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
-/// and the principal id it identifies the operator as. Frozen config text the composition root's
-/// legacy table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
-/// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never spells it. Which module answers it is
-/// the auth axis's business.
-pub use busbar_kernel_identity::operator::{
-    principal_id as operator_principal_id, provider as operator_provider,
-};
+/// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name).
+/// Frozen config text the composition root's legacy table holds and hands in on its install record
+/// beside its linked auth rows (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the
+/// kernel never spells it. Which module answers it is the auth axis's business.
+#[must_use]
+pub fn operator_provider() -> &'static str {
+    crate::preflight::operator_words().provider
+}
+
+/// The principal id the operator credential identifies the operator as, handed in with
+/// [`operator_provider`].
+#[must_use]
+pub fn operator_principal_id() -> &'static str {
+    crate::preflight::operator_words().principal_id
+}
 
 /// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
 /// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
 /// former name the root legacy table gives that key — every name the registry resolves to that row.
 pub fn names_operator(module: &str) -> bool {
     let op = operator_provider();
-    busbar_kernel_identity::operator::names(op, module)
+    busbar_kernel_identity::operator::names(crate::preflight::linked_auth_rows(), op, module)
         || (!op.is_empty()
             && crate::config::legacy::former_names(op)
                 .iter()

@@ -1,142 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The security invariants of the authenticate step, stated over every shape rather than sampled.
-//!
-//! Each of these is a property the ported suite checks one instance of. One instance is what a
-//! reader believes; every instance is what a change has to survive. They are written as exhaustive
-//! walks over the chain shapes the configuration can produce, so a change that keeps the sampled
-//! case working and breaks a neighbouring one has nowhere to land.
-
-use super::{entry, Canned, OneKey};
-use crate::chain::{AuthChain, ChainEntry, ChainVerdict};
-use crate::module::{AuthModule, AuthOutcome};
-use crate::principal::Principal;
-
-/// A module that identifies, for the positions after the rejecting one.
-fn identifies(name: &'static str) -> Box<dyn AuthModule> {
-    Box::new(Canned::new(
-        name,
-        AuthOutcome::Identify(Principal::from_id("alice")),
-    ))
-}
-
-/// The three answers, as a chain position.
-fn answering(name: &'static str, outcome: AuthOutcome) -> Box<dyn AuthModule> {
-    Box::new(Canned::new(name, outcome))
-}
-
-// ---------------------------------------------------------------------------------------------
-// A Reject is never a Pass.
-// ---------------------------------------------------------------------------------------------
-
-/// A `Reject` ANYWHERE in the chain denies, whatever is behind it.
-///
-/// The three answers are not interchangeable and only one of them is a refusal: `Reject` means this
-/// module recognised the credential and refuses it, and `Pass` means it is not this module's
-/// credential at all. Turning the first into the second is the whole failure mode this chain shape
-/// exists to prevent — the module that KNOWS the credential is bad steps aside, and the next module,
-/// or the keys arm, admits it. The suite checks one two-module chain. This checks every position in
-/// chains of every length up to four, with something behind the rejection that would have admitted:
-/// a module that identifies, the built-in keys arm holding a valid token, and both.
-#[test]
-fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
-    const TOKEN: &str = "the-token";
-    for len in 1..=4usize {
-        for reject_at in 0..len {
-            for keys_behind in [false, true] {
-                let names = ["m0", "m1", "m2", "m3"];
-                let mut chain: Vec<ChainEntry> = Vec::new();
-                for (i, name) in names.iter().take(len).enumerate() {
-                    let m = if i == reject_at {
-                        answering(name, AuthOutcome::Reject)
-                    } else if i > reject_at {
-                        // Behind the rejection: a module that WOULD identify.
-                        identifies(name)
-                    } else {
-                        answering(name, AuthOutcome::Pass)
-                    };
-                    chain.push(entry(name, m));
-                }
-                let c = AuthChain::new(chain, keys_behind);
-                let keys = OneKey {
-                    token: TOKEN,
-                    aud: None,
-                };
-                let verdict = c.run_chain_with(Some(TOKEN), Some(&keys), 1000, None);
-                assert_eq!(
-                    verdict,
-                    ChainVerdict::Denied,
-                    "len={len} reject_at={reject_at} keys_behind={keys_behind}: \
-                     a recognised-and-refused credential was admitted by something behind it"
-                );
-            }
-        }
-    }
-}
-
-/// A `Reject` is re-asked every time: an invalid credential re-runs its module on every call, so
-/// the moment the module changes its mind the chain does too.
-///
-/// This is the deny path's instant-revocation property: nothing sits in front of the rejecting
-/// module that could skip it without the module ever being asked.
-#[test]
-fn a_rejection_is_re_asked_every_time() {
-    let rejecting = Canned::new("m", AuthOutcome::Reject);
-    let calls = rejecting.calls.clone();
-    let c = AuthChain::new(vec![entry("m", Box::new(rejecting))], false);
-
-    for i in 1..=5 {
-        assert_eq!(
-            c.run_chain_with(Some("bad"), None, 1000, None),
-            ChainVerdict::Denied
-        );
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::Relaxed),
-            i,
-            "the module is asked every time"
-        );
-    }
-}
-
-/// A chain that only ever passes ends DENIED, never open.
-///
-/// The open door is one condition and one only: no boxed module and no keys arm. A chain that has
-/// modules, all of which say "not mine", has not authenticated anybody — collapsing that into the
-/// anonymous admit would turn "no module recognised this credential" into "no module was
-/// configured", which is the operator's most consequential posture decided by accident.
-#[test]
-fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
-    for len in 1..=4usize {
-        let names = ["m0", "m1", "m2", "m3"];
-        let chain: Vec<ChainEntry> = names
-            .iter()
-            .take(len)
-            .map(|n| entry(n, answering(n, AuthOutcome::Pass)))
-            .collect();
-        let c = AuthChain::new(chain, false);
-        assert!(!c.is_open(), "len={len}");
-        assert_eq!(
-            c.run_chain_with(Some("cred"), None, 1000, None),
-            ChainVerdict::Denied,
-            "len={len}: every module said 'not mine', which is not an admission"
-        );
-    }
-    // The keys arm alone keeps the door shut too: it runs, and with no verifier it denies.
-    let arm_only = AuthChain::new(Vec::new(), true);
-    assert!(!arm_only.is_open());
-    assert_eq!(
-        arm_only.run_chain_with(Some("cred"), None, 1000, None),
-        ChainVerdict::Denied
-    );
-    // And the one shape that opens.
-    let unconfigured = AuthChain::new(Vec::new(), false);
-    assert!(unconfigured.is_open());
-    assert_eq!(
-        unconfigured.run_chain_with(Some("cred"), None, 1000, None),
-        ChainVerdict::Open
-    );
-}
+//! The crate's source invariants: one authenticate path (the kernel's), and nothing installed into
+//! a process-wide static here.
 
 // ---------------------------------------------------------------------------------------------
 // One authenticate path.
@@ -178,6 +44,15 @@ fn the_unreached_authenticate_unit_is_gone() {
         "pub mod exchange",
         "Auth::new(",
         "with_auth_chain",
+        // The crate's own chain walk, its key-verifier binding and its module/principal twins of
+        // the contract's: the kernel's chain is the walk that serves, so a second one only drifts.
+        "pub struct AuthChain",
+        "fn run_chain_with(",
+        "pub trait KeyVerifier",
+        "pub struct ResolvedKey",
+        "pub trait AuthModule",
+        "pub enum AuthOutcome",
+        "fn id_is_reserved(",
     ];
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
@@ -208,6 +83,49 @@ fn the_unreached_authenticate_unit_is_gone() {
     assert!(
         hits.is_empty(),
         "the unreached authenticate unit is still in non-test source:\n{}",
+        hits.join("\n")
+    );
+}
+
+/// No process-wide static in this crate (BUSBAR-1.6.0.md THE DESIGN §11.11 R6: the kernel holds
+/// exactly two `OnceLock` seams, `oauth_as/seam.rs` and `admin/seam.rs`). The composition root's
+/// linked auth rows each carry a plugin's door function, so a static holding them is a function
+/// pointer seam installed into a kernel crate; the rows and the operator words reach the kernel on
+/// the root's install record instead, and every function here takes what it reads as an argument.
+#[test]
+fn nothing_is_installed_into_a_static_of_this_crate() {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    non_test_sources(&crate_dir.join("src"), &mut files);
+    files.sort();
+    let mut hits = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("source reads");
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            for needle in [
+                "static ",
+                "OnceLock",
+                "OnceCell",
+                "LazyLock",
+                "thread_local!",
+            ] {
+                for (at, _) in code.match_indices(needle) {
+                    // `&'static str` is a lifetime, not an item.
+                    if needle == "static " && code[..at].ends_with('\'') {
+                        continue;
+                    }
+                    if is_ident(code[..at].chars().next_back()) {
+                        continue;
+                    }
+                    hits.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "a process-wide static in busbar-kernel-identity:\n{}",
         hits.join("\n")
     );
 }

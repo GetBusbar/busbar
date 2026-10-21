@@ -51,8 +51,9 @@ const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 /// - **The method is compared EXACTLY.** `axum::http::Method`'s equality is case-sensitive, per
 ///   RFC 9110 §9.1: the method token is case-sensitive and `get` is not `GET` — it is an EXTENSION
 ///   method that happens to look like one. Case-folding it here let a non-canonical verb be folded
-///   into `GET`/`HEAD` and DOWNGRADED to `read-only`, where 1.5.5 fails closed to `full`. That is the wrong direction for an authorization matrix to differ in, whatever else
-///   filters the verb first.
+///   into `GET`/`HEAD` and DOWNGRADED to `read-only`, where 1.5.5 fails closed to `full`. That is
+///   the wrong direction for an authorization matrix to differ in, whatever else filters the verb
+///   first.
 /// - **The dry-run paths are matched on PATH ALONE**, with no method gate, exactly as the 1.5.5
 ///   matrix does. Requiring `POST` would answer `full` for a pair 1.5.5 answers `read-only`
 ///   for.

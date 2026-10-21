@@ -152,7 +152,7 @@ rcgen = { workspace = true, optional = true, features = ["pem"] }
 # No auth feature and no auth-module edge (DECISIONS #40, #2; ARCHITECT 2026-09-27 AUTH-ROW): every
 # admin auth module, the operator credential's included, resolves through the auth kind's registry by
 # the key the configuration names. The composition root links the build's auth rows
-# (`preflight::install_linked_auth`); this crate names none of them.
+# on its install record (`preflight::RootInstall::auths`); this crate names none of them.
 default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
 # The build links the ranking hooks: the composition root registers their row (it owns the crate
 # edge); here it only decides whether a test build's stand-in rows carry that row.

@@ -213,3 +213,32 @@ fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
         }
     }
 }
+
+/// A door no test opens: the rows below are read for their names alone.
+extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+/// The rows a build links are an ARGUMENT: a row answers the operator provider by its key or by its
+/// canonical name, and `names` judges a module by the row's identity rather than one spelling.
+#[test]
+fn the_linked_rows_are_read_from_what_the_caller_hands_in() {
+    let rows: [crate::operator::LinkedAuth; 2] = [
+        ("op-key", "op-canonical", no_door),
+        ("other", "other", no_door),
+    ];
+    assert!(crate::operator::answered(&rows, "op-key"));
+    assert!(crate::operator::answered(&rows, "op-canonical"));
+    assert!(!crate::operator::answered(&rows, "absent"));
+    assert!(
+        !crate::operator::answered(&[], "op-key"),
+        "no rows answer nothing"
+    );
+    assert!(crate::operator::names(&rows, "op-key", "op-key"));
+    assert!(crate::operator::names(&rows, "op-key", "op-canonical"));
+    assert!(!crate::operator::names(&rows, "op-key", "other"));
+    assert!(
+        crate::operator::names(&[], "op-key", "op-key"),
+        "the bare key is always its own"
+    );
+}

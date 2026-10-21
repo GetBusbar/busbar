@@ -6,8 +6,8 @@
 //! `[package.metadata.busbar.legacy]`, generated from `plugins.yaml`").
 //!
 //! The rows name plugins no crate in the kernel declares, so the kernel spells none of them: the
-//! composition root hands its table in once, before the first configuration is read, exactly as it
-//! hands in the operator credential's words (`busbar_kernel_identity::operator::install_linked`).
+//! composition root hands its table in once, before the first configuration is read, as it hands in
+//! the operator credential's words (`preflight::RootInstall::operator`).
 //! A row is `key = "value"`:
 //!
 //! - `retired.<kind root>.<word>` → the alias a retired `module:` spelling now answers to;

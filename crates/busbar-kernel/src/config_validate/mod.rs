@@ -1912,7 +1912,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // boot error instead. The row is the composition root's, linked under the operator
     // credential's provider name by the root's packaging feature of the same name.
     let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
-    if token.is_some() && !operator::answered(operator_provider()) {
+    if token.is_some()
+        && !operator::answered(crate::preflight::linked_auth_rows(), operator_provider())
+    {
         errors.push(operator::unanswered_token(operator_provider()));
     }
 }
@@ -1936,7 +1938,8 @@ fn admin_root_segment() -> &'static str {
 /// as well. With no auth row linked under the operator credential's provider there is no operator
 /// principal to shadow, so nothing is reserved.
 fn reserved_operator_principal_id(role: &str) -> bool {
-    role == crate::config::operator_principal_id() && operator::answered(operator_provider())
+    role == crate::config::operator_principal_id()
+        && operator::answered(crate::preflight::linked_auth_rows(), operator_provider())
 }
 
 /// True when a pool / provider / model `name` would collide with the built-in native-API operator

@@ -118,6 +118,12 @@ pub type PluginsFetch = fn(
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
+    /// The build's linked auth rows, in registration order: the rows every admin auth module (the
+    /// operator credential's included) resolves through, by the key configuration names.
+    pub auths: &'static [LinkedAuth],
+    /// The operator credential's words, off the root's legacy table (ARCHITECT 2026-09-30,
+    /// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173, "sit in the root legacy table").
+    pub operator: busbar_kernel_identity::operator::OperatorWords,
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
@@ -170,6 +176,10 @@ pub type TrustPolicyBuild =
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[crate::test_support::store_double::STORE],
+    // A test build links no auth row of a root's (a test binary links its own through
+    // `test_support::install_operator_auth_row`), and answers to the kind-neutral stand-in words.
+    auths: &[],
+    operator: busbar_kernel_identity::operator::STAND_IN,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
@@ -190,14 +200,15 @@ pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::D
     crate::test_support::ranking_double::door,
 ];
 
-/// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks) and its registry build, installed once before the first
-/// resolution.
+/// The composition root's linked store, auth and hook entries (the build's in-process stores, its
+/// auth rows and, when compiled in, its ranking hooks), the operator credential's words and its
+/// registry build, installed once before the first resolution.
 static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
-/// root's registry build (the first install stands). The kernel names none of the plugins it
-/// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores`, `auths` and `hooks` entries,
+/// the operator credential's words and the root's registry build (the first install stands). The
+/// kernel names none of the plugins it registers, and no store is a default (#2 rule (1), #40;
+/// Q-STORE = (B)).
 pub fn install_linked_rows(rows: RootInstall) {
     let _ = ROOT_ROWS.set(rows);
 }
@@ -208,14 +219,20 @@ pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     {
         let _ = ROOT_ROWS.set(STAND_IN);
+        let mut rows = ROOT_ROWS.get().copied().unwrap_or_default();
         if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
-            return RootInstall {
-                hook_names,
-                ..ROOT_ROWS.get().copied().unwrap_or_default()
-            };
+            rows.hook_names = hook_names;
         }
+        if let Some((auths, operator)) = TEST_ROOT_AUTH.get().copied() {
+            rows.auths = auths;
+            rows.operator = operator;
+        }
+        rows
     }
-    ROOT_ROWS.get().copied().unwrap_or_default()
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        ROOT_ROWS.get().copied().unwrap_or_default()
+    }
 }
 
 /// The hook names the composition root's OWN test binary hands in, in the root's words (its
@@ -227,14 +244,41 @@ pub fn root_rows() -> RootInstall {
 pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static str]> =
     std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
-/// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
-/// credential's included — resolves through this axis by the key configuration names; the kernel
-/// names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW).
-pub use busbar_kernel_identity::operator::{
-    install_linked as install_linked_auth, linked as linked_auth_rows,
-    linked_names as linked_auth_names,
-};
+/// The auth rows and operator words a TEST binary links in place of a root's: the operator
+/// credential's double (`test_support::install_operator_auth_row`), or the root's own table and
+/// words in the root's test binary (`test_support::install_root_auth`). The install record reports
+/// them in place of the stand-in's none, whichever read came first. The first hand-in stands.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) static TEST_ROOT_AUTH: std::sync::OnceLock<TestRootAuth> = std::sync::OnceLock::new();
+
+/// What a test binary hands in for [`TEST_ROOT_AUTH`]: its auth rows and its operator words.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type TestRootAuth = (
+    &'static [LinkedAuth],
+    busbar_kernel_identity::operator::OperatorWords,
+);
+
+/// THIS BUILD'S LINKED AUTH ROWS, in registration order: the install record's `auths`. Every admin
+/// auth module — the operator credential's included — resolves through the auth axis by the key
+/// configuration names; the kernel names none of the rows it registers (DECISIONS #2 rule (1), #40;
+/// ARCHITECT 2026-09-27 AUTH-ROW).
+#[must_use]
+pub fn linked_auth_rows() -> &'static [LinkedAuth] {
+    root_rows().auths
+}
+
+/// The names of this build's linked auth rows, in registration order.
+#[must_use]
+pub fn linked_auth_names() -> Vec<&'static str> {
+    linked_auth_rows().iter().map(|r| r.0).collect()
+}
+
+/// The operator credential's words the root handed in on its install record; with no root, the
+/// stand-in's (none in a shipped build).
+#[must_use]
+pub fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
+    root_rows().operator
+}
 
 /// The names of the INBOUND auth-chain modules among `rows`: those whose Statement declares an
 /// inbound capability and is not a host-held credentials' verifier (that one serves the `keys`
@@ -283,8 +327,8 @@ pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
-    let RootInstall { stores, .. } = root_rows();
-    let auths = busbar_kernel_identity::operator::linked().iter();
+    let RootInstall { stores, auths, .. } = root_rows();
+    let auths = auths.iter();
     let rows = stores.iter().map(linked_store_row);
     rows.chain(auths.map(linked_auth_row)).collect()
 }

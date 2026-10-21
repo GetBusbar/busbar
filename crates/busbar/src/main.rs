@@ -282,13 +282,9 @@ fn register_planes() {
     // The root legacy table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::legacy::install();
-    // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
-    // auth axis, before anything resolves one.
+    // The linked store, auth and hook rows onto the kernel's cold-kind axis, with the operator
+    // credential's words, before anything resolves one.
     root::linked::register_stores(&LINKED);
-    busbar_kernel::preflight::install_linked_auth(
-        LINKED.auths,
-        root::auth_bindings::operator_words(),
-    );
     busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.

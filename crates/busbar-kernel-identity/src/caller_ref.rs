@@ -17,7 +17,7 @@ use ring::{hkdf, hmac};
 /// The HKDF label the reference key is expanded under.
 pub const LABEL: &[u8] = b"busbar caller-ref v1";
 
-/// The key caller references are computed under. No `Debug`, no `Clone`, no accessor.
+/// The key caller references are computed under. A redacting `Debug`, no `Clone`, no accessor.
 pub struct CallerRefKey(hmac::Key);
 
 impl std::fmt::Debug for CallerRefKey {

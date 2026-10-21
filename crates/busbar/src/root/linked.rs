@@ -337,14 +337,16 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
-/// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
-/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
+/// THE STORE, AUTH, HOOK AND SECRET AXES: the linked store, auth and hook rows onto the kernel's
+/// cold-kind axis, with the operator credential's words, and the secret axis ([`secret_rows`]). No
+/// row is a default store: the store is the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
 /// before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
+            auths: linked.auths,
+            operator: crate::root::auth_bindings::operator_words(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
