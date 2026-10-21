@@ -82,7 +82,9 @@ use busbar_contract::conn::{
 };
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::ids::StreamId;
-use busbar_contract::services::{DiskDest, DiskReport, Later, Ran};
+use busbar_contract::services::{
+    DiskDest, DiskReport, DiskRotate, Later, Ran, DISK_TRUNCATE_REPORTS_ROTATED,
+};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
@@ -136,6 +138,15 @@ fn file_declares() -> Declares {
         metrics: Vec::new(),
         ..file_declaration()
     }
+}
+
+/// `declared` with its `path` destination kept by RENAME (`declares.keep` 2): the host renames a
+/// due file and reports the rotation, so the sink observes and reports it. The arms whose subject
+/// is what the sink hands the host run under it; the host's undeclared default, 1.5.5's
+/// truncation, which reports no rotation, is the S4 arm's and the keep-0 arm's subject.
+fn renaming(mut declared: Declares) -> Declares {
+    declared.keep.insert("path".to_string(), 2);
+    declared
 }
 
 /// The WEBHOOK sink's own manifest declaration, without its series (as [`file_declares`]).
@@ -246,10 +257,11 @@ impl EnvelopeSink for Tape {
 }
 
 /// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
-/// bound for the caller's destination key, rolling it over first when the file already holds
-/// `rotate_at` bytes — truncated in place when the destination keeps no archives (`keep` 0), else
-/// by rename keeping `keep` archives ([`crate::host::rotate`]) — then opening it (created if
-/// absent) and writing the bytes whole: the same rules the kernel's lane follows.
+/// bound for the caller's destination key, rotating first when the file already holds `rotate_at`
+/// bytes — truncated in place under `DiskRotate::Truncate` (1.5.5, reported as no rotation unless
+/// [`DISK_TRUNCATE_REPORTS_ROTATED`]), or renamed keeping `keep` archives under
+/// `DiskRotate::Rename` ([`crate::host::rotate`]) — then opening it (created if absent) and writing
+/// the bytes whole: the same rules the kernel's lane follows.
 struct DiskHost;
 
 impl DiskHost {
@@ -258,11 +270,12 @@ impl DiskHost {
         let due = dest
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-        let truncate = due && dest.keep == 0;
-        let (rotated, failed) = if due && !truncate {
-            crate::host::rotate(std::path::Path::new(&dest.path), dest.keep)
-        } else {
-            (false, Vec::new())
+        let truncate = due && dest.rotate == DiskRotate::Truncate;
+        let (renamed, failed) = match dest.rotate {
+            DiskRotate::Rename { keep } if due => {
+                crate::host::rotate(std::path::Path::new(&dest.path), keep)
+            }
+            _ => (false, Vec::new()),
         };
         let faults = failed.iter().fold(0u8, |f, step| {
             f | match *step {
@@ -271,19 +284,20 @@ impl DiskHost {
                 _ => DISK_RENAME_FAILED,
             }
         });
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!truncate)
+            .truncate(truncate)
+            .open(&dest.path);
+        let rotated = renamed || (DISK_TRUNCATE_REPORTS_ROTATED && truncate && opened.is_ok());
         let report = |step, error: String| DiskReport {
             step,
             rotated,
             faults,
             error: Box::leak(error.into_boxed_str()),
         };
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(!truncate)
-            .write(true)
-            .truncate(truncate)
-            .open(&dest.path)
-        {
+        match opened {
             Ok(mut file) => match file.write_all(bytes) {
                 Ok(()) => report(0, String::new()),
                 Err(e) => report(DISK_APPEND_FAILED, e.to_string()),
@@ -671,8 +685,9 @@ fn file_settings(path: &Path) -> serde_json::Value {
 }
 
 /// The operations the observation arms run, in order: three lines too large to share the file, so
-/// the second and the third each have the host rotate first — two rotations the sink observes and
-/// reports, then the host's files: `[3]` live, `[2]` in `.1`, `[1]` in `.2`.
+/// the second and the third each have the host rotate first — the destination is granted
+/// [`renaming`], so two renames the sink observes and reports — then the host's files: `[3]` live,
+/// `[2]` in `.1`, `[1]` in `.2`.
 fn script(sink: &dyn ExportCalls, path: &Path) {
     for n in 1..=3 {
         deliver(sink, &big_line(n));
@@ -685,14 +700,14 @@ fn script(sink: &dyn ExportCalls, path: &Path) {
 }
 
 /// THE DOOR, BOUND: `door` (the linked row's or the dlopened image's) under `sink`, on `dispatcher`,
-/// granted the FILE sink's declared destination, then OPENED over `settings` — the instance the
+/// granted the FILE sink's declared destination kept by rename ([`renaming`]), then OPENED over `settings` — the instance the
 /// opener makes ([`ExportRows::open`]'s memory arm).
 fn opened(
     plugin: Plugin<Export>,
     d: Arc<Dispatcher>,
     settings: &serde_json::Value,
 ) -> ExportInstance {
-    plugin.grant_destinations(&file_declares());
+    plugin.grant_destinations(&renaming(file_declares()));
     ExportInstance::open(plugin, d, settings.to_string().as_bytes()).expect("the sink opens")
 }
 
@@ -857,7 +872,11 @@ fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
 #[test]
 fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
     let name = "export-fixture";
-    let doors = both(manifest(name, file_declares()), FILE_DOOR, file_cdylib());
+    let doors = both(
+        manifest(name, renaming(file_declares())),
+        FILE_DOOR,
+        file_cdylib(),
+    );
     let dir = scratch("k5");
     let path = dir.join("requests.jsonl");
     let [linked, dropped] = doors.map(|registry| {
@@ -870,7 +889,7 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
             .expect("the export sink opens through its alias");
         let streams = sink.streams().to_vec();
         let routes = sink.routes().len();
-        // Two lines too large to share the file: the second has the host rotate first.
+        // Two lines too large to share the file: the second has the host rotate (rename) first.
         for n in [1, 2] {
             deliver(sink.as_ref(), &big_line(n));
         }
@@ -1189,7 +1208,11 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         "{series:?}"
     );
     let name = "s1-fixture";
-    let doors = both(manifest(name, declared.clone()), FILE_DOOR, file_cdylib());
+    let doors = both(
+        manifest(name, renaming(declared.clone())),
+        FILE_DOOR,
+        file_cdylib(),
+    );
     let dir = scratch("s1");
     let path = dir.join("requests.jsonl");
     let [linked, dropped] = doors.map(|registry| {
@@ -1410,17 +1433,18 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     };
     let doors = both(declaring("s4-fixture", true), FILE_DOOR, file_cdylib());
     let [linked, dropped] = doors.map(|registry| {
-        let on_disk =
-            |_: &Tape| ns(&path) == Some(vec![3, 4]) && ns(&archive(&path, 1)) == Some(vec![1, 2]);
+        let on_disk = |_: &Tape| ns(&path) == Some(vec![3, 4]) && !archive(&path, 1).exists();
         (
             both_ways::row(&registry, "s4-fixture"),
             run(&registry, "s4-fixture", &on_disk),
         )
     });
-    assert!(linked.1.contains(r#""archive":[1,2]"#), "{}", linked.1);
+    // 1.5.5 parity (Q128 arch u50): the host truncated in place at `rotate_mb`, so no archive,
+    // and, as 1.5.5 reported nothing of a truncation, no rotation is reported.
+    assert!(linked.1.contains(r#""archive":null"#), "{}", linked.1);
     assert!(linked.1.contains(r#""live":[3,4]"#), "{}", linked.1);
     assert!(
-        linked.1.contains("request-log file rotated by rename"),
+        !linked.1.contains("request-log file rotated"),
         "{}",
         linked.1
     );

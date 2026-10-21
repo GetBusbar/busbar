@@ -23,8 +23,35 @@ fn dest(path: &Path, rotate_at: Option<u64>) -> DiskDest {
         key: "path".into(),
         path: path.display().to_string(),
         rotate_at,
-        keep: busbar_contract::services::DISK_KEEP,
+        rotate: DiskRotate::Rename {
+            keep: busbar_contract::services::DISK_KEEP,
+        },
     }
+}
+
+/// A destination rotated as 1.5.5 rotated it: truncated in place.
+fn truncating(path: &Path, rotate_at: Option<u64>) -> DiskDest {
+    DiskDest {
+        rotate: DiskRotate::Truncate,
+        ..dest(path, rotate_at)
+    }
+}
+
+/// 1.5.5's ROTATION (v1.5.5 `crates/busbar/src/export/file.rs:96-108`, "roll over by truncation rather
+/// than a rename"; Q128 arch u50): a due file is truncated in place and the append lands from empty;
+/// no archive is ever written, and, as 1.5.5 reported nothing of it, no rotation is reported. RED
+/// before the host honoured `DiskRotate::Truncate`: the file was renamed to `.1`.
+#[test]
+fn a_due_file_truncates_in_place_under_truncate() {
+    let d = dir("truncate");
+    let file = d.join("log.jsonl");
+    let to = truncating(&file, Some(4));
+    assert!(!append(&to, b"abc\n").rotated, "an absent file is not due");
+    let second = append(&to, b"def\n");
+    assert_eq!((second.step, second.rotated, second.faults), (0, false, 0));
+    assert_eq!(std::fs::read(&file).unwrap(), b"def\n");
+    assert!(!d.join("log.jsonl.1").exists(), "no archive is written");
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// 1.5.5's WRITE: each append creates the file when absent and adds the bytes after what is
@@ -96,7 +123,7 @@ fn a_due_keep_zero_destination_truncates_in_place_and_keeps_no_archive() {
     let d = dir("keep0");
     let file = d.join("log.jsonl");
     let to = DiskDest {
-        keep: 0,
+        rotate: DiskRotate::declared(Some(0)),
         ..dest(&file, Some(8))
     };
     let first = append(&to, b"abc\n");
@@ -127,6 +154,18 @@ fn a_due_keep_zero_destination_truncates_in_place_and_keeps_no_archive() {
     names.sort();
     assert_eq!(names, ["log.jsonl"], "no archive, nothing else written");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// THE HOST'S POLICY from a manifest's `keep`: `0` truncates in place, `n` renames keeping `n`
+/// archives, and none declared takes 1.5.5's truncation.
+#[test]
+fn a_declared_keep_maps_to_the_hosts_rotation() {
+    assert_eq!(DiskRotate::declared(Some(0)), DiskRotate::Truncate);
+    assert_eq!(
+        DiskRotate::declared(Some(3)),
+        DiskRotate::Rename { keep: 3 }
+    );
+    assert_eq!(DiskRotate::declared(None), DiskRotate::Truncate);
 }
 
 /// Retention: at `keep` archives the oldest is dropped, never more than `keep` kept.

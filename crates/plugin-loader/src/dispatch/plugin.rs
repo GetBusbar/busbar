@@ -772,11 +772,13 @@ impl Instance {
     /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
     /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
     /// under the key, rotated at the `rotate_mb` (the host's rotation key,
-    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping the archives the
-    /// manifest declares for the key (`declares.keep`: `0` truncates in place, as 1.5.5's
-    /// request-log sink did), [`busbar_contract::services::DISK_KEEP`] when it declares none. A key
-    /// the settings leave unset is not bound, and `disk.append` refuses it. A refresh re-binds, so
-    /// a changed path moves the file.
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it as the host's
+    /// [`busbar_contract::services::DiskRotate`] for the key: from the archives the manifest
+    /// declares it keeps (`declares.keep`: `0` truncates in place, as 1.5.5's request-log sink did;
+    /// `n` renames keeping `n`), else the host's default
+    /// ([`busbar_contract::services::DISK_ROTATE_UNDECLARED`]). A key the settings leave unset is
+    /// not bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the
+    /// file.
     fn bind_destinations(&self, settings: Blob) {
         let Some(keys) = self.wake.destinations.get() else {
             return;
@@ -801,13 +803,12 @@ impl Instance {
                         key: key.clone(),
                         path: path.to_owned(),
                         rotate_at,
-                        keep: self
-                            .wake
-                            .keep
-                            .get()
-                            .and_then(|k| k.get(key))
-                            .copied()
-                            .unwrap_or(busbar_contract::services::DISK_KEEP),
+                        // 1.5.5 parity: the request-log file sink truncated in place at
+                        // `rotate_mb` (Q128 arch u50). The data-keeping rename, PENDING OWNER, is
+                        // `DiskRotate::Rename { keep: DISK_KEEP }`.
+                        rotate: busbar_contract::services::DiskRotate::declared(
+                            self.wake.keep.get().and_then(|k| k.get(key)).copied(),
+                        ),
                     }
                 })
             })

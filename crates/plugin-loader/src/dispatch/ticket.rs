@@ -89,8 +89,8 @@ pub(crate) struct InstanceWake {
     /// opener that read the manifest): `disk.append` serves this instance those only.
     pub(crate) destinations: OnceLock<Vec<String>>,
     /// How many archives the manifest declares each granted destination keeps when the host rolls
-    /// it over (`declares.keep`), granted with the destinations; a key not named keeps
-    /// [`busbar_contract::services::DISK_KEEP`].
+    /// it over (`declares.keep`), granted with the destinations; a key not named takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`].
     pub(crate) keep: OnceLock<std::collections::BTreeMap<String, u32>>,
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).

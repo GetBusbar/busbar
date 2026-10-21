@@ -292,9 +292,10 @@ pub struct Declares {
     pub destinations: Vec<String>,
     /// How many archives the host's disk lane keeps when it rolls a declared destination over
     /// (THE DESIGN: `disk.append` rotation is declared per destination, `{path_key,
-    /// rotate_size_key, keep}`), keyed by the destination's settings key. `0`: no archive — a due
-    /// file is truncated in place, 1.5.5's request-log rollover. A destination not named here
-    /// keeps [`busbar_contract::services::DISK_KEEP`]. Left off the wire when empty, so every
+    /// rotate_size_key, keep}`), keyed by the destination's settings key; the host turns it into
+    /// its rotation ([`busbar_contract::services::DiskRotate::declared`]). `0`: no archive — a due
+    /// file is truncated in place, 1.5.5's request-log rollover. A destination not named here takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`]. Left off the wire when empty, so every
     /// manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keep: BTreeMap<String, u32>,

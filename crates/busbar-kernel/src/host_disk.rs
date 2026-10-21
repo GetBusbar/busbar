@@ -16,13 +16,14 @@
 //!   bytes whole: a file an external rotator moved aside is never written through a stale handle,
 //!   and an unopenable path is a per-append failure the plugin reports, never a refused boot.
 //! * **Rotation is the host's.** When the destination states a threshold and the file already holds
-//!   at least that many bytes, the file is rolled over before the append, as the destination
-//!   declares it (`keep`, per destination). `keep` = 0 is 1.5.5's request-log rollover
-//!   (`crates/busbar/src/export/file.rs` at v1.5.5): the live file is TRUNCATED IN PLACE — same
-//!   inode, no rename, no archive, nothing else written. `keep` > 0 rotates BY RENAME: the oldest
-//!   archive is dropped, the rest shift up one slot, the live file becomes `<path>.1`. Each failed
-//!   step is reported and the rest still run; a failed final rename leaves the live file to keep
-//!   growing, never truncated.
+//!   at least that many bytes, the file is rolled over before the append, as the host's
+//!   [`DiskRotate`] for it says (from the manifest's per-destination `keep`, or the host's default).
+//!   [`DiskRotate::Truncate`] is 1.5.5's request-log rollover (`crates/busbar/src/export/file.rs`
+//!   at v1.5.5): the live file is TRUNCATED IN PLACE — same inode, no rename, no archive, nothing
+//!   else written — and, as in 1.5.5, reported as no rotation. [`DiskRotate::Rename`] rotates BY
+//!   RENAME: the oldest archive is dropped, the rest shift up one slot, the live file becomes
+//!   `<path>.1`. Each failed rename step is reported and the rest still run; a failed final rename
+//!   leaves the live file to keep growing.
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -34,7 +35,9 @@ use busbar_contract::abi::host::service::{
     DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
     DISK_SHIFT_FAILED,
 };
-use busbar_contract::services::{DiskDest, DiskReport, Later};
+use busbar_contract::services::{
+    DiskDest, DiskReport, DiskRotate, Later, DISK_TRUNCATE_REPORTS_ROTATED,
+};
 
 /// The most appends the lane holds, queued or running.
 pub const LANE_BOUND: usize = 4096;
@@ -139,33 +142,35 @@ fn start() -> Option<SyncSender<Job>> {
 }
 
 /// THE APPEND, as the lane runs it: roll the file over first when `dest` is due, then open it
-/// (created if absent) and write `bytes` whole. A due destination that keeps no archives
-/// (`keep` = 0) is opened TRUNCATED, in place, exactly as 1.5.5's request-log sink opened it
-/// (`append(!truncate).write(true).truncate(truncate)`); one that keeps archives is rotated by
-/// rename and then opened for append.
+/// (created if absent) and write `bytes` whole. A due [`DiskRotate::Truncate`] destination is opened
+/// TRUNCATED, in place, exactly as 1.5.5's request-log sink opened it
+/// (`append(!truncate).write(true).truncate(truncate)`); a due [`DiskRotate::Rename`] one is
+/// rotated by rename and then opened for append.
 #[must_use]
 pub fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
     let due = dest
         .rotate_at
         .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-    let truncate = due && dest.keep == 0;
-    let (rotated, faults) = if due && !truncate {
-        rotate(&dest.path, dest.keep)
-    } else {
-        (false, 0)
+    // TRUNCATE (1.5.5): a due file is opened truncated and the append lands from empty; RENAME:
+    // the live file is renamed into its archives first.
+    let truncate = due && dest.rotate == DiskRotate::Truncate;
+    let (renamed, faults) = match dest.rotate {
+        DiskRotate::Rename { keep } if due => rotate(&dest.path, keep),
+        _ => (false, 0),
     };
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!truncate)
+        .truncate(truncate)
+        .open(&dest.path);
+    let rotated = renamed || (DISK_TRUNCATE_REPORTS_ROTATED && truncate && opened.is_ok());
     let report = |step, error| DiskReport {
         step,
         rotated,
         faults,
         error,
     };
-    let opened = std::fs::OpenOptions::new()
-        .create(true)
-        .append(!truncate)
-        .write(true)
-        .truncate(truncate)
-        .open(&dest.path);
     match opened {
         Ok(mut file) => match file.write_all(bytes) {
             Ok(()) => report(0, ""),
@@ -177,7 +182,7 @@ pub fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
 
 /// Rotate `path` by rename, keeping `keep` archives: drop the oldest, shift the rest up, rename the
 /// live file to `<path>.1`. Whether the live file was renamed, and the steps that failed. A
-/// destination that keeps no archives never reaches here: [`append`] truncates it in place.
+/// [`DiskRotate::Truncate`] destination never reaches here: [`append`] truncates it in place.
 #[must_use]
 pub fn rotate(path: &str, keep: u32) -> (bool, u8) {
     let keep = keep.clamp(1, MAX_KEEP);
