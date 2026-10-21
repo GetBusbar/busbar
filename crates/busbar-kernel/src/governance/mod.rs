@@ -809,7 +809,7 @@ pub struct GovState {
     /// THE NODE'S AMENDMENT JOURNAL (item 404): every hook or export content access and every root
     /// count correction. Held here because this state lives as long as the node does and is reused
     /// across every config apply, and because the budget book's reads price the counts AS
-    /// CORRECTED by it (Q51) — an instance the node owns, never a process static. Every `App`
+    /// CORRECTED by it — an instance the node owns, never a process static. Every `App`
     /// generation carries the same `Arc` (`App::amendments`).
     amendments: Arc<crate::audit::amend::NodeAmendments>,
 }

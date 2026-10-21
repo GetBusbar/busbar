@@ -5,8 +5,8 @@
 //! unit's COUNTS, never to a money figure.
 //!
 //! The kernel half ([`busbar_kernel::audit::amend::correct_counts`]) seals the correction on the
-//! node's amendment journal (the one its `App` carries, bound on the admin units) and refuses a count below zero, a blank reason and any scope below
-//! `full`. This half is the composition root's: it decodes the body, reads what the book RECORDED
+//! node's amendment journal (the one its `App` carries, bound on the admin units) and refuses a
+//! count below zero, a blank reason and any scope below `full`. This half is the composition root's: it decodes the body, reads what the book RECORDED
 //! for the entry the correction names ([`recorded_in`]) — the lane, the card epoch (#79) and the
 //! counts, never from the body, so a correction cannot misstate what it corrects — and hands both
 //! to the kernel half.
