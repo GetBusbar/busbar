@@ -15,8 +15,9 @@
 # MODES
 #   --selftest            prove the parser + arm-state logic bite (no Docker, runs anywhere)
 #   --subject-arm          build the ws-conformance-subject bin and report whether it is ARMED
-#   --control               run Autobahn against the known peer: an echo server on the Python
-#                           `websockets` package, pinned and hash-locked (Docker)
+#   --control               run Autobahn against the known peer: ws-conformance-reference, a strict
+#                           RFC 6455 echo server on the Rust standard library alone, independent of
+#                           busbar's framer (Docker)
 #   --negative-control      run Autobahn against the deliberately broken echo server (Docker); MUST be RED
 #   --subject                run Autobahn against the busbar ws-conformance-subject (Docker); ARMED OR RED
 #
@@ -119,14 +120,12 @@ case "$mode" in
   --selftest) selftest ;;
   --subject-arm) subject_arm ;;
   --control)
-    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs the Python websockets echo peer)." >&2
-    # THE KNOWN PEER: an echo server on the Python `websockets` package, pinned and hash-locked
-    # (reference/requirements.txt), installed into a venv of its own for this run.
-    venv="$(mktemp -d)"
-    python3 -m venv "$venv"
-    "$venv/bin/pip" install --quiet --disable-pip-version-check --no-deps --only-binary :all: \
-      --require-hashes -r "$ROOT/reference/requirements.txt"
-    log="$(mktemp)"; "$venv/bin/python" "$ROOT/reference/echo_server.py" >"$log" 2>&1 & pid=$!
+    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs the ws-conformance-reference echo peer)." >&2
+    # THE KNOWN PEER: ws-conformance-reference (subject/src/reference.rs), a strict RFC 6455 echo
+    # server on the standard library alone: no busbar crate and no WebSocket library, so it shares
+    # nothing with the framer the subject leg grades. Release, as the subject is built.
+    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" -p ws-conformance-subject --bin ws-conformance-reference
+    log="$(mktemp)"; "$REPO_ROOT/target/release/ws-conformance-reference" >"$log" 2>&1 & pid=$!
     port=""
     for _ in $(seq 1 100); do port="$(sed -n 's/^REFERENCE_PORT=//p' "$log")"; [ -n "$port" ] && break; sleep 0.1; done
     [ -n "$port" ] || { echo "reference echo server never printed REFERENCE_PORT" >&2; cat "$log" >&2; kill "$pid" 2>/dev/null; exit 1; }

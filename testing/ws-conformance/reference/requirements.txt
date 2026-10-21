@@ -1,4 +1,0 @@
-# The control peer's one dependency, pinned and hash-locked (pip --require-hashes). The pure-Python
-# wheel alone, so every backend installs the same bytes whatever its CPU or Python.
-websockets==17.3 \
-    --hash=sha256:dc2b495a92b3971966bf102e73589f950db3ec1ca6713265355ce7771d97b199
