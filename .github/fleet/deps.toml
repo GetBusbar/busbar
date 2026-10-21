@@ -112,15 +112,27 @@ reason = "BUILD ONLY: the protoc the a2a plane's `build.rs` drives, vendored so 
 # [patch.crates-io]. busbar's `cargo xtask plugin-gates gitsources` validates the rows.
 [git-sources.str0m]
 git = "https://github.com/GetBusbar/str0m"
-rev = "a142c64e1fafc5cca029adda1507a51064f81902"
+rev = "f91d55ab54a0c2e519fed33493e059365bffcf0b"
 repos = ["busbar-transport-webrtc"]
-reason = "H2 zeroize: str0m 0.24.1 plus zeroize-on-drop commits (keying material copy, SrtpKey and derived SRTP keys, ICE password); THE DESIGN §5 'keys are zeroised'. Upstream: pending owner approval to post."
+reason = "H2 zeroize: str0m 0.24.1 plus zeroize-on-drop commits (keying material copy, SrtpKey and derived SRTP keys, ICE password); THE DESIGN §5 'keys are zeroised'. Identifier randomness drawn from the OS per call, no per-thread generator (THE DESIGN §2, 'a plugin holds no process-global state'). An empty data-channel message is sent (RFC 8831 §6.6). Upstream: pending owner approval to post."
 
 [git-sources.dimpl]
 git = "https://github.com/GetBusbar/dimpl"
 rev = "88f01226145c6a904986156e92610b1eb642f143"
 repos = ["busbar-transport-webrtc"]
 reason = "H2 zeroize: dimpl 0.7.4 plus a zeroize-on-drop commit (KeyingMaterial, the DTLS-exported SRTP keying material); THE DESIGN §5 'keys are zeroised'. Upstream: pending owner approval to post."
+
+[git-sources.ring]
+git = "https://github.com/GetBusbar/ring"
+rev = "c0471befa70cf942622f002be1529a16c7d3509a"
+repos = ["busbar-transport-webrtc"]
+reason = "H2 zeroize: ring 0.17.14 plus a zeroize-on-drop commit (the AES-GCM key's expanded AES schedule and GHASH key, which hold the SRTP session keys the webrtc framer derives); THE DESIGN §5 'keys are zeroised'. Builds from the 0.17.14 package's committed pregenerated sources. Upstream: pending owner approval to post."
+
+[git-sources.sctp-proto]
+git = "https://github.com/GetBusbar/sctp-proto"
+rev = "b3f0bc87b84821b7768745ffeead1d0b55ef6657"
+repos = ["busbar-transport-webrtc"]
+reason = "sctp-proto 0.10.5 plus one commit: association ids, initiate tags, TSNs and cookies drawn from the OS (OsRng), never from rand's per-thread generator; THE DESIGN §2 'a plugin holds no process-global state'. Upstream: pending owner approval to post."
 
 # ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
 # Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's
