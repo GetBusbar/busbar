@@ -42,9 +42,9 @@ impl AdminService {
 
     /// The same service, resolving usage against `history` instead of the process's.
     ///
-    /// The process's history is the kernel's rate dater's, installed once — so a test that needs to
-    /// drive the read against a history of its own naming pins it here rather than racing that
-    /// install. Every other caller reads the process's by construction.
+    /// The history is the rate dater's of the governance book the app carries — so a test that
+    /// needs to drive the read against a history of its own naming pins it here rather than lending
+    /// a book a dater of its own. Every other caller reads the app's book's by construction.
     #[cfg(test)]
     pub(crate) fn with_rate_history(mut self, history: Arc<busbar_kernel::cost::History>) -> Self {
         self.rate_history = Some(history);
@@ -1439,7 +1439,10 @@ impl AdminService {
         // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
         // one response is answered at one snapshot. A card appended while this read is in flight
         // must not price half its rows against one history and half against another.
-        let history = self.rate_history.clone().or_else(dated_rate_history);
+        let history = self
+            .rate_history
+            .clone()
+            .or_else(|| dated_rate_history(&self.app));
         // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
         // state that does not exist is refused rather than quietly answered at some other state —
         // including when governance is off and the read would otherwise return early.

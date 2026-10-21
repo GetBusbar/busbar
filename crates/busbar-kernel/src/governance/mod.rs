@@ -277,15 +277,16 @@ impl BudgetCell {
 
     /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
     /// segment and — with `include_fee` — the fee base per era, each at the card its era resolves to
-    /// in the installed dated history (none: the live card), through the one function. A present
-    /// card silent about a held class, or an overflow, REFUSES — never a silent 0.
+    /// in the dated history of `gov`'s dater (none: the live card), through the one function. A
+    /// present card silent about a held class, or an overflow, REFUSES — never a silent 0.
     fn spend(
         &self,
+        gov: &GovState,
         cost: &crate::cost::CostModel,
         include_fee: bool,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
         use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
-        let history = crate::rate_apply::dated_history();
+        let history = crate::rate_apply::dated_history(gov);
         let now_ms = crate::store::now_ms();
         let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
         let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
@@ -804,6 +805,16 @@ pub struct GovState {
     /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
     /// Zeroised on drop and never logged (`GovState` has no `Debug`).
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+    /// THE RATE HOLDER the composition root lent on its install record
+    /// ([`crate::preflight::RootInstall::rate_apply`]), set once where the build makes this book
+    /// ([`GovState::with_rates`]): what every rate resolution of a build carrying this book is
+    /// staged with, raised to and withdrawn from ([`crate::rate_apply::holder`]). `None`: no holder
+    /// hears an apply.
+    rate_apply: Option<&'static dyn crate::rate_apply::RateApply>,
+    /// THE RATE DATER beside it ([`crate::preflight::RootInstall::rate_epoch`]): what this book's
+    /// accruals are dated by and its reads priced through ([`crate::rate_apply::dater`]). `None`:
+    /// every instant dates to the opening entry (`0`) and no era has a history.
+    rate_epoch: Option<&'static dyn crate::rate_apply::RateEpoch>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

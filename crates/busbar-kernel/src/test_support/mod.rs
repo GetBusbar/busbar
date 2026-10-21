@@ -1750,12 +1750,10 @@ impl TestApp {
         // control-plane surface, and the per-container gate resolution below.
         let hook_env = self.hook_env.clone().unwrap_or_else(|| {
             crate::hooks::HookEnv::new(
-                &self.root.unwrap_or(crate::preflight::RootInstall::STAND_IN),
+                &self.root.unwrap_or_else(lent_stand_in),
                 std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
                 std::sync::Arc::new(crate::config::secret::SecretResolver::linked_only(
-                    self.root
-                        .unwrap_or(crate::preflight::RootInstall::STAND_IN)
-                        .secret_axis,
+                    self.root.unwrap_or_else(lent_stand_in).secret_axis,
                 )),
             )
             .expect("an empty registry's hook axis")
@@ -1927,11 +1925,8 @@ impl TestApp {
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
                 let legacy = crate::config::Legacy::stand_in();
                 let reg = std::sync::Arc::new(
-                    crate::preflight::linked(
-                        &self.root.unwrap_or(crate::preflight::RootInstall::STAND_IN),
-                        legacy,
-                    )
-                    .expect("the linked registry"),
+                    crate::preflight::linked(&self.root.unwrap_or_else(lent_stand_in), legacy)
+                        .expect("the linked registry"),
                 );
                 chain.operator =
                     crate::auth::open_operator(&reg, digest, &self.identity_providers, legacy)
@@ -1981,9 +1976,7 @@ impl TestApp {
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
                 crate::config::secret::SecretResolver::linked_only(
-                    self.root
-                        .unwrap_or(crate::preflight::RootInstall::STAND_IN)
-                        .secret_axis,
+                    self.root.unwrap_or_else(lent_stand_in).secret_axis,
                 ),
             ),
             cost: self
@@ -1994,7 +1987,7 @@ impl TestApp {
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
             plugin_trust: Some(self.plugin_trust.unwrap_or(trust_policy_stand_in)),
-            root: self.root.unwrap_or(crate::preflight::RootInstall::STAND_IN),
+            root: self.root.unwrap_or_else(lent_stand_in),
             self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
@@ -2243,8 +2236,6 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
-/// The rate holder and dater a test binary hands in, in place of the root's install record's.
-pub mod rate_holders;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
@@ -2357,6 +2348,35 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
+
+// FINAL-REPIN: delete with `preflight::install_auth_axis` when the pinned door root cells lend
+// their TestApp a record of their own (`TestApp::root`).
+/// The auth-axis opener the pinned door root cells hand in (`preflight::install_auth_axis`): a
+/// [`TestApp`] lent no record of its own lends the stand-in with it in place of the stand-in's
+/// opener ([`lent_stand_in`]). Read by nothing else; a test that lends a record
+/// ([`TestApp::root`]) reads the opener that record lends. The first hand-in stands.
+static ROOT_AUTH_AXIS_HANDED_IN: std::sync::OnceLock<crate::preflight::AuthAxisOpener> =
+    std::sync::OnceLock::new();
+
+/// Hand the pinned door root cells' auth-axis opener in ([`ROOT_AUTH_AXIS_HANDED_IN`]).
+#[cfg(feature = "test-support")]
+pub(crate) fn hand_in_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = ROOT_AUTH_AXIS_HANDED_IN.set(open);
+}
+
+/// The record a [`TestApp`] lent none of its own lends: the stand-in
+/// ([`crate::preflight::RootInstall::STAND_IN`]), with the pinned door root cells' auth-axis opener
+/// in place of the stand-in's when they handed one in ([`ROOT_AUTH_AXIS_HANDED_IN`]).
+pub(crate) fn lent_stand_in() -> crate::preflight::RootInstall {
+    let stand_in = crate::preflight::RootInstall::STAND_IN;
+    crate::preflight::RootInstall {
+        auth_axis: ROOT_AUTH_AXIS_HANDED_IN
+            .get()
+            .copied()
+            .or(stand_in.auth_axis),
+        ..stand_in
+    }
+}
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
 /// by the names its pinned table spells them with — one read and two mutations — so a kernel test of

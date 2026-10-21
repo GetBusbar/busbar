@@ -144,6 +144,8 @@ impl GovState {
             })))),
             deployment_caller_ref: RwLock::new(None),
             boot_caller_ref,
+            rate_apply: None,
+            rate_epoch: None,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
@@ -153,6 +155,36 @@ impl GovState {
             ),
             store_calls: std::sync::OnceLock::new(),
         })
+    }
+
+    /// This book, answering to the rate holder and dater the composition root lent on its install
+    /// record ([`crate::preflight::RootInstall::rate_apply`],
+    /// [`crate::preflight::RootInstall::rate_epoch`]): set once, where the build makes the book
+    /// from that record, before anything accrues on it. A book carries its own, so two books in one
+    /// process answer to their own holders.
+    #[must_use]
+    pub fn with_rates(
+        mut self,
+        rate_apply: Option<&'static dyn crate::rate_apply::RateApply>,
+        rate_epoch: Option<&'static dyn crate::rate_apply::RateEpoch>,
+    ) -> Self {
+        self.rate_apply = rate_apply;
+        self.rate_epoch = rate_epoch;
+        self
+    }
+
+    /// The rate holder this book answers to ([`Self::with_rates`]); `None`: no holder hears an
+    /// apply.
+    #[must_use]
+    pub fn rate_apply(&self) -> Option<&'static dyn crate::rate_apply::RateApply> {
+        self.rate_apply
+    }
+
+    /// The rate dater this book answers to ([`Self::with_rates`]); `None`: every instant dates to
+    /// the opening entry.
+    #[must_use]
+    pub fn rate_epoch(&self) -> Option<&'static dyn crate::rate_apply::RateEpoch> {
+        self.rate_epoch
     }
 
     /// Keep the configured store's store v3 slots beside its 1.5.5 op set, once (boot opens the
@@ -588,7 +620,7 @@ impl GovState {
         }
         // THE CARD ERA (Q14, #79), read as the metering row beside this accrual reads it: the
         // tokens are dated when they land, on the history's own millisecond clock.
-        let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        let era = crate::rate_apply::effective_from_at(self, crate::store::now_ms());
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
         // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
         // lands — so the admin usage read prices exactly the counts this book prices.
@@ -771,14 +803,14 @@ impl GovState {
             add,
             now,
             &crate::store::now_ms,
-            &crate::rate_apply::effective_from_at,
+            &|at_ms: u64| crate::rate_apply::effective_from_at(self, at_ms),
         );
     }
 
     /// [`Self::record_metered_request`] with the price-instant clock and the rate dater passed in,
-    /// so a test drives the dating behaviourally against a dater double rather than the
-    /// process-wide `OnceLock` holder. The production path passes the wall clock in milliseconds
-    /// and the installed holder.
+    /// so a test drives the dating behaviourally against a dater double rather than the book's own
+    /// dater. The production path passes the wall clock in milliseconds and the dater this book
+    /// carries ([`Self::rate_epoch`]).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_metered_request_dated(
         &self,
@@ -1564,7 +1596,7 @@ impl GovState {
     ) -> RecordStoreResult<DerivedUsage> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell(bucket_id, window)?;
-        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
+        let inputs = money_view::Inputs::of(self, cost, budget_period, include_request_fee, &cell);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
@@ -1622,7 +1654,7 @@ impl GovState {
         // from the BILLABLE (2xx-only) count; `requests` reports the admission count (the
         // requests-limit truth).
         let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
-        let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
+        let spend = fixed.and_then(|()| cell.spend(self, cost, include_request_fee));
         Ok(spend
             .and_then(Money::minor_i64)
             .map(|spend_cents| DerivedUsage {
@@ -1673,7 +1705,7 @@ impl GovState {
             let i = seg.unwrap_or_else(|| {
                 segments.push(ModelCell {
                     model: std::sync::Arc::from(adj.lane.as_str()),
-                    era: crate::rate_apply::effective_from_at(at),
+                    era: crate::rate_apply::effective_from_at(self, at),
                     cur: BTreeMap::new(),
                     flushed: BTreeMap::new(),
                 });
@@ -1745,7 +1777,7 @@ impl GovState {
                 let map = self.budget.read(bucket.bucket_id);
                 match map.get(bucket.bucket_id) {
                     Some(cell) if cell.window_start == window => {
-                        cell.spend(cost, true).and_then(Money::micros_i64)
+                        cell.spend(self, cost, true).and_then(Money::micros_i64)
                     }
                     _ => Ok(0),
                 }
@@ -2061,7 +2093,7 @@ impl GovState {
                     bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
                     Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
-                        (cell.spend(cost, true)).and_then(Money::minor_i64)
+                        (cell.spend(self, cost, true)).and_then(Money::minor_i64)
                     }),
                 ),
                 // stale or absent cell = fresh window = nothing used
@@ -2126,7 +2158,7 @@ impl GovState {
 
         // The arrival's card era: each bucket's fee base records the request under the card in
         // force at admission, so a card edit reprices only what follows it.
-        let era = crate::rate_apply::effective_from_at(wall_ms());
+        let era = crate::rate_apply::effective_from_at(self, wall_ms());
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));

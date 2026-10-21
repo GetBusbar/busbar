@@ -950,9 +950,13 @@ impl AuthMiddleware {
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
+        // The empty registry a test build's record would build, its auth rows opened through the
+        // opener that record lends.
+        let registry = busbar_plugin_loader::PluginRegistry::empty()
+            .with_auth_axis(crate::test_support::lent_stand_in().auth_axis);
         let mut mw = Self::new(
             cfg,
-            &std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+            &std::sync::Arc::new(registry),
             &crate::config::secret::SecretResolver::builtins_only(),
         )
         .expect("builtin-only auth chain never fails to construct");

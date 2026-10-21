@@ -15,9 +15,18 @@ use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 use busbar_kernel::auth::{AdminAuthChain, Operator};
 use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg, SecretRef};
 use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::preflight::RootInstall;
 
 /// The operator's token in every fixture here.
 const TOKEN: &str = "admintok";
+
+/// THE RECORD EVERY FIXTURE HERE LENDS: the kernel's test stand-in, its auth rows opened through
+/// the root's own auth axis (`crate::root::dispatch::auth_axis`), the opener the shipped root's
+/// install record lends (`root::linked::register_stores`).
+const ROOT: RootInstall = RootInstall {
+    auth_axis: Some(crate::root::dispatch::auth_axis),
+    ..RootInstall::STAND_IN
+};
 
 /// Link this build's auth rows onto the kernel's auth axis, as `register_planes` does at boot (the
 /// first install stands, and every install in this binary is this one table). The linked protocol declarations go in too: a config fixture's provider names the registry's
@@ -27,7 +36,6 @@ fn link() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
@@ -51,6 +59,7 @@ fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_ke
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some(TOKEN.to_string())).expect("governance"));
     let mut app = busbar_kernel::test_support::TestApp::new()
+        .root(ROOT)
         .governance(gov)
         .admin_chain(chain.iter().map(|s| s.to_string()).collect());
     for (name, module) in extra {
@@ -160,11 +169,8 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
     let linked = Arc::new(
-        busbar_kernel::preflight::linked(
-            &busbar_kernel::preflight::RootInstall::STAND_IN,
-            crate::root::legacy::table(),
-        )
-        .expect("the linked registry"),
+        busbar_kernel::preflight::linked(&ROOT, crate::root::legacy::table())
+            .expect("the linked registry"),
     );
     let axis = crate::root::dispatch::auth_axis(linked);
     assert_eq!(
@@ -331,7 +337,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
         serde_yaml::from_str("module: oidc").expect("a provider definition");
     providers.insert("oracle-oidc".to_string(), def);
     let err = busbar_kernel::preflight::plugins_preflight(
-        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        &ROOT,
         None,
         None,
         &providers,
@@ -350,6 +356,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
 fn a_role_shadowing_the_operator_principal_is_refused() {
     link();
     let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(SecretRef::none());
+    cfg.root = ROOT;
     let mut auth = AuthCfg::default_none();
     auth.chain = vec![AuthChainEntry::bare(config::KEYS_MODULE)];
     let mut roles = HashMap::new();
@@ -377,6 +384,7 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
     link();
     let build = |token: SecretRef| -> Result<(), Vec<String>> {
         let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(SecretRef::none());
+        cfg.root = ROOT;
         let mut auth = AuthCfg::default_none();
         let mut entry = AuthChainEntry::bare(config::operator_provider());
         entry.token = Some(token);
@@ -419,6 +427,7 @@ fn cfg_with_credentials(
     let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
         busbar_kernel::config::SecretRef::none(),
     );
+    cfg.root = ROOT;
     let mut admin_entry =
         busbar_kernel::config::AuthChainEntry::bare(busbar_kernel::config::operator_provider());
     admin_entry.token = Some(busbar_kernel::config::SecretRef::file(
@@ -966,7 +975,7 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     let op = op();
     let registry = Arc::new(
         busbar_kernel::preflight::plugins_preflight(
-            &busbar_kernel::preflight::RootInstall::STAND_IN,
+            &ROOT,
             None,
             None,
             &config::IdentityProviders::new(),
@@ -1070,6 +1079,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         AuthChainEntry::bare(module),
     ])));
     let app = busbar_kernel::test_support::TestApp::new()
+        .root(ROOT)
         .auth(Arc::clone(&auth))
         .role_bindings(role_bindings)
         .build();
@@ -1182,6 +1192,7 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
         .expect("mint");
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
     let app = busbar_kernel::test_support::TestApp::new()
+        .root(ROOT)
         .keys_chain()
         .governance(gov)
         .build();

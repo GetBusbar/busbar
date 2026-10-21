@@ -43,8 +43,10 @@ fn the_usage_read_signatures_name_the_kernel_cost_facade() {
         &UsageBreakdown,
     ) -> Spend = derive_spend_micros_row_at_card;
     let _: DatedClasses = derive_spend_micros_row_classes_at_card;
-    // The process's dated history, which the usage read prices through, is the facade's `History`.
-    let _: fn() -> Option<Arc<cost::History>> = busbar_kernel::rate_apply::dated_history;
+    // The governance book's dated history, which the usage read prices through, is the facade's
+    // `History`.
+    let _: fn(&busbar_kernel::governance::GovState) -> Option<Arc<cost::History>> =
+        busbar_kernel::rate_apply::dated_history;
     // `CostModel::card` hands back the facade's `RateCard`: the kernel's card IS the ledger's.
     let _: fn(&CostModel) -> &cost::RateCard = CostModel::card;
 }

@@ -4957,10 +4957,15 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        // The record the admin chain is opened under: the stand-in, its auth rows opened through
+        // the root's own auth axis, as the shipped root's install record lends it.
+        let lent = busbar_kernel::preflight::RootInstall {
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            ..busbar_kernel::preflight::RootInstall::STAND_IN
+        };
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = rig_tools(instance, port, tools, &|app| {
-            dispatched(app.admin_chain(chain.clone()), row, &slot)
+            dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
         });
 
         // ── CONNECT ───────────────────────────────────────────────────────────────────────────────
@@ -5087,7 +5092,12 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        // The record the admin chain is opened under: the stand-in, its auth rows opened through
+        // the root's own auth axis, as the shipped root's install record lends it.
+        let lent = busbar_kernel::preflight::RootInstall {
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            ..busbar_kernel::preflight::RootInstall::STAND_IN
+        };
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
         registry(row);
@@ -5108,7 +5118,7 @@ pub(crate) mod door_boundary {
         .expect("a section");
             let slot = slot_over(row, tools.clone());
             let rig = rig_tools(instance, port, tools, &|app| {
-                dispatched(app.admin_chain(chain.clone()), row, &slot)
+                dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
             });
             let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
             assert_eq!(status, 200, "{body}");
@@ -5142,7 +5152,7 @@ pub(crate) mod door_boundary {
         .expect("a section");
         let slot = slot_over(row, tools.clone());
         let rig = rig_tools(instance, port, tools, &|app| {
-            dispatched(app.admin_chain(chain.clone()), row, &slot)
+            dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
         });
         let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
         assert_eq!(status, 400, "{body}");

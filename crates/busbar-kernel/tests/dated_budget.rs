@@ -17,8 +17,9 @@
 //! each row's own instant; this test asks that function for the same consumption at the same
 //! instants and holds every read above to its answer.
 //!
-//! A test BINARY of its own, because the dated history is reached through the process-wide
-//! rate-epoch holder, which this file installs once and every test here re-opens under one lock.
+//! Each test lends its own rate dater to the governance book it builds (`GovState::with_rates`), as
+//! a build lends the book the dater on the root's install record; the tests still run one at a
+//! time.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -27,7 +28,6 @@ use busbar_contract::records::{ModelTokens, RecordStore, VirtualKey};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{budget_window, GovState, LimitBlocked, MemoryStore, WINDOW_TOTAL};
 use busbar_kernel::rate_apply::RateEpoch;
-use busbar_kernel::test_support::rate_holders::install_rate_epoch;
 use busbar_kernel_ledger::cost::{
     price_in_view, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
 };
@@ -47,22 +47,24 @@ impl RateEpoch for Holder {
     }
 }
 
-/// Runs this binary's tests one at a time: the holder is process-wide, and each test opens its own
-/// history in it.
+/// Runs this binary's tests one at a time: each reads and corrects the one node's books.
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// The installed holder, re-opened at `card`, and the lock the calling test holds while it runs.
+/// A holder of its own, opened at `card`, and the lock the calling test holds while it runs. The
+/// test lends it to the governance book it builds ([`book`]).
 fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'static, ()>) {
-    static HOLDER: std::sync::OnceLock<&'static Holder> = std::sync::OnceLock::new();
     let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-    let holder = *HOLDER.get_or_init(|| {
-        let opening = Arc::new(History::opening(history_card(0.0), 0));
-        let holder: &'static Holder = Box::leak(Box::new(Holder(Mutex::new(opening))));
-        install_rate_epoch(holder);
-        holder
-    });
-    *holder.0.lock().unwrap() = Arc::new(History::opening(card, 0));
+    let opening = Arc::new(History::opening(card, 0));
+    let holder: &'static Holder = Box::leak(Box::new(Holder(Mutex::new(opening))));
     (holder, serial)
+}
+
+/// The governance book over `store`, dated by `holder` — the dater the build lends a book from the
+/// root's install record.
+fn book(store: Arc<dyn RecordStore>, holder: &'static Holder) -> GovState {
+    GovState::new(store, None)
+        .unwrap()
+        .with_rates(None, Some(holder))
 }
 
 /// The card the history holds for `input_utok` micro-units a token on lane `m`, built the way the
@@ -122,7 +124,7 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         ..Default::default()
     };
     store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = book(store.clone(), holder);
     let now = busbar_kernel::store::now();
 
     // Before the edit: admitted and served at 20.
@@ -268,7 +270,7 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
         *history = Arc::new(next);
     }
 
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = book(store.clone(), holder);
     let reads = |gov: &GovState| {
         let key_read = gov
             .usage_for(&current, &key.id, now)
@@ -342,7 +344,7 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
         ..Default::default()
     };
     store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = book(store.clone(), holder);
     let now = busbar_kernel::store::now();
 
     let before = fee_cost(5);
@@ -411,7 +413,7 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
         ..Default::default()
     };
     store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = book(store.clone(), holder);
     let now = busbar_kernel::store::now();
     let pool = format!("tp{PLANE_LANE_SEP}probe");
 

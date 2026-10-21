@@ -4,21 +4,20 @@
 //! THE RATE HOLDER AND DATER RIDE THE ROOT'S INSTALL RECORD (THE DESIGN Part 0: no process-global
 //! fn-pointer or trait-object static seam beyond the two R6 exempts).
 //!
-//! The composition root hands the kernel its rate holder ([`RateApply`]) and its rate dater
+//! The composition root lends the kernel its rate holder ([`RateApply`]) and its rate dater
 //! ([`RateEpoch`]) on its one install record (`RootInstall::rate_apply`, `RootInstall::rate_epoch`),
-//! never through a process-wide static of `rate_apply`. What the seam carries is unchanged: every
-//! staged, applied and withdrawn rate reaches the record's holder with its figures verbatim, and
-//! an accrual is dated, and a ledger read priced, by the record's dater.
-//!
-//! A test BINARY of its own: the root's install record is process-wide and the first install
-//! stands, so this file installs it before anything reads it.
+//! and the governance book a build makes from that record carries them (`GovState::with_rates`) —
+//! never a process-wide static of `rate_apply`. What the seam carries is unchanged: every staged,
+//! applied and withdrawn rate reaches the record's holder with its figures verbatim, and an accrual
+//! is dated, and a ledger read priced, by the record's dater.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use busbar_kernel::billing::RawTierRates;
 use busbar_kernel::cost::{History, RateCard};
-use busbar_kernel::preflight::{install_linked_rows, root_rows, RootInstall};
+use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::preflight::RootInstall;
 use busbar_kernel::rate_apply::{
     dated_history, effective_from_at, rates_applied, rates_staged, rates_withdrawn, RateApply,
     RateEpoch, RawRates,
@@ -88,23 +87,28 @@ impl RateEpoch for Root {
     }
 }
 
-/// The record's holder hears every rate the seam raises, with its figures verbatim, and the
-/// record's dater dates every accrual and hands over the history the ledger reads price through.
+/// The record's holder hears every rate the seam raises through the book lent it, with its figures
+/// verbatim, and the record's dater dates every accrual and hands over the history the ledger reads
+/// price through.
 #[test]
 fn the_install_records_holder_and_dater_answer_the_rate_seam() {
     let root: &'static Root = Box::leak(Box::new(Root {
         heard: Mutex::new(Vec::new()),
         history: Arc::new(History::opening(RateCard::absent(0), 0)),
     }));
-    install_linked_rows(RootInstall {
+    let record = RootInstall {
         rate_apply: Some(root),
         rate_epoch: Some(root),
         ..RootInstall::default()
-    });
+    };
     assert!(
-        root_rows().rate_apply.is_some() && root_rows().rate_epoch.is_some(),
+        record.rate_apply.is_some() && record.rate_epoch.is_some(),
         "the install record carries the root's holder and dater"
     );
+    // The book a build makes from the record, lent the record's holder and dater.
+    let book = GovState::new(Arc::new(MemoryStore::new()), None)
+        .expect("governance builds")
+        .with_rates(record.rate_apply, record.rate_epoch);
 
     // Four DISTINCT tier rates and an open-class rate, so a seam that carried the right lane with a
     // defaulted card is red rather than green.
@@ -126,9 +130,9 @@ fn the_install_records_holder_and_dater_answer_the_rate_seam() {
         present: true,
         plane_fees: &fees,
     };
-    rates_staged(&rates).expect("the holder makes the rates durable");
-    rates_withdrawn();
-    rates_applied(&rates);
+    rates_staged(Some(&book), &rates).expect("the holder makes the rates durable");
+    rates_withdrawn(Some(&book));
+    rates_applied(Some(&book), &rates);
     assert_eq!(
         *root.heard.lock().unwrap(),
         vec![
@@ -140,12 +144,12 @@ fn the_install_records_holder_and_dater_answer_the_rate_seam() {
     );
 
     assert_eq!(
-        effective_from_at(1_234_567),
+        effective_from_at(&book, 1_234_567),
         1_234_000,
         "an accrual is dated by the record's dater"
     );
     assert!(
-        dated_history().is_some_and(|h| Arc::ptr_eq(&h, &root.history)),
+        dated_history(&book).is_some_and(|h| Arc::ptr_eq(&h, &root.history)),
         "the ledger reads price through the record's dater's history"
     );
 }
