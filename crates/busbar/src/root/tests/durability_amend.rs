@@ -62,6 +62,7 @@ fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::st
         Some(dir),
         "the child process boots over the directory its phase names"
     );
+    busbar_kernel::test_support::register_neutral_test_plane();
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
