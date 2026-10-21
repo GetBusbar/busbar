@@ -1176,7 +1176,11 @@ impl HookStage {
         host: busbar_kernel::plane_driver::GenerationHost,
         gov: Arc<busbar_kernel::governance::GovState>,
     ) -> Self {
-        Self { host, gov }
+        Self {
+            host,
+            gov,
+            journal: None,
+        }
     }
 
     /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
