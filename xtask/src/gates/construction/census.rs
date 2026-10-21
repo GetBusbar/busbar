@@ -191,12 +191,15 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 now_deleted.contains(dir) && !cx.abs(dir).exists()
             });
             bad.extend(problems);
+            let (measured, problems) = measured_ceilings(&cfg.doc, &doc);
+            bad.extend(problems);
             bad.extend(raised_ceilings(
                 &cfg.doc,
                 &doc,
                 base.short(),
                 &now_planes,
                 &struck,
+                &measured,
             ));
         }
         Err(e) => bad.push(e),
@@ -569,19 +572,23 @@ fn rule_ceilings(doc: &Document) -> BTreeMap<(String, String), i64> {
 /// census floors, in the other direction. Deleting the key is the cheapest rise and is scored as
 /// one. Two deletions are not rises: a `max_per_crate` figure for a crate that left
 /// `gate.plane_crates`, whose floor the census already holds against the base, and a rule table
-/// whose whole subject was deleted with a ledgered crate ([`struck_rule_tables`]).
+/// whose whole subject was deleted with a ledgered crate ([`struck_rule_tables`]). One rise is not
+/// a rise: a ceiling SET from 0 in the change whose detector first makes that debt visible
+/// ([`measured_ceilings`]); from any other figure, or in any later change, it is refused.
 fn raised_ceilings(
     now_doc: &Document,
     base_doc: &Document,
     short: &str,
     plane_crates_now: &[String],
     struck: &BTreeSet<String>,
+    measured: &BTreeSet<(String, String)>,
 ) -> Vec<String> {
     let now = rule_ceilings(now_doc);
     rule_ceilings(base_doc)
         .into_iter()
         .filter_map(
             |((table, key), before)| match now.get(&(table.clone(), key.clone())) {
+                Some(_) if before == 0 && measured.contains(&(table.clone(), key.clone())) => None,
                 Some(after) if *after > before => Some(format!(
                 "[{table}] {key}: the ceiling rose {before} -> {after} since the base {short}. A \
                  ceiling refuses every rise (Law 9): drain the sites instead"
@@ -598,6 +605,121 @@ fn raised_ceilings(
             },
         )
         .collect()
+}
+
+/// THE LEDGER OF CEILINGS SET BY THE CHANGE THAT FIRST MEASURES THEIR DEBT:
+/// `[gate.census.measured]`.
+pub const MEASURED: &str = "gate.census.measured";
+
+/// THE CEILINGS A DETECTOR CHANGE MEASURED INTO BEING (ARCHITECT ruling on #1454, the #1418 MINTED
+/// precedent): debt that was in the tree, unseen, until this change's detector could see it may be
+/// SET at its measured count in that same change, and only then. Each entry of
+/// `[gate.census.measured]` is `"rules.<table>.<key>" = "<detector key>[, <detector key>…] -- <why,
+/// with each debt site's drain>"`, and it excuses the rise of that one ceiling only when ALL hold:
+///   * the base does not carry the entry (it is this change's own; at a later base it excuses
+///     nothing, and the figure it set is then held like every other);
+///   * the ceiling was 0 at the base (a ceiling is SET from nothing; a rise from N stays refused);
+///   * every named detector key is a matcher of that rule table (not an integer, not a ledger of
+///     debt or exemptions) whose value differs from the base's: the detector changed in this diff;
+///   * the reason is given and names the drain (`drain`).
+/// That the figure is exactly the measured count is the rule's own check (its ceiling may not sit
+/// above the count, and the count may not exceed it). An entry that fails any condition is RED and
+/// excuses nothing; the ledger is add-only against the base.
+fn measured_ceilings(
+    now_doc: &Document,
+    base_doc: &Document,
+) -> (BTreeSet<(String, String)>, Vec<String>) {
+    let ledger = |doc: &Document| -> Vec<(String, String)> {
+        let t = doc.table_or_empty(MEASURED);
+        t.keys()
+            .iter()
+            .map(|k| {
+                (
+                    k.trim().trim_matches('"').to_string(),
+                    t.str_of(k).unwrap_or_default().trim().to_string(),
+                )
+            })
+            .collect()
+    };
+    let now = ledger(now_doc);
+    let base = ledger(base_doc);
+    let mut problems: Vec<String> = base
+        .iter()
+        .filter(|(b, _)| !now.iter().any(|(n, _)| n == b))
+        .map(|(b, _)| {
+            format!("[{MEASURED}] `{b}` was removed since the base; the ledger is add-only")
+        })
+        .collect();
+    let mut out = BTreeSet::new();
+    for (entry, value) in &now {
+        if base.iter().any(|(b, _)| b == entry) {
+            // Measured at an earlier base: the figure it set is that base's, held like any other.
+            continue;
+        }
+        let (table, key) = entry.rsplit_once('.').unwrap_or_default();
+        if !table.starts_with("rules.") || key.is_empty() {
+            problems.push(format!("[{MEASURED}] `{entry}` names no `rules.<table>.<key>` ceiling"));
+            continue;
+        }
+        let (detectors, why) = value.split_once(" -- ").unwrap_or(("", value.as_str()));
+        let detectors: Vec<&str> = detectors
+            .split(',')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .collect();
+        if why.trim().is_empty() || !why.contains("drain") {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}` gives no reason naming the drain: ledger every debt site \
+                 by name with its drain lane"
+            ));
+            continue;
+        }
+        let (Some(now_t), Some(base_t)) = (now_doc.table(table), base_doc.table(table)) else {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}`: the rule table [{table}] is not in both this tree and the \
+                 base, so no detector change can be shown"
+            ));
+            continue;
+        };
+        if base_t.int_of(key).is_some_and(|b| b != 0) {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}`: the ceiling was {} at the base; a measured ceiling is SET \
+                 from 0, and a rise from any figure is refused (Law 9)",
+                base_t.int_of(key).unwrap_or_default()
+            ));
+            continue;
+        }
+        if detectors.is_empty() {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}` names no detector key: name the matcher this change \
+                 widened (`<key>, <key> -- why`)"
+            ));
+            continue;
+        }
+        let unchanged: Vec<String> = detectors
+            .iter()
+            .filter(|d| {
+                let ledgerish = d.contains("debt") || d.contains("exempt") || *d == key;
+                let v = now_t.get(d);
+                ledgerish
+                    || v.is_none()
+                    || v.is_some_and(|v| v.as_int().is_some())
+                    || v == base_t.get(d)
+            })
+            .map(|d| d.to_string())
+            .collect();
+        if !unchanged.is_empty() {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}`: detector key(s) {} of [{table}] did not change since the \
+                 base (or are not matchers): a ceiling is set only in the change whose detector \
+                 first makes the debt visible",
+                unchanged.join(", ")
+            ));
+            continue;
+        }
+        out.insert((table.to_string(), key.to_string()));
+    }
+    (out, problems)
 }
 
 /// THE LEDGER OF RULE TABLES STRUCK WITH THEIR SUBJECT: `[gate.census.deleted_rules]`.
@@ -976,7 +1098,8 @@ mod tests {
             struck.is_empty() && problems.is_empty(),
             "{struck:?} {problems:?}"
         );
-        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck);
+        let none = BTreeSet::new();
+        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck, &none);
         assert_eq!(out.len(), 2, "{out:?}");
         let blank = doc("[gate.census.deleted_rules]\n\"rules.a\" = \"\"\n");
         let (struck, problems) = struck_rule_tables(&blank, &doc(RULE_BASE), gone_dir);
@@ -995,7 +1118,9 @@ mod tests {
         let (struck, problems) = struck_rule_tables(&now, &doc(RULE_BASE), gone_dir);
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(struck, set(&["rules.a", "rules.b"]));
-        assert!(raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck).is_empty());
+        let none = BTreeSet::new();
+        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck, &none);
+        assert!(out.is_empty(), "{out:?}");
     }
 
     /// A ledger entry for a table whose subject is still in the tree excuses nothing, and neither
@@ -1024,5 +1149,73 @@ mod tests {
         let (_, problems) = struck_rule_tables(&doc(RULE_BASE), &doc(&base), gone_dir);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("add-only"), "{problems:?}");
+    }
+
+    const DEBT_BASE: &str = "[rules.d]\ncells = [\"OnceLock\"]\nmax_debt = 0\n";
+    const DEBT_WIDER: &str =
+        "[rules.d]\ncells = [\"OnceLock\", \"RefCell\"]\nmax_debt = 4\n";
+    const MEASURED_ROW: &str = "[gate.census.measured]\n\"rules.d.max_debt\" = \"cells -- four \
+                                sites the wider cells first see; drain: lane-x\"\n";
+
+    fn rises(now: &str, base: &str) -> (Vec<String>, Vec<String>) {
+        let (measured, problems) = measured_ceilings(&doc(now), &doc(base));
+        let out = raised_ceilings(
+            &doc(now),
+            &doc(base),
+            "abc1234",
+            &[],
+            &BTreeSet::new(),
+            &measured,
+        );
+        (out, problems)
+    }
+
+    /// RED: a plain rise of a debt ceiling from 0 is refused (Law 9), detector widened or not.
+    #[test]
+    fn a_plain_rise_from_zero_is_still_refused() {
+        let (out, problems) = rises(DEBT_WIDER, DEBT_BASE);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("0 -> 4"), "{out:?}");
+    }
+
+    /// THE RULED WAY IN (#1454, the #1418 MINTED precedent): SET from 0, in the change whose
+    /// detector first sees the debt, with its entry naming the widened matcher and the drain.
+    #[test]
+    fn a_ceiling_set_from_zero_with_its_detector_change_is_green() {
+        let (out, problems) = rises(&format!("{DEBT_WIDER}\n{MEASURED_ROW}"), DEBT_BASE);
+        assert!(problems.is_empty() && out.is_empty(), "{problems:?} {out:?}");
+    }
+
+    /// RED: the entry with no detector change, from a figure other than 0, or carried by the base
+    /// excuses nothing.
+    #[test]
+    fn a_measured_entry_without_its_detector_change_or_from_n_or_at_the_base_is_red() {
+        let same = DEBT_WIDER.replace(", \"RefCell\"", "");
+        let (out, problems) = rises(&format!("{same}\n{MEASURED_ROW}"), DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("did not change"), "{problems:?}");
+
+        let from_two = DEBT_BASE.replace("max_debt = 0", "max_debt = 2");
+        let (out, problems) = rises(&format!("{DEBT_WIDER}\n{MEASURED_ROW}"), &from_two);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("SET from 0"), "{problems:?}");
+
+        let later = format!(
+            "{}\n{MEASURED_ROW}",
+            DEBT_BASE.replace("max_debt = 0", "max_debt = 4")
+        );
+        let more = DEBT_WIDER.replace("max_debt = 4", "max_debt = 5");
+        let (out, problems) = rises(&format!("{more}\n{MEASURED_ROW}"), &later);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(out.len() == 1 && out[0].contains("4 -> 5"), "{out:?}");
+
+        let ledger_only = format!(
+            "{DEBT_WIDER}\n{}",
+            MEASURED_ROW.replacen("cells --", "debt_stores --", 1)
+        );
+        let (out, problems) = rises(&ledger_only, DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("did not change"), "{problems:?}");
     }
 }
