@@ -190,6 +190,7 @@ impl ConstructionGate {
             "no-escaped-newline-doc-comment",
             "unit-no-wall-clock",
             "unit-no-finding-ids",
+            "kernel-no-protocol-registry",
             "plane-no-money",
             "one-pricing-site",
             "one-pricing-site:fee-fields",
@@ -398,6 +399,9 @@ impl ConstructionGate {
             }),
             ("unit-no-finding-ids", &|| {
                 rules2::unit_no_finding_ids(cx, &tree, &cfg)
+            }),
+            ("kernel-no-protocol-registry", &|| {
+                rules2::kernel_no_protocol_registry(&tree, &cfg)
             }),
             ("plane-no-money", &|| {
                 rules2::plane_no_money(cx, &tree, &cfg)

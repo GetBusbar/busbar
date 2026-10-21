@@ -740,11 +740,21 @@ fn caller_of(tree: &Tree, rel: &str, f: &Fnc) -> (String, String) {
     (qualified, f.name.clone())
 }
 
-/// The receiver a call at byte `at` of line `idx` of `rel` is made on: `Some(Ok(Type))` for a
-/// path call (`Type::fn(`), `Some(Err(ident))` for the trailing identifier of a method receiver
-/// (`self`, `money` in `served.money.fn(`), read off the line above for a chain broken before its
-/// `.`; `None` when no single identifier names it.
-fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Result<String, String>> {
+/// What a call of the terminal's name is made on.
+enum Receiver {
+    /// A path call, `Type::fn(`: the type it names.
+    Path(String),
+    /// A bare binding, `money.fn(` or `self.fn(`: a local, an argument or `self`, declared in the
+    /// calling file if anywhere.
+    Binding(String),
+    /// A field, `served.money.fn(`: the trailing field name, declared on its struct, which may live
+    /// in another file.
+    Field(String),
+}
+
+/// The receiver a call at byte `at` of line `idx` of `rel` is made on, read off the line above for
+/// a chain broken before its `.`; `None` when no single identifier names it.
+fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Receiver> {
     let trailing_ident = |text: &str| -> String {
         let rev: String = text
             .chars()
@@ -757,7 +767,7 @@ fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Result<String, S
     let pre = code.get(..at).unwrap_or_default().trim_end();
     if let Some(path) = pre.strip_suffix("::") {
         let ty = trailing_ident(path);
-        return (!ty.is_empty()).then_some(Ok(ty));
+        return (!ty.is_empty()).then_some(Receiver::Path(ty));
     }
     let pre = pre.strip_suffix('.')?.trim_end();
     let pre = if pre.is_empty() {
@@ -768,12 +778,27 @@ fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Result<String, S
         pre.to_string()
     };
     let ident = trailing_ident(&pre);
-    (!ident.is_empty()).then_some(Err(ident))
+    if ident.is_empty() {
+        return None;
+    }
+    let before = pre[..pre.len() - ident.len()].trim_end();
+    Some(if before.ends_with('.') {
+        Receiver::Field(ident)
+    } else {
+        Receiver::Binding(ident)
+    })
 }
 
 /// The types among `owners` that a declaration of `ident` (`ident: …Type…`, a field, an argument
-/// or a typed binding) names, searched in `rel` first and then across the production tree.
-fn declared_types(tree: &Tree, rel: &str, ident: &str, owners: &[String]) -> Vec<String> {
+/// or a typed binding) names, searched in `rel` first and then, when `tree_wide`, across the
+/// production tree.
+fn declared_types(
+    tree: &Tree,
+    rel: &str,
+    ident: &str,
+    owners: &[String],
+    tree_wide: bool,
+) -> Vec<String> {
     let names = |l: &Line, found: &mut Vec<String>| {
         let code = &l.code;
         let mut from = 0;
@@ -808,7 +833,7 @@ fn declared_types(tree: &Tree, rel: &str, ident: &str, owners: &[String]) -> Vec
             names(l, &mut found);
         }
     }
-    if found.is_empty() {
+    if found.is_empty() && tree_wide {
         for lines in tree.files.values() {
             for l in lines.iter().filter(|l| !l.intest) {
                 names(l, &mut found);
@@ -818,10 +843,23 @@ fn declared_types(tree: &Tree, rel: &str, ident: &str, owners: &[String]) -> Vec
     found
 }
 
+/// Does a production line of the file bind `ident` with a `let` that names no type? Such a binding
+/// is a value nobody declared, so a call on it cannot be attributed. A pattern that fails to build
+/// answers yes (fail-safe: an unread call is a finding).
+fn untyped_let(lines: &[Line], ident: &str) -> bool {
+    let Ok(rx_let) = Regex::new(&format!(r"\blet\s+(mut\s+)?{}\s*=", rx::escape(ident))) else {
+        return true;
+    };
+    lines
+        .iter()
+        .any(|l| !l.intest && rx_let.is_match(l.code_bytes()))
+}
+
 /// Is the call of `t.name` at byte `at` of line `idx` of `rel` a call of the TERMINAL? A bare
 /// terminal is matched by name. A `Type::fn` terminal whose name no other type defines is too; one
 /// whose name another type also defines is attributed by its receiver: a path names its type,
-/// `self` is the enclosing impl's type, and a field or binding is the type its declaration names.
+/// `self` is the enclosing impl's type, a binding is the type its declaration in the calling file
+/// names, and a field is the type its declaration names wherever it is.
 /// A receiver that resolves to no single type is counted (fail-safe: an unread call is a finding,
 /// never a pass).
 fn calls_terminal(
@@ -842,13 +880,23 @@ fn calls_terminal(
         return true;
     };
     match receiver_of(lines, idx, at) {
-        Some(Ok(path_ty)) => &path_ty == ty,
-        Some(Err(ident)) if ident == "self" => impl_owner(tree, rel, lines[idx].no)
+        Some(Receiver::Path(path_ty)) => &path_ty == ty,
+        Some(Receiver::Binding(ident)) if ident == "self" => impl_owner(tree, rel, lines[idx].no)
             .is_none_or(|owner| &owner == ty || !owners.contains(&owner)),
-        Some(Err(ident)) => {
-            // Declared as another defining type alone: that type's call. As the terminal's type, as
-            // several, or undeclared: counted.
-            let named = declared_types(tree, rel, &ident, owners);
+        // A bare binding is declared in the calling file or nowhere the scan can read: an untyped
+        // `let` of it there (`let money = …;`) is unread, so counted, and otherwise a typed
+        // declaration there attributes it. A same-named field of another type, in this file or
+        // elsewhere in the tree, says nothing about it.
+        Some(Receiver::Binding(ident)) => {
+            untyped_let(lines, &ident) || {
+                let named = declared_types(tree, rel, &ident, owners, false);
+                named.is_empty() || named.contains(ty)
+            }
+        }
+        // A field is declared on its struct, wherever that lives. Declared as another defining
+        // type alone: that type's call. As the terminal's type, as several, or undeclared: counted.
+        Some(Receiver::Field(ident)) => {
+            let named = declared_types(tree, rel, &ident, owners, true);
             named.is_empty() || named.contains(ty)
         }
         None => true,

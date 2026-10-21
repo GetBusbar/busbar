@@ -511,6 +511,63 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
+    // AN UNTYPED BINDING IS NOT ATTRIBUTED BY A SAME-NAMED FIELD ELSEWHERE (a6's review of #1401):
+    // `let money = …;` declares no type, so the call on it is unread and counted. A field `money`
+    // of the node's type in another file says nothing about this local; reading it there would let
+    // a third door through as the node's own `settle_end`.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_field_elsewhere.rs",
+        "pub struct ZzHolder {\n    pub money: Node,\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_untyped_binding.rs",
+        "impl DataRoutes {\n    fn zz_planted_untyped_binding(&self, served: &ServedPlane) {\n        \
+         let money = &served.money;\n        money.settle_end(unit, 200);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called on an untyped binding is counted, whatever a same-named field elsewhere \
+         is declared as",
+        &["single-terminal"],
+        ov,
+        &[
+            "DataRoutes::zz_planted_untyped_binding",
+            "zz_planted_untyped_binding.rs",
+        ],
+    ));
+
+    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
+    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
+    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
+    // why this rule exists; each of the three spellings is on its own line and each is named.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/proto/mod.rs",
+        "use std::sync::OnceLock;\n\nstatic PROTOCOLS: OnceLock<ProtocolDecl> = \
+         OnceLock::new();\n\npub fn install_protocols(decls: Planted) {\n    let _ = \
+         PROTOCOLS.set(decls.into());\n}\n\npub fn decl_for(name: &str) -> Option<String> {\n    \
+         PROTOCOLS.get().map(|_| name.to_string())\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_protocols.rs",
+        "pub fn zz_planted_register_protocols() {\n    \
+         busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a protocol registry grown back in the kernel, installed by the root",
+        &["kernel-no-protocol-registry"],
+        ov,
+        &[
+            "crates/busbar-kernel/src/proto/mod.rs:3",
+            "crates/busbar-kernel/src/proto/mod.rs:5",
+            "crates/busbar-kernel/src/proto/mod.rs:9",
+        ],
+    ));
+
     // AN UNRELATED `fn settle_end` ON ANOTHER TYPE IS NEITHER COUNTED NOR ALLOWED: the terminal is
     // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
     // `self`, is that type's business.

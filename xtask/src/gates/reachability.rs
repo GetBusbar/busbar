@@ -1772,7 +1772,6 @@ fn manifest_table(manifest: &str, table: &str) -> Vec<(String, String)> {
 /// `crates/busbar/src/linked_gen.rs` generates `LINKED` from (the plane axis is its two items).
 const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("plane", &["PLANE_DECLARATION", "PLANE_HOOKS"]),
-    ("protocols", &["PROTOCOLS"]),
     ("body-ingress", &["BODY_INGRESS"]),
     ("protocol-seams", &["install_protocol_seams"]),
     ("diagnostics", &["DIAGNOSTICS"]),

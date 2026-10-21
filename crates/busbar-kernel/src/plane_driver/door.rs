@@ -925,8 +925,8 @@ fn openapi<const I: usize>() -> serde_json::Value {
 
 /// The door's stated `components.schemas`: the bodies its paths' `$ref`s name (the paths already
 /// carry those `$ref`s, as [`openapi`] keyed them). The admin document's generator inserts them
-/// ([`crate::plane_driver::row::stated_schemas_hook`]); a build that generates no document reads none.
-#[allow(dead_code)] // read only by the document generator's hook, which a non-generating build omits
+/// ([`crate::plane_driver::row::stated_schemas_hook`]); a build that generates no document never
+/// calls it.
 pub(crate) fn stated_schemas<const I: usize>() -> Option<serde_json::Map<String, serde_json::Value>>
 {
     match openapi_blob::<I>()

@@ -1459,6 +1459,21 @@ patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
 exempt_crates = ["busbar-kernel-ledger"]
 max_hits = 0
 
+# ── 26b. kernel-no-protocol-registry ─────────────────────────────────────────────────────────────
+[rules.kernel-no-protocol-registry]
+why = """The kernel holds no protocol registry (status row 82, D2; spec Part 1, Law 5: dialects are \
+internal to their plane, and core does not change when a dialect is added). The kernel's proto/ \
+registry left the tree, and the structure-lint census row that held `fn decl_for(` to one site \
+left with its subject, so nothing named the registry any more. A registry grown back in the \
+kernel (a `ProtocolDecl` table behind a static, an `install_protocols` seam the root fills, a \
+by-name `decl_for`) would pass `no-uninstalled-seam`, because the root installs it. This rule \
+refuses those spellings in the kernel's production code. Comments are not read: the kernel's docs \
+may still say what the contract's `ProtocolDecl` is."""
+scope_globs = ["crates/busbar-kernel/src/*"]
+# Regular expressions over production code lines.
+patterns = ['\bProtocolDecl\b', '\binstall_protocols\b', 'fn\s+decl_for\b']
+max_hits = 0
+
 # ── 27. seal-sites ───────────────────────────────────────────────────────────────────────────────
 [rules.seal-sites]
 why = """busbar-contract's caps module writes down two lists of rules the compiler cannot carry: the hold escapes, \

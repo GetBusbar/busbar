@@ -1315,6 +1315,53 @@ pub fn unit_no_finding_ids(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>
     )])
 }
 
+// ── 27b. kernel-no-protocol-registry ────────────────────────────────────────────────────────────
+
+/// THE KERNEL HOLDS NO PROTOCOL REGISTRY (status row 82, D2; spec Part 1, Law 5). The kernel's
+/// `proto/` registry left the tree, and with it the census row that held `fn decl_for(` to one
+/// site: a ban whose subject left reads green over nothing, and a registry grown back in the kernel
+/// (a `ProtocolDecl` table behind a static, an `install_protocols` seam the root fills, a by-name
+/// `decl_for`) would pass `no-uninstalled-seam` because the root installs it. This rule names those
+/// spellings in the kernel's production code and refuses every one. Its floor is the scope: a
+/// kernel with no production source in the tree is a vacuous scan, refused.
+pub fn kernel_no_protocol_registry(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("kernel-no-protocol-registry")?;
+    let max_hits = need_int(c, "max_hits", "kernel-no-protocol-registry")?;
+    let patterns = c.list_of("patterns");
+    if patterns.is_empty() {
+        return Err("kernel-no-protocol-registry: no `patterns`, so it bans nothing".into());
+    }
+    // The spellings are regular expressions (a word boundary, `fn` and its whitespace); escaping
+    // them here would search for the backslashes the ceilings file spells.
+    let rx_pat = Regex::new(&patterns.join("|"))?;
+    let files = scoped_files(tree, &c.list_of("scope_globs"));
+    let offenders: Vec<String> = tree
+        .grep(&rx_pat, true, Some(&files))
+        .into_iter()
+        .map(|(rel, l)| format!("{rel}:{}", l.no))
+        .collect();
+    let current = offenders.len() as i64;
+    let pass = !files.is_empty() && current <= max_hits;
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no kernel production source is present in the scanned tree")
+    } else {
+        format!(
+            "{current} protocol-registry spelling(s) in the kernel's production code (ceiling \
+             {max_hits}): {}",
+            join_or_none(&offenders)
+        )
+    };
+    Ok(vec![plain(
+        "kernel-no-protocol-registry",
+        pass,
+        "the kernel holds no protocol registry: no ProtocolDecl, no install_protocols, no decl_for",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    )])
+}
+
 // ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
 
 /// The whole identifier containing `pos`, so a match on a fragment is judged as the word a reader
