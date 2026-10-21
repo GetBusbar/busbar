@@ -528,39 +528,29 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
-    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key, read off
-    // its Statement as its row's is (`crate::root::doors::row_facts`), and its `door`, which the
-    // root's one Connector opens as a framer entry (`crate::root::connector`).
+    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door, which the root's
+    // one Connector opens as a framer entry (`crate::root::connector`), beside the manifest row that
+    // links it. The row's name is a label for a refusal only: the door's key is its Statement's
+    // (`crate::root::doors::row_facts`), read by the connector off the door it opens, never off a
+    // constant of the entry's (BUSBAR-1.6.0.md l.3560-3561).
     out.push_str(
-        "/// Every linked memory-ABI transport door, by the key its Statement states, for the root's\n\
-         /// one Connector.\n\
+        "/// Every linked memory-ABI transport door, beside the manifest row that links it, for the\n\
+         /// root's one Connector.\n\
          #[allow(dead_code)]\n\
-         pub(crate) fn linked_transport_doors() -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {\n    \
-         static DOORS: ::std::sync::OnceLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n        \
-         ::std::sync::OnceLock::new();\n    \
-         DOORS.get_or_init(|| {\n        \
-         let doors: &[busbar_contract::abi::mechanism::door::DoorFn] = &[",
+         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)] = &[",
     );
-    for (e, axes) in linked
-        .iter()
-        .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
-    {
+    for ((e, axes), (feature, _)) in linked.iter().zip(&on) {
+        if !axes.iter().any(|x| x == TRANSPORT_AXIS) {
+            continue;
+        }
         if axes
             .iter()
             .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
         {
-            out.push_str(&format!("{e}::door, "));
+            out.push_str(&format!("({feature:?}, {e}::door), "));
         }
     }
-    out.push_str(
-        "];\n        \
-         doors\n            \
-         .iter()\n            \
-         .map(|door| (crate::root::doors::row_facts(*door).key, *door))\n            \
-         .collect()\n    \
-         })\n\
-         }\n",
-    );
+    out.push_str("];\n");
     // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
     // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
     // plane looks.

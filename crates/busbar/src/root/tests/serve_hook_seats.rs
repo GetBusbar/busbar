@@ -839,7 +839,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
-                crate::linked_transport_doors(),
+                crate::LINKED_TRANSPORT_DOORS,
                 &busbar_contract::transport::TransportSettings::default(),
             )
         },

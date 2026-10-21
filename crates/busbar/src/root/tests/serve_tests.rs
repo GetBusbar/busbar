@@ -239,7 +239,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
-                crate::linked_transport_doors(),
+                crate::LINKED_TRANSPORT_DOORS,
                 &busbar_contract::transport::TransportSettings::default(),
             )
         },
@@ -911,7 +911,7 @@ pub(super) mod session_door {
         busbar_core_connector::process::build_with_secrets(
             || {
                 crate::root::connector::entries(
-                    crate::linked_transport_doors(),
+                    crate::LINKED_TRANSPORT_DOORS,
                     &busbar_contract::transport::TransportSettings::default(),
                 )
             },
@@ -4027,7 +4027,7 @@ async fn serve_configured(
     let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
-                crate::linked_transport_doors(),
+                crate::LINKED_TRANSPORT_DOORS,
                 &busbar_contract::transport::TransportSettings::default(),
             )
         },

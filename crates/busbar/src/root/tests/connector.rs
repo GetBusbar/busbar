@@ -17,7 +17,7 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_process_has_one_connector_and_every_path_takes_it() {
-    let doors = crate::linked_transport_doors();
+    let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
     let built = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
@@ -316,7 +316,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
     use busbar_contract::conn::{
         ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
     };
-    let doors = crate::linked_transport_doors();
+    let doors = crate::LINKED_TRANSPORT_DOORS;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -252,27 +252,24 @@ fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
 
 /// EVERY ROW THIS BUILD LINKS, door-root or `linked`-module alike, reads its key off its door's
 /// Statement through the one reader: each linked transport door states its own claim as its name,
-/// and the linked table's rows are keyed, in order, by what those doors state.
+/// and the linked table's rows are keyed and layered, in order, by what those doors state.
 #[test]
 fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
-    let doors = crate::linked_transport_doors();
-    let keys: Vec<&str> = crate::LINKED.transports.iter().map(|t| (t.key)()).collect();
+    let stated: Vec<RowFacts> = crate::LINKED_TRANSPORT_DOORS
+        .iter()
+        .map(|(row, door)| stated_row(*door).unwrap_or_else(|e| panic!("`{row}`: {e}")))
+        .collect();
+    let rows: Vec<(&str, Vec<&str>)> = crate::LINKED
+        .transports
+        .iter()
+        .map(|t| ((t.key)(), (t.composes_over)().to_vec()))
+        .collect();
     assert_eq!(
-        doors.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-        keys,
-        "the connector's doors and the linked rows are one list, keyed alike"
+        stated
+            .into_iter()
+            .map(|f| (f.key, f.composes_over))
+            .collect::<Vec<_>>(),
+        rows,
+        "each linked row is keyed and layered by its door's Statement"
     );
-    for (key, door) in doors {
-        let stated = stated_row(*door).unwrap_or_else(|e| panic!("`{key}`: {e}"));
-        assert_eq!(stated.key, *key, "`{key}` is keyed by its door's own claim");
-        assert_eq!(
-            crate::LINKED
-                .transports
-                .iter()
-                .find(|t| (t.key)() == *key)
-                .map(|t| (t.composes_over)().to_vec()),
-            Some(stated.composes_over),
-            "`{key}`'s layers are its door's tail's"
-        );
-    }
 }
