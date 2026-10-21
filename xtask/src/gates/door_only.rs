@@ -319,12 +319,27 @@ const TEST_ONLY_FILE_ATTRS: &[&str] = &[
     "#![cfg(any(test, feature = \"test-support\"))]",
 ];
 
-/// Is this file test code as a whole: one of [`TEST_ONLY_FILE_ATTRS`], exactly, on a line of its
-/// own?
-fn test_only_file(text: &str) -> bool {
-    text.lines()
-        .map(str::trim)
-        .any(|t| TEST_ONLY_FILE_ATTRS.contains(&t))
+/// Is this file test code as a whole: one of [`TEST_ONLY_FILE_ATTRS`], exactly, among the inner
+/// attributes that lead the file, before its first item?
+///
+/// Read off the file's production lines (`lines`), never its raw text: a line inside a block
+/// comment or a string literal is blanked in `counted`, so an attribute spelled there is no
+/// attribute; and an inner attribute after the first item (`mod t {` then `#![cfg(test)]`) gates
+/// that item alone, never the file.
+fn test_only_file(lines: &[crate::scan::ScopeLine]) -> bool {
+    for sl in lines {
+        let counted = sl.counted.trim();
+        if counted.is_empty() {
+            continue;
+        }
+        if !counted.starts_with("#![") {
+            return false;
+        }
+        if TEST_ONLY_FILE_ATTRS.contains(&sl.code.trim()) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
@@ -379,9 +394,9 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         let krate = m.name.replace('-', "_");
         for f in &files {
             let rel = f.rel_str();
-            let test_only = test_only_file(&f.text);
             // A multi-line static's type runs onto the next lines; read up to its `=` or `;`.
             let lines = one_abi::production(&f.text);
+            let test_only = test_only_file(&lines);
             for (idx, sl) in lines.iter().enumerate() {
                 for p in &plugin_idents {
                     let needle = format!("{p}::");
@@ -553,6 +568,23 @@ impl Gate for DoorOnlyGate {
             file,
             format!("#![cfg(any(test, fuzzing))]\n{fuzzing_static}"),
         );
+        // DECOYS: the exact attribute where it is no file attribute — gating an inline module, in a
+        // block comment, in a raw string. Each file's real fn static after the decoy is a finding.
+        let mut decoy_mod = Overlay::new();
+        decoy_mod.set(
+            file,
+            format!("mod decoy {{\n    #![cfg(test)]\n}}\n{fuzzing_static}"),
+        );
+        let mut decoy_comment = Overlay::new();
+        decoy_comment.set(file, format!("/*\n#![cfg(test)]\n*/\n{fuzzing_static}"));
+        let mut decoy_string = Overlay::new();
+        decoy_string.set(
+            file,
+            format!(
+                "pub const DECOY: &str = r#\"\n#![cfg(any(test, feature = \"test-support\"))]\n\"#;\n\
+                 {fuzzing_static}"
+            ),
+        );
         let mut test_support = Overlay::new();
         test_support.set(
             file,
@@ -607,6 +639,24 @@ impl Gate for DoorOnlyGate {
                     ROW_SEAM,
                     "a fn static in an `any(test, fuzzing)` file is RED, naming it",
                     fuzzing,
+                    vec![file, "PLANTED_FUZZ"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a test attribute gating an inline module does not hide the file's fn static",
+                    decoy_mod,
+                    vec![file, "PLANTED_FUZZ"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a test attribute in a block comment does not hide the file's fn static",
+                    decoy_comment,
+                    vec![file, "PLANTED_FUZZ"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a test attribute in a raw string does not hide the file's fn static",
+                    decoy_string,
                     vec![file, "PLANTED_FUZZ"],
                 ),
                 (
