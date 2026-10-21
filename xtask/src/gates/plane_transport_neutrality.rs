@@ -88,14 +88,13 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-/// Lowered 1220 -> 1211 by the D2 plane-side breaker/arena and gauntlet-runner deletion (status
-/// row 82): 11 files left, no arrivals -- 7 `busbar-kernel/src` files
+/// Lowered 1220 -> 1212 by the D2 plane-side breaker/arena and gauntlet-runner deletion (status
+/// row 82, #1374). Dev 893d659a8d's tree holds 1223 scanned files (three over its 1220 floor);
+/// this lane deletes 11 and adds none, so 1223 - 11 = 1212: 7 `busbar-kernel/src` files
 /// (`plane_host/{breaker,govern,scope}.rs`,
 /// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`) and 4 `busbar/src/root`
 /// gauntlet files (`gauntlet_install.rs`, `gauntlet_kernel.rs`, `tests/gauntlet_kernel.rs`,
-/// `tests/percall_meter_shadow.rs`). The floor is the count measured on that lane's head over dev
-/// 452a6e63d4, which had also deleted the kernel's `failover/` (#1299); then raised 1211 -> 1212
-/// by the one file dev landed there by 893d659a8d (`busbar/src/root/tests/durability_boot_reads.rs`).
+/// `tests/percall_meter_shadow.rs`).
 pub const MIN_FILES: usize = 1212;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
