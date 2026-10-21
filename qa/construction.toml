@@ -850,12 +850,12 @@ kinds = ["plane", "hook", "auth"]
 # AND IT IS CHECKED BOTH WAYS, exactly as the waiver file is: an exemption that suppresses NO hit is
 # RED (`denylist:stale-waivers`). An exemption nobody has to defend reads to the next reviewer as a
 # live, reviewed fact about the tree, and after the edge is gone it is not a fact at all.
-[[rules.source-denylist.edge_exemptions]]
-dep = "libc"
-via = "cpufeatures"
-symbols = ["getauxval", "sysctlbyname"]
-reason = "OWNER RULING 2026-09-22, docs/design/BUSBAR-1.6.0.md: cpufeatures -> libc is NOT an I/O reach. NEEDED, and it cannot be switched off: in sha2 0.10.9 cpufeatures is a TARGET-GATED hard dependency for aarch64, x86_64 and x86 -- every platform busbar ships on -- declared behind NO feature, so force-soft forces the software hash path and still leaves the edge resolved. RIGHT CRATE: it is RustCrypto's standard runtime detector for selecting hardware SHA acceleration. ENTIRE libc SURFACE, enumerated from its source and listed in `symbols` above: getauxval and sysctlbyname, plus the c_ulong/c_void type aliases. Two function calls, both CPU-capability queries. This rule's own `why` forbids a socket, a file, a process, an OS handle, an environment read and an HTTP client; a CPU-capability query is none of those six. SCOPE, load-bearing: this exempts THAT PATH ONLY -- a pure crate reaching libc by any OTHER route is still a hit, which is the per-crate waivers' own words (re-review if any other path to libc appears) kept as the rule. getrandom -> libc is explicitly NOT ruled on here: it is a different edge with a different argument (entropy drawn by the codec instead of arriving through Ctx) and it keeps its per-crate waiver in qa/denylist-allow.toml until someone rules on it."
-owner = "owner, 2026-09-22"
+#
+# The table is EMPTY. Its one entry, `(dep = libc, via = cpufeatures)` (OWNER RULING 2026-09-22),
+# went when busbar-plane-llm left this tree (rows 106/107): no pure kind is a workspace member any
+# more, so no hit reached libc through cpufeatures and the exemption excused nothing
+# (`denylist:stale-waivers`). A pure kind that brings the edge back meets the ban, red, until the
+# owner rules on it again.
 
 # ── 17. lean-core (BUSBAR-1.6.0.md THE DESIGN, §1) ─────────────────────────────────────────────────────────────
 [rules.lean-core]
