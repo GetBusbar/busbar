@@ -240,44 +240,47 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
     assert!(!mw.validate_token(Some(""))); // empty token never matches
 }
 
-/// ITEM 144 — an IDENTIFIED principal that earns no governance key is REFUSED, never admitted
-/// `key: None` (no pool ACL, no budget, spend booked to `anonymous`). The guard is "no key" alone:
-/// a ROLELESS principal, a role principal under a module with NO `role_bindings` table, and a role
-/// principal whose roles are unbound under a module that HAS one are all `NoGrant`. The two admitted
-/// shapes stay admitted: `Open` (anonymous by explicit `chain: []`) and a principal that earned a key.
+/// 1.5.5 PARITY CELL (Q128 u27, Q20): an IDENTIFIED principal that earns no governance key is
+/// judged as 1.5.5 judged it (v1.5.5 crates/busbar/src/auth/mod.rs:1543). A ROLELESS principal, and
+/// a role principal under a module with NO `role_bindings` table, are ADMITTED ungoverned
+/// (`key: None`); a roleless principal under a governed module is admitted too; a role principal
+/// whose roles are unbound under a module that HAS a table is `NoGrant`. `Open` stays anonymous and
+/// a bound role earns its key. RED against the item-144 rule, which refuses every keyless principal.
 #[test]
-fn a_principal_without_a_governance_key_is_refused() {
+fn an_ungoverned_principal_is_judged_as_1_5_5_judged_it() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
         module: module.to_string(),
         principal,
         resolved: None,
     };
-    let refused =
+    let admitted_ungoverned =
         |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
             app, v,
         ) {
-            Err(IdentityRefusal::NoGrant) => {}
-            Ok((_, gov)) => panic!(
-                "{why}: admitted with key {:?} — fails open",
-                gov.key.map(|k| k.id.clone())
-            ),
-            Err(other) => panic!("{why}: expected NoGrant, got {other:?}"),
+            Ok((who, gov)) => {
+                assert!(who.0.is_some(), "{why}: admitted as itself");
+                assert!(
+                    gov.key.is_none(),
+                    "{why}: admitted ungoverned, as 1.5.5 did"
+                );
+            }
+            Err(other) => panic!("{why}: 1.5.5 admitted it ungoverned, got {other:?}"),
         };
 
     // No bindings table for any module.
     let bare = crate::test_support::TestApp::new().build();
-    refused(
+    admitted_ungoverned(
         &bare,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
         "a roleless principal",
     );
-    refused(
+    admitted_ungoverned(
         &bare,
         identified("test-groups-module", grp_principal("test:dev", &["dev"])),
         "a role principal under a module with no role_bindings table",
     );
 
-    // A bindings table for the module: an unbound role (and no role) still earns nothing.
+    // A bindings table for the module.
     let table = bindings_for(
         "test-groups-module",
         &[("dev", binding(Some(&["pa"]), None, None))],
@@ -285,16 +288,21 @@ fn a_principal_without_a_governance_key_is_refused() {
     let governed = crate::test_support::TestApp::new()
         .role_bindings(table)
         .build();
-    refused(
+    admitted_ungoverned(
         &governed,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
         "a roleless principal under a governed module",
     );
-    refused(
+    match resolve_data_plane_identity(
         &governed,
         identified("test-groups-module", grp_principal("test:ops", &["ops"])),
-        "an unbound role under a governed module",
-    );
+    ) {
+        Err(IdentityRefusal::NoGrant) => {}
+        other => panic!(
+            "an unbound role under a governed module is refused, as 1.5.5 refused it: {:?}",
+            other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
+        ),
+    }
 
     // Positive controls: the bound role earns a key and is admitted under it; `Open` is anonymous.
     let (who, gov) = resolve_data_plane_identity(
@@ -305,6 +313,38 @@ fn a_principal_without_a_governance_key_is_refused() {
     assert!(who.0.is_some() && gov.key.is_some());
     let (who, gov) = resolve_data_plane_identity(&bare, ChainVerdict::Open).expect("open door");
     assert!(who.0.is_none() && gov.key.is_none());
+}
+
+/// THE SIGNABLE RULE, held ready (Q20, item 144): under `refuse_every` no keyless principal is
+/// admitted, whatever its roles and whatever its module's bindings. Without it, 1.5.5's three-part
+/// guard: refused only with roles under a module that has a table.
+#[test]
+fn the_refuse_every_ungoverned_rule_is_held_ready_behind_its_const() {
+    let table = bindings_for(
+        "test-groups-module",
+        &[("dev", binding(Some(&["pa"]), None, None))],
+    );
+    let none = crate::config::RoleBindings::new();
+    let roleless = grp_principal("test:nobody", &[]);
+    let ops = grp_principal("test:ops", &["ops"]);
+    for (bindings, principal, admitted_by_1_5_5) in [
+        (&none, &roleless, true),
+        (&none, &ops, true),
+        (&table, &roleless, true),
+        (&table, &ops, false),
+    ] {
+        assert!(!admits_ungoverned_under(
+            true,
+            "test-groups-module",
+            principal,
+            bindings
+        ));
+        assert_eq!(
+            admits_ungoverned_under(false, "test-groups-module", principal, bindings),
+            admitted_by_1_5_5,
+            "{principal:?}"
+        );
+    }
 }
 
 /// The EMPTY chain is the open front door (the old `none`/`passthrough` modes): every request is
@@ -2916,11 +2956,12 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         "native error envelope must contain an `error` object: {env}"
     );
 
-    // Identified, but the role is unbound: no governance key → 401, same envelope.
+    // Identified, but the role is unbound under the module's bindings table: no governance key →
+    // 401, same envelope (1.5.5's guard, v1.5.5 auth/mod.rs:1543).
     let (status, ct, body) = door_post(addr, url, Some(("x-api-key", "grp:unbound"))).await;
     assert_eq!(
         status, 401,
-        "an identified principal with no governance key must be refused: {body}"
+        "an unbound role under a governed module must be refused: {body}"
     );
     assert_eq!(ct.as_deref(), Some("application/json"));
 

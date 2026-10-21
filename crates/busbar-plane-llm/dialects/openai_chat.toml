@@ -10,7 +10,7 @@
 # table whose rows come first.
 
 [dialect]
-wire = "openai"  # the wire lock: dialects/openai.wire.json (notation A paths)
+wire = "openai"  # the wire lock: testing/llm-conformance/wire/openai.wire.json (notation A paths)
 label = "OpenAI"
 request = [
     "chat_structure",
@@ -60,7 +60,7 @@ stream = ["stream"]
 "stop" = { ir = "stop", cap = 4 }
 "n" = { ir = "n" }
 
-# The Q57 request members Chat and Responses spell alike (ir-slots-landed.md IR-03..06). A raw
+# The Q57 request members Chat and Responses spell alike. A raw
 # member the slot cannot reproduce is parked in `extra` (same-dialect fidelity).
 [rows.openai_family]
 park = true
@@ -171,7 +171,8 @@ park = true
 "metadata" = { no-equivalent = "a stored completion's echo of the request's metadata: the IR answer has no request-echo slot (the request's metadata crosses on the request hop)" }
 
 # Controls beyond the rows. Chat has no top_k: 1.5.5 omitted it with no warn and no audit
-# (1.5.5: crates/busbar/src/proto/openai_chat/writer.rs:265). Custom tools are tools[] entries.
+# (1.5.5: crates/busbar/src/proto/openai_chat/writer.rs:265); `silent = true` means "no dialect text
+# of its own", so the runtime warns and audits the drop (spec Part 2 #76). Custom tools are tools[] entries.
 [controls]
 "top_k" = { silent = true }
 "custom_tool" = { code = "chat_custom_tools" }
