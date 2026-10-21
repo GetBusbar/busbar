@@ -876,6 +876,8 @@ fn red_an_uncapped_secured_bind_admits_past_the_default_cap() {
             .expect("closed at once")
             .unwrap_or(0);
         assert_eq!(n, 0, "not a byte written");
+    });
+}
 
 /// RED (/status row 192 B, the agreed protocol): the protocol an accepting framer states it agreed
 /// (`FramerYield::agreed`, a 1-based position in its accepting offer) is read back by the
