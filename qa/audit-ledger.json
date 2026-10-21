@@ -1525,7 +1525,7 @@
    "paths": [
     "crates/busbar-kernel-identity/src"
    ],
-   "tree_hash": "2266f2042c68d4b88f7cfc9819ff50673e72e3f2605caecb373c5f74df233324",
+   "tree_hash": "788c1466f766c2d0c094de8c11e37f432df0f44ddd8d9f66d2159de6efdc8594",
    "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
    "round": 4,
    "result": "findings",
@@ -1537,7 +1537,7 @@
    },
    "report": "The crate holds the operator credential's words, refusal texts and judgement, the caller reference key, and a chain walk with its module, principal and key-verifier types. The root installs the build's linked auth rows, each carrying a plugin door function pointer, into a process-wide static the crate owns. The design allows only two static code seams, and the static-seam scan cannot see this one because the function pointer is hidden behind a type alias. The chain walk still never runs in production: the kernel runs its own chain, so the walk, the key-verifier binding and the revocation view are exercised only by tests. The reserved-id check has no caller although its docs say it refuses such ids, and several docs still describe a credential cache that does not exist. Read fully.",
    "auditor": "opus-r159d-kernel-identity",
-   "fixed_at": null,
+   "fixed_at": "368fb7f59ece98bbef0f1d5cbf116a5d125870ee",
    "exclude": [
     "crates/busbar-kernel-identity/src/tests"
    ],
