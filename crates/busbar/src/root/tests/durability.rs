@@ -3524,6 +3524,122 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
     );
 }
 
+/// **THE WALK OF EVERY STORED CHAIN FINDS AN UNSIGNED RECORD SEALED AFTER THAT CHAIN'S
+/// `Bootstrap`** (BUSBAR-1.6.0.md l.193, "integrity (prev hash)"; l.2285, #82(a) "sign at seal
+/// time, in the process that sealed it"): the signature is not in the digest and the journal's
+/// links are unkeyed, so an edit to a stored record that strips its signature and recomputes its
+/// digest and the links leaves a chain that verifies whole, and only the unsigned rule sees it. The
+/// stored walk keeps that rule per chain, as the retained walk keeps it for this node: every record
+/// from the first one journalled after the chain's `Bootstrap` on is signed. The peer's chain here
+/// is sealed unsigned past its `Bootstrap`, the bytes such an edit leaves, and the node walking it
+/// never held that record in its own retained cache.
+///
+/// RED before the fix: the walk skipped every record naming no key, and found nothing.
+#[test]
+fn the_stored_walk_finds_an_unsigned_record_after_a_chains_bootstrap() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let walking = node_id(slots.calls().as_ref(), "host-walking").expect("an id");
+    let peer = node_id(slots.calls().as_ref(), "host-stripped").expect("an id");
+    {
+        let mut durability = keyed_store_book(&slots, peer);
+        durability
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .expect("sealed");
+        // From here on the peer's chain seals unsigned, past its Bootstrap.
+        durability.record = AuditChain::resume(&durability.audit_records).sealing_as(peer);
+        let stripped = durability
+            .seal_unit(audit_inputs(2), audit_pass(), &token())
+            .expect("sealed");
+        assert!(stripped.key_id.is_none() && stripped.signature.is_none());
+        drained(&durability);
+    }
+    let durability = keyed_store_book(&slots, walking);
+    assert_eq!(
+        durability.retained_audit_findings(),
+        Vec::<String>::new(),
+        "this node's own retained records hold nothing of the peer's"
+    );
+    let (lane, own, keys) = durability
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert_eq!(
+        walk.findings,
+        vec![format!(
+            "node {peer}: audit record 2 is unsigned, sealed after the keyset was bound"
+        )]
+    );
+}
+
+/// **A STORED RECORD SEALED BEFORE ITS CHAIN'S `Bootstrap` IS UNSIGNED, AND THAT IS NOT A FINDING**
+/// (the green twin of the test above; BUSBAR-1.6.0.md l.2285, #82(a): "records sealed before"
+/// a key was bound stay unsigned, which is the truth about them): a chain a keyless boot began over
+/// the store, continued by a boot that binds the deployment keyset, walks clean.
+///
+/// Green before the fix and after it: the rule starts at the chain's `Bootstrap`, never before.
+#[test]
+fn the_stored_walk_accepts_records_sealed_before_a_chains_bootstrap() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = node_id(slots.calls().as_ref(), "host-keyless-first").expect("an id");
+    {
+        let mut keyless = store_book(&slots, node);
+        for unit in 1..=2 {
+            keyless
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        drained(&keyless);
+    }
+    let mut keyed = keyed_store_book(&slots, node);
+    let third = keyed
+        .seal_unit(audit_inputs(3), audit_pass(), &token())
+        .expect("sealed");
+    assert!(third.key_id.is_some(), "sealed under the bound key");
+    drained(&keyed);
+    let (lane, own, keys) = keyed.stored_walk_inputs().expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert_eq!(walk.chains, vec![node]);
+    assert_eq!(walk.findings, Vec::<String>::new());
+}
+
+/// **AN AUDIT BODY ON A STORED CHAIN THAT DOES NOT DECODE IS A FINDING OF THE WALK**, never a
+/// record silently dropped (BUSBAR-1.6.0.md l.193, "integrity"; the boot's resume reports the same
+/// record as a restart finding): a record the walk cannot read is one it cannot verify, so its
+/// digest, its link and its signature go unchecked, and the walk says so.
+///
+/// RED before the fix: the walk filtered the record out, and found nothing.
+#[test]
+fn the_stored_walk_reports_an_audit_body_that_does_not_decode() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = node_id(slots.calls().as_ref(), "host-undecodable").expect("an id");
+    let mut durability = keyed_store_book(&slots, node);
+    durability
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    let mut inputs = audit_inputs(2);
+    inputs.usage.lines.push(UsageLine {
+        class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
+        quantity: 3,
+        source: busbar_contract::caps::QuantitySource::Count,
+        estimated: false,
+    });
+    durability
+        .seal_unit(inputs, audit_pass(), &token())
+        .expect("sealed");
+    drained(&durability);
+    let (lane, own, keys) = durability
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert_eq!(walk.findings.len(), 1, "{:?}", walk.findings);
+    assert!(
+        walk.findings[0].starts_with(&format!("node {node}: record "))
+            && walk.findings[0].contains("a_class_this_node_never_registered"),
+        "{:?}",
+        walk.findings
+    );
+}
+
 /// **A RUNNING DRIVEN UNIT'S CHECKPOINT IS KEPT BY THE STORE, AND A KILL RECOVERS IT THERE** (THE
 /// DESIGN §7: "a checkpoint is a durability `unit.accrued` record"; H3 with K2-H1): on a node with
 /// no data directory, the checkpoint the root's flush tick journals for a running unit rides the
