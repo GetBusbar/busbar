@@ -352,7 +352,7 @@ impl Rig {
             &self.via,
             "127.0.0.1:0",
             None,
-            Vec::new(),
+            busbar_core_connector::tls::server_alpn(),
             AcceptLimits::uncapped(),
         )
         .expect("the framed listener binds")

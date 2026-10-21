@@ -194,6 +194,14 @@ pub fn server_alpn() -> Vec<Vec<u8>> {
     ALPN_OFFER.iter().map(|p| p.to_vec()).collect()
 }
 
+/// THE ENTRY OF [`server_alpn`] THAT CARRIES CONCURRENT STREAMS on one connection (RFC 9113): a
+/// connection whose framer states it agreed this one (`Connection::agreed`) multiplexes its
+/// requests, each stream ending on its own.
+#[must_use]
+pub fn multiplexed_alpn() -> &'static [u8] {
+    ALPN_H2
+}
+
 /// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
 const ALPN_H2: &[u8] = b"h2";
 

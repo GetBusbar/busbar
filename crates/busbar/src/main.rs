@@ -1724,11 +1724,10 @@ async fn serve_framed_worker(
         ),
         ..ROOT_BIND_LIMITS
     };
-    let alpn = if tls.is_some() {
-        busbar_core_connector::tls::server_alpn()
-    } else {
-        Vec::new()
-    };
+    // The root listener's one offer: agreed in the handshake under `tls:`, and in the clear the list
+    // the framer states its agreed protocol by (a prior-knowledge connection's), never offered in
+    // any handshake there.
+    let alpn = busbar_core_connector::tls::server_alpn();
     let listener = Listening::bind_secured(
         Some(std::sync::Arc::clone(&framed.framer)),
         &via,

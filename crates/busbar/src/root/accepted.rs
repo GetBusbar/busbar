@@ -554,9 +554,8 @@ enum Op {
         pipe: busbar_kernel::plane_routes::SessionPipe,
         done: oneshot::Sender<bool>,
     },
-    /// The stream's task ended: its inflow goes. `multiplexed` = its request named its authority
-    /// in its head (h2's `:authority`): the connection carries concurrent streams.
-    Ended { multiplexed: bool },
+    /// The stream's task ended: its inflow goes.
+    Ended,
 }
 
 /// A stream task's end of its connection.
@@ -615,16 +614,11 @@ impl Emitter {
 struct StreamEnd {
     out: Emitter,
     unit: u64,
-    /// The stream rides a connection that carries concurrent streams ([`Op::Ended`]).
-    multiplexed: bool,
 }
 
 impl Drop for StreamEnd {
     fn drop(&mut self) {
-        let ended = Op::Ended {
-            multiplexed: self.multiplexed,
-        };
-        let _ = self.out.tx.send((self.out.stream, ended));
+        let _ = self.out.tx.send((self.out.stream, Op::Ended));
         crate::root::inbound::host().exit(self.unit);
     }
 }
@@ -918,12 +912,15 @@ impl Conn {
                 .refuse_stream(stream, &bytes[..], *status, *head_sent)
                 .is_ok(),
             Op::Switch { door, .. } => conn.switch(stream, Arc::clone(door)).is_ok(),
-            Op::Ended { multiplexed } => {
+            Op::Ended => {
                 // h1: a request answered with its body unread closes the connection once idle, as
-                // the hyper loop closed one. h2: the stream ends on its own (its answer whole,
-                // the rest of its body dropped as it arrives) and the connection and its other
-                // streams serve on, as the hyper loop's h2 reset the one stream.
-                self.multiplexed |= *multiplexed;
+                // the hyper loop closed one. A connection whose framer states it agreed the
+                // offer's multiplexed protocol (`Connection::agreed`): the stream ends on its own
+                // (its answer whole, the rest of its body dropped as it arrives) and the connection
+                // and its other streams serve on, as the hyper loop's h2 reset the one stream. A
+                // framer that states none is held to the h1 rule.
+                let multiplexed = busbar_core_connector::tls::multiplexed_alpn();
+                self.multiplexed |= conn.agreed() == Some(multiplexed);
                 if let Some(inflow) = self.inflows.remove(&stream) {
                     let drained = inflow.drained.load(std::sync::atomic::Ordering::Acquire);
                     self.closing |= !drained && !self.multiplexed;
@@ -944,7 +941,7 @@ impl Conn {
                 }
                 let _ = done.send(ok);
             }
-            Op::Refuse { .. } | Op::Ended { .. } => {}
+            Op::Refuse { .. } | Op::Ended => {}
         }
         Step::Done
     }
@@ -1194,18 +1191,14 @@ async fn serve_stream(
     body: InboundBody,
     out: Emitter,
 ) {
-    let mut end = StreamEnd {
+    let _end = StreamEnd {
         out: out.clone(),
         unit: handed.unit,
-        multiplexed: false,
     };
     let answer = ConnAnswer { out: out.clone() };
-    let head = crate::root::inbound::host().head_of(handed.unit);
-    // An h2 request names its authority in its head (`:authority`); an h1 request in origin form
-    // names none.
-    end.multiplexed = head.as_ref().is_some_and(|h| !h.authority.is_empty());
-    let request =
-        head.and_then(|head| request_of(&head, axum::body::Body::new(body), door.scheme()));
+    let request = crate::root::inbound::host()
+        .head_of(handed.unit)
+        .and_then(|head| request_of(&head, axum::body::Body::new(body), door.scheme()));
     let Some(request) = request else {
         out.refuse(Vec::new(), UNHANDED_STATUS, false);
         return;
