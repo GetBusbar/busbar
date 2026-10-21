@@ -704,6 +704,8 @@ fn still_present(strips: &[Strip], head: &Head) -> bool {
 
 /// The `verify` request one position is lent at `point`: the head as received, the body at the
 /// body point; no candidate credential (no kernel step names an inbound credential line, l.944).
+/// The walk lends a plugin position the one candidate the kernel itself established: a DPoP-proven
+/// token ([`screen`]).
 fn verify_request(
     head: &Head,
     point: AuthPoint,
@@ -1517,7 +1519,16 @@ impl Inbound {
                     Target::Unit(u) => u,
                     Target::Peer(_) => 0,
                 };
-                let req = verify_request(&head, point, conn, unit_id, body.as_deref());
+                let mut req = verify_request(&head, point, conn, unit_id, body.as_deref());
+                // A DPoP-proven token (RFC 9449, [`screen`]) is the candidate the position is
+                // lent, as the old chain lent it (`ChainHead::request`).
+                req.credential = me
+                    .with_state(target, |u| {
+                        u.proven.as_ref().map(|p| {
+                            Secret::new(p.expose(&crate::seal::lend()).as_bytes().to_vec())
+                        })
+                    })
+                    .flatten();
                 let mut verifying = calls.verify(req);
                 let answer = match (deadline, tokio::runtime::Handle::try_current()) {
                     (Some(d), Ok(_)) => {
