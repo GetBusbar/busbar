@@ -46,7 +46,7 @@ fn the_identity_holds_over_a_long_run_of_random_postings() {
                         h.record_overdraft(spent - reserved);
                     }
                     let u = usage("tokens", spent);
-                    ledger.settle(&k, window, h, u128::from(spent), &u, &token);
+                    ledger.settle_recording(&k, window, h, u128::from(spent), &u, &token);
                 }
             }
             let r = residual(&opening, &ledger.book().get(&k, window));
@@ -71,7 +71,7 @@ fn a_hand_corrupted_priced_amount_breaks_the_identity() {
     ledger.record_draw(&k, window, 1_000);
     ledger.record_hold_opened(&k, window, 800);
     ledger.record_slice_spent(&k, window, 800);
-    ledger.settle(
+    ledger.settle_recording(
         &k,
         window,
         hold("p", 800),
@@ -113,7 +113,7 @@ fn overdraft_is_subtracted_rather_than_added() {
     ledger.record_slice_spent(&k, window, 100);
     let mut h = hold("p", 100);
     h.record_overdraft(40);
-    ledger.settle(&k, window, h, 140, &usage("tokens", 140), &token);
+    ledger.settle_recording(&k, window, h, 140, &usage("tokens", 140), &token);
 
     let figures = ledger.book().get(&k, window);
     assert_eq!(figures.settled, 140);
@@ -139,7 +139,9 @@ fn an_estimated_usage_report_still_settles_and_still_balances() {
         }],
     )
     .unwrap();
-    let posted = ledger.settle(&k, 1, hold("p", 500), 250, &estimate, &token);
+    let posted = ledger
+        .settle_recording(&k, 1, hold("p", 500), 250, &estimate, &token)
+        .posted;
     assert!(posted
         .flags()
         .contains(busbar_contract::caps::PostingFlags::ESTIMATED));
@@ -165,7 +167,9 @@ fn a_replayed_posting_moves_the_book_exactly_as_the_live_one_did() {
         if used > reserved {
             h.record_overdraft(used - reserved);
         }
-        let posted = live.settle(&k, 1, h, u128::from(used), &usage("tokens", used), &token);
+        let posted = live
+            .settle_recording(&k, 1, h, u128::from(used), &usage("tokens", used), &token)
+            .posted;
         replayed.replay_post(
             &k,
             1,

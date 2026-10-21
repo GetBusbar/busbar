@@ -120,6 +120,11 @@ mod percall_meter_shadow;
 #[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+// A config apply refreshes every opened transport instance (`doors::refresh_live`).
+#[cfg(test)]
+#[path = "tests/doors_refresh.rs"]
+mod doors_refresh;
+
 // The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
 // how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
 #[cfg(test)]
