@@ -1958,16 +1958,37 @@
    "paths": [
     "crates/busbar-plane-a2a-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b257ffbe4f92a0fae31e9b31037cbf160175f833e31a6a089b8bbba774c6c0bf",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "b257ffbe4f92a0fae31e9b31037cbf160175f833e31a6a089b8bbba774c6c0bf",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully."
+    }
    ]
   },
   {
@@ -2079,16 +2100,37 @@
    "paths": [
     "crates/busbar-plane-decisions-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "d094c0097f1fa143c62c8200302e4dd8ddd2c5e240f45d1cbaeb30be61761ff7",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-decisions-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "d094c0097f1fa143c62c8200302e4dd8ddd2c5e240f45d1cbaeb30be61761ff7",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully."
+    }
    ]
   },
   {
@@ -2263,14 +2305,35 @@
    "paths": [
     "crates/busbar-plane-mcp/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "8a28c3037547193704f7a46f02d9ccd7ef0e38e0cf4fa02301a4db817817168b",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The build script generates nothing and links nothing: it states one address under the crate's links name, the path of the plane's own root test cells, which the composition root reads only in its test builds to compile those cells into its door-path tests. The path is derived from the crate's own manifest directory, so it holds for a path dependency and a pinned one alike, and the plane ships no black-box case directory, so stating none is correct. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "8a28c3037547193704f7a46f02d9ccd7ef0e38e0cf4fa02301a4db817817168b",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The build script generates nothing and links nothing: it states one address under the crate's links name, the path of the plane's own root test cells, which the composition root reads only in its test builds to compile those cells into its door-path tests. The path is derived from the crate's own manifest directory, so it holds for a path dependency and a pinned one alike, and the plane ships no black-box case directory, so stating none is correct. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-mcp-plugin/src",
@@ -2278,16 +2341,37 @@
    "paths": [
     "crates/busbar-plane-mcp-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "787b203850f58ec4ec4ad6182ccd89da9e69655c96d70c751281d8927005b370",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does. Its doc also names a predecessor example that no longer exists. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "787b203850f58ec4ec4ad6182ccd89da9e69655c96d70c751281d8927005b370",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does. Its doc also names a predecessor example that no longer exists. Read fully."
+    }
    ]
   },
   {
@@ -2399,16 +2483,37 @@
    "paths": [
     "crates/busbar-plane-streaming-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
+   "auditor": "opus-r159c-plane-twins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-streaming-plugin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-twins",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully."
+    }
    ]
   },
   {
@@ -3382,14 +3487,35 @@
    "paths": [
     "crates/busbar-auth-webhook-signature/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "019071d1e8d03954895590537a1dbab8a425f39bb8374792622bc609f475a411",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The webhook-signature auth plugin's declares document states only a contract-ABI window of three to three. That equals the auth kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plugin opens no connection, emits no metric series, raises no coded diagnostic, names no destination and reads no disk. The loader drops the stated range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "019071d1e8d03954895590537a1dbab8a425f39bb8374792622bc609f475a411",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The webhook-signature auth plugin's declares document states only a contract-ABI window of three to three. That equals the auth kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plugin opens no connection, emits no metric series, raises no coded diagnostic, names no destination and reads no disk. The loader drops the stated range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-contract/include",
@@ -3641,14 +3767,35 @@
    "paths": [
     "crates/busbar-plane-a2a/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "39e049f1492a16ef748ec20bea2926da8d126ce4ab5696f5c00c9095b2c187ca",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 2,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The agent plane's declares document states one fact, that a transient failure below the trip threshold never benches an agent's cell, and both the linked and the packed builds read it. It omits the connection needs its Statement names, http and grpc, so the host's conformance check that the two lists match fails on this file. It also declares none of the plane's thirty-six coded diagnostics, and nothing else registers them, so in no build do they join the runtime catalogue. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "39e049f1492a16ef748ec20bea2926da8d126ce4ab5696f5c00c9095b2c187ca",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 2,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The agent plane's declares document states one fact, that a transient failure below the trip threshold never benches an agent's cell, and both the linked and the packed builds read it. It omits the connection needs its Statement names, http and grpc, so the host's conformance check that the two lists match fails on this file. It also declares none of the plane's thirty-six coded diagnostics, and nothing else registers them, so in no build do they join the runtime catalogue. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-a2a/proto",
@@ -3706,14 +3853,35 @@
    "paths": [
     "crates/busbar-plane-decisions/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "d41327d763231265d9c6752d0c27c581acbbffdf1a284f23c5e97366a85cf8c0",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The decisions plane's declares document lists the http transport as its one need, which matches the single outbound provider need its Statement names, and a contract-ABI window of one to one. The window equals the plane kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plane raises no coded diagnostic, emits no declared metric series and keeps the host's default breaker posture. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "d41327d763231265d9c6752d0c27c581acbbffdf1a284f23c5e97366a85cf8c0",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The decisions plane's declares document lists the http transport as its one need, which matches the single outbound provider need its Statement names, and a contract-ABI window of one to one. The window equals the plane kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plane raises no coded diagnostic, emits no declared metric series and keeps the host's default breaker posture. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/declares.json",
@@ -3721,14 +3889,35 @@
    "paths": [
     "crates/busbar-plane-llm/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "20801eea45ac83677947af43aed87c1de9a427cad4bbf3fd75e71be94116f3c6",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The llm plane's declares document lists only the http transport as its need, which matches the six outbound provider needs its Statement names, and it correctly states no contract-ABI range and no breaker fact, since the plane keeps the host's default posture. It omits the plane's own coded diagnostics: those reach the runtime catalogue only through the linked build's separate diagnostics axis, so the declaration that a packed copy of the plane would carry names none of them. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "20801eea45ac83677947af43aed87c1de9a427cad4bbf3fd75e71be94116f3c6",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The llm plane's declares document lists only the http transport as its need, which matches the six outbound provider needs its Statement names, and it correctly states no contract-ABI range and no breaker fact, since the plane keeps the host's default posture. It omits the plane's own coded diagnostics: those reach the runtime catalogue only through the linked build's separate diagnostics axis, so the declaration that a packed copy of the plane would carry names none of them. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/dialects",
@@ -3783,14 +3972,35 @@
    "paths": [
     "crates/busbar-plane-mcp/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "007d2b81651e9d725196dc61aa6bd4979c5e6654093f8f0b93432e1087453e37",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The tool plane keeps two declares documents. This one, which the release signs into a dropped-in plane's manifest, lists the right needs, http and stdio, plus a retired contract-ABI range the host's declares gate now refuses. The breaker fact and the ten diagnostics live only in a second file the linked build reads. A dropped-in copy therefore benches a member on any transient failure below the trip threshold, where the linked plane does not, and its codes never join the catalogue. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "007d2b81651e9d725196dc61aa6bd4979c5e6654093f8f0b93432e1087453e37",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The tool plane keeps two declares documents. This one, which the release signs into a dropped-in plane's manifest, lists the right needs, http and stdio, plus a retired contract-ABI range the host's declares gate now refuses. The breaker fact and the ten diagnostics live only in a second file the linked build reads. A dropped-in copy therefore benches a member on any transient failure below the trip threshold, where the linked plane does not, and its codes never join the catalogue. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-secret-env/declares.json",
@@ -3983,14 +4193,35 @@
    "paths": [
     "crates/busbar-transport-http/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "8295448ec17878a110f12c5551c9b3168a7199ecf7d07a2a0ae70d4d07a0fa20",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The http transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "8295448ec17878a110f12c5551c9b3168a7199ecf7d07a2a0ae70d4d07a0fa20",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The http transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-stdio/declares.json",
@@ -3998,14 +4229,35 @@
    "paths": [
     "crates/busbar-transport-stdio/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "01fa645758cc104a9640dc61ac36f22b6b13355cd9bdf5299193eec421bff58e",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The stdio transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the carrier states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "01fa645758cc104a9640dc61ac36f22b6b13355cd9bdf5299193eec421bff58e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The stdio transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the carrier states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-tcp/declares.json",
@@ -4049,14 +4301,35 @@
    "paths": [
     "crates/busbar-transport-webrtc/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "65280f096bb8f6b276b087690ff9923bdc56ce620b77f220f9dff424919823b8",
+   "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The webrtc transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
+   "auditor": "opus-r159c-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-r159c-declares",
+     "audited_at": "496507680f23874daa5582904399f91223f26fa9",
+     "tree_hash": "65280f096bb8f6b276b087690ff9923bdc56ce620b77f220f9dff424919823b8",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The webrtc transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-ws/declares.json",

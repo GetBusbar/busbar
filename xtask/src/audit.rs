@@ -280,8 +280,8 @@ impl Git {
     }
 
     /// THE UNIVERSE: every tracked blob at `rev`, path -> blob oid, PLUS every pinned plugin crate
-    /// of `rev`'s default distribution mounted at `crates/<package>` where the tree holds no such
-    /// directory ([`crate::audit_pinned`]). A pin whose checkout cannot be produced is an `Err`
+    /// of `rev`'s `Cargo.lock` (every feature, every target) mounted at `crates/<package>` where
+    /// the tree holds no such directory ([`crate::audit_pinned`]). A pin whose checkout cannot be produced is an `Err`
     /// naming the package and the commit — the universe is never silently missing a crate.
     pub fn files_at(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
         Ok(self.universe_at(rev)?.0)
