@@ -4742,3 +4742,49 @@ fn a_window_posted_again_after_its_retirement_still_re_derives() {
         );
     }
 }
+
+/// RED (#1492 review BLOCKER): A SEAL'S HORIZON LEAVES WITH IT WHEN THE RING DROPS IT. One window past
+/// the horizon can never retire (its figures move before every seal), so every seal keeps it; after
+/// more seals than the ring holds, the node keeps a horizon for each seal the ring holds and no
+/// more, and the windows kept across them are bounded the same way. RED with the ring's prune of
+/// the horizons removed: one horizon, and one kept window, per seal ever made.
+#[test]
+fn the_horizons_kept_are_bounded_by_the_ring_when_a_window_can_never_retire() {
+    use super::super::CHECKPOINT_RING;
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_never_retires");
+    let window = 86_400;
+    let now = window + WINDOW_RETENTION_SECS + 10;
+    let seals = CHECKPOINT_RING as u64 + 8;
+    for n in 0..seals {
+        // The figures move before every seal, so the window is never held by the last seal at the
+        // book's own figures, and never retires.
+        durability
+            .ledger
+            .book_mut()
+            .entry(key.clone(), window)
+            .settled += 1;
+        durability
+            .seal_checkpoint(&token, StepName::Meter, now + n)
+            .expect("the seal goes down");
+    }
+    assert_eq!(
+        durability.ledger.book().get(&key, window).settled,
+        i128::from(u32::try_from(seals).expect("fits")),
+        "the window never retired"
+    );
+    assert_eq!(durability.checkpoints.len(), CHECKPOINT_RING);
+    assert!(
+        durability.seal_horizons_held() <= CHECKPOINT_RING,
+        "{} seal horizons kept beside a ring of {CHECKPOINT_RING}",
+        durability.seal_horizons_held()
+    );
+    assert!(
+        durability.retirement_windows_held() <= CHECKPOINT_RING,
+        "{} kept windows across a ring of {CHECKPOINT_RING} held seals",
+        durability.retirement_windows_held()
+    );
+}

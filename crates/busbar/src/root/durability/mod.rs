@@ -604,8 +604,16 @@ impl Durability {
             .map_or(0, |sealed| sealed.totals.len())
     }
 
+    /// HOW MANY HELD SEALS THIS NODE KEEPS A HORIZON FOR: never more than the ring holds, since a
+    /// seal's horizon leaves with it.
+    #[cfg(test)]
+    pub(crate) fn seal_horizons_held(&self) -> usize {
+        self.seal_horizons.len()
+    }
+
     /// HOW MANY WINDOW INSTANTS THIS NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS across the book's
-    /// retirement: the bound the 31-day horizon sets on that memory.
+    /// retirement: the bound the 31-day horizon sets on that memory (per held seal; see
+    /// [`Durability::seal_horizons_held`] for how many seals it keeps one for).
     #[cfg(test)]
     pub(crate) fn retirement_windows_held(&self) -> usize {
         self.seal_horizons
