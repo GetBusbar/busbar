@@ -253,6 +253,31 @@ pub const DOOR_CELLS: &str = "<door-cells>";
 /// The generated file the composition root includes its door planes' own root cells from.
 const DOOR_CELLS_FILE: &str = "/door_cells.rs";
 
+/// The name a file's DRIVER-PROOFS include stands under in [`FileItems::decls`]: the composition
+/// root's `include!(concat!(env!("OUT_DIR"), "/driver_proofs.rs"))` (its `tests/hook_parity_driver`
+/// target), which its build script writes as `#[path = ".."] pub(crate) mod proofs;` at the plane
+/// crate's `tests/on_driver/mod.rs` for the one enabled `[package.metadata.busbar.driver-proofs]`
+/// row. Not an identifier, so no real module is ever mistaken for it; [`module_tree`] reads the row
+/// off the manifest instead ([`driver_proof_rows`]).
+pub const DRIVER_PROOFS: &str = "<driver-proofs>";
+
+/// The generated file a test target includes the driver-proofs plane's own cases from.
+pub const DRIVER_PROOFS_FILE: &str = "/driver_proofs.rs";
+
+/// The module the build script declares the driver-proofs cases under (build.rs
+/// `driver_proofs_source`).
+const DRIVER_PROOFS_MODULE: &str = "proofs";
+
+/// The stand-in name of the generated module file an `include!` (its tokens after the `!`) names:
+/// [`DOOR_CELLS`] or [`DRIVER_PROOFS`]; `None` for any other include.
+fn generated_include(after_bang: &[Tok]) -> Option<&'static str> {
+    after_bang.iter().take(14).find_map(|tok| match tok {
+        Tok::Str(s) if s == DOOR_CELLS_FILE => Some(DOOR_CELLS),
+        Tok::Str(s) if s == DRIVER_PROOFS_FILE => Some(DRIVER_PROOFS),
+        _ => None,
+    })
+}
+
 /// The module declarations and fn definitions of one file, each with its inline nesting and the
 /// `cfg` predicates it sits under within the file.
 #[must_use]
@@ -369,18 +394,18 @@ pub fn file_items(src: &str) -> FileItems {
                 }
             }
             // `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`: the door planes' own root
-            // cells, one module per manifest row ([`DOOR_CELLS`]).
+            // cells, one module per manifest row ([`DOOR_CELLS`]); `.."/driver_proofs.rs"))`: the
+            // driver-proofs plane's own cases ([`DRIVER_PROOFS`]).
             Tok::Ident(kw)
                 if kw == "include"
                     && matches!(t.get(i + 1), Some(Tok::Punct('!')))
-                    && t.iter()
-                        .skip(i + 2)
-                        .take(14)
-                        .any(|tok| matches!(tok, Tok::Str(s) if s == DOOR_CELLS_FILE)) =>
+                    && generated_include(&t[i + 2..]).is_some() =>
             {
                 items.decls.push(ModDecl {
                     nest: nest_of(&stack),
-                    name: DOOR_CELLS.to_string(),
+                    name: generated_include(&t[i + 2..])
+                        .unwrap_or(DOOR_CELLS)
+                        .to_string(),
                     path: None,
                     cfgs: cfgs_of(&stack, &pending_attrs),
                 });
@@ -533,6 +558,68 @@ pub fn door_cell_rows(
         .collect()
 }
 
+/// [`file_items`] of `src`, read once per process for each distinct text. A gate's self-test walks
+/// the same crates once per planted case, and every walk would otherwise re-tokenise every file;
+/// the result depends on the text alone, so the text is the key.
+fn file_items_memo(src: &str) -> FileItems {
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<FileItems>>>,
+    > = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(src)
+    {
+        return hit.as_ref().clone();
+    }
+    let items = file_items(src);
+    memo.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(src.to_string(), std::sync::Arc::new(items.clone()));
+    items
+}
+
+/// THE DRIVER-PROOFS MODULE of the crate one of whose targets is `root_file`: for every
+/// `[package.metadata.busbar.driver-proofs]` row of its manifest (cargo feature -> plane crate), the
+/// repo-relative `tests/on_driver/mod.rs` of the crate its `[dependencies]` row names (at the row's
+/// `path`, or at the crate's census mount for a pinned one, as [`door_cell_rows`]), with the
+/// feature that keys it: `(file, feature)`. The crate is the nearest directory above `root_file`
+/// holding a `Cargo.toml` (a test target sits deeper than `src/main.rs`). The build script writes
+/// the module only for an ENABLED row (two enabled rows are a compile error), so each row's chain
+/// carries its feature.
+pub fn driver_proof_rows(
+    read: &dyn Fn(&str) -> Option<String>,
+    root_file: &str,
+) -> Vec<(String, String)> {
+    let mut crate_dir = parent(root_file);
+    let manifest = loop {
+        if let Some(m) = read(&join(&crate_dir, "Cargo.toml")) {
+            break m;
+        }
+        if crate_dir.is_empty() {
+            return Vec::new();
+        }
+        crate_dir = parent(&crate_dir);
+    };
+    let deps = manifest_rows(&manifest, "dependencies");
+    manifest_rows(&manifest, "package.metadata.busbar.driver-proofs")
+        .into_iter()
+        .filter_map(|(feature, krate)| {
+            let dep = deps.iter().find(|(k, _)| *k == krate)?;
+            let dir = match dep
+                .1
+                .split_once("path")
+                .and_then(|(_, at)| at.split('"').nth(1))
+            {
+                Some(path) => join(&crate_dir, path),
+                None => join(&parent(&crate_dir), &krate),
+            };
+            Some((join(&dir, "tests/on_driver/mod.rs"), feature))
+        })
+        .collect()
+}
+
 /// One file the walk still has to read: the module path it is reached under, the directory its
 /// children resolve against, the non-mod-rs stem if any, and the cfg predicates of every
 /// declaration on the way to it.
@@ -578,7 +665,7 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
                 let Some(src) = read(&file) else {
                     continue;
                 };
-                let it = file_items(&src);
+                let it = file_items_memo(&src);
                 tree.items.insert(file.clone(), it.clone());
                 it
             }
@@ -598,6 +685,28 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
         } in &items.decls
         {
             let child_chain: Vec<String> = chain.iter().chain(decl_cfgs.iter()).cloned().collect();
+            if name == DRIVER_PROOFS {
+                for (cases, feature) in driver_proof_rows(read, root_file) {
+                    let child_module = std::iter::once(module.as_str())
+                        .filter(|m| !m.is_empty())
+                        .map(str::to_string)
+                        .chain(nest.iter().cloned())
+                        .chain(std::iter::once(DRIVER_PROOFS_MODULE.to_string()))
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    let cases_dir = parent(&cases);
+                    let mut cases_chain = child_chain.clone();
+                    cases_chain.push(format!("feature=\"{feature}\""));
+                    work.push(Visit {
+                        file: cases,
+                        module: child_module,
+                        dir: cases_dir,
+                        relative: None,
+                        on_the_way: cases_chain,
+                    });
+                }
+                continue;
+            }
             if name == DOOR_CELLS {
                 for (ident, cells, feature) in door_cell_rows(read, root_file) {
                     let child_module = std::iter::once(module.as_str())

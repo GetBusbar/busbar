@@ -774,11 +774,17 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
 
 /// WHAT RUNS IN CI: the composition root's module tree, read off the source with every cfg on the
 /// way to each file, and the build CI's `test` check compiles it in ([`crate::ci_cfg`]). Read once
-/// per gate run and handed to both root columns.
+/// per gate run and handed to both root columns. A cited file the root's tree does not reach is
+/// looked for in the test targets of the crate that compiles it (the root's own integration-test
+/// targets, then any other workspace member's lib, bin and test targets), each read once and kept.
 pub struct CiView {
     tree: crate::libtest_path::ModuleTree,
     ci: Result<crate::ci_cfg::CiBuild, String>,
+    /// target root file -> its module tree, read on first use.
+    targets: std::sync::Mutex<BTreeMap<String, ModuleTreeRef>>,
 }
+
+type ModuleTreeRef = std::sync::Arc<crate::libtest_path::ModuleTree>;
 
 impl CiView {
     pub fn of(cx: &Ctx) -> CiView {
@@ -788,84 +794,210 @@ impl CiView {
                 .read(MANIFEST_REL)
                 .and_then(|t| crate::ci_cfg::CiBuild::of_manifest(&t))
                 .map_err(|e| format!("{MANIFEST_REL}: {e}")),
+            targets: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
     /// `Ok` when `file::func` is a test CI's build compiles and runs; else why not.
     fn runs(&self, file: &str, func: &str) -> Result<(), String> {
-        self.runs_in(&self.tree, file, func)
+        let ci = self.ci.as_ref().map_err(|e| {
+            format!("CI's test build could not be derived, so no cell is shown to run ({e})")
+        })?;
+        crate::libtest_path::resolve_cell(&self.tree, file, func).and_then(|c| ci.runs(&c))
     }
 
-    /// [`Self::runs`] over `tree`: the composition root's binary, or one of the crate's own
-    /// integration-test targets (`crates/busbar/tests/<name>.rs`), which the same build compiles
-    /// with the same features and build.rs cfgs.
-    fn runs_in(
+    /// THE VERDICT FOR ANY CITATION: `None` when `file` is outside this workspace (a pinned
+    /// plugin's own repo, whose tests that repo's CI builds), else whether CI's `test` check
+    /// (`cargo nextest run --workspace`) compiles and runs `file::func`:
+    /// - a file the composition root's binary reaches (door cells included) is judged in that build;
+    /// - else, in each target that reaches it, under the build of the crate that target belongs
+    ///   to: the file's own crate's lib, bin and the integration-test target its path spells, then
+    ///   (when none of those runs it) every test target of that crate and the composition root's
+    ///   targets that include a plane crate's driver-proofs cases. A target whose
+    ///   `required-features` its crate's build lacks is never built. One target that runs it is
+    ///   enough;
+    /// - a file of a workspace crate no target reaches is a refusal, never skipped.
+    fn judge(&self, cx: &Ctx, file: &str, func: &str) -> Option<Result<(), String>> {
+        if self.tree.paths.contains_key(file) {
+            return Some(self.runs(file, func));
+        }
+        let member = workspace_member_of(cx, file)?;
+        let mut why = Vec::new();
+        for full in [false, true] {
+            for target in target_candidates(cx, &member, file, full) {
+                let tree = self.tree_at(cx, &target);
+                if !tree.paths.contains_key(file) {
+                    continue;
+                }
+                match self.runs_in_target(cx, &target, &tree, file, func) {
+                    Ok(()) => return Some(Ok(())),
+                    Err(e) => {
+                        let e = format!("in {target}: {e}");
+                        if !why.contains(&e) {
+                            why.push(e);
+                        }
+                    }
+                }
+            }
+        }
+        if !why.is_empty() {
+            return Some(Err(why.join("; ")));
+        }
+        if file.starts_with(BUSBAR_SRC) {
+            // Reached by no `mod` from the root: `runs` names that refusal.
+            return Some(self.runs(file, func));
+        }
+        Some(Err(format!(
+            "{file} is reached by no target of {member} (its lib, bin or test targets), nor by \
+             the composition root's, so no test in it runs"
+        )))
+    }
+
+    /// `file::func` in `target` (a root file `tree` was read from), under the build of the crate
+    /// `target` belongs to: the composition root's derived build, or another member's
+    /// ([`crate::ci_cfg::CiBuild::of_member_manifest`]).
+    fn runs_in_target(
         &self,
+        cx: &Ctx,
+        target: &str,
         tree: &crate::libtest_path::ModuleTree,
         file: &str,
         func: &str,
     ) -> Result<(), String> {
-        let ci = self.ci.as_ref().map_err(|e| {
-            format!("CI's test build could not be derived, so no cell is shown to run ({e})")
-        })?;
-        crate::libtest_path::resolve_cell(tree, file, func).and_then(|c| ci.runs(&c))
-    }
-
-    /// Whether `file` is compiled by the build this view models: a file the composition root's
-    /// module tree reaches (door cells included), any file under its `src/` (one no `mod` reaches
-    /// is refused by [`Self::runs`], never skipped), or one of its integration-test targets. A
-    /// citation elsewhere (another workspace crate, a pinned plane's own repo) is judged by that
-    /// crate's own build and the cargo gate, not by this model of the composition root's.
-    fn judges(&self, file: &str) -> bool {
-        self.tree.paths.contains_key(file)
-            || file.starts_with(BUSBAR_SRC)
-            || integration_target(file).is_some()
-    }
-
-    /// [`Self::runs`] for a file [`Self::judges`]: an integration-test target is resolved over its
-    /// own module tree, everything else over the composition root's.
-    fn judged_runs(&self, cx: &Ctx, file: &str, func: &str) -> Result<(), String> {
-        match integration_target(file) {
-            Some(target) if !self.tree.paths.contains_key(file) => {
-                // A `[[test]]` target cargo builds only under its `required-features` is skipped
-                // whole by a build that lacks one: no cfg inside the file says so.
-                let ci = self.ci.as_ref().map_err(|e| {
-                    format!(
-                        "CI's test build could not be derived, so no cell is shown to run ({e})"
-                    )
-                })?;
-                let manifest = cx.read(MANIFEST_REL).unwrap_or_default();
-                let off: Vec<String> = required_features(&manifest, target)
-                    .into_iter()
-                    .filter(|f| !ci.features.contains(f))
-                    .collect();
-                if !off.is_empty() {
-                    return Err(format!(
-                        "its test target {target} requires feature(s) {} ({MANIFEST_REL} \
-                         `required-features`), which {} does not enable, so cargo never builds it",
-                        py_list(off.iter().map(String::as_str)),
-                        crate::ci_cfg::CI_TEST_BUILD
-                    ));
-                }
-                let tree = crate::libtest_path::module_tree(&|rel: &str| cx.read(rel).ok(), target);
-                self.runs_in(&tree, file, func)
-            }
-            _ => self.runs(file, func),
+        let krate = workspace_member_of(cx, target).unwrap_or_else(|| BUSBAR_DIR.to_string());
+        let manifest_rel = format!("{krate}/Cargo.toml");
+        let manifest = cx.read(&manifest_rel).unwrap_or_default();
+        let build = if krate == BUSBAR_DIR {
+            self.ci.clone().map_err(|e| {
+                format!("CI's test build could not be derived, so no cell is shown to run ({e})")
+            })?
+        } else {
+            crate::ci_cfg::CiBuild::of_member_manifest(&manifest)
+        };
+        let off: Vec<String> = required_features(&manifest, &krate, target)
+            .into_iter()
+            .filter(|f| !build.features.contains(f))
+            .collect();
+        if !off.is_empty() {
+            return Err(format!(
+                "its test target {target} requires feature(s) {} ({manifest_rel} \
+                 `required-features`), which {} does not enable, so cargo never builds it",
+                py_list(off.iter().map(String::as_str)),
+                crate::ci_cfg::CI_TEST_BUILD
+            ));
         }
+        crate::libtest_path::resolve_cell(tree, file, func).and_then(|c| build.runs(&c))
+    }
+
+    /// The module tree rooted at `target`, read once per view.
+    fn tree_at(&self, cx: &Ctx, target: &str) -> ModuleTreeRef {
+        let mut cache = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .entry(target.to_string())
+            .or_insert_with(|| {
+                std::sync::Arc::new(crate::libtest_path::module_tree(
+                    &|rel: &str| cx.read(rel).ok(),
+                    target,
+                ))
+            })
+            .clone()
     }
 }
 
+/// The targets that may compile `file`, a file of the workspace member at `krate`, each an existing
+/// root file. Not `full`: the cheap ones, the member's lib and bin (the composition root's bin is
+/// [`CiView::tree`] itself) and the integration-test target `file`'s path spells. `full`: every
+/// test target of the member ([`target_roots`]), and the composition root's targets that include a
+/// plane crate's driver-proofs cases (`tests/on_driver/`, compiled only there).
+fn target_candidates(cx: &Ctx, krate: &str, file: &str, full: bool) -> Vec<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    if full {
+        out.extend(target_roots(cx, krate));
+        if krate != BUSBAR_DIR {
+            out.extend(target_roots(cx, BUSBAR_DIR).into_iter().filter(|r| {
+                cx.read(r)
+                    .is_ok_and(|t| t.contains(crate::libtest_path::DRIVER_PROOFS_FILE))
+            }));
+        }
+    } else {
+        if krate != BUSBAR_DIR {
+            let manifest = cx.read(format!("{krate}/Cargo.toml")).unwrap_or_default();
+            let lib = crate::toml_lite::parse_text(&manifest)
+                .table("lib")
+                .get_one("path")
+                .map_or_else(|| "src/lib.rs".to_string(), str::to_string);
+            out.insert(format!("{krate}/{}", lib.trim_start_matches("./")));
+            out.insert(format!("{krate}/src/main.rs"));
+        }
+        out.extend(target_root_of(krate, file));
+    }
+    out.into_iter().filter(|r| cx.exists(r)).collect()
+}
+
+/// The root files of the workspace member at `krate`'s integration-test targets, as its manifest
+/// and its `tests/` directory state them: every `[[test]]` path, every `tests/<x>.rs` and
+/// `tests/<x>/main.rs`. Whether each exists is the caller's question.
+fn target_roots(cx: &Ctx, krate: &str) -> BTreeSet<String> {
+    let manifest = cx.read(format!("{krate}/Cargo.toml")).unwrap_or_default();
+    let mut roots: BTreeSet<String> = BTreeSet::new();
+    for t in crate::toml_lite::parse_text(&manifest).array_table("test") {
+        if let Some(p) = t.get_one("path") {
+            roots.insert(format!("{krate}/{}", p.trim_start_matches("./")));
+        }
+    }
+    let tests_dir = format!("{krate}/tests");
+    if let Ok(rd) = std::fs::read_dir(cx.abs(&tests_dir)) {
+        for e in rd.filter_map(Result::ok) {
+            let name = e.file_name().to_string_lossy().to_string();
+            if e.path().is_dir() {
+                roots.insert(format!("{tests_dir}/{name}/main.rs"));
+            } else if name.ends_with(".rs") {
+                roots.insert(format!("{tests_dir}/{name}"));
+            }
+        }
+    }
+    roots
+}
+
+/// A workspace member's test file a capability-equality cell's own column cites (the kernel's
+/// breaker cells), which the selftest extends with a cell CI's build is not shown to compile.
+const MEMBER_CELL_FILE: &str = "crates/busbar-kernel/src/tests/breaker_tests.rs";
+/// A file in that member no `mod` and no target reaches, planted by the selftest.
+const MEMBER_UNREACHED_FILE: &str = "crates/busbar-kernel/src/tests/a_file_no_mod_reaches.rs";
+
+/// The composition root's crate directory.
+const BUSBAR_DIR: &str = "crates/busbar";
 /// The composition root's own sources: every test under here is compiled, if at all, by the build
 /// [`CiView`] models.
 const BUSBAR_SRC: &str = "crates/busbar/src/";
 /// The composition root's integration-test targets, one per `<name>.rs` directly under here.
 const BUSBAR_TESTS: &str = "crates/busbar/tests/";
+/// The workspace manifest whose `[workspace] members` CI's `--workspace` run builds.
+const WORKSPACE_MANIFEST: &str = "Cargo.toml";
 
-/// `file` itself when it is one of the composition root's integration-test targets
-/// (`crates/busbar/tests/<name>.rs`, the file cargo compiles as its own test crate).
-fn integration_target(file: &str) -> Option<&str> {
-    let name = file.strip_prefix(BUSBAR_TESTS)?;
-    (!name.contains('/') && name.ends_with(".rs")).then_some(file)
+/// The workspace member (its directory, as `[workspace] members` spells it) whose tree holds
+/// `file`; `None` for a file outside every member (a pinned plugin's own repo).
+fn workspace_member_of(cx: &Ctx, file: &str) -> Option<String> {
+    let doc = crate::toml_lite::parse_text(&cx.read(WORKSPACE_MANIFEST).ok()?);
+    doc.table("workspace")
+        .get_list("members")
+        .into_iter()
+        .filter(|m| file.starts_with(&format!("{m}/")))
+        .max_by_key(String::len)
+}
+
+/// The integration-test target cargo compiles `file` as, spelled from its path alone: `file` itself
+/// when it is `<crate>/tests/<name>.rs`, else `<crate>/tests/<dir>/main.rs` for a file under
+/// `<crate>/tests/<dir>/` (whether that target exists is the caller's question).
+fn target_root_of(krate: &str, file: &str) -> Option<String> {
+    let rest = file.strip_prefix(&format!("{krate}/tests/"))?;
+    match rest.split_once('/') {
+        None => rest.ends_with(".rs").then(|| file.to_string()),
+        Some((dir, _)) => Some(format!("{krate}/tests/{dir}/main.rs")),
+    }
 }
 
 /// Points the first `proven` cell of a capability-equality document at `cited` in its own column;
@@ -886,43 +1018,17 @@ fn plant_own_test(eq: &mut Json, cited: &str) -> bool {
     false
 }
 
-/// The `required-features` of the `[[test]]` table in `manifest` whose `path` is `target`
-/// (`crates/busbar/tests/x.rs` is stated relative to the crate, `tests/x.rs`); empty when no such
-/// table states any. One `key = value` per line, as the manifest writes them.
-fn required_features(manifest: &str, target: &str) -> Vec<String> {
-    let rel = target.strip_prefix("crates/busbar/").unwrap_or(target);
-    let mut out = Vec::new();
-    for table in manifest.split("\n[").skip(1) {
-        let mut lines = table.lines();
-        if lines.next().map(str::trim) != Some("[test]]") {
-            continue;
-        }
-        let mut path = None;
-        let mut required = Vec::new();
-        for line in lines {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            match key.trim() {
-                "path" => path = Some(value.trim().trim_matches('"').to_string()),
-                "required-features" => {
-                    required = value
-                        .trim()
-                        .trim_start_matches('[')
-                        .trim_end_matches(']')
-                        .split(',')
-                        .map(|f| f.trim().trim_matches('"').to_string())
-                        .filter(|f| !f.is_empty())
-                        .collect();
-                }
-                _ => {}
-            }
-        }
-        if path.as_deref() == Some(rel) {
-            out.extend(required);
-        }
-    }
-    out
+/// The `required-features` of the `[[test]]` table in `manifest` (the manifest of the crate at
+/// `krate`) whose `path` is `target` (stated relative to the crate: `tests/x.rs`); empty when no
+/// such table states any.
+fn required_features(manifest: &str, krate: &str, target: &str) -> Vec<String> {
+    let rel = target.strip_prefix(&format!("{krate}/")).unwrap_or(target);
+    crate::toml_lite::parse_text(manifest)
+        .array_table("test")
+        .into_iter()
+        .filter(|t| t.get_one("path").map(|p| p.trim_start_matches("./")) == Some(rel))
+        .flat_map(|t| t.get_list("required-features"))
+        .collect()
 }
 
 fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
@@ -1111,9 +1217,12 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
 
 /// THE CAPABILITY-EQUALITY LEDGER, BY THE SAME RUN RULE: every `proven` cell of [`EQUALITY_REL`]
 /// names a test CI's build compiles and runs, in BOTH its columns. The root column always lives in
-/// the composition root; the cell's own column is judged wherever it cites a file of the build
-/// [`CiView`] models ([`CiView::judges`]): `audit-chain`x`llm` once cited a node-axis cell there
-/// that compiles under `cfg(linked_axis_node)`, which no CI build enables. Shape, ownership and
+/// the composition root; the cell's own column is judged wherever it cites a file of this
+/// workspace ([`CiView::judge`]): the root's binary or test targets, or another member crate's lib,
+/// bin or test targets, each under the build CI's `--workspace` run compiles it in.
+/// `audit-chain`x`llm` once cited a node-axis cell that compiles under `cfg(linked_axis_node)`,
+/// which no CI build enables. A citation into a pinned plugin's own repo is that repo's CI's to
+/// run, not this workspace's. Shape, ownership and
 /// existence are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is
 /// the question a source read there cannot answer, whether the cited fn is in the build that runs.
 pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
@@ -1134,9 +1243,9 @@ pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
         if cell.str_or("state", "") == "proven" {
             let test = cell.str_or("test", "");
             if let Some((file, func)) = test.split_once("::") {
-                if view.judges(file) {
+                if let Some(verdict) = view.judge(cx, file, func) {
                     judged_own += 1;
-                    if let Err(why) = view.judged_runs(cx, file, func) {
+                    if let Err(why) = verdict {
                         out.push(format!(
                             "{EQUALITY_REL}: cell {id} is proven by {test}, which no CI step \
                              runs: {why}. A proof may not point at a test that never runs"
@@ -1176,7 +1285,7 @@ pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
     }
     if judged_own == 0 {
         out.push(format!(
-            "{EQUALITY_REL}: no proven cell's own test is in the composition root's build, so \
+            "{EQUALITY_REL}: no proven cell's own test is in this workspace's build, so \
              nothing in that column is shown to run -- a column judged over nothing is not a \
              column that passed"
         ));
@@ -2355,7 +2464,8 @@ impl Gate for TellerStepsGate {
         let target = format!("{BUSBAR_TESTS}a_target_no_ci_build_has.rs");
         // (label, cited `file::fn`, the files it plants, the word its refusal must name)
         type OwnPlant = (&'static str, String, Vec<(String, String)>, &'static str);
-        let own_plants: [OwnPlant; 2] = [
+        let member_body = base_cx.read(MEMBER_CELL_FILE).unwrap_or_default();
+        let own_plants: [OwnPlant; 4] = [
             (
                 "a capability-equality cell's own test under a cfg no CI build enables",
                 format!("{llm_leg_file}::a_cell_no_ci_build_compiles"),
@@ -2384,7 +2494,36 @@ impl Gate for TellerStepsGate {
                 ],
                 "required-features",
             ),
+            // ANOTHER WORKSPACE MEMBER (row 178): its own tests are judged in its own build too,
+            // where a feature outside its default and self-dev closure is not shown on.
+            (
+                "a capability-equality cell's own test in another workspace crate under a feature \
+                 its CI build is not shown to enable",
+                format!("{MEMBER_CELL_FILE}::a_member_cell_no_ci_build_is_shown_to_compile"),
+                vec![(
+                    MEMBER_CELL_FILE.to_string(),
+                    format!(
+                        "{member_body}\n#[cfg(feature = \"a-feature-ci-never-enables\")]\n#[test]\n\
+                         fn a_member_cell_no_ci_build_is_shown_to_compile() {{}}\n"
+                    ),
+                )],
+                "a-feature-ci-never-enables",
+            ),
+            (
+                "a capability-equality cell's own test in a workspace crate file no target reaches",
+                format!("{MEMBER_UNREACHED_FILE}::a_member_cell_no_mod_reaches"),
+                vec![(
+                    MEMBER_UNREACHED_FILE.to_string(),
+                    "#[test]\nfn a_member_cell_no_mod_reaches() {}\n".to_string(),
+                )],
+                "reached by no target",
+            ),
         ];
+        if member_body.is_empty() {
+            report.note_infra_failure(format!(
+                "{MEMBER_CELL_FILE}: unreadable, so the member-crate plant has nothing to extend"
+            ));
+        }
         for (label, cited, files, naming) in own_plants {
             let eq = base_cx
                 .read(EQUALITY_REL)
@@ -2908,26 +3047,38 @@ mod equality_target_tests {
     #[test]
     fn a_target_states_its_required_features_and_only_its_own() {
         assert_eq!(
-            required_features(MANIFEST, "crates/busbar/tests/gated.rs"),
+            required_features(MANIFEST, "crates/busbar", "crates/busbar/tests/gated.rs"),
             vec!["a".to_string(), "b".to_string()]
         );
-        assert!(required_features(MANIFEST, "crates/busbar/tests/free.rs").is_empty());
-        assert!(required_features(MANIFEST, "crates/busbar/tests/absent.rs").is_empty());
+        assert!(
+            required_features(MANIFEST, "crates/busbar", "crates/busbar/tests/free.rs").is_empty()
+        );
+        assert!(
+            required_features(MANIFEST, "crates/busbar", "crates/busbar/tests/absent.rs")
+                .is_empty()
+        );
     }
 
     #[test]
-    fn only_a_file_directly_under_the_crates_tests_is_a_target() {
+    fn a_files_target_is_spelled_from_its_path_under_its_crates_tests() {
         assert_eq!(
-            integration_target("crates/busbar/tests/plane_integration.rs"),
+            target_root_of("crates/busbar", "crates/busbar/tests/plane_integration.rs").as_deref(),
             Some("crates/busbar/tests/plane_integration.rs")
         );
         assert_eq!(
-            integration_target("crates/busbar/tests/linked/mod.rs"),
+            target_root_of("crates/busbar", "crates/busbar/tests/linked/mod.rs").as_deref(),
+            Some("crates/busbar/tests/linked/main.rs")
+        );
+        assert_eq!(
+            target_root_of("crates/busbar-kernel", "crates/busbar-kernel/tests/x.rs").as_deref(),
+            Some("crates/busbar-kernel/tests/x.rs")
+        );
+        assert_eq!(
+            target_root_of("crates/busbar", "crates/busbar-kernel/tests/x.rs"),
             None
         );
-        assert_eq!(integration_target("crates/busbar-kernel/tests/x.rs"), None);
         assert_eq!(
-            integration_target("crates/busbar/src/root/tests/x.rs"),
+            target_root_of("crates/busbar", "crates/busbar/src/root/tests/x.rs"),
             None
         );
     }
