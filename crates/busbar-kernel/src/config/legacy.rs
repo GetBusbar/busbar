@@ -45,8 +45,10 @@ impl Legacy {
         Self { rows }
     }
 
-    /// The table a build with no root reads: none in a shipped build; in a TEST build the frozen
-    /// 1.5.5 rows the kernel tests pin (`tests/fixtures/frozen_customer_text.yaml`, `legacy_rows`).
+    /// The table a TEST build with no root reads: the frozen 1.5.5 rows the kernel tests pin
+    /// (`tests/fixtures/frozen_customer_text.yaml`, `legacy_rows`). A shipped build has no such
+    /// table: its rows are the root's, lent through [`Legacy::new`].
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn stand_in() -> Self {
         Self::new(stand_in())
@@ -129,11 +131,6 @@ fn stand_in() -> Rows {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect()
     })
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn stand_in() -> Rows {
-    &[]
 }
 
 #[cfg(test)]
