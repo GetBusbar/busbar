@@ -287,6 +287,11 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// `record_put` (slot 40): an upsert on `(schema, key)`. `value` is the host's bytes, borrowed,
     /// and at most `MAX_RECORD_BYTES` (the door refuses a longer one before calling).
     ///
+    /// AN EMPTY `value` REMOVES THE ROW: after it, [`Self::record_get`] answers `None` for the key
+    /// and [`Self::record_scan`] never returns it. The host writes every strike (a swept work
+    /// handle, a dropped chain) as an empty put and reads empty as absent, so a store that kept the
+    /// row would keep every strike forever. Removing a row that is not there is `Ok`.
+    ///
     /// # Errors
     /// A backend text.
     fn record_put(
