@@ -937,3 +937,111 @@ async fn a_data_request_verified_by_a_dropped_in_auth_plugin_is_answered_alike()
         })
         .await;
 }
+
+/// One answer on an h2 connection: the status, the head fields but `date` in order, and the body;
+/// or the failure the stream ended with, by its kind.
+type H2Answer = Result<(u16, Vec<(String, Vec<u8>)>, Vec<u8>), String>;
+
+/// `request` sent on `send`, its answer read whole.
+async fn h2_answer(
+    send: &mut hyper::client::conn::http2::SendRequest<http_body_util::Full<bytes::Bytes>>,
+    request: hyper::Request<http_body_util::Full<bytes::Bytes>>,
+) -> H2Answer {
+    use http_body_util::BodyExt as _;
+    let response = tokio::time::timeout(EXCHANGE_BOUND, send.send_request(request))
+        .await
+        .map_err(|_| "no answer in time".to_string())?
+        .map_err(|e| format!("the stream failed: {}", e.is_canceled()))?;
+    let status = response.status().as_u16();
+    let fields = response
+        .headers()
+        .iter()
+        .filter(|(name, _)| name.as_str() != "date")
+        .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+        .collect();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| "the body failed".to_string())?
+        .to_bytes()
+        .to_vec();
+    Ok((status, fields, body))
+}
+
+/// ON ONE h2 CONNECTION at `at`: a stream carrying a body past the cap and a concurrent probe,
+/// then a third request on the same connection: each answer.
+async fn h2_over_cap(at: SocketAddr, token: &str) -> Vec<H2Answer> {
+    let stream = tokio::net::TcpStream::connect(at)
+        .await
+        .expect("the listener accepts");
+    let (send, conn) = hyper::client::conn::http2::handshake(
+        hyper_util::rt::TokioExecutor::new(),
+        hyper_util::rt::TokioIo::new(stream),
+    )
+    .await
+    .expect("the h2 preface is answered");
+    drop(tokio::task::spawn_local(conn));
+    let scheme = axum::http::uri::Scheme::HTTP;
+    let request = |method: &str, path: &str, body: Vec<u8>| {
+        hyper::Request::builder()
+            .method(method)
+            .uri(format!("{scheme}://{at}{path}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "text/plain")
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+            .expect("a request")
+    };
+    let over = request("POST", "/call/local-whole", vec![b'x'; CAP + 4096]);
+    let probe = request("GET", busbar_kernel::auth::HEALTHZ_PATH, Vec::new());
+    let (mut a, mut b) = (send.clone(), send.clone());
+    let (over, probe) = tokio::join!(h2_answer(&mut a, over), h2_answer(&mut b, probe));
+    // The connection outlives the over-cap stream: a third request on it is answered.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut c = send;
+    let after = h2_answer(
+        &mut c,
+        request("POST", "/call/local-whole", b"ping".to_vec()),
+    )
+    .await;
+    vec![over, probe, after]
+}
+
+/// AN OVER-CAP STREAM ENDS ON ITS OWN ON h2 (1.5.5's hyper: the stream answered and reset, the
+/// connection and its other streams kept): on one h2 connection, a stream carrying a body past the
+/// cap is answered `413`, a concurrent probe completes with its whole answer, and a request made on
+/// the same connection afterwards is answered, its bytes alike handed up and framed.
+#[tokio::test(flavor = "current_thread")]
+async fn an_over_cap_stream_ends_on_its_own_on_h2_and_the_connection_serves_on() {
+    let _one = PUBLISHING.lock().await;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let rig = rig("accepted-over-cap-h2", Chain::Keys, 0);
+            let handed_up = rig.handed_up();
+            let framed = rig.framed(rig.linked_framer());
+            let left = h2_over_cap(handed_up, &rig.token).await;
+            let right = h2_over_cap(framed, &rig.token).await;
+            let status = |a: &H2Answer| a.as_ref().map(|(s, _, _)| *s).ok();
+            assert_eq!(
+                status(&left[0]),
+                Some(413),
+                "the over-cap stream: {:?}",
+                left[0]
+            );
+            assert_eq!(status(&left[1]), Some(200), "the probe: {:?}", left[1]);
+            assert_eq!(
+                status(&left[2]),
+                Some(200),
+                "the request after: {:?}",
+                left[2]
+            );
+            for (case, (l, r)) in ["over_cap", "probe", "after"]
+                .iter()
+                .zip(left.iter().zip(right.iter()))
+            {
+                assert_eq!(l, r, "h2__{case}: the answers differ handed up and framed");
+            }
+        })
+        .await;
+}
