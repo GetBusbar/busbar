@@ -98,8 +98,10 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// gate's measure on 5989f0e117. Lowered 1213 -> 1210 by GetBusbar/busbar#1408 (row 82 D2): the root's
 /// kernel-loop rider (`root/gauntlet_install.rs`, `root/gauntlet_kernel.rs`) is deleted with its
 /// tests and the root tests gated on axes no linked row sets, the gate's measure on 5948c3ecf6.
-/// Raised 1210 -> 1211 to the true count on the merged tree (a6 measured it).
-pub const MIN_FILES: usize = 1211;
+/// Raised 1210 -> 1211 to the true count on the merged tree (a6 measured it). Raised 1211 -> 1226 merging
+/// dev e4bd56e5ee into GetBusbar/busbar#1408: the gate's measure on 09883f2003 (`1226 file(s) across 14
+/// census-neutral root(s)`).
+pub const MIN_FILES: usize = 1226;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
