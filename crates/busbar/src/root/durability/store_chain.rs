@@ -50,6 +50,8 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_wal::{Record, ShipError, Shipper, MEMORY_BUFFER_RECORDS};
 
+use super::store_identity::{HeldLease, NodeLease};
+
 /// The record schema the journal's records are kept under in the configured store.
 pub const JOURNAL_SCHEMA: &str = "busbar.journal.v1";
 
@@ -297,6 +299,9 @@ struct Lane {
     moved: Condvar,
     /// The fail-closed fact, readable without the lock on the request path.
     full: AtomicBool,
+    /// The lease on this node's host name held in this store, once the boot took one
+    /// ([`JournalLane::hold_lease`]).
+    lease: HeldLease,
 }
 
 impl Lane {
@@ -421,6 +426,7 @@ impl JournalLane {
             work: Condvar::new(),
             moved: Condvar::new(),
             full: AtomicBool::new(false),
+            lease: HeldLease::default(),
         });
         let worker = Arc::clone(&lane);
         std::thread::Builder::new()
@@ -443,6 +449,24 @@ impl JournalLane {
     #[must_use]
     pub fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::clone(&self.lane.calls)
+    }
+
+    /// Keep `lease`, the boot's lease on its host name in this lane's store: what
+    /// [`JournalLane::refresh_held_lease`] and [`JournalLane::release_held_lease`] act on.
+    pub fn hold_lease(&self, lease: NodeLease) {
+        self.lane.lease.hold(lease);
+    }
+
+    /// REFRESH the held lease, if any, on every `LEASE_REFRESH_TICKS`-th call: run on the checkpoint
+    /// flush tick, off any runtime worker ([`HeldLease::refresh`]).
+    pub fn refresh_held_lease(&self) {
+        self.lane.lease.refresh(self.lane.calls.as_ref());
+    }
+
+    /// RELEASE the held lease, if any: run on a clean shutdown once the lane drained, so the next
+    /// boot of the host resumes the whole chain at once ([`HeldLease::release`]).
+    pub fn release_held_lease(&self) {
+        self.lane.lease.release(self.lane.calls.as_ref());
     }
 
     /// The journal's shipper over this lane.

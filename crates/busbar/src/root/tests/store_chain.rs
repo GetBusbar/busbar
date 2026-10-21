@@ -116,3 +116,61 @@ fn a_full_lane_refuses_money_with_its_reason_and_drops_nothing() {
         3
     );
 }
+
+/// THE LEASE IS THE LANE'S (row 159; BUSBAR-1.6.0.md Part 0, no process-global static seam): each
+/// lane holds the lease its boot took on a host name in its store. One lane releasing its lease
+/// frees its name; another lane of the same process keeps its own lease and refreshes it, so a
+/// rival boot on that name watches it stay live and takes a fresh id.
+#[test]
+fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
+    use crate::root::durability::take_node;
+    let slots = RecordSlots::new();
+    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
+    let other = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
+    let first = take_node(slots.calls().as_ref(), "host-lane-a").expect("an identity");
+    let kept = take_node(slots.calls().as_ref(), "host-lane-b").expect("an identity");
+    lane.hold_lease(first.lease.expect("the first boot holds the name's lease"));
+    other.hold_lease(kept.lease.expect("the first boot holds the name's lease"));
+    // The other lane's flush tick, as a running node's serve loop drives it.
+    let stop = Arc::new(AtomicBool::new(false));
+    let ticking = {
+        let (other, stop) = (other.clone(), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                other.refresh_held_lease();
+                std::thread::sleep(Duration::from_millis(
+                    super::super::store_identity::LEASE_TTL_MS / 27,
+                ));
+            }
+        })
+    };
+    lane.release_held_lease();
+    let again = take_node(slots.calls().as_ref(), "host-lane-a").expect("an identity");
+    let rival = take_node(slots.calls().as_ref(), "host-lane-b").expect("an identity");
+    stop.store(true, Ordering::Relaxed);
+    ticking.join().expect("the tick thread ends");
+    assert_eq!(again.id, first.id, "a released lease is taken again");
+    assert_ne!(
+        rival.id, kept.id,
+        "the other lane's lease was released with the first, or not refreshed"
+    );
+    assert!(rival.lease.is_none(), "a live lease is never shared");
+}
+
+/// RED (row 159): NO STATIC HOLDS THE NODE'S LEASE. Before, `store_identity.rs` kept the boot's
+/// lease and the store it is held in in a process-wide `static HELD`; it is now kept on the lane
+/// the boot hands its book.
+#[test]
+fn no_static_holds_the_nodes_lease() {
+    let held: Vec<&str> = include_str!("../durability/store_identity.rs")
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .filter(|code| {
+            code.contains("static ")
+                && ["HELD", "Held", "NodeLease", "StoreCalls", "LEASE_TICKS"]
+                    .iter()
+                    .any(|name| code.contains(name))
+        })
+        .collect();
+    assert!(held.is_empty(), "a static holds the node's lease: {held:?}");
+}

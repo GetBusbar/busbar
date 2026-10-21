@@ -550,64 +550,62 @@ pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String
     Ok(TakenNode { id, lease: None })
 }
 
-/// The lease this process holds on its host name, and the store it is held in: refreshed on the
-/// checkpoint flush tick, released on a clean shutdown.
-type Held = (std::sync::Arc<dyn StoreCalls>, NodeLease);
-
-/// THE PROCESS'S LEASE, once its boot took one ([`hold_lease`]).
-static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
-
-/// Keep `lease`, held in `calls`, as this process's: what [`refresh_held_lease`] and
-/// [`release_held_lease`] act on.
-pub fn hold_lease(calls: std::sync::Arc<dyn StoreCalls>, lease: NodeLease) {
-    *HELD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((calls, lease));
+/// THE LEASE A BOOK'S LANE HOLDS on its host name (`JournalLane::hold_lease`): taken by the boot
+/// that opened the lane, refreshed on the checkpoint flush tick, released on a clean shutdown. It is
+/// kept on the lane to the store it is held in, the value the boot hands the book, never in a
+/// process-wide static.
+#[derive(Debug, Default)]
+pub struct HeldLease {
+    lease: std::sync::Mutex<Option<NodeLease>>,
+    /// The checkpoint flush ticks counted since the lease was last refreshed.
+    ticks: std::sync::atomic::AtomicU32,
 }
 
-/// The held lease, cloned out of the lock so no store call waits under it.
-fn held() -> Option<Held> {
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-/// The checkpoint flush ticks counted since the lease was last refreshed.
-static LEASE_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// REFRESH this process's lease, if it holds one, on every [`LEASE_REFRESH_TICKS`]-th call: run on
-/// the checkpoint flush tick, off any runtime worker. A lease another process took (this one went
-/// unrefreshed past its lapse) is logged.
-pub fn refresh_held_lease() {
-    let tick = LEASE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
-        return;
+impl HeldLease {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<NodeLease>> {
+        self.lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    let Some((calls, lease)) = held() else {
-        return;
-    };
-    match lease.refresh(calls.as_ref()) {
-        Ok(true) => {}
-        Ok(false) => tracing::error!(
-            host = %lease.host,
-            "this node's lease on its host name lapsed and another process took it"
-        ),
-        Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
-    }
-}
 
-/// RELEASE this process's lease, if it holds one: run on a clean shutdown once the journal's lane
-/// drained, so the next boot of the host resumes the whole chain at once.
-pub fn release_held_lease() {
-    let Some((calls, lease)) = HELD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    else {
-        return;
-    };
-    if let Err(why) = lease.release(calls.as_ref()) {
-        tracing::warn!(reason = %why, "this node's lease was not released");
+    /// Keep `lease` as the one [`HeldLease::refresh`] and [`HeldLease::release`] act on.
+    pub fn hold(&self, lease: NodeLease) {
+        *self.lock() = Some(lease);
+    }
+
+    /// REFRESH the lease in `calls`, if one is held, on every [`LEASE_REFRESH_TICKS`]-th call: run
+    /// on the checkpoint flush tick, off any runtime worker. A lease another process took (this one
+    /// went unrefreshed past its lapse) is logged. The lease is cloned out of the lock, so no store
+    /// call waits under it.
+    pub fn refresh(&self, calls: &dyn StoreCalls) {
+        let tick = self
+            .ticks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
+            return;
+        }
+        let Some(lease) = self.lock().clone() else {
+            return;
+        };
+        match lease.refresh(calls) {
+            Ok(true) => {}
+            Ok(false) => tracing::error!(
+                host = %lease.host,
+                "this node's lease on its host name lapsed and another process took it"
+            ),
+            Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
+        }
+    }
+
+    /// RELEASE the lease in `calls`, if one is held: run on a clean shutdown once the journal's lane
+    /// drained, so the next boot of the host resumes the whole chain at once.
+    pub fn release(&self, calls: &dyn StoreCalls) {
+        let Some(lease) = self.lock().take() else {
+            return;
+        };
+        if let Err(why) = lease.release(calls) {
+            tracing::warn!(reason = %why, "this node's lease was not released");
+        }
     }
 }
 

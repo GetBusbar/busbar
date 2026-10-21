@@ -403,6 +403,19 @@ impl Node {
         let _ = self.book.set(book);
     }
 
+    /// The lane to the configured store the book bound to this node keeps ([`Node::bind_book`]):
+    /// the lane the boot's lease on the host name is held on. `None` before a book is bound, or on
+    /// a book over no store.
+    #[must_use]
+    pub fn book_lane(&self) -> Option<crate::root::durability::JournalLane> {
+        self.book.get().and_then(|book| {
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .lane()
+                .cloned()
+        })
+    }
+
     /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
     /// store keeps up. The book's journal is kept by the configured store and the lane to it is
     /// full: admitting the unit would put records on the chain nothing has room to hold, and a record

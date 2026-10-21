@@ -223,6 +223,12 @@ pub fn boot(
         // opened on.
         crate::root::dispatch::dispatcher().conn_waker(),
         pool_posture(settings),
+        // A member program's `env` secret references resolve through the linked secret plugins
+        // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at
+        // a plane's load or a config apply, and the connector's refresher — and are held for the
+        // spawns, which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a
+        // request).
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");

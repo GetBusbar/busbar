@@ -30,8 +30,9 @@ use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 /// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), dialling a framed
 /// connection through the proxy the process's environment names ([`crate::proxy`]), securing a
 /// connection with the default outbound trust where its target asks for it, waking a plugin's
-/// ticket through `wake`, and keeping a dialled connection whose exchange finished whole under the
-/// deployment's `pool` posture ([`crate::pool`]). The trust is built before `entries` is asked for,
+/// ticket through `wake`, keeping a dialled connection whose exchange finished whole under the
+/// deployment's `pool` posture ([`crate::pool`]), and resolving a program's environment references
+/// through `spawn_secrets` at config time ([`crate::spawn_env`]). The trust is built before `entries` is asked for,
 /// so a boot that cannot secure a connection loads no transport door.
 ///
 /// # Errors
@@ -45,6 +46,7 @@ pub fn build(
     own_ports: &[u16],
     wake: WakeTicket,
     pool: PoolPosture,
+    spawn_secrets: crate::spawn_env::SpawnSecretFn,
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
@@ -55,7 +57,8 @@ pub fn build(
     Ok(Arc::new(
         Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake)
             .pooling(pool)
-            .proxying(proxy),
+            .proxying(proxy)
+            .resolving_spawn_secrets(spawn_secrets),
     ))
 }
 

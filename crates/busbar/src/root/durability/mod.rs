@@ -141,10 +141,7 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 /// Who a node is and the key it signs with, kept in the configured store: the node registry, the
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;
-pub use store_identity::{
-    hold_lease, host_identity, keep_keyset, persisted_node, refresh_held_lease, release_held_lease,
-    stored_keyset, take_node,
-};
+pub use store_identity::{host_identity, keep_keyset, persisted_node, stored_keyset, take_node};
 // The host registry's own id, read by the boot through `take_node`; the tests reach it directly.
 #[cfg(test)]
 pub use store_identity::node_id;

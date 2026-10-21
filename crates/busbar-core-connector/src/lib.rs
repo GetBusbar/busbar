@@ -627,6 +627,11 @@ pub struct Connector {
     /// ([`Connector::pair`]): what an open serving that unit (`OpenDesc::unit`) over a datagram
     /// framer's need bridges with.
     pairs: Mutex<HashMap<u64, Arc<datagram::Pairing>>>,
+    /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
+    /// root handed this connector ([`Connector::resolving_spawn_secrets`]), handed on to every
+    /// environment a declaration loads. `None` = no reference resolves, and a program that states
+    /// one is not spawned (fail-closed).
+    spawn_secrets: Option<spawn_env::SpawnSecretFn>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -656,6 +661,7 @@ impl Default for Connector {
             io: hostio::process(),
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
+            spawn_secrets: None,
         }
     }
 }
@@ -726,6 +732,15 @@ impl Connector {
     #[must_use]
     pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
         self.io = io;
+        self
+    }
+
+    /// The same connector resolving its programs' environment references through `secrets`, at
+    /// config time: the need's declaration and the refresher's lease, never a spawn
+    /// ([`spawn_env`]).
+    #[must_use]
+    pub fn resolving_spawn_secrets(mut self, secrets: spawn_env::SpawnSecretFn) -> Self {
+        self.spawn_secrets = Some(secrets);
         self
     }
 
@@ -1112,7 +1127,7 @@ impl Connector {
                 let member = kept.unwrap_or_else(|| {
                     Arc::new(program::Member::new(
                         p.clone(),
-                        spawn_env::HeldEnv::load(&p.env_refs, scope),
+                        spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
                             door: Arc::clone(&door),
                             io: Arc::clone(&self.io),
@@ -1182,7 +1197,7 @@ impl Connector {
                 tls: None,
                 program: Some((
                     program.clone(),
-                    spawn_env::HeldEnv::load(&program.env_refs, scope),
+                    spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
                 )),
                 members: None,
             }),
