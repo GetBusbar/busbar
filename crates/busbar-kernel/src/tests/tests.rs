@@ -2805,6 +2805,9 @@ fn build_with(
 /// candidate's limits while the generation was built but not live.
 #[test]
 fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D):
+    // without it the fixture's provider is refused before any limit is read.
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestorePublished(crate::config::limits::installed());
@@ -2831,9 +2834,12 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     // A REFUSED apply (validation: a zero sticky cooldown) changes no live limit.
     let mut refused = tagged_limits(2);
     refused.hard_down_cooldown_secs = 0;
+    let Err(refusal) = build_with(cfg(refused), None) else {
+        panic!("validation refuses it");
+    };
     assert!(
-        build_with(cfg(refused), None).is_err(),
-        "validation refuses it"
+        refusal.contains("limits.hard_down_cooldown_secs must be >= 1"),
+        "refused for its zero sticky cooldown, not another reason: {refusal}"
     );
     assert_eq!(
         live_limits(),
@@ -2881,6 +2887,9 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
 /// never refreshed, so the first hard-down below read ~1800, not <= 60.
 #[test]
 fn the_operator_breaker_limits_reach_every_planes_cells() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D):
+    // without it the fixture's provider is refused before any limit is read.
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestorePublished(crate::config::limits::installed());
