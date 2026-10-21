@@ -1527,8 +1527,9 @@ pub fn compose_egress(
 /// validated `{section: value}` object per `open`/`refresh`): the kernel-owned sections it reads
 /// ([`kernel_sections`]), the providers its members are reached through ([`provider_routes`]) and
 /// the model-serving pools' bounds ([`crate::root::model_egress::ModelPools`]). Projected from each
-/// resolved configuration as it is built (`busbar_kernel::appbuild::set_config_projection`), and
-/// read back when that generation is swapped in.
+/// resolved configuration as it is built (the root's install record,
+/// `busbar_kernel::preflight::RootInstall::config_projection`), and read back when that generation
+/// is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW

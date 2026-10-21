@@ -54,9 +54,10 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 }
 
 /// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher
-/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Installed on the kernel as its auth-axis opener
-/// (`busbar_kernel::preflight::install_auth_axis`), so the kernel opens every auth instance through
-/// the contract's `AuthAxis` and names neither the loader's rows nor this dispatcher.
+/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Handed to the kernel as its auth-axis opener on the
+/// root's install record (`busbar_kernel::preflight::RootInstall::auth_axis`), so the kernel opens
+/// every auth instance through the contract's `AuthAxis` and names neither the loader's rows nor
+/// this dispatcher.
 ///
 /// Its outbound half ([`busbar_contract::auth_calls::AuthAxis::serving`]) is the process's one set
 /// of outbound auth instances ([`crate::root::door_steps::process_auths`]): an outbound style is
