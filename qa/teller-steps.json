@@ -132,7 +132,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape",
-          "note": "each of the six caller dialects the door words name driven through the door in every decode shape it has, each leg on its own deployment, and held to what the shipped path answers: a named model reaches the door and is served once, a body-model request with no model is the ladder's own 400 (all four body-model dialects), a malformed body is step 0's parse refusal (all six), and a verb the dialects declare that the door does not serve is the endpoint's own 404 -- seventeen legs, none of the refusals dialled or charged"
+          "note": "all 24 legs of the six caller dialects the plane states (read from its door words, held equal to the dialects it declares) driven through the door: 17 answered at decode and asserted with their own sentence (six named reach the door and are served, six malformed are the arrival's 400, four body-model requests with no model are the ladder's 400, the generate dialect's unserved action is its 404), plus 7 proven to resolve before decode to the answer 1.5.5 gave (five other methods on a dialect path are its 405, v1.5.5 ingress/dispatch.rs:311-318, golden http.crosscut|wrong-method|GET-messages; the two URL-model dialects' URLs naming no model are generate's Invalid resource path 404, ingress/mod.rs:838-858, and converse's model-not-found 404 after admission, ingress/dispatch.rs:199 and :220-233)"
         }
       },
       "authenticate": {
@@ -165,7 +165,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_seated_gate_stops_a_unit_and_a_passing_gate_changes_nothing",
-          "note": "a gate seated on the door's live mount driven both ways: a seat that vetoes stops the unit -- the gate's own refusal (451) in the caller's JSON envelope, the upstream never dialled, nothing charged (its admission kept and fee refunded, as 1.5.5), no metering row and one link on the chain sealed as the veto -- and a seat that does not veto is consulted and the unit answers the same served end; the mount seats no gate in front of the admission charge (the veto ends at Route after the drawn admission: a veto moved in front of a charge would change what is billed), and a gate-first seat at Approve stops the unit undialled and unadmitted (crates/busbar-kernel/tests/plane_driver.rs::a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_the_gates_status)"
+          "note": "a gate seated on the door's live mount driven both ways, in 1.5.5's order (ARCHITECT-ACCEPTED: a unit is admitted and charged, then its gate is asked, then a veto refunds its fee -- v1.5.5 crates/busbar/src/ingress/dispatch.rs:199 governance_guard admits and charges, :248 forward_with_pool_parsed, crates/busbar/src/proxy/engine/mod.rs:946 the gate chain fires and :1005 a reject returns, dispatch.rs:275 finish_admitted with ingress/mod.rs:469 refunding a non-2xx): a vetoing gate stops the unit with its 451 in the caller's JSON envelope, dials nothing, meters nothing, keeps its admission with the fee refunded and seals one record ending at Route for the veto; a passing gate is asked and the unit reaches, field by field, the served end a gateless unit reaches (the far end's bytes, the media type, one dial, the ledger, one metering row, the breaker, a Completed record). The gate-first arm, a screen that stops a unit before the door with nothing admitted, is crates/busbar/src/root/tests/plane_node_money.rs::a_screened_veto_through_the_node_admits_nothing"
         }
       },
       "admit": {
@@ -187,7 +187,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
-          "note": "the walk the route step drives, compared byte for byte with the shipped path's answer on all six fixtures: the buffered and streamed answers as 1.5.5 re-emitted them, the malformed and pool-ACL refusals as 1.5.5's own recording, the over-budget and unknown-model refusals in 1.5.5's writer's words; and per fixture the far-end dials, the admissions drawn and the member's breaker"
+          "note": "the walk the route step drives, compared with 1.5.5's answer on all six fixtures: every answer's body byte for byte (the buffered and streamed answers as 1.5.5 relayed and re-emitted them, the malformed and pool-ACL refusals as the oracle recorded them, the over-budget and unknown-model refusals in 1.5.5's writer's envelope and sentences), its response head held to the oracle's recorded 1.5.5 capture of the same request (header names framing aside, and content type), each delivered unit dialled once and a refused one never, admissions and fees drawn where 1.5.5 drew them, and the member's lane left with its breaker closed and still admissible"
         }
       },
       "meter": {

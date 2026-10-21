@@ -19,8 +19,6 @@ messages_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0"
 # Each caller dialect's own path onto pool `p`, and a request body in that dialect.
 chat_path = /v1/chat/completions
 chat_body = {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}
-# The chat dialect's cells among 1.5.5's recorded oracle answers (testing/shadow-oracle/golden/1.5.5/cells).
-recorded_cell_prefix = llm__openai__openai__request__
 messages_path = /v1/messages
 respond_path = /v1/responses
 respond_body = {"model":"p","input":"hi"}
@@ -31,6 +29,40 @@ generate_v1_path = /v1/models/p:generateContent
 generate_body = {"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
 converse_path = /model/p/converse
 converse_body = {"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+# EVERY CALLER DIALECT THIS PLANE MOUNTS, one row each, read by the composition root's decode cell
+# (one row per dialect the plane declares on the protocol axis): `caller.<name> = <path onto pool
+# p> | <a request in that dialect> | body` (its model rides the body) or `| path` (the URL).
+caller.chat = /v1/chat/completions | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body
+caller.messages = /v1/messages | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body
+caller.chat_v2 = /v2/chat | {"model":"p","messages":[{"role":"user","content":"hi"}]} | body
+caller.respond = /v1/responses | {"model":"p","input":"hi"} | body
+caller.generate = /v1beta/models/p:generateContent | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | path
+caller.converse = /model/p/converse | {"messages":[{"role":"user","content":[{"text":"hi"}]}]} | path
+# The decode step's refusal sentences, as 1.5.5 wrote them: a body naming no model, and a body that
+# is not JSON.
+missing_model_sentence = Missing required parameter: 'model'.
+unparsable_sentence = We could not parse the JSON body of your request.
+# The two decode shapes a dialect answers before decode on 1.5.5 and on the door, each as the
+# request a caller can send and 1.5.5's answer to it: `<path> | <status> | <sentence> |
+# <admissions>`. UNSERVED ACTION: an action the dialect has that the door does not serve (only the
+# generate dialect names one; every other dialect's resolved operations all have handlers, so a verb
+# its path does not take is another method on it, answered `wrong_verb_sentence` with a 405, v1.5.5
+# crates/busbar/src/ingress/dispatch.rs:311-318). NO URL MODEL: a dialect whose model rides the URL,
+# its URL naming none (v1.5.5 ingress/mod.rs:838-858 for generate; for converse, admitted at
+# ingress/dispatch.rs:199 and answered ingress/dispatch.rs:220-233 with ingress/mod.rs:1005-1013).
+unserved_action.generate = /v1beta/models/p:countTokens | 404 | or is not supported for countTokens. | 0
+wrong_verb = GET
+wrong_verb_sentence = method not allowed for this resource
+no_url_model.generate = /v1beta/models/:generateContent | 404 | Invalid resource path: models/:generateContent is not found for API version v1beta. | 0
+no_url_model.converse = /model//converse | 404 | The model '' does not exist or you do not have access to it. | 1
+# THE 1.5.5 GOLDEN CAPTURES the root's route cell holds each fixture's response head to: the oracle's
+# recorded cell (repo-relative), and for a capture of several requests the step's own request.
+route_golden.buffered = testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__ok.json
+route_golden.streamed = testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__ok_stream.json
+route_golden.malformed = testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__malformed.json
+route_golden.over_budget = testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__over_budget_total.json
+route_golden.pool_acl = testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__out_of_scope.json
+route_golden.unknown_model = testing/shadow-oracle/golden/1.5.5/cells/neutrality__models-empty__surface.json | POST /v1/chat/completions
 # The converse dialect's model-scoped invoke path, and the generate dialect's token-count action
 # (one the door does not serve), both on pool `p`.
 invoke_path = /model/p/invoke

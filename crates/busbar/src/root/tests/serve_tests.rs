@@ -5140,10 +5140,57 @@ async fn the_pools_doors_seated_gate_stops_a_unit_and_a_passing_gate_changes_not
                 "sealed as its veto, after the admission charge"
             );
         } else {
+            // FIELD BY FIELD, the served end a gateless unit reaches: the answer, its head, the
+            // dial, the money, the metering row, the lane and the record.
             assert_eq!(status, 200, "a gate that passes changes nothing");
+            assert_eq!(
+                body,
+                SERVED_BY_TWIN.as_bytes(),
+                "the far end's answer relayed byte for byte"
+            );
+            assert_eq!(
+                head.get("content-type").and_then(|v| v.to_str().ok()),
+                Some("application/json"),
+                "the answer's media type"
+            );
             assert_eq!(far.served(), 1, "the unit went on to its far end once");
-            let (requests, spend, _, billable) = rig.ledger_after(1).await;
-            assert_eq!((requests, spend, billable), (1, 1, 1));
+            assert_eq!(
+                rig.ledger_after(1).await,
+                (1, 1, 1, 1),
+                "one admission, its one-cent fee, one billable request"
+            );
+            rig.gov.flush_metering();
+            let rows: Vec<String> = rig
+                .gov
+                .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+                .expect("metering read")
+                .into_iter()
+                .filter(|row| row.key_id == rig.key_id)
+                .map(|row| {
+                    format!(
+                        "{} in={} out={} cr={} cw={} req={} billable={}",
+                        row.model,
+                        row.tokens_input,
+                        row.tokens_output,
+                        row.tokens_cache_read,
+                        row.tokens_cache_write,
+                        row.requests,
+                        row.billable_requests
+                    )
+                })
+                .collect();
+            assert_eq!(
+                rows,
+                vec!["m0 in=1 out=1 cr=0 cw=0 req=1 billable=1".to_string()],
+                "one metering row: the far end's 1 in, 1 out"
+            );
+            assert!(
+                matches!(
+                    rig.app.store.breaker_state_in("p", 0),
+                    busbar_kernel::store::BreakerState::Closed
+                ),
+                "the member's breaker stays closed"
+            );
             assert_eq!(
                 records[0].outcome.unit_end,
                 busbar_contract::caps::Outcome::Completed,
@@ -11223,19 +11270,20 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
 // The node's legacy answer path (`root/tests/plane_node.rs`) is compiled into no build since #1161
 // removed the plane that rode the node axis, so the root column's cells it held are driven here,
 // through the door the model plane is served by, at the breadth they had there: the six fixture
-// ends, the money each leaves, every caller dialect in each decode shape, and one audit record per
-// unit end on one chain. Every dialect, path and body is the plane's own door word.
+// ends, the money each leaves, the walk's dispatches, every caller dialect in each decode shape,
+// one audit record per unit end, and the identity a unit is attributed to. Every dialect, path,
+// body and refusal sentence is the plane's own door word.
 #[cfg(linked_driver_proofs)]
 mod model_door_root_cells {
     use super::*;
 
     use std::sync::Arc;
 
-    use axum::http::StatusCode;
+    use axum::http::{HeaderMap, StatusCode};
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_kernel::test_support::{MockResponse, MockServer, MockServerState};
 
-    use super::super::hook_seat_tests::{DoorRig, FarEnd};
+    use super::super::hook_seat_tests::{DoorRig, FarEnd, DRIVER_WORDS};
 
     /// The store's clock.
     fn now() -> u64 {
@@ -11277,9 +11325,53 @@ mod model_door_root_cells {
         Box::leak(label.to_lowercase().into_boxed_str())
     }
 
-    /// One request through the door as the keyed caller, its body sent as these very bytes: its
-    /// status and the bytes it answered.
-    async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> (u16, Vec<u8>) {
+    /// One caller dialect the plane's door words state (`caller.<name> = <path> | <body> |
+    /// body|path`): its name, its path onto pool `p`, a request in it, and whether its model rides
+    /// the body.
+    struct Caller {
+        name: &'static str,
+        path: &'static str,
+        request: serde_json::Value,
+        body_model: bool,
+    }
+
+    /// EVERY CALLER DIALECT THE PLANE STATES, read off its door words rather than listed here, so a
+    /// dialect the plane adds is driven without an edit to this file.
+    fn callers() -> Vec<Caller> {
+        DRIVER_WORDS
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .filter_map(|(k, v)| Some((k.trim().strip_prefix("caller.")?, v.trim())))
+            .map(|(name, row)| {
+                let cols: Vec<&'static str> = row.split(" | ").map(str::trim).collect();
+                assert_eq!(
+                    cols.len(),
+                    3,
+                    "caller.{name}: `<path> | <body> | body|path`"
+                );
+                Caller {
+                    name,
+                    path: cols[0],
+                    request: serde_json::from_str(cols[1]).expect("a JSON request body"),
+                    body_model: cols[2] == "body",
+                }
+            })
+            .collect()
+    }
+
+    /// How many dialects the linked plane declares on the protocol axis.
+    fn declared_dialects() -> usize {
+        crate::LINKED
+            .protocols
+            .iter()
+            .map(|decls| decls.len())
+            .sum()
+    }
+
+    /// One request through the door as the keyed caller, its body sent as these very bytes.
+    async fn send_raw(rig: &DoorRig, path: &str, body: &str) -> (u16, HeaderMap, Vec<u8>) {
         use tower::ServiceExt as _;
         let req = axum::http::Request::builder()
             .method("POST")
@@ -11295,11 +11387,12 @@ mod model_door_root_cells {
             .await
             .expect("the router answers");
         let status = response.status().as_u16();
-        let answered = axum::body::to_bytes(response.into_body(), 1 << 20)
+        let head = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .expect("the body")
             .to_vec();
-        (status, answered)
+        (status, head, bytes)
     }
 
     /// The key's metering rows in the bucket `at` falls in, once flushed: `model/provider in= out=
@@ -11325,6 +11418,43 @@ mod model_door_root_cells {
                 )
             })
             .collect()
+    }
+
+    /// THE WALK'S DISPATCHES, AS THE NODE'S BOOK HOLDS THEM: every write-ahead dispatch record the
+    /// door's egress walk wrote onto the node's journal before a dial (the route seam's count on
+    /// the door path: one per attempt that left the node, none for a unit that never dialled).
+    fn dispatches(rig: &DoorRig) -> usize {
+        rig.book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("the journal verifies")
+            .iter()
+            .filter_map(crate::root::durability::UnitMark::from_record)
+            .filter(|mark| mark.mark == crate::root::durability::Mark::Dispatched)
+            .count()
+    }
+
+    /// The node's book's lines so far (an overdraft carry is the same unit's second record).
+    fn book_lines(rig: &DoorRig) -> Vec<crate::root::durability::Posting> {
+        rig.book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_back()
+            .into_iter()
+            .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
+            .collect()
+    }
+
+    /// The audit records sealed, once `want` of them are or the wait is spent.
+    async fn sealed(rig: &DoorRig, want: usize) -> usize {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while rig.audit_records() < want && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        rig.audit_records()
     }
 
     /// The six ends the original's fixtures name. Each is an END a client reaches, not a step.
@@ -11354,17 +11484,22 @@ mod model_door_root_cells {
         Fixture::UnknownModel,
     ];
 
-    /// Everything one fixture's leg left behind: the caller's answer, the far end's dials, the
-    /// key's admissions and tokens, its metering rows, and the member's breaker after the walk.
+    /// Everything one fixture's leg left behind: the caller's answer and head, the far end's dials,
+    /// the walk's dispatch records, the key's admissions, spend and tokens, its metering rows, and
+    /// the member's breaker after the walk.
     #[derive(Debug)]
     struct Observed {
         status: u16,
+        head: HeaderMap,
         body: Vec<u8>,
         dialled: usize,
+        dispatched: usize,
         admitted: u64,
+        spend: i64,
         tokens: u64,
         rows: Vec<String>,
         breaker_closed: bool,
+        admissible: bool,
     }
 
     /// ONE FIXTURE, DRIVEN THROUGH THE DOOR on a deployment of its own: the caller's chat on pool
@@ -11400,29 +11535,24 @@ mod model_door_root_cells {
         let rig = rig(instance, opts).await;
         let charged_at = now();
         let path = door_word("chat_path");
-        let (status, body) = match fixture {
-            Fixture::Malformed => send_bytes(&rig, path, "{not json").await,
-            Fixture::StreamedOk => {
-                let (status, _, body) = rig.send("POST", path, Some(streamed_chat())).await;
-                (status, body)
-            }
+        let (status, head, body) = match fixture {
+            Fixture::Malformed => send_raw(&rig, path, "{not json").await,
+            Fixture::StreamedOk => rig.send("POST", path, Some(streamed_chat())).await,
             Fixture::UnknownModel => {
                 let mut request = body_word("chat_body");
                 request["model"] = serde_json::Value::from("no-such-model");
-                let (status, _, body) = rig.send("POST", path, Some(request)).await;
-                (status, body)
+                rig.send("POST", path, Some(request)).await
             }
-            _ => {
-                let (status, _, body) = rig.send("POST", path, Some(body_word("chat_body"))).await;
-                (status, body)
-            }
+            _ => rig.send("POST", path, Some(body_word("chat_body"))).await,
         };
-        let admitted = if matches!(fixture, Fixture::BufferedOk | Fixture::StreamedOk) {
-            rig.ledger_after(1).await.0
+        let (admitted, spend) = if matches!(fixture, Fixture::BufferedOk | Fixture::StreamedOk) {
+            let ledger = rig.ledger_after(1).await;
+            (ledger.0, ledger.1)
         } else {
             // A refusal's money settles at the unit's end, where there is one: give it the time.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            rig.ledger_after(0).await.0
+            let ledger = rig.ledger_after(0).await;
+            (ledger.0, ledger.1)
         };
         let tokens = rig.tokens_after().await;
         let rows = metering_rows(&rig, charged_at);
@@ -11430,15 +11560,25 @@ mod model_door_root_cells {
             rig.app.store.breaker_state_in("p", 0),
             busbar_kernel::store::BreakerState::Closed
         );
+        let admissible = rig.app.store.lane_admissible(0);
         Observed {
             status,
+            head,
             body,
             dialled: far.served(),
+            dispatched: dispatches(&rig),
             admitted,
+            spend,
             tokens,
             rows,
             breaker_closed,
+            admissible,
         }
+    }
+
+    /// A head field as text.
+    fn field<'h>(head: &'h HeaderMap, name: &str) -> &'h str {
+        head.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
     }
 
     /// THE SIX FIXTURE ENDS, ON THE DOOR. Door successor of
@@ -11476,125 +11616,200 @@ mod model_door_root_cells {
         );
     }
 
-    /// 1.5.5'S OWN RECORDED ANSWER for one of its chat-dialect oracle cells
-    /// (`testing/shadow-oracle/golden/1.5.5/cells/<the door words' recorded_cell_prefix><cell>.json`, the
-    /// shipped release driven as an operator drives it): its status, its body in the compact form
-    /// the chat dialect's writer serializes (keys in order, no whitespace), and the byte count the
-    /// recording's `content-length` held for that body.
-    fn recorded_1_5_5(cell: &str) -> (u16, Vec<u8>, usize) {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../testing/shadow-oracle/golden/1.5.5/cells")
-            .join(format!("{}{cell}.json", door_word("recorded_cell_prefix")));
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("1.5.5's recording {}: {e}", path.display()));
-        let golden: serde_json::Value = serde_json::from_str(&text).expect("a recorded cell");
-        let status = u16::try_from(golden["status"].as_u64().expect("a recorded status"))
-            .expect("an HTTP status");
-        let body = serde_json::to_vec(&golden["body"]["json"]).expect("a recorded JSON body");
-        let length = golden["headers"]["content-length"]
+    /// The framing a wire adds and the oracle normalises (`hdr.date`, `hdr.length`): what the
+    /// router's own answer carries no counterpart of, so it is not part of the compared head.
+    const FRAMING: [&str; 4] = ["content-length", "transfer-encoding", "connection", "date"];
+
+    /// THE 1.5.5 HEAD OF ONE FIXTURE, from the oracle's recorded golden capture the plane's door
+    /// words name (`route_golden.<fixture> = <repo-relative cell file> [| <step request>]`): its
+    /// header names, framing aside, and its content type.
+    fn golden_head(fixture: Fixture) -> (std::collections::BTreeSet<String>, String) {
+        let key = match fixture {
+            Fixture::BufferedOk => "route_golden.buffered",
+            Fixture::StreamedOk => "route_golden.streamed",
+            Fixture::Malformed => "route_golden.malformed",
+            Fixture::OverBudget => "route_golden.over_budget",
+            Fixture::PoolAcl => "route_golden.pool_acl",
+            Fixture::UnknownModel => "route_golden.unknown_model",
+        };
+        let row: Vec<&str> = door_word(key).split(" | ").map(str::trim).collect();
+        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(row[0]);
+        let cell: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&at)
+                .unwrap_or_else(|e| panic!("the 1.5.5 golden {} reads: {e}", at.display())),
+        )
+        .expect("the golden is JSON");
+        let headers = match row.get(1) {
+            None => cell["headers"].clone(),
+            Some(step) => cell["body"]["json"]["steps"]
+                .as_array()
+                .expect("a capture's steps")
+                .iter()
+                .find(|s| s["request"] == *step)
+                .unwrap_or_else(|| panic!("the capture has a `{step}` step"))["headers"]
+                .clone(),
+        };
+        let headers = headers.as_object().expect("the golden records the head");
+        let names = headers
+            .keys()
+            .map(|k| k.to_ascii_lowercase())
+            .filter(|k| !FRAMING.contains(&k.as_str()))
+            .collect();
+        let media = headers["content-type"]
+            .as_str()
+            .expect("a content type")
+            .to_string();
+        (names, media)
+    }
+
+    /// THE 1.5.5 BODY OF A FIXTURE THE ORACLE RECORDED IN THE CALLER'S DIALECT (`route_golden.*`'s
+    /// cell file, its body as the dialect's writer serializes it: compact, keys in order) and the
+    /// byte count its `content-length` held.
+    fn golden_body(key: &str) -> (Vec<u8>, usize) {
+        let row: Vec<&str> = door_word(key).split(" | ").map(str::trim).collect();
+        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(row[0]);
+        let cell: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&at)
+                .unwrap_or_else(|e| panic!("the 1.5.5 golden {} reads: {e}", at.display())),
+        )
+        .expect("the golden is JSON");
+        let body = serde_json::to_vec(&cell["body"]["json"]).expect("a recorded JSON body");
+        let length = cell["headers"]["content-length"]
             .as_str()
             .and_then(|n| n.parse().ok())
             .expect("a recorded content-length");
-        (status, body, length)
+        (body, length)
     }
 
-    /// A refusal in the chat dialect's error envelope, as 1.5.5's writer shaped it (that dialect's
-    /// family writer: `type` the kind, `code` paired with it, `param` null).
-    fn chat_refusal(kind: &str, code: Option<&str>, message: &str) -> Vec<u8> {
+    /// A refusal in the caller dialect's error envelope as 1.5.5's writer shaped it: `type` the
+    /// kind, `code` paired with it, `param` null.
+    fn refusal_body(kind: &str, code: Option<&str>, message: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"error": {
             "code": code, "message": message, "param": null, "type": kind}}))
         .expect("JSON")
     }
 
-    /// THE WALK ON EVERY FIXTURE, BYTE FOR BYTE, ON THE DOOR. Door successor of
+    /// THE WALK ON EVERY FIXTURE, ON THE DOOR, ANCHORED TO 1.5.5. Door successor of
     /// `plane_node.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture`, whose second leg,
-    /// the shipped entry point, is the door itself since #1161: every field the original compared
-    /// is asserted per fixture at the value the shipped path left. The caller's status and EVERY
-    /// BYTE of the answer on all six fixtures: the buffered answer relayed as the far end's very
-    /// bytes; the streamed one as the far end's frames re-emitted byte-exact with the usage chunk
-    /// the caller did not ask for stripped (1.5.5's same-dialect stream: `include_usage` injected
-    /// upstream, the trailing usage chunk withheld from an opted-out caller); the malformed body's
-    /// and the pool-ACL key's refusals as 1.5.5's own recorded answers, byte count included; the
-    /// spent budget's and the unknown model's refusals as 1.5.5's writer spelled them for these
-    /// fixtures (its quota sentence for group `bgrp`'s total window, its not-found sentence for the
-    /// name) -- the envelope builder itself checked against 1.5.5's recorded quota refusal. Then the
-    /// far end dialled once by each delivered unit and never by a refused one; the key's admissions
-    /// (drawn by each delivered unit and by the unit refused after the door, never by one refused at
-    /// or before it); and the member's breaker still closed after every walk.
+    /// the shipped entry point, is the door itself since #1161, so each field the original compared
+    /// is held to the value 1.5.5 left. THE HEAD is held to the oracle's recorded 1.5.5 capture of
+    /// the same request (`route_golden.*` in the plane's door words; the PARITY group replays the
+    /// same cells on the wire): the same header names, framing aside, and the same content type,
+    /// the budget refusal's `Retry-After` among them. Beside it: the caller's status; the far end
+    /// dialled once by each delivered unit and never by a refused one; the buffered answer relayed
+    /// as the far end's very bytes (same dialect, so byte for byte); THE BODY of every other fixture
+    /// byte for byte against 1.5.5: the streamed answer as 1.5.5's same-dialect stream re-emitted
+    /// the far end's frames (the usage chunk the caller did not ask for withheld), the malformed
+    /// and pool-ACL refusals as the oracle recorded them (byte count included), and the spent
+    /// budget's and the unknown model's refusals in 1.5.5's writer's envelope and sentences for
+    /// these fixtures (the envelope checked against 1.5.5's recorded quota refusal); the key's
+    /// admissions (drawn by each delivered unit and by the unit refused after the door, never by
+    /// one refused at or before it) and its spend (the one-cent fee of each delivered unit, nothing
+    /// for a refusal); and the member's lane after every walk, its breaker closed and the lane
+    /// still admissible (neither marked dead nor out of budget), as 1.5.5 left both.
     ///
-    /// RED: an answer differing from 1.5.5's by one byte on any fixture, a walk that dials a refused
-    /// unit or dials twice, an admission drawn or skipped against the fixture, or a member benched by
-    /// a refusal.
+    /// RED: a head that names a field 1.5.5 did not send or drops one it did, another media type, a
+    /// body that differs from 1.5.5's by one byte, a walk that dials a refused unit or dials twice,
+    /// an admission or a fee drawn or skipped against the fixture, or a member benched or made
+    /// inadmissible by a walk.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave() {
         let _one = ONE_PUBLISHER.lock().await;
         let mut failures: Vec<String> = Vec::new();
-
-        // The envelope builder spells what 1.5.5 recorded, so the two fixtures it spells below are
-        // in 1.5.5's bytes and not this file's.
-        let (_, quota_recorded, quota_length) = recorded_1_5_5("over_budget_total");
-        let quota_sentence =
-            "You have exceeded your current quota (group 'broke-quota' budget per \
-                              day exhausted). Please check your plan and billing details.";
-        let quota_spelled = chat_refusal(
+        // The envelope is spelled as 1.5.5 recorded it, so the two refusals spelled below are in
+        // 1.5.5's bytes and not this file's.
+        let (quota_recorded, quota_length) = golden_body("route_golden.over_budget");
+        let quota_spelled = refusal_body(
             "insufficient_quota",
             Some("insufficient_quota"),
-            quota_sentence,
+            "You have exceeded your current quota (group 'broke-quota' budget per day exhausted). \
+             Please check your plan and billing details.",
         );
         assert_eq!(
             (quota_spelled.as_slice(), quota_spelled.len()),
             (quota_recorded.as_slice(), quota_length),
-            "the chat envelope is spelled as 1.5.5 recorded it"
+            "the refusal envelope is spelled as 1.5.5 recorded it"
         );
-
-        let (malformed_status, malformed, malformed_length) = recorded_1_5_5("malformed");
-        let (acl_status, acl, acl_length) = recorded_1_5_5("out_of_scope");
+        let (malformed, malformed_length) = golden_body("route_golden.malformed");
+        let (acl, acl_length) = golden_body("route_golden.pool_acl");
         assert_eq!(
-            (malformed_status, malformed.len(), acl_status, acl.len()),
-            (400, malformed_length, 403, acl_length),
-            "1.5.5's recordings are the 400 and the 403, each its recorded byte count"
+            (malformed.len(), acl.len()),
+            (malformed_length, acl_length),
+            "each recorded body is its recorded byte count"
         );
         let streamed = format!(
             "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
             FRAMES[0], FRAMES[1]
         );
-        let over_budget = chat_refusal(
+        let over_budget = refusal_body(
             "insufficient_quota",
             Some("insufficient_quota"),
             "You have exceeded your current quota (group 'bgrp' budget per total exhausted). \
              Please check your plan and billing details.",
         );
-        let unknown = chat_refusal(
+        let unknown = refusal_body(
             "not_found_error",
             None,
             "The model 'no-such-model' does not exist or you do not have access to it.",
         );
-
-        for (fixture, status, answer, dialled, admitted) in [
-            (Fixture::BufferedOk, 200, SERVED_BY_TWIN.as_bytes(), 1, 1),
-            (Fixture::StreamedOk, 200, streamed.as_bytes(), 1, 1),
-            (
-                Fixture::Malformed,
-                malformed_status,
-                malformed.as_slice(),
-                0,
-                0,
-            ),
-            (Fixture::OverBudget, 429, over_budget.as_slice(), 0, 0),
-            (Fixture::PoolAcl, acl_status, acl.as_slice(), 0, 0),
-            (Fixture::UnknownModel, 404, unknown.as_slice(), 0, 1),
+        let answers: [(Fixture, &[u8]); 6] = [
+            (Fixture::BufferedOk, SERVED_BY_TWIN.as_bytes()),
+            (Fixture::StreamedOk, streamed.as_bytes()),
+            (Fixture::Malformed, &malformed),
+            (Fixture::OverBudget, &over_budget),
+            (Fixture::PoolAcl, &acl),
+            (Fixture::UnknownModel, &unknown),
+        ];
+        for (fixture, status, dialled, admitted, spend) in [
+            (Fixture::BufferedOk, 200, 1, 1, 1),
+            (Fixture::StreamedOk, 200, 1, 1, 1),
+            (Fixture::Malformed, 400, 0, 0, 0),
+            (Fixture::OverBudget, 429, 0, 0, 0),
+            (Fixture::PoolAcl, 403, 0, 0, 0),
+            (Fixture::UnknownModel, 404, 0, 1, 0),
         ] {
             let seen = observe("walk", fixture).await;
-            if (seen.status, seen.dialled, seen.admitted) != (status, dialled, admitted) {
+            if (seen.status, seen.dialled, seen.admitted, seen.spend)
+                != (status, dialled, admitted, spend)
+            {
                 failures.push(format!(
-                    "{fixture:?}: (status, dialled, admitted) = ({}, {}, {}), expected \
-                     ({status}, {dialled}, {admitted})",
-                    seen.status, seen.dialled, seen.admitted
+                    "{fixture:?}: (status, dialled, admitted, spend) = ({}, {}, {}, {}), \
+                     expected ({status}, {dialled}, {admitted}, {spend})",
+                    seen.status, seen.dialled, seen.admitted, seen.spend
+                ));
+            }
+            let (names, media) = golden_head(fixture);
+            let door: std::collections::BTreeSet<String> = seen
+                .head
+                .keys()
+                .map(|k| k.as_str().to_ascii_lowercase())
+                .filter(|k| !FRAMING.contains(&k.as_str()))
+                .collect();
+            if door != names {
+                failures.push(format!(
+                    "{fixture:?}: the head names {door:?}, 1.5.5 sent {names:?}"
+                ));
+            }
+            if field(&seen.head, "content-type") != media {
+                failures.push(format!(
+                    "{fixture:?}: content-type {:?}, 1.5.5 sent {media:?}",
+                    field(&seen.head, "content-type")
                 ));
             }
             if !seen.breaker_closed {
                 failures.push(format!("{fixture:?}: the member's breaker left closed"));
             }
+            if !seen.admissible {
+                failures.push(format!("{fixture:?}: the member's lane left inadmissible"));
+            }
+            let answer = answers
+                .iter()
+                .find_map(|(f, bytes)| (*f == fixture).then_some(*bytes))
+                .expect("every fixture has its 1.5.5 answer");
             if seen.body != answer {
                 failures.push(format!(
                     "{fixture:?}: the answer is not 1.5.5's byte for byte\n  1.5.5: {}\n  door:  {}",
@@ -11681,50 +11896,99 @@ mod model_door_root_cells {
         assert_eq!(post_door.rows, Vec::<String>::new(), "and meters nothing");
     }
 
-    /// The four shapes the decode step is asked about.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Shape {
-        /// A well-formed native request naming pool `p`: both halves of the step answer, and the
-        /// unit reaches the door.
-        Named,
-        /// A well-formed native request with no `model` member: the model ladder resolves nothing,
-        /// the decode step's own refusal. Asked of the dialects whose model rides the body; a
-        /// dialect whose model rides the path has no body member to leave out.
-        NoModel,
-        /// Bytes that are not a document at all: refused at arrival, never reaching the ladder.
-        Malformed,
-        /// An action the dialect has and the door does not serve: the handler half of the step.
-        UnsupportedVerb,
-    }
-
-    /// Every caller dialect the door words name: its path onto pool `p`, a request in it, and
-    /// whether its model rides the body.
-    fn dialects() -> Vec<(&'static str, serde_json::Value, bool)> {
-        vec![
-            (door_word("chat_path"), body_word("chat_body"), true),
-            (door_word("messages_path"), body_word("chat_body"), true),
-            (door_word("chat_v2_path"), body_word("chat_v2_body"), true),
-            (door_word("respond_path"), body_word("respond_body"), true),
+    /// **THE ROUTE SEAM'S COUNT, ON THE DOOR.** Door successor of
+    /// `plane_node.rs::the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one`.
+    /// The count is the instrument, and a status cannot be: a refusal the loop rendered and a far
+    /// end's own refusal are the same bytes on the wire, and only "did anything leave the node" tells
+    /// them apart. On the door path that count is the egress walk's write-ahead DISPATCH RECORD on
+    /// the node's journal, written before each dial and never for a unit that does not dial.
+    ///
+    /// THREE ENDS, THREE COUNTS, each on its own deployment. The two refusals bracket the door: the
+    /// pool-ACL guard (refused before the door) and the spent budget (refused at it) dispatch
+    /// nothing; the served unit dispatches EXACTLY once (a second dispatch of one unit is a request
+    /// the client sent once and the far end saw twice). THE SECOND WITNESS is the far end's own
+    /// count, independent of the first: a dispatch record with no dial, or a dial with no record, is
+    /// a finding. Each unit still produces its status.
+    ///
+    /// RED: a walk whose journal port writes no record reads 0 for the served unit; a refusal that
+    /// dialled reads 1 on either witness.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_model_door_dispatches_a_served_unit_once_and_a_refused_one_never() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let mut failures: Vec<String> = Vec::new();
+        for (fixture, expected, why) in [
             (
-                door_word("generate_path"),
-                body_word("generate_body"),
-                false,
+                Fixture::PoolAcl,
+                0usize,
+                "refused before the door: the pre-admission guard",
             ),
             (
-                door_word("converse_path"),
-                body_word("converse_body"),
-                false,
+                Fixture::OverBudget,
+                0,
+                "refused at the door: the group's budget is spent",
             ),
-        ]
+            (
+                Fixture::BufferedOk,
+                1,
+                "served: the whole walk, exactly once",
+            ),
+        ] {
+            let seen = observe("dispatch", fixture).await;
+            if seen.dispatched != expected {
+                failures.push(format!(
+                    "{fixture:?} ({why}): the walk wrote {} dispatch record(s), expected \
+                     {expected}",
+                    seen.dispatched
+                ));
+            }
+            if seen.dialled != expected {
+                failures.push(format!(
+                    "{fixture:?} ({why}): the far end was dialled {} time(s), expected {expected}",
+                    seen.dialled
+                ));
+            }
+            if !(100..600).contains(&seen.status) {
+                failures.push(format!("{fixture:?} ({why}): the unit produced no status"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} finding(s) at the route seam:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
-    /// One decode leg on a deployment of its own: (status, far-end dials, admissions).
+    /// What one decode leg sends.
+    enum Payload {
+        /// A JSON request.
+        Json(serde_json::Value),
+        /// These very bytes.
+        Raw(&'static str),
+        /// No body.
+        Empty,
+    }
+
+    /// One decode leg's request and the answer it is held to.
+    struct Leg {
+        shape: &'static str,
+        method: &'static str,
+        path: &'static str,
+        payload: Payload,
+        status: u16,
+        sentence: Option<&'static str>,
+        dials: usize,
+        admits: u64,
+    }
+
+    /// One decode leg on a deployment of its own: (status, body, far-end dials, admissions).
     async fn decode_leg(
         label: &str,
+        method: &str,
         path: &str,
-        shape: Shape,
-        request: &serde_json::Value,
-    ) -> (u16, usize, u64) {
+        payload: Payload,
+        served: bool,
+    ) -> (u16, String, usize, u64) {
         let instance = deployment(format!("root-door-decode-{label}"));
         let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
@@ -11736,107 +12000,212 @@ mod model_door_root_cells {
             },
         )
         .await;
-        let status = match shape {
-            Shape::Named => rig.send("POST", path, Some(request.clone())).await.0,
-            Shape::NoModel => {
-                let mut bare = request.clone();
+        let (status, _, body) = match payload {
+            Payload::Json(request) => rig.send(method, path, Some(request)).await,
+            Payload::Raw(bytes) => send_raw(&rig, path, bytes).await,
+            Payload::Empty => rig.send(method, path, None).await,
+        };
+        let admitted = if served {
+            rig.ledger_after(1).await.0
+        } else {
+            // A refusal's money settles at the unit's end, where there is one: give it the time.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            rig.ledger_after(0).await.0
+        };
+        (
+            status,
+            String::from_utf8_lossy(&body).into_owned(),
+            far.served(),
+            admitted,
+        )
+    }
+
+    /// A door word's row of `<path> | <status> | <sentence> | <admissions>`: one request a caller can
+    /// send and the answer 1.5.5 gave it.
+    fn answer_row(key: &str) -> Option<(&'static str, u16, &'static str, u64)> {
+        let row = DRIVER_WORDS
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)?
+            .1
+            .trim();
+        let cols: Vec<&'static str> = row.split(" | ").map(str::trim).collect();
+        assert_eq!(
+            cols.len(),
+            4,
+            "{key}: `<path> | <status> | <sentence> | <admissions>`"
+        );
+        Some((
+            cols[0],
+            cols[1].parse().expect("a status"),
+            cols[2],
+            cols[3].parse().expect("an admission count"),
+        ))
+    }
+
+    /// **THE DECODE STEP ON EVERY DIALECT THE PLANE STATES, ALL FOUR SHAPES.** Door successor of
+    /// `plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`: each
+    /// caller dialect the plane's door words state (as many as the plane declares on the protocol
+    /// axis, read rather than listed) in each of the four shapes, every leg on its own deployment,
+    /// the end each reaches asserted with the answer's own sentence. Twenty-four legs for six
+    /// dialects:
+    ///
+    /// * `Named` (each dialect) reaches the door and is served (200, one dial, one admission): the
+    ///   model WAS resolved, and the dialect is mounted;
+    /// * `Malformed` (each dialect) is refused 400 at arrival with the parse sentence, charged
+    ///   nothing and dialled nowhere;
+    /// * NO MODEL. A dialect whose model rides the body: the ladder's own 400 with the
+    ///   missing-model sentence. A dialect whose model rides the URL has no body member to leave
+    ///   out, so the request a caller can send is the URL naming no model (`no_url_model.<name>`),
+    ///   answered as 1.5.5 answered it before decode: the generate dialect's own `Invalid resource
+    ///   path` 404 (v1.5.5 `crates/busbar/src/ingress/mod.rs:838-858`), the converse dialect's
+    ///   model-not-found 404 naming the empty model after its admission (v1.5.5
+    ///   `ingress/dispatch.rs:199` admits, `:220-233` answers `not_found_message`,
+    ///   `ingress/mod.rs:1005-1013`);
+    /// * UNSUPPORTED VERB. Where the door words name an action the dialect has and the door does
+    ///   not serve (`unserved_action.<name>`), its own 404. Every other dialect resolves no
+    ///   operation on its path that lacks a handler, on 1.5.5 as on the door (v1.5.5
+    ///   `ingress/dispatch.rs:325-336`), so the request a caller can send for a verb its path does
+    ///   not take is another method on that path, answered as 1.5.5 answered it before decode:
+    ///   the dialect's 405 (v1.5.5 `ingress/dispatch.rs:311-318`; the oracle's golden
+    ///   `http.crosscut|wrong-method|GET-messages`).
+    ///
+    /// RED: a dialect that does not reach the door, a model-less request that does, a refusal that
+    /// is charged or dialled against 1.5.5, or an answer in another status or sentence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_model_door_decodes_every_dialect_it_mounts_in_every_shape() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let callers = callers();
+        assert_eq!(
+            callers.len(),
+            declared_dialects(),
+            "the door words state one caller row per dialect the plane declares"
+        );
+        let missing_model = door_word("missing_model_sentence");
+        let unparsable = door_word("unparsable_sentence");
+        let wrong_verb = door_word("wrong_verb");
+        let wrong_verb_sentence = door_word("wrong_verb_sentence");
+        let mut failures: Vec<String> = Vec::new();
+        let mut legs = 0usize;
+        for caller in &callers {
+            let mut shapes = vec![
+                Leg {
+                    shape: "named",
+                    method: "POST",
+                    path: caller.path,
+                    payload: Payload::Json(caller.request.clone()),
+                    status: 200,
+                    sentence: None,
+                    dials: 1,
+                    admits: 1,
+                },
+                Leg {
+                    shape: "malformed",
+                    method: "POST",
+                    path: caller.path,
+                    payload: Payload::Raw("{not json"),
+                    status: 400,
+                    sentence: Some(unparsable),
+                    dials: 0,
+                    admits: 0,
+                },
+            ];
+            if caller.body_model {
+                let mut bare = caller.request.clone();
                 let _ = bare
                     .as_object_mut()
                     .expect("a body-model request is a JSON object")
                     .remove("model");
-                rig.send("POST", path, Some(bare)).await.0
+                shapes.push(Leg {
+                    shape: "no-model",
+                    method: "POST",
+                    path: caller.path,
+                    payload: Payload::Json(bare),
+                    status: 400,
+                    sentence: Some(missing_model),
+                    dials: 0,
+                    admits: 0,
+                });
+            } else {
+                let (path, status, sentence, admits) =
+                    answer_row(&format!("no_url_model.{}", caller.name))
+                        .unwrap_or_else(|| panic!("no_url_model.{} is stated", caller.name));
+                shapes.push(Leg {
+                    shape: "no-url-model",
+                    method: "POST",
+                    path,
+                    payload: Payload::Json(caller.request.clone()),
+                    status,
+                    sentence: Some(sentence),
+                    dials: 0,
+                    admits,
+                });
             }
-            Shape::Malformed => send_bytes(&rig, path, "{not json").await.0,
-            Shape::UnsupportedVerb => {
-                rig.send("POST", path, Some(serde_json::json!({"contents": []})))
-                    .await
-                    .0
-            }
-        };
-        let admitted = if shape == Shape::Named {
-            rig.ledger_after(1).await.0
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            rig.ledger_after(0).await.0
-        };
-        (status, far.served(), admitted)
-    }
-
-    /// **THE DECODE STEP ON EVERY DIALECT THE DOOR MOUNTS.** Door successor of
-    /// `plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`. The
-    /// decode step answers two questions, which handler owns the request and which model the caller
-    /// named, and every step after it is about those two answers, so each of the six caller dialects
-    /// the door words name is driven through the door, each shape on its own deployment, and the
-    /// end each reaches is asserted:
-    ///
-    /// * `Named` reaches the door and is served (200, one dial, one admission): the model WAS
-    ///   resolved, and the dialect is mounted (a dialect missing from the door's claims resolves
-    ///   no arrival and 404s);
-    /// * `NoModel` (each dialect whose model rides the body) is the ladder's own 400, charged to
-    ///   nobody and dialled nowhere;
-    /// * `Malformed` (every dialect) is refused 400 at arrival, before the ladder, charged nothing;
-    /// * `UnsupportedVerb` is the handler half: the action the door words name that the door does
-    ///   not serve is the endpoint's own 404, charged nothing.
-    ///
-    /// RED: a dialect that does not reach the door, a model-less body that does, a malformed body
-    /// that is charged or dialled, or an unserved action answered as anything but its 404.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_model_door_decodes_every_dialect_it_mounts_in_every_shape() {
-        let _one = ONE_PUBLISHER.lock().await;
-        let mut failures: Vec<String> = Vec::new();
-        let mut legs = 0usize;
-        for (n, (path, request, body_model)) in dialects().into_iter().enumerate() {
-            let mut shapes = vec![Shape::Named, Shape::Malformed];
-            if body_model {
-                shapes.push(Shape::NoModel);
-            }
-            for shape in shapes {
+            shapes.push(
+                match answer_row(&format!("unserved_action.{}", caller.name)) {
+                    Some((path, status, sentence, admits)) => Leg {
+                        shape: "unserved-action",
+                        method: "POST",
+                        path,
+                        payload: Payload::Json(caller.request.clone()),
+                        status,
+                        sentence: Some(sentence),
+                        dials: 0,
+                        admits,
+                    },
+                    None => Leg {
+                        shape: "wrong-verb",
+                        method: wrong_verb,
+                        path: caller.path,
+                        payload: Payload::Empty,
+                        status: 405,
+                        sentence: Some(wrong_verb_sentence),
+                        dials: 0,
+                        admits: 0,
+                    },
+                },
+            );
+            for leg in shapes {
                 legs += 1;
-                let label = format!("{n}-{shape:?}");
-                let (status, dialled, admitted) = decode_leg(&label, path, shape, &request).await;
-                let want = match shape {
-                    Shape::Named => (200, 1, 1),
-                    _ => (400, 0, 0),
-                };
-                if (status, dialled, admitted) != want {
+                let (shape, method, path) = (leg.shape, leg.method, leg.path);
+                let label = format!("{}-{shape}", caller.name);
+                let (status, body, dialled, admitted) =
+                    decode_leg(&label, method, path, leg.payload, shape == "named").await;
+                if (status, dialled, admitted) != (leg.status, leg.dials, leg.admits) {
                     failures.push(format!(
-                        "{path} {shape:?}: (status, dialled, admitted) = ({status}, {dialled}, \
-                         {admitted}), expected {want:?}"
+                        "{method} {path} ({shape}): (status, dialled, admitted) = ({status}, \
+                         {dialled}, {admitted}), expected ({}, {}, {}): {body}",
+                        leg.status, leg.dials, leg.admits
                     ));
+                }
+                if let Some(sentence) = leg.sentence {
+                    if !body.contains(sentence) {
+                        failures.push(format!(
+                            "{method} {path} ({shape}): the answer does not say {sentence:?}: \
+                             {body}"
+                        ));
+                    }
                 }
             }
         }
-        // THE HANDLER HALF, on the action the door words name as one the door does not serve.
-        legs += 1;
-        let unserved = door_word("count_tokens_path");
-        let (status, dialled, admitted) = decode_leg(
-            "unserved",
-            unserved,
-            Shape::UnsupportedVerb,
-            &serde_json::Value::Null,
-        )
-        .await;
-        if (status, dialled, admitted) != (404, 0, 0) {
-            failures.push(format!(
-                "{unserved} UnsupportedVerb: (status, dialled, admitted) = ({status}, {dialled}, \
-                 {admitted}), expected (404, 0, 0)"
-            ));
-        }
         assert_eq!(
-            legs, 17,
-            "six dialects named and malformed, four model-less, one unserved action"
+            legs,
+            4 * callers.len(),
+            "every dialect in all four shapes: named, malformed, no model, unsupported verb"
         );
         assert!(
             failures.is_empty(),
             "{} divergence(s) across {} dialect(s):\n{}",
             failures.len(),
-            dialects().len(),
+            callers.len(),
             failures.join("\n")
         );
     }
 
-    /// EVERY UNIT END SEALS EXACTLY ONE AUDIT RECORD ON ONE CHAIN, AND A REQUEST THAT NEVER BECAME A
-    /// UNIT SEALS NONE, ON THE DOOR. Door successor of
+    /// EVERY UNIT END SEALS EXACTLY ONE AUDIT RECORD ON ONE CHAIN, AND A UNIT WHOSE AUDIT DOOR IS
+    /// NEVER ASKED SEALS NONE, ON THE DOOR. Door successor of
     /// `plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record` and the chain half of
     /// `every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain`.
     /// On one deployment: a served unit seals one record; a bearer this deployment never minted is
@@ -11844,11 +12213,13 @@ mod model_door_root_cells {
     /// its far end holds the body (an ABANDONED end) seals exactly one record more. The two records
     /// are contiguous, the second linked to the first, the chain walks clean under
     /// `AuditChain::verify_window` and the node's own verify, and a record altered after its seal
-    /// breaks the walk. (The node-side half, an abandoned unit whose audit door never answered
-    /// sealing none, is the node's own cell, `plane_node_money.rs`, built in every test build.)
+    /// breaks the walk. On a second deployment, whose node's journal cannot reach its store: the
+    /// node declines a new unit before any step of it runs (`journal_refusal`), so its audit door
+    /// is never asked, and it seals NO record, though the caller has its answer.
     ///
-    /// RED: an abandoned end sealing nothing or twice, a record for a request that was never a unit,
-    /// or a chain that does not link or does not detect a forgery.
+    /// RED: an abandoned end sealing nothing or twice, a record for a request that was never a unit
+    /// or for a unit whose audit door was never asked, or a chain that does not link or does not
+    /// detect a forgery.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_seals_one_record_per_unit_end_on_one_chain_and_none_without_a_unit() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11877,16 +12248,6 @@ mod model_door_root_cells {
             },
         )
         .await;
-        let sealed = |want: usize| {
-            let rig = &rig;
-            async move {
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-                while rig.audit_records() < want && tokio::time::Instant::now() < deadline {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                rig.audit_records()
-            }
-        };
         let path = door_word("chat_path");
 
         // A SERVED UNIT: one record.
@@ -11894,7 +12255,7 @@ mod model_door_root_cells {
             rig.send("POST", path, Some(body_word("chat_body"))).await.0,
             200
         );
-        assert_eq!(sealed(1).await, 1, "one record for the served unit");
+        assert_eq!(sealed(&rig, 1).await, 1, "one record for the served unit");
 
         // A REQUEST THAT NEVER BECAME A UNIT: refused at the door, nothing sealed.
         let (refused, _, _) = rig
@@ -11918,7 +12279,7 @@ mod model_door_root_cells {
         }
         release.notify_one();
         assert_eq!(
-            sealed(2).await,
+            sealed(&rig, 2).await,
             2,
             "exactly one audit record for the abandoned unit"
         );
@@ -11954,6 +12315,227 @@ mod model_door_root_cells {
         assert!(
             busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
             "a record altered after its seal breaks the chain"
+        );
+
+        // A UNIT WHOSE AUDIT DOOR IS NEVER ASKED: the node declines it before any step runs.
+        let declining = "root-door-audit-never-asked";
+        let _declining_published = Withdrawn(declining);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let full = rig_of(declining, far.port).await;
+        let (status, _, _) = full.send("POST", path, Some(body_word("chat_body"))).await;
+        assert_eq!(status, 503, "the node declines the unit before any step");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            full.audit_records(),
+            0,
+            "a unit whose audit door was never asked seals no record"
+        );
+        assert_eq!(far.served(), 0, "and dialled nothing");
+    }
+
+    /// A deployment whose node's journal cannot reach its store (`RigOpts::full_journal`).
+    async fn rig_of(instance: &'static str, port: u16) -> DoorRig {
+        rig(
+            instance,
+            RigOpts {
+                members: &[(port, 1)],
+                full_journal: true,
+                ..RigOpts::default()
+            },
+        )
+        .await
+    }
+
+    /// A deployment whose door binds no key (`RigOpts::open_door`).
+    async fn unbound_rig_of(instance: &'static str, port: u16) -> DoorRig {
+        rig(
+            instance,
+            RigOpts {
+                members: &[(port, 1)],
+                open_door: true,
+                ..RigOpts::default()
+            },
+        )
+        .await
+    }
+
+    /// The unit's line that carries its counts, once the node's late arm wrote it (bounded).
+    async fn counted_line(rig: &DoorRig) -> crate::root::durability::Posting {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(line) = book_lines(rig).into_iter().find(|p| p.counts.is_some()) {
+                return line;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the node's book has a line carrying the unit's counts: {:?}",
+                book_lines(rig)
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// **THE DOOR ATTRIBUTES THE IDENTITY IT RESOLVED AND INVENTS NONE.** Door successor of
+    /// `plane_node.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none`, its three
+    /// credentials and its unbound arm. Every credential goes through the deployment's OWN data door:
+    ///
+    /// * the deployment's live bearer is ADMITTED, its unit charged to that key (requests 1) and the
+    ///   unit's line on the node's book names that key as its principal;
+    /// * a bearer this deployment never minted, and a bearer whose lifetime has run out, are both
+    ///   REFUSED at the door (401), so no unit exists: nothing is dialled, no line or record is
+    ///   written, and the expired key's own ledger stays empty;
+    /// * THE UNBOUND ARM: on a deployment whose door binds no key (an open front door), the same
+    ///   never-minted bearer leaves the middleware's shape that binds no key, the unit is served,
+    ///   and its record is attributed to the anonymous actor, never to a key and never to the bearer
+    ///   the caller presented; nothing is charged to the deployment's key.
+    ///
+    /// RED: a refused credential admitted, a unit charged to a key nobody presented, a line
+    /// attributed to anything but the resolved key, or an unbound unit attributed to anything but
+    /// the anonymous actor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_model_door_attributes_the_identity_it_resolved_and_invents_none() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let path = door_word("chat_path");
+        let never_minted = "Bearer not-a-token-this-deployment-minted";
+
+        let instance = "root-door-identity-keyed";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+
+        // THE LIVE BEARER: admitted, and the unit is the resolved key's.
+        assert_eq!(
+            rig.send("POST", path, Some(body_word("chat_body"))).await.0,
+            200,
+            "the deployment's own bearer"
+        );
+        let (requests, _, _, _) = rig.ledger_after(1).await;
+        assert_eq!(requests, 1, "the admitted unit was charged to the key");
+        let line = counted_line(&rig).await;
+        assert_eq!(
+            line.principal, rig.key_id,
+            "the loop settled on the key the door resolved"
+        );
+        let lines = book_lines(&rig).len();
+        let records = rig.audit_records();
+
+        // A BEARER THIS DEPLOYMENT NEVER MINTED.
+        let (bad, _, _) = rig
+            .send_bare(
+                "POST",
+                path,
+                Some(body_word("chat_body")),
+                &[("authorization", never_minted)],
+            )
+            .await;
+        assert_eq!(bad, 401, "a bearer never minted is refused at the door");
+
+        // A BEARER WHOSE LIFETIME HAS RUN OUT, minted on this deployment's own book.
+        let (expired_key, expired_token) = rig
+            .gov
+            .mint_signed(
+                NewKeySpec {
+                    name: "expired".to_string(),
+                    ..Default::default()
+                },
+                1_700_000_100,
+                1_700_000_000,
+            )
+            .expect("mint");
+        let expired_bearer = format!(
+            "Bearer {}",
+            expired_token.expose(&busbar_kernel::seal::lend())
+        );
+        let (expired, _, _) = rig
+            .send_bare(
+                "POST",
+                path,
+                Some(body_word("chat_body")),
+                &[("authorization", expired_bearer.as_str())],
+            )
+            .await;
+        assert_eq!(
+            expired, bad,
+            "an expired bearer is refused at the door as a bearer never minted is"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            far.served(),
+            1,
+            "neither refused credential reached a far end"
+        );
+        assert_eq!(
+            (book_lines(&rig).len(), rig.audit_records()),
+            (lines, records),
+            "no unit exists for a refused credential: no line, no record"
+        );
+        assert!(
+            book_lines(&rig)
+                .iter()
+                .all(|line| line.principal == rig.key_id),
+            "every line is the resolved key's: {:?}",
+            book_lines(&rig)
+        );
+        let expired_usage = rig
+            .gov
+            .usage_for(&rig.app.cost, &expired_key.id, now())
+            .expect("usage read")
+            .map_or(0, |usage| usage.requests);
+        assert_eq!(
+            expired_usage, 0,
+            "nothing was charged to the key whose bearer expired"
+        );
+
+        // THE UNBOUND ARM: a door that binds no key.
+        let open = "root-door-identity-unbound";
+        let _open_published = Withdrawn(open);
+        let open_far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let open_rig = unbound_rig_of(open, open_far.port).await;
+        let (status, _, body) = open_rig
+            .send_bare(
+                "POST",
+                path,
+                Some(body_word("chat_body")),
+                &[("authorization", never_minted)],
+            )
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "an unbound unit is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            sealed(&open_rig, 1).await,
+            1,
+            "the unbound unit seals its record"
+        );
+        let anonymous = busbar_contract::auth::AuthPrincipal(None)
+            .actor_id()
+            .to_string();
+        for record in open_rig.records() {
+            let attributed = match &record.subject {
+                busbar_kernel_audit::record::Subject::PrincipalId(id) => id.clone(),
+                busbar_kernel_audit::record::Subject::Arrival => anonymous.clone(),
+                other => format!("{other:?}"),
+            };
+            assert_eq!(
+                attributed, anonymous,
+                "an unbound unit is the anonymous actor's, never a key's or the bearer's: {:?}",
+                record.subject
+            );
+        }
+        let (open_requests, _, _, _) = open_rig.ledger_after(0).await;
+        assert_eq!(
+            open_requests, 0,
+            "nothing is charged to the deployment's key for an unbound unit"
         );
     }
 }
