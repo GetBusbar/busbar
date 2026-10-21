@@ -770,7 +770,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=dae6619b1baf79d344b5a030f679449d437aa250#dae6619b1baf79d344b5a030f679449d437aa250"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=d7095cf3e6896b8eb806ef68f01af5147ef6b8ab#d7095cf3e6896b8eb806ef68f01af5147ef6b8ab"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
