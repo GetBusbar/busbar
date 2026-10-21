@@ -4320,6 +4320,9 @@ Requirements: RED plants for the key-position and identifier cases, a GREEN plan
 This resolves the busbar × plane +1 from c8400fb00 (linked.rs:586 "which streams.") without rewording.
 It follows the owner law: the kernel speaks kinds, and the gate measures instances.
 
+### 2026-10-21 — ARCHITECT RULING: frozen 1.5.5 bytes are exempt from law0 only in place
+A line is exempt from the law0 instance count only when it is the same line, unchanged since v1.5.5 (positional, not an equal string elsewhere), because #9 and DoD item 6 require those customer-observable bytes unchanged. Any edited, moved or new line counts. The 2026-09-27 English-word alias ruling stands unchanged: aliases count in identifiers, literals and config-key position; non-English instance ids count everywhere. Gate-scope rulings Q1, Q2 and Q4 of 2026-10-20 are withdrawn. Requirements: RED plants for an edited, moved or copied frozen line; a GREEN plant for an unchanged line; ceilings lowered to the measure in the same commit.
+
 ### 2026-09-27 — OWNER RULED Q2: the plane is "decisions"
 The owner said "decisions feels right".
 - Plane id is `decisions`, crate `busbar-plane-decisions`, feature `plane-decisions`, repo `busbar-plane-decisions`. The config section `decisions:` is unchanged (#47).
