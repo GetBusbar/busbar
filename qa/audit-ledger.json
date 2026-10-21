@@ -3523,7 +3523,7 @@
    "paths": [
     "crates/busbar-contract/include"
    ],
-   "tree_hash": "3806ae0704e477473c1b0094e6d4fd97308c543e32c040365207bb89c4ef41cf",
+   "tree_hash": "3569aaee9d65d80092f49d7ca50029abdda592b89c87d67ce78a9fca00faefdf",
    "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
    "round": 1,
    "result": "findings",
@@ -3535,7 +3535,7 @@
    },
    "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled.",
    "auditor": "sonnet-ledger-contract-include",
-   "fixed_at": null,
+   "fixed_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
    "rounds": [
     {
      "round": 1,
