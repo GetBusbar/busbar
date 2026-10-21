@@ -1659,9 +1659,18 @@ pub fn resolve_gate_hooks(
 #[allow(unused_imports)]
 pub use busbar_kernel::config::plane_sections::attach_list;
 
+/// THE SECTION'S OWN SCOPE in a plane's per-container hook maps: the section-level attach
+/// (`<section>.hooks:`) resolved alone, keyed by the reserved word itself, which no registration
+/// can be named (`busbar_contract::section::RESERVED_SECTION_KEYS`). A ROUTED-order plane binds it to
+/// every unit beside the deployment's global hooks (`plane_driver::HostHooks`), so a
+/// section's own attach fires on a plane whose units name no container; a GATE-FIRST plane reads
+/// its entries, each of which already carries the section's list ([`attach_list`]).
+pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[0];
+
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
 /// container's own hook list)`, the effective attach ([`attach_list`]) resolved through
-/// [`resolve_gate_hooks`], keyed by container.
+/// [`resolve_gate_hooks`], keyed by container; and the section's own attach alone, under
+/// [`SECTION_SCOPE`].
 ///
 /// A container whose effective chain is EMPTY gets NO ENTRY, deliberately: the firing site's lookup
 /// then answers `None` on every deployment that attached nothing, which is the zero-cost default,
@@ -1682,7 +1691,7 @@ pub fn resolve_container_gates<'a>(
     settings_version: u64,
 ) -> std::collections::HashMap<String, Vec<(u16, ResolvedPolicy)>> {
     let mut out = std::collections::HashMap::new();
-    for (name, own) in containers {
+    for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
             continue;
@@ -1698,7 +1707,8 @@ pub fn resolve_container_gates<'a>(
 /// Resolve the per-CONTAINER REWRITE (`prompt: rw`) chains for one plane's registry — the
 /// tap/transform twin of [`resolve_container_gates`]. For each `(container name, own hook list)`, the
 /// effective attach ([`attach_list`]) resolved through [`resolve_rewrite_hooks`] (which enforces the
-/// EFFECTIVE `rw` grant), keyed by container.
+/// EFFECTIVE `rw` grant), keyed by container; and the section's own attach alone, under
+/// [`SECTION_SCOPE`].
 ///
 /// A container whose effective chain is EMPTY gets NO ENTRY, exactly like the gate twin: the tap
 /// firing site's presence lookup then answers `None` on every deployment that attached no rewrite
@@ -1719,7 +1729,7 @@ pub fn resolve_container_rewrites<'a>(
     settings_version: u64,
 ) -> std::collections::HashMap<String, Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>> {
     let mut out = std::collections::HashMap::new();
-    for (name, own) in containers {
+    for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
             continue;

@@ -408,7 +408,9 @@ impl HookBinder for BoundHooks {
 /// THE BINDER OVER THE DEPLOYMENT'S OWN HOOK CONFIGURATION: the engine host the composition root
 /// mints over the generation (its global and per-pool rewrites, gates, policies and taps, its
 /// declared signals and its one request-id counter), with what `caller` knows of a verified
-/// principal.
+/// principal. A plane's own section-level attach (`<section>.hooks:`) binds beside the globals: its
+/// rewrites after the global ones and before the pool's, its gates in the one priority-sorted chain
+/// (THE DESIGN section 1: every plane gets every capability, its section's hooks included).
 pub struct HostHooks {
     /// The generation's engine host.
     pub host: Arc<dyn crate::plane_host::EngineHost>,
@@ -416,6 +418,9 @@ pub struct HostHooks {
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.
     pub dialects: Vec<String>,
+    /// The plane's registry key: its section's own attach is resolved under it, at
+    /// [`crate::hooks::SECTION_SCOPE`]. Empty = no plane section (none bound).
+    pub plane_key: String,
 }
 
 impl HookBinder for HostHooks {
@@ -428,9 +433,20 @@ impl HookBinder for HostHooks {
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
         let h = &*self.host;
+        // THE SECTION'S OWN ATTACH, then the pool's: one scope after the globals.
+        let (mut rewrites, mut gates) = if self.plane_key.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                h.plane_rewrites_of(&self.plane_key, crate::hooks::SECTION_SCOPE),
+                h.plane_gates_of(&self.plane_key, crate::hooks::SECTION_SCOPE),
+            )
+        };
+        rewrites.extend(h.pool_rewrites(bind.pool).iter().cloned());
+        gates.extend(h.pool_gates(bind.pool).iter().cloned());
         let parts = Parts::of(
             (h.rewrite_hooks(), h.global_gates()),
-            (h.pool_rewrites(bind.pool), h.pool_gates(bind.pool)),
+            (rewrites.as_slice(), gates.as_slice()),
             h.pool_policy(bind.pool).cloned(),
             StageTaps {
                 request: h.tap_hooks().to_vec(),
@@ -1098,6 +1114,10 @@ fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
 #[cfg(test)]
 #[path = "tests/rewrite_crossing_tests.rs"]
 mod rewrite_crossing_tests;
+
+#[cfg(test)]
+#[path = "tests/section_attach_tests.rs"]
+mod section_attach_tests;
 
 /// The buffers one `project` crossing lends.
 struct ProjectBufs {
