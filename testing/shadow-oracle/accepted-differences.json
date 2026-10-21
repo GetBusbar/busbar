@@ -3317,51 +3317,6 @@
       }
     },
     {
-      "id": "P-1 the dispatcher's two bb_* plugin-health counter families are added to /metrics",
-      "kind": "improvement",
-      "changelog": "**`/metrics` carries two plugin-health counters.**",
-      "by": "owner (Matthew Jackson), OWNER 2026-10-20 parity principle (additive /metrics families)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-20",
-        "ruling": "OWNER 2026-10-20 parity principle (additive /metrics families): new families may be added; every family, name, label and value a 1.5.5 user scrapes stays byte-identical"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^(ops\\.scrape\\|metrics\\|key|neutrality\\|metrics-series|crosscut\\.traps\\|request-duration-quantiles)$",
-      "expected_cells": 3,
-      "classes": [
-        "body"
-      ],
-      "transform": {
-        "candidate": [
-          [
-            "(?m)^# (HELP|TYPE) bb_(deadline_without_wake|plugin_quarantined)_total[^\\n]*\\n",
-            ""
-          ],
-          [
-            "(?m)^bb_(deadline_without_wake|plugin_quarantined)_total [0-9]+\\n",
-            ""
-          ]
-        ]
-      },
-      "premise": {
-        "all": [
-          {
-            "cell": "ops.scrape|metrics|key",
-            "body_contains": "# HELP bb_deadline_without_wake_total "
-          },
-          {
-            "cell": "ops.scrape|metrics|key",
-            "body_contains": "# HELP bb_plugin_quarantined_total "
-          }
-        ]
-      },
-      "rationale": "The dispatcher's bb_deadline_without_wake_total and bb_plugin_quarantined_total (THE DESIGN A.4.3 / A.8; 05c4f18209, coordinator ruling 2026-10-14) are two NEW counter families on /metrics, each one HELP line, one TYPE line and one unlabelled sample. The transform removes exactly those lines and nothing else, so any change to a family 1.5.5 served (its name, labels, HELP, TYPE or value) still diverges. Owner 2026-10-20 parity principle: an added family breaks no 1.5.5 scrape or dashboard."
-    },
-    {
       "id": "M-2R the openai and cohere doors trip the breaker on an in-band error inside a 200 stream",
       "kind": "breaking",
       "changelog": "**A stream that dies mid-flight is no longer served, and billed, as a completed one.**",
