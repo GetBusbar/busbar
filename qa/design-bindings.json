@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 426
+   "test": 429
   }
  },
  "dropped_since_last_write": [],
@@ -4662,6 +4662,27 @@
      "status": "mapped"
     },
     {
+     "kind": "test",
+     "ref": "a_correctly_signed_request_is_admitted_at_the_boundary",
+     "proves": "a correctly signed request is admitted at the busbar boundary, and the upstream is signed under the provider's own key id, never the client's (booted binary)",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_signed_request_with_an_altered_body_is_refused_with_the_recorded_refusal",
+     "proves": "a signed request whose body was altered after signing is refused with the 1.5.5 oracle cell's status, body and headers, and never reaches the upstream (booted binary)",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_signature_by_an_unknown_key_id_is_refused_byte_identically_to_a_bad_signature",
+     "proves": "a signature by a key id busbar never minted is refused with the recorded refusal, byte-identical to a bad signature's, and never reaches the upstream (booted binary)",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
      "kind": "oracle-cell",
      "ref": "llm|bedrock|bedrock|request|unauthenticated",
      "proves": "the bedrock ingress refusal diffed against 1.5.5",
@@ -4712,7 +4733,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:the_linked_sigv4_style_signs_the_walked_requests_method_and_query, oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
+   "verdict_detail": "test:the_linked_sigv4_style_signs_the_walked_requests_method_and_query, test:a_correctly_signed_request_is_admitted_at_the_boundary, test:a_signed_request_with_an_altered_body_is_refused_with_the_recorded_refusal, test:a_signature_by_an_unknown_key_id_is_refused_byte_identically_to_a_bad_signature, oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
   },
   {
    "id": "PB-102",

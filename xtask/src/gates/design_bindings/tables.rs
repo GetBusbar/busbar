@@ -562,6 +562,9 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-101", &[
         ("test", "the_linked_sigv4_style_signs_the_walked_requests_method_and_query", "at the busbar boundary, the linked sigv4 auth style signs the walked request in place: the scope names the request's day, region and service, and the Signature recomputes over the walked method, double-encoded path, sorted query and signed headers (the outbound half; the inbound verify rides the sigv4 plugin's own both-ways suite)"),
+        ("test", "a_correctly_signed_request_is_admitted_at_the_boundary", "a correctly signed request is admitted at the busbar boundary, and the upstream is signed under the provider's own key id, never the client's (booted binary)"),
+        ("test", "a_signed_request_with_an_altered_body_is_refused_with_the_recorded_refusal", "a signed request whose body was altered after signing is refused with the 1.5.5 oracle cell's status, body and headers, and never reaches the upstream (booted binary)"),
+        ("test", "a_signature_by_an_unknown_key_id_is_refused_byte_identically_to_a_bad_signature", "a signature by a key id busbar never minted is refused with the recorded refusal, byte-identical to a bad signature's, and never reaches the upstream (booted binary)"),
         ("oracle-cell", "llm|bedrock|bedrock|request|unauthenticated", "the bedrock ingress refusal diffed against 1.5.5"),
         ("test", "throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch", "MIN_BODY_THROUGHPUT_BYTES_PER_SEC and the grace"),
         ("test", "a_fast_large_upload_is_not_killed_by_the_throughput_floor", "the floor does not kill a fast upload"),
