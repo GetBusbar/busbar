@@ -2061,10 +2061,13 @@ pub(super) mod session_door {
     /// MONEY (Q128 arch u64; THE DESIGN section 7, "the plane reports the units it did"), at the
     /// session door's root leg: a caller's GA `session.update` sets the uplink to µ-law through
     /// `session.audio.input.format`, the provider reads 8 bytes a millisecond from then on, and the
-    /// session's one line on the node's book bills what it read: six seconds of µ-law (48 000
-    /// bytes) are 6 `audio_seconds_in`. RED ARM: the plane read only the legacy
-    /// `input_audio_format`, counted the 48 000 bytes at PCM16's 48 a millisecond, and the line
-    /// billed 1 second of the 6 served.
+    /// session's one sealed line bills what it read: six seconds of µ-law (48 000 bytes) are 6
+    /// `audio_seconds_in`. A session holds nothing on the book's chain (no hold, no settlement:
+    /// `Node::open_borrowed`), so its one line is the record its end seals with the counts the
+    /// plane reported (`Node::seal_session`, THE DESIGN section 7: "the session's end writes ONE
+    /// sealed line"), and that record is what this cell reads. RED ARM: the plane read only the
+    /// legacy `input_audio_format`, counted the 48 000 bytes at PCM16's 48 a millisecond, and the
+    /// line billed 1 second of the 6 served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_bills_a_ga_mulaw_uplink_at_mulaw() {
         use base64::Engine as _;
@@ -2123,41 +2126,37 @@ pub(super) mod session_door {
                 .unwrap_or_else(|| panic!("second {n} reaches the provider"));
             assert!(carried.contains("input_audio_buffer.append"), "{carried}");
         }
-        // The caller closes: the session ends and its one line is written.
+        // The caller closes: the session ends and its one line is sealed.
         caller
             .write_all(&[0x88, 0x80, 0x37, 0xFA, 0x21, 0x3D])
             .await
             .expect("the caller's close");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let (billed, written) = loop {
-            let rows = s.book.durability.lock().expect("unpoisoned").read_back();
-            let seconds = rows
-                .iter()
-                .filter_map(|p| p.counts.as_ref())
-                .filter(|c| c.lane.ends_with("m-cap"))
-                .find_map(|c| c.classes.get(AUDIO_CLASS).copied());
-            if seconds.is_some() || std::time::Instant::now() > deadline {
-                // What the book holds, so a red names whether the line was never written or was
-                // written without the audio the provider read.
-                let written: Vec<String> = rows
+        let (billed, sealed) = loop {
+            let records = s.audit_records();
+            let seconds = records.iter().find_map(|r| {
+                r.usage
+                    .lines
                     .iter()
-                    .map(|p| match &p.counts {
-                        Some(c) => format!(
-                            "{:?} {} fee {} {:?}",
-                            p.kind, c.lane, c.fee_count, c.classes
-                        ),
-                        None => format!("{:?} (no counts)", p.kind),
-                    })
+                    .find(|l| l.class.as_str() == AUDIO_CLASS)
+                    .map(|l| l.quantity)
+            });
+            if seconds.is_some() || std::time::Instant::now() > deadline {
+                // What the session's end sealed, so a red names whether its line was never sealed
+                // or was sealed without the audio the provider read.
+                let sealed: Vec<String> = records
+                    .iter()
+                    .map(|r| format!("{:?} {:?}", r.outcome.unit_end, r.usage.lines))
                     .collect();
-                break (seconds, written);
+                break (seconds, sealed);
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         assert_eq!(
             billed,
             Some(6),
-            "six seconds of µ-law the provider read are six billed seconds; the book holds {written:?}"
+            "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
         );
     }
 }
