@@ -42,6 +42,36 @@ fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
     }
 }
 
+/// A destination's retention (`keep`, THE DESIGN: `disk.append` rotation declared per
+/// destination) reads for a declared destination and rides the section; unstated, the section
+/// carries none (the manifest's canonical bytes are unchanged). RED ARM: a `keep` naming a key that
+/// is not a declared destination is refused.
+#[test]
+fn a_declared_keep_reads_for_a_declared_destination_only() {
+    let read = Declares::from_declares_json(br#"{"destinations": ["path"], "keep": {"path": 0}}"#)
+        .expect("a keep for a declared destination reads");
+    assert_eq!(read.keep.get("path"), Some(&0));
+    assert_eq!(
+        serde_json::to_value(&read).unwrap(),
+        serde_json::json!({"destinations": ["path"], "keep": {"path": 0}})
+    );
+    assert!(!Declares {
+        keep: read.keep.clone(),
+        ..Declares::default()
+    }
+    .is_empty());
+    let none = Declares::from_declares_json(br#"{"destinations": ["path"]}"#).expect("reads");
+    assert!(none.keep.is_empty());
+    assert_eq!(
+        serde_json::to_value(&none).unwrap(),
+        serde_json::json!({"destinations": ["path"]})
+    );
+    assert!(
+        Declares::from_declares_json(br#"{"destinations": ["path"], "keep": {"other": 0}}"#)
+            .is_err()
+    );
+}
+
 /// A SIGNED manifest's `declares` is not a declares document: the manifest never carries `needs`,
 /// so one that states it is refused like any other unknown key.
 #[test]
