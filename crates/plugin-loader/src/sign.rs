@@ -334,6 +334,13 @@ pub struct Declares {
     /// absent, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_labels: Option<AuthLabels>,
+    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
+    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
+    /// hook is judged and served as every hook before the field existed (it may order); left off
+    /// the wire when absent, so every manifest packed before the field existed keeps its canonical
+    /// bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookDecl>,
 }
 
 /// A plane's AUTHENTICATION-REFUSAL LABELS (`declares.auth_labels`): ordered rules, the first whose
@@ -406,6 +413,23 @@ impl AuthLabels {
             .iter()
             .find(|r| r.path.matches(path))
             .map(|r| r.label.as_str())
+    }
+}
+
+/// A hook's declared FACTS (`declares.hook`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDecl {
+    /// Whether the hook's `decide` ever answers an order (PREFER). `false`: it always abstains, the
+    /// conformance suite judges it on abstain-only and fails it if it orders, and the loader refuses
+    /// an order it answers at run. Absent, `true`.
+    #[serde(default = "HookDecl::orders_by_default")]
+    pub orders: bool,
+}
+
+impl HookDecl {
+    const fn orders_by_default() -> bool {
+        true
     }
 }
 
@@ -512,6 +536,13 @@ impl Declares {
             && !self.disk
             && self.stream_media.is_empty()
             && self.auth_labels.is_none()
+            && self.hook.is_none()
+    }
+
+    /// Whether the hook may answer an order: `declares.hook.orders`, `true` when not stated.
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.hook.is_none_or(|h| h.orders)
     }
 }
 

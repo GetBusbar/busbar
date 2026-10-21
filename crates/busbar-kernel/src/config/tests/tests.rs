@@ -3628,6 +3628,7 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
     let pool = crate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
+        breaker: None,
     };
     assert_eq!(
         pool.repeatability("search_code"),
@@ -4500,7 +4501,7 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
     // legacy lane carrier reads them.
     let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_host::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
+        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
     };
     assert_eq!(tenant(&def, &deploy).organization, None);
     def.organization = Some("org-catalog".to_string());
