@@ -153,6 +153,20 @@ impl Host {
         }
     }
 
+    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
+    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
+    /// caller that names it here compiles there too.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub const unsafe fn from_raw(tables: &HostTables) -> Self {
+        Self::of(tables)
+    }
+
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
     /// a carrier moves bytes with (`abi::sdk::io`).
     #[must_use]

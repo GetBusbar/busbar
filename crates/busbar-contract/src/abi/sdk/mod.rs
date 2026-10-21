@@ -34,6 +34,10 @@ pub mod capture;
 pub mod lent;
 pub mod safe;
 pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+// THE GENERATION BORROW: what an op's `out` may name at runtime, held by the borrow checker to
+// memory that lives until the instance's next refresh generation (status row 194).
+pub mod generation;
+pub use generation::Gen;
 // A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
 pub mod out;
 pub use out::{Out, Scalar};

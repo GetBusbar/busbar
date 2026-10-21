@@ -72,6 +72,7 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::lifecycle::OpenOut;
 use crate::abi::sdk::door::AbiOut;
+use crate::abi::sdk::generation::Gen;
 use crate::abi::sdk::lent::HostBuf;
 use crate::abi::sdk::life::{Leases, Refusal};
 use crate::abi::sdk::publish::{Generations, Publish};
@@ -754,6 +755,32 @@ impl<'a, T: AbiOut> Out<'a, T> {
         if let Some(reporting) = self.reporting {
             reporting.set(Some(r));
         }
+    }
+
+    /// Set the string field `pick` names to `s`, which lives at least until the instance's next
+    /// refresh generation: the op's generation borrow `gen` ([`Instance::generation`]) proves it,
+    /// so the borrow checker refuses a local or a string the host lent the call (status row 194).
+    ///
+    /// [`Instance::generation`]: crate::abi::sdk::Instance::generation
+    pub fn lent_str<'g>(&mut self, pick: impl FnOnce(&T) -> &AbiStr, s: &'g str, gen: &Gen<'g>) {
+        self.put(pick, AbiStr::lent(s, gen));
+    }
+
+    /// As [`Out::lent_str`], for the blob field `pick` names: `bytes` of format `fmt`.
+    pub fn lent_blob<'g>(
+        &mut self,
+        pick: impl FnOnce(&T) -> &Blob,
+        bytes: &'g [u8],
+        fmt: u32,
+        gen: &Gen<'g>,
+    ) {
+        self.put(pick, Blob::lent(bytes, gen).with_fmt(fmt));
+    }
+
+    /// Name `text`, which lives at least until the instance's next refresh generation
+    /// ([`Out::lent_str`]), as the answer's error text; the outcome is the caller's to answer.
+    pub fn error_lent<'g>(&mut self, text: &'g str, gen: &Gen<'g>) {
+        self.head().error = AbiStr::lent(text, gen);
     }
 
     /// Hold `bytes` in `leases` under a new lease (named in the head) and set the blob `pick`

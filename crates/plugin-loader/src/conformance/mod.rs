@@ -2002,6 +2002,54 @@ pub fn profile(debug: bool) {
     );
 }
 
+/// THE DOOR A SUITE NAMES, as either form a plugin states it (status rows 159 and 194): its
+/// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
+/// plugin::MACRO_DOOR` first, and the same line compiles before and after.
+///
+/// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
+/// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference
+/// (`DoorFnArg`), and the caller's `DoorFn` annotation coerces the function item.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __conformance_door {
+    ($door:path) => {{
+        #[allow(unused_imports)]
+        use $crate::conformance::{DoorFnArg as _, MacroDoorArg as _};
+        let door: $crate::conformance::ConformanceDoorFn = (&$door).door_arg();
+        door
+    }};
+}
+
+/// The door function type a suite runs over, named where `__conformance_door!` expands.
+#[doc(hidden)]
+pub type ConformanceDoorFn = DoorFn;
+
+/// `__conformance_door!`'s arm for a `MacroDoor`.
+#[doc(hidden)]
+pub trait MacroDoorArg {
+    /// The door function the macro door names.
+    fn door_arg(&self) -> DoorFn;
+}
+
+impl MacroDoorArg for busbar_contract::abi::sdk::door::MacroDoor {
+    fn door_arg(&self) -> DoorFn {
+        self.door_fn()
+    }
+}
+
+/// `__conformance_door!`'s arm for a door function: the value itself, coerced by the caller.
+#[doc(hidden)]
+pub trait DoorFnArg<F> {
+    /// The door function, as given.
+    fn door_arg(&self) -> F;
+}
+
+impl<F: Copy> DoorFnArg<F> for &F {
+    fn door_arg(&self) -> F {
+        **self
+    }
+}
+
 /// **THE SUITE, IN A PLUGIN REPO'S `tests/conformance.rs`.** Emits the suite's tests over the
 /// plugin's linked door, its cdylib and its inputs; `plugin-ci.yml` runs them under `--release`
 /// and requires every one to RUN. The names are the contract the CI step reads.
@@ -2018,7 +2066,11 @@ macro_rules! conformance_suite {
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
             #[allow(unused_mut)]
-            let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
+            let mut s = $crate::conformance::Subject::new(
+                $crate::__conformance_door!($door),
+                $cdylib,
+                $inputs,
+            );
             $(s = s.with_host($host);)?
             $(s = s.with_anchors($tls);)?
             $(s = s.with_namespace($create, $drop);)?

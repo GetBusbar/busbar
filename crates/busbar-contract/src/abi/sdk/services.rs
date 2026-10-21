@@ -242,6 +242,20 @@ impl Wake {
         })
     }
 
+    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
+    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
+    /// caller that names it here compiles there too.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
+        Self::of(tables)
+    }
+
     /// Wake `ticket`.
     pub fn wake(&self, ticket: Ticket) {
         (self.wake)(self.ctx, ticket);
@@ -269,6 +283,20 @@ impl Services {
             ctx: tables.ctx,
             table: tables.services,
         })
+    }
+
+    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
+    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
+    /// caller that names it here compiles there too.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
+        Self::of(tables)
     }
 
     /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its

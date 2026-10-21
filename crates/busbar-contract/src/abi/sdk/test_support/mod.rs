@@ -46,6 +46,7 @@ mod sealed {
 
 pub mod fake;
 pub mod reply;
+pub mod test_in;
 
 // ── THE ALL-ZERO VALUE ──────────────────────────────────────────────────────────────────────────
 
