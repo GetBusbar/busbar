@@ -289,7 +289,6 @@ fn register_planes() {
         LINKED.auths,
         root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
@@ -797,9 +796,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
-    // What the door planes are sealed over, projected from every configuration as it is built
-    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
-    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
     // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
