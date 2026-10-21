@@ -88,6 +88,15 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
+  1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect from a public host to a private or loopback address, and any such redirect to a cloud metadata or IPv6 link-local host.
+  1.5.5 followed up to 10 https redirects with no address check. The refusal reads
+  `request to {next URL} failed: a redirect to a private or loopback address is not allowed` or
+  `request to {next URL} failed: a redirect to a cloud metadata address is not allowed`. An identity
+  provider on a private address may still redirect within private addresses, a public-to-public
+  https redirect is still followed, and every other error text is 1.5.5's (owner-approved
+  2026-10-21).
+
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
   and both halves are caller-supplied free text: rotating `a:b` under header `c` and rotating `a`
@@ -191,6 +200,9 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The SigV4 auth plugin signs the request it sends.** 1.6.0 Changed: the SigV4 auth plugin signs the real method, query string and content type of each outbound request it signs; a POST of `application/json` with no query string signs byte-for-byte as 1.5.5 did.
+  1.5.5 only ever signed that one shape. The query is canonicalised as SigV4 requires, and a repeated
+  header name is comma-merged as the AWS spec says (owner-approved 2026-10-21).
 - **A configuration apply's limits go live with it.** A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits. 1.5.5 put them in force before
   validating them, for the length of the build.
 - **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
