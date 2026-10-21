@@ -94,13 +94,12 @@ pub trait ArrivalHost: Send + Sync {
         resp: Response,
     ) -> Response;
 
-    /// Render `status`/`kind`/`message` in `proto`'s native error envelope
-    /// (`crate::proxy::ingress_error`).
+    /// Render `status`/`kind`/`message` as an error answer for `proto` (the host's own envelope,
+    /// `crate::proxy::ingress_error`, when it renders no dialect).
     fn ingress_error(&self, proto: &str, status: StatusCode, kind: &str, message: &str)
         -> Response;
 
-    /// The mount-aware dialect an answer to `path` is SHAPED in
-    /// (`crate::ingress::native::envelope_dialect(app.planes.ingress_of(path))`).
+    /// The dialect an answer to `path` is SHAPED in, as the host knows it.
     fn envelope_dialect(&self, ctx: &ArrivalCtx, path: &str) -> &'static str;
 
     /// The pre-collapse fallback 404 shape by path (`crate::fallback_error_response`).

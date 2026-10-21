@@ -184,48 +184,25 @@ pub fn build_egress_client(
         .expect("the base egress engine posture has no failing build arm")
 }
 
-// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────
-// The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
-// fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
-// the retired engine crate shapes an ingress error through the neutral ABI rather than reaching BACK into
-// `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
-// resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
-// being dropped with the the retired engine crate plane. `busbar-core` re-exports both at their historical
-// `busbar_kernel::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
-// unchanged.
+// ── THE KERNEL'S OWN ERROR ANSWER ──────────────────────────────────────────────────────────────
+// The kernel speaks no dialect (spec Part 1, Law 5: dialects are internal to their plane; Part 3
+// section 12: a plane renders its own refusals through its door). What the kernel answers itself, on
+// a path no plane renders for, is its own neutral envelope.
 
-/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
-/// response, attaching the protocol-appropriate headers via the resolved writer vtable. When `ingress`
-/// resolves to no protocol the body is the neutral `agnostic_error_envelope` and no protocol headers
-/// are attached — the shape that survives every LLM dialect being dropped with the the retired engine crate plane.
+/// THE KERNEL'S OWN ERROR ANSWER: `(status, kind, msg)` as the neutral [`agnostic_error_envelope`],
+/// `application/json`, at `status`, with no header of any dialect's. A plane that words a refusal in
+/// its own dialect renders it through its door; this is the answer where none does.
 pub fn ingress_error(
-    ingress: &str,
     status: axum::http::StatusCode,
     kind: &str,
     msg: &str,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
-    let envelope = match &dialect {
-        Some(di) => di.write_error(crate::proto::CODEC_HOST, status.as_u16(), kind, msg),
-        None => agnostic_error_envelope(kind, msg),
-    };
-    let body = crate::json::to_string(&envelope)
-        .unwrap_or_else(|_| agnostic_error_envelope(kind, msg).to_string());
-    let mut resp = axum::response::Response::builder()
+    let envelope = agnostic_error_envelope(kind, msg);
+    let body = crate::json::to_string(&envelope).unwrap_or_else(|_| envelope.to_string());
+    axum::response::Response::builder()
         .status(status)
         .header(axum::http::header::CONTENT_TYPE, APPLICATION_JSON)
         .body(axum::body::Body::from(body))
-        .unwrap_or_else(|_| status.into_response());
-    if let Some(di) = &dialect {
-        for (name, value) in di.error_response_fields(crate::proto::CODEC_HOST, kind, &envelope) {
-            if let (Ok(n), Ok(v)) = (
-                axum::http::HeaderName::from_bytes(name.as_bytes()),
-                axum::http::HeaderValue::from_bytes(&value),
-            ) {
-                resp.headers_mut().insert(n, v);
-            }
-        }
-    }
-    resp
+        .unwrap_or_else(|_| status.into_response())
 }

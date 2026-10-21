@@ -35,6 +35,7 @@ fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
         },
         refuse: Arc::new(|_: busbar_contract::caps::ReasonCode, _: &str| PlaneResponse::default()),
         signed_ingress: signed,
+        dialect: "",
     }]);
     assert!(table.signed_ingress("/door/x/sign"));
     assert!(table.signed_ingress("/door/arn:a:b/c:0/sign"));

@@ -314,8 +314,9 @@ untranslated while every test was green."""
 # BOTH HALVES of the substrate are in the kernel today. The value families split into
 # `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, taking
 # `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` with them; that
-# crate is deleted (#83a SD-8) and the three seams are the kernel's again (`proto/installed.rs`,
-# `diagnostics/mod.rs`), so the one kernel root reads every seam the fault it exists for lived in.
+# crate is deleted (#83a SD-8) and its seams are the kernel's again (`diagnostics/mod.rs`; the
+# protocol registry left the kernel with row 82), so the one kernel root reads every seam the fault
+# it exists for lived in.
 #
 # THE ENGINE HALF IS `crates/busbar-kernel/src`, NOT `crates/busbar-substrate/src`. This row named
 # the deleted path and therefore scanned a population of ZERO on that side — a ban over nothing,
@@ -1297,9 +1298,6 @@ known_sites = [
   # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
   # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
   "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
-  # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
-  # verbatim (#83a SD-8).
-  "crates/busbar-kernel/src/proto/installed.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
@@ -1329,8 +1327,7 @@ known_sites = [
   # load or distinct pattern, never per request, and none of them can carry a hold. Sites already
   # inside a reviewed entry above were read too: `plugin-loader/src/` (a plane's Statement words
   # and tail tables copied once per load: `kinds/plane.rs` `tail_facts`, `kept`, `declared`,
-  # `registration`), `proto/installed.rs` (the protocol registry's process-singleton tables) and
-  # `diagnostics/emit.rs::site` (the interned field set).
+  # `registration`) and `diagnostics/emit.rs::site` (the interned field set).
   #   The plane axis's installed row list: one slice of row references, made once at boot.
   "crates/busbar/src/root/linked.rs::register_planes",
   #   The declared-diagnostics catalogue, installed once at boot.

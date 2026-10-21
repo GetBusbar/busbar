@@ -92,16 +92,12 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
-/// THE REGISTRY ROWS THE DEPLOYMENT WRITES INTO, as the composition root installs them: the linked
-/// protocol declarations (the door row's `protocols` axis) and the row the door serving the `pools`
-/// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
+/// THE REGISTRY ROW THE DEPLOYMENT WRITES INTO, as the composition root installs it: the row the
+/// door serving the `pools` map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
 /// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
 pub(super) fn install_door_seams() {
     static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
         std::sync::OnceLock::new();
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
     let row = ROW.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg = registration(linked_probe(pools_door(), "pools-door-row"))

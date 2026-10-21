@@ -2988,14 +2988,13 @@ pub(crate) fn frozen_str(key: &str) -> String {
 }
 
 /// F25 row 634: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
-/// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
+/// Pins: the kernel's own error answer is its OWN envelope —
 /// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
 /// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
 /// dialect's error headers (the content type is the only header).
 #[tokio::test]
 async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     let resp = crate::proxy::ingress_error(
-        "no-such-protocol",
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         crate::proxy::KIND_OVERLOADED,
         "everything is on fire",

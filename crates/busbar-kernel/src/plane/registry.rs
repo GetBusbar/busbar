@@ -259,8 +259,7 @@ static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLoc
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
 
 /// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
-/// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
-/// shape and contract, on the plane axis. `pub`, not `pub`: the `busbar` binary crate is the
+/// an extracted plane crate registers through. `pub`, not `pub`: the `busbar` binary crate is the
 /// composition root and calls this from `main` (`register_planes`), before any config load or
 /// validation touches a plane.
 ///
@@ -795,9 +794,9 @@ impl std::ops::Deref for PlaneDecl {
 
 plane_behaviour! {
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
-    /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
-    /// LLM plane's answer is `busbar_kernel::proto::known_protocols` — read off the live protocol
-    /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
+    /// slice for exactly one reason, and it is the reason the field is worth its indirection: a door
+    /// plane's answer is the dialects its own Statement tail states, read off the folded door, so a
+    /// seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so

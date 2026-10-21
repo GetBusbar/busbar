@@ -29,8 +29,38 @@ use busbar_kernel::test_support::seam::{
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
+/// The test-linked planes' own dialect declarations (each door row's `protocols` axis), in the
+/// linked order. The kernel holds no protocol set (a plane resolves its own dialects, spec Part 1,
+/// Law 5); a test that needs a dialect's name reads it here, off the plane's own statement.
+pub fn dialect_rows() -> Vec<&'static busbar_contract::protocol::ProtocolDecl> {
+    TEST_LINKED_PROTOCOLS
+        .iter()
+        .flat_map(|decls| decls.iter().copied())
+        .collect()
+}
+
+/// The dialect a linked plane declares its residual default (`ProtocolDecl::residual_default`):
+/// the name a fixture lane or provider uses where any provider dialect will do.
+pub fn residual_default_dialect() -> &'static str {
+    dialect_rows()
+        .into_iter()
+        .find(|d| d.residual_default)
+        .map(|d| d.name)
+        .expect("a test-linked plane declares a residual-default dialect")
+}
+
+/// The dialect a linked plane's declarations claim `path` for, by its shape alone
+/// (`ProtocolDecl::residual_claims`, the tightest claim kept).
+pub fn dialect_for_path(path: &str) -> Option<&'static str> {
+    dialect_rows()
+        .into_iter()
+        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
+}
+
 /// Install every test-linked plane exactly as the composition root installs it in production
-/// (protocol declarations, plane row, ingress seams), and every test-linked DOOR plane's registry
+/// (plane row, ingress seams), and every test-linked DOOR plane's registry
 /// row folded from its Statement, as the root folds a door — in the list's order, which is the
 /// planes' layering order. Idempotent: each entry's own install is first-wins, each door is folded
 /// once per test binary, and the registration loop runs once per test binary.
@@ -39,11 +69,6 @@ pub fn install() {
     ONCE.call_once(|| {
         for entry in TEST_LINKED {
             register_test_plane_seam(entry);
-        }
-        // The linked doors' own dialect declarations, as the root's `register_protocols` installs
-        // them in production (the door row's `protocols` axis).
-        for decls in TEST_LINKED_PROTOCOLS {
-            busbar_kernel::proto::register_test_protocols(decls);
         }
     });
     let doors = door_rows();

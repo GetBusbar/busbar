@@ -2852,7 +2852,7 @@ fn door_app() -> crate::test_support::TestApp {
         .lane(
             crate::test_support::LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_DIALECTS[0],
                 "http://127.0.0.1:1",
             )
             .api_key("busbar-upstream-key"),
@@ -3373,7 +3373,7 @@ async fn test_admin_prefix_is_boundary_safe() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_DIALECTS[0],
                 "http://127.0.0.1:1",
             )
             .api_key("busbar-upstream-key"),

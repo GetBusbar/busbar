@@ -2124,12 +2124,12 @@ fn validate_providers_with(
     // circuit breaker), exactly like the shipped built-in catalog entries that carry none. Only the
     // entries that ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
-        // construction. An unknown protocol used to escape this multi-error collection entirely and
-        // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
-        // config mistakes saw only the first one. Validate it HERE against the single source of
-        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
-        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // The provider's `protocol` names a dialect a plane declares. An unknown protocol used to
+        // escape this multi-error collection entirely and surface as a lone `die()` deep in
+        // `main.rs` (lane build) — so an operator with several config mistakes saw only the first
+        // one. Validate it HERE against the single source of truth (the provider dialects the
+        // registered planes declare, `plane::provider_dialects`) so a bad protocol is collected
+        // alongside every other error.
         // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
         //
         // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time

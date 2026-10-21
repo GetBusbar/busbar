@@ -4769,12 +4769,12 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
 
     fn ingress_error(
         &self,
-        proto: &str,
+        _proto: &str,
         status: StatusCode,
         kind: &str,
         message: &str,
     ) -> Response {
-        busbar_kernel::proxy::ingress_error(proto, status, kind, message)
+        busbar_kernel::proxy::ingress_error(status, kind, message)
     }
 
     fn envelope_dialect(
@@ -4793,7 +4793,7 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
         err_type: &str,
         message: &str,
     ) -> Response {
-        busbar_kernel::proxy::ingress_error(PROTO, status, err_type, message)
+        busbar_kernel::proxy::ingress_error(status, err_type, message)
     }
 
     fn percent_decode(&self, s: &str) -> String {

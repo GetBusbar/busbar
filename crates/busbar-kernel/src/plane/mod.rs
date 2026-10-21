@@ -499,8 +499,8 @@ impl PlaneDispatch {
     /// explicitly mounted as something else. Two readers of one fact will eventually disagree, and
     /// the disagreement surfaces at the error path, where nobody is looking.
     ///
-    /// So the order of resolution is now stated once, here, and it is the only order that respects
-    /// what a mount MEANS: **the mount table first, the path shape only for what is left over.**
+    /// So the order of resolution is now stated once, here: **the mount table, and the fallback for
+    /// what is left over.**
     ///
     /// ## Matching is on a SEGMENT BOUNDARY, never a bare prefix
     ///
@@ -518,10 +518,10 @@ impl PlaneDispatch {
     pub fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
-            // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
-            // `None` for a path that names no dialect — an honest answer the old classifier could
-            // not give, because it always spent that case on one hard-coded dialect.
-            None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
+            // THE FALLBACK ARM. The kernel reads no dialect off a path shape: a plane matches its
+            // own claimed routes and renders its own refusals through its door (spec Part 1,
+            // Law 5; Part 3 section 12).
+            None => Ingress::Fallback,
         }
     }
 
@@ -567,32 +567,29 @@ impl PlaneDispatch {
 ///
 /// Two variants, and the split is the mount table's: a path is CLAIMED by a plane the operator
 /// mounted, or it is not and belongs to the fallback. There is deliberately no third variant for
-/// "unknown": an unrecognised path is not a fourth kind of thing, it is a fallback path whose
-/// dialect is not legible, which is what `Fallback(None)` says.
+/// "unknown": an unrecognised path is not a third kind of thing, it is a fallback path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ingress {
     /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
     Mounted(&'static str),
-    /// The fallback plane. `Some(dialect)` when the path shape names one of the registered fallback
-    /// dialects; `None` when it names none — a bare `/`, a typo, a probe. `None` is a real answer
-    /// and not a failure: what to SAY to a caller whose dialect is unknown is a decision for the
-    /// site composing the reply, not for the resolver, which would otherwise have to invent a
-    /// protocol identity for a path that carries none.
-    Fallback(Option<&'static str>),
+    /// A path no plane claims by mount. The kernel names no dialect for it: the plane whose door
+    /// claims the path reads its own dialect off it, and the kernel's own answer is its neutral
+    /// envelope.
+    Fallback,
 }
 
 impl Ingress {
-    /// The WIRE FORMAT spoken on this path, or `None` when the path names none.
+    /// The WIRE FORMAT spoken on this path, or `None` when the kernel cannot name one (a fallback
+    /// path, or a mounted plane with several dialects).
     ///
     /// This is the `ingress_protocol` metric-label vocabulary (see [`wire_format_names`]),
-    /// so a mounted plane labels as its own dialect rather than as whichever fallback dialect its
-    /// path happens to resemble.
+    /// so a mounted plane labels as its own dialect.
     pub fn wire_format(self) -> Option<&'static str> {
         match self {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
             Ingress::Mounted(key) => sole_wire_format(key),
-            Ingress::Fallback(dialect) => dialect,
+            Ingress::Fallback => None,
         }
     }
 
@@ -604,8 +601,8 @@ impl Ingress {
     /// [`Self::wire_format`] answers "which dialect DID speak", and `None` is its honest answer for
     /// a plane with several: nobody at the door knows yet. That is exactly right for a metric label,
     /// where guessing invents a fact. It is exactly wrong for an ERROR BODY, where `None` is not an
-    /// option — some bytes have to go back — and the caller of `envelope_dialect` had one fallback
-    /// for both cases: a single hard-coded dialect's envelope.
+    /// option — some bytes have to go back — and its caller once had one fallback for both cases:
+    /// a single hard-coded dialect's envelope.
     ///
     /// That fallback was harmless while every mounted plane spoke one dialect. The moment a plane
     /// spoke two, `wire_format()` started answering `None` for it and every door-level refusal
@@ -620,7 +617,7 @@ impl Ingress {
     pub fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
-            Ingress::Fallback(dialect) => dialect,
+            Ingress::Fallback => None,
         }
     }
 }

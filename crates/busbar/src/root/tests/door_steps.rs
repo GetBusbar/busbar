@@ -4564,15 +4564,14 @@ pub(crate) mod door_boundary {
             .map(|a| (a.audience, a.resource_metadata))
             .expect("the door binds an audience under the public base URL");
         let base_url = upstream.base_url();
+        // The dialect the linked plane's declarations claim its messages path for (named by no
+        // literal).
+        let dialect = crate::root::linked::dialect_for_path(&crate::LINKED, "/v1/messages")
+            .expect("a linked plane claims its messages path for a dialect");
         let rig = rig_with(instance, port, None, &|app| {
             dispatched(
                 app.lane(
-                    LaneSpec::new(
-                        "test-model",
-                        busbar_kernel::proto::PROTO_ANTHROPIC,
-                        &base_url,
-                    )
-                    .api_key("busbar-upstream-key"),
+                    LaneSpec::new("test-model", dialect, &base_url).api_key("busbar-upstream-key"),
                 )
                 .pool("pa", &[(0, 1)]),
                 row,

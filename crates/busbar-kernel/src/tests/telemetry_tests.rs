@@ -28,18 +28,12 @@ fn model_plane_key() -> &'static str {
     crate::plane::fallback_key()
 }
 
-/// Two DISTINCT shipped protocol names, read off the protocol registry's own codec list (the same
-/// list `known_protocols()` answers, which the bank sizes its request families and its translation
-/// table over), so this module names no dialect: what it asserts is the bank's routing over WHATEVER
-/// the registry ships, never anything about one dialect. `.0` is the lane's egress protocol, `.1` a
-/// different ingress. Read through `registry()`, which seeds this test binary's built-in set first:
-/// `known_protocols()` seeds nothing, and these tests ask before any request path has seeded it.
+/// Two DISTINCT provider dialects the neutral fallback plane declares
+/// ([`crate::test_support::NEUTRAL_DIALECTS`]), so this module names no dialect: what it asserts is
+/// the bank's routing over WHATEVER a plane declares, never anything about one dialect. `.0` is the
+/// lane's egress protocol, `.1` a different ingress.
 fn shipped_protocols() -> (&'static str, &'static str) {
-    let known = crate::proto::registry::registry().codec_protocols();
-    assert!(
-        known.len() >= 2,
-        "the test binary's protocol registry must ship at least two codecs; got {known:?}"
-    );
+    let known = crate::test_support::NEUTRAL_DIALECTS;
     (known[0], known[1])
 }
 

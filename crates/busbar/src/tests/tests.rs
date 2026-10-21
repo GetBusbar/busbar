@@ -828,14 +828,6 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
     use busbar_kernel_wal::RecordClass;
 
-    // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
-    // residual-default dialect, and in a test binary the protocol set is installed by whichever
-    // test installs it first — so without this the test passes in a full run and fails run alone.
-    // Every linked protocol declaration goes into the test registry, read off the linked table
-    // the root registers from.
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
     busbar_kernel::snapshot::init();
     let dir = BookDir::new("real-path");
     assert!(
@@ -1000,9 +992,6 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
 fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel::test_support::register_neutral_test_plane();
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
     busbar_kernel::snapshot::init();
     let app = busbar_kernel::test_support::build_once(
         busbar_kernel::test_support::cfg_with_provider_api_key(
@@ -1259,9 +1248,6 @@ fn one_seal_after_two_reloads() {
     busbar_kernel::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
     busbar_kernel::snapshot::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);

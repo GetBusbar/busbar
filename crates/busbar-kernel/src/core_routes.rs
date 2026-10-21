@@ -146,7 +146,7 @@ impl CoreRouteTable {
         &self,
         path: &str,
         method: &Method,
-    ) -> Option<&busbar_kernel::plane_routes::PlaneRefuseFn> {
+    ) -> Option<&busbar_kernel::plane_routes::PlaneRefusalSpec> {
         if self.door_refusals.is_empty() {
             return None;
         }
@@ -154,7 +154,6 @@ impl CoreRouteTable {
         self.door_refusals
             .iter()
             .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
-            .map(|r| &r.refuse)
     }
 
     /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT

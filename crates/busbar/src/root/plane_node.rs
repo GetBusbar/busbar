@@ -1032,13 +1032,14 @@ impl Node {
         // The sweep, before this unit takes a slot of its own: any slot a lost task left MARKED is
         // settled and given back now. One atomic read when nothing is marked.
         self.sweep(arrived);
-        // Whose unit, what class, and the dialect a refusal this node renders is written in — the
-        // plane's statements about what arrived, read off it before any step runs.
-        let (principal, op_class, proto, build) = handed;
+        // Whose unit and what class — the plane's statements about what arrived, read off it before
+        // any step runs. The dialect it states stays the plane's: a refusal this node answers itself
+        // is the kernel's own envelope (the kernel holds no protocol set).
+        let (principal, op_class, _dialect, build) = handed;
         // FAIL CLOSED while the book's journal cannot reach its store: nothing is built, held or
         // journalled for a unit that is refused here, and the reason is the answer.
         if let Some(why) = self.journal_refusal() {
-            return journal_unavailable(proto, &why);
+            return journal_unavailable(&why);
         }
         let key = self.next_key.mint();
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
@@ -1088,7 +1089,7 @@ impl Node {
         match entered {
             // The table is uncapped on this listener, so this arm is the table declining for a
             // reason that is not capacity. It is still an answer rather than a panic.
-            Err(_refused) => unavailable(proto),
+            Err(_refused) => unavailable(),
             Ok(slot) => {
                 // THE SLOT, from here to whichever way this unit leaves. The table is what bounds
                 // how many units this node has in flight, so the one thing that must not depend on
@@ -1160,8 +1161,7 @@ impl Node {
                 // THE AUDITED EXIT (#28): the plane's answer becomes the served response here, and
                 // nowhere on the plane's side of the seam.
                 let (answer, late) = finish();
-                let response =
-                    answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
+                let response = answer.map_or_else(unavailable, PlaneAnswer::into_response);
                 let seal = driven.take_seal(key);
                 let response = self.tail(
                     ended,
@@ -1917,21 +1917,20 @@ impl Drop for Occupied<'_> {
     }
 }
 
-/// What a node whose journal cannot reach its store answers a new unit with, in the caller's own
-/// dialect: 503 and the reason. A state the previous release never reached (it kept no journal).
-fn journal_unavailable(proto: &str, why: &str) -> Response {
+/// What a node whose journal cannot reach its store answers a new unit with, in the kernel's own
+/// envelope (the kernel speaks no dialect): 503 and the reason. A state the previous release never
+/// reached (it kept no journal).
+fn journal_unavailable(why: &str) -> Response {
     busbar_kernel::proxy::ingress_error(
-        proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
         why,
     )
 }
 
-/// What a node that cannot take the unit at all answers with, in the caller's own dialect.
-fn unavailable(proto: &str) -> Response {
+/// What a node that cannot take the unit at all answers with, in the kernel's own envelope.
+fn unavailable() -> Response {
     busbar_kernel::proxy::ingress_error(
-        proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",

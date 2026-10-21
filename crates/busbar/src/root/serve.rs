@@ -37,7 +37,6 @@ use busbar_kernel::plane_driver::{
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
 /// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
@@ -2792,11 +2791,22 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            // The claim's refusal dialect, by the name the plane's tail states for it: the label a
+            // hook tap of the `401` is told.
+            let served = &routes.served.planes[plane];
+            let dialect = served
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .and_then(|c| served.dialects.get(usize::from(c.refusal_dialect)))
+                .copied()
+                .unwrap_or("");
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
+                dialect,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
@@ -4472,8 +4482,8 @@ fn whole_answer(fields: &HeadFields) -> bool {
 
 /// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
 /// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
-/// boot ([`declared_stream_media`]).
+/// or the stream `Content-Type` a linked plane's dialect row states on its `ProtocolDecl`
+/// ([`declared_stream_media`]).
 fn streamed_media(content_type: &str) -> bool {
     std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
         .chain(declared_stream_media().iter().copied())
@@ -4482,6 +4492,13 @@ fn streamed_media(content_type: &str) -> bool {
                 .get(..media.len())
                 .is_some_and(|head| head.eq_ignore_ascii_case(media))
         })
+}
+
+/// The stream media the linked planes' dialect rows state ([`crate::root::linked::stream_media`]),
+/// folded once.
+fn declared_stream_media() -> &'static [&'static str] {
+    static MEDIA: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    MEDIA.get_or_init(|| crate::root::linked::stream_media(&crate::LINKED))
 }
 
 /// A whole answer's head without its stated length: the response states the length of what was

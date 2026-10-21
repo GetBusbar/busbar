@@ -6,7 +6,6 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::proto::PROTO_ANTHROPIC;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -2857,11 +2856,14 @@ fn write_named_map_fixture(
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
     let config_path = dir.join("config.yaml");
+    // The dialect the linked plane's declarations claim its messages path for (named by no literal).
+    let dialect = crate::linked::dialect_for_path("/v1/messages")
+        .expect("a linked plane claims its messages path for a dialect");
     std::fs::write(
         &providers_path,
         format!(
             "test-provider:
-  protocol: {PROTO_ANTHROPIC}
+  protocol: {dialect}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
 "

@@ -1338,6 +1338,32 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
     app.planes.ingress_of(path)
 }
 
+/// THE DOOR ROUTE A REQUEST MATCHES, as the auth middleware words a `401` on it: the route's plane
+/// rendering, the request target it renders for, and the dialect the plane states for the route's
+/// refusals (spec Part 3 section 12, "Refusals").
+struct DoorRefusal {
+    /// The route's plane rendering.
+    refuse: busbar_kernel::plane_routes::PlaneRefuseFn,
+    /// The request target (path and query) it renders for.
+    target: String,
+    /// The route's refusal dialect, as its door states it.
+    dialect: &'static str,
+}
+
+/// THE DIALECT AN AUTHENTICATION REFUSAL IS TAPPED UNDER (the `ingress_protocol` a `response` tap
+/// is told): the dialect the door route's plane states for the route's refusals, else a mounted
+/// plane's own first wire format, else none. The kernel reads it off the plane's statement and
+/// never off the path's shape (spec Part 1, Law 5: dialects are internal to their plane), so the
+/// tap and the answer the plane rendered name one dialect.
+fn denial_dialect(app: &crate::state::App, path: &str, door: Option<&DoorRefusal>) -> &'static str {
+    match door {
+        Some(door) => door.dialect,
+        None => ingress_for_path(app, path)
+            .shaping_wire_format()
+            .unwrap_or(""),
+    }
+}
+
 /// The words the kernel hands a plane with an authentication refusal, and its own answer's message
 /// when no plane renders one. A plane words a bad credential in its own dialect's vendor sentence,
 /// status and kind (spec §1: refusal texts that name instances are rendered from the plugins' rows,
@@ -1363,10 +1389,13 @@ fn unauthorized_response(
     app: &crate::state::App,
     core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&DoorRefusal>,
 ) -> Response {
-    if let Some((refuse, target)) = door {
-        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    if let Some(door) = door {
+        return (door.refuse)(
+            busbar_contract::caps::ReasonCode::Unauthenticated,
+            &door.target,
+        );
     }
     let ingress = ingress_for_path(app, path);
     if let crate::plane::Ingress::Mounted(_) = ingress {
@@ -2008,14 +2037,10 @@ fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&DoorRefusal>,
 ) -> Response {
     let refused = unauthorized_response(app, core_routes, path, door);
-    // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
-    // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
-    // dialect its path happens to resemble; a residual path that names none is labelled with the
-    // dialect its answer is shaped in, so the tap and the response can never disagree.
-    let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
+    let proto = denial_dialect(app, path, door);
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
@@ -2109,15 +2134,17 @@ pub(crate) async fn auth_middleware(
     // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
     // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
     // on every residual data-plane path, which keeps its envelope byte for byte.
-    // `(the route's plane rendering, the request target it renders for)`.
-    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
-        core_routes.door_refusal(&path, req.method()).map(|refuse| {
-            let target = req
-                .uri()
-                .path_and_query()
-                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-            (refuse.clone(), target)
-        });
+    let door: Option<DoorRefusal> =
+        core_routes
+            .door_refusal(&path, req.method())
+            .map(|spec| DoorRefusal {
+                refuse: spec.refuse.clone(),
+                target: req
+                    .uri()
+                    .path_and_query()
+                    .map_or_else(|| path.clone(), |t| t.as_str().to_owned()),
+                dialect: spec.dialect,
+            });
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -2473,7 +2500,12 @@ pub(crate) async fn auth_middleware(
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
                     {
-                        return Err(unauthorized_response(&app, &path, door.as_ref()));
+                        return Err(unauthorized_response(
+                            &app,
+                            core_routes,
+                            &path,
+                            door.as_ref(),
+                        ));
                     }
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {

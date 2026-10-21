@@ -87,19 +87,18 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     }
 }
 
-/// The `nth` wire-codec protocol this test binary ships, read by POSITION off core's own test
-/// built-in table (the shipped install order) rather than spelled here. The validator's provider
-/// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
-/// registered name, not a particular dialect — and the neutral kernel's tests name none.
+/// The `nth` provider dialect the neutral fallback plane declares
+/// ([`crate::test_support::NEUTRAL_DIALECTS`]), read by POSITION rather than spelled here. The
+/// validator's provider sweep asks only "does a registered plane declare this provider dialect?",
+/// never which one, so a fixture needs a declared name, not a particular dialect — and the neutral
+/// kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
-    crate::proto::registry::builtin_decls()
-        .iter()
-        .filter(|d| d.codec.is_some())
-        .nth(nth)
-        .map(|d| d.name)
+    crate::test_support::NEUTRAL_DIALECTS
+        .get(nth)
+        .copied()
         .unwrap_or_else(|| {
             panic!(
-                "the test binary ships fewer than {} codec protocols",
+                "the neutral plane declares fewer than {} provider dialects",
                 nth + 1
             )
         })
@@ -215,7 +214,7 @@ fn test_validate_rejects_bad_protocol() {
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
         .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
-    for proto in crate::proto::known_protocols() {
+    for proto in crate::test_support::NEUTRAL_DIALECTS {
         assert!(
             msg.contains(proto),
             "allowed-set list must include '{proto}'; got: {msg}"
@@ -6004,27 +6003,23 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     );
 }
 
-/// **D5 — AND THE EMPTY SET IS ONE THE REGISTRY ITSELF PRODUCES.**
+/// **D5 — AND THE EMPTY SET IS ONE THE PLANE REGISTRY ITSELF PRODUCES.**
 ///
-/// The two tests above hand the validator a literal `&[]`. That is only evidence if the registry
-/// can ever hand it the same thing — otherwise the refusal is pinned against an input that cannot
-/// occur, which is the vacuity D5 is about. So this one takes no literal: it builds a registry
-/// through the registry's OWN boot path with every protocol edge removed (see
-/// `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`), reads its
-/// codec-protocol list, and feeds THAT to the production sweep.
-///
-/// HONEST LIMIT, stated so nobody reads more into this than it says: the process-wide
-/// `known_protocols()` is a `OnceLock` over a `BUILTIN_DECLS` that is not empty in this build, so
-/// this drives the registry's empty state, not the process's. The zero-protocol BOOT proof closes
-/// with the last dialect extraction; this is the strongest proof available before it.
+/// The two tests above hand the validator a literal `&[]`. That is only evidence if the source the
+/// validator reads can ever hand it the same thing — otherwise the refusal is pinned against an
+/// input that cannot occur, which is the vacuity D5 is about. So this one takes no literal: the
+/// validator's known set is the provider dialects the registered planes declare
+/// (`plane::provider_dialects`, ruling 2026-10-16 D; the kernel holds no protocol set), read here
+/// over an isolated registry with no plane in it, and fed to the production sweep.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let empty_registry =
-        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
-    let known: &'static [&'static str] = empty_registry.codec_protocols();
+    let known: Vec<&'static str> = {
+        let _iso = crate::plane::registry::TestRegistryIsolation::empty();
+        crate::plane::provider_dialects()
+    };
     assert!(
         known.is_empty(),
-        "the premise of this test: a registry with no declarations knows no protocols"
+        "the premise of this test: a registry with no plane declares no provider dialect"
     );
 
     let mut providers = HashMap::new();
@@ -6035,7 +6030,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
     let mut errors = Vec::new();
-    super::validate_providers_with(known, &cfg, &[], &mut errors);
+    super::validate_providers_with(&known, &cfg, &[], &mut errors);
     assert_eq!(
         errors.len(),
         1,
@@ -6436,7 +6431,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     },
     wire_format_names: || &[],
     // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
+    provider_dialects: || crate::test_support::NEUTRAL_DIALECTS,
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,

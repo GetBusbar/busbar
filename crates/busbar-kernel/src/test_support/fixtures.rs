@@ -26,12 +26,13 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
     let provider = crate::config::ProviderCfg {
-        // The registry-supplied residual-default dialect — the neutral test protocol — in place of the
-        // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
-        // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
-        // so this resolves to the same default dialect the literal named.
-        protocol: crate::proto::residual_default_dialect()
-            .expect("a residual-default protocol (the neutral test dialect) must be registered")
+        // The first provider dialect a registered plane declares (the neutral fallback plane's,
+        // [`register_neutral_test_plane`], or a linked plane's), so the boot accepts it; with no
+        // plane registered, the neutral plane's first. The kernel names no dialect.
+        protocol: crate::plane::provider_dialects()
+            .first()
+            .copied()
+            .unwrap_or(NEUTRAL_DIALECTS[0])
             .into(),
         base_url: "https://api.example.com".into(),
         api_key,
@@ -93,6 +94,14 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     }
 }
 
+/// THE NEUTRAL FALLBACK PLANE'S PROVIDER DIALECTS: synthetic names, so a test lane names a dialect
+/// the boot accepts without the kernel naming a real one. The kernel holds no protocol set; a plane
+/// resolves its own dialects (spec Part 1, Law 5), and the config validator reads the provider
+/// dialects the registered planes declare.
+pub const NEUTRAL_DIALECTS: &[&str] = &[
+    "proto-a", "proto-b", "proto-c", "proto-d", "proto-e", "proto-f",
+];
+
 // ── THE NEUTRAL FALLBACK-PLANE FIXTURE ────────────────────────────────────────────────────────────
 // `config::plane_sections::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
 // `plane::fallback_key()` and finds no plane registered to own it: since the A6/HostCtx
@@ -137,9 +146,8 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
-    // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
-    // lane names one the boot accepts.
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
+    // The synthetic provider dialects a test lane names, so the boot accepts one.
+    provider_dialects: || NEUTRAL_DIALECTS,
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,

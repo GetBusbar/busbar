@@ -1,12 +1,12 @@
-//! THE PROTOCOL AXIS AS THE SHIPPED BUILD LINKS IT — the registry and detection folds over the REAL
-//! declarations the root installs, read off the linked table (`crate::LINKED.protocols`), never named.
+//! THE PROTOCOL AXIS AS THE SHIPPED BUILD LINKS IT — the linked planes' own dialect declarations,
+//! read off the linked table (`crate::LINKED.protocols`), never named.
 //!
 //! These assertions moved here from the composition root's integration suites (ARCHITECT on N4,
-//! option (b)): what they prove is a property of the composition — the host's folds over what this
-//! build links — so the root holds them. The protocol names, paths, headers and bodies they are held
-//! to are fixture DATA (`fixtures/linked_protocols.json`, ARCHITECT F-T), so this source names no
-//! plane. The registry's own machinery over synthetic declarations is the kernel's to prove
-//! (`busbar-kernel`'s `proto` tests, `registry_fold`).
+//! option (b)): what they prove is a property of the composition — what this build links — so the
+//! root holds them. The protocol names, paths, headers and bodies they are held to are fixture DATA
+//! (`fixtures/linked_protocols.json`, ARCHITECT F-T), so this source names no plane. The kernel holds
+//! no protocol set (a plane resolves its own dialects, spec Part 1, Law 5): the folds below are this
+//! suite's own reading of the declarations, the plane's statements about its dialects.
 //!
 //! Compiled only in a build that links every plane (`linked_every_plane`): the fixture is the shipped
 //! composition's, and a single-plane build links a different protocol set.
@@ -14,8 +14,6 @@
 use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
-use busbar_kernel::proto::streaming_content_types as event_content_types;
-use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path, Registry};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -35,17 +33,41 @@ fn linked_decls() -> Vec<&'static ProtocolDecl> {
         .collect()
 }
 
-/// Seed the process registry with the linked declarations, exactly as the root's boot does — before
-/// any fold is read, so no verdict depends on which test ran first.
-fn registered() {
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
+/// The dialect a request speaks, as the linked declarations' own claims fold it: every declaration's
+/// [`ProtocolDecl::claim_over`] in the linked order, the TIGHTEST claim kept, a tie broken by order.
+fn detect_protocol(path: &str, headers: &HeaderMap) -> Option<&'static str> {
+    let fields: Vec<(&[u8], &[u8])> = headers
+        .iter()
+        .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()))
+        .collect();
+    linked_decls()
+        .into_iter()
+        .filter_map(|d| d.claim_over(path, &fields).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
 }
 
-/// The registry the linked declarations build, as production folds it.
-fn builtins() -> Registry {
-    Registry::new(linked_decls())
+/// The dialect a path names from its shape alone, as the linked declarations' residual claims fold
+/// it (`ProtocolDecl::residual_claims`), the tightest kept.
+fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
+    linked_decls()
+        .into_iter()
+        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
+}
+
+/// Every verb a linked declaration serves, in the linked order, deduped.
+fn declared_verbs() -> Vec<OpVerb> {
+    let mut verbs: Vec<OpVerb> = Vec::new();
+    for d in linked_decls() {
+        for v in d.verbs {
+            if !verbs.contains(v) {
+                verbs.push(*v);
+            }
+        }
+    }
+    verbs
 }
 
 fn strs(v: &Value) -> Vec<&str> {
@@ -71,60 +93,24 @@ fn headers(v: &Value) -> HeaderMap {
     h
 }
 
-/// The cell a protocol declares, read off the process registry the linked table seeded.
+/// The cell a linked declaration states, by its name.
 fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
-    busbar_kernel::proto::decl_for(proto).and_then(|d| d.handler)
+    linked_decls()
+        .into_iter()
+        .find(|d| d.name == proto)
+        .and_then(|d| d.handler)
 }
 
 // ══ THE SURFACE THAT MUST NOT MOVE ═══════════════════════════════════════════════════════════════
 
-/// **THE METRIC-SURFACE PIN.** Protocol names are metric LABELS and `providers.*.protocol` config
-/// keys, and telemetry indexes its per-protocol families BY POSITION in this list. Held to the
-/// fixture, not derived from the declarations it checks. The order is the published 1.5.5 binary's
-/// (shadow-oracle `boot.refusal|BOOT-020|validate`).
+/// The stream media the root relays piece by piece ([`crate::root::linked::stream_media`]) are the
+/// event-stream content types the linked declarations state.
 #[test]
-fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
-    registered();
+fn the_linked_stream_media_are_the_declared_event_content_types() {
     assert_eq!(
-        busbar_kernel::proto::known_protocols(),
-        strs(&FIXTURE["protocol_order"]).as_slice(),
-        "the protocol name set AND ITS ORDER are operator-visible: the order indexes telemetry's \
-         metric families and the set is what the config validator accepts"
-    );
-}
-
-/// THE DERIVED LIST IS NEVER EMPTY IN A BUILD THAT SHIPS A PROTOCOL: an empty fold would make the
-/// validator reject every provider with an empty "must be one of:" tail.
-#[test]
-fn the_derived_protocol_list_is_not_empty() {
-    registered();
-    assert!(
-        !busbar_kernel::proto::known_protocols().is_empty(),
-        "the codec-protocol list is derived from the declarations; an empty one means the built-in \
-         table stopped being read, and every operator config would be refused with no cause named"
-    );
-}
-
-/// The three `OnceLock` sweeps the registry absorbed produce exactly these sets, folded from the
-/// declarations at boot.
-#[test]
-fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
-    registered();
-    assert_eq!(
-        event_content_types(),
-        strs(&FIXTURE["event_content_types"]).as_slice(),
-        "the absorbed event-stream content types"
-    );
-    assert_eq!(
-        busbar_kernel::proto::array_stream_shim_keys(),
-        strs(&FIXTURE["array_stream_shim_keys"]).as_slice(),
-        "absorbed proto::array_stream_shim_keys()"
-    );
-    assert_eq!(
-        builtins().head_keys(),
-        strs(&FIXTURE["head_keys"]).as_slice(),
-        "absorbed proxy::lazy_body::captured_head_keys() — the four core keys plus every declared \
-         shim key, sorted and deduped exactly as the sweep produced them"
+        crate::root::linked::stream_media(&crate::LINKED),
+        strs(&FIXTURE["event_content_types"]),
+        "the event-stream content types the linked declarations state"
     );
 }
 
@@ -132,14 +118,13 @@ fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
 /// serves makes the metric label space a lie. Both directions, over every linked declaration.
 #[test]
 fn the_declared_verbs_are_the_verbs_the_handler_serves() {
-    registered();
-    for decl in builtins().decls() {
+    for decl in linked_decls() {
         let handler = decl
             .handler
             .unwrap_or_else(|| panic!("{} declares no handler", decl.name));
         let mut candidates: Vec<OpVerb> = OpVerb::ALL
             .iter()
-            .chain(busbar_kernel::proto::declared_verbs())
+            .chain(declared_verbs().iter())
             .copied()
             .collect();
         candidates.sort_unstable_by_key(|op| op.name());
@@ -165,16 +150,15 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
     }
 }
 
-/// The registry-level EXHAUSTIVENESS contract: every verb a declaration claims resolves to a serving
-/// cell on that declaration's handler.
+/// The EXHAUSTIVENESS contract: every verb a declaration claims resolves to a serving cell on that
+/// declaration's handler.
 #[test]
 fn every_declared_verb_has_a_serving_handler() {
-    registered();
     assert!(
-        !busbar_kernel::proto::declared_verbs().is_empty(),
-        "the registry must declare at least the linked planes' verbs"
+        !declared_verbs().is_empty(),
+        "the linked declarations must declare at least the linked planes' verbs"
     );
-    for decl in builtins().decls() {
+    for decl in linked_decls() {
         let Some(handler) = decl.handler else {
             continue;
         };
@@ -189,83 +173,13 @@ fn every_declared_verb_has_a_serving_handler() {
     }
 }
 
-/// A linked protocol that declares no codec still resolves, still dispatches, and MUST NOT be offered
-/// to a provider lane: it is absent from the codec-protocol list, without anything comparing its
-/// name. Every such linked declaration is checked. The shipped build links none (the one it linked
-/// was a deleted engine's; its plane is served through its door and declares no protocol row), so
-/// the rule over a codec-less declaration is held by the planted one in
-/// [`a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead`].
-#[test]
-fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
-    registered();
-    assert!(
-        !busbar_kernel::proto::known_protocols().is_empty(),
-        "the exclusion below is asserted against a NON-EMPTY codec fold"
-    );
-    let codec_less: Vec<&'static ProtocolDecl> = linked_decls()
-        .into_iter()
-        .filter(|d| d.codec.is_none())
-        .collect();
-    for decl in codec_less {
-        let d = busbar_kernel::proto::decl_for(decl.name).expect("it declares itself");
-        assert!(d.codec.is_none());
-        assert!(d.handler.is_some(), "{} serves operations", d.name);
-        assert!(
-            !busbar_kernel::proto::known_protocols().contains(&d.name),
-            "a provider lane cannot name {}, which has no wire codec",
-            d.name
-        );
-    }
-}
-
-/// Two declarations of one name would make one unroutable; a boot panic is the only honest answer.
-#[test]
-#[should_panic(expected = "two protocol declarations claim the same name")]
-fn two_declarations_of_one_name_are_refused() {
-    let mut decls = linked_decls();
-    decls.push(decls[0]);
-    let _ = Registry::new(decls);
-}
-
-/// **THE FOLD-AHEAD RULE IS SAFE FOR A CODEC-LESS PROTOCOL.** The operator-visible list is
-/// `codec_protocols`, built by SKIPPING every declaration whose `codec` is `None`, so a codec-less
-/// declaration at the TAIL (the monolith's shape) or the HEAD (the extracted binary's shape) derives
-/// the identical list over the linked codec declarations.
-#[test]
-fn a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead() {
-    static CODEC_LESS: ProtocolDecl = ProtocolDecl::named("codec-less");
-    let with_codecs: Vec<&'static ProtocolDecl> = linked_decls()
-        .into_iter()
-        .filter(|d| d.codec.is_some())
-        .collect();
-    let at_the_tail: Vec<&'static ProtocolDecl> = with_codecs
-        .iter()
-        .copied()
-        .chain(std::iter::once(&CODEC_LESS))
-        .collect();
-    let at_the_head: Vec<&'static ProtocolDecl> = std::iter::once(&CODEC_LESS)
-        .chain(with_codecs.iter().copied())
-        .collect();
-    assert_ne!(
-        at_the_tail.iter().map(|d| d.name).collect::<Vec<_>>(),
-        at_the_head.iter().map(|d| d.name).collect::<Vec<_>>(),
-        "the two declaration orders must actually differ or the assertion below is vacuous"
-    );
-    assert_eq!(
-        Registry::new(at_the_tail).codec_protocols(),
-        Registry::new(at_the_head).codec_protocols(),
-        "a declaration that ships no wire codec contributes no entry to the operator-visible list"
-    );
-}
-
 // ══ DETECTION ════════════════════════════════════════════════════════════════════════════════════
 
-/// The resolver table through the REAL two-step pipeline: the fold IDs the protocol, then that
-/// protocol's `RequestHandler::resolve_operation` decides the operation — including collision
+/// The resolver table through the two-step pipeline: the declarations' fold IDs the protocol, then
+/// that protocol's `RequestHandler::resolve_operation` decides the operation — including collision
 /// defaults and ordering, then the cases the body disambiguates.
 #[test]
 fn resolver_table() {
-    registered();
     for case in FIXTURE["resolver"].as_array().expect("resolver") {
         let path = case[0].as_str().expect("path");
         let got = detect_protocol(path, &headers(&case[1])).and_then(|proto| {
@@ -304,7 +218,6 @@ fn resolver_table() {
 /// another dialect's ordering would also claim.
 #[test]
 fn mandatory_header_beats_path_ordering() {
-    registered();
     let case = &FIXTURE["mandatory_header"];
     let p = detect_protocol(case[0].as_str().expect("path"), &headers(&case[1])).unwrap();
     assert_eq!(p, case[2].as_str().expect("proto"));
@@ -314,7 +227,6 @@ fn mandatory_header_beats_path_ordering() {
 /// only the known action suffixes move to another — each row as the fixture records it.
 #[test]
 fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
-    registered();
     for case in FIXTURE["residual"].as_array().expect("residual") {
         let path = case[0].as_str().expect("path");
         assert_eq!(
@@ -326,10 +238,9 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
 }
 
 /// A PATH THAT NAMES NO DIALECT ANSWERS `None` — including the paths other planes are mounted at. The
-/// positive control first: an unseeded registry answers `None` everywhere, so the fold must be live.
+/// positive control first: the fold must be live, or the `None` assertions prove nothing.
 #[test]
 fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
-    registered();
     let live = &FIXTURE["residual_live"];
     assert_eq!(
         residual_dialect_for_path(live[0].as_str().expect("path")),
