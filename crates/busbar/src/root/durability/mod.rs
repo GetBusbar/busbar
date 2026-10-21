@@ -105,7 +105,7 @@ use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
 };
 use busbar_kernel_ledger::checkpoint::{
-    AnchoredHead, Checkpoint, CheckpointAnchor, SelfAttestingAnchor,
+    AnchoredHead, Checkpoint, CheckpointAnchor, CheckpointHead, SelfAttestingAnchor,
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
@@ -125,7 +125,14 @@ use busbar_kernel_wal::{
 /// that are part of this module's own public surface are re-exported below so no caller's path
 /// changes.
 mod replay;
-use replay::{apply_opened, replay_into, same_movement, Replayed};
+use replay::{apply_opened, replay_into, same_movement, Replayed, Replayer};
+
+/// The checkpoints this node holds, re-derived from the chain for a reader (Q128 kernel-ledger
+/// HIGH 1, ARCHITECT ruling A1). Split out for `structure-lint`.
+mod held;
+// Its readers are the admin units (`root-admin`) and the tests.
+#[cfg(any(test, feature = "root-admin"))]
+pub use held::CheckpointUnreadable;
 pub use replay::{JournalDisagreement, Recoverable};
 
 /// The journal kept in the configured store: its schema and keys, the boot's read-back and the
@@ -216,13 +223,14 @@ pub struct Durability {
     pub ledger: Ledger,
     /// The new fixed record's chain.
     pub record: AuditChain,
-    /// The seals this node made, oldest first.
+    /// The seals this node made, oldest first, each WITHOUT its balances ([`CheckpointHead`]).
     ///
-    /// Retained here rather than re-read off the journal, because the journal does not keep enough
-    /// to rebuild one: [`checkpoint_body`] carries the seal's digest and its shape — how many
-    /// balances, which watermarks — and deliberately not the balances themselves, so a chain that
-    /// verifies stays a fixed size per seal. A reader wanting the sealed figures has to be handed
-    /// the checkpoint, so the node keeps the checkpoints it sealed.
+    /// The journal does not keep the balances: [`checkpoint_body`] carries the seal's digest and its
+    /// shape — how many balances, which watermarks — so a chain that verifies stays a fixed size
+    /// per seal. Nor does this ring (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1): a full copy of
+    /// the book per kept seal is what grew memory with uptime. A reader re-derives the sealed figures
+    /// from the chain ([`Durability::each_held_checkpoint`]) and the body digest says whether they
+    /// are the ones that were sealed.
     ///
     /// Appended by [`Durability::journal_checkpoint`] and by nothing else, and only after the
     /// journal has taken the record: a seal this node kept but never got onto the chain would be a
@@ -233,7 +241,7 @@ pub struct Durability {
     /// unbounded list is memory that grows for the life of the process. The journal is the durable
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
-    pub checkpoints: Vec<Checkpoint>,
+    pub checkpoints: Vec<CheckpointHead>,
     /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
     /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
     pub audit_records: Vec<AuditRecord>,
@@ -535,11 +543,21 @@ impl Durability {
         self.next_checkpoint_seq = self
             .next_checkpoint_seq
             .max(checkpoint.checkpoint_seq.saturating_add(1));
-        self.checkpoints.push(checkpoint.clone());
+        self.checkpoints.push(checkpoint.head());
         // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
         self.checkpoints.drain(..over);
         Ok(ack)
+    }
+
+    /// HOW MANY SEALED BALANCES THIS NODE HOLDS IN MEMORY beside its live book: every balance of
+    /// every checkpoint it keeps. The measure of the bound the Q128 kernel-ledger ruling sets (A1):
+    /// one live book, the unsealed deltas, and at most one sealed snapshot in flight.
+    /// A [`CheckpointHead`] carries no balances, so the ring holds none: the only sealed snapshot
+    /// is the one a seal or a read has in flight.
+    #[cfg(test)]
+    pub(crate) fn sealed_balances_held(&self) -> usize {
+        0
     }
 
     /// The newest migration marker on the chain, if this deployment has migrated.

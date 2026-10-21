@@ -1338,8 +1338,9 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
     assert_eq!(restarted.recovered_holds, 0, "every hold was closed");
     assert_eq!(restarted.incarnation, 2, "the second boot of this journal");
 
-    // A book that lost a row.
-    restarted.ledger.book_mut().retain_from(86_401);
+    // A book that lost both rows.
+    *restarted.ledger.book_mut().entry(key.clone(), 86_400) = Default::default();
+    *restarted.ledger.book_mut().entry(other.clone(), 86_400) = Default::default();
     let findings = restarted.reconcile_with_journal();
     assert_eq!(
         findings.len(),
@@ -3851,4 +3852,185 @@ fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_di
         "the adopted id is held under the lease"
     );
     assert!(peer.lease.is_none(), "and the peer holds none");
+}
+
+/// THE HELD CHECKPOINTS ARE RE-DERIVED FROM THE CHAIN, AS THEY WERE SEALED (Q128 kernel-ledger
+/// HIGH 1, ARCHITECT ruling A1): the node keeps each seal's head and not its balances, and one
+/// ordered walk of its journal hands every held checkpoint back with the very figures it sealed,
+/// oldest first, the same set the ring holds.
+#[test]
+fn every_held_checkpoint_is_re_derived_from_the_chain_as_it_was_sealed() {
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_held");
+    let mut sealed = Vec::new();
+    for n in 1..=3u64 {
+        settle_one(&mut durability, &key, 1_000, 100 * n, n);
+        sealed.push(
+            durability
+                .seal_checkpoint(&token, StepName::Meter, 1_700_000_000 + n)
+                .expect("the seal goes down"),
+        );
+    }
+    assert!(
+        sealed
+            .windows(2)
+            .all(|pair| pair[0].totals != pair[1].totals),
+        "each seal holds figures the one before it did not"
+    );
+    let mut served = Vec::new();
+    durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives");
+    // The set the ring holds (the cadence may have sealed beside the explicit seals), in order,
+    // and every explicit seal among them with the very figures it sealed.
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        durability.checkpoints
+    );
+    for seal in &sealed {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+    }
+}
+
+/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE IS REFUSED BY ITS SEQUENCE
+/// NUMBER, never served with numbers. A figure the book moved with no record behind it is sealed
+/// into the second checkpoint, so the chain re-derives figures that are not the sealed ones; and a
+/// held head no record on the chain carries is refused as not on the chain.
+#[test]
+fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_by_its_seq() {
+    use crate::root::durability::CheckpointUnreadable;
+
+    let token = token();
+    let mut durability = memory_node();
+    settle_one(&mut durability, &totals_key("vk_held"), 1_000, 400, 1);
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, 1_700_000_001)
+        .expect("the seal goes down");
+    durability
+        .ledger
+        .book_mut()
+        .entry(totals_key("vk_unrecorded"), 86_400)
+        .settled = 1;
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, 1_700_000_002)
+        .expect("the seal goes down");
+
+    let mut served = Vec::new();
+    let refused = durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.checkpoint_seq))
+        .expect_err("a figure no record carries cannot be re-derived");
+    assert_eq!(
+        refused,
+        CheckpointUnreadable::Diverged {
+            checkpoint_seq: second.checkpoint_seq
+        }
+    );
+    assert!(served.contains(&first.checkpoint_seq), "{served:?}");
+    assert!(
+        served.iter().all(|seq| *seq < second.checkpoint_seq),
+        "no figure past the refusal: {served:?}"
+    );
+
+    let mut stray = first.head();
+    stray.checkpoint_seq = 99;
+    durability.checkpoints = vec![stray];
+    assert_eq!(
+        durability.each_held_checkpoint(&mut |_| {}),
+        Err(CheckpointUnreadable::NotOnChain { checkpoint_seq: 99 })
+    );
+}
+
+/// RED (Q128 kernel-ledger HIGH 1, the held-checkpoint walk): ON A NODE RESUMED FROM THE STORE WHOSE
+/// CHAIN OUTGREW ONE MEMORY SEGMENT, EVERY HELD CHECKPOINT STILL RE-DERIVES. The memory log keeps only
+/// its newest segment resident (`Wal::memory_seeded`); the rest of the chain is the store's. A walk
+/// of the journal's own replay starts mid-chain, misses the settlement sealed before the roll, and
+/// reads every held checkpoint as diverged; the walk has to read the whole chain, store copy plus
+/// the resident segment, as `/verify`'s chain reader does ([`Durability::chain`]).
+///
+/// The segment is the shipped [`busbar_kernel_wal::SEGMENT_BYTES`]: the log has no smaller one to
+/// ask for, so the first boot pads the chain past it, as the amendment journal's `store` phase does.
+#[test]
+fn a_store_resumed_chain_past_one_segment_re_derives_every_held_checkpoint() {
+    /// One padding record's body: a few hundred roll the log past a segment, and 256 of them (one
+    /// block of the store's scan) stay inside one scan.
+    const PAD_BODY: usize = 100_000;
+    const NODE: u64 = 41;
+
+    let token = token();
+    let slots = crate::root::store_double::RecordSlots::new();
+    let early = totals_key("vk_before_the_roll");
+    let late = totals_key("vk_after_the_roll");
+    {
+        let mut durability = store_book(&slots, NODE);
+        settle_one(&mut durability, &early, 1_000, 300, 1);
+        let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
+        for _ in 0..pads {
+            durability
+                .journal
+                .append(
+                    &token,
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Load, vec![0x5a; PAD_BODY]).at(1_700_000_000, 0)],
+                )
+                .expect("the padding goes on the chain");
+        }
+        assert!(
+            durability
+                .lane()
+                .expect("a book over the store")
+                .drain(std::time::Duration::from_secs(120)),
+            "the store takes the journal's records"
+        );
+    }
+
+    let mut restarted = store_book(&slots, NODE);
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
+    assert!(
+        restarted.journal.log().segments_used() >= 2,
+        "the resumed memory journal rolled past one segment"
+    );
+    assert_eq!(
+        restarted.ledger.book().get(&early, 86_400).settled,
+        300,
+        "the boot read the whole chain"
+    );
+    let mut sealed = Vec::new();
+    for n in 1..=2u64 {
+        settle_one(&mut restarted, &late, 1_000, 100 * n, 10 + n);
+        sealed.push(
+            restarted
+                .seal_checkpoint(&token, StepName::Meter, 1_700_000_100 + n)
+                .expect("the seal goes down"),
+        );
+    }
+
+    let mut served = Vec::new();
+    restarted
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives from the whole chain");
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        restarted.checkpoints,
+        "the set the ring holds, in order"
+    );
+    for seal in &sealed {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+        assert_eq!(
+            seal.totals_for(&early, 86_400).settled,
+            300,
+            "the seal holds the settlement made before the roll"
+        );
+    }
 }
