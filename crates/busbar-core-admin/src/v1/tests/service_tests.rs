@@ -495,7 +495,8 @@ pub(crate) fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
         .stores
         .first()
         .expect("the build links a store");
-    let reg = busbar_kernel::preflight::linked().expect("the linked rows register");
+    let reg = busbar_kernel::preflight::linked(busbar_kernel::config::Legacy::stand_in())
+        .expect("the linked rows register");
     let row = reg
         .resolve(canonical)
         .expect("the linked store answers its canonical name");

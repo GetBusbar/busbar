@@ -276,6 +276,7 @@ impl AdminService {
         for (name, entry) in busbar_kernel::config::overlay::unparseable_named_map_entries(
             self.app.overlay_path.as_deref(),
             section,
+            self.app.legacy,
         ) {
             if !defs.iter().any(|d| d.name == name) {
                 defs.push(unparseable_def_view(&name, &entry));
@@ -314,6 +315,7 @@ impl AdminService {
             busbar_kernel::config::overlay::unparseable_named_map_entries(
                 self.app.overlay_path.as_deref(),
                 section,
+                self.app.legacy,
             )
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
@@ -990,7 +992,9 @@ impl AdminService {
         // plugin at the same version is already served by the linked row, so the install is an
         // accepted no-op (nothing is written); another version is refused now, in the words boot
         // would refuse it with, never published to brick the next boot.
-        match busbar_kernel::preflight::linked().and_then(|r| r.linked_copy(manifest, &file)) {
+        match busbar_kernel::preflight::linked(self.app.legacy)
+            .and_then(|r| r.linked_copy(manifest, &file))
+        {
             Ok(None) => {}
             Ok(Some(_)) => {
                 return Ok(crate::v1::contract::PluginInstallView {
@@ -1317,8 +1321,10 @@ impl AdminService {
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
         // The running generation's root rules: a dry run judges what an apply would.
         let rules = std::sync::Arc::clone(&self.app.root_rules);
+        // The running generation's legacy table: the dry run resolves as an apply would.
+        let legacy = self.app.legacy;
         match tokio::task::spawn_blocking(move || {
-            validate_config_blocking(deploy, &defs, plugins_dir, &rules)
+            validate_config_blocking(deploy, &defs, plugins_dir, &rules, legacy)
         })
         .await
         {
@@ -1862,10 +1868,11 @@ fn validate_config_blocking(
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
+    legacy: busbar_kernel::config::Legacy,
 ) -> ConfigValidateView {
     // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
     // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-    let root = match busbar_kernel::config::resolve(&deploy, defs) {
+    let root = match busbar_kernel::config::resolve(&deploy, defs, legacy) {
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };

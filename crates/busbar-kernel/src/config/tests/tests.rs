@@ -100,8 +100,10 @@ pub(crate) fn base_deploy() -> DeployCfg {
 // parse.
 #[test]
 fn augment_config_error_adds_auth_mode_migration_hint() {
-    let augmented =
-        crate::config::augment_config_error("unknown field `mode`, expected one of `chain`");
+    let augmented = crate::config::augment_config_error(
+        "unknown field `mode`, expected one of `chain`",
+        crate::config::Legacy::stand_in(),
+    );
     assert!(
         augmented.contains("auth.mode:"),
         "hint names the removed key: {augmented}"
@@ -116,13 +118,16 @@ fn augment_config_error_adds_auth_mode_migration_hint() {
     );
     // Unrelated errors are returned unchanged.
     assert_eq!(
-        crate::config::augment_config_error("some other yaml error"),
+        crate::config::augment_config_error(
+            "some other yaml error",
+            crate::config::Legacy::stand_in()
+        ),
         "some other yaml error"
     );
     // End-to-end: a legacy `auth.mode:` config surfaces the hint through the parse path.
     let legacy = "providers: {}\nauth:\n  mode: none\n";
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(legacy)
-        .map_err(crate::config::augment_config_error)
+        .map_err(|e| crate::config::augment_config_error(e, crate::config::Legacy::stand_in()))
         .expect_err("legacy auth.mode must fail to parse");
     assert!(
         err.contains("auth.chain:"),
@@ -142,9 +147,12 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
         ("completion", "response"),
     ] {
         // The synthetic serde message an unknown enum variant produces.
-        let augmented = crate::config::augment_config_error(format!(
+        let augmented = crate::config::augment_config_error(
+            format!(
             "unknown variant `{old}`, expected one of `request`, `candidate`, `routing`, `response`"
-        ));
+        ),
+            crate::config::Legacy::stand_in(),
+        );
         assert!(
             augmented.contains(&format!("`{old}`")) && augmented.contains(&format!("`{new}`")),
             "hint must name the old AND new stage value: {augmented}"
@@ -160,7 +168,7 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
     // only reaches the parser through `phase:`.)
     let legacy = "kind: tap\nmodule: p\nphase: [completion]\n";
     let err = serde_yaml::from_str::<HookCfg>(legacy)
-        .map_err(crate::config::augment_config_error)
+        .map_err(|e| crate::config::augment_config_error(e, crate::config::Legacy::stand_in()))
         .expect_err(
             "an old-form `completion` stage value must fail to parse (HARD rename, no alias)",
         );
@@ -379,7 +387,7 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
         "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired observability block must be rejected");
-    let hint = crate::config::augment_config_error(err);
+    let hint = crate::config::augment_config_error(err, crate::config::Legacy::stand_in());
     assert!(
         hint.contains("observability")
             && hint.contains("request-log-webhook")
@@ -391,7 +399,7 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
         "metrics:\n  buffer_seconds: 60\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired metrics block must be rejected");
-    let hint = crate::config::augment_config_error(err);
+    let hint = crate::config::augment_config_error(err, crate::config::Legacy::stand_in());
     assert!(
         hint.contains("export.prometheus") && hint.contains("--migrate-config"),
         "the retired metrics block must point at export.prometheus + the migrator; got: {hint}"
@@ -472,7 +480,7 @@ fn test_provider_path_override_resolves() {
     let mut deploy = base_deploy();
     deploy.providers.insert("zai-payg".to_string(), dep);
 
-    let cfg = resolve(&deploy, &defs).expect("resolve");
+    let cfg = resolve(&deploy, &defs, crate::config::Legacy::stand_in()).expect("resolve");
     assert_eq!(
         cfg.providers["zai-payg"].path.as_deref(),
         Some("/chat/completions"),
@@ -530,7 +538,7 @@ fn admin_plane_boot_guard() {
             client_ca: Some(SecretRef::file(ca)),
         });
         deploy.admin_require_mtls = require_mtls;
-        resolve(&deploy, &defs)
+        resolve(&deploy, &defs, crate::config::Legacy::stand_in())
     }
 
     // DEFAULT: the zero-config `admin_listen` is loopback, so it boots with no mTLS. Note the
@@ -581,7 +589,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
         "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired admin_insecure key must be rejected at parse");
-    let hint = crate::config::augment_config_error(err);
+    let hint = crate::config::augment_config_error(err, crate::config::Legacy::stand_in());
     assert!(
         hint.contains("admin_insecure")
             && hint.contains("admin_require_mtls")
@@ -1453,7 +1461,8 @@ fn test_resolve_provider_from_def() {
         .providers
         .insert("z.ai".to_string(), provider_deploy("ZAI_KEY"));
 
-    let result = resolve(&deploy, &defs).expect("resolve should succeed");
+    let result =
+        resolve(&deploy, &defs, crate::config::Legacy::stand_in()).expect("resolve should succeed");
 
     let provider_cfg = result
         .providers
@@ -1522,7 +1531,7 @@ fn test_resolve_unknown_provider_error() {
         .providers
         .insert("nope".to_string(), provider_deploy("NOPE_KEY"));
 
-    let result = resolve(&deploy, &defs);
+    let result = resolve(&deploy, &defs, crate::config::Legacy::stand_in());
     assert!(result.is_err());
     let errs = result.unwrap_err();
     assert_eq!(errs.len(), 1);
@@ -1549,7 +1558,8 @@ fn test_resolve_override_wins() {
     let mut deploy = base_deploy();
     deploy.providers.insert("custom".to_string(), dep);
 
-    let result = resolve(&deploy, &defs).expect("resolve should succeed");
+    let result =
+        resolve(&deploy, &defs, crate::config::Legacy::stand_in()).expect("resolve should succeed");
 
     let provider_cfg = result
         .providers
@@ -1581,7 +1591,8 @@ fn test_resolve_empty_error_map_allowed_in_def() {
         .providers
         .insert("minimal".to_string(), provider_deploy("MINIMAL_KEY"));
 
-    let result = resolve(&deploy, &defs).expect("resolve should succeed");
+    let result =
+        resolve(&deploy, &defs, crate::config::Legacy::stand_in()).expect("resolve should succeed");
     let provider_cfg = result
         .providers
         .get("minimal")
@@ -2113,6 +2124,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
 
@@ -2163,6 +2175,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(
@@ -2190,6 +2203,7 @@ fn test_dangling_identity_provider_reference_is_an_error() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(
         errors
@@ -2240,6 +2254,7 @@ fn test_token_on_a_non_operator_provider_is_an_error() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(
         errors
@@ -2677,7 +2692,8 @@ fn test_resolve_builds_registry_from_named_defs() {
     deploy.pools.pools.insert("b".to_string(), pool_b);
     deploy.pools.all_pool_hooks = vec!["audit".to_string()];
 
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolve");
 
     let mut names: Vec<&String> = cfg.hooks.keys().collect();
     names.sort();
@@ -2720,7 +2736,8 @@ fn test_resolve_builds_registry_from_named_defs() {
 fn test_resolve_rejects_bad_hook_defs() {
     let mut deploy = base_deploy();
     deploy.hooks = serde_yaml::from_str("bad:\n  module: \"  \"\n").unwrap();
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("empty module must fail resolve");
+    let errs = resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in())
+        .expect_err("empty module must fail resolve");
     let joined = errs.join("\n");
     assert!(
         joined.contains("hooks.bad") && joined.contains("non-empty"),
@@ -2730,7 +2747,8 @@ fn test_resolve_rejects_bad_hook_defs() {
     // A definition named after a reserved word (a built-in strategy) is rejected.
     let mut deploy = base_deploy();
     deploy.hooks = serde_yaml::from_str("cheapest:\n  module: busbar-phi\n").unwrap();
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("reserved def name must fail");
+    let errs = resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in())
+        .expect_err("reserved def name must fail");
     assert!(errs.join("\n").contains("reserved name"), "{errs:?}");
 }
 
@@ -2832,7 +2850,12 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
 #[test]
 fn test_resolve_projects_admin_auth_names() {
     // auth absent: the default admin chain.
-    let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
+    let cfg = resolve(
+        &base_deploy(),
+        &HashMap::new(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 
     // auth present with a custom admin chain: names projected in order.
@@ -2848,13 +2871,14 @@ fn test_resolve_projects_admin_auth_names() {
          ad: {{ module: ad, max_admin_scope: read-only }}\n",
     ))
     .expect("identity-providers parse");
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);
     // The operator credential stays reachable as a SecretRef through the resolved auth block.
     assert_eq!(
         cfg.auth
             .as_ref()
-            .and_then(|a| a.admin_token_ref())
+            .and_then(|a| a.admin_token_ref(crate::config::Legacy::stand_in()))
             .and_then(|t| t.env_var()),
         Some("BUSBAR_ADMIN_TOKEN")
     );
@@ -2862,7 +2886,8 @@ fn test_resolve_projects_admin_auth_names() {
     // auth present but admin_auth omitted: the serde default (the operator credential) applies.
     let mut deploy = base_deploy();
     deploy.auth = Some(serde_yaml::from_str("chain: [keys]\n").expect("auth parses"));
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 }
 
@@ -2917,6 +2942,7 @@ test-idp-double:
         &serde_yaml::from_str("chain: [test-idp-double]\n").expect("auth parses"),
         &providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     let method = auth
@@ -3093,7 +3119,8 @@ advanced:
     let mut deploy = base_deploy();
     deploy.advanced.upstream_http1_only = true;
     deploy.advanced.upstream_h2_prior_knowledge = true;
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolve");
     assert!(
         cfg.limits.upstream_http1_only,
         "advanced.upstream_http1_only must reach cfg.limits"
@@ -3188,7 +3215,7 @@ fn reserved_hook_names_are_frozen() {
         "cheapest".to_string(),
         serde_yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
     );
-    let errs = resolve(&deploy, &HashMap::new())
+    let errs = resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in())
         .expect_err("a hook named with a reserved word must refuse to boot");
     assert!(
         errs.iter()
@@ -3205,7 +3232,7 @@ fn reserved_hook_names_are_frozen() {
         operator.to_string(),
         serde_yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
     );
-    let errs = resolve(&deploy, &HashMap::new())
+    let errs = resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in())
         .expect_err("a hook named with the operator credential's provider must refuse to boot");
     assert!(
         errs.iter()
@@ -3341,7 +3368,8 @@ fn additive_hook_lists_dedupe_at_first_position() {
          providers: {}\nmodels: {}\n",
     )
     .expect("parses");
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolves");
     assert_eq!(cfg.global_hooks, ["audit"]);
     assert!(
         cfg.pools["fast"].gates.is_empty(),
@@ -3356,7 +3384,8 @@ fn additive_hook_lists_dedupe_at_first_position() {
          providers: {}\nmodels: {}\n",
     )
     .expect("parses");
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolves");
     assert_eq!(cfg.pools["fast"].gates, ["pii"]);
 }
 
@@ -3408,7 +3437,8 @@ fn pools_upstream_credentials_is_a_scalar_override() {
          providers: {}\nmodels: {}\n",
     )
     .expect("parses");
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolves");
     assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
     assert_eq!(
         cfg.pools["fast"].upstream_credentials,
@@ -3421,7 +3451,12 @@ fn pools_upstream_credentials_is_a_scalar_override() {
     );
 
     // Omitted at both levels ⇒ the built-in default, unchanged from pre-1.5.3 behavior.
-    let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolves");
+    let cfg = resolve(
+        &base_deploy(),
+        &HashMap::new(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("resolves");
     assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
 }
 
@@ -3602,7 +3637,8 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 #[test]
 fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolve");
     assert!(
         cfg.plane_pools.is_empty(),
         "no plane failover unless asked for"
@@ -3683,6 +3719,7 @@ fn test_auth_policy_block_parses_and_resolves() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
 
@@ -3730,6 +3767,7 @@ fn test_auth_policy_absent_is_default() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     let p = &auth.policy;
@@ -3907,7 +3945,12 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
     let keys: Vec<&str> = deploy.declared.0.keys().copied().collect();
     assert_eq!(keys, ["neutral_section", "second_section"]);
     assert!(deploy.plane_raw.is_empty(), "{:?}", deploy.plane_raw);
-    let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let root = crate::config::resolve(
+        &deploy,
+        &Default::default(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("resolves");
     for section in keys {
         assert!(
             root.plane_sections.contains(section),
@@ -3993,7 +4036,12 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
     );
     assert!(deploy.plane_fees.contains_key("neutral-test-raw"));
 
-    let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let root = crate::config::resolve(
+        &deploy,
+        &Default::default(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("resolves");
     assert!(
         root.plane_sections.contains(RAW_SECTION),
         "LAW 7: the plane is configured"
@@ -4012,7 +4060,12 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
         "{RAW_SECTION}: ~\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"
     ))
     .expect("parses");
-    let root = crate::config::resolve(&bare, &Default::default()).expect("resolves");
+    let root = crate::config::resolve(
+        &bare,
+        &Default::default(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("resolves");
     assert!(!root.plane_sections.contains(RAW_SECTION));
     assert!(root.endpoint_resource(RAW_SECTION).is_none());
 }
@@ -4049,7 +4102,9 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
     let bare: DeployCfg =
         crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
             .expect("a document with no `decisions:` section still parses");
-    let bare_errors = resolve(&bare, &HashMap::new()).err().unwrap_or_default();
+    let bare_errors = resolve(&bare, &HashMap::new(), crate::config::Legacy::stand_in())
+        .err()
+        .unwrap_or_default();
     assert!(
         !bare_errors.iter().any(|e| e.contains("unknown field")),
         "an absent `decisions:` section must not be refused; got: {bare_errors:?}"
@@ -4147,7 +4202,8 @@ fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
         "the card is filed under the plane's registry key, exact"
     );
 
-    let root = resolve(&deploy, &HashMap::new()).expect("resolves");
+    let root =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolves");
     let composed = root.rate_card.expect("a plane card present");
     let lane = format!(
         "card-plane{}srv_read",
@@ -4188,7 +4244,8 @@ fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
         per_session: 40,
     };
     assert_eq!(deploy.plane_fees.get("card-plane"), Some(&fees));
-    let root = resolve(&deploy, &HashMap::new()).expect("resolves");
+    let root =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolves");
     assert_eq!(root.plane_fees.get("card-plane"), Some(&fees));
     assert_eq!(
         root.per_request_fee, 5,
@@ -4299,7 +4356,8 @@ fn a_flat_rate_card_resolves_to_itself() {
     ] {
         let deploy = crate::config::deploy_from_yaml_str(text).expect("parses");
         assert!(deploy.plane_rate_cards.is_empty());
-        let root = resolve(&deploy, &HashMap::new()).expect("resolves");
+        let root =
+            resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolves");
         assert_eq!(root.rate_card, deploy.rate_card, "{text}");
     }
 }

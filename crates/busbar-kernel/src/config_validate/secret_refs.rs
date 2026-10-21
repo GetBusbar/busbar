@@ -123,6 +123,10 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         upstream_credentials: _,
         // The configured plane section NAMES (Law 7): `&'static str` keys, no credential.
         plane_sections: _,
+        // The root legacy table this config was resolved under: frozen 1.5.5 text the composition
+        // root lent, no credential. Read below for the operator credential's former names, the
+        // names boot reads its token under.
+        legacy,
         // ── OPAQUE MODULE SETTINGS BAGS (`serde_json::Value` trees, not typed config): `store`,
         // `secrets`, `hooks`, `export` and `export_defs` all carry a plugin's own `settings:`, which
         // MAY contain `SecretRef`-SHAPED documents. Those are NOT `SecretRef`-typed values and are
@@ -268,7 +272,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // first operator-credential entry's reference, and that is compared by ADDRESS (the accessor
         // hands back a borrow into these very entries), so a second such entry, or a token on a
         // module that never reads one, is left out exactly as boot leaves it unread.
-        let boot_token = auth.admin_token_ref();
+        let boot_token = auth.admin_token_ref(*legacy);
         for (plane, entries) in [("chain", chain), ("admin_auth", admin_auth)] {
             for entry in entries {
                 let crate::config::AuthChainEntry {

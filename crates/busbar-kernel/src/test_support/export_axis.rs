@@ -173,7 +173,7 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
 /// module.
 #[must_use]
 pub fn scrape_module() -> &'static str {
-    crate::config::migrate_export::export_type_keys()
+    crate::config::migrate_export::export_type_keys(crate::config::Legacy::stand_in())
         .into_iter()
         .find(|(_, instance, _)| *instance == ExportStream::Metrics.as_token())
         .map_or("", |(_, _, module)| module)
@@ -291,7 +291,8 @@ pub fn install_export_axis() {
 /// door — for a test binary that links a sink of its own. The first install holds.
 pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>) {
     let built = BUILT.get_or_init(|| {
-        let modules: Vec<&'static str> = crate::config::legacy::text("export_modules")
+        let modules: Vec<&'static str> = crate::config::Legacy::stand_in()
+            .text("export_modules")
             .split(" | ")
             .filter(|module| !module.is_empty() && *module != scrape_module())
             .collect();

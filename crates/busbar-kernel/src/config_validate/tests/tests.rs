@@ -11,6 +11,7 @@ fn make_root_cfg(
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        legacy: config::Legacy::stand_in(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
@@ -5318,7 +5319,7 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     ))
     .unwrap();
     let defs = HashMap::from([("acme".to_string(), def)]);
-    config::resolve(&deploy, &defs)
+    config::resolve(&deploy, &defs, crate::config::Legacy::stand_in())
 }
 
 /// `--validate` and boot share ONE pipeline: DeployCfg yaml -> config::resolve -> RootCfg ->
@@ -5740,7 +5741,12 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
     }
     let doc: Doc = serde_yaml::from_str(yaml).expect("auth yaml parses");
     let mut errors = Vec::new();
-    let out = config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
+    let out = config::resolve_auth(
+        &doc.auth,
+        &doc.identity_providers,
+        &mut errors,
+        crate::config::Legacy::stand_in(),
+    );
     assert!(
         errors.is_empty(),
         "auth yaml must resolve cleanly: {errors:?}"

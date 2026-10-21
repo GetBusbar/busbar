@@ -211,7 +211,8 @@ fn chooser_renders_0_1_n_buttons() {
 /// generic arm — its title-cased name under the key icon — exactly as an unmatched method does.
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
-    let row = busbar_kernel::config::legacy::text("login_brands");
+    let legacy = busbar_kernel::config::Legacy::stand_in();
+    let row = legacy.text("login_brands");
     let brands: Vec<(&str, &str, &str)> = row
         .split(" | ")
         .map(|b| {
@@ -227,9 +228,16 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
             .find(|(r, _)| r == icon_ref)
             .map(|(_, svg)| *svg)
             .unwrap_or_else(|| panic!("no icon asset for `{icon_ref}`"));
-        assert_eq!(button_brand(token, None), ((*label).to_string(), icon));
         assert_eq!(
-            button_brand("corp-sso", Some(&format!("https://{token}.example"))),
+            button_brand(legacy, token, None),
+            ((*label).to_string(), icon)
+        );
+        assert_eq!(
+            button_brand(
+                legacy,
+                "corp-sso",
+                Some(&format!("https://{token}.example"))
+            ),
             ((*label).to_string(), icon),
             "the issuer host matches as the name does"
         );
@@ -244,7 +252,7 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
     }
     // No brand matches: the generic arm.
     assert_eq!(
-        button_brand("corp-sso", None),
+        button_brand(legacy, "corp-sso", None),
         ("Corp Sso".to_string(), GENERIC_ICON)
     );
     // With no row, the brands' own tokens are generic too.

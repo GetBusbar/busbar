@@ -281,9 +281,6 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
-    // The root legacy table, before the first configuration read (the dropped-plugin scan below
-    // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
-    root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
@@ -541,11 +538,16 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let config_path =
         std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
+    // The root legacy table, LENT to the config load (the kernel's 1.x detector reads it), to the
+    // overlay's typed parse, to `resolve` (which keeps it on the configuration and the generation
+    // built from it) and to the metrics recorder.
+    let legacy = root::legacy::table();
     let loaded = load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
+        legacy,
     )
     .unwrap_or_else(|e| die(e));
     let LoadedConfig {
@@ -576,7 +578,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // hooks + groups overlay sections merge POST-resolve (below). `--safe-mode` clears `overlay_doc`,
     // so the root overrides are quarantined too — the whole overlay is one on/off switch.
     if let Some(doc) = overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut deploy, doc);
+        config::overlay::apply_root_to_deploy(&mut deploy, doc, legacy);
     }
 
     // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE
@@ -603,6 +605,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             .recorder
             .as_ref()
             .map(|p| Duration::from_secs(p.buffer_seconds)),
+        legacy,
     );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
@@ -657,7 +660,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
 
     // Resolve deployment + definitions into resolved RootCfg (semantic validation runs inside
     // build_app_from_config — the one construction path).
-    let mut cfg = config::resolve(&deploy, &defs)
+    let mut cfg = config::resolve(&deploy, &defs, legacy)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
     // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
     // connection, built once here, before anything dials: the kernel's `dest.judge` and its own

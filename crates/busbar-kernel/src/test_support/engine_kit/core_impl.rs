@@ -136,7 +136,11 @@ impl EngineTestKit for CoreEngineKit {
         name: &str,
         def: &serde_json::Value,
     ) -> Result<(), String> {
-        crate::config::named_map::NamedMapSection::Plane(section).validate_def(name, def)
+        crate::config::named_map::NamedMapSection::Plane(section).validate_def(
+            name,
+            def,
+            crate::config::Legacy::stand_in(),
+        )
     }
 
     fn durable_store_cfg(&self, tag: &str) -> (PathBuf, String) {

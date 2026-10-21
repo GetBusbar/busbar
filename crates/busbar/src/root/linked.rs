@@ -257,7 +257,12 @@ pub fn linked_exports(
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
-                .map(busbar_kernel::preflight::answering_former_names)
+                .map(|row| {
+                    busbar_kernel::preflight::answering_former_names(
+                        row,
+                        crate::root::legacy::table(),
+                    )
+                })
         })
         .collect::<Result<Vec<_>, String>>()?;
     // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
@@ -415,7 +420,7 @@ pub fn link_secrets(
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
+    rows.with_former_names(crate::root::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 

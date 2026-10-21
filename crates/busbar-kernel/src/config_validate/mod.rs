@@ -995,7 +995,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
+            if entry.token.is_some() && !crate::config::names_operator(&entry.module, cfg.legacy) {
                 errors.push(operator::misplaced_token(
                     operator_provider(),
                     &entry.module,
@@ -1146,7 +1146,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // see `AuthCfg::usable_mint_path`. An explicit OPEN admin (`admin_auth: []`) counts as a mint
         // path but is dev-only — WARN that anyone can mint. `oidc`/plugin chains never set
         // `keys_in_chain`, so they never trigger this (their identities are externally issued).
-        if verifies_signed_keys && !auth.usable_mint_path() {
+        if verifies_signed_keys && !auth.usable_mint_path(cfg.legacy) {
             errors.push(operator::no_mint_path(operator_provider()));
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
@@ -1831,12 +1831,12 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // answers to additionally requires the plugin subsystem (checked with the registry in
     // `plugins_preflight`, the shared boot path).
     match &cfg.store {
-        None => errors.push(crate::config::store_required()),
+        None => errors.push(crate::config::store_required(cfg.legacy)),
         Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
                 "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
-                crate::config::migrate::legacy_store_text("module_examples")
+                crate::config::migrate::legacy_store_text(cfg.legacy, "module_examples")
             ));
         }
         Some(_) => {}
@@ -1912,7 +1912,10 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // would silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
     // boot error instead. The row is the composition root's, linked under the operator
     // credential's provider name by the root's packaging feature of the same name.
-    let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
+    let token = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.admin_token_ref(cfg.legacy));
     if token.is_some() && !operator::answered(operator_provider()) {
         errors.push(operator::unanswered_token(operator_provider()));
     }
@@ -2448,7 +2451,12 @@ fn validate_providers_with(
                     "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
-                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
+                for e in outbound_credential_refusals(
+                    "oauth-client-credentials",
+                    &cred,
+                    &params,
+                    cfg.legacy,
+                ) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2518,6 +2526,7 @@ fn validate_providers_with(
                             "jwt-bearer",
                             &cred,
                             &serde_json::Value::Object(params),
+                            cfg.legacy,
                         )
                     }
                 };
@@ -2582,8 +2591,9 @@ fn outbound_credential_refusals(
     style: &str,
     credential: &str,
     params: &serde_json::Value,
+    legacy: crate::config::Legacy,
 ) -> Vec<String> {
-    let Some(axis) = crate::preflight::linked_auth_axis() else {
+    let Some(axis) = crate::preflight::linked_auth_axis(legacy) else {
         return Vec::new();
     };
     axis.check_outbound(style, credential.as_bytes(), params)

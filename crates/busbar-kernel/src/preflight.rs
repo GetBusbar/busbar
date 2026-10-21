@@ -365,46 +365,64 @@ pub(crate) fn auth_axis(
 }
 
 /// This build's auth axis over its LINKED rows alone (no plugins directory): what `--validate`
-/// asks a style's plugin to judge a credential through.
-pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
-    auth_axis(Arc::new(linked().ok()?))
+/// asks a style's plugin to judge a credential through, its rows answering the former names
+/// `legacy` gives them ([`linked`]).
+pub(crate) fn linked_auth_axis(
+    legacy: config::Legacy,
+) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
+    auth_axis(Arc::new(linked(legacy).ok()?))
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores and the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
-fn linked_rows() -> Vec<LinkedPlugin> {
+fn linked_rows(legacy: config::Legacy) -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
     let auths = busbar_kernel_identity::operator::linked().iter();
-    let rows = stores.iter().map(linked_store_row);
-    rows.chain(auths.map(linked_auth_row)).collect()
+    let rows = stores.iter().map(|s| linked_store_row(s, legacy));
+    rows.chain(auths.map(|a| linked_auth_row(a, legacy)))
+        .collect()
 }
 
 /// The registry row a linked STORE entry states: its canonical name, answering also to its key and
-/// to the former names the root legacy table gives that key ([`answering_former_names`]).
-pub fn linked_store_row(&(key, ephemeral, door, canonical): &LinkedStore) -> LinkedPlugin {
-    answering_former_names(LinkedPlugin::store_named(canonical, key, door, ephemeral))
+/// to the former names the root legacy table the composition root lent (`legacy`) gives that key
+/// ([`answering_former_names`]).
+pub fn linked_store_row(
+    &(key, ephemeral, door, canonical): &LinkedStore,
+    legacy: config::Legacy,
+) -> LinkedPlugin {
+    answering_former_names(
+        LinkedPlugin::store_named(canonical, key, door, ephemeral),
+        legacy,
+    )
 }
 
 /// The registry row a linked AUTH entry states ([`linked_store_row`]'s rule).
-pub fn linked_auth_row(&(key, canonical, door): &LinkedAuth) -> LinkedPlugin {
-    answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door))
+pub fn linked_auth_row(
+    &(key, canonical, door): &LinkedAuth,
+    legacy: config::Legacy,
+) -> LinkedPlugin {
+    answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door), legacy)
 }
 
-/// `row`, answering also to the former names the root legacy table declares for its alias
-/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
-/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
-pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
-    let former = config::legacy::former_names(&row.manifest.alias);
+/// `row`, answering also to the former names the root legacy table the composition root lent
+/// (`legacy`) declares for its alias (`former.<alias>`, from plugins.yaml `former_names:`): a
+/// linked plugin answers the names its earlier releases carried exactly as its dropped-in copy's
+/// signed manifest does.
+pub fn answering_former_names(row: LinkedPlugin, legacy: config::Legacy) -> LinkedPlugin {
+    let former = legacy.former_names(&row.manifest.alias);
     row.with_former_names(former)
 }
 
 /// The hook axis over this build's LINKED rows alone (no plugins directory): where a pool strategy
-/// word resolves.
+/// word resolves. The linked hook rows are the root's hook doors, which the axis states itself; a
+/// registry hands a hook axis only its DROPPED-IN hook rows (`HookRows::new` reads
+/// `PluginRegistry::dropped_hooks`), and with no plugins directory there are none, so the axis is
+/// built over the empty registry and reads none of the linked store and auth rows.
 fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>> {
     let build = root_rows().hook_axis?;
-    build(&std::sync::Arc::new(linked().ok()?)).ok()
+    build(&std::sync::Arc::new(PluginRegistry::empty())).ok()
 }
 
 /// Whether this build links a ranking hook that claims the strategy word `name` (a hook word mark
@@ -499,11 +517,12 @@ fn require_plugin(
     }
 }
 
-/// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
-/// No directory is read and no root is needed: the kernel's own built-in secret modules resolve in
-/// any build.
-pub fn linked() -> Result<PluginRegistry, String> {
-    PluginRegistry::empty().link(linked_rows())
+/// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has —
+/// each answering the former names the root legacy table the composition root lent (`legacy`)
+/// gives it. No directory is read and no root is needed: the kernel's own built-in secret modules
+/// resolve in any build.
+pub fn linked(legacy: config::Legacy) -> Result<PluginRegistry, String> {
+    PluginRegistry::empty().link(linked_rows(legacy))
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
@@ -539,6 +558,7 @@ pub fn plugins_preflight(
     hooks_cfg: &std::collections::HashMap<String, config::HookCfg>,
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
+    legacy: config::Legacy,
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
     // `plugins.logs` is refused here, on every path (boot, `--validate`, reload, apply).
     let l = &plugins_cfg.logs;
@@ -554,7 +574,7 @@ pub fn plugins_preflight(
     let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();
+    let store_is_plugin = store_cfg.is_some() && linked(legacy)?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -596,7 +616,9 @@ pub fn plugins_preflight(
         .map(|(name, def)| (name.as_str(), def.module.trim()))
         // An EMPTY module is `resolve_auth`'s rule ("must be a non-empty module name"), reported
         // there in its own words; do not shadow it with a less specific "no such plugin".
-        .filter(|(_, m)| !m.is_empty() && is_real_identity_provider_plugin_ref(m, stand_ins))
+        .filter(|(_, m)| {
+            !m.is_empty() && is_real_identity_provider_plugin_ref(m, stand_ins, legacy)
+        })
         .collect();
     let idp_refs_human = |refs: &[(&str, &str)]| {
         refs.iter()
@@ -689,7 +711,7 @@ pub fn plugins_preflight(
     //    first-party verdict counts, and the mark only ever rises). A failure to persist is NOT
     //    fatal: the in-memory marks still floor this process.
     let build = RegistryIn {
-        linked: linked_rows(),
+        linked: linked_rows(legacy),
         plugins: Some(plugins_cfg),
         data_dir: data_dir.as_deref(),
     };
@@ -902,8 +924,9 @@ fn log_build(n: boot::Note<'_>, dir: &str) {
 pub(crate) fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
+    legacy: config::Legacy,
 ) -> Result<Option<busbar_contract::redacted::Secret<String>>, String> {
-    let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
+    let Some(r) = auth.and_then(|a| a.admin_token_ref(legacy)) else {
         return Ok(None);
     };
     use busbar_kernel_identity::operator::{blank_token, unresolved_token};
@@ -1058,8 +1081,12 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
 /// unconditionally would make `--validate` silently bless a RELEASE config that real boot still
 /// hard-fails, and gating them on `cfg!(test)` alone refused them in a `test-support` build that
 /// registers them (item 292).
-pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool) -> bool {
-    !config::is_builtin_identity_module(m)
+pub(crate) fn is_real_identity_provider_plugin_ref(
+    m: &str,
+    is_test_build: bool,
+    legacy: config::Legacy,
+) -> bool {
+    !config::is_builtin_identity_module(m, legacy)
         && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
 }
 
@@ -1096,6 +1123,7 @@ pub fn preflight_plugins_and_secrets(
         &cfg.hooks,
         &deploy.plugins,
         &cfg.export,
+        cfg.legacy,
     )?;
     validate_secret_modules(&registry, &cfg.secrets)?;
     validate_secret_refs(&registry, cfg)?;

@@ -104,3 +104,30 @@ fn no_static_holds_the_root_legacy_table_and_nothing_installs_one() {
         installers.join("\n")
     );
 }
+
+/// THE TABLE IS A VALUE THE ROOT LENDS: two compositions in one process each read the table they
+/// lent, where an installed table answered whichever install came first.
+#[test]
+fn two_compositions_in_one_process_each_read_the_table_they_lent() {
+    use crate::config::Legacy;
+    let a = Legacy::new(&[
+        ("former.alpha", "alpha-1 alpha-0"),
+        ("retired.store.old-alpha", "alpha"),
+    ]);
+    let b = Legacy::new(&[("former.alpha", "beta-1")]);
+    assert_eq!(a.former_names("alpha"), ["alpha-1", "alpha-0"]);
+    assert_eq!(b.former_names("alpha"), ["beta-1"]);
+    assert!(b.text("retired.store.old-alpha").is_empty());
+
+    let mut section = serde_yaml::Mapping::new();
+    section.insert("module".into(), "old-alpha".into());
+    assert_eq!(b.rewrite_retired("store", &mut section.clone(), true), None);
+    assert_eq!(
+        a.rewrite_retired("store", &mut section, true),
+        Some(("old-alpha".to_string(), "alpha"))
+    );
+    assert_eq!(
+        section.get("module").and_then(serde_yaml::Value::as_str),
+        Some("alpha")
+    );
+}

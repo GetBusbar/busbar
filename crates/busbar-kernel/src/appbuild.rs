@@ -314,6 +314,7 @@ pub fn load_config_from_disk(
     providers_override: Option<&std::path::Path>,
     safe_mode: bool,
     env_mode: config::EnvSubst,
+    legacy: config::Legacy,
 ) -> Result<LoadedConfig, String> {
     let mut unset_env_vars: Vec<String> = Vec::new();
     // 1.5.3: read + parse config.yaml FIRST — it may name the providers catalog (`providers_file:`).
@@ -331,7 +332,7 @@ pub fn load_config_from_disk(
     // a pile of unknown-field messages - and, critically, so nothing from 1.x can half-parse
     // into 1.5.0 semantics (the `allowed_pools: []` all->none flip, vanished budgets).
     if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&interpolated_config) {
-        let markers = config::migrate::detect_legacy_markers(&doc);
+        let markers = config::migrate::detect_legacy_markers(&doc, legacy);
         if !markers.is_empty() {
             return Err(format!(
                 "config.yaml: {}",
@@ -346,7 +347,7 @@ pub fn load_config_from_disk(
         config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
             format!(
                 "config.yaml: invalid YAML: {}",
-                config::augment_config_error(e)
+                config::augment_config_error(e, legacy)
             )
         })?;
 
@@ -618,6 +619,9 @@ pub fn build_app_from_config(
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
+    // The root legacy table this configuration was resolved under (`config::resolve` was lent it):
+    // every reader below, and the generation built here, reads that table.
+    let legacy = cfg.legacy;
     // The planes this configuration writes that the process did not open at boot: restart-to-apply,
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
@@ -712,6 +716,7 @@ pub fn build_app_from_config(
         &cfg.hooks,
         &plugins_cfg,
         &cfg.export,
+        legacy,
     )?);
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
@@ -1112,7 +1117,7 @@ pub fn build_app_from_config(
     // The operator credential's module is opened once its token has resolved (below, beside the
     // governance credentials it has always been resolved with).
     let mut admin_modules =
-        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
+        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver, legacy)
             .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     // HOSTED-LOGIN methods (1.5.2): resolve every `auth.methods:` entry as a login-capable
     // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
@@ -1250,7 +1255,7 @@ pub fn build_app_from_config(
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| crate::config::names_operator(&e.module))
+                    .any(|e| crate::config::names_operator(&e.module, legacy))
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
@@ -1259,7 +1264,7 @@ pub fn build_app_from_config(
                     // Declared with no token ref resolves to `None`: the admin API is credential-less
                     // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
                     Some(
-                        resolve_admin_token(auth, &secret_resolver)
+                        resolve_admin_token(auth, &secret_resolver, legacy)
                             .map_err(|e| format!("{e} (nothing was changed)"))?,
                     )
                 } else {
@@ -1295,7 +1300,10 @@ pub fn build_app_from_config(
         // row, or a store PLUGIN (resolved by alias or canonical name from the validated registry —
         // the engine sees only the returned `dyn Store`, exactly like a compiled-in backend). The
         // validation above refused an absent block.
-        let g = cfg.store.clone().ok_or_else(config::store_required)?;
+        let g = cfg
+            .store
+            .clone()
+            .ok_or_else(|| config::store_required(legacy))?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
         // the RAM store drops on restart. "Configured" = any registration in a plane's declared
         // section OR any plane pool. A bare registration (the common case, no failover pool) is just
@@ -1356,7 +1364,7 @@ pub fn build_app_from_config(
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<busbar_contract::redacted::Secret<String>> =
-            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
+            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver, legacy)?;
         // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
@@ -1436,8 +1444,9 @@ pub fn build_app_from_config(
     // The operator credential judges the token this build declares, or — when it declares none —
     // the one the governance state holds (that live credential stands, as it does for the rotation).
     let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
-    admin_modules.operator = open_operator(&plugin_registry, digest, &cfg.identity_providers)
-        .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    admin_modules.operator =
+        open_operator(&plugin_registry, digest, &cfg.identity_providers, legacy)
+            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     let admin_modules = Arc::new(admin_modules);
 
     // Resolve the global rewrite hooks (prompt: rw gates in global_hooks) into priority-ordered
@@ -1761,6 +1770,7 @@ pub fn build_app_from_config(
         // reader of the new generation runs, and carries them onto the plane breaker store.
         limits: Some(limits_resolved.clone()),
         root_rules: std::sync::Arc::clone(rules),
+        legacy,
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the

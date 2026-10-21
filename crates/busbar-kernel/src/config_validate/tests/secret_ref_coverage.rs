@@ -402,8 +402,12 @@ auth:
 "#;
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
-    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
-        .expect("the fixture config must resolve");
+    let cfg = crate::config::resolve(
+        &deploy,
+        &std::collections::HashMap::new(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("the fixture config must resolve");
 
     let every: Vec<String> = super::secret_refs(&cfg)
         .into_iter()
@@ -448,8 +452,12 @@ auth:
     let yaml = yaml.replace("OPERATOR", op);
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
-    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
-        .expect("the fixture config must resolve");
+    let cfg = crate::config::resolve(
+        &deploy,
+        &std::collections::HashMap::new(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("the fixture config must resolve");
     let boot: Vec<String> = super::boot_resolved_secret_refs(&cfg)
         .into_iter()
         .map(|(p, _)| p)
@@ -491,8 +499,12 @@ auth:
 "#;
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
-    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
-        .expect("the fixture config must resolve");
+    let cfg = crate::config::resolve(
+        &deploy,
+        &std::collections::HashMap::new(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("the fixture config must resolve");
 
     let paths: Vec<String> = super::secret_refs(&cfg)
         .into_iter()
@@ -569,7 +581,8 @@ auth:
             (name.to_string(), def)
         })
         .collect();
-    let cfg = crate::config::resolve(&deploy, &defs).expect("the fixture config must resolve");
+    let cfg = crate::config::resolve(&deploy, &defs, crate::config::Legacy::stand_in())
+        .expect("the fixture config must resolve");
 
     let keyless: Vec<String> = super::secret_refs(&cfg)
         .into_iter()
