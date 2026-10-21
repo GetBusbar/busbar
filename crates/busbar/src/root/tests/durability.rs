@@ -4636,20 +4636,22 @@ fn a_held_checkpoint_sealed_without_a_retired_window_still_re_derives() {
         .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
         .expect("every held checkpoint re-derives across the retirement");
     assert_eq!(served, vec![first, second], "each as it was sealed");
-    assert!(
-        durability.sealed_balances_held() <= durability.ledger.book().len(),
-        "the one resident sealed copy holds {} balances, more than the {} the book holds",
+    // ONE resident sealed copy: the newest seal's balances and no other's. The ring holds two seals
+    // here, the first with a balance the second left out, so a copy per held seal would count it.
+    assert_eq!(durability.checkpoints.len(), 2);
+    assert_eq!(
         durability.sealed_balances_held(),
-        durability.ledger.book().len()
+        durability.checkpoints.last().expect("a held seal").balances,
+        "the node holds the newest seal's balances and no other seal's"
     );
 }
 
 /// RED (row 159 retirement x Q128 A1): WHAT THE NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS ACROSS
 /// RETIREMENTS IS BOUNDED BY THE 31-DAY HORIZON, not by how many windows it ever retired. Forty
-/// windows are sealed while young; each later seal carries one more past the horizon, and the seal
-/// leaves it out. Once every one of them is retired, no held seal kept a window past its horizon,
-/// so nothing is kept. RED with a per-seal record of every retired window: forty instants, one more
-/// per retirement for the life of the process.
+/// windows are sealed while young; each seal after it carries one more past the horizon, and the
+/// seal leaves it out. Once every one of them is retired, no held seal kept a window past its
+/// horizon, so nothing is kept. RED with a per-seal record of every retired window: forty instants,
+/// one more per retirement for the life of the process.
 #[test]
 fn many_retirements_across_seals_keep_only_what_the_horizon_requires() {
     use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
@@ -4691,9 +4693,9 @@ fn many_retirements_across_seals_keep_only_what_the_horizon_requires() {
 /// The second seal leaves the window out and the book lets it go; a late posting then lands on that
 /// window, so the book holds it again with only the new figure, and the third seal carries it. The
 /// walk drops the retired window from its scratch book when it passes the seal that left it out, so
-/// the later posting rebuilds exactly what the book holds. RED with the walk filtering every later
-/// snapshot by the windows retired so far: the third seal reads as diverged, the window it holds
-/// filtered away.
+/// the posting after the retirement rebuilds exactly what the book holds. RED with the walk
+/// filtering every snapshot by the windows retired so far: the third seal reads as diverged, the
+/// window it holds filtered away.
 #[test]
 fn a_window_posted_again_after_its_retirement_still_re_derives() {
     use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
@@ -4743,10 +4745,10 @@ fn a_window_posted_again_after_its_retirement_still_re_derives() {
     }
 }
 
-/// RED (#1492 review BLOCKER): A SEAL'S HORIZON LEAVES WITH IT WHEN THE RING DROPS IT. One window past
-/// the horizon can never retire (its figures move before every seal), so every seal keeps it; after
-/// more seals than the ring holds, the node keeps a horizon for each seal the ring holds and no
-/// more, and the windows kept across them are bounded the same way. RED with the ring's prune of
+/// RED (#1492 review BLOCKER): A SEAL'S HORIZON LEAVES WITH IT WHEN THE RING DROPS IT. One window
+/// past the horizon can never retire (its figures move before every seal), so every seal keeps it;
+/// after more seals than the ring holds, the node keeps a horizon for each seal the ring holds and
+/// no more, and the windows kept across them are bounded the same way. RED with the ring's prune of
 /// the horizons removed: one horizon, and one kept window, per seal ever made.
 #[test]
 fn the_horizons_kept_are_bounded_by_the_ring_when_a_window_can_never_retire() {

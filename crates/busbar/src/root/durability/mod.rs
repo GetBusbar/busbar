@@ -256,18 +256,19 @@ pub struct Durability {
     /// The checkpoints read serves this ring.
     pub checkpoints: Vec<CheckpointHead>,
     /// THE NEWEST SEAL THIS NODE KEPT, WITH ITS BALANCES: the one resident sealed copy the A1
-    /// bound allows. The book's retirement measures against it (row 159: a window past 1.5.5's 31-day
-    /// horizon goes only once a kept seal holds it at the book's own figures,
+    /// bound allows. The book's retirement measures against it (row 159: a window past 1.5.5's
+    /// 31-day horizon goes only once a kept seal holds it at the book's own figures,
     /// `Ledger::retirable`), so it is replaced by every seal and never accumulates. `None` until
     /// this process has sealed once: a restarted node retires nothing before its first seal.
     last_sealed: Option<Checkpoint>,
     /// WHAT EACH HELD SEAL KEPT PAST THE 31-DAY HORIZON, by its sequence number: what the walk
     /// needs to re-derive it across the book's retirement ([`SealHorizon`]). One entry per seal the
     /// ring holds, pruned with the ring; each holds only the windows that seal carried past its
-    /// horizon, which the retirement takes at the next seal. Never balances.
+    /// horizon (one the retirement could not take yet: figures that moved since the seal before, an
+    /// open hold, an unconfirmed settlement, or the first seal after a boot). Never balances.
     seal_horizons: std::collections::BTreeMap<u64, SealHorizon>,
     /// The latest seal instant this process has sealed at: every horizon is measured from it, so
-    /// a clock that steps back never brings a retired window inside a later seal's horizon.
+    /// a clock that steps back never brings a retired window inside the horizon of a seal after it.
     retire_clock: u64,
     /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
     /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.

@@ -138,8 +138,8 @@ impl Durability {
                 if record_checkpoint_seq(record) == Some(head.checkpoint_seq) {
                     // The chain still carries every window the book let go; the book this
                     // seal was taken from did not (row 159's retirement). They leave the scratch
-                    // book here, at the seal that left them out, as they left the book; a later
-                    // posting on one rebuilds it from that posting alone, as it did the book's.
+                    // book here, at the seal that left them out, as they left the book; a posting
+                    // on one after that rebuilds it from that posting alone, as it did the book's.
                     let left_behind = self.left_behind_at(head.checkpoint_seq, scratch.book());
                     scratch.retire_windows(&left_behind);
                     let checkpoint = head.with_totals(scratch.book().snapshot());
