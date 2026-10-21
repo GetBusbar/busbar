@@ -2094,6 +2094,25 @@ pub mod ranking_double;
 /// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
 pub mod store_double;
 
+/// The manifest `needs` a dropped-in hook declares, built from its two axes so a caller names no field
+/// of the value (the value's type is the kernel kit's to change).
+pub fn hook_needs(
+    prompt: busbar_plugin_loader::sign::NeedLevel,
+    user: busbar_plugin_loader::sign::NeedLevel,
+) -> busbar_plugin_loader::sign::HookNeeds {
+    busbar_plugin_loader::sign::HookNeeds { prompt, user }
+}
+
+/// Install a test build's linked auth rows and the operator credential's words, as boot does
+/// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
+/// result nor the types behind it.
+pub fn install_linked_auth(
+    rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
+    words: busbar_kernel_identity::operator::OperatorWords,
+) {
+    crate::preflight::install_linked_auth(rows, words);
+}
+
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
 /// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
 /// [`hook_double::HookAxisDouble`] answering those aliases, beside the build's linked rows. The

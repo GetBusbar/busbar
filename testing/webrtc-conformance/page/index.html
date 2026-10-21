@@ -160,7 +160,15 @@ window.runControl = async function () {
       ch.binaryType = "arraybuffer";
       ch.onmessage = (m) => ch.send(m.data);
     };
-    b.ontrack = (e) => b.addTrack(e.track);
+    b.ontrack = (e) => {
+      // Chromium pulls a received audio track's samples only while something plays it out, so a
+      // track forwarded unplayed sends nothing: a muted element is its sink.
+      const sink = new Audio();
+      sink.muted = true;
+      sink.srcObject = new MediaStream([e.track]);
+      sink.play().catch(() => {});
+      b.addTrack(e.track);
+    };
     const dc = a.createDataChannel("events");
     await capture(a);
     b.onnegotiationneeded = async () => {

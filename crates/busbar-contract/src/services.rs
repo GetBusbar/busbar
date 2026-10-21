@@ -316,8 +316,23 @@ pub struct DiskDest {
     pub path: String,
     /// Rotate before an append that finds the file at least this many bytes long; `None` = never.
     pub rotate_at: Option<u64>,
-    /// How many archives a rotation keeps (`<path>.1` .. `<path>.{keep}`).
-    pub keep: u32,
+    /// HOW the host rotates a due file: the host's choice, never the plugin's.
+    pub rotate: DiskRotate,
+}
+
+/// How the host rotates a destination it finds due ([`DiskDest::rotate_at`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskRotate {
+    /// Truncate the live file in place and append to it from empty: 1.5.5's request-log file sink
+    /// ("roll over by truncation rather than a rename", its v1.5.5 `rotate_mb` size bound,
+    /// lines 96-108 of the sink's module), one bounded file whose older lines are dropped.
+    Truncate,
+    /// Rename the live file into `<path>.1` .. `<path>.{keep}`, dropping the oldest archive past
+    /// `keep`.
+    Rename {
+        /// How many archives a rotation keeps.
+        keep: u32,
+    },
 }
 
 /// How many archives the host keeps for a destination it rotates (`<path>.1` .. `<path>.9`): the
