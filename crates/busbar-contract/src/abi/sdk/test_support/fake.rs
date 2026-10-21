@@ -36,7 +36,6 @@ use core::ffi::c_void;
 use core::marker::PhantomData;
 use core::mem::{offset_of, size_of};
 use core::ptr;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use super::zeroed;
 use crate::abi::host::conn::connector::{self, ConnectorSlots};
@@ -706,7 +705,7 @@ extern "C" fn trampoline<S: FakeService, const OP: u32>(
     input: *const c_void,
     out: *mut ServiceOut,
 ) -> RawOutcome {
-    let ran = catch_unwind(AssertUnwindSafe(|| {
+    let ran = crate::abi::sdk::boundary::caught(|| {
         assert!(!input.is_null(), "service {}: the in is NULL", OP);
         // SAFETY: a non-NULL `in` a plugin passed a host service leads with its `ServiceHead`.
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
@@ -726,8 +725,8 @@ extern "C" fn trampoline<S: FakeService, const OP: u32>(
         let outcome = S::serve(&mut call);
         call.reply.outcome = RawOutcome::of(outcome);
         call.reply
-    }));
-    let reply = ran.unwrap_or_else(|_| {
+    });
+    let reply = ran.unwrap_or_else(|| {
         let mut fault: ServiceOut = zeroed();
         fault.size = size_of::<ServiceOut>() as u32;
         fault.outcome = RawOutcome::of(Outcome::Fault);
@@ -841,11 +840,10 @@ impl FakeHost {
         &self.conns
     }
 
-    /// The tables, for a host that outlives every test (a `static` harness).
-    #[must_use]
-    pub fn leak(self) -> &'static HostTables {
-        let host: &'static Self = Box::leak(Box::new(self));
-        &host.tables
+    /// The tables, lent to `f` for as long as it runs: the borrow ends with the call, and the host
+    /// (which owns every table it lends) outlives it.
+    pub fn lend<R>(&self, f: impl FnOnce(&HostTables) -> R) -> R {
+        f(&self.tables)
     }
 
     /// Point the `HostTables` at the three tables again, after any change to them.
