@@ -136,7 +136,14 @@ impl Durability {
                     break;
                 }
                 if record_checkpoint_seq(record) == Some(head.checkpoint_seq) {
-                    let checkpoint = head.with_totals(scratch.book().snapshot());
+                    // The chain still carries every window the book let go; the book this
+                    // seal was taken from did not (row 159's retirement).
+                    let mut totals = scratch.book().snapshot();
+                    let retired = self.retired_through(head.checkpoint_seq);
+                    if !retired.is_empty() {
+                        totals.retain(|(_, window), _| !retired.contains(window));
+                    }
+                    let checkpoint = head.with_totals(totals);
                     if !checkpoint.body_hash_verifies() {
                         return Err(CheckpointUnreadable::Diverged {
                             checkpoint_seq: head.checkpoint_seq,

@@ -1311,6 +1311,38 @@ impl Gate for AbiLocationGate {
             ],
         ));
 
+        // THE SAME BYTES, JUDGED BY THE ABI'S FN TYPES. One kernel file, planted identically in two
+        // cases: alone, its `extern "C"` slot has a signature abi/ does not declare and is RED; with
+        // abi/ declaring that fn type, the slot implements it and is GREEN. The file's findings are
+        // memoised ([`scan_file`]), and this pair is what holds the memo to the fn types as well
+        // as the bytes: a lookup that dropped them would hand one case the other's answer, so
+        // whichever of the two ran second would fail.
+        let typed = "crates/busbar-kernel/src/planted_typed_slot.rs";
+        let typed_body =
+            "pub extern \"C\" fn planted_typed_slot(a: u64, b: u64) -> u64 {\n    a ^ b\n}\n";
+        let mut ov = Overlay::new();
+        ov.set(typed, typed_body);
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an extern \"C\" slot whose signature abi/ does not declare is RED",
+            &[ROW_EXTERN],
+            ov,
+            &[&format!("extern-fn {typed}:1 planted_typed_slot")],
+        ));
+        let mut ov = cx.overlay().cloned().unwrap_or_default();
+        ov.set(typed, typed_body);
+        ov.set(
+            format!("{ONE_HOME}planted_slot_type.rs"),
+            "pub type PlantedSlotType = unsafe extern \"C\" fn(u64, u64) -> u64;\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "the same slot, once abi/ declares its fn type, implements the ABI and is GREEN",
+            &[ROW_EXTERN],
+        ));
+
         // THE LEDGER CANNOT OUTLIVE ITS DEBT: a row naming a shape the tree does not hold is RED.
         let ledger = cx.read(LEDGER).unwrap_or_default();
         let mut ov = Overlay::new();

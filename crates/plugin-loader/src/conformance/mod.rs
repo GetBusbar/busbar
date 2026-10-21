@@ -159,6 +159,10 @@ pub struct Subject {
     /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
     /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
     pub namespace: Option<(NamespaceHook, NamespaceHook)>,
+    /// THE PLUGIN'S DECLARES (`conformance_suite!` reads its declares file, [`Subject::declared_in`]):
+    /// what the suite judges a kind's script against when the plugin states a fact about itself
+    /// (a hook's `hook.orders`). `None`: nothing stated, every fact at its default.
+    pub declares: Option<crate::sign::Declares>,
 }
 
 /// A per-fold namespace hook: called with the fold's namespace (what [`FOLD`] was filled with) and
@@ -240,6 +244,7 @@ impl Subject {
             host: None,
             anchors: None,
             namespace: None,
+            declares: None,
         };
         s.apply_env();
         s
@@ -251,6 +256,41 @@ impl Subject {
     pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
         self.namespace = Some((create, drop));
         self
+    }
+
+    /// This subject's declares are `declares`: the facts a plugin states about itself, which its
+    /// kind's script judges it against.
+    #[must_use]
+    pub fn with_declares(mut self, declares: crate::sign::Declares) -> Self {
+        self.declares = Some(declares);
+        self
+    }
+
+    /// This subject's declares are the plugin crate's own declares file ([`declares_file`] of
+    /// `manifest_dir`), read through [`crate::sign::Declares::from_declares_json`]. A crate with no
+    /// declares file states nothing here (`the_declared_needs_are_the_statements` fails it).
+    ///
+    /// # Panics
+    /// The declares file does not read.
+    #[must_use]
+    pub fn declared_in(self, manifest_dir: &str) -> Self {
+        let Some(file) = declares_file(manifest_dir) else {
+            return self;
+        };
+        let text = std::fs::read(&file)
+            .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
+        let declares = crate::sign::Declares::from_declares_json(&text)
+            .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        self.with_declares(declares)
+    }
+
+    /// Whether the plugin's hook may answer an order (`declares.hook.orders`; `true` when it
+    /// states none).
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.declares
+            .as_ref()
+            .is_none_or(crate::sign::Declares::hook_orders)
     }
 
     /// One fold's settings, tagged `tag` (its leg, or the RED arm that opens): [`FOLD`] filled with
@@ -2035,7 +2075,7 @@ macro_rules! conformance_suite {
             $(s = s.with_host($host);)?
             $(s = s.with_anchors($tls);)?
             $(s = s.with_namespace($create, $drop);)?
-            s
+            s.declared_in(env!("CARGO_MANIFEST_DIR"))
         }
 
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
