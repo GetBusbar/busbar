@@ -6,7 +6,7 @@
 //! `unsafe` only in its reviewed `mod door`, and a plane, hook, auth or secret crate forbids it).
 //! The one `unsafe` read of each kind lives here, once, reviewed, instead of once per plugin test.
 //!
-//! Four parts:
+//! Five parts:
 //!
 //! * [`zeroed`] and `Default`: the all-zero value of a REVIEWED ABI struct (every slot `in`/`out`
 //!   the contract states, and the row structs a test lays out beside them). [`AllZero`] is sealed,
@@ -17,6 +17,8 @@
 //!   the length its `out` states and the capacity the test lent.
 //! * [`fake`]: a fake host whose services a test writes as safe Rust, the `in` read and the
 //!   `ServiceOut` written for it.
+//! * [`reply`]: a door op called and its reply copied into owned values before it returns, so a
+//!   test never holds a pointer into the plugin's leased or published memory.
 //!
 //! DEV-ONLY: the module is compiled for this crate's own tests and behind the dev-only `test-seal`
 //! feature a plugin's `[dev-dependencies]` edge enables (`tests/test_seal_is_dev_only.rs` refuses
@@ -43,6 +45,7 @@ mod sealed {
 }
 
 pub mod fake;
+pub mod reply;
 
 // ── THE ALL-ZERO VALUE ──────────────────────────────────────────────────────────────────────────
 

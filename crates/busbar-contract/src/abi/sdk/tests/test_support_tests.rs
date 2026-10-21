@@ -8,6 +8,7 @@
 //! door whose tail's texts and lists read back, the reason a failed `open` wrote into the buffer the
 //! test lent, and fake host services called as a plugin's SDK calls them.
 
+use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr;
 
@@ -601,4 +602,328 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     assert_eq!(call(&stray, &input), Outcome::Fault);
     // The well-formed call still answers.
     assert_eq!(call(&host, &input), Outcome::Ready);
+}
+
+// ── a reply copied before release ───────────────────────────────────────────────────────────────
+
+use super::reply::{call, Reply};
+use crate::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
+use crate::abi::export::{CheckOut, ServeOut};
+use crate::abi::mechanism::call::{Blob, RawOutcome};
+use crate::abi::mechanism::check::HARD_MAX_BYTES;
+use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
+use crate::abi::secret::ResolveOut;
+
+/// A stand-in slot: it answers the `O` its instance points at, whole, as a plugin writes its
+/// answer (pointers into memory the plugin keeps until release).
+extern "C" fn answer<O: Reply>(
+    instance: *mut c_void,
+    _: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome {
+    // SAFETY: the test's own template `O`, and the caller's `out` of that type.
+    let mut written = unsafe { *instance.cast::<O>() };
+    // SAFETY: as above.
+    unsafe { out.cast::<O>().write(written) };
+    written.head().outcome
+}
+
+/// `answer::<O>` called over `template`.
+fn answered<O: Reply>(template: &mut O) -> super::reply::Called<O> {
+    call(
+        answer::<O>,
+        ptr::from_mut(template).cast(),
+        &in_head::<InHead>(0),
+        *template,
+    )
+}
+
+fn bytes_of(b: &[u8]) -> Blob {
+    Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        ..Blob::ABSENT
+    }
+}
+
+fn str_of(s: &str) -> AbiStr {
+    AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    }
+}
+
+fn ready_head(lease: u64) -> OutHead {
+    let mut h: OutHead = zeroed();
+    h.outcome = RawOutcome::of(Outcome::Ready);
+    h.lease = lease;
+    h
+}
+
+fn resolved(secret: Blob) -> ResolveOut {
+    let mut out: ResolveOut = zeroed();
+    out.head = ready_head(7);
+    out.secret = secret;
+    out
+}
+
+#[test]
+fn a_secret_is_copied_into_wiped_memory_before_release() {
+    let mut material = b"s3cret".to_vec();
+    let mut t = resolved(bytes_of(&material));
+    let got = answered(&mut t);
+    material.fill(0); // the plugin's release wipes what it leased
+    assert_eq!(got.outcome, Outcome::Ready);
+    assert_eq!(got.owned.expose(), b"s3cret");
+    assert_eq!(got.out.head.lease, 7, "the scalars stay");
+    assert!(
+        got.out.secret.ptr.is_null(),
+        "no pointer into the lease survives"
+    );
+    assert!(
+        !format!("{:?}", got.owned).contains("s3cret"),
+        "never printed"
+    );
+}
+
+#[test]
+#[should_panic(expected = "resolve.secret: NullWithCount")]
+fn a_forged_secret_with_no_pointer_is_refused() {
+    let mut t = resolved(Blob {
+        ptr: ptr::null(),
+        len: 5,
+        ..Blob::ABSENT
+    });
+    let _ = answered(&mut t);
+}
+
+#[test]
+#[should_panic(expected = "resolve.secret.len: OverMax")]
+fn a_secret_past_the_declared_bound_is_refused() {
+    let mut t = resolved(Blob {
+        ptr: ptr::NonNull::<u8>::dangling().as_ptr(),
+        len: HARD_MAX_BYTES as usize + 1,
+        ..Blob::ABSENT
+    });
+    let _ = answered(&mut t);
+}
+
+fn served(headers: &[AbiStr], body: &[u8]) -> ServeOut {
+    let mut out: ServeOut = zeroed();
+    out.head = ready_head(3);
+    out.status_code = 200;
+    out.headers_out = headers.as_ptr();
+    out.headers_out_len = headers.len();
+    out.body = bytes_of(body);
+    out
+}
+
+#[test]
+fn a_served_reply_is_copied_before_release() {
+    let mut name = String::from("content-type");
+    let value = String::from("text/plain");
+    let mut body = b"metrics 1".to_vec();
+    let headers = [str_of(&name), str_of(&value)];
+    let mut t = served(&headers, &body);
+    let got = answered(&mut t);
+    name.clear();
+    body.fill(b'x');
+    assert_eq!(got.owned.headers, ["content-type", "text/plain"]);
+    assert_eq!(got.owned.body, b"metrics 1");
+    assert_eq!(got.out.status_code, 200);
+    assert!(got.out.headers_out.is_null() && got.out.body.ptr.is_null());
+}
+
+#[test]
+#[should_panic(expected = "serve.headers_out: misaligned")]
+fn a_forged_misaligned_header_list_is_refused() {
+    let mut t = served(&[], b"");
+    t.headers_out = ptr::without_provenance(1);
+    t.headers_out_len = 2;
+    let _ = answered(&mut t);
+}
+
+#[test]
+#[should_panic(expected = "serve.headers_out_len: OverMax")]
+fn a_header_list_past_the_declared_bound_is_refused() {
+    let mut t = served(&[], b"");
+    t.headers_out = ptr::NonNull::<AbiStr>::dangling().as_ptr();
+    t.headers_out_len = 129;
+    let _ = answered(&mut t);
+}
+
+#[test]
+fn check_findings_are_copied_before_release() {
+    let mut findings = b"[\"ok\"]".to_vec();
+    let mut t: CheckOut = zeroed();
+    t.head = ready_head(4);
+    t.findings = bytes_of(&findings);
+    let got = answered(&mut t);
+    findings.fill(0);
+    assert_eq!(got.owned, b"[\"ok\"]");
+}
+
+#[test]
+#[should_panic(expected = "check.findings.len: OverMax")]
+fn findings_past_the_declared_bound_are_refused() {
+    let mut t: CheckOut = zeroed();
+    t.head = ready_head(4);
+    t.findings = Blob {
+        ptr: ptr::NonNull::<u8>::dangling().as_ptr(),
+        len: HARD_MAX_BYTES as usize + 1,
+        ..Blob::ABSENT
+    };
+    let _ = answered(&mut t);
+}
+
+fn login(form: *const LoginField, form_len: usize) -> BeginLoginOut {
+    let mut out: BeginLoginOut = zeroed();
+    out.head = ready_head(0);
+    out.shape = BEGIN_FORM;
+    out.form = form;
+    out.form_len = form_len;
+    out
+}
+
+#[test]
+fn a_login_forms_texts_are_copied_before_release() {
+    let mut label = String::from("Your user name");
+    let form = [LoginField {
+        name: abi_str("user"),
+        label: str_of(&label),
+        kind: 1,
+        required: 1,
+    }];
+    let mut t = login(form.as_ptr(), form.len());
+    let got = answered(&mut t);
+    label.clear();
+    assert_eq!(got.owned.authorize_url, "");
+    assert_eq!(got.owned.form.len(), 1);
+    assert_eq!(got.owned.form[0].name, "user");
+    assert_eq!(got.owned.form[0].label, "Your user name");
+    assert!(got.out.form.is_null());
+}
+
+#[test]
+#[should_panic(expected = "NullWithCount")]
+fn a_forged_login_form_with_no_pointer_is_refused() {
+    let mut t = login(ptr::null(), 2);
+    let _ = answered(&mut t);
+}
+
+#[test]
+#[should_panic(expected = "begin_login.form: a count of 1025, over the bound of 1024")]
+fn a_login_form_past_the_declared_bound_is_refused() {
+    let mut t = login(ptr::NonNull::<LoginField>::dangling().as_ptr(), 1025);
+    let _ = answered(&mut t);
+}
+
+/// A snapshot a plane published, over `claims`.
+fn snapshot_of(claims: &[crate::abi::plane::Claim]) -> PlaneSnapshot {
+    PlaneSnapshot {
+        size: size_of::<PlaneSnapshot>() as u32,
+        _reserved: 0,
+        generation: 2,
+        claims: claims.as_ptr(),
+        claims_len: claims.len(),
+        admin_routes: ptr::null(),
+        admin_routes_len: 0,
+        openapi: Blob::ABSENT,
+        audience: abi_str("probe-audience"),
+        resource_metadata: NONE,
+        resource_facts: Blob::ABSENT,
+        listed: ptr::null(),
+        listed_len: 0,
+        arrival_spans: ptr::null(),
+        arrival_spans_len: 0,
+    }
+}
+
+fn refreshed(snapshot: *const PlaneSnapshot) -> PlaneRefreshOut {
+    let mut out: PlaneRefreshOut = zeroed();
+    out.head = ready_head(0);
+    out.snapshot = snapshot;
+    out
+}
+
+#[test]
+fn a_published_snapshot_is_copied_before_its_generation_retires() {
+    let mut target = String::from("/probe");
+    let claims = [crate::abi::plane::Claim {
+        verb: abi_str("POST"),
+        target: str_of(&target),
+        carrier: NONE,
+        flags: 0,
+        refusal_dialect: 0,
+        _pad: 0,
+    }];
+    let mut snapshot = snapshot_of(&claims);
+    let mut t = refreshed(ptr::from_ref(&snapshot));
+    let got = answered(&mut t);
+    target.clear(); // the next generation replaces what the old one named
+    snapshot.generation = 3;
+    let copy = got.owned.expect("a snapshot was published");
+    assert_eq!(copy.generation, 2);
+    assert_eq!(copy.audience, "probe-audience");
+    assert_eq!(copy.claims.len(), 1);
+    assert_eq!(
+        (copy.claims[0].verb.as_str(), copy.claims[0].target.as_str()),
+        ("POST", "/probe")
+    );
+    assert!(got.out.snapshot.is_null());
+}
+
+#[test]
+#[should_panic(expected = "snapshot: misaligned")]
+fn a_forged_misaligned_snapshot_is_refused() {
+    let mut t = refreshed(ptr::without_provenance(1));
+    let _ = answered(&mut t);
+}
+
+#[test]
+#[should_panic(expected = "snapshot.claims: OverMax")]
+fn a_snapshot_past_the_declared_bound_is_refused() {
+    let mut snapshot = snapshot_of(&[]);
+    snapshot.claims = ptr::NonNull::<crate::abi::plane::Claim>::dangling().as_ptr();
+    snapshot.claims_len = 1025;
+    let mut t = refreshed(ptr::from_ref(&snapshot));
+    let _ = answered(&mut t);
+}
+
+fn failed_with(error: AbiStr) -> OutHead {
+    let mut h: OutHead = zeroed();
+    h.outcome = RawOutcome::of(Outcome::Failed);
+    h.error = error;
+    h
+}
+
+#[test]
+fn a_failures_text_is_copied_before_release() {
+    let mut why = String::from("the probe failed");
+    let mut t = failed_with(str_of(&why));
+    let got = answered(&mut t);
+    why.clear();
+    assert_eq!(got.outcome, Outcome::Failed);
+    assert_eq!(got.error.as_deref(), Some("the probe failed"));
+    assert!(got.out.error.ptr.is_null());
+}
+
+#[test]
+#[should_panic(expected = "head.error: NULL with a count of 3")]
+fn a_forged_failure_text_with_no_pointer_is_refused() {
+    let mut t = failed_with(AbiStr {
+        ptr: ptr::null(),
+        len: 3,
+    });
+    let _ = answered(&mut t);
+}
+
+#[test]
+#[should_panic(expected = "head.error: 16777217 bytes, over the bound of 16777216")]
+fn a_failure_text_past_the_declared_bound_is_refused() {
+    let mut t = failed_with(AbiStr {
+        ptr: ptr::NonNull::<u8>::dangling().as_ptr(),
+        len: HARD_MAX_BYTES as usize + 1,
+    });
+    let _ = answered(&mut t);
 }
