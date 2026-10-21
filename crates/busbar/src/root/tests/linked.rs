@@ -24,7 +24,10 @@ use busbar_kernel::plane::registry::merged_boot_plane_decls;
 #[test]
 fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_refuse_the_boot() {
     let release = test_plugins::key(7);
-    let doors = crate::LINKED.export_doors.iter().map(|d| (d.name, d.alias));
+    let doors = crate::LINKED.export_doors.iter().map(|d| {
+        let name = d.name().expect("a linked export door states its name");
+        (name, d.alias)
+    });
     for (name, alias) in doors {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
         let rows = || linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
@@ -35,7 +38,7 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
         assert!(
             refused.contains("claim conflict")
                 && refused.contains(&format!("'{alias}'"))
-                && refused.contains(name)
+                && refused.contains(name.as_str())
                 && refused.contains("k9e-dropped"),
             "{alias}: {refused}"
         );
@@ -44,7 +47,7 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
         let alone = PluginRegistry::empty()
             .link(rows())
             .expect("the linked rows alone");
-        assert_eq!(answering(&alone).as_deref(), Some(name), "{alias}");
+        assert_eq!(answering(&alone).as_deref(), Some(name.as_str()), "{alias}");
         assert_eq!(
             answering(&scan()).as_deref(),
             Some("k9e-dropped"),
@@ -108,7 +111,8 @@ fn a_linked_export_declares_stating_needs_boots() {
         panic!("a `needs` that is not a list must refuse the rows");
     };
     assert!(
-        refused.contains(first.name) && refused.contains("`needs`"),
+        refused.contains(&first.name().expect("a linked export door states its name"))
+            && refused.contains("`needs`"),
         "{refused}"
     );
 }

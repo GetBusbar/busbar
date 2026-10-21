@@ -71,8 +71,9 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// The transport axis (#3, #30): each row's entry exports its transport's `KEY`, the `COMPOSES_OVER`
-/// it declares and `build(lower, &TransportSettings)`; the root folds the rows bottom-up.
+/// The transport axis (#3, #30): each row's entry exports its memory-ABI `door`, and the root reads
+/// its key (the Statement's `name`), the layers it declares (the tail's `composes_over`) and every
+/// claim off that door; the root folds the rows bottom-up.
 const TRANSPORT_AXIS: &str = "transport";
 
 /// Beside `transport`: the row's entry exports its memory-ABI `door` instead of a `build`, and the
@@ -184,8 +185,15 @@ pub(crate) const SEAMS: &[(&str, &str)] = &[
 pub(crate) const LINKED_SWAPS: &str = "package.metadata.busbar.linked-swaps";
 
 /// Whether `feature`'s row is linked: its feature is `on`, and no switch that swaps it is.
-pub(crate) fn swapped_in(swaps: &[(String, String)], on: &dyn Fn(&str) -> bool, feature: &str) -> bool {
-    on(feature) && !swaps.iter().any(|(row, switch)| row == feature && on(switch))
+pub(crate) fn swapped_in(
+    swaps: &[(String, String)],
+    on: &dyn Fn(&str) -> bool,
+    feature: &str,
+) -> bool {
+    on(feature)
+        && !swaps
+            .iter()
+            .any(|(row, switch)| row == feature && on(switch))
 }
 
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
@@ -379,6 +387,9 @@ pub(crate) fn linked_source(
             .collect()
     };
 
+    // NO STATEMENT HOME: a `plane` row's `PLANE_DECLARATION` and `PLANE_HOOKS` are kernel-typed
+    // Rust items (`PlaneDecl::assemble`); no Statement field or plane tail states a declaration
+    // or its hooks, so they are still read off the entry.
     let planes = on_axis("plane");
     out.push_str(&format!(
         "/// The plane axis: each entry's contract declaration joined kernel-side to its hooks.\n\
@@ -409,6 +420,9 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
+    // NO STATEMENT HOME for the `declares` document a `linked-declares` row names (a crate's
+    // `DECLARES`, here and for the plane doors below): the Statement carries metric families,
+    // diagnostic ids and answers, never the document's needs or destinations.
     // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
     // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
     // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
@@ -474,11 +488,20 @@ pub(crate) fn linked_source(
             "Cargo.toml: `{e}` is on the `{TRANSPORT_AXIS}` axis but not the `{DOOR_AXIS}` axis; a \
              transport is linked only as its memory-ABI door"
         );
+        // EVERY FACT OFF THE DOOR (BUSBAR-1.6.0.md, the door-only gate): the row names its
+        // `door` and nothing else. Its key is its Statement's `name`, its layers its tail's
+        // `composes_over`, each read once, when the seal first asks.
         door_builds.push_str(&format!(
-            "fn __door_build_{n}(\n    \
+            "fn __door_key_{n}() -> &'static str {{\n    \
+             static KEY: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();\n    \
+             KEY.get_or_init(|| crate::root::doors::name_of({e}::door))\n}}\n\
+             fn __door_composes_over_{n}() -> &'static [&'static str] {{\n    \
+             static UNDER: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();\n    \
+             UNDER.get_or_init(|| crate::root::doors::composes_over_of({e}::door))\n}}\n\
+             fn __door_build_{n}(\n    \
              settings: &busbar_contract::transport::TransportSettings,\n\
              ) -> std::sync::Arc<busbar_core_connector::wire::HostWire> {{\n    \
-             crate::root::doors::build({e}::KEY, {e}::door, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
+             crate::root::doors::build(__door_key_{n}(), {e}::door, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
              fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
              crate::root::doors::claims_of({e}::door)\n}}\n\
              fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
@@ -488,7 +511,9 @@ pub(crate) fn linked_source(
              fn __door_offered_{n}() -> busbar_contract::abi::auth::AuthPoints {{\n    \
              crate::root::doors::offered_of({e}::door)\n}}\n"
         ));
-        let (build, claims, upgrades, lines, offered) = (
+        let (key, under, build, claims, upgrades, lines, offered) = (
+            format!("__door_key_{n}"),
+            format!("__door_composes_over_{n}"),
             format!("__door_build_{n}"),
             format!("__door_claims_{n}"),
             format!("__door_upgrades_{n}"),
@@ -496,8 +521,8 @@ pub(crate) fn linked_source(
             format!("__door_offered_{n}"),
         );
         out.push_str(&format!(
-            "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
-             {e}::COMPOSES_OVER, build: {build}, claims: {claims}, upgrades: {upgrades}, \
+            "crate::root::linked::LinkedTransport {{ key: {key}, composes_over: \
+             {under}, build: {build}, claims: {claims}, upgrades: {upgrades}, \
              lines: {lines}, \
              offered: {offered} }}, "
         ));
@@ -513,9 +538,12 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            let canonical =
-                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
-                    .unwrap_or_else(|| name.clone());
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .unwrap_or_else(|| name.clone());
             out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::door), "));
         }
     }
@@ -530,13 +558,21 @@ pub(crate) fn linked_source(
     for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
         if list.iter().any(|a| a == EXPORT_DOOR_AXIS) {
             let c = ident(krate);
+            // Its name is its door's Statement `name` (`LinkedDoorExport::name`). NO STATEMENT
+            // HOME for the other two, so they are still read off the crate: `ALIAS` (a Statement
+            // states an alias as a `REWRITE_ALIAS` rewrite, and not every export door states one)
+            // and `DECLARES` (the Statement carries metric families, diagnostic ids and answers,
+            // never the whole `declares` document).
             out.push_str(&format!(
-                "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
+                "crate::root::linked::LinkedDoorExport {{ alias: {c}::ALIAS, \
                  declares: {c}::DECLARES, door: {entry}::door }}, "
             ));
         }
     }
     out.push_str("],\n");
+    // NO STATEMENT HOME: a `claims` row's `PLANE` (the pure plane the seal registers, a Rust
+    // value) and `CLAIMS` (its grammar claims); the Statement's `claims` are a transport's URL
+    // schemes and no field states a plane's grammar claims, so they are still read off the entry.
     out.push_str("    claims: &[");
     for e in on_axis(CLAIMS_AXIS) {
         out.push_str(&format!(
@@ -545,6 +581,11 @@ pub(crate) fn linked_source(
         ));
     }
     out.push_str("],\n");
+    // NO STATEMENT HOME for any `AXES` item but `hooks` (`door`): each is a Rust value or fn the
+    // root calls in process (protocol declarations, ingress entries, seam and node installers,
+    // diagnostics, host and compose steps, help rows, the gauntlet declaration keys), and `STORE`
+    // states a canonical manifest name no Statement field carries (its key is the Statement's
+    // `name` and its `ephemeral` the store tail's). They are still read off the entry.
     for (axis, field, item) in AXES {
         out.push_str(&format!("    {field}: &["));
         for e in on_axis(axis) {
@@ -554,12 +595,12 @@ pub(crate) fn linked_source(
     }
     out.push_str("};\n");
     out.push_str(&door_builds);
-    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key and its
-    // `door`, which the root's one Connector opens as a framer entry (`crate::root::connector`).
+    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door, which the root's
+    // one Connector opens as a framer entry (`crate::root::connector`); it states its own name.
     out.push_str(
-        "/// Every linked memory-ABI transport door, by key, for the root's one Connector.\n\
+        "/// Every linked memory-ABI transport door, for the root's one Connector.\n\
          #[allow(dead_code)]\n\
-         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)] = &[",
+         pub(crate) static LINKED_TRANSPORT_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[",
     );
     for (e, axes) in linked
         .iter()
@@ -569,13 +610,14 @@ pub(crate) fn linked_source(
             .iter()
             .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
         {
-            out.push_str(&format!("({e}::KEY, {e}::door), "));
+            out.push_str(&format!("{e}::door, "));
         }
     }
     out.push_str("];\n");
     // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
     // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
-    // plane looks.
+    // plane looks. NO STATEMENT HOME for either key: no Statement field states a plane's
+    // declaration key or the key its gauntlet asks under.
     out.push_str(
         "/// Each kernel-loop row's (declaration key, key its gauntlet asks its runner under).\n\
          #[cfg(test)]\n\
