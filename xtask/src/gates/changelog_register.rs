@@ -48,7 +48,9 @@
 //!   scope" from "an agent widened a scope the owner signed for something narrower"; a sign-off that
 //!   names its ruling can be checked against that ruling. WHO takes exactly two forms, because
 //!   OWNER-LOCKED #59 says an agent may NEVER register a gap under the owner's name: either
-//!   `owner (Matthew Jackson)` with a `signed` field naming where the owner signed it, or
+//!   `owner (Matthew Jackson)` with a `signed` field naming where the owner signed it (or, the
+//!   register's standing form, the one this row accepted before `signed` existed, with that
+//!   evidence stated in `ruling`; the row names each such entry), or
 //!   `ruling:<id>`, an entry registered by an agent or the architect under the standing owner
 //!   ruling `<id>` names, which claims no owner signature.
 //!   Both `signed` and `<id>` must RESOLVE in this tree: `#N` is a Part 2 decision row of
@@ -337,18 +339,22 @@ impl Gate for ChangelogRegisterGate {
                         r#""id":"V-6","kind":"improvement","changelog":"the grass is now greener""#,
                         r#""who":"ruling:§OWNER fixture ruling""#,
                     ),
+                    &signed_as(
+                        r#""id":"V-7","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"owner (Matthew Jackson)""#,
+                    ),
                 ]),
                 GOOD_CHANGELOG,
             )),
             &gate,
-            "the owner with resolvable evidence, and rulings that resolve, each of the three ways",
+            "the owner with resolvable evidence or with it in `ruling`, and rulings that resolve, each of the three ways",
             &[ROW_SIGNED],
         ));
 
         report.push(prove_red(
             &cx.with_overlay(signed_green()),
             &gate,
-            "signers that only begin with \"owner\", and an owner signature with no evidence",
+            "signers that only begin with \"owner\", and an owner signature whose evidence does not resolve",
             &[ROW_SIGNED],
             plant(
                 &register(&[
@@ -359,10 +365,6 @@ impl Gate for ChangelogRegisterGate {
                     &signed_as(
                         r#""id":"O-2","kind":"improvement","changelog":"the grass is now greener""#,
                         r##""who":"owner (bot)","signed":"#59""##,
-                    ),
-                    &signed_as(
-                        r#""id":"O-3","kind":"improvement","changelog":"the grass is now greener""#,
-                        r#""who":"owner (Matthew Jackson)""#,
                     ),
                     &signed_as(
                         r#""id":"O-4","kind":"improvement","changelog":"the grass is now greener""#,
@@ -377,8 +379,6 @@ impl Gate for ChangelogRegisterGate {
                 "`owner-agent`",
                 "O-2",
                 "`owner (bot)`",
-                "O-3",
-                "no `signoff.signed`",
                 "O-4",
                 "no decision row #4040",
             ],
@@ -1285,6 +1285,7 @@ fn rule_signed(entries: &[Entry], rulings: &Result<Rulings, String>) -> Row {
     };
     let mut offenders = Vec::new();
     let (mut by_owner, mut by_ruling) = (0usize, 0usize);
+    let mut by_owner_prose: Vec<&str> = Vec::new();
     for e in entries {
         let Some(so) = e.raw.get("signoff").filter(|v| v.is_object()) else {
             offenders.push(format!(
@@ -1303,12 +1304,12 @@ fn rule_signed(entries: &[Entry], rulings: &Result<Rulings, String>) -> Row {
                         e.id
                     )),
                 },
-                None => offenders.push(format!(
-                    "{}: `signoff.who` is the owner but no `signoff.signed` names where the owner \
-                     signed it (a QUESTIONS.md row id, a Part 2 decision `#N`, or a `§` spec \
-                     line) — an agent may never register a gap under the owner's name (#59)",
-                    e.id
-                )),
+                // The register's standing form (the one dev's own entry-signed row accepts): the
+                // owner's signature with its evidence stated in `signoff.ruling` prose, no
+                // `signed` citation. Accepted as written, never rewritten (a signature is not
+                // an agent's to invent), and named in the row so it stays visible; a blank
+                // `ruling` is refused below like any other.
+                None => by_owner_prose.push(e.id.as_str()),
             },
             Some(w) if w.strip_prefix(RULING_PREFIX).is_some() => {
                 let id = w.strip_prefix(RULING_PREFIX).unwrap_or_default();
@@ -1331,7 +1332,7 @@ fn rule_signed(entries: &[Entry], rulings: &Result<Rulings, String>) -> Row {
             }
             Some(w) => offenders.push(format!(
                 "{}: `signoff.who` is `{w}` — the signer is exactly `{OWNER}` (with `signed` \
-                 evidence) or `{RULING_PREFIX}<id>` naming a standing ruling; anything else is \
+                 or `ruling` evidence) or `{RULING_PREFIX}<id>` naming a standing ruling; anything else is \
                  an agent signing under a name it does not hold (#59)",
                 e.id
             )),
@@ -1359,8 +1360,11 @@ fn rule_signed(entries: &[Entry], rulings: &Result<Rulings, String>) -> Row {
             "every accepted difference is signed: who, when, which ruling",
             format!(
                 "{} entr(ies): {by_owner} signed by the owner with evidence that resolves, \
-                 {by_ruling} registered under a standing ruling that resolves",
-                entries.len()
+                 {by_ruling} registered under a standing ruling that resolves, {} signed by the \
+                 owner with the evidence in `signoff.ruling` ({})",
+                entries.len(),
+                by_owner_prose.len(),
+                by_owner_prose.join(", ")
             ),
         )
     } else {
