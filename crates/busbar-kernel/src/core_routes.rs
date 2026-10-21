@@ -156,26 +156,6 @@ impl CoreRouteTable {
             .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
     }
 
-    /// THE DIALECT AN AUTHENTICATION REFUSAL AT `(path, method)` IS TAPPED UNDER: the refusal
-    /// dialect the door plane states for the most specific door route `path` matches at `method`,
-    /// else — a verb no route at the path takes (OPTIONS, HEAD, any unclaimed method) — for the most
-    /// specific door route `path` matches whatever its method. v1.5.5 read the label off the path
-    /// alone (`crates/busbar/src/auth/mod.rs:1166-1167` at v1.5.5), so the verb never changed it;
-    /// the plane's statement per claim now carries the same dialect, and the kernel names none.
-    /// `None` when no door route matches the path.
-    pub(crate) fn refusal_dialect(&self, path: &str, method: &Method) -> Option<&'static str> {
-        let rm = route_method_of(method);
-        let most_specific = |at_method: bool| {
-            self.door_refusals
-                .iter()
-                .filter(|r| route_matches(&r.route.path, path))
-                .filter(|r| !at_method || Some(r.route.method) == rm)
-                .min_by_key(|r| route_generality(&r.route.path))
-                .map(|r| r.dialect)
-        };
-        most_specific(true).or_else(|| most_specific(false))
-    }
-
     /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT
     /// ruling 2026-10-16, 3b A): some raw-affix claim of a door plane (`abi::plane::CLAIM_RAW_AFFIX`,
     /// ARCHITECT ruling 2026-10-17), whatever its verb, whose prefix and suffix the raw `path` starts
@@ -275,25 +255,6 @@ impl CoreRouter {
 
 /// Whether the request `path` is one the route pattern `route` matches: literal segments exactly, a
 /// `{name}` segment as any one non-empty segment, a `{*name}` tail as whatever remains.
-/// How general a route pattern is, least first: an exact pattern, then one with `{name}` segments
-/// (fewer first), then a `{*name}` tail (the longer its literal head, the less general). The order
-/// the router itself resolves an overlapping path in.
-fn route_generality(route: &str) -> (bool, usize, std::cmp::Reverse<usize>) {
-    let segments: Vec<&str> = route.split('/').collect();
-    let tail = segments
-        .last()
-        .is_some_and(|s| s.starts_with("{*") && s.ends_with('}'));
-    let params = segments
-        .iter()
-        .filter(|s| s.starts_with('{') && !s.starts_with("{*"))
-        .count();
-    let literals = segments
-        .iter()
-        .filter(|s| !s.is_empty() && !s.starts_with('{'))
-        .count();
-    (tail, params, std::cmp::Reverse(literals))
-}
-
 fn route_matches(route: &str, path: &str) -> bool {
     let mut want = route.split('/');
     let mut got = path.split('/');

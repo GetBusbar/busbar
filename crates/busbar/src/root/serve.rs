@@ -2807,22 +2807,11 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
-            // The claim's refusal dialect, by the name the plane's tail states for it: the label a
-            // hook tap of the `401` is told.
-            let served = &routes.served.planes[plane];
-            let dialect = served
-                .snapshot
-                .claims
-                .get(claim as usize)
-                .and_then(|c| served.dialects.get(usize::from(c.refusal_dialect)))
-                .copied()
-                .unwrap_or("");
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
-                dialect,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
@@ -2871,7 +2860,10 @@ pub fn door_mounts(
                 _ => None,
             };
             // The fallback plane's dialect index is unread for a unit-less refusal: the plane
-            // renders the target by its own path rule.
+            // renders the target by its own path rule. A path under a mounted plane's claim is
+            // never the fallback's: with no line of that plane taking it, the kernel answers in the
+            // mounted plane's own wire format.
+            let fallback = fallback.filter(|_| !r.mounted);
             let (plane, dialect) = owner.or_else(|| fallback.map(|plane| (plane, 0)))?;
             let rendered = routes.served.planes[plane].driver.refuse_kernel(
                 r.reason,

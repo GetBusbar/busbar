@@ -7,6 +7,8 @@ use crate::test_support::{build_once, cfg_with_provider_api_key};
 /// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
 /// `src/sigv4.rs` left with D3 (ec0c05f4e3): it was a re-export of the identity unit's SigV4 items
 /// and carried no code of its own, so no code under these rules left with it.
+/// `src/proto/installed.rs` left with row 82 D2 (#1376): the protocol registry it held is deleted,
+/// not moved, so no code under these rules left with it either.
 pub(crate) fn moved_sources() -> &'static [&'static str] {
     &[
         "src/breaker.rs",
@@ -15,7 +17,6 @@ pub(crate) fn moved_sources() -> &'static [&'static str] {
         "src/json.rs",
         "src/ir/lane_caps.rs",
         "src/config/providers.rs",
-        "src/proto/installed.rs",
     ]
 }
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
@@ -3162,5 +3163,74 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
         seen.lock().unwrap().len(),
         asked,
         "the native-API root asks no door"
+    );
+}
+
+/// A KERNEL-SHAPED REFUSAL UNDER A MOUNTED PLANE keeps that plane's wire format: the door renderer
+/// is told the path is mounted (so the fallback plane's path rule never takes it), and a refusal no
+/// line of the plane renders is answered in JSON-RPC 2.0, the mounted plane's own format, beneath
+/// the mount at a segment boundary as at the mount itself. A residual path is told it is not
+/// mounted and keeps the kernel's neutral envelope. RED: the mounted path answered in the neutral
+/// envelope (its JSON-RPC client decodes nothing else), or the renderer not told it is mounted.
+#[tokio::test]
+async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    use http_body_util::BodyExt as _;
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+    let refuser: PlaneRefuseByPathFn = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |r: &KernelRefusal<'_>| {
+            seen.lock().unwrap().push((r.path.to_string(), r.mounted));
+            None
+        })
+    };
+    let planes = crate::plane_driver::claims::PlaneDispatch::default().mount(
+        "refusal-under-a-mount",
+        "/front-door",
+        crate::plane_driver::claims::WIRE_JSONRPC,
+    );
+    let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    handle.bind_door_refuser(refuser);
+    let answer = |path: &str| {
+        crate::router::kernel_refusal_response(
+            &handle,
+            &planes,
+            ReasonCode::BodyTooLarge,
+            path,
+            path,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            "request body exceeds the maximum allowed size",
+        )
+    };
+    let json = |r: axum::response::Response| async move {
+        let bytes = r.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON")
+    };
+    for path in ["/front-door", "/front-door/anything"] {
+        let v = json(answer(path)).await;
+        assert_eq!(v["jsonrpc"], "2.0", "{path}: {v}");
+        assert!(
+            v.pointer("/error/code")
+                .is_some_and(serde_json::Value::is_i64),
+            "{path}: {v}"
+        );
+        assert!(v.pointer("/error/type").is_none(), "{path}: {v}");
+    }
+    let v = json(answer("/front-doorx")).await;
+    assert!(
+        v.get("jsonrpc").is_none(),
+        "a sibling is not under the mount: {v}"
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            ("/front-door".to_string(), true),
+            ("/front-door/anything".to_string(), true),
+            ("/front-doorx".to_string(), false),
+        ],
+        "the renderer is told which paths lie under a mounted plane"
     );
 }

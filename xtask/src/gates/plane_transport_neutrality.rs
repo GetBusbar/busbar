@@ -95,8 +95,11 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// it stacks on (#1276: `ingress/arrival_host.rs`, `ingress/tests/terminal_tests.rs`), against the
 /// files dev landed meanwhile. Lowered 1215 -> 1213 merging dev after GetBusbar/busbar#1299
 /// (`busbar-kernel/src/failover/mod.rs` and `failover/tests/failover_tests.rs` deleted), the
-/// gate's measure on 5989f0e117.
-pub const MIN_FILES: usize = 1213;
+/// gate's measure on 5989f0e117. Set 1213 -> 1216, the `.rs` count of the census-neutral roots
+/// measured on GetBusbar/busbar#1376's head f8e6755c38 (1214 on 498a942e19, the head a review
+/// measured; plus `root/durability/recovery.rs` and its tests, which dev landed since:
+/// the merged tree's own count, so the floor sits at the tree it guards).
+pub const MIN_FILES: usize = 1216;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";

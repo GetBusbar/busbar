@@ -108,6 +108,9 @@ pub struct TestDoor {
     pub begun_targets: Mutex<Vec<Vec<u8>>>,
     /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
     pub dialled_keys: Mutex<Vec<u64>>,
+    /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
+    /// program it holds down.
+    pub held_keys: Mutex<HashSet<u64>>,
 }
 
 impl TestDoor {
@@ -157,6 +160,7 @@ impl TestDoor {
             begun_fields: Mutex::new(Vec::new()),
             begun_targets: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
+            held_keys: Mutex::new(HashSet::new()),
         }
     }
 
@@ -669,7 +673,12 @@ impl TestDoor {
                 self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 // SAFETY: the connector's destination, live for the call.
                 let d = unsafe { &*i.dest };
-                let r = if d.kind == DEST_PROGRAM {
+                let held = self.held_keys.lock().unwrap().contains(&i.supervision_key);
+                let r = if held {
+                    Err(IoRefusal::Refused(
+                        "held down by the carrier's supervisor".to_owned(),
+                    ))
+                } else if d.kind == DEST_PROGRAM {
                     let program = text_of(d.program);
                     let args: Vec<String> = (0..d.args_len)
                         // SAFETY: `args_len` strings at `args`.

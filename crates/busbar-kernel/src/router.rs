@@ -86,16 +86,26 @@ pub(crate) fn kernel_refusal_response(
     use crate::admin::gate::API_ROOT;
     let native_api = path == API_ROOT || path.starts_with(&format!("{API_ROOT}/"));
     if !native_api {
+        let ingress = planes.ingress_of(path);
+        let mounted = matches!(ingress, crate::plane_driver::claims::Ingress::Mounted(_));
         let refusal = busbar_kernel::plane_routes::KernelRefusal {
             reason,
             status: status.as_u16(),
             text: message,
             path,
             target,
+            mounted,
         };
-        return handle
-            .door_refusal(&refusal)
-            .unwrap_or_else(|| crate::ingress::native::kernel_refusal(status, kind, message));
+        return handle.door_refusal(&refusal).unwrap_or_else(|| {
+            // A MOUNTED plane speaks its own wire format, and its client decodes nothing else: the
+            // refusal no line of it rendered is answered in that format, never in the kernel's
+            // neutral envelope (`native_error`'s mounted arm, as the auth chain's 401 answers it).
+            if mounted {
+                crate::ingress::native::native_error(ingress, status, kind, message)
+            } else {
+                crate::ingress::native::kernel_refusal(status, kind, message)
+            }
+        });
     }
     fallback_error_response(planes, path, status, kind, message)
 }

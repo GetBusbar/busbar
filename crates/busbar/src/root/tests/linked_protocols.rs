@@ -256,6 +256,35 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     }
 }
 
+/// THE AUTHENTICATION REFUSAL'S TAP LABEL IS ITS PATH'S, WHATEVER THE VERB. v1.5.5 told a
+/// `rejected_by_auth` response tap the dialect it read off the path alone
+/// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path(path)`), so neither the verb nor
+/// the route a request matched moved it. Each fixture row is a request and that function's answer
+/// for it, verbatim; the kernel computes the label with no verb and no route in hand
+/// ([`busbar_kernel::ingress::native::labelled_dialect`]), over the path dialects this root installs
+/// ([`crate::root::linked::path_dialects`]), on a path no plane is mounted at.
+#[test]
+fn an_auth_denial_is_tapped_under_the_1_5_5_label_of_its_path_whatever_the_verb() {
+    let dialects = crate::root::linked::path_dialects(&crate::LINKED);
+    let rows = FIXTURE["auth_denial_label"]
+        .as_array()
+        .expect("auth_denial_label");
+    assert!(!rows.is_empty(), "the fixture names the requests");
+    for row in rows {
+        let method = row[0].as_str().expect("method");
+        let path = row[1].as_str().expect("path");
+        assert_eq!(
+            busbar_kernel::ingress::native::labelled_dialect(
+                busbar_kernel::plane_driver::claims::Ingress::Fallback,
+                path,
+                Some(&dialects),
+            ),
+            row[2].as_str(),
+            "the tap label of an authentication refusal to {method} {path}"
+        );
+    }
+}
+
 // ══ THE METRIC LABELS ARE DECLARED DATA (ARCHITECT ruling 2026-10-16 item 4) ═════════════════════════
 
 /// The fallback plane every linked door row folds to, as the composition root folds it: the one
