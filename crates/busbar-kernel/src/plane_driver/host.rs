@@ -220,7 +220,7 @@ impl EngineHost for EngineHostImpl {
         plane_key: &str,
         container: &str,
     ) -> Vec<(u16, crate::hooks::ResolvedPolicy)> {
-        // The set the previous release's gate seam fired, as resolved (`gate::decide` orders it).
+        // The set the previous release's gate seam fired, as resolved (`gate::decide_over` orders it).
         self.app
             .plane_gates(plane_key)
             .and_then(|m| m.get(container))
