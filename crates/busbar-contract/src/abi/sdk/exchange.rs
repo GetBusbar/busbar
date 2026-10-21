@@ -137,6 +137,9 @@ pub struct Exchange {
     slot: Box<ReplyPiece>,
     reply: Zeroizing<ExchangeResponse>,
     code: u32,
+    /// The reply's head (or the transport's ack) was received: `code` is its status
+    /// ([`Exchange::head_status`]).
+    head_seen: bool,
     /// How many of this op's services' results are already applied to `reply`.
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
@@ -179,6 +182,7 @@ impl Exchange {
             slot: Box::default(),
             reply: Zeroizing::default(),
             code: 0,
+            head_seen: false,
             applied: 0,
             ended: None,
             within: String::new(),
@@ -221,6 +225,25 @@ impl Exchange {
     #[must_use]
     pub fn observed(&self) -> Option<&Observed> {
         self.observed.as_ref()
+    }
+
+    /// WHETHER THE REPLY'S HEAD WAS RECEIVED: `true` once a head (or a pure-send transport's ack)
+    /// was read, whatever the exchange answered after it. A failed exchange that had its head
+    /// failed reading the body (a reset, a stalled body, [`REPLY_OVER_BOUND`]); one without failed
+    /// before any reply (the dial, the send, the far end's silence).
+    #[must_use]
+    pub const fn head_seen(&self) -> bool {
+        self.head_seen
+    }
+
+    /// The status the reply's head carried ([`ExchangeResponse::status`], read as [`exchange`]
+    /// reads it), once [`Exchange::head_seen`]; `None` before. Answered on a failed exchange too,
+    /// so a driver judges the status before the body as an HTTP client does: a reply past
+    /// [`REPLY_OVER_BOUND`] still says what status it came with.
+    #[must_use]
+    pub fn head_status(&self) -> Option<u16> {
+        self.head_seen
+            .then(|| u16::try_from(self.code).unwrap_or(0))
     }
 
     /// Land this exchange's dial only on an address of `within`, the set the plugin's
@@ -473,6 +496,7 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
         REPLY_HEAD | REPLY_ACK if fresh => {
             let bytes = &state.buf[..len];
             state.code = p.code;
+            state.head_seen = true;
             let reason = spanned(bytes, p.reason);
             state.reply.reason.zeroize();
             state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
