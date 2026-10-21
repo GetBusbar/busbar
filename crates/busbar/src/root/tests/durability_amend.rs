@@ -64,7 +64,9 @@ fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("the directory is writable");
-    durability.restore_amendments();
+    durability
+        .restore_amendments()
+        .expect("the chain reads back");
     let book = Arc::new(Mutex::new(durability));
     bind_amendments(&book);
     book
@@ -118,7 +120,7 @@ fn restart_phase() {
             )
             .expect("a pooled root correction lands");
             let app = busbar_kernel::test_support::TestApp::new().build();
-            busbar_kernel::plane_host::engine_host(&app).hook_read(
+            busbar_kernel::plane_driver::engine_host(&app).hook_read(
                 HOOK,
                 Some("pseudonym-1"),
                 "chat",
@@ -232,7 +234,9 @@ fn store_boot(slots: &crate::root::store_double::RecordSlots) -> Arc<Mutex<Durab
         None,
     )
     .expect("the store reads back");
-    durability.restore_amendments();
+    durability
+        .restore_amendments()
+        .expect("the chain reads back");
     let book = Arc::new(Mutex::new(durability));
     bind_amendments(&book);
     book
@@ -432,7 +436,9 @@ fn without_a_data_dir_the_amendment_journal_is_neither_rebuilt_nor_bound() {
         Box::new(|| None),
     )
     .expect("a memory-buffered journal cannot fail to open");
-    durability.restore_amendments();
+    durability
+        .restore_amendments()
+        .expect("nothing is read back");
     assert_eq!(durability.amendments_through, None);
     assert!(durability.restart_findings.is_empty());
 }

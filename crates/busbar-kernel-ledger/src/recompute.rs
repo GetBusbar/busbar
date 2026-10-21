@@ -9,11 +9,12 @@
 //! with its counts is the boot reconciliation, which re-derives every settled figure from the
 //! journal's counts and compares it with the book.
 //!
-//! ## The origin rule on the fee line
+//! ## The fee line
 //!
-//! The per-request fee is charged on client-originated work and not on the rest: a line whose origin
-//! is not a client prices its fee line at zero. On a deployment with no rate card the fee line is the
-//! whole of what a line costs.
+//! A line's fee count is the number of billable requests it carries, and the fee line prices exactly
+//! that count. Work the node did for its own reasons posts no counted line, so there is no second
+//! kind of line to charge differently. On a deployment with no rate card the fee line is the whole
+//! of what a line costs.
 
 use crate::cost::{
     price, HistorySeq, HistoryView, Posting as CostPosting, Priced, Quantity, Unpriceable,
@@ -32,15 +33,6 @@ pub struct PricedLine {
     pub class: MeterClassId,
     /// How much of it.
     pub quantity: u64,
-}
-
-/// Where a unit came from, as far as the fee line is concerned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PostingOrigin {
-    /// A client asked for this work; the per-request fee applies.
-    Client,
-    /// The node did this for its own reasons; the fee line prices at zero.
-    Internal,
 }
 
 /// One booked ledger line, as the journal holds it.
@@ -70,8 +62,6 @@ pub struct Posting {
     pub tier_bp: u32,
     /// The instant it happened, in wall-clock milliseconds. The scale the history resolves at.
     pub arrived_ms: u64,
-    /// Whether the fee line applies.
-    pub origin: PostingOrigin,
 }
 
 /// Why a booked line cannot be priced.
@@ -145,17 +135,11 @@ pub fn price_line(
             .iter()
             .map(|line| Quantity::new(line.class.as_str(), line.quantity))
             .collect(),
-        // The origin rule, applied by charging no fees rather than by a branch further down: a line
-        // the node did for its own reasons carries no client request to charge one for.
-        fee_count: match posting.origin {
-            PostingOrigin::Client => posting.fee_count,
-            PostingOrigin::Internal => 0,
-        },
+        fee_count: posting.fee_count,
         tier_bp,
         arrived_ms: posting.arrived_ms,
         arrived_mono: 0,
         estimated: false,
-        cached: None,
     };
     price(view, &cost)
 }
