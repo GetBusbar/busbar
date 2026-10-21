@@ -299,8 +299,7 @@ pub(crate) static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceL
 /// A TEST BINARY'S OWN AUTH AXIS OPENER, read ahead of the stand-in (the [`TEST_ROOT`] rule); filled by
 /// [`crate::test_support::install_test_auth_axis`].
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
-    std::sync::OnceLock::new();
+pub(crate) static TEST_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
 
 /// The hook names the composition root's OWN test binary hands in, in the root's words (its
 /// generated linked-hook list): a test build's install record reports them in place of the
