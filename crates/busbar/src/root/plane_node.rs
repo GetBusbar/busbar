@@ -57,8 +57,8 @@ use busbar_kernel::teller::{
 };
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
-    AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
-    Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
+    AuditInputs, Controls, FinishClass as RecordFinish, HookApplied, OpClassId as RecordOpClass,
+    OutcomeFacts, Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
 };
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
@@ -2463,7 +2463,11 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
 /// is sealed (THE DESIGN §1: the record's "controls (... hooks applied)"), as its walk's dispatch
 /// is. A unit with no open facts keeps nothing.
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
-    fn hooks_ran(&self, _record: &busbar_kernel::plane_driver::HooksRan) {}
+    fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
+        if let Some(open) = self.lock().get_mut(&record.unit) {
+            open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
+        }
+    }
 }
 
 /// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
@@ -2567,6 +2571,9 @@ struct Ran {
     verified: Vec<LaneId>,
     /// The lane of the verified destination its egress walk last dialled, where one dialled.
     dialled: Option<LaneId>,
+    /// Every hook its hook stage reported running, in the order they ran (THE DESIGN §1: "hooks
+    /// applied"): empty for a unit no hook ran for.
+    hooks: Vec<HookApplied>,
 }
 
 /// A unit's record-to-be while it runs: what the node saw ([`Ran`]), and its audit door's facts and
@@ -2677,12 +2684,12 @@ impl Sealing {
         // applied"): the hold its admission opened on the chain and the settlement its one line
         // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
         // running, in order, with its head; a hook that failed is recorded failed, never dropped.
-        let hooks_applied = Vec::new();
-        let hook_failed = false;
+        let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
+        let destination = ran.destination(line.served);
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
             settle_ref: line.settled_at.map(|seq| seq.to_string()),
-            hooks_applied,
+            hooks_applied: ran.hooks,
             ..Controls::default()
         };
         let inputs = AuditInputs {
@@ -2691,7 +2698,7 @@ impl Sealing {
                 unit_key: seal.key,
                 incarnation: 0,
                 op_class: RecordOpClass::new(seal.facts.op_class.as_str()),
-                destination: ran.destination(line.served),
+                destination,
                 parent: seal.parent,
                 pre_hook_head: None,
                 post_hook_head: None,

@@ -1387,10 +1387,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return;
         }
         let unit = busbar_contract::UnitKey::new(self.lock().unit);
-        journal.hooks_ran(&HooksRan {
-            unit,
-            hooks: Vec::new(),
-        });
+        journal.hooks_ran(&HooksRan { unit, hooks });
     }
 
     /// [`Self::request_stage`], each hook that ran pushed onto `ran` as it answered.
