@@ -1636,3 +1636,44 @@ fn red_a_hand_in_keeps_the_stream_its_request_arrived_on() {
     assert_eq!(k.inbound.handed_on(OWNER, 31, 5), None, "another framing");
     assert_eq!(k.inbound.handed_on(OWNER + 1, 30, 5), None, "another owner");
 }
+
+/// RED (/status row 192 B; THE DESIGN §6 item 1, "HeadBody includes the head, so a set never
+/// holds both"; `check_points`): a line whose chain needs the head point and the body point is
+/// lent as needing the BODY point alone (a set the line table accepts, `check::check_lines`), and
+/// the call the transport makes there judges the whole chain: the auth that needs the head is
+/// answered at the body point, which includes the head.
+#[test]
+fn red_a_line_needing_head_and_body_is_lent_its_body_point_and_judged_whole_there() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k-1"), Vec::new());
+    let b = Script::new(AuthPoints::HEAD_BODY, Verified::Pass, Vec::new());
+    let k = kit(&[("a", Arc::clone(&a)), ("b", Arc::clone(&b))]);
+    let spec = k.inbound.specs(OWNER, GEN).expect("installed")[k.line(MESSAGES) as usize];
+    assert_eq!(spec.points, POINT_HEAD_BODY, "lent at the body point alone");
+    assert!(
+        busbar_contract::abi::auth::check_points(spec.points, false).is_ok(),
+        "a point set the line table accepts"
+    );
+    assert_ne!(
+        spec.body_limit, 0,
+        "held to the size gate at the body point"
+    );
+    let answered = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD_BODY,
+            post(MESSAGES, &[], None),
+        )
+        .expect("answered");
+    assert_eq!(answered.flow, FLOW_CONTINUE);
+    assert_eq!(
+        a.calls(),
+        1,
+        "the head auth is judged at the body point, which includes the head"
+    );
+    assert_eq!(
+        b.calls(),
+        0,
+        "the head auth's identity fixed the verdict first"
+    );
+}
