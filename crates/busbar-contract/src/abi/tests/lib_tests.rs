@@ -103,7 +103,10 @@ fn sized_field_guard_hides_truncated_tail() {
     let g = Pod::whole();
     // A full-size struct reveals a tail field.
     // SAFETY: `&g` addresses a whole, live `Pod`.
-    assert_eq!(unsafe { read_sized_field!(&g, g.size, Pod, flags) }, Some(0));
+    assert_eq!(
+        unsafe { read_sized_field!(&g, g.size, Pod, flags) },
+        Some(0)
+    );
     // A sender that advertised only the preamble reveals nothing past it.
     let mut truncated = g;
     truncated.size = 6; // size(u32)=4 + version(u16)=2 — preamble only
@@ -159,12 +162,21 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
     // `p` addresses `PREFIX` live bytes whose leading `size` says exactly that; the guard reads
     // nothing beyond it.
     // SAFETY: `p` addresses `PREFIX` live bytes, the leading prefix of a `Pod`.
-    assert_eq!(unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_ptr) }, None);
+    assert_eq!(
+        unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_ptr) },
+        None
+    );
     // SAFETY: `p` addresses `PREFIX` live bytes, the leading prefix of a `Pod`.
-    assert_eq!(unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_len) }, None);
+    assert_eq!(
+        unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_len) },
+        None
+    );
     // A field inside the prefix still reads.
     // SAFETY: as above.
-    assert_eq!(unsafe { read_sized_field!(p, PREFIX as u32, Pod, tokens) }, Some(0));
+    assert_eq!(
+        unsafe { read_sized_field!(p, PREFIX as u32, Pod, tokens) },
+        Some(0)
+    );
 }
 
 /// THE AUTH TAIL'S FACT BITS are distinct single bits, the default inbound style among them (row
