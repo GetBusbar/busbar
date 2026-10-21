@@ -123,12 +123,22 @@ impl<S: StoreSlots> SlotStore<S> {
     /// Run one slot on no ticket: its answer, or FAULT for a PENDING. A store body that panics is
     /// FAULT too, never an unwind into the caller: the SDK's door runs every slot body under
     /// `catch_unwind` and answers a panic as `Outcome::Fault`, which the loader's bridge classes
-    /// [`StoreFailure::Fault`] (`crates/plugin-loader/src/store_v3.rs`).
-    fn call<T>(&self, slot: impl FnOnce(&S, &mut Op<'_>) -> Step<T>) -> Result<T, StoreFailure> {
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut cx = Op::detached();
-            slot(&self.store, &mut cx)
-        }));
+    /// [`StoreFailure::Fault`] (`crates/plugin-loader/src/store_v3.rs`). The body runs on a scoped
+    /// thread of its own and its join answers the panic, so no unwind boundary is asserted here
+    /// (`qa/construction.toml` `hold-escapes`: the stand-in holds no hold, and names no escape).
+    fn call<T: Send>(
+        &self,
+        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<T> + Send,
+    ) -> Result<T, StoreFailure> {
+        let store = &self.store;
+        let ran = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    let mut cx = Op::detached();
+                    slot(store, &mut cx)
+                })
+                .join()
+        });
         match ran {
             Ok(Step::Ready(answer)) => Ok(answer),
             Ok(Step::Pending { .. }) => Err(StoreFailure::Fault(format!(
@@ -143,9 +153,9 @@ impl<S: StoreSlots> SlotStore<S> {
     }
 
     /// An `op_id`-carrying write: a conflict is [`StoreFailure::Conflict`], a refusal's text FAILED.
-    fn op<T>(
+    fn op<T: Send>(
         &self,
-        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<OpResult<T>>,
+        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<OpResult<T>> + Send,
     ) -> Result<T, StoreFailure> {
         self.call(slot)?.map_err(|e| match e {
             OpRefused::Conflict => StoreFailure::Conflict,
@@ -154,17 +164,17 @@ impl<S: StoreSlots> SlotStore<S> {
     }
 
     /// A slot answering the store's own text on failure: FAILED with it.
-    fn text<T>(
+    fn text<T: Send>(
         &self,
-        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<Result<T, String>>,
+        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<Result<T, String>> + Send,
     ) -> Result<T, StoreFailure> {
         self.call(slot)?.map_err(StoreFailure::Failed)
     }
 
     /// A 1.5.5 op: FAILED with the store's error text.
-    fn record<T>(
+    fn record<T: Send>(
         &self,
-        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<RecordStoreResult<T>>,
+        slot: impl FnOnce(&S, &mut Op<'_>) -> Step<RecordStoreResult<T>> + Send,
     ) -> Result<T, StoreFailure> {
         self.call(slot)?.map_err(|e| StoreFailure::Failed(e.0))
     }
