@@ -97,6 +97,20 @@ pub fn residual_default_dialect() -> &'static str {
     })
 }
 
+/// The dialect the fallback door's claim on exactly `path` wears, read off its facing claims
+/// (BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): a test's way to name a
+/// dialect a linked plane states without spelling one, as `root::linked::dialect_for_path` is the
+/// root's own tests'.
+pub fn dialect_for_path(path: &str) -> Option<&'static str> {
+    let facing = (fallback_registration().facing)(b"{}", b"", None, &[])
+        .unwrap_or_else(|e| panic!("the fallback door faces the world: {e}"));
+    facing
+        .claims
+        .into_iter()
+        .find(|(target, _)| target == path)
+        .map(|(_, dialect)| dialect)
+}
+
 /// Install every test-linked plane exactly as the composition root installs it in production
 /// (plane row, ingress seams), and every test-linked DOOR plane's registry
 /// row folded from its Statement, as the root folds a door — in the list's order, which is the
