@@ -68,14 +68,17 @@ extern "C" {
 #define BB_MECH_MARK_WORD_ISSUED_SECRET_LENGTH UINT32_C(6) /* [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED. */
 #define BB_MECH_MARK_WORD_ISSUED_SECRET_ALPHABET UINT32_C(7) /* [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn */
 #define BB_MECH_REWRITE_ALIAS UINT32_C(1) /* [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The */
-#define BB_MECH_REWRITE_SUGAR UINT32_C(2) /* [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to`, if */
+#define BB_MECH_REWRITE_SUGAR UINT32_C(2) /* [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret */
 #define BB_MECH_REWRITE_KEY UINT32_C(3) /* [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's */
 #define BB_MECH_REWRITE_SUGAR_SHOWN UINT32_C(4) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder */
 #define BB_MECH_REWRITE_SUGAR_NAMES UINT32_C(5) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value */
 #define BB_MECH_REWRITE_SUGAR_ROLE UINT32_C(6) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role */
+#define BB_MECH_SUGAR_ROLE_FILL "fill" /* [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this */
+#define BB_MECH_SUGAR_ROLE_PATH "path" /* [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of */
 #define BB_MECH_SECTION_DECLARING UINT32_C(1) /* [`Section::flags`]: the plugin's declaring section (a plane's verb). */
 #define BB_MECH_SECTION_REQUIRED UINT32_C(2) /* [`Section::flags`]: a document must carry the section when the plugin is linked. */
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
+#define BB_MECH_SECTION_SELECTS UINT32_C(16) /* [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7). */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */

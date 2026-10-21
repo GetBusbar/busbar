@@ -81,7 +81,7 @@
       "columns": [
         "llm"
       ],
-      "note": "the LLM plane served through its pools door on the kernel's plane driver: the door bound through the loader's one load, composed by root/serve.rs and mounted on the data router; each cell drives a dialect's request through that router (root/tests/serve_tests.rs, modules pools_door_*, behind the driver-proofs row plane-llm links)"
+      "note": "the LLM plane over the loop on its door's served leg: the llm door bound through the loader's one load and mounted on the data router, each cell a unit served end to end by root/tests/serve_tests.rs (carried by serve.rs through #[path]); the node's own cells (root/tests/plane_node.rs) compile only under the node axis no linked row carries, so they prove nothing CI runs"
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/serve.rs",
