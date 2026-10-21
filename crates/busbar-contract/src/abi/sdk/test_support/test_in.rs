@@ -140,7 +140,7 @@ impl<I: 'static> TestIn<'_, I> {
     /// Every pointer and length pair an `I` carries, its embedded structs' included:
     /// `(pointer's offset, length's offset, length's width)`.
     fn pairs() -> Vec<(usize, usize, usize)> {
-        crate::abi::sdk::lent::lent_pairs(std::any::TypeId::of::<I>())
+        super::pairs::lent_pairs(std::any::TypeId::of::<I>())
     }
 
     /// The `width`-byte unsigned value at byte `at` of the `in`.

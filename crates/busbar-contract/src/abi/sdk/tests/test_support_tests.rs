@@ -1259,3 +1259,69 @@ fn a_door_views_slot_knows_its_own_in() {
     open.check_in::<OpenIn>();
     close.check_in::<InHead>();
 }
+
+/// Every slot `T`'s table lays out (its lifecycle's and its own) maps to an `in` type.
+fn every_slot_maps<T: crate::abi::sdk::door::KindOps>() {
+    let count = crate::abi::sdk::door::slot_count::<T>();
+    assert!(count > slot::CLOSE, "{}", core::any::type_name::<T>());
+    for index in 0..count {
+        assert!(
+            super::slot_in_type::<T>(index).is_some(),
+            "{}: slot {index} maps to no `in`",
+            core::any::type_name::<T>()
+        );
+    }
+}
+
+#[test]
+fn the_slot_table_maps_every_slot_of_every_kind_to_its_own_in() {
+    every_slot_maps::<crate::abi::store::Ops>();
+    every_slot_maps::<crate::abi::secret::Ops>();
+    every_slot_maps::<crate::abi::auth::Ops>();
+    every_slot_maps::<crate::abi::hook::Ops>();
+    every_slot_maps::<crate::abi::export::Ops>();
+    every_slot_maps::<crate::abi::plane::Ops>();
+    every_slot_maps::<crate::abi::transport::Ops>();
+    // Spot checks against the kinds' own `KindSlot` rows, one per table.
+    use crate::abi::sdk::door::KindSlot;
+    fn in_of<T: KindSlot<N>, const N: u32>() -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<T::In>())
+    }
+    use crate::abi::{auth, export, hook, plane, secret, store, transport};
+    assert_eq!(
+        super::slot_in_type::<transport::Ops>(slot::OPEN),
+        in_of::<crate::abi::sdk::door::Lifecycle, { slot::OPEN }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<plane::Ops>(slot::OPEN),
+        in_of::<plane::PlaneLifecycle, { slot::OPEN }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<transport::Ops>(transport::slot::LISTEN),
+        in_of::<transport::Ops, { transport::slot::LISTEN }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<plane::Ops>(plane::slot::ARRIVE),
+        in_of::<plane::Ops, { plane::slot::ARRIVE }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<auth::Ops>(auth::slot::VERIFY),
+        in_of::<auth::Ops, { auth::slot::VERIFY }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<secret::Ops>(secret::slot::RESOLVE),
+        in_of::<secret::Ops, { secret::slot::RESOLVE }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<hook::Ops>(hook::slot::NOTIFY),
+        in_of::<hook::Ops, { hook::slot::NOTIFY }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<export::Ops>(export::slot::SCRAPE),
+        in_of::<export::Ops, { export::slot::SCRAPE }>()
+    );
+    assert_eq!(
+        super::slot_in_type::<store::Ops>(store::slot::GET_KEY),
+        in_of::<store::Ops, { store::slot::GET_KEY }>()
+    );
+}

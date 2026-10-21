@@ -31,6 +31,9 @@ pub use crate::{export_door, plugin_door};
 pub mod capture;
 // THE SAFE SURFACE (THE DESIGN, plugins and the plugin ABI): a slot body with no `unsafe` — host-lent memory read and
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
+// `#[macro_use]`: the lists `lent.rs` states its accessors from are the test support's too (its
+// pointer and length pairs, status row 194): one list, read in both places.
+#[macro_use]
 pub mod lent;
 pub mod safe;
 pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
