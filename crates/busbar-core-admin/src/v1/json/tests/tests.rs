@@ -648,3 +648,178 @@ fn the_restart_note_keeps_the_route_sentence_and_names_a_pending_plane() {
         Some(format!("{route_only}; {plane_only}"))
     );
 }
+
+/// Whether a sibling task got the test's one worker while `served` was in flight: the sibling is
+/// spawned before `served` starts and records that it ran before `served` finished. On a
+/// `current_thread` runtime the sibling can run only when the handler's future yields the worker,
+/// so `false` means the handler held the worker for its whole run.
+async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
+    served: Fut,
+) -> (bool, Response) {
+    let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ran_during = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sibling = {
+        let finished = Arc::clone(&finished);
+        let ran_during = Arc::clone(&ran_during);
+        tokio::spawn(async move {
+            let during = !finished.load(std::sync::atomic::Ordering::SeqCst);
+            ran_during.store(during, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    let resp = served.await;
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    sibling.await.expect("the sibling task runs");
+    (ran_during.load(std::sync::atomic::Ordering::SeqCst), resp)
+}
+
+fn openapi_headers(accept_encoding: Option<&str>) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    if let Some(v) = accept_encoding {
+        headers.insert(axum::http::header::ACCEPT_ENCODING, v.parse().unwrap());
+    }
+    headers
+}
+
+/// RED (a read blocks an async worker): `GET /openapi.json` inflates the embedded ~500 KB document,
+/// parses it, walks it for the operations of planes this node does not configure and re-renders
+/// it — per request, on a node that runs a 1.5.5 config. That work runs off the async worker. RED
+/// while it ran inline in the handler: the handler never yielded, so no other task ran while it
+/// built the document.
+#[tokio::test(flavor = "current_thread")]
+async fn openapi_builds_the_served_document_off_the_async_worker() {
+    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
+    for accept in [Some("gzip"), None] {
+        let (free, resp) = worker_was_free_during(super::handlers::openapi(
+            State(Arc::clone(&handle)),
+            openapi_headers(accept),
+        ))
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            free,
+            "GET openapi.json (accept-encoding {accept:?}) built the document on the async worker"
+        );
+    }
+}
+
+/// GREEN twin: the served document is still the committed one less the operations of every plane
+/// this node does not configure — for a gzip-accepting client and an identity-only one alike, the
+/// same bytes `openapi_for_configured_planes` renders, with every unmarked admin path kept.
+#[tokio::test(flavor = "current_thread")]
+async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
+    let app = crate::new_test_app().build();
+    let configured = |section: &str| {
+        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+            .is_some_and(|decl| app.plane_configured(decl))
+    };
+    let expected = super::handlers::openapi_for_configured_planes(
+        &super::handlers::openapi_json(),
+        configured,
+    );
+    let handle = Arc::new(AppHandle::new(Arc::clone(&app)));
+    for accept in [Some("gzip"), None] {
+        let resp =
+            super::handlers::openapi(State(Arc::clone(&handle)), openapi_headers(accept)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let gzipped = resp
+            .headers()
+            .get(axum::http::header::CONTENT_ENCODING)
+            .is_some();
+        use http_body_util::BodyExt;
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        match &expected {
+            Some(filtered) => {
+                assert!(!gzipped, "a filtered document is served as JSON");
+                assert_eq!(std::str::from_utf8(&bytes).unwrap(), filtered.as_str());
+                let doc: serde_json::Value = serde_json::from_str(filtered).unwrap();
+                assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
+            }
+            None if gzipped => {
+                assert_eq!(accept, Some("gzip"));
+                assert_eq!(&bytes[..], include_bytes!("../openapi.json.gz"));
+            }
+            None => assert_eq!(
+                std::str::from_utf8(&bytes).unwrap(),
+                super::handlers::openapi_json()
+            ),
+        }
+    }
+}
+
+thread_local! {
+    /// Set on whichever thread resolved the trust policy for the inspect below.
+    static TRUST_RESOLVED_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A root trust builder that marks the thread it ran on and refuses, so the inspect stops there.
+fn trust_marking_its_thread(
+    _: &busbar_kernel::config::PluginsCfg,
+    _: &str,
+) -> Result<busbar_kernel::plugin_admission::sign::TrustPolicy, String> {
+    TRUST_RESOLVED_HERE.with(|here| here.set(true));
+    Err("the marking root refuses".into())
+}
+
+fn inspect_body(tarball: &[u8]) -> axum::body::Bytes {
+    use base64::Engine as _;
+    axum::body::Bytes::from(
+        serde_json::json!({
+            "file": "candidate.tar.gz",
+            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(tarball),
+        })
+        .to_string(),
+    )
+}
+
+/// RED (a read blocks an async worker): `POST /plugins/inspect` — reachable by the read-only
+/// credential — resolves the trust policy, then gunzips and untars a caller-supplied archive of up
+/// to the tarball cap, hashes the library and checks its signature. All of it runs off the async
+/// worker. The root's trust builder marks the thread it runs on; RED while the inspect ran inline in
+/// the handler: the mark landed on the test's own runtime thread, its one worker.
+#[tokio::test(flavor = "current_thread")]
+async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
+    let app = crate::new_test_app()
+        .plugin_trust(trust_marking_its_thread)
+        .build();
+    let handle = Arc::new(AppHandle::new(app));
+    TRUST_RESOLVED_HERE.with(|here| here.set(false));
+    let resp = super::handlers::inspect_plugin(State(handle), inspect_body(b"candidate")).await;
+    let (status, _, body) = parts(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["message"], "the marking root refuses");
+    assert!(
+        !TRUST_RESOLVED_HERE.with(std::cell::Cell::get),
+        "the plugin inspect ran on the async worker"
+    );
+}
+
+/// GREEN twin: the inspect still answers through the same envelope — a body that is not a tarball
+/// is the `invalid_request` naming the tarball, and a body that is not base64 is refused before any
+/// work is handed off.
+#[tokio::test(flavor = "current_thread")]
+async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
+    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
+    let resp = super::handlers::inspect_plugin(
+        State(Arc::clone(&handle)),
+        inspect_body(b"not a tarball at all"),
+    )
+    .await;
+    let (status, ct, body) = parts(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(ct.starts_with("application/json"), "{ct}");
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("invalid plugin tarball")),
+        "{body}"
+    );
+    let resp = super::handlers::inspect_plugin(
+        State(handle),
+        axum::body::Bytes::from(r#"{"file":"x.tar.gz","tarball_b64":"%%%"}"#),
+    )
+    .await;
+    let (status, _, body) = parts(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_request");
+}
