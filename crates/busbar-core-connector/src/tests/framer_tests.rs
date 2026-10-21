@@ -1006,3 +1006,36 @@ fn a_request_admitted_while_an_auth_call_is_parked_pairs_under_framing_id() {
         "once nothing is parked the framing crosses on its begin ticket again"
     );
 }
+
+/// RED (ROW 192 STEP C, THE ANSWER'S HEAD AND ITS STATUS IN ONE EMIT, `EmitIn::status`): an
+/// accepting framing's head emit states its status on the very crossing that hands the framer the
+/// head's bytes, a parked one included (its resume re-issues the status with the op), and every
+/// other emit states none.
+#[test]
+fn red_an_answer_heads_status_rides_its_emit_and_the_resume_of_a_parked_one() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
+    let (mut f, _) = Framing::begin_lent(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        None,
+    )
+    .unwrap();
+    let y = f.emit_head(1, b"head", false, 101).unwrap();
+    assert_eq!(y, Yielded::default(), "stream 1's head waits on its auth");
+    assert!(f.holds(1));
+    let y = f.emit_head(3, b"other", true, 204).unwrap();
+    assert_eq!(y.wire, b"other", "another stream's head goes now");
+    door.host.complete(9);
+    match f.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => assert_eq!(y.wire, b"head"),
+        other => panic!("the parked head emit completes: {other:?}"),
+    }
+    f.emit(1, b"body", true, false).unwrap();
+    assert_eq!(
+        door.inner.emitted_statuses.lock().unwrap().as_slice(),
+        &[204, 101, 0],
+        "each head's status on the crossing that carried its bytes; the body states none"
+    );
+}
