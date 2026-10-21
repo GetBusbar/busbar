@@ -265,7 +265,6 @@ mod member_tests;
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
 pub mod plane;
-pub mod plane_host;
 pub mod plugin_routes;
 /// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
 /// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
@@ -334,6 +333,18 @@ pub mod test_support;
 /// The kernel's neutral test seam: a test-support consumer that links no plane installs it.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
+// FINAL-REPIN: delete with a2a path move
+/// THE HOST SEAM'S OLD TEST PATH, kept for the door cells a pinned plane crate compiles into the
+/// root's test binary (`crates/<crate>/tests/root/mod.rs`): a plane's root cells mint their hook
+/// stage's host as `busbar_kernel::plane_host::engine_host`, and the plane's pin moves on that
+/// plane's own line, not this one. The kernel's plane hosting is deleted (status row 82); this module
+/// holds no code, only the plane driver's own `engine_host` under the name those cells spell, and
+/// only where `test_support` is (`test-support`), so no shipped build carries it.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod plane_host {
+    pub use crate::plane_driver::engine_host;
+}
 pub mod tls;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.

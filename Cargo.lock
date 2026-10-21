@@ -460,6 +460,7 @@ dependencies = [
  "hex",
  "http",
  "hyper",
+ "idna",
  "indexmap",
  "jsonschema",
  "libc",
