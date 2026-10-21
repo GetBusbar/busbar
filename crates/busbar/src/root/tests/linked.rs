@@ -367,11 +367,11 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         caller_credential_refusal: None,
     };
     let hooks = busbar_kernel::plane_driver::row::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,

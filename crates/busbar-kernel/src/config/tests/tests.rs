@@ -4148,6 +4148,7 @@ static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::n
 static PLANE_SAW_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn record_plane_section(
+    _decl: &crate::plane_driver::row::PlaneDecl,
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>, String> {
     PLANE_SAW.lock().unwrap().push(v.clone());
@@ -4177,11 +4178,11 @@ static CARD_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::ro
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &[],
-    provider_dialects: || &[],
+    wire_format_names: |_| &[],
+    provider_dialects: |_| &[],
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| None,
+    build: |_, _| None,
     routes: None,
     admin_routes: None,
     openapi: None,
@@ -4202,6 +4203,7 @@ static CARD_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::ro
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 /// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
@@ -4430,11 +4432,11 @@ const fn requiring_plane(required: &'static [&'static str]) -> crate::plane_driv
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -4455,6 +4457,7 @@ const fn requiring_plane(required: &'static [&'static str]) -> crate::plane_driv
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     }
 }
 

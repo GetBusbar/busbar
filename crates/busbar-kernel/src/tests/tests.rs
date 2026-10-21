@@ -2623,7 +2623,9 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             config_section: SECTION,
             ..crate::test_support::NEUTRAL_FALLBACK.declaration
         },
-        build: |_| Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+        build: |_, _| {
+            Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+        },
         ..crate::test_support::NEUTRAL_FALLBACK
     };
     struct Unopened;

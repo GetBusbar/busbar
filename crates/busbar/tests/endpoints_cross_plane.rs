@@ -433,11 +433,16 @@ fn with_listing_door(
     };
     let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("the listing door folds");
-    let mut t = topology();
+    // The table this generation is lent: the binary's own, and the listing door folded here.
+    let rows: Vec<&'static busbar_kernel::plane_driver::row::PlaneDecl> =
+        (linked::table().decls().iter().copied())
+            .chain([decl])
+            .collect();
+    let mut t = topology().doors(busbar_kernel::plane_driver::doors::Doors::for_test(&rows));
     t.install_plane_runtime(
         decl.key,
         Arc::new(DoorSlot {
-            section: DoorSection::new(section, serde_yaml::Value::Null),
+            section: DoorSection::new(decl.door, section, serde_yaml::Value::Null),
             facing,
             opened: true,
         }),
@@ -560,17 +565,21 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     // The table this generation is lent: the linked fallback plane and the opening door, alone.
     let doors = busbar_kernel::plane_driver::doors::Doors::for_test(&[fallback, door]);
     let section = busbar_kernel::plane_driver::door::DoorSection::new(
+        door.door,
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
     );
     let section_defs = section.as_defs();
-    let slot = (door.build)(&busbar_kernel::plane_driver::row::BuildCtx {
-        endpoint_slot: None,
-        plane_defs: &section_defs,
-        public_url: None,
-        prior: None,
-        providers: None,
-    })
+    let slot = (door.build)(
+        door,
+        &busbar_kernel::plane_driver::row::BuildCtx {
+            endpoint_slot: None,
+            plane_defs: &section_defs,
+            public_url: None,
+            prior: None,
+            providers: None,
+        },
+    )
     .expect("the configured door builds its generation's slot");
     assert!(
         busbar_kernel::plane_driver::door::opened(slot.as_ref()),

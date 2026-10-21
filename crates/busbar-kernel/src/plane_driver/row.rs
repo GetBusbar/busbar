@@ -292,15 +292,22 @@ macro_rules! plane_behaviour {
         /// THE REGISTRY ROW: a plane's contract [`PlaneDeclaration`] (read through `Deref`, so
         /// `decl.key` is the declaration's key) and its [`PlaneHooks`], flat. Built only by
         /// [`PlaneDecl::assemble`] or, in a test, by a literal naming both halves.
+        ///
+        /// A hook that reads its plane's own row is handed it (`&PlaneDecl`): a plane served through
+        /// its door carries the door it was folded from ([`Self::door`]) in the row itself, so the
+        /// row the composition root owns is everything its hooks read.
         pub struct PlaneDecl {
             /// The facts the plane states about itself — contract data.
             pub declaration: PlaneDeclaration, $($(#[$m])* pub $f: $t,)*
+            /// THE DOOR THIS ROW WAS FOLDED FROM ([`crate::plane_driver::door::fold`]), or `None`
+            /// for a plane whose hooks are its own code.
+            pub door: Option<&'static crate::plane_driver::door::DoorRow>,
         }
 
         impl PlaneDecl {
             /// JOIN a plane's contract declaration and its behaviour into the registry row.
             pub const fn assemble(declaration: PlaneDeclaration, hooks: PlaneHooks) -> PlaneDecl {
-                PlaneDecl { declaration, $($f: hooks.$f,)* }
+                PlaneDecl { declaration, $($f: hooks.$f,)* door: None }
             }
         }
     };
@@ -310,13 +317,7 @@ macro_rules! plane_behaviour {
 /// (schema name to schema body). The admin document's generator inserts them into its response
 /// generator's definitions as written; the hook names no generator type, so its shape is the same in
 /// every build and a build that generates no document simply never calls it.
-pub type OpenapiSchemasHook = fn() -> Option<serde_json::Map<String, serde_json::Value>>;
-
-/// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
-/// OpenAPI blob states ([`crate::plane_driver::door::stated_schemas`]).
-pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
-    Some(crate::plane_driver::door::stated_schemas::<I>)
-}
+pub type OpenapiSchemasHook = fn(&PlaneDecl) -> Option<serde_json::Map<String, serde_json::Value>>;
 
 impl std::ops::Deref for PlaneDecl {
     type Target = PlaneDeclaration;
@@ -334,13 +335,13 @@ plane_behaviour! {
     ///
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
-    wire_format_names: fn() -> &'static [&'static str],
+    wire_format_names: fn(&PlaneDecl) -> &'static [&'static str],
 
     /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
     /// (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: declared data). A door plane's
     /// are the dialects its tail's `dialect_auth` lines flag `DIALECT_PROVIDER`. The boot accepts a
     /// provider whose `protocol` some registered plane lists here, and its refusal lists them all.
-    provider_dialects: fn() -> &'static [&'static str],
+    provider_dialects: fn(&PlaneDecl) -> &'static [&'static str],
 
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
@@ -373,7 +374,7 @@ plane_behaviour! {
     /// fields the LLM data plane already reads directly, not one object) returns `None`
     /// unconditionally — it contributes no slot, exactly as [`Self::claims`] already returns nothing
     /// for it.
-    build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    build: fn(&PlaneDecl, &BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 
     /// THE PLANE'S DATA ROUTES, described NEUTRALLY (S4a Option A) — the one seam a plane contributes
     /// its data-plane routes through, naming no core router type. From the plane's own runtime slot
@@ -409,7 +410,8 @@ plane_behaviour! {
     /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
     /// byte-identical — the security invariant this seam preserves.
     #[allow(clippy::type_complexity)]
-    admin_routes: Option<fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>>,
+    admin_routes:
+        Option<fn(&PlaneDecl, &dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>>,
 
     /// CONTRIBUTE THE PLANE'S OpenAPI PATH FRAGMENT — a JSON object whose keys are the ABSOLUTE admin
     /// paths this plane's verbs answer on and whose values are the OpenAPI path items. Merged into the
@@ -417,7 +419,7 @@ plane_behaviour! {
     /// that contributes admin verbs ([`Self::admin_routes`] is `Some`) MUST return a non-empty object
     /// here, so the document can never silently omit a mounted verb.
     // Read by the OpenAPI generator and the non-vacuity floor test.
-    openapi: Option<fn() -> serde_json::Value>,
+    openapi: Option<fn(&PlaneDecl) -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
     /// `busbar_kernel::boot::hydrate_all`. Handed a [`PlaneBootCtx`] whose store surface is `PlaneStore`
@@ -455,7 +457,8 @@ plane_behaviour! {
     // to call it, so the field is genuinely unread there rather than dead.
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    config_validate: Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
+    config_validate:
+        Option<fn(&PlaneDecl, name: &str, def: &serde_json::Value) -> Result<(), String>>,
 
     /// PROJECT THIS PLANE'S NAMED-DEFINITION REGISTRATIONS onto the shared read view — the plane half
     /// of the generic `GET /api/v1/admin/<section>` list, so `admin::v1::service` reads a plane's
@@ -471,7 +474,7 @@ plane_behaviour! {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     named_def_list:
-        Option<fn(&dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
+        Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
 
     /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
     /// twin of [`Self::named_def_list`], the plane half of `GET /api/v1/admin/<section>/{name}`.
@@ -481,21 +484,21 @@ plane_behaviour! {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     named_def_get:
-        Option<fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
+        Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
 
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
     /// check the admin write path consults so it names no plane registry type. `None` for a plane with
     /// no named-definition map.
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    registry_contains: Option<fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool>,
+    registry_contains: Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
     /// its own gate field back, so `admin::v1::service::reresolve_plane_gates` names no plane registry
     /// type. `None` for a plane with no per-registration hook gates (the LLM plane).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    reresolve_gates: Option<fn(&mut dyn crate::plane_driver::slots::ContainerGateSink)>,
+    reresolve_gates: Option<fn(&PlaneDecl, &mut dyn crate::plane_driver::slots::ContainerGateSink)>,
 
     /// STATE THIS PLANE'S ADMIN COMPONENT SCHEMAS for the OpenAPI document — the plane half of the
     /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`, which inserts the returned
@@ -531,7 +534,7 @@ plane_behaviour! {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_section:
-        Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
+        Option<fn(&PlaneDecl, &serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
     /// `serde_yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
@@ -540,7 +543,7 @@ plane_behaviour! {
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_endpoint: Option<
-        fn(&serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
+        fn(&PlaneDecl, &serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
     >,
 
     /// LOWER THIS PLANE'S ENDPOINT block into its validated runtime resource, type-erased as
@@ -551,6 +554,7 @@ plane_behaviour! {
     #[allow(clippy::type_complexity)]
     lower_endpoint: Option<
         fn(
+            &PlaneDecl,
             &dyn crate::config::plane_sections::PlaneEndpointCfg,
         ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
     >,
@@ -597,7 +601,7 @@ plane_behaviour! {
     /// `ToolsCfg::default()`) rather than a re-parse of an empty document. `None` for a plane with no
     /// registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    default_section: Option<fn() -> Box<dyn crate::config::plane_sections::PlaneCfg>>,
+    default_section: Option<fn(&PlaneDecl) -> Box<dyn crate::config::plane_sections::PlaneCfg>>,
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,

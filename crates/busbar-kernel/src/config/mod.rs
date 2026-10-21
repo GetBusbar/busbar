@@ -2228,8 +2228,9 @@ pub fn resolve(
                 .decls()
                 .iter()
                 .find(|d| d.config_section == section)
-                .and_then(|d| d.parse_section)?;
-            parse(value)
+                .and_then(|d| d.parse_section.map(|parse| (d, parse)))?;
+            let (d, parse) = parse;
+            parse(d, value)
                 .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
                 .ok()
                 .map(|cfg| (section, cfg))
@@ -2402,14 +2403,14 @@ pub fn resolve(
     // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let lower = (deploy.doors.plane_decl_for_config_section(endpoint_section))
-        .and_then(|d| d.lower_endpoint);
+        .and_then(|d| d.lower_endpoint.map(|lower| (d, lower)));
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
         plane_sections.insert(endpoint_section);
     }
     let lowered_endpoint = endpoint_block
         .zip(lower)
-        .and_then(|(ep, lower)| lower(&**ep).map_err(|e| errors.push(e)).ok());
+        .and_then(|(ep, (d, lower))| lower(d, &**ep).map_err(|e| errors.push(e)).ok());
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring

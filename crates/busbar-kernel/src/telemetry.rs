@@ -502,7 +502,7 @@ fn declared_dialects(
 ) -> &'static [&'static str] {
     doors
         .plane_decl_for(plane)
-        .map_or(&[], |d| (d.wire_format_names)())
+        .map_or(&[], |d| (d.wire_format_names)(d))
 }
 
 #[cfg(test)]

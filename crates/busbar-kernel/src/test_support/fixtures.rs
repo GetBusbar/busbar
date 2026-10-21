@@ -141,12 +141,12 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::row::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
+        wire_format_names: |_| &[],
         // The synthetic provider dialects a test lane names, so the boot accepts one.
-        provider_dialects: || NEUTRAL_DIALECTS,
+        provider_dialects: |_| NEUTRAL_DIALECTS,
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -167,6 +167,7 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::row::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// THE NEUTRAL TEST TABLE: the one neutral fallback plane, as a lent door table. A test that needs

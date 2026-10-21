@@ -3921,7 +3921,7 @@ pub(crate) fn openapi_doc(doors: busbar_kernel::plane_driver::doors::Doors) -> s
     // pass, which looks each path up by the key inserted here.
     for decl in doors.decls() {
         if let Some(openapi) = decl.openapi {
-            if let Some(obj) = openapi().as_object() {
+            if let Some(obj) = openapi(decl).as_object() {
                 for (path, item) in obj {
                     paths.insert(path.clone(), item.clone());
                 }
@@ -4671,7 +4671,7 @@ pub(crate) fn openapi_doc(doors: busbar_kernel::plane_driver::doors::Doors) -> s
     // `#/components/schemas` exactly as before, and this document is byte-identical while this
     // function names no plane-specific view type. Folded in the lent door table's order.
     for decl in doors.decls() {
-        if let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated()) {
+        if let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated(decl)) {
             gen.definitions_mut().extend(schemas);
         }
     }

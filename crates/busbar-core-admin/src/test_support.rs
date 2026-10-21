@@ -42,7 +42,7 @@ pub fn plane_component_schemas(
 ) -> Vec<(&'static str, String, serde_json::Value)> {
     let mut out = Vec::new();
     for decl in doors.decls() {
-        let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated()) else {
+        let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated(decl)) else {
             continue;
         };
         for (name, schema) in schemas {

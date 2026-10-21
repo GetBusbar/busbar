@@ -6420,12 +6420,12 @@ static CLASS_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::r
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &[],
+    wire_format_names: |_| &[],
     // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-    provider_dialects: || crate::test_support::NEUTRAL_DIALECTS,
+    provider_dialects: |_| crate::test_support::NEUTRAL_DIALECTS,
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| None,
+    build: |_, _| None,
     routes: None,
     admin_routes: None,
     openapi: None,
@@ -6446,6 +6446,7 @@ static CLASS_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::r
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 /// One declared billable class in `family`.

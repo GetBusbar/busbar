@@ -1333,7 +1333,7 @@ fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
 fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
     for decl in next.doors.decls() {
         if let Some(reresolve) = decl.reresolve_gates {
-            reresolve(next);
+            reresolve(decl, next);
         }
     }
 }
@@ -1347,9 +1347,12 @@ fn plane_named_def_list(
 ) -> Vec<NamedDefView> {
     app.doors
         .plane_decl_for_config_section(section.key())
-        .and_then(|d| d.named_def_list)
-        .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
+        .and_then(|d| d.named_def_list.map(|f| (d, f)))
+        .map_or_else(Vec::new, |(d, f)| {
+            f(
+                d,
+                app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
+            )
         })
 }
 
@@ -1362,9 +1365,10 @@ fn plane_named_def_get(
 ) -> Option<NamedDefView> {
     app.doors
         .plane_decl_for_config_section(section.key())
-        .and_then(|d| d.named_def_get)
-        .and_then(|f| {
+        .and_then(|d| d.named_def_get.map(|f| (d, f)))
+        .and_then(|(d, f)| {
             f(
+                d,
                 app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
                 name,
             )

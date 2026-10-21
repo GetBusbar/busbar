@@ -323,7 +323,7 @@ fn mount_plane_admin_routes(
 ) -> Router<Arc<AppHandle>> {
     for decl in doors.decls() {
         if let Some(admin_routes) = decl.admin_routes {
-            for spec in admin_routes(&() as &dyn std::any::Any) {
+            for spec in admin_routes(decl, &() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl, spec);
             }
         }

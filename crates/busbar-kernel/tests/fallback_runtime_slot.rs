@@ -63,11 +63,11 @@ static SIBLING: PlaneDecl = PlaneDecl {
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &["slotsibling"],
-    provider_dialects: || &[],
+    wire_format_names: |_| &["slotsibling"],
+    provider_dialects: |_| &[],
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| None,
+    build: |_, _| None,
     routes: None,
     admin_routes: None,
     openapi: None,
@@ -88,6 +88,7 @@ static SIBLING: PlaneDecl = PlaneDecl {
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 /// The plane that declares itself the fallback; App composition builds its runtime through its
@@ -113,11 +114,11 @@ static FALLBACK: PlaneDecl = PlaneDecl {
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &["slotfallback"],
-    provider_dialects: || &[],
+    wire_format_names: |_| &["slotfallback"],
+    provider_dialects: |_| &[],
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| None,
+    build: |_, _| None,
     routes: None,
     admin_routes: None,
     openapi: None,
@@ -138,6 +139,7 @@ static FALLBACK: PlaneDecl = PlaneDecl {
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 /// An App lent `doors`, with the sibling's own runtime installed in its slot.

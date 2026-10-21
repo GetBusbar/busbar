@@ -733,8 +733,8 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         NamedMapSection::Plane(_) => app
             .doors
             .plane_decl_for_config_section(section.key())
-            .and_then(|d| d.registry_contains)
-            .is_some_and(|f| f(app, name)),
+            .and_then(|d| d.registry_contains.map(|f| (d, f)))
+            .is_some_and(|(d, f)| f(d, app, name)),
     }
 }
 

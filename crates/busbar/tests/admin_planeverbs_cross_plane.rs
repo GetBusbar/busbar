@@ -60,7 +60,7 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
         };
         // The specs' paths/methods are static; the `&dyn Any` slot is unread by the admin verbs (they
         // read the request's own snapshot at call time), so a unit placeholder drives the enumeration.
-        for spec in admin_routes(&() as &dyn std::any::Any) {
+        for spec in admin_routes(decl, &() as &dyn std::any::Any) {
             let abs = format!("{}{}", busbar_kernel::api::ADMIN_PREFIX, spec.path);
             let method = match spec.method {
                 RouteMethod::Get => axum::http::Method::GET,

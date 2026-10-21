@@ -218,7 +218,8 @@ impl Doors {
     /// another plane's dialect spelling end up in one series meaning two things.
     #[must_use]
     pub fn wire_format_names(self, key: &str) -> &'static [&'static str] {
-        (self.plane_decl(key).wire_format_names)()
+        let decl = self.plane_decl(key);
+        (decl.wire_format_names)(decl)
     }
 
     /// EVERY DIALECT A PROVIDER'S `protocol` MAY NAME: each registered plane's declared provider
@@ -229,7 +230,7 @@ impl Doors {
     pub fn provider_dialects(self) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
         for d in self.rows {
-            for name in (d.provider_dialects)() {
+            for name in (d.provider_dialects)(d) {
                 if !out.contains(name) {
                     out.push(name);
                 }
@@ -491,11 +492,11 @@ const fn neutral_sibling_decl(
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -516,6 +517,7 @@ const fn neutral_sibling_decl(
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     }
 }
 
