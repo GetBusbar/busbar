@@ -250,14 +250,16 @@ pub struct Connection {
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
-/// stream's message, whether it is a text message, and, on a dialled request's head, the length
-/// of the body it opens with where it is known.
+/// stream's message, whether it is a text message, on a dialled request's head the length of the
+/// body it opens with where it is known, and on an accepted stream's answer head the answer's
+/// status (`0` = none).
 struct Early {
     stream: u64,
     bytes: Vec<u8>,
     end: bool,
     text: bool,
     body_len: Option<u64>,
+    status: u32,
 }
 
 impl Early {
@@ -268,6 +270,7 @@ impl Early {
             end,
             text,
             body_len: None,
+            status: 0,
         }
     }
 }
@@ -1170,22 +1173,31 @@ impl Connection {
         text: bool,
         body_len: Option<u64>,
     ) -> Result<(), Failure> {
+        self.put_early_one(Early {
+            body_len,
+            ..Early::of(stream, bytes, end, text)
+        })
+    }
+
+    /// Hand one write to the wire, or hold it back behind its stream's.
+    fn put_early_one(&mut self, e: Early) -> Result<(), Failure> {
+        let (stream, end, text, body_len, status) = (e.stream, e.end, e.text, e.body_len, e.status);
         // A PENDING ANSWER PARKS ONLY ITS OWN STREAM: a write on a stream an op parked on its
         // ticket holds (or one whose earlier writes still wait) waits, in order, for that op to
         // complete; every other stream's write goes now.
         if let Some(framing) = self.framing.as_ref() {
             if framing.holds(stream) || self.early.iter().any(|e| e.stream == stream) {
-                self.early.push(Early {
-                    body_len,
-                    ..Early::of(stream, bytes, end, text)
-                });
+                self.early.push(e);
                 return Ok(());
             }
         }
         if let Some(framing) = self.framing.as_mut() {
-            let y = framing
-                .emit_opening(stream, bytes, end, text, body_len)
-                .map_err(failed)?;
+            let y = if status == 0 {
+                framing.emit_opening(stream, &e.bytes, end, text, body_len)
+            } else {
+                framing.emit_head(stream, &e.bytes, end, status)
+            }
+            .map_err(failed)?;
             return self.absorb(y);
         }
         if self.door.is_some() {
@@ -1193,10 +1205,10 @@ impl Connection {
         }
         match self.tls.as_mut() {
             Some(tls) => {
-                tls.writer().write_all(bytes).map_err(failed)?;
+                tls.writer().write_all(&e.bytes).map_err(failed)?;
                 self.tls_out()?;
             }
-            None => self.queue(bytes, end),
+            None => self.queue(&e.bytes, end),
         }
         Ok(())
     }
@@ -1498,6 +1510,155 @@ impl Connection {
         Ok(take)
     }
 
+    /// THE ANSWER'S HEAD AND ITS STATUS IN ONE EMIT (INBOUND-LISTEN; `BUSBAR-1.6.0.md` l.5038,
+    /// [`EmitIn::status`](busbar_contract::abi::transport::EmitIn::status), a tail field: no ABI
+    /// change): `fields` is the head as the entry's `encode` rendered it, `status` the answer's
+    /// status in the numbering of the claim `stream` arrived on, `end` = the answer ends with its
+    /// head. The head goes whole (it is never cut at the write buffer's room, so its status rides
+    /// the emit that carries all of it), now if the framing has begun, else once it does, and
+    /// behind any write its stream still holds back.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] on a dialled connection or one with no framer (no answer head is its
+    /// to state), or a status of `0`; the connection is closed or failed, or the framer refused
+    /// the head.
+    pub fn emit_head(
+        &mut self,
+        stream: u64,
+        status: u32,
+        fields: &[u8],
+        end: bool,
+        cx: &mut Context<'_>,
+    ) -> Result<(), Failure> {
+        if self.side != SIDE_ACCEPT || self.door.is_none() {
+            return Err(Failure::Refused(
+                "an answer head is stated on an accepted, framed connection only".into(),
+            ));
+        }
+        if status == 0 {
+            return Err(Failure::Refused("an answer head states its status".into()));
+        }
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
+            _ => {}
+        }
+        let head = Early {
+            status,
+            ..Early::of(stream, fields, end, false)
+        };
+        match self.phase {
+            Phase::Open | Phase::Ended => self.put_early_one(head)?,
+            _ => self.early.push(head),
+        }
+        if let Err(f) = self.drive(cx) {
+            self.fail(f.clone());
+            return Err(f);
+        }
+        Ok(())
+    }
+
+    /// REFUSE ONE STREAM of this connection: the framer's `refuse` ([`Framing::refuse`]) renders
+    /// `bytes` as the refusal on its wire, with its neutral `status` (`0` = none stated);
+    /// `head_sent` = the stream's answer head already went, so the refusal is its closing lines
+    /// only. What it renders is queued for the far end; the connection's next poll writes it.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] on a connection with no framer; the connection is closed or failed, an
+    /// op parked on the stream holds it, or the framer refused to render the refusal.
+    pub fn refuse_stream(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        status: u32,
+        head_sent: bool,
+    ) -> Result<(), Failure> {
+        if self.door.is_none() {
+            return Err(Failure::Refused(
+                "a carrier carried as itself has no framer to refuse a stream".into(),
+            ));
+        }
+        if let Phase::Failed(f) = &self.phase {
+            return Err(f.clone());
+        }
+        let Some(framing) = self.framing.as_mut() else {
+            return Err(Failure::Closed);
+        };
+        let y = framing
+            .refuse(Some(stream), bytes, status, head_sent)
+            .map_err(failed)?;
+        self.absorb(y)
+    }
+
+    /// SWITCH THE CONNECTION TO ANOTHER FRAMER (an upgrade answered on `stream`): the framing it
+    /// has DETACHES ([`Framing::detach`]), handing back the bytes it took and did not answer (the
+    /// upgrade request itself, unanswered, and whatever followed it), and `door` ADOPTS the
+    /// connection on the accepting side ([`Framing::adopt`], `SIDE_ACCEPT`) with those bytes
+    /// first; the adopting framer writes its own answer to the upgrade. Pieces the old framing
+    /// handed up on `stream` and not yet taken are dropped: their bytes ride the hand-over. The
+    /// adopting framing carries the connection's security and facts on, under `door`'s claim.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`]: the connection is dialled, has no framing, holds writes back or an
+    /// op parked, or holds an untaken piece of another stream; the old framer would not let the
+    /// connection go, or `door` would not adopt it (the connection fails with it).
+    pub fn switch(&mut self, stream: u64, door: Arc<dyn FramerDoor>) -> Result<(), Failure> {
+        if let Phase::Failed(f) = &self.phase {
+            return Err(f.clone());
+        }
+        if self.side != SIDE_ACCEPT {
+            return Err(Failure::Refused(
+                "a switch is the answer to an accepted connection's upgrade".into(),
+            ));
+        }
+        if self.framing.is_none() || !matches!(self.phase, Phase::Open | Phase::Ended) {
+            return Err(Failure::Refused(
+                "a switch needs the framing the connection has begun".into(),
+            ));
+        }
+        if self.parked() || !self.early.is_empty() || !self.unfed.is_empty() {
+            return Err(Failure::Refused(
+                "a switch waits for the writes and ops the framing still holds".into(),
+            ));
+        }
+        if self.inbox.iter().any(|p| p.stream != stream) {
+            return Err(Failure::Refused(
+                "a switch would drop another stream's untaken piece".into(),
+            ));
+        }
+        let Some(old) = self.framing.take() else {
+            return Err(Failure::Closed);
+        };
+        let leftover = match old.detach() {
+            Ok(left) => left,
+            Err(e) => {
+                let f = Failure::Refused(e.to_string());
+                self.fail(f.clone());
+                return Err(f);
+            }
+        };
+        self.inbox.clear();
+        self.framer_deadline = None;
+        self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
+        let (framing, y) =
+            match Framing::adopt(Arc::clone(&door), SIDE_ACCEPT, &leftover, &self.established) {
+                Ok(adopted) => adopted,
+                Err(e) => {
+                    self.framer_error = Some(e.error.clone());
+                    let f = Failure::Refused(e.to_string());
+                    self.fail(f.clone());
+                    return Err(f);
+                }
+            };
+        self.door = Some(door);
+        self.framing = Some(framing);
+        self.phase = Phase::Open;
+        self.absorb(y)
+    }
+
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
     /// moved; `Ok(false)` = nothing can until a waker fires.
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
@@ -1768,7 +1929,7 @@ impl Connection {
     /// again, and so does every later write on that stream.
     fn put_early(&mut self) -> Result<(), Failure> {
         for e in std::mem::take(&mut self.early) {
-            self.put_opening(e.stream, &e.bytes, e.end, e.text, e.body_len)?;
+            self.put_early_one(e)?;
         }
         Ok(())
     }

@@ -758,6 +758,9 @@ enum Ticketed<'a> {
         text: bool,
         /// The opening body's length on a dialled request's head emit: `Some` = known.
         body_len: Option<u64>,
+        /// THE ANSWER'S STATUS on an accepted stream's head emit ([`EmitIn::status`]); `0` on
+        /// every other emit. Kept when the op parks, so its resume states it again.
+        status: u32,
     },
 }
 
@@ -790,6 +793,7 @@ impl Ticketed<'_> {
                 end_of_frame,
                 text,
                 body_len,
+                status,
                 ..
             } => Ticketed::Emit {
                 stream,
@@ -797,6 +801,7 @@ impl Ticketed<'_> {
                 end_of_frame,
                 text,
                 body_len,
+                status,
             },
         }
     }
@@ -1588,6 +1593,7 @@ impl Framing {
                 end_of_frame,
                 text,
                 body_len,
+                status,
             } => {
                 let mut i: EmitIn = blank_in();
                 i.framing = self.token;
@@ -1604,6 +1610,9 @@ impl Framing {
                     i.body_len = len;
                     i.body_len_known = 1;
                 }
+                // The answer's status rides every crossing of its head's emit (a re-call and a
+                // parked op's resume are that same emit), as the opening body's length does.
+                i.status = *status;
                 i.sink = sink;
                 cross(Call::Emit(&mut i, &mut o))
             }
@@ -1836,6 +1845,38 @@ impl Framing {
         text: bool,
         body_len: Option<u64>,
     ) -> Result<Yielded, Refused> {
+        self.emit_op(stream, bytes, end_of_frame, text, body_len, 0)
+    }
+
+    /// `emit` of an ACCEPTED stream's ANSWER HEAD (`bytes`, as `encode` rendered it) with the
+    /// answer's `status` on the same emit ([`EmitIn::status`], `BUSBAR-1.6.0.md` l.4913): the
+    /// numbering is the claim's the stream arrived on, and a status that switches protocols hands
+    /// the connection to the claimed upgrade framer. Parked, it states the status again on its
+    /// resume.
+    ///
+    /// # Errors
+    ///
+    /// The framer refused them; `stream` is held.
+    pub fn emit_head(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        status: u32,
+    ) -> Result<Yielded, Refused> {
+        self.emit_op(stream, bytes, end_of_frame, false, None, status)
+    }
+
+    /// The one `emit` op every emit is.
+    fn emit_op(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        body_len: Option<u64>,
+        status: u32,
+    ) -> Result<Yielded, Refused> {
         self.idle(Some(stream))?;
         let op = Ticketed::Emit {
             stream,
@@ -1843,6 +1884,7 @@ impl Framing {
             end_of_frame,
             text,
             body_len,
+            status,
         };
         let ticket = self.take_ticket()?;
         Ok(self

@@ -576,7 +576,11 @@ fn red_an_accepted_connection_answers_a_head_with_its_status_and_refuses_a_strea
         conn.refuse_stream(p.stream, b"no", 403, true)
             .expect("the framer renders the refusal");
         tokio::spawn(async move { while let Ok(Some(_)) = next(&mut conn).await {} });
-        assert_eq!(&client.await.unwrap(), b"HEADbodyno", "every byte, in order");
+        assert_eq!(
+            &client.await.unwrap(),
+            b"HEADbodyno",
+            "every byte, in order"
+        );
         assert_eq!(
             door.emitted_statuses.lock().unwrap().as_slice(),
             &[200, 0],
@@ -625,7 +629,11 @@ fn red_a_switched_connection_hands_the_adopting_framer_the_upgrade_request_and_w
         }
         let adopting: Arc<dyn FramerDoor> = next_framer.clone();
         conn.switch(0, adopting).expect("switched");
-        assert_eq!(http.count("detach"), 1, "the framing it had let the connection go");
+        assert_eq!(
+            http.count("detach"),
+            1,
+            "the framing it had let the connection go"
+        );
         assert_eq!(
             next_framer.adopted.lock().unwrap().as_slice(),
             &[[REQUEST, TRAILING].concat()],
@@ -644,8 +652,15 @@ fn red_a_switched_connection_hands_the_adopting_framer_the_upgrade_request_and_w
         tokio::spawn(async move { while let Ok(Some(_)) = next(&mut conn).await {} });
         let (answer, echoed) = client.await.unwrap();
         assert_eq!(&answer, b"101 switched", "the adopting framer's own answer");
-        assert_eq!(&echoed, b"after", "what followed is the adopting framer's to frame");
-        assert_eq!(http.count("emit"), 0, "nothing was written through the old framing");
+        assert_eq!(
+            &echoed, b"after",
+            "what followed is the adopting framer's to frame"
+        );
+        assert_eq!(
+            http.count("emit"),
+            0,
+            "nothing was written through the old framing"
+        );
         assert!(next_framer.count("emit") >= 2);
     });
 }
@@ -728,7 +743,11 @@ fn red_a_secured_listeners_socket_is_placed_before_tls_and_secured_where_it_land
             .expect("admitted");
         assert_eq!(peer.ip(), addr.ip());
         assert_eq!(l.live(), 1, "the slot is held across the placement");
-        assert_eq!(door.count("begin"), 0, "nothing is secured or framed before placement");
+        assert_eq!(
+            door.count("begin"),
+            0,
+            "nothing is secured or framed before placement"
+        );
         let bare = carried.hand_up().expect("the bare, pre-TLS socket");
         let via = crate::support::via();
         let placed = std::thread::spawn(move || {
@@ -739,9 +758,15 @@ fn red_a_secured_listeners_socket_is_placed_before_tls_and_secured_where_it_land
                     .compose(carried, peer, Some(slot))
                     .expect("composed where it landed")
                     .conn;
-                assert!(!conn.is_open(), "the handshake runs where the socket landed");
+                assert!(
+                    !conn.is_open(),
+                    "the handshake runs where the socket landed"
+                );
                 while let Ok(Some(p)) = next(&mut conn).await {
-                    if conn.emit(p.stream, &p.bytes, false, false, &mut noop()).is_err() {
+                    if conn
+                        .emit(p.stream, &p.bytes, false, false, &mut noop())
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -750,9 +775,17 @@ fn red_a_secured_listeners_socket_is_placed_before_tls_and_secured_where_it_land
         });
         client.await.unwrap();
         let agreed = placed.join().expect("the placed worker served it");
-        assert_eq!(agreed.as_deref(), Some(&b"x-framer"[..]), "the framer's offer");
+        assert_eq!(
+            agreed.as_deref(),
+            Some(&b"x-framer"[..]),
+            "the framer's offer"
+        );
         assert_eq!(door.count("begin"), 1, "framed once, after the handshake");
-        assert_eq!(l.live(), 0, "the slot frees with the connection, wherever it ran");
+        assert_eq!(
+            l.live(),
+            0,
+            "the slot frees with the connection, wherever it ran"
+        );
     });
 }
 
