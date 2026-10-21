@@ -191,6 +191,8 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **A configuration apply's limits go live with it.** A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits. 1.5.5 put them in force before
+  validating them, for the length of the build.
 - **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
   it.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
@@ -255,14 +257,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `--providers <path>` names the provider catalog (flag > `providers_file:` > `providers.yaml`
   beside the config); both are additive. `--version` adds a `build: profile=… target=…`
   provenance line under the version.
-- **Bedrock `usage.totalTokens` counts the cache tokens AWS counts.** Converse reports
-  `inputTokens` as the non-cached input only and states the full input as
-  `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`; 1.5.5 derived
-  `totalTokens = inputTokens + outputTokens` while emitting the two cache counts beside it, so on a
-  cache-bearing response the published parts summed past the published total and a consumer reading
-  `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
-  frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
-  activity. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).

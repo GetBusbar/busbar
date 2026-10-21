@@ -413,7 +413,7 @@ impl HookBinder for BoundHooks {
 /// (THE DESIGN section 1: every plane gets every capability, its section's hooks included).
 pub struct HostHooks {
     /// The generation's engine host.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// What the hooks may know of a verified caller.
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.
