@@ -324,6 +324,23 @@ fn an_empty_append_drops_the_chain_whole() {
     );
 }
 
+/// A DROPPED CHAIN SCANS EMPTY IN THE STORE (ARCHITECT 2026-10-21, slot 40: an empty `record_put`
+/// removes the row): the drop's strikes remove its rows, so a raw scan of the kind finds none of
+/// them, not one empty row per record the chain ever held.
+#[test]
+fn a_dropped_chain_scans_empty_in_the_store() {
+    let (s, store) = rig();
+    append(&s, b"t1", b"|1|a").unwrap();
+    append(&s, b"t1", b"|2|b").unwrap();
+    assert_eq!(store.record_scan(EV, b"", u32::MAX).unwrap().len(), 2);
+    append(&s, b"t1", b"").unwrap();
+    assert_eq!(
+        store.record_scan(EV, b"", u32::MAX).unwrap(),
+        Vec::new(),
+        "the dropped chain's rows are gone from the store"
+    );
+}
+
 /// A chained kind refuses what it cannot hold: a key that is no scope, bytes too large to keep with
 /// their chain fields, and a single-record read (a chain is read whole).
 #[test]
