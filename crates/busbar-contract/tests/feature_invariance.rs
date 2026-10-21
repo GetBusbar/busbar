@@ -22,16 +22,18 @@
 //!    `caps` (each asserts it in its own purity test) and may not take a dev edge onto the kernel
 //!    (`kind-isolation:test-deps` refuses a plane/transport -> kernel edge as not-allowed), so its
 //!    harness has no other legal way to present a seal. `plugin::TestKernelSeal` and its two impls
-//!    in `caps/token.rs` are that seal, and `KernelSeal::acquire_for_kernel` is the tests' minter
+//!    in `caps/token.rs` are that seal (also compiled for this crate's own `cfg(test)`, where the
+//!    `Secret<T>` cell presents it), and `KernelSeal::acquire_for_kernel` is the tests' minter
 //!    of the concrete seal (#65: a release build's only seal is the kernel's own). The hazard this
 //!    file exists for — a plugin and the kernel disagreeing at the call — needs the item to exist in a shipped build, and it does not:
 //!    `tests/test_seal_is_dev_only.rs` fails if any non-dev dependency edge anywhere in the
 //!    workspace enables the feature, which is the guard this exemption rests on.
 //!
 //! The exemption is as narrow as it can be written. The feature must be named exactly `test-seal`
-//! and be EMPTY (`[]`: it may switch on no dependency and no other feature). Its conditional items
-//! must be spelled `#[cfg(feature = "test-seal")]` exactly — no `any(...)`/`all(...)` composition —
-//! and the item under each one must be one of [`TEST_SEAL_ITEMS`], in the file that list names.
+//! and be EMPTY (`[]`: it may switch on no dependency and no other feature). The minter must be
+//! spelled `#[cfg(feature = "test-seal")]` exactly ([`TEST_SEAL_ITEMS`]); the seal type and its two
+//! impls exactly `#[cfg(any(test, feature = "test-seal"))]` ([`TEST_SEAL_TYPE_ITEMS`]) — no other
+//! composition — each in the file its list names.
 //! Any other feature, any non-empty `test-seal`, and any other item behind `test-seal` stays RED;
 //! the `*_red_*` tests below plant each of those and require the finding.
 //!
@@ -61,8 +63,28 @@ const NEUTRAL_TRANSPORT_FEATURES: [&str; 2] = ["dispatch", "runtime"];
 /// (`tests/test_seal_is_dev_only.rs`).
 const TEST_SEAL_FEATURE: &str = "test-seal";
 
-/// The one attribute spelling the `test-seal` exemption accepts.
+/// The one attribute spelling the `test-seal` exemption accepts for the minter.
 const TEST_SEAL_CFG: &str = "#[cfg(feature = \"test-seal\")]";
+
+/// The one attribute the test seal TYPE and its two sealed-trait impls carry: this crate's own unit
+/// tests (the `Secret<T>` cell presents the seal; `cargo test -p busbar-contract` turns no feature on,
+/// so a feature-only type is absent there and the cell does not compile) or the dev-only feature.
+/// `cfg(test)` never reaches a shipped build, so this is no wider than [`TEST_SEAL_CFG`] in a release.
+const TEST_SEAL_TYPE_CFG: &str = "#[cfg(any(test, feature = \"test-seal\"))]";
+
+/// The items [`TEST_SEAL_TYPE_CFG`] gates: the type and its two sealed-trait impls. The minter
+/// `acquire_for_kernel` is NOT among them: it stays behind [`TEST_SEAL_CFG`] alone.
+const TEST_SEAL_TYPE_ITEMS: [(&str, &str); 3] = [
+    ("plugin.rs", "pub struct TestKernelSeal;"),
+    (
+        "caps/token.rs",
+        "impl crate::plugin::sealed::KernelSealed for crate::plugin::TestKernelSeal {}",
+    ),
+    (
+        "caps/token.rs",
+        "impl crate::plugin::KernelSeal for crate::plugin::TestKernelSeal {",
+    ),
+];
 
 /// The one attribute the test kit's module declaration may carry: the crate's own tests, or the
 /// dev-only seal feature. Nothing else may be spelled this way.
@@ -81,22 +103,11 @@ const SERVICES_DOUBLE_CFG: &str = "#[cfg(any(test, feature = \"services-double\"
 /// The one item [`SERVICES_DOUBLE_CFG`] may gate: `(file under src/, the item's first line)`.
 const SERVICES_DOUBLE_ITEM: (&str, &str) = ("services.rs", "pub mod double;");
 
-/// Every item `test-seal` may gate: `(file under src/, the item's first line)`. The type and its two
-/// sealed-trait impls, and the tests' seal `KernelSeal::acquire_for_kernel` (#65, ARCHITECT ruling
-/// 2026-10-14: the release seal reaches the kernel through its own symbol, so the minter is
-/// dev-only), and nothing else.
-const TEST_SEAL_ITEMS: [(&str, &str); 4] = [
-    ("plugin.rs", "pub struct TestKernelSeal;"),
-    (
-        "caps/token.rs",
-        "impl crate::plugin::sealed::KernelSealed for crate::plugin::TestKernelSeal {}",
-    ),
-    (
-        "caps/token.rs",
-        "impl crate::plugin::KernelSeal for crate::plugin::TestKernelSeal {",
-    ),
-    ("caps/token.rs", "pub fn acquire_for_kernel() -> Self {"),
-];
+/// Every item `test-seal` alone may gate: `(file under src/, the item's first line)`. The tests'
+/// seal minter `KernelSeal::acquire_for_kernel` (#65, ARCHITECT ruling 2026-10-14: the release seal
+/// reaches the kernel through its own symbol, so the minter is dev-only), and nothing else.
+const TEST_SEAL_ITEMS: [(&str, &str); 1] =
+    [("caps/token.rs", "pub fn acquire_for_kernel() -> Self {")];
 
 /// Every finding against the manifest's `[features]` table and optional dependencies.
 fn feature_findings(manifest: &str) -> Vec<String> {
@@ -180,6 +191,20 @@ fn cfg_findings(files: &[(String, String)]) -> Vec<String> {
                     continue;
                 }
             }
+            // The test seal type and its two impls: this exact attribute, over one of those items.
+            if line.trim_end() == TEST_SEAL_TYPE_CFG {
+                let item = lines[n + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("#["))
+                    .unwrap_or_default();
+                if TEST_SEAL_TYPE_ITEMS
+                    .iter()
+                    .any(|(file, first)| rel == file && item == *first)
+                {
+                    continue;
+                }
+            }
             // The shared host-services double: this exact attribute, over that one item, in
             // services.rs.
             if line.trim_end() == SERVICES_DOUBLE_CFG {
@@ -226,7 +251,8 @@ fn the_crate_declares_no_features() {
 
 /// No item on the PLUGIN-VISIBLE surface is behind a conditional-compilation attribute. The only
 /// conditionals allowed are the two neutral transport-axis capability gates, test-only `cfg(test)`,
-/// and `test-seal` over exactly [`TEST_SEAL_ITEMS`] (see the module header).
+/// and `test-seal` over exactly [`TEST_SEAL_ITEMS`] and [`TEST_SEAL_TYPE_ITEMS`] (see the module
+/// header).
 #[test]
 fn no_item_is_conditionally_compiled() {
     let offenders = cfg_findings(&src_files());
@@ -242,7 +268,15 @@ fn no_item_is_conditionally_compiled() {
 #[test]
 fn every_test_seal_item_is_present_behind_its_attribute() {
     let files = src_files();
-    for (file, first) in TEST_SEAL_ITEMS {
+    let gated = TEST_SEAL_ITEMS
+        .iter()
+        .map(|item| (item, TEST_SEAL_CFG))
+        .chain(
+            TEST_SEAL_TYPE_ITEMS
+                .iter()
+                .map(|item| (item, TEST_SEAL_TYPE_CFG)),
+        );
+    for ((file, first), cfg) in gated {
         let (_, text) = files
             .iter()
             .find(|(rel, _)| rel == file)
@@ -256,11 +290,8 @@ fn every_test_seal_item_is_present_behind_its_attribute() {
             .iter()
             .rev()
             .take_while(|l| l.starts_with("#["))
-            .any(|l| *l == TEST_SEAL_CFG);
-        assert!(
-            attr,
-            "src/{file}: `{first}` is not behind `{TEST_SEAL_CFG}`"
-        );
+            .any(|l| *l == cfg);
+        assert!(attr, "src/{file}: `{first}` is not behind `{cfg}`");
     }
 }
 
@@ -375,17 +406,40 @@ fn a_non_empty_test_seal_is_red() {
     }
 }
 
-/// RED: `test-seal` over any item but the three named ones, in any file but its own, or in any
-/// spelling but the exact one, is refused.
+/// RED: `test-seal` over any item but the four named ones, in any file but its own, or in any
+/// spelling but the exact one that item takes, is refused.
 #[test]
 fn test_seal_over_another_item_is_red() {
     let plant = |rel: &str, text: &str| cfg_findings(&[(rel.to_string(), text.to_string())]);
-    // The named item, in its file: exempt.
+    // The named items, in their files, each behind its own attribute: exempt.
     assert!(plant(
         "plugin.rs",
-        "#[cfg(feature = \"test-seal\")]\n#[derive(Debug)]\npub struct TestKernelSeal;\n"
+        "#[cfg(any(test, feature = \"test-seal\"))]\n#[derive(Debug)]\npub struct TestKernelSeal;\n"
     )
     .is_empty());
+    assert!(plant(
+        "caps/token.rs",
+        "#[cfg(feature = \"test-seal\")]\npub fn acquire_for_kernel() -> Self {\n"
+    )
+    .is_empty());
+    // The minter may not take the type's wider attribute: a seal minted in every `cfg(test)` build.
+    assert_eq!(
+        plant(
+            "caps/token.rs",
+            "#[cfg(any(test, feature = \"test-seal\"))]\npub fn acquire_for_kernel() -> Self {\n"
+        )
+        .len(),
+        1
+    );
+    // Another item behind the type's attribute.
+    assert_eq!(
+        plant(
+            "plugin.rs",
+            "#[cfg(any(test, feature = \"test-seal\"))]\npub fn helper() {}\n"
+        )
+        .len(),
+        1
+    );
     // Another item behind the same attribute.
     assert_eq!(
         plant(
