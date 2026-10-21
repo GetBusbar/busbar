@@ -436,6 +436,19 @@ pub fn refusal(
     status: u32,
     words: &'static str,
 ) -> Rendered {
+    refusal_for(p, unit, dialect, 0, status, words)
+}
+
+/// The kernel refuses unit `unit` on `dialect` for `reason` (its code on the plane ABI) with
+/// `status` and `words`: the door renders it.
+pub fn refusal_for(
+    p: &Plugin<Plane>,
+    unit: u64,
+    dialect: u32,
+    reason: u32,
+    status: u32,
+    words: &'static str,
+) -> Rendered {
     let mut reply = vec![0u8; 4096];
     let mut fields: Vec<OutField> = zeros(4);
     let mut arena = vec![0u8; 512];
@@ -444,6 +457,7 @@ pub fn refusal(
     i.head = in_head();
     i.cause = REFUSAL_KERNEL;
     i.status = status;
+    i.reason = reason;
     i.dialect = dialect;
     i.text = text(words);
     i.unit = unit;

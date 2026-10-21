@@ -3983,6 +3983,7 @@ name = "voice-conformance-harness"
 version = "0.0.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel",
  "busbar-plane-streaming",
  "busbar-plugin-loader",
  "bytes",

@@ -47,7 +47,7 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 | `session-scope` | 1 | the `session` grant kind; every door asks for a principal; 404 off the guest list |
 | `gemini-live-route` | 1 | the Gemini Live door: claim, arrival, and the handshake across it |
 | `provider-dial` | 1 | a session's far frames ride the dialect's socket need; the host connector dials |
-| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing |
+| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing; a policy refusal wears its 4xx, never `server_error` |
 | `route-failover` | 1 | each ATTEMPT answered afresh on the pass need; nothing reaches the caller early |
 | `audit-record` | 1 | the audit kind and operation the kernel's one row is written under; no door row |
 | `exit-terminal` | 1 | one session, one end; an ended stream is refused on every side |
