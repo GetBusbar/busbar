@@ -815,7 +815,9 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     }
     // A hook that ran is named, with its decision head and whether it failed (`hooks[].head`,
     // `hooks[].failed`: docs/audit-chain-digest-v4.md rows 39-40), and never priced.
-    let hooks = parsed["records"][0]["hooks"].as_array().expect("the hooks are an array");
+    let hooks = parsed["records"][0]["hooks"]
+        .as_array()
+        .expect("the hooks are an array");
     assert!(!hooks.is_empty(), "the record names the hook that ran");
     for hook in hooks {
         let hook = hook.as_object().expect("a hook is an object");
