@@ -223,8 +223,9 @@ mod ranking_double_tests;
 // A test build has no composition root and so no loader to cross the door above (THE DESIGN
 // l.322: the kernel never names the loader). The kernel's hook port — the contract's [`HookAxis`] /
 // [`HookCalls`] — answers the double's words here, in process: the same strategies, ranked by
-// [`rank`]'s rules over the candidates the kernel built, answered through the frame exactly as an
-// in-process hook answers ([`DecideFrame::answer_decide`]). That the door states and ranks the
+// [`rank`] itself over the frame's view as the SDK decodes it for the door
+// ([`DecideFrame::decoded`], every key as the `in` carries it), answered through the frame exactly
+// as an in-process hook answers ([`DecideFrame::answer_decide`]). That the door states and ranks the
 // same is the root's proof, which crosses it (`the_kernel_ranking_double_states_what_the_linked_
 // ranking_door_states`).
 
@@ -234,7 +235,6 @@ use std::time::Duration;
 use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pending, Probed};
-use busbar_contract::hook_wire::OP_DECIDE;
 
 /// The call budget the double's calls are bounded by: the root's dispatcher's `Call` class budget
 /// at its defaults (`busbar-plugin-loader`, `dispatch::worker::Budgets::default`).
@@ -244,48 +244,6 @@ pub const CALL_BUDGET: Duration = Duration::from_secs(1);
 /// build that links the ranking hooks.
 fn answers(module: &str) -> bool {
     cfg!(feature = "linked-hook-double") && (module == NAME || WORDS.contains(&module))
-}
-
-/// The sort key [`key`] reads, off one candidate of the 1.5.5 projection.
-fn projected_key(strategy: Strategy, c: &serde_json::Value) -> Option<f64> {
-    let f = |name: &str| c.get(name).and_then(serde_json::Value::as_f64);
-    let k = match strategy {
-        Strategy::Cheapest => f("cost_per_mtok"),
-        Strategy::Fastest => f("latency_ms"),
-        Strategy::LeastBusy => f("available_concurrency").map(|a| -a),
-        Strategy::Usage => f("rate_headroom").map(|h| -h),
-        Strategy::Weighted => None,
-    };
-    k.filter(|k| k.is_finite())
-}
-
-/// [`rank`] over the 1.5.5 projection's candidates (the same rules: present before absent, the
-/// strategy's order, ties by `idx`; every key absent abstains).
-fn rank_projected(strategy: Strategy, projection: &serde_json::Value) -> Verdict {
-    if strategy == Strategy::Weighted {
-        return Verdict::Abstain;
-    }
-    let mut keyed: Vec<(Option<f64>, usize)> = projection["candidates"]
-        .as_array()
-        .map(|cs| {
-            cs.iter()
-                .filter_map(|c| {
-                    let idx = usize::try_from(c.get("idx")?.as_u64()?).ok()?;
-                    Some((projected_key(strategy, c), idx))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if keyed.iter().all(|(k, _)| k.is_none()) {
-        return Verdict::Abstain;
-    }
-    keyed.sort_by(|(ka, ia), (kb, ib)| match (ka, kb) {
-        (Some(a), Some(b)) => a.total_cmp(b).then(ia.cmp(ib)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => ia.cmp(ib),
-    });
-    Verdict::Prefer(keyed.into_iter().map(|(_, idx)| idx).collect())
 }
 
 /// One opened instance, on the hook port.
@@ -305,7 +263,7 @@ impl HookCalls for RankingCalls {
         Box::pin(super::hook_double::verdict(
             frame,
             budget,
-            move |f| rank_projected(strategy, &f.projection_json(OP_DECIDE)),
+            move |f| f.decoded(|view| rank(strategy, &view.candidates)),
             |f, v| {
                 let (outcome, out) = f.answer_decide(v);
                 (outcome, out, None, outcome == Outcome::Failed)

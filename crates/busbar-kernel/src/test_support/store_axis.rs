@@ -120,14 +120,23 @@ impl<S: StoreSlots> SlotStore<S> {
         }
     }
 
-    /// Run one slot on no ticket: its answer, or FAULT for a PENDING. A store body that panics
-    /// panics the test that called it.
+    /// Run one slot on no ticket: its answer, or FAULT for a PENDING. A store body that panics is
+    /// FAULT too, never an unwind into the caller: the SDK's door runs every slot body under
+    /// `catch_unwind` and answers a panic as `Outcome::Fault`, which the loader's bridge classes
+    /// [`StoreFailure::Fault`] (`crates/plugin-loader/src/store_v3.rs`).
     fn call<T>(&self, slot: impl FnOnce(&S, &mut Op<'_>) -> Step<T>) -> Result<T, StoreFailure> {
-        let mut cx = Op::detached();
-        match slot(&self.store, &mut cx) {
-            Step::Ready(answer) => Ok(answer),
-            Step::Pending { .. } => Err(StoreFailure::Fault(format!(
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut cx = Op::detached();
+            slot(&self.store, &mut cx)
+        }));
+        match ran {
+            Ok(Step::Ready(answer)) => Ok(answer),
+            Ok(Step::Pending { .. }) => Err(StoreFailure::Fault(format!(
                 "store '{}' answered PENDING on a call on no ticket",
+                self.name
+            ))),
+            Err(_) => Err(StoreFailure::Fault(format!(
+                "store '{}' panicked in its slot body",
                 self.name
             ))),
         }

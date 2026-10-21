@@ -34,6 +34,9 @@ struct Entry {
     row: Row,
     former: Vec<String>,
     door: Option<DoorFn>,
+    /// For a linked auth row stated by [`Rows::with_linked_style`]: the carrier lines its door's
+    /// Statement states as the default inbound style (`FACT_DEFAULT_INBOUND_STYLE`), in order.
+    inbound_style: Vec<String>,
 }
 
 impl Entry {
@@ -112,6 +115,7 @@ fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bo
         row,
         former,
         door: Some(door),
+        inbound_style: Vec::new(),
     }
 }
 
@@ -144,6 +148,31 @@ impl Rows {
         self
     }
 
+    /// `self` with the build's linked auth `row` registered as [`Self::with_linked`] does, its door
+    /// stating the default inbound style over `lines`, in order (`FACT_DEFAULT_INBOUND_STYLE` and
+    /// its carrier marks). A test build has no loader to read a door's Statement (BUSBAR-1.6.0.md
+    /// THE DESIGN l.322), so the row states here what its door's Statement states; the loader's
+    /// reading of the Statement is the loader's to prove (`crates/plugin-loader`,
+    /// `auth_axis::default_inbound_style`).
+    #[must_use]
+    pub fn with_linked_style(mut self, row: LinkedRow, lines: &[&str]) -> Self {
+        self = self.with_linked(row);
+        if let Some(e) = self.linked.last_mut() {
+            e.inbound_style = lines.iter().map(|l| (*l).to_string()).collect();
+        }
+        self
+    }
+
+    /// The linked rows stating the default inbound style ([`Self::with_linked_style`]), in
+    /// registration order: each row's key and its lines.
+    pub(crate) fn inbound_styles(&self) -> Vec<(String, Vec<String>)> {
+        self.linked
+            .iter()
+            .filter(|e| !e.inbound_style.is_empty())
+            .map(|e| (e.row.key.clone(), e.inbound_style.clone()))
+            .collect()
+    }
+
     /// `self` with the dropped-in `row` admitted after the rows it already has.
     #[must_use]
     pub fn with_dropped(mut self, row: Row) -> Self {
@@ -151,6 +180,7 @@ impl Rows {
             row,
             former: Vec::new(),
             door: None,
+            inbound_style: Vec::new(),
         });
         self
     }

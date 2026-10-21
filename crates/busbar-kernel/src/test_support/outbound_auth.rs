@@ -17,7 +17,8 @@
 //! `VerifyPlugin`). What the stand-in states for the rows mirrors what the loader's auth rows
 //! (`AuthRows`, `crates/plugin-loader/src/auth_axis.rs`) state for the same doors: the linked
 //! rows' keys, the operator row (`FACT_OPERATOR` and its principal), each row's carriers, no
-//! credential reader and no default inbound style (the double states neither). A linked door the
+//! credential reader (the double states none), and the default inbound style of the one linked row
+//! a test's rows double states it for ([`super::rows::Rows::with_linked_style`]). A linked door the
 //! kit has no double for, and a dropped-in auth row (a test's rows double carries no image), is
 //! a row that "will not load here": it answers, states nothing, and its open is refused naming it.
 //! How the loader binds and crosses a real auth door is the loader's and the root's to prove
@@ -191,13 +192,29 @@ impl StandIn {
             })
     }
 
-    /// What the stand-in states for `module`'s row: its own carriers. A row that will not load here
-    /// states none.
+    /// The linked rows of a test's rows double that state the default inbound style
+    /// ([`super::rows::Rows::with_linked_style`]): each row's key and its lines.
+    fn inbound_styles(&self) -> Vec<(String, Vec<String>)> {
+        self.registry
+            .as_any()
+            .downcast_ref::<super::rows::Rows>()
+            .map(super::rows::Rows::inbound_styles)
+            .unwrap_or_default()
+    }
+
+    /// What the stand-in states for `module`'s row: its own carriers (a row stating the default
+    /// inbound style states its lines). A row that will not load here states none.
     fn row_carriers(&self, module: &str) -> Vec<String> {
         match self.row(module) {
             Some(AuthRow::Linked(r)) if r.kit_door() == KitDoor::Operator => {
                 super::operator_double::carriers()
             }
+            Some(AuthRow::Linked(r)) => self
+                .inbound_styles()
+                .into_iter()
+                .find(|(key, _)| *key == r.key)
+                .map(|(_, lines)| lines)
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -259,10 +276,26 @@ impl AuthAxis for StandIn {
         rows
     }
 
-    /// No row the stand-in answers states `FACT_DEFAULT_INBOUND_STYLE`: the double's default
+    /// The lines of the one linked row stating `FACT_DEFAULT_INBOUND_STYLE`
+    /// ([`super::rows::Rows::with_linked_style`]); where no row states it, the double's default
     /// inbound style.
+    ///
+    /// # Errors
+    /// Two or more rows state it, in the loader's words (`auth_axis::two_default_inbound_styles`).
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {
-        Ok(double_inbound_style())
+        let stating = self.inbound_styles();
+        match stating.as_slice() {
+            [] => Ok(double_inbound_style()),
+            [(_, lines)] => Ok(lines.clone()),
+            many => Err(format!(
+                "more than one auth plugin states the default inbound style ({}): at most one may; \
+                 remove all but one",
+                many.iter()
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     fn serving(

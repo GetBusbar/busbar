@@ -158,8 +158,17 @@ async fn serve_admission(
     hook_env: Option<busbar_kernel::hooks::HookEnv>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
+    // The operator credential's row on the auth axis, as boot links it (`register_planes`): the
+    // admin chain authenticates `x-admin-token` through the root's REAL operator door (a test build
+    // of the kernel answers no operator row of its own; the first install stands).
+    busbar_kernel::preflight::install_linked_auth(
+        crate::LINKED.auths,
+        crate::root::auth_bindings::operator_words(),
+    );
+    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
     let mut app = busbar_kernel::test_support::TestApp::new()
         .governance(gov_with_signer(Some("admintok".to_string())))
+        .admin_chain(vec![busbar_kernel::config::operator_provider().to_string()])
         .plugins_dir(dir)
         .plugins_cfg(cfg)
         .plugin_admission(&ADMISSION);
