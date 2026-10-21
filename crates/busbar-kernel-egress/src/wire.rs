@@ -43,8 +43,8 @@ pub const STATUS_INTERNAL_ERROR: u16 = 500;
 
 /// A refusal this unit produced, in the words the previous release used.
 ///
-/// The `retry_after_secs` field is what the exhaustion terminal computed from the members the walk's
-/// last pick ran over; it is present only where the previous release sent the header.
+/// The `retry_after_secs` field is what the exhaustion terminal computed from the pool's members as
+/// the unit's hooks kept them; it is present only where the previous release sent the header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shed {
     /// The status the client sees.

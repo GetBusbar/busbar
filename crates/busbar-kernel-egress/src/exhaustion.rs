@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the pool does AFTER the walk finds nowhere to send.
+//! What the pool does AFTER the walk finds nowhere to send: the two terminal bodies that are not
+//! the walk's own steps.
 //!
-//! Nothing in this module is a second selection loop and nothing here decides who is healthy. The
-//! spill re-enters the walk's one pick against another pool; the wait parks for a bounded time and
-//! then re-asks the same admission every path asks; the last-resort route is the ONE documented
-//! breaker bypass in the unit and it says so by owning no probe; and the shed is a refusal with an
-//! honest wait computed from the pool's own members. The walk ([`crate::walk::Walk`]) runs them in
-//! that order and marks every dispatch they make degraded: an upstream's own answer is relayed to
-//! the client as it came, and only an attempt that produced no answer at all moves on.
+//! Nothing in this module is a second selection loop and nothing here decides who is healthy. Here
+//! are the shed's honest wait ([`retry_after_secs`]) and the last resort ([`least_bad`]), the ONE
+//! documented breaker bypass in the unit, which says so by owning no probe. The spill into another
+//! pool and the bounded wait for a slot are steps of the walk itself ([`crate::walk::Walk`]), which
+//! runs every terminal and marks every dispatch one makes degraded: an upstream's own answer is
+//! relayed to the client as it came, and only an attempt that produced no answer at all moves on.
+//! The last resort and the shed's wait read the pool's members as the unit's hooks kept them, never
+//! the pool's whole membership.
 
 use busbar_contract::caps::{Pass, Route};
 

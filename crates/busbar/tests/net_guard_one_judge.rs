@@ -223,18 +223,25 @@ fn the_bare_authority_arm_is_reached_through_the_kernel_name() {
     );
 }
 
-/// THE METADATA LIST IS ONE LIST, AND BOTH ARMS READ IT.
+/// THE METADATA LIST IS ONE LIST, AND THE ARM THAT DIALS READS IT.
 ///
 /// This is the bug that was actually live, stated directly. `net_guard` kept a two-entry
 /// `METADATA_HOSTS` that its dialing arm read, while a six-entry copy shadowed privately inside
 /// `ssrf_blocked_host` served config validation. Four names were refused at boot and dialled at
-/// runtime. The dialing arm is now the connector's destination guard, which reads the contract's
-/// `METADATA_HOSTS`; the config arm reads the same list through the unit.
+/// runtime. The dialing arm is the connector's destination guard ([`Guard::judge_name`], the one
+/// `dest.judge`), which reads the contract's `METADATA_HOSTS`; the config arm reads the same list
+/// through the unit.
 ///
 /// `metadata.platformequinix.com` is why the NAME arm is the only arm that can help: it resolves
-/// to a globally routable address, so no address predicate says anything about it at all.
+/// and pins to a globally routable address, so no address predicate says anything about it at all.
+///
+/// [`Guard::judge_name`]: busbar_core_connector::guard::Guard::judge_name
 #[test]
 fn the_dialing_arm_and_the_config_arm_read_the_same_metadata_list() {
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_PROVIDER,
+    };
     let names = busbar_contract::net::METADATA_HOSTS;
     assert_eq!(
         names,
@@ -245,8 +252,36 @@ fn the_dialing_arm_and_the_config_arm_read_the_same_metadata_list() {
         names.len() >= 6 && names.contains(&"metadata.platformequinix.com"),
         "the metadata list shrank back toward the two-entry copy: {names:?}"
     );
+    // The DIALING arm under the permissive stance: private addresses not blocked, nothing
+    // allowlisted, no carve-out. The metadata arm is unconditional, so the private stance must not
+    // reach it, in any egress class.
+    let permissive =
+        busbar_core_connector::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: false,
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the permissive guard builds");
     for name in names {
-        // The CONFIG arm, over the name spelled as a URL.
+        for class in [
+            EGRESS_DEFAULT,
+            EGRESS_PROVIDER,
+            EGRESS_OPERATOR_INFRASTRUCTURE,
+            EGRESS_OPEN_WEB,
+            EGRESS_LOOPBACK_ALLOWED,
+        ] {
+            let Err(refusal) = permissive.judge_name(name, class) else {
+                panic!(
+                    "`{name}` is on the metadata list and the dialing arm let it through (class \
+                     {class})"
+                );
+            };
+            assert_eq!(
+                refusal.verdict,
+                busbar_contract::abi::host::service::DEST_METADATA,
+                "`{name}` (class {class}) refused, but not by the metadata arm: {refusal}"
+            );
+        }
+        // And the CONFIG arm, over the same name spelled as a URL.
         assert!(
             busbar_kernel::config_validate::ssrf_blocked_host(
                 &format!("https://{name}/latest/meta-data/"),

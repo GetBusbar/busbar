@@ -79,7 +79,7 @@ pub struct Failover {
     /// Member names this pool will never select, primary or failover. They are removed from the
     /// membership rather than marked as already-tried: a consumer reading the tried set could not
     /// otherwise tell a blocklisted member from one this request has burned through, and the
-    /// terminals read the members the picks ran over, which start from this membership.
+    /// picks and the terminals read the membership with these removed.
     pub exclusions: Vec<String>,
 }
 
@@ -99,8 +99,7 @@ impl Default for Failover {
 /// absence of the key rather than a spelling an operator writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum OnExhausted {
-    /// Refuse, with the wait the members the walk's last pick ran over (as the unit's hooks kept
-    /// them) justify.
+    /// Refuse, with the wait the pool's members as the unit's hooks kept them justify.
     #[default]
     Status503,
     /// Spill into another pool, re-applying every restriction, with a visited guard.
@@ -144,8 +143,8 @@ impl Pool {
 
     /// This pool's membership with its own blocklist applied.
     ///
-    /// The blocklist is applied here, before every pick, and the terminals read only the members a
-    /// pick ran over — which is what stops a blocklisted member being reached by the least-bad
+    /// The blocklist is applied here, and every pick and every terminal reads the membership
+    /// through it — which is what stops a blocklisted member being reached by the least-bad
     /// terminal or counted into a shed's retry hint.
     ///
     /// A pool that blocklists nobody — the common case, and the one every hop of every walk pays

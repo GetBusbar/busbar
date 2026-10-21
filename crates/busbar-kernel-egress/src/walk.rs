@@ -8,7 +8,7 @@
 //! what a refusal for size does to the candidate set, which terminal runs when the pool is spent,
 //! and when the walk is over. The sending is the caller's: it asks [`Walk::next`] for a member,
 //! runs the attempt, and asks again. The ordering is the order's, the admission is the breaker's,
-//! and the terminals' own bodies are in [`crate::exhaustion`].
+//! and the shed's wait and the last resort are in [`crate::exhaustion`].
 //!
 //! Three properties of it are load-bearing and each is one line below.
 //!
