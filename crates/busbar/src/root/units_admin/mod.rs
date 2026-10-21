@@ -960,8 +960,11 @@ impl AuditView for NodeAudit {
         take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
         let durability = self.lock();
-        let records = durability.audit_window(from, to);
-        take(&durability.record, Some(&records));
+        // A window the journal would not read back is not answered at all, which the range read
+        // renders as the store failure it is; never as an empty window.
+        if let Some(records) = durability.audit_window(from, to) {
+            take(&durability.record, Some(&records));
+        }
     }
 
     fn keys(&self) -> AuditKeySet {

@@ -29,19 +29,32 @@ fn a_fourth_status_namespace_needs_no_reader_edit() {
     assert_eq!(quic.code, 42);
     assert_eq!(quic.in_namespace(QUIC), Some(42));
 
-    // It answers `None` to the two shipped questions BECAUSE THE NAMESPACES DIFFER — not because
-    // of a variant it is not, which is the reading that had to be re-stated at every match site.
-    assert_eq!(quic.http(), None);
-    assert_eq!(quic.grpc(), None);
+    // It answers `None` to every other numbering's question BECAUSE THE NAMESPACES DIFFER — not
+    // because of a variant it is not, which is the reading that had to be re-stated at every match
+    // site.
+    assert_eq!(quic.in_namespace(status_ns::HTTP), None);
+    assert_eq!(quic.in_namespace(status_ns::GRPC), None);
 
-    // And the two shipped families are unchanged in what they say.
-    assert_eq!(WireStatus::new(status_ns::HTTP, 503).http(), Some(503));
-    assert_eq!(WireStatus::new(status_ns::GRPC, 14).grpc(), Some(14));
+    // And the reserved numberings are read through the same one accessor.
+    assert_eq!(
+        WireStatus::new(status_ns::HTTP, 503).in_namespace(status_ns::HTTP),
+        Some(503)
+    );
+    assert_eq!(
+        WireStatus::new(status_ns::GRPC, 14).in_namespace(status_ns::GRPC),
+        Some(14)
+    );
 
     // The spelling collision the namespace exists for: `14` in gRPC's numbering is `UNAVAILABLE`
     // and is not a status at all in HTTP's. Neither answers the other's question.
-    assert_eq!(WireStatus::new(status_ns::GRPC, 14).http(), None);
-    assert_eq!(WireStatus::new(status_ns::HTTP, 14).grpc(), None);
+    assert_eq!(
+        WireStatus::new(status_ns::GRPC, 14).in_namespace(status_ns::HTTP),
+        None
+    );
+    assert_eq!(
+        WireStatus::new(status_ns::HTTP, 14).in_namespace(status_ns::GRPC),
+        None
+    );
     assert_ne!(
         WireStatus::new(status_ns::GRPC, 14),
         WireStatus::new(status_ns::HTTP, 14)
