@@ -341,18 +341,10 @@ pub(crate) async fn decide_noting(
                 continue;
             }
         };
-        // The gate answered: a reject stops the unit; nothing else acts on these protocols.
-        ran.push(HookApplied {
-            hook: policy.name().to_string(),
-            head: if matches!(decision, RoutingDecision::Reject { .. }) {
-                HookHead::Veto
-            } else {
-                HookHead::Pass
-            },
-            failed: false,
-        });
         match decision {
             RoutingDecision::Reject { status, message } => {
+                // The gate answered, and its reject stops the unit.
+                ran.push(gate_ran(policy.name(), HookHead::Veto, false));
                 return GateVerdict::Reject {
                     // RE-CLAMPED at the seam that acts on it, not merely at the seam that parsed
                     // it — the same belt-and-braces the model plane's forward site applies, so no
@@ -375,6 +367,8 @@ pub(crate) async fn decide_noting(
             }
             RoutingDecision::Abstain => {}
         }
+        // The gate answered, and nothing else acts on these protocols: it passed the unit.
+        ran.push(gate_ran(policy.name(), HookHead::Pass, false));
         // A clean pass (no reject returned above): record the pieces just screened as cleared for this
         // hook, so the next turn in this session skips them. Rejects never reach here — a blocked piece
         // is deliberately NOT cached and is re-screened on retry.
@@ -388,14 +382,20 @@ pub(crate) async fn decide_noting(
 /// A gate keyed `hook` that could not answer, as it ran: a veto when its `on_error` closed, else a
 /// pass. The failure is kept either way.
 fn failed_gate(hook: &str, closed: bool) -> HookApplied {
+    let head = if closed {
+        HookHead::Veto
+    } else {
+        HookHead::Pass
+    };
+    gate_ran(hook, head, true)
+}
+
+/// A gate keyed `hook` as it ran: its head, and whether it failed.
+fn gate_ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
     HookApplied {
         hook: hook.to_string(),
-        head: if closed {
-            HookHead::Veto
-        } else {
-            HookHead::Pass
-        },
-        failed: true,
+        head,
+        failed,
     }
 }
 
