@@ -3532,11 +3532,10 @@ fn open_linked_refuses_another_kind_abi_as_the_dropped_in_door_is_refused() {
         let door: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<0>;
         // SAFETY: the cell's door function answers a `'static` door (a restated real door).
         let linked = unsafe { crate::dispatch::load::open_linked(door) }
-            .err()
-            .expect("a linked door at another kind ABI is refused");
-        let dropped = crate::dispatch::load::validate::<TestKind>(door)
-            .err()
-            .expect("the dropped-in door at another kind ABI is refused");
+            .expect_err("a linked door at another kind ABI is refused");
+        let Err(dropped) = crate::dispatch::load::validate::<TestKind>(door) else {
+            panic!("the dropped-in door at another kind ABI is refused");
+        };
         assert_eq!(linked, dropped, "the same refusal, both ways");
         assert_eq!(
             linked,
@@ -3617,11 +3616,10 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
     LINKED_PIECE.set(piece_door(piece - 8));
     // SAFETY: as above.
     let linked = unsafe { crate::dispatch::load::open_linked(piece_cell) }
-        .err()
-        .expect("a linked transport at another piece is refused");
-    let dropped = crate::dispatch::load::validate::<Transport>(piece_cell)
-        .err()
-        .expect("the dropped-in transport at another piece is refused");
+        .expect_err("a linked transport at another piece is refused");
+    let Err(dropped) = crate::dispatch::load::validate::<Transport>(piece_cell) else {
+        panic!("the dropped-in transport at another piece is refused");
+    };
     assert_eq!(linked, dropped, "the same refusal, both ways");
     assert_eq!(
         linked,
@@ -3636,11 +3634,10 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
     LINKED_LAYOUT.set(layout_door(ANSWER_LAYOUT + 1));
     // SAFETY: as above.
     let linked = unsafe { crate::dispatch::load::open_linked(layout_cell) }
-        .err()
-        .expect("a linked plane at another layout is refused");
-    let dropped = crate::dispatch::load::validate::<Plane>(layout_cell)
-        .err()
-        .expect("the dropped-in plane at another layout is refused");
+        .expect_err("a linked plane at another layout is refused");
+    let Err(dropped) = crate::dispatch::load::validate::<Plane>(layout_cell) else {
+        panic!("the dropped-in plane at another layout is refused");
+    };
     assert_eq!(linked, dropped, "the same refusal, both ways");
     assert_eq!(
         linked,

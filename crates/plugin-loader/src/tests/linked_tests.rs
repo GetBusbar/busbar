@@ -63,7 +63,7 @@ fn the_generated_table_names_only_the_door_root_crates() {
     }
     assert_eq!(
         src.matches("crate::dispatch::load::open_linked(").count(),
-        2,
+        1,
         "every row is admitted through the one entry:\n{src}"
     );
     for broken in [

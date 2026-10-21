@@ -232,15 +232,13 @@ pub fn check_statements(rows: &[DoorRoot]) -> Result<(), String> {
                 crate::root::doors::stated_row(row.door)
                     .map_err(|e| format!("plugin '{}': {e}", row.row))?;
             }
-            KindCode::Export => {
-                if stated.aliases.len() != 1 {
-                    return Err(format!(
-                        "plugin '{}': its door's Statement states {} aliases (`REWRITE_ALIAS`); an \
-                         export states exactly one, the module name an `export:` instance names it by",
-                        row.row,
-                        stated.aliases.len()
-                    ));
-                }
+            KindCode::Export if stated.aliases.len() != 1 => {
+                return Err(format!(
+                    "plugin '{}': its door's Statement states {} aliases (`REWRITE_ALIAS`); an \
+                     export states exactly one, the module name an `export:` instance names it by",
+                    row.row,
+                    stated.aliases.len()
+                ));
             }
             _ => {}
         }
