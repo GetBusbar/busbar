@@ -296,7 +296,7 @@ pub fn root_rows() -> RootInstall {
 #[cfg(any(test, feature = "test-support"))]
 static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// Install `rows` as this test binary's root ([`TEST_ROOT`]): every later [`root_rows`] answers
+/// Install `rows` as this test binary's root ([`TEST_ROOT`]): every [`root_rows`] read after it answers
 /// them. The first install stands.
 #[cfg(any(test, feature = "test-support"))]
 pub fn install_test_root(rows: RootInstall) {
