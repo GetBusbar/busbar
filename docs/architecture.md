@@ -467,7 +467,7 @@ on A2A. Three identities, one state machine:
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
 `breaker:` key under `tools:` or `agents:`, and both sections `deny_unknown_fields`, so
 a config that writes one fails at boot. On MCP and A2A the breaker therefore runs on
-built-in defaults, through the kernel's failover walk (`crates/busbar-kernel/src/failover/mod.rs`),
+built-in defaults, through the kernel's route walk (`crates/busbar-kernel-egress/src/walk.rs`),
 which reaches the same breaker cells the LLM plane uses and adds no second state machine.
 
 **What generalises, and what it took to generalise it.** The state machine and the cause
