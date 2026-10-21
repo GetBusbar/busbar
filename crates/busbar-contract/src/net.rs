@@ -339,6 +339,25 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(addr))
 }
 
+/// Whether `s` is a SOCKET LITERAL: `v4:port` or `[v6]:port`, exactly the grammar
+/// `std::net::SocketAddr`'s parser accepts (no named zone, no alternate v4 spelling, a port in
+/// `0..=65535`, never a bare host). A plugin whose source may not name the system's network module
+/// tells a pinned literal from a name here, and accepts exactly what the parser accepts.
+#[must_use]
+pub fn is_socket_literal(s: &str) -> bool {
+    s.parse::<std::net::SocketAddr>().is_ok()
+}
+
+/// Whether `s` is a bare IP LITERAL, v4 or v6: exactly the grammar `std::net::IpAddr`'s parser
+/// accepts (a dotted quad with no leading zeros or alternate spelling, or an IPv6 address with no
+/// brackets, no zone and no port). An IP literal is not a name: a plugin whose source may not name
+/// the system's network module tells one from a name here, and accepts exactly what the parser
+/// accepts.
+#[must_use]
+pub fn is_ip_literal(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok()
+}
+
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
 /// canonical v4 or v6 literal (a v6 zone suffix `%…` is ignored), or an alternate IPv4 spelling
 /// ([`expand_alternate_ipv4`]). `None` for a DNS name.
@@ -758,12 +777,15 @@ pub fn judged_host(host: &str) -> Result<String, UrlRefusal> {
 /// [`UrlRefusal`] when the string has no scheme, no authority, no usable host, a malformed bracket
 /// or port, or a backslash inside a [`UrlFamily::Generic`] authority.
 pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
-    parse_url_raw(url).map(|(parts, _)| parts)
+    parse_url_raw(url, false).map(|(parts, _)| parts)
 }
 
 /// [`parse_url`], and the host exactly as the authority spelled it (the IPv6 literal without its
-/// brackets): [`dial_authority`] serialises the host from that spelling as `url` did.
-fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
+/// brackets): [`dial_authority`] serialises the host from that spelling as `url` did. The host is
+/// kept VERBATIM when `verbatim` ([`url_host_verbatim`]): an IPv6 literal unbracketed (as
+/// [`Ipv6Addr`] displays it), any other host exactly as spelled (no percent-decode, no mapping, no
+/// root dot dropped, no character refused but an empty host).
+fn parse_url_raw(url: &str, verbatim: bool) -> Result<(UrlParts, String), UrlRefusal> {
     let cleaned = strip_whatwg_removed(url);
     let s = cleaned.as_ref();
     let (scheme, after) = s.split_once(':').ok_or(UrlRefusal::NoScheme)?;
@@ -801,44 +823,56 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
     };
     let (host, raw_host, port) = if let Some(inner) = host_port.strip_prefix('[') {
         let (literal, after) = inner.split_once(']').ok_or(UrlRefusal::Bracket)?;
-        if literal.parse::<Ipv6Addr>().is_err() {
+        let Ok(addr) = literal.parse::<Ipv6Addr>() else {
             return Err(UrlRefusal::Bracket);
-        }
+        };
         let port = match after {
             "" => None,
             p => Some(p.strip_prefix(':').ok_or(UrlRefusal::Bracket)?),
         };
-        (literal.to_string(), literal.to_string(), port)
+        let host = if verbatim {
+            addr.to_string()
+        } else {
+            literal.to_string()
+        };
+        (host, literal.to_string(), port)
     } else {
         let (raw, port) = match host_port.rsplit_once(':') {
             Some((h, _)) if h.contains(':') => return Err(UrlRefusal::Bracket),
             Some((h, p)) => (h, Some(p)),
             None => (host_port, None),
         };
-        let decoded = percent_decode_host(raw);
-        // A special scheme's host is read decoded, as `url` reads it. Any other scheme's host is
-        // read decoded too while that decode is a plain ASCII host (so `%6c%6fcalhost` is judged
-        // as `localhost`); one that is not, `url` kept as an opaque host and so does this reader.
-        let read_decoded = is_special_scheme(&scheme)
-            || (decoded.is_ascii() && !decoded.contains(forbidden_in_host));
-        let host = if read_decoded {
-            // Decoded first, then mapped, then the one trailing root dot dropped: a mapping can
-            // make that dot (a full-width `．` reads `.`), and `url` maps the decoded host too.
-            let mapped = url_host_to_ascii(decoded.as_ref())?;
-            let host = mapped.strip_suffix('.').unwrap_or(mapped.as_ref());
-            if host.is_empty() || host.contains(forbidden_in_host) {
+        if verbatim {
+            if raw.is_empty() {
                 return Err(UrlRefusal::NoHost);
             }
-            host.to_string()
+            (raw.to_string(), raw.to_string(), port)
         } else {
-            // `url`'s opaque host, byte for byte: the spelling checked as `url` checks it (so a
-            // `%25` stands), then percent-encoded, its root dot kept.
-            if raw.contains(forbidden_in_opaque_host) {
-                return Err(UrlRefusal::NoHost);
-            }
-            opaque_host(raw)
-        };
-        (host, raw.to_string(), port)
+            let decoded = percent_decode_host(raw);
+            // A special scheme's host is read decoded, as `url` reads it. Any other scheme's host is
+            // read decoded too while that decode is a plain ASCII host (so `%6c%6fcalhost` is judged
+            // as `localhost`); one that is not, `url` kept as an opaque host and so does this reader.
+            let read_decoded = is_special_scheme(&scheme)
+                || (decoded.is_ascii() && !decoded.contains(forbidden_in_host));
+            let host = if read_decoded {
+                // Decoded first, then mapped, then the one trailing root dot dropped: a mapping can
+                // make that dot (a full-width `．` reads `.`), and `url` maps the decoded host too.
+                let mapped = url_host_to_ascii(decoded.as_ref())?;
+                let host = mapped.strip_suffix('.').unwrap_or(mapped.as_ref());
+                if host.is_empty() || host.contains(forbidden_in_host) {
+                    return Err(UrlRefusal::NoHost);
+                }
+                host.to_string()
+            } else {
+                // `url`'s opaque host, byte for byte: the spelling checked as `url` checks it (so a
+                // `%25` stands), then percent-encoded, its root dot kept.
+                if raw.contains(forbidden_in_opaque_host) {
+                    return Err(UrlRefusal::NoHost);
+                }
+                opaque_host(raw)
+            };
+            (host, raw.to_string(), port)
+        }
     };
     let port = match port {
         None | Some("") => None,
@@ -948,9 +982,9 @@ pub fn dial_authority(target: &str) -> Result<DialAuthority, UrlRefusal> {
         .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
     let bare = !web_scheme && !trimmed.contains("://");
     let (parts, raw) = if bare {
-        parse_url_raw(&format!("http://{trimmed}"))?
+        parse_url_raw(&format!("http://{trimmed}"), false)?
     } else {
-        parse_url_raw(&trimmed)?
+        parse_url_raw(&trimmed, false)?
     };
     // One reader decides whether the target names a host at all: the destination check's.
     if target_host(&trimmed).is_none() {
@@ -1111,6 +1145,16 @@ pub fn url_host(url: &str) -> Option<String> {
     parse_url(url).ok().map(|p| p.host)
 }
 
+/// The host of a URL of any scheme as SPELLED, read as [`parse_url`] reads the authority but not
+/// normalised: an IPv6 literal unbracketed (as [`Ipv6Addr`] displays it), any other host exactly
+/// as written, a trailing root dot KEPT (`example.com.` is not `example.com` here). For a caller
+/// whose rule compares the host a URL reader serialised, byte for byte; `None` when it reads no
+/// host.
+#[must_use]
+pub fn url_host_verbatim(url: &str) -> Option<String> {
+    parse_url_raw(url, true).ok().map(|(p, _)| p.host)
+}
+
 /// The host of a DIAL TARGET, which may be spelled as a URL or as a bare `host`, `host:port`,
 /// `[v6]` or `[v6]:port` authority (a bare v6 literal is kept whole, a zone suffix too). A target
 /// carrying `://`, or opening with a [`UrlFamily::Web`] scheme and `:`, is read as a URL, so its
@@ -1127,7 +1171,7 @@ pub fn target_host(target: &str) -> Option<String> {
         .split_once(':')
         .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
     if web_scheme || trimmed.contains("://") {
-        let (parts, raw) = parse_url_raw(&trimmed).ok()?;
+        let (parts, raw) = parse_url_raw(&trimmed, false).ok()?;
         let literal = parts.host.contains(':');
         if !literal && percent_decode_host(&raw).contains(forbidden_in_host) {
             return None;

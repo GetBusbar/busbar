@@ -84,13 +84,11 @@ io_in!(OpenIn, ListenIn, AddrIn, ReadIn, WriteIn, ReadyIn, ShutIn, HandleIn, Spa
 
 const fn head() -> ServiceHead {
     ServiceHead {
-        size: 0,
-        op: 0,
         handle: CompletionHandle {
             ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
+        ..ServiceHead::ZERO
     }
 }
 
@@ -153,22 +151,13 @@ impl<'h> Io<'h> {
             handle: CompletionHandle {
                 ticket: self.ticket,
                 seq,
-                _reserved: 0,
+                ..CompletionHandle::ZERO
             },
         };
         let mut out = ServiceOut {
             size: std::mem::size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(Outcome::Fault),
-            _reserved: [0; 3],
-            value: 0,
-            len: 0,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
-            error: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            ..ServiceOut::ZERO
         };
         match f(self.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome() {
             Outcome::Ready => Poll::Ready(Ok(out)),
@@ -431,6 +420,31 @@ impl<'h> Io<'h> {
         let o = self.now(op::ENDS, |s| s.ends, i)?;
         let port = u32::try_from(o.value).map_err(|_| IoFailure::Fault)?;
         Ok((port, count(o.len, cap)?))
+    }
+
+    /// `io.ends` on a spawned program's handle: its exit code once the program ITSELF has exited,
+    /// `None` while it runs (and for any other handle, and on a host that predates `exited`, which
+    /// always wrote that byte as zero). A descendant still holding the program's output keeps the
+    /// pipe open, so a carrier reads the program's end here, not from the pipe.
+    ///
+    /// # Errors
+    ///
+    /// Not the caller's handle.
+    pub fn program_exit(&mut self, handle: u64) -> IoAnswer<Option<u32>> {
+        let mut peer = [0_u8; MAX_ADDR];
+        let i = AddrIn {
+            head: head(),
+            handle,
+            addr_buf: peer.as_mut_ptr(),
+            addr_cap: peer.len(),
+        };
+        let o = self.now(op::ENDS, |s| s.ends, i)?;
+        if o.exited == 0 {
+            return Ok(None);
+        }
+        u32::try_from(o.value)
+            .map(Some)
+            .map_err(|_| IoFailure::Fault)
     }
 }
 

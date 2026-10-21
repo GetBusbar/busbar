@@ -157,7 +157,7 @@ const ROWS: &[Row] = &[
             key: "dest".to_string(),
             path: "/nowhere".to_string(),
             rotate_at: None,
-            keep: 0,
+            rotate: crate::services::DiskRotate::Truncate,
         };
         now(
             "disk_append",

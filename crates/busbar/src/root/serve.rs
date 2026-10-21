@@ -1165,6 +1165,16 @@ impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
 }
 
 impl HookStage {
+    /// A hook stage over `host` and `gov`, every other field in its idle state: what a test cell
+    /// builds without naming the stage's fields.
+    #[cfg(test)]
+    pub(crate) fn new(
+        host: busbar_kernel::plane_driver::GenerationHost,
+        gov: Arc<busbar_kernel::governance::GovState>,
+    ) -> Self {
+        Self { host, gov }
+    }
+
     /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
     /// deployment's global and per-pool hooks, bound per unit off the current generation (U22,
     /// ARCHITECT rulings 2026-10-05).
@@ -2264,6 +2274,9 @@ pub struct DoorRequest {
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`): a stream another framer
+    /// frames begins with it.
+    pub scheme: u8,
 }
 
 /// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
@@ -3101,6 +3114,7 @@ impl DoorRequest {
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
             app,
+            scheme: ctx.scheme,
         })
     }
 }
@@ -3164,6 +3178,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            scheme: _,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3444,6 +3459,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            scheme,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3515,7 +3531,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, &carrier, &target, &head,
+                door, &carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),

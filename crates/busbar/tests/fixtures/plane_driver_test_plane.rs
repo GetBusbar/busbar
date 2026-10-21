@@ -150,15 +150,10 @@ const fn s(b: &'static [u8]) -> AbiStr {
         len: b.len(),
     }
 }
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_STR: AbiStr = AbiStr::ZERO;
 const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
     fmt: BLOB_ABSENT,
-    flags: 0,
+    ..Blob::ZERO
 };
 
 /// Its declaring section, and an owned section beside it (handed at `open` as `PlaneOpenIn::owned`).
@@ -166,12 +161,11 @@ static SECTIONS: Shared<[Section; 2]> = Shared([
     Section {
         name: s(b"test_plane"),
         flags: SECTION_DECLARING,
-        _reserved: 0,
+        ..Section::ZERO
     },
     Section {
         name: s(b"test_plane_owned"),
-        flags: 0,
-        _reserved: 0,
+        ..Section::ZERO
     },
 ]);
 static DIALECTS: Shared<[AbiStr; 1]> = Shared([s(b"plain")]);
@@ -259,9 +253,8 @@ static STATUSES: Shared<[RefusalStatus; 3]> = Shared([
 static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     head: KindTailHead {
         size: std::mem::size_of::<PlaneTail>() as u32,
-        _reserved: 0,
+        ..KindTailHead::ZERO
     },
-    flags: 0,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_WHOLE,
     // The layout this plane writes its answers in: the contract's it was built against.
@@ -276,45 +269,23 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     cli_help: NO_STR,
     dialects: &DIALECTS.0 as *const AbiStr,
     dialects_len: 1,
-    dialect_auth: std::ptr::null(),
-    dialect_auth_len: 0,
-    scope_kinds: std::ptr::null(),
-    scope_kinds_len: 0,
     op_classes: &OP_CLASSES.0 as *const OpClass,
     op_classes_len: 1,
     billable_classes: &CLASSES.0 as *const BillableClass,
     billable_classes_len: 12,
-    route_cost: std::ptr::null(),
-    route_cost_len: 0,
-    fee_units: std::ptr::null(),
-    fee_units_len: 0,
-    record_kinds: std::ptr::null(),
-    record_kinds_len: 0,
-    egress_targets: std::ptr::null(),
-    egress_targets_len: 0,
-    record_chains: std::ptr::null(),
-    record_chains_len: 0,
-    trust_keys: std::ptr::null(),
-    trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
     caller_credential_refusal: NO_STR,
-    admin_routes: std::ptr::null(),
-    admin_routes_len: 0,
     admin_openapi: NO_BLOB,
-    metric_lanes: std::ptr::null(),
-    metric_lanes_len: 0,
-    stream_ceiling_secs: 0,
+    ..PlaneTail::ZERO
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
     name: s(b"plane_driver_test_drives"),
     help: NO_STR,
     unit: NO_STR,
-    label_keys: std::ptr::null(),
-    label_keys_len: 0,
     kind: FAMILY_GAUGE,
-    _reserved: [0; 7],
+    ..MetricFamily::ZERO
 }]);
 
 static STATEMENT: Shared<Statement> = Shared(Statement {
@@ -326,46 +297,28 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     version: s(b"1.6.0"),
     families: &FAMILIES.0 as *const MetricFamily,
     families_len: 1,
-    diag_ids: std::ptr::null(),
-    diag_ids_len: 0,
-    secret_refs: std::ptr::null(),
-    secret_refs_len: 0,
     settings_schema: NO_BLOB,
     kind_tail: &TAIL.0.head as *const KindTailHead,
     extensions: NO_BLOB,
-    marks: 0,
-    mark_words: std::ptr::null(),
-    mark_words_len: 0,
-    rewrites: std::ptr::null(),
-    rewrites_len: 0,
     sections: &SECTIONS.0 as *const Section,
     sections_len: 2,
     needs: &NEEDS.0 as *const Need,
     needs_len: 1,
     target_from: NO_STR,
     trust_from: NO_STR,
-    answers: std::ptr::null(),
-    answers_len: 0,
-    claims: std::ptr::null(),
-    claims_len: 0,
+    ..Statement::ZERO
 });
 
 /// Its one outbound need: handed the host's connection slots only where the host binds a table.
 static NEEDS: Shared<[Need; 1]> = Shared([Need {
     direction: DIRECTION_OUTBOUND,
-    egress_class: 0,
     transport: s(b"sock"),
     auth: NO_STR,
     target_from: NO_STR,
     trust_from: NO_STR,
     details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
     keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: std::ptr::null(),
-    deny_response_headers_len: 0,
+    ..Need::ZERO
 }]);
 
 static OPS: Shared<Ops> = Shared(Ops {
@@ -412,25 +365,21 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
         verb: s(b"POST"),
         target: s(b"/call"),
         carrier: s(b"inbound"),
-        flags: 0,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
     Claim {
         verb: s(b"POST"),
         target: s(b"/open"),
         carrier: s(b"inbound"),
         flags: CLAIM_OPEN | CLAIM_EXACT,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
     Claim {
         verb: s(b"POST"),
         target: s(b"/framed"),
         carrier: s(b"frame"),
         flags: CLAIM_OPEN,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
 ]);
 
@@ -568,7 +517,7 @@ extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
         let o = &mut *out.cast::<ProjectOut>();
         let absent = Span {
             offset: SPAN_ABSENT,
-            len: 0,
+            ..Span::ZERO
         };
         o.body = absent;
         o.rewritten = absent;
@@ -647,7 +596,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
                 ptr: json.as_ptr(),
                 len: json.len(),
                 fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
-                flags: 0,
+                ..Blob::ZERO
             }
         } else {
             NO_BLOB
@@ -833,13 +782,13 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                         op: service_op::CLOCK_NOW,
                         handle: CompletionHandle {
                             ticket: Ticket::NONE,
-                            seq: 0,
-                            _reserved: 0,
+                            ..CompletionHandle::ZERO
                         },
                     },
                     reading: &mut reading,
                 };
                 let mut answer = std::mem::zeroed::<ServiceOut>();
+                answer.size = std::mem::size_of::<ServiceOut>() as u32;
                 if now(me.ctx, (&call as *const ClockNowIn).cast(), &mut answer).outcome()
                     != Outcome::Ready
                 {
@@ -1224,10 +1173,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         return Some(b"nest-refused:unserved".to_vec());
     };
     let mut buf = vec![0u8; 1 << 16];
-    let blank = ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    };
+    let blank = ItemSpan::ZERO;
     let mut spans = [blank; 32];
     let call = UnitNestIn {
         head: ServiceHead {
@@ -1235,8 +1181,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             op: service_op::UNIT_NEST,
             handle: CompletionHandle {
                 ticket: t,
-                seq: 0,
-                _reserved: 0,
+                ..CompletionHandle::ZERO
             },
         },
         verb: s(b"POST"),
@@ -1247,8 +1192,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         body: Blob {
             ptr: body.as_ptr(),
             len: body.len(),
-            fmt: 0,
-            flags: 0,
+            ..Blob::ZERO
         },
         into: ServiceBufs {
             buf: buf.as_mut_ptr(),
@@ -1258,6 +1202,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         },
     };
     let mut answer = std::mem::zeroed::<ServiceOut>();
+    answer.size = std::mem::size_of::<ServiceOut>() as u32;
     match slot(me.ctx, (&call as *const UnitNestIn).cast(), &mut answer).outcome() {
         Outcome::Pending => None,
         Outcome::Ready => {
@@ -1289,14 +1234,11 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
         handle: CompletionHandle {
             ticket: t,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
     };
     let mut buf = vec![0u8; 1 << 12];
-    let blank = ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    };
+    let blank = ItemSpan::ZERO;
     let mut spans = [blank; 4];
     let mut into = || ServiceBufs {
         buf: buf.as_mut_ptr(),
@@ -1307,8 +1249,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
     let blob = Blob {
         ptr: body.as_ptr(),
         len: body.len(),
-        fmt: 0,
-        flags: 0,
+        ..Blob::ZERO
     };
     let message = MessageView {
         role: s(b"user"),
@@ -1318,17 +1259,9 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
         },
     };
     let prompt = PromptView {
-        system: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        system: AbiStr::ZERO,
         message_count: 1,
-        body: Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: 0,
-            flags: 0,
-        },
+        body: Blob::ZERO,
         messages: &message,
         messages_len: 1,
     };
@@ -1393,6 +1326,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
             continue;
         };
         let mut answer = std::mem::zeroed::<ServiceOut>();
+        answer.size = std::mem::size_of::<ServiceOut>() as u32;
         match slot(me.ctx, input, &mut answer).outcome() {
             Outcome::Pending => pending = true,
             Outcome::Ready => said.push(format!("{name}={}", answer.value)),
@@ -1423,12 +1357,12 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
                 entry: Blob {
                     ptr: entry.as_ptr(),
                     len: entry.len(),
-                    fmt: 0,
-                    flags: 0,
+                    ..Blob::ZERO
                 },
                 ttl_ms: 0,
             };
             let mut answer = std::mem::zeroed::<ServiceOut>();
+            answer.size = std::mem::size_of::<ServiceOut>() as u32;
             me.count(Stat::HostCalls);
             let _ = store(me.ctx, (&call as *const VerifyStoreIn).cast(), &mut answer);
         }
@@ -1499,9 +1433,9 @@ unsafe fn session_piece(
         _ => {
             emit(i, o, &[b"far-said:".as_slice(), piece].concat());
             *i.units_buf = UnitCount {
-                class: 0,
                 source: UNITS_REPORTED,
                 amount: o.emitted,
+                ..UnitCount::ZERO
             };
             o.units_written = 1;
             if i.flags & PIECE_LAST != 0 {
@@ -1557,8 +1491,8 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
         *i.fields_buf = OutField {
             name: Span {
-                offset: 0,
                 len: name.len() as u32,
+                ..Span::ZERO
             },
             value: Span {
                 offset: name.len() as u32,
@@ -1624,8 +1558,8 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
         std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
         *i.fields_buf = OutField {
             name: Span {
-                offset: 0,
                 len: name.len() as u32,
+                ..Span::ZERO
             },
             value: Span {
                 offset: name.len() as u32,
@@ -1727,11 +1661,12 @@ unsafe fn conn_call<I>(
         handle: CompletionHandle {
             ticket,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
     };
     me.count(Stat::HostCalls);
     let mut out = std::mem::zeroed::<ServiceOut>();
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     f(me.ctx, (input as *const I).cast(), &mut out);
     Some(out)
 }

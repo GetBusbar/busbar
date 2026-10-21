@@ -367,6 +367,20 @@ impl HostWire {
         self
     }
 
+    /// The same wire, framing over `binding`. A wire frames every connection TICKET-LESS (its
+    /// `begin`, `adopt`, `ingest` and `emit` cross with no ticket), so a binding with auth points
+    /// is refused here, before any connection is framed ([`framer::TICKET_LESS_AUTH`]): its
+    /// framer may call the auth service, which may pend, and only a ticketed framing
+    /// ([`crate::compose::Connection`]) can park it.
+    ///
+    /// # Errors
+    ///
+    /// [`framer::TICKET_LESS_AUTH`]: the binding has auth points.
+    pub fn bound(self, binding: &framer::AuthBinding) -> Result<Self, String> {
+        binding.ticket_less().map_err(|r| r.error)?;
+        Ok(self)
+    }
+
     /// Whether this wire's entry is a carrier, carried as itself.
     fn is_carrier(&self) -> bool {
         self.door.facts().role == ROLE_CARRIER
@@ -417,10 +431,12 @@ impl HostWire {
         ))
     }
 
-    /// What a framing on this entry is told the handshake established: its claim.
+    /// What a framing on this entry is told the handshake established: its claim, and the clear
+    /// scheme on both sides (this wire secures nothing; a secure target is refused before dial).
     fn established(&self) -> Established {
         Established {
             claim: Some(self.key.to_owned()),
+            scheme: Established::scheme_of(false),
             ..Established::default()
         }
     }

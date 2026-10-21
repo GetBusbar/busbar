@@ -72,7 +72,7 @@ use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
 use crate::records::{
     AuditRecord, CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecordRef, PlaneSelector,
-    UsageDelta, UsageLedger, VirtualKey,
+    Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 /// How many error texts one instance keeps alive for the host to copy.
@@ -84,16 +84,15 @@ pub const DIAG_IDS: [AbiStr; 2] = [abi_str(DIAG_OPID_CONFLICT), abi_str(DIAG_CAP
 const OPID_CONFLICT_TEXT: &str =
     "STORE_OPID_CONFLICT: the op_id was already used with different value fields";
 const DIAG_OPID: &[Diag] = &[Diag {
-    id_idx: 0,
     severity: SEVERITY_WARN,
-    _reserved: [0; 3],
     text: abi_str(OPID_CONFLICT_TEXT),
+    ..Diag::ZERO
 }];
 const DIAG_CAP: &[Diag] = &[Diag {
     id_idx: 1,
     severity: SEVERITY_WARN,
-    _reserved: [0; 3],
     text: abi_str("a cap was pushed again at its config_gen with a different value"),
+    ..Diag::ZERO
 }];
 
 /// The Statement tail of a store `B` (`abi::store::StoreTail`), for [`store_door!`](crate::store_door).
@@ -103,11 +102,11 @@ pub const fn tail<B: StoreSlots>() -> StoreTail {
     StoreTail {
         head: crate::abi::mechanism::door::KindTailHead {
             size: std::mem::size_of::<StoreTail>() as u32,
-            _reserved: 0,
+            ..crate::abi::mechanism::door::KindTailHead::ZERO
         },
         durable_plane: B::TAIL.durable_plane as u8,
         fork_refusal: B::TAIL.fork_refusal as u8,
-        _reserved: [0; 6],
+        ..StoreTail::ZERO
     }
 }
 
@@ -602,7 +601,7 @@ fn span_blob((ptr, len): (*const u8, usize)) -> Blob {
         ptr,
         len,
         fmt: BLOB_OCTETS,
-        flags: 0,
+        ..Blob::ZERO
     }
 }
 
@@ -1198,9 +1197,15 @@ slot!(
 );
 slot!(
     /// `purge_plane_records_before` (slot 29).
+    /// The rule rides the `in`; an older host's shorter `in` reads `0` there (the trampoline
+    /// zero-fills past its stated size), the age rule that host purged by. A code that names no
+    /// rule is refused, never guessed.
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before)) {
+        let Some(retention) = Retention::from_code(i.retention) else {
+            return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
+        };
+        match step!(o, s.store.purge_plane_records(cx, kind, i.before, retention)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }

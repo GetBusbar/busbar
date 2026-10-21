@@ -447,7 +447,11 @@ fn compute_layout() -> String {
         StoreListPlaneRecordsIn,
         [head, kind, selector, _reserved, parent, out]
     );
-    record!(s, StoreKindBeforeIn, [head, kind, before]);
+    record!(
+        s,
+        StoreKindBeforeIn,
+        [head, kind, before, retention, _reserved]
+    );
     record!(s, StoreTokenIn, [head, kind, token, expires_at, now]);
     record!(
         s,
@@ -723,6 +727,7 @@ fn compute_layout() -> String {
         tkind::route::RouteMatch,
         [methods, path_form, path, fields, fields_len, rung, _reserved]
     );
+    record!(s, tkind::LineEntry, [line, points, auth, body_limit, route]);
     record!(s, tkind::SettingDecl, [path, kind, _reserved, default]);
     record!(
         s,
@@ -876,7 +881,9 @@ fn compute_layout() -> String {
             alpn_written,
             alpn_needed,
             defaults_written,
-            defaults_needed
+            defaults_needed,
+            states_length,
+            _reserved
         ]
     );
     record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);
@@ -913,7 +920,23 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink, fields, fields_len, lane]
+        [
+            head,
+            side,
+            scheme,
+            _reserved,
+            target,
+            facts,
+            sink,
+            fields,
+            fields_len,
+            lane,
+            lines,
+            lines_len,
+            points,
+            _points_reserved,
+            auth
+        ]
     );
     record!(
         s,
@@ -935,7 +958,11 @@ fn compute_layout() -> String {
             deadline_ns,
             lane,
             status,
-            _status_reserved
+            _status_reserved,
+            unit,
+            body_len,
+            body_len_known,
+            _body_len_reserved
         ]
     );
     record!(
@@ -986,6 +1013,7 @@ fn compute_layout() -> String {
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
     record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
+    record!(s, pkind::RecordRetention, [kind, rule]);
     record!(s, pkind::PinMechanism, [token, flags, _reserved]);
     record!(
         s,
@@ -1044,7 +1072,9 @@ fn compute_layout() -> String {
             admin_openapi,
             stream_ceiling_secs,
             metric_lanes,
-            metric_lanes_len
+            metric_lanes_len,
+            record_retentions,
+            record_retentions_len
         ]
     );
     record!(
@@ -1465,6 +1495,7 @@ fn compute_layout() -> String {
         [
             size,
             outcome,
+            exited,
             _reserved,
             value,
             len,
@@ -1560,7 +1591,10 @@ fn compute_layout() -> String {
             trust_serves,
             trust_decide,
             trust_state,
-            session_emit
+            session_emit,
+            auth_call,
+            unit_hand_in,
+            unit_refuse
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -1578,6 +1612,46 @@ fn compute_layout() -> String {
         [size, rotated, faults, _reserved, written]
     );
     record!(s, hsvc::SnapshotReadIn, [head, scope, _reserved, into]);
+    record!(s, hsvc::AuthRef, [id, mac]);
+    record!(s, hsvc::UnitRef, [id, mac]);
+    record!(
+        s,
+        hsvc::HeadView,
+        [
+            method,
+            target,
+            authority,
+            query,
+            fields,
+            fields_len,
+            scheme,
+            _scheme_reserved
+        ]
+    );
+    record!(s, hsvc::AuthAnswer, [size, flow, unit]);
+    record!(
+        s,
+        hsvc::AuthCallIn,
+        [
+            head, auth, unit, point, _reserved, conn, stream, request, body, buf, cap, spans,
+            spans_cap, answer
+        ]
+    );
+    record!(
+        s,
+        hsvc::UnitHandInIn,
+        [head, auth, unit, line, _reserved, conn, stream, request, answer]
+    );
+    record!(
+        s,
+        hsvc::RefusalAnswer,
+        [size, status, _reserved, fields, fields_len, body]
+    );
+    record!(
+        s,
+        hsvc::UnitRefuseIn,
+        [head, unit, cause, line, conn, stream, answer, request]
+    );
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve, check]);

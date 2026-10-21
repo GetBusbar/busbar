@@ -335,7 +335,7 @@ auth-oauth = ["dep:busbar-auth-oauth"]
 # inbound capability, so `GET /api/v1/admin/info` `build.auth_modules` lists it after 1.5.5's
 # `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
-hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 

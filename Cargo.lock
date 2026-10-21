@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936#175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=af22153f4e34ffec8c9d1ad5f0838d00a4aca58f#af22153f4e34ffec8c9d1ad5f0838d00a4aca58f"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -427,7 +427,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=765d8120cfac540ab46b8e267cffc7a251a23707#765d8120cfac540ab46b8e267cffc7a251a23707"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=17a24d970b0190d7dffb84dbdf87ab4f792bbc0d#17a24d970b0190d7dffb84dbdf87ab4f792bbc0d"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -771,7 +771,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=d7cf79d32b442c8e68610adb82192db5f7d05911#d7cf79d32b442c8e68610adb82192db5f7d05911"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=7782664c91769b80272ff99272127f127fbb2dfc#7782664c91769b80272ff99272127f127fbb2dfc"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -790,7 +790,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b3e74232c96e1403b6c4c42ac1dfd5a19c12b344#b3e74232c96e1403b6c4c42ac1dfd5a19c12b344"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=046e649d20fcf509b5ee1d8091fa558075be92a4#046e649d20fcf509b5ee1d8091fa558075be92a4"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -814,7 +814,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=7dd2c1c947347806280f4cf635555008dc2a5a0a#7dd2c1c947347806280f4cf635555008dc2a5a0a"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=28d655c22533eaee578c7432d29d317a33507585#28d655c22533eaee578c7432d29d317a33507585"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -827,7 +827,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=253b5b2791122f07e74647a9f21efe51aa00ab7d#253b5b2791122f07e74647a9f21efe51aa00ab7d"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=d31740b9c741a373dec69c2fe63c7e76c77ce6d3#d31740b9c741a373dec69c2fe63c7e76c77ce6d3"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -899,7 +899,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=3d0ac5eed987d171d3b004c77caa23b21c1f4c0b#3d0ac5eed987d171d3b004c77caa23b21c1f4c0b"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=83a24359c4ccc5d1bfd915203b4905b0597854bb#83a24359c4ccc5d1bfd915203b4905b0597854bb"
 dependencies = [
  "busbar-contract",
  "sha2",
@@ -2533,16 +2533,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prettyplease"
-version = "0.2.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
-dependencies = [
- "proc-macro2",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2572,11 +2562,9 @@ dependencies = [
  "log",
  "multimap",
  "petgraph",
- "prettyplease",
  "prost",
  "prost-types",
  "regex",
- "syn 2.0.117",
  "tempfile",
 ]
 
