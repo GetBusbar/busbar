@@ -838,7 +838,11 @@ fn a_published_snapshot_is_copied_before_its_generation_retires() {
     target.clear(); // the next generation replaces what the old one named
     snapshot.generation = 3;
     let copy = got.owned.expect("a snapshot was published");
-    assert_eq!(copy.generation, 2);
+    assert_eq!(
+        (copy.generation, snapshot.generation),
+        (2, 3),
+        "the copy keeps the generation the plugin has since replaced"
+    );
     assert_eq!(copy.audience, "probe-audience");
     assert_eq!(copy.claims.len(), 1);
     assert_eq!(
