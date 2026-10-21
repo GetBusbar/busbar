@@ -408,5 +408,5 @@ fn probe_release_crosses_the_seam() {
         .probe_epoch
         .expect("an expired cooldown re-admits via a probe");
     // Released without ever completing the dispatch: does not panic, does not wedge the cell.
-    breaker.release_probe("pool", DestinationId::new(5), epoch);
+    breaker.release_probe("pool", DestinationId::new(5), epoch, 100_000);
 }
