@@ -1087,12 +1087,13 @@ async fn framed_over_h2(at: SocketAddr, path: &str, body: &'static [u8]) -> Clos
     (status, head, collected.to_bytes().to_vec(), closing)
 }
 
-/// A FRAMED CLAIM'S CLOSING BLOCK REACHES ITS CALLER ON BOTH PATHS (ARCHITECT 4l): the test plane's
-/// framed claim, framed by its own framer (the neutral frame door, dropped in), answers its messages
-/// and closes with the framer's own closing block (the unit's final status, message and details);
-/// over h2 the caller reads the same answer and the same closing block handed up and framed.
+/// A FRAMED CLAIM'S CLOSING BLOCK IS NEVER SURFACED ON THE DATA LISTENER (`BUSBAR-1.6.0.md`
+/// l.731-732, no trailer piece on the transport ABI; l.4794, the caller output drops trailers, as
+/// 1.5.5's did): the test plane's framed claim, framed by its own framer (the neutral frame door,
+/// dropped in), answers its messages, and no trailer field reaches the caller, over h1 (chunked,
+/// the caller asking for trailers) and over h2, handed up and framed alike.
 #[tokio::test(flavor = "current_thread")]
-async fn a_framed_claims_closing_block_reaches_its_caller_on_both_paths() {
+async fn a_framed_claims_closing_block_is_never_surfaced_on_the_data_listener() {
     let _one = PUBLISHING.lock().await;
     let local = tokio::task::LocalSet::new();
     local
@@ -1100,14 +1101,48 @@ async fn a_framed_claims_closing_block_reaches_its_caller_on_both_paths() {
             let rig = rig("accepted-framed-claim", Chain::Keys, 0);
             let handed_up = rig.handed_up();
             let framed = rig.framed(rig.linked_framer());
+            let messages: &'static [u8] = b"\x02hi\x03abc";
             for path in ["/framed/status", "/framed/ok"] {
-                let left = framed_over_h2(handed_up, path, b"\x02hi\x03abc").await;
-                let right = framed_over_h2(framed, path, b"\x02hi\x03abc").await;
+                // h2: the answer and its body, and no trailer field.
+                let left = framed_over_h2(handed_up, path, messages).await;
+                let right = framed_over_h2(framed, path, messages).await;
                 assert!(
-                    left.3.iter().any(|(name, _)| name == "frame-status"),
-                    "{path}: the hand-up delivers the framer's closing block: {left:?}"
+                    !left.2.is_empty(),
+                    "{path}: the framed answer's body arrives"
                 );
-                assert_eq!(left, right, "{path}: the framed claim's answers differ");
+                assert!(
+                    left.3.is_empty() && right.3.is_empty(),
+                    "{path}: no trailer field on h2: {:?} / {:?}",
+                    left.3,
+                    right.3
+                );
+                assert_eq!(left, right, "{path}: the h2 answers differ");
+                // h1, chunked, the caller asking for trailers.
+                let request = post(
+                    path,
+                    "TE: trailers\r\n",
+                    "application/octet-stream",
+                    messages,
+                    true,
+                );
+                let l = exchange(handed_up, request.clone()).await;
+                let r = exchange(framed, request).await;
+                let text = String::from_utf8_lossy(&l).to_ascii_lowercase();
+                assert!(text.contains(" 200 "), "{path}: the h1 answer: {text}");
+                for name in ["frame-status", "frame-message", "frame-details"] {
+                    assert!(!text.contains(name), "{path}: no {name} on h1: {text}");
+                }
+                if text.contains("transfer-encoding: chunked") {
+                    assert!(
+                        text.ends_with("\r\n0\r\n\r\n"),
+                        "{path}: the last chunk carries no trailer field: {text:?}"
+                    );
+                }
+                assert_eq!(
+                    String::from_utf8_lossy(&l),
+                    String::from_utf8_lossy(&r),
+                    "{path}: the h1 answers differ"
+                );
             }
         })
         .await;
