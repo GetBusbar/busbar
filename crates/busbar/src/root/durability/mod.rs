@@ -180,6 +180,9 @@ pub use seal::{keyset_of, KeySetVerifier};
 /// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
 /// module, as `replay` is; its methods are `Durability`'s own.
 mod audit;
+// Its one caller is the admin unit's audit range read (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
+pub use audit::AuditWindowAt;
 
 /// The three disaster-recovery verbs over the node's journal and the configured store (status row
 /// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
@@ -251,7 +254,7 @@ pub struct Durability {
     /// THE WINDOWS EACH SEAL OF THIS PROCESS LEFT OUT AND THE BOOK THEN LET GO, by the sequence
     /// number of the seal that left them out. A held checkpoint is re-derived from the whole chain,
     /// which still carries every retired window; the book a seal was taken from did not, so the
-    /// walk drops every window retired at or before that seal ([`Durability::retired_through`]).
+    /// walk drops every window retired at or before that seal ([`held::HeldWalk`]).
     /// One entry per seal that retired something, holding window instants only, never balances.
     /// In memory only, as the book's retirement is: a restarted node rebuilds every window.
     retired_at: std::collections::BTreeMap<u64, std::collections::BTreeSet<WindowStart>>,
@@ -381,6 +384,65 @@ fn chain_of(
     }
 }
 
+/// What a read of the whole chain answers: the records oldest first, or why it could not be read.
+pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
+
+/// THE CHAIN AS OF ONE HOLD OF THE BOOK'S LOCK, to be read after letting go of it
+/// ([`Durability::chain_at`]). On a journal resumed from the store, reading the whole chain scans
+/// the store through its plugin, a wait per block of the chain; the book's lock is the one every
+/// unit's open, settle and seal takes on the request path, so a read off the request path takes
+/// this under the lock and reads it without (THE DESIGN §11.2: no blocking on the hot path).
+pub struct ChainAt(ChainSource);
+
+/// Where a [`ChainAt`] reads from.
+enum ChainSource {
+    /// Already read, under the lock: a disk, or a journal with no store behind it, reads no plugin.
+    Read(ChainRead),
+    /// What the node holds of a chain the store keeps; the store is read by [`ChainAt::read`].
+    Stored(store_chain::HeldChain),
+}
+
+impl ChainAt {
+    /// The chain as of the hold it was taken under: [`Durability::chain`]'s answer for that moment.
+    ///
+    /// # Errors
+    ///
+    /// The chain could not be read back.
+    pub fn read(self) -> ChainRead {
+        match self.0 {
+            ChainSource::Read(read) => read,
+            ChainSource::Stored(held) => held.read(),
+        }
+    }
+
+    /// The configured store the chain is read from, on a journal resumed from one.
+    fn store(&self) -> Option<&str> {
+        match &self.0 {
+            ChainSource::Read(_) => None,
+            ChainSource::Stored(held) => Some(held.store()),
+        }
+    }
+
+    /// The newest migration marker on the chain: [`Durability::migration_marker`], as of the hold.
+    #[must_use]
+    pub fn migration_marker(self) -> Option<MigrationMarker> {
+        let replayed = self.read().ok()?.ok()?;
+        replayed
+            .iter()
+            .filter(|r| r.class == RecordClass::Migration)
+            .max_by_key(|r| r.node_seq)
+            .and_then(|r| migration_marker_from(&r.body))
+    }
+}
+
+/// WHY A CHAIN READ FAILED, as [`Durability::unreadable`] says it, for a chain kept in `store`.
+fn unreadable_in(store: Option<&str>, e: &std::io::Error) -> String {
+    match store {
+        Some(store) => format!("the journal could not be read back from the store `{store}`: {e}"),
+        None => format!("the journal could not be read back: {e}"),
+    }
+}
+
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
 /// at the moment of the read.
 pub type HistorySource = Box<dyn Fn() -> Option<PinnedHistory> + Send + Sync>;
@@ -423,10 +485,23 @@ impl Durability {
     /// # Errors
     ///
     /// The chain could not be read back.
-    pub fn chain(
-        &self,
-    ) -> std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>> {
-        chain_of(&self.journal, self.store_kept())
+    pub fn chain(&self) -> ChainRead {
+        self.chain_at().read()
+    }
+
+    /// [`Durability::chain`] in two halves: what the node holds of the chain, taken here under the
+    /// book's lock, and the store read by [`ChainAt::read`] once the lock is let go. A read off the
+    /// request path takes this rather than the whole chain, so no unit waits on the store plugin
+    /// for it (THE DESIGN §11.2).
+    #[must_use]
+    pub fn chain_at(&self) -> ChainAt {
+        ChainAt(match self.store_kept() {
+            Some(lane) => match store_chain::HeldChain::of(&self.journal, lane) {
+                Ok(held) => ChainSource::Stored(held),
+                Err(e) => ChainSource::Read(Err(e)),
+            },
+            None => ChainSource::Read(self.journal.replay()),
+        })
     }
 
     /// The lane the chain is kept through, on a journal resumed from the store.
@@ -438,13 +513,7 @@ impl Durability {
     /// [`build_on_store`] gives a store that would not read the chain back the first time. A boot
     /// step that reads the chain again never takes a failed read for an empty chain.
     pub(crate) fn unreadable(&self, e: &std::io::Error) -> String {
-        match self.store_kept() {
-            Some(lane) => format!(
-                "the journal could not be read back from the store `{}`: {e}",
-                lane.store()
-            ),
-            None => format!("the journal could not be read back: {e}"),
-        }
+        unreadable_in(self.store_kept().map(JournalLane::store), e)
     }
 
     /// The host's lane to the configured store, on a book built over one.
@@ -586,18 +655,6 @@ impl Durability {
         }
     }
 
-    /// Every window this process retired at or before the seal `checkpoint_seq`: the windows the
-    /// book that seal was taken from no longer held, though the chain still carries them.
-    pub(super) fn retired_through(
-        &self,
-        checkpoint_seq: u64,
-    ) -> std::collections::BTreeSet<WindowStart> {
-        self.retired_at
-            .range(..=checkpoint_seq)
-            .flat_map(|(_, windows)| windows.iter().copied())
-            .collect()
-    }
-
     /// The newest migration marker on the chain, if this deployment has migrated.
     ///
     /// The same replay [`JournalMigrationRecords::read_marker`] does, reachable without a durability
@@ -611,12 +668,7 @@ impl Durability {
     /// treating one as the other there is how a deployment re-opens balances it already opened.
     #[must_use]
     pub fn migration_marker(&self) -> Option<MigrationMarker> {
-        let replayed = self.chain().ok()?.ok()?;
-        replayed
-            .iter()
-            .filter(|r| r.class == RecordClass::Migration)
-            .max_by_key(|r| r.node_seq)
-            .and_then(|r| migration_marker_from(&r.body))
+        self.chain_at().migration_marker()
     }
 
     /// OPEN A HOLD ON THE BOOK AND ON THE JOURNAL, before the unit it reserves for runs (item 127).
