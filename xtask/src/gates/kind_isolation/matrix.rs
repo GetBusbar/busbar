@@ -4712,6 +4712,10 @@ pub fn selftest<'a>(
     // The subject of every GREEN case planted into the fixture crate: the bare fixture's own
     // findings out of view, so the control is the tree with the fixture in it ([`OverFixture`]).
     let over_fixture: &'a dyn crate::gates::Gate = OverFixture::leak(cx, gate);
+    // The cases that read the gate AS REGISTERED read it against the same HEAD-pinned base the
+    // subject runs on ([`super::debt_free::HeadPinned`]): on a checkout with no derivable merge-base
+    // they were red before any plant.
+    let registered: &'a dyn crate::gates::Gate = super::debt_free::HeadPinned::leak(cx, registered);
 
     // THE ROW IS REPORT-ONLY, AND ITS NUMBER STILL COUNTS (owner 2026-10-03: "the matrix is a
     // measured to-do list, not a gate"). `gate` (the subject below) runs the rule with its findings

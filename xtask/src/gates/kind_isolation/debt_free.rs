@@ -171,6 +171,65 @@ fn pinned(cx: &Ctx, sha: Option<&str>) -> Ctx {
     cx.with_overlay(ov)
 }
 
+/// THE REGISTERED GATE, MEASURED AGAINST THE SAME PINNED BASE AS [`DebtFree`], AND NOTHING ELSE.
+///
+/// A case that reads the gate AS REGISTERED (its debt in view, its report-only rows report-only)
+/// still runs rules that compare the tree with the merge-base, and on a checkout that cannot
+/// establish one (the `test` check's detached commit, no `XTASK_CEILING_BASE`) every such rule
+/// answers `no-base`: the registered matrix row went FAIL before any plant, so its report-only case
+/// read red and its presence case was PROOF IMPOSSIBLE, on every checkout made that way and on no
+/// other. Pinning the base to `HEAD` (the commit the battery stands on, read once per root by
+/// [`pinned_base`]) makes the plant the only difference between the two halves of the proof, as it
+/// is for [`DebtFree`]. No finding is taken out of view.
+pub(super) struct HeadPinned<'a> {
+    inner: &'a dyn Gate,
+    base: Option<String>,
+}
+
+impl<'a> HeadPinned<'a> {
+    /// Leaked for the battery's lifetime, as the battery's own context is: the cases borrow it.
+    pub(super) fn leak(cx: &Ctx, inner: &'a dyn Gate) -> &'a HeadPinned<'a> {
+        Box::leak(Box::new(HeadPinned {
+            inner,
+            base: pinned_base(cx),
+        }))
+    }
+}
+
+impl Gate for HeadPinned<'_> {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    /// ITS OWN BASELINE: the registered gate's cached one may have been taken unpinned.
+    fn baseline_key(&self) -> Option<String> {
+        let base = self.base.as_deref().unwrap_or("-");
+        self.inner
+            .baseline_key()
+            .map(|k| format!("{k}\u{3}head-pinned\u{3}{base}"))
+    }
+
+    fn owed(&self) -> Vec<String> {
+        self.inner.owed()
+    }
+
+    fn skip_allow(&self) -> Vec<String> {
+        self.inner.skip_allow()
+    }
+
+    fn informational(&self) -> Vec<String> {
+        self.inner.informational()
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        self.inner.run(&pinned(cx, self.base.as_deref()))
+    }
+
+    fn selftest<'b>(&'b self, _cx: &'b Ctx) -> Report<'b> {
+        Report::new()
+    }
+}
+
 /// THE SHIPPED GATE WITH TODAY'S DEBT OUT OF VIEW. See the module header.
 pub(super) struct DebtFree {
     pub(super) inner: super::KindIsolationGate,
