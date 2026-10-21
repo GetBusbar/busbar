@@ -350,14 +350,9 @@ impl DiskRotate {
     }
 }
 
-// THE DISK LANE'S TWO DEFAULTS, both 1.5.5 parity, each a one-line change here and nowhere else.
-
-/// The rotation a destination gets when its manifest declares no `keep` for it.
+/// The rotation a destination gets when its manifest declares no `keep` for it: 1.5.5's
+/// truncation in place, the host's one default (a one-line change here and nowhere else).
 pub const DISK_ROTATE_UNDECLARED: DiskRotate = DiskRotate::Truncate;
-
-/// Whether a truncation in place is reported as a rotation ([`DiskReport::rotated`]). A rename
-/// always is.
-pub const DISK_TRUNCATE_REPORTS_ROTATED: bool = false;
 
 /// How many archives the host keeps for a destination it rotates by rename without a declared
 /// `keep` (`<path>.1` .. `<path>.9`): the count [`DISK_ROTATE_UNDECLARED`] names when that default
@@ -374,8 +369,8 @@ pub const DISK_ROTATE_KEY: &str = "rotate_mb";
 pub struct DiskReport {
     /// `0` = the bytes landed; else the failed step (`DISK_OPEN_FAILED` / `DISK_APPEND_FAILED`).
     pub step: u64,
-    /// Whether the file was rotated before the append: renamed to its first archive, or truncated
-    /// in place when [`DISK_TRUNCATE_REPORTS_ROTATED`].
+    /// Whether the file was renamed to its first archive before the append. A truncation in place
+    /// is not reported, as 1.5.5 reported none (v1.5.5 `crates/busbar/src/export/file.rs:96-108`).
     pub rotated: bool,
     /// The rotation steps that failed (`DISK_RETENTION_FAILED` | ...).
     pub faults: u8,

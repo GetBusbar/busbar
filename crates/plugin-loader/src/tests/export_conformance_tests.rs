@@ -82,9 +82,7 @@ use busbar_contract::conn::{
 };
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::ids::StreamId;
-use busbar_contract::services::{
-    DiskDest, DiskReport, DiskRotate, Later, Ran, DISK_TRUNCATE_REPORTS_ROTATED,
-};
+use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later, Ran};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
@@ -258,8 +256,8 @@ impl EnvelopeSink for Tape {
 
 /// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
 /// bound for the caller's destination key, rotating first when the file already holds `rotate_at`
-/// bytes — truncated in place under `DiskRotate::Truncate` (1.5.5, reported as no rotation unless
-/// [`DISK_TRUNCATE_REPORTS_ROTATED`]), or renamed keeping `keep` archives under
+/// bytes — truncated in place under `DiskRotate::Truncate` (1.5.5, reported as no rotation), or
+/// renamed keeping `keep` archives under
 /// `DiskRotate::Rename` ([`crate::host::rotate`]) — then opening it (created if absent) and writing
 /// the bytes whole: the same rules the kernel's lane follows.
 struct DiskHost;
@@ -290,7 +288,7 @@ impl DiskHost {
             .append(!truncate)
             .truncate(truncate)
             .open(&dest.path);
-        let rotated = renamed || (DISK_TRUNCATE_REPORTS_ROTATED && truncate && opened.is_ok());
+        let rotated = renamed;
         let report = |step, error: String| DiskReport {
             step,
             rotated,

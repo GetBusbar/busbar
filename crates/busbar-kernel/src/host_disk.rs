@@ -20,9 +20,10 @@
 //!   [`DiskRotate`] for it says (from the manifest's per-destination `keep`, or the host's default).
 //!   [`DiskRotate::Truncate`] is 1.5.5's request-log rollover (`crates/busbar/src/export/file.rs`
 //!   at v1.5.5): the live file is TRUNCATED IN PLACE — same inode, no rename, no archive, nothing
-//!   else written — and, as in 1.5.5, reported as no rotation. [`DiskRotate::Rename`] rotates BY
-//!   RENAME: the oldest archive is dropped, the rest shift up one slot, the live file becomes
-//!   `<path>.1`. Each failed rename step is reported and the rest still run; a failed final rename
+//!   else written — and reported as no rotation: 1.5.5 reported nothing of it (v1.5.5
+//!   `crates/busbar/src/export/file.rs:96-108`; no log line, metric or record).
+//!   [`DiskRotate::Rename`] rotates BY RENAME: the oldest archive is dropped, the rest shift up one
+//!   slot, the live file becomes `<path>.1`. Each failed rename step is reported and the rest still run; a failed final rename
 //!   leaves the live file to keep growing.
 
 use std::collections::HashSet;
@@ -35,9 +36,7 @@ use busbar_contract::abi::host::service::{
     DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
     DISK_SHIFT_FAILED,
 };
-use busbar_contract::services::{
-    DiskDest, DiskReport, DiskRotate, Later, DISK_TRUNCATE_REPORTS_ROTATED,
-};
+use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later};
 
 /// The most appends the lane holds, queued or running.
 pub const LANE_BOUND: usize = 4096;
@@ -164,7 +163,7 @@ pub fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
         .append(!truncate)
         .truncate(truncate)
         .open(&dest.path);
-    let rotated = renamed || (DISK_TRUNCATE_REPORTS_ROTATED && truncate && opened.is_ok());
+    let rotated = renamed;
     let report = |step, error| DiskReport {
         step,
         rotated,
