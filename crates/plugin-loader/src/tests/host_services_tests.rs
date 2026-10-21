@@ -3221,3 +3221,48 @@ fn red_retiring_a_connection_sides_ticket_ends_its_framing() {
     drop(live);
     assert_eq!(side.ended.lock().unwrap().last(), Some(&held));
 }
+
+/// RED (/status row 192 B, the unit's pairing): the framing the loader names on every auth-handle
+/// call (`framing_of` the op's ticket) is the contract's one reading of a ticket
+/// (`Ticket::framing`), the number the connector names its framing by
+/// (`Framing::framing_id`): its slot and its generation, never colliding across either.
+#[test]
+fn red_the_loaders_framing_is_the_contracts_reading_of_the_ticket() {
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    let tickets = [
+        Ticket {
+            slot: 0,
+            generation: 1,
+        },
+        Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        Ticket {
+            slot: 1,
+            generation: 2,
+        },
+        Ticket {
+            slot: u32::MAX,
+            generation: u32::MAX,
+        },
+    ];
+    for t in tickets {
+        assert_eq!(
+            crate::dispatch::auth_handle::framing_of(t),
+            t.framing(),
+            "{t:?}"
+        );
+        assert_eq!(
+            t.framing(),
+            (u64::from(t.slot) << 32) | u64::from(t.generation),
+            "{t:?}"
+        );
+    }
+    let named: std::collections::HashSet<u64> = tickets.iter().map(|t| t.framing()).collect();
+    assert_eq!(
+        named.len(),
+        tickets.len(),
+        "no two tickets name one framing"
+    );
+}

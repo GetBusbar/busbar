@@ -587,6 +587,9 @@ pub struct Framing {
     parked: Vec<Parked>,
     /// The listener's guest list lent at `begin`, held for the framing's life.
     lent: Option<Arc<GuestLines>>,
+    /// The ticket its `begin` crossed on, kept idle between its ops: its identity
+    /// ([`Framing::framing_id`]). `None` = ticket-less.
+    home: Option<busbar_contract::abi::mechanism::ticket::Ticket>,
 }
 
 /// The most ticketed ops one framing may have parked at once: each holds a ticket of the host's,
@@ -1328,6 +1331,18 @@ impl Framing {
         )
     }
 
+    /// THE FRAMING'S IDENTITY, as the loader names it on every auth-handle call the framer makes
+    /// inside one of its ops (`AuthCallAsk::framing`, `HandInAsk::framing`: `framing_of` the op's
+    /// ticket, [`busbar_contract::abi::mechanism::ticket::Ticket::framing`]): the ticket its
+    /// `begin` crossed on, which the framing keeps idle and crosses its next op on while no op is
+    /// parked. An op that crosses while another is parked holds a ticket of its own, whose
+    /// framing the loader names by THAT ticket. `None` = a ticket-less framing.
+    #[must_use]
+    pub fn framing_id(&self) -> Option<u64> {
+        self.home
+            .map(busbar_contract::abi::mechanism::ticket::Ticket::framing)
+    }
+
     /// The guest list the framing was lent at `begin`, held for its life; `None` = none.
     #[must_use]
     pub fn guests(&self) -> Option<&Arc<GuestLines>> {
@@ -1353,6 +1368,7 @@ impl Framing {
             idle: Vec::new(),
             parked: Vec::new(),
             lent: guests.clone(),
+            home: ticket.as_ref().map(|t| t.ticket()),
         };
         let op = Ticketed::Begin {
             side,
@@ -1689,6 +1705,7 @@ impl Framing {
             idle: Vec::new(),
             parked: Vec::new(),
             lent: None,
+            home: None,
         };
         let mut y = Yielded::default();
         if !f.bufs.take(&o, &mut y)? {

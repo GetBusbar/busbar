@@ -908,3 +908,47 @@ fn red_a_guest_list_with_auth_points_is_never_lent_ticket_less() {
     }
     assert_eq!(door.count("begin"), 1, "the dial crossed nothing");
 }
+
+/// RED (/status row 192 B, the unit's pairing): an accepting framing's identity
+/// ([`Framing::framing_id`]) is the number the loader names its framing by on every auth-handle
+/// call its framer makes inside an op (`framing_of` the op's ticket, the ticket's slot and
+/// generation as one number): the ticket its `begin` crossed on, and every op that crosses while
+/// none is parked crosses on that same ticket. A ticket-less framing names none.
+#[test]
+fn red_an_accepting_framings_identity_is_the_framing_the_loader_names() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
+    let (mut f, _) = Framing::begin_lent(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        Some(two_lines(0)),
+    )
+    .unwrap();
+    f.ingest(b"x", false).unwrap();
+    f.emit(1, b"y", true, false).unwrap();
+    let on = door.on.lock().unwrap().clone();
+    assert_eq!(
+        on.len(),
+        3,
+        "begin, ingest and emit each crossed on a ticket: {on:?}"
+    );
+    for (op, t, _) in &on {
+        let named = (u64::from(t.slot) << 32) | u64::from(t.generation);
+        assert_eq!(
+            f.framing_id(),
+            Some(named),
+            "`{op}` crossed on the framing's own ticket, named as the loader names it"
+        );
+    }
+    let bare = Arc::new(TestDoor::identity("bytes"));
+    let (ticketless, _) = Framing::begin_lent(
+        bare,
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        Some(two_lines(0)),
+    )
+    .unwrap();
+    assert_eq!(ticketless.framing_id(), None);
+}

@@ -319,6 +319,7 @@ impl Kit {
                 unit,
                 line: self.line(path),
                 conn,
+                stream: 1,
                 framing: Some(conn),
                 head,
             })
@@ -334,6 +335,7 @@ impl Kit {
                 unit,
                 line: self.line(line_path),
                 conn: 1,
+                stream: 1,
                 framing: Some(1),
                 head,
             })
@@ -1505,6 +1507,7 @@ fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
             unit: UnitRef::NONE,
             line: k.line(MESSAGES),
             conn: 9,
+            stream: 1,
             framing: Some(40),
             head: post(MESSAGES, &[], None),
         }),
@@ -1601,4 +1604,35 @@ fn red_a_listeners_guest_list_is_lent_to_its_own_transport_alone() {
         k.inbound.lent(OWNER, GEN + 1).is_none(),
         "nor another generation"
     );
+}
+
+/// RED (/status row 192 B, the unit's pairing): a hand-in names the stream its request arrived on
+/// (`HandIn::stream`), and the kernel keeps where each unit was handed in, so the request the
+/// connector carries on (owner, framing, stream) pairs with the unit the kernel admitted it as;
+/// another stream, framing or owner names none.
+#[test]
+fn red_a_hand_in_keeps_the_stream_its_request_arrived_on() {
+    let a = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+    let k = kit(&[("a", a)]);
+    let mut get = post(HEALTHZ, &[], None);
+    get.method = "GET".to_string();
+    let (flow, unit) = k
+        .inbound
+        .hand_in(HandIn {
+            owner: OWNER,
+            generation: GEN,
+            auth: k.id(HEALTHZ),
+            unit: UnitRef::NONE,
+            line: k.line(HEALTHZ),
+            conn: 3,
+            stream: 5,
+            framing: Some(30),
+            head: get,
+        })
+        .expect("handed in");
+    assert_eq!(flow, FLOW_CONTINUE);
+    assert_eq!(k.inbound.handed_on(OWNER, 30, 5), Some(unit.id));
+    assert_eq!(k.inbound.handed_on(OWNER, 30, 7), None, "another stream");
+    assert_eq!(k.inbound.handed_on(OWNER, 31, 5), None, "another framing");
+    assert_eq!(k.inbound.handed_on(OWNER + 1, 30, 5), None, "another owner");
 }

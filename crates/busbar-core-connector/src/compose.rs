@@ -1004,6 +1004,15 @@ impl Connection {
         matches!(self.phase, Phase::Open) && !self.opening_owed
     }
 
+    /// THE FRAMING'S IDENTITY ([`Framing::framing_id`]): the number the loader names this
+    /// connection's framing by on every auth-handle call its framer makes (`framing_of` the op's
+    /// ticket), so an admitted request pairs with its unit by (owner, framing, stream). `None`
+    /// before the framing begins, for a carrier carried as itself, and for a ticket-less framing.
+    #[must_use]
+    pub fn framing_id(&self) -> Option<u64> {
+        self.framing.as_ref().and_then(Framing::framing_id)
+    }
+
     /// Whether an op is parked on the framing's ticket, waiting for its wake.
     fn parked(&self) -> bool {
         self.framing.as_ref().is_some_and(Framing::parked)

@@ -205,6 +205,9 @@ pub struct HandIn {
     pub line: u32,
     /// The connection, as the transport names it.
     pub conn: u64,
+    /// The stream on the connection the request arrived on, as the transport names it: with
+    /// [`HandIn::framing`], what pairs the request the connector carries with its unit.
+    pub stream: u64,
     /// The framing the hand-in was made on ([`Call::framing`]): a `Peer` line's verdict is its
     /// framing's. `None` for a ticketless hand-in, which no `Peer` verdict reaches.
     pub framing: Option<u64>,
@@ -451,6 +454,8 @@ struct UnitState {
     credential: Option<Secret<String>>,
     /// The governance key the `keys` arm resolved, held until the verdict is fixed.
     resolved: Option<Arc<crate::governance::VirtualKey>>,
+    /// Where it was handed in: (framing, stream), on a hand-in made on a framing.
+    handed: Option<(u64, u64)>,
 }
 
 impl UnitState {
@@ -475,6 +480,7 @@ impl UnitState {
             admitted: None,
             credential: None,
             resolved: None,
+            handed: None,
         }
     }
 
@@ -1352,8 +1358,20 @@ impl Inbound {
         };
         if let Some(u) = self.units().get_mut(&unit.id) {
             u.head = Some(h.head);
+            // RED: where it was handed in is not kept.
         }
         Ok((flow, unit))
+    }
+
+    /// THE UNIT HANDED IN on `owner`'s framing `framing`, stream `stream` ([`HandIn::framing`],
+    /// [`HandIn::stream`]): what pairs the request the connector carries on that stream with the
+    /// unit the kernel admitted it as. `None` = no live unit was handed in there.
+    #[must_use]
+    pub fn handed_on(&self, owner: u64, framing: u64, stream: u64) -> Option<u64> {
+        self.units()
+            .iter()
+            .find(|(_, u)| u.owner == owner && u.handed == Some((framing, stream)))
+            .map(|(id, _)| *id)
     }
 
     /// The hand-in's checks (a) to (c) (l.953-958).

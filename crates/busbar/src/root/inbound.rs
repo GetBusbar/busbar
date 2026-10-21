@@ -158,6 +158,8 @@ impl AuthHandleHost for LoaderSide {
             unit: ask.unit,
             line: ask.line,
             conn: ask.conn,
+            // RED: the stream is dropped.
+            stream: 0,
             framing: ask.framing,
             head: head_of(ask.request),
         })
