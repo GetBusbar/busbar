@@ -4229,7 +4229,7 @@
    "paths": [
     "crates/busbar-transport-stdio/declares.json"
    ],
-   "tree_hash": "01fa645758cc104a9640dc61ac36f22b6b13355cd9bdf5299193eec421bff58e",
+   "tree_hash": "855073c2d02da396e4427db0fa89369bdb86eb1ea22db10a4f4f768009e77f73",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -4241,7 +4241,7 @@
    },
    "report": "The stdio transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the carrier states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
    "auditor": "opus-r159c-declares",
-   "fixed_at": null,
+   "fixed_at": "33da611afd41dde4e5594c42ce6d3079dbb3caaf",
    "rounds": [
     {
      "round": 1,
