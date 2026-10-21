@@ -184,3 +184,31 @@ fn a_default_inbound_style_with_no_carrier_is_refused_at_load() {
         "{err}"
     );
 }
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20 on
+/// root#7 / loader#9: reading a row's static declaration, its kind tail included, is reading, not
+/// loading). The boot's fact reads — the credential readers, the default inbound style, the
+/// operator row, a module's carriers — read every linked row's Statement and bind none; opening
+/// the one module config names binds that row and no other.
+#[test]
+fn a_linked_row_the_configuration_does_not_name_is_never_bound() {
+    let rows = linking(&[("plain", plain::door), ("default-a", default_a::door)]);
+    let bound = || {
+        rows.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    assert_eq!(rows.default_inbound_style().map(|c| c.len()), Ok(3));
+    assert!(rows.credential_readers().is_empty());
+    assert_eq!(rows.operator(), None);
+    assert_eq!(rows.carriers("plain").len(), 3);
+    assert_eq!(bound(), Vec::<String>::new(), "a fact read binds no row");
+    rows.open("plain", "plain", &serde_json::json!({}))
+        .expect("the named row opens");
+    assert_eq!(
+        bound(),
+        vec!["plain".to_string()],
+        "only the named row is bound"
+    );
+}
