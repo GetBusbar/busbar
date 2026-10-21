@@ -126,12 +126,13 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
 
 /// Whether `arg` is a flag a linked plane declares — the first word of one of its `Flags:` rows.
 /// EVERY PLANE'S `busbar --help` ROWS: each linked row's (its `cli-help` axis), then each linked
-/// plane door's, read off its tail's `cli_help` without binding it (a door states one `Flags:` block),
-/// in manifest order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
+/// plane door's, read off its tail's `cli_help` without binding it, in the contract's grammar
+/// (`busbar_contract::abi::plane::cli_help`: its tagline, `Flags:` and `ENDPOINTS` rows), in manifest
+/// order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
 pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
     // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
-    // each lent out as a one-row slice: nothing is leaked to give them their `'static` life.
-    static DOOR_ROWS: std::sync::OnceLock<Vec<super::linked::CliHelpRow>> =
+    // each door's lent out as one slice: nothing is leaked to give them their `'static` life.
+    static DOOR_ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
         std::sync::OnceLock::new();
     let door_rows = DOOR_ROWS.get_or_init(|| {
         crate::LINKED
@@ -139,14 +140,16 @@ pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
             .iter()
             .filter_map(|door| {
                 match crate::root::loader::dispatch::kinds::plane::linked_cli_help(*door) {
-                    Ok(Some(text)) => Some(("flag", text)),
+                    Ok(Some(text)) => {
+                        Some(busbar_contract::abi::plane::cli_help::rows(text).collect())
+                    }
                     _ => None,
                 }
             })
             .collect()
     });
     let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
-    rows.extend(door_rows.iter().map(std::slice::from_ref));
+    rows.extend(door_rows.iter().map(Vec::as_slice));
     rows
 }
 

@@ -77,11 +77,11 @@
   },
   "root_legs": {
     "root-llm": {
-      "file": "crates/busbar/src/root/tests/plane_node.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "columns": [
         "llm"
       ],
-      "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
+      "note": "the LLM plane over the loop on its door's served leg: the llm door bound through the loader's one load and mounted on the data router, each cell a unit served end to end by root/tests/serve_tests.rs (carried by serve.rs through #[path]); the node's own cells (root/tests/plane_node.rs) compile only under the node axis no linked row carries, so they prove nothing CI runs"
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/serve.rs",
@@ -125,7 +125,7 @@
       "capability": "breaker-trip",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell",
+      "test": "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell",
       "root": {
         "state": "none",
         "leg": "root-llm",
@@ -191,7 +191,7 @@
       "capability": "breaker-fastfail",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next",
+      "test": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_walks_past_a_suppressed_preferred_member",
       "root": {
         "state": "none",
         "leg": "root-llm",
@@ -257,7 +257,7 @@
       "capability": "failover-reroute",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
+      "test": "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
       "root": {
         "state": "none",
         "leg": "root-llm",
@@ -321,7 +321,7 @@
       "capability": "hooks-tap",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order",
+      "test": "crates/busbar-plane-llm/tests/on_driver/seam.rs::apply_global_rewrites_chains_in_order",
       "root": {
         "state": "none",
         "leg": "root-llm",
@@ -388,7 +388,7 @@
       "capability": "hooks-gate",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request",
+      "test": "crates/busbar-plane-llm/tests/on_driver/seam.rs::global_gate_reject_short_circuits_the_request",
       "root": {
         "state": "none",
         "leg": "root-llm",
@@ -458,7 +458,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_an_error_end_as_one_error_record"
       }
     },
     {
@@ -523,11 +523,11 @@
       "capability": "governance-budget",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker",
+      "test": "crates/busbar-plane-llm/tests/exchange_reply.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker",
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_spent_budget_without_charging_anything"
       }
     },
     {
@@ -598,7 +598,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_classifies_by_the_mapped_code_not_the_status"
       }
     },
     {
@@ -861,7 +861,7 @@
       "capability": "egress-auth",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::anthropic_egress_carries_exactly_the_declared_headers",
+      "test": "crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim",
       "root": {
         "state": "none",
         "leg": "root-llm",
@@ -933,7 +933,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_switched_table_names_every_dialect_the_plane_names"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches"
       }
     },
     {

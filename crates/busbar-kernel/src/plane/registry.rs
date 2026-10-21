@@ -155,22 +155,22 @@ impl PlaneBootCtx for BootCtx {
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
     /// hydration, which is correct: hydration reads exactly the generation it is restoring into). Named
-    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane_host::engine_host`
+    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane_driver::engine_host`
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
-    fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
+    fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_driver::EngineHost> {
         // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY
         // host over it (no live handle yet, which is correct — hydration reads exactly the
         // generation it restores into); the start phase supplies the live `handle` and mints a host
         // over its current load (`from_handle`), byte-identical to the old start hook's
         // `handle.load()`-driven reads. Exactly one of the two is present per phase.
         if let Some(handle) = self.handle.as_ref() {
-            crate::plane_host::engine_host_from_handle(handle)
+            crate::plane_driver::engine_host_from_handle(handle)
         } else {
             let app = self.app.as_ref().expect(
                 "engine_host runs in the HYDRATE phase (app) or the START phase (handle); one is present",
             );
-            crate::plane_host::engine_host(app)
+            crate::plane_driver::engine_host(app)
         }
     }
 
@@ -241,9 +241,9 @@ pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
 /// back when the MCP plane was an automatic built-in there (see [`BUILTIN_PLANE_DECLS`]). With no
 /// plane auto-registered under `cfg(test)` any more, [`plane_decl_for_config_section`] finds no
 /// `tools:`-owning plane and this is never actually reached — kept only so the (now dead-at-runtime)
-/// call chain in `test_support::TestApp::build` still compiles; a test that wants the real MCP
-/// runtime seeded registers the plane itself (`busbar_mcp::testkit::install_test_seams()`) and drives
-/// its own fixture, exactly as an external `test-support` consumer already did.
+/// call chain in `test_support::TestApp::build` still compiles; a test that wants a plane's real
+/// runtime seeded registers that plane itself and installs its runtime
+/// (`TestApp::install_plane_runtime`), exactly as an external `test-support` consumer already did.
 #[cfg(test)]
 pub fn default_section_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     std::sync::Arc::new(())
@@ -593,7 +593,7 @@ pub fn build_dispatch(
 }
 
 // `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
-// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
+// cleanup): most of it drove the REAL the retired engine crate/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
 // `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`
@@ -706,7 +706,7 @@ pub trait PlaneBootCtx {
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
     /// hydration). The returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
-    fn engine_host(&self) -> std::sync::Arc<dyn crate::plane_host::EngineHost>;
+    fn engine_host(&self) -> std::sync::Arc<dyn crate::plane_driver::EngineHost>;
 
     /// Recover the concrete core `BootCtx` as `&dyn Any` — the hatch an in-core plane twin (A2A)
     /// downcasts through to reach the phase fields (`app`, `handle`, `card_issuer`) that name core-live
@@ -803,6 +803,12 @@ plane_behaviour! {
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
     wire_format_names: fn() -> &'static [&'static str],
+
+    /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
+    /// (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: declared data). A door plane's
+    /// are the dialects its tail's `dialect_auth` lines flag `DIALECT_PROVIDER`. The boot accepts a
+    /// provider whose `protocol` some registered plane lists here, and its refusal lists them all.
+    provider_dialects: fn() -> &'static [&'static str],
 
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
@@ -1045,7 +1051,7 @@ plane_behaviour! {
     /// this at most once per scrape/discovery read and falls back to the substrate-resident
     /// [`crate::plane_driver::route_tables::EMPTY_VIEW`] when the plane contributed no runtime slot (the zero-plane binary).
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
-    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in `busbar-llm`.
+    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in the retired engine crate.
     #[allow(clippy::type_complexity)]
     viewer:
         Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_driver::route_tables::EngineTablesView>,
