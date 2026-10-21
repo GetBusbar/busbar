@@ -2258,16 +2258,7 @@ pub(crate) async fn auth_middleware(
                 Some(token)
             }
             dpop::SenderConstraint::Refused => {
-                return Err(match app.planes.admission_for(&path) {
-                    Some(adm) => challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
-                         did not verify.",
-                        None,
-                    ),
-                    None => unauthorized_response(&app, &path, door.as_ref()),
-                });
+                return Err(sender_refusal(&app, &path, door.as_ref()));
             }
         }
     };
@@ -2559,28 +2550,8 @@ pub(crate) async fn auth_middleware(
         // has no shape for it — so core establishes the binding itself, BEFORE the chain runs, and
         // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
         // chain, so this can narrow what is admitted and can never widen it.
-        if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
-            match audience::inspect_bearer(tok, &adm.audience) {
-                // A busbar-signed token: the verifier below has the claims and the signature, and
-                // does the real check. Pre-judging it here would refuse every valid one.
-                audience::Binding::Deferred | audience::Binding::Bound => {}
-                audience::Binding::Mismatch => {
-                    return Err(challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        audience::MISMATCH_DESCRIPTION,
-                        None,
-                    ))
-                }
-                audience::Binding::Opaque => {
-                    return Err(challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        audience::OPAQUE_DESCRIPTION,
-                        None,
-                    ))
-                }
-            }
+        if let Some(refusal) = audience_refusal(admission.as_ref(), client_token.as_deref()) {
+            return Err(refusal);
         }
         let (judged, named) = AuthMiddleware::judge_chain_on_request_path_naming(
             &app.auth,
@@ -2630,6 +2601,54 @@ pub(crate) async fn auth_middleware(
 
     drop(_mw.take());
     Ok(next.run(req).await)
+}
+
+/// THE DATA-PLANE GATE'S ANSWER TO A REFUSED SENDER (RFC 9449, [`dpop::SenderConstraint::Refused`])
+/// on `path`: the `invalid_token` challenge on an audience-bound plane, else the path's 401
+/// (rendered by the door route's plane when `door` names one). The auth middleware and the inbound
+/// handle's refusals answer through it.
+pub(crate) fn sender_refusal(
+    app: &App,
+    path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+) -> Response {
+    match app.planes.admission_for(path) {
+        Some(adm) => challenge::refuse(
+            challenge::ChallengeError::InvalidToken,
+            &adm.resource_metadata,
+            "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
+             did not verify.",
+            None,
+        ),
+        None => unauthorized_response(app, path, door),
+    }
+}
+
+/// THE AUDIENCE PRE-FILTER (RFC 8707), for credentials busbar did not mint: on an audience-bound
+/// plane (`admission`), a presented `token` that is opaque, or a JWT minted for another audience, is
+/// refused before any chain runs with the `invalid_token` challenge. The chain's plugin modules
+/// verify an operator IdP's signature and cannot be asked about RFC 8707, so core establishes the
+/// binding itself, and only ever to refuse (see `auth::audience`): a token that passes here still
+/// has to pass the chain. `None` = it goes on. The auth middleware and the inbound handle answer
+/// through it.
+pub(crate) fn audience_refusal(
+    admission: Option<&crate::plane::PlaneAdmission>,
+    token: Option<&str>,
+) -> Option<Response> {
+    let (adm, tok) = (admission?, token?);
+    let description = match audience::inspect_bearer(tok, &adm.audience) {
+        // A busbar-signed token: the verifier has the claims and the signature, and does the real
+        // check. Pre-judging it here would refuse every valid one.
+        audience::Binding::Deferred | audience::Binding::Bound => return None,
+        audience::Binding::Mismatch => audience::MISMATCH_DESCRIPTION,
+        audience::Binding::Opaque => audience::OPAQUE_DESCRIPTION,
+    };
+    Some(challenge::refuse(
+        challenge::ChallengeError::InvalidToken,
+        &adm.resource_metadata,
+        description,
+        None,
+    ))
 }
 
 /// THE DATA-PLANE GATE'S ANSWER to a chain verdict that resolved to `refusal` on `path` (`presented`:

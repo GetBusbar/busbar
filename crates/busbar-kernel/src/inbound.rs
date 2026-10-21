@@ -522,6 +522,15 @@ struct UnitState {
     /// read off the first head the kernel saw (before any strip): a refusal on an audience-bound
     /// plane tells a credential that failed from none at all, as the data-plane gate did.
     presented: Option<bool>,
+    /// Whether the old path's judging before the chain ([`screen`]) ran for it: once, at its first
+    /// per-request call.
+    screened: bool,
+    /// The refusal that judging answered, rendered by the old path's own function: the request was
+    /// stopped before any auth was called, and is refused with these bytes.
+    screen_refusal: Option<Refusal>,
+    /// A DPoP-bound token whose proof verified (RFC 9449): the credential the `keys` arm judges,
+    /// as the old path's chain judged it.
+    proven: Option<Secret<String>>,
 }
 
 /// Who answers for a unit's caller, by its line's auth.
@@ -574,6 +583,9 @@ impl UnitState {
             shed: false,
             admission: None,
             presented: None,
+            screened: false,
+            screen_refusal: None,
+            proven: None,
         }
     }
 
@@ -846,6 +858,59 @@ fn project(
     crate::auth::resolve_data_plane_identity(app, verdict)
 }
 
+/// What the `keys` arm verifies a request's bearer with, as the old path's chain did: the
+/// DPoP-proven token in place of the carriers' when one was proven, and the audience-bound plane's
+/// audience (`None` on the residual plane, where the verifier refuses a token carrying one).
+#[derive(Debug, Clone, Copy, Default)]
+struct KeysBearer<'a> {
+    proven: Option<&'a str>,
+    audience: Option<&'a str>,
+}
+
+/// What the old path's judging before the chain decided for a request ([`screen`]).
+enum Screened {
+    /// It goes on to the chain; `Some` = the DPoP-proven token the `keys` arm judges.
+    Clear(Option<String>),
+    /// It is refused, before any auth is called, with these bytes.
+    Refused(Refusal),
+}
+
+/// THE OLD PATH'S JUDGING BEFORE THE CHAIN, for a request on a line with auth, through the very
+/// functions the auth middleware answers with: the sender constraint (RFC 9449,
+/// `auth::dpop::judge`; refused with `auth::sender_refusal`), then on an audience-bound plane the
+/// audience pre-filter over the credential it leaves (RFC 8707, `auth::audience_refusal`).
+async fn screen(table: &Table, head: &Head) -> Screened {
+    let app = &table.listener.app;
+    let headers = header_map(head);
+    let bearer = app.auth.extract_client_token(&headers);
+    let method = axum::http::Method::from_bytes(head.method.as_bytes()).unwrap_or_default();
+    let (token, proven) =
+        match crate::auth::dpop::judge(app, &method, &head.target, &headers, bearer.as_deref())
+            .await
+        {
+            crate::auth::dpop::SenderConstraint::Unconstrained => (bearer, false),
+            crate::auth::dpop::SenderConstraint::Proven(token) => (Some(token), true),
+            crate::auth::dpop::SenderConstraint::Refused => {
+                let door = table
+                    .doors
+                    .door_refusal(&head.target, &method)
+                    .cloned()
+                    .map(|refuse| (refuse, head.path_and_query()));
+                return Screened::Refused(Refusal::of(crate::auth::sender_refusal(
+                    app,
+                    &head.target,
+                    door.as_ref(),
+                )));
+            }
+        };
+    if let Some(refusal) =
+        crate::auth::audience_refusal(app.planes.admission_for(&head.target), token.as_deref())
+    {
+        return Screened::Refused(Refusal::of(refusal));
+    }
+    Screened::Clear(token.filter(|_| proven))
+}
+
 /// THE `keys` ARM with the signed-request pre-step ahead of it, as 1.5.5's gate ran them: a
 /// verifier's identity is the governance key holding that credential (enabled, live, not revoked)
 /// or a deny; its pass falls through to the token path; a reject or no verdict denies; an
@@ -855,6 +920,7 @@ fn signed_then_keys(
     gov: Option<&crate::governance::GovState>,
     head: &Head,
     signed: Option<SignedAnswer>,
+    bearer: KeysBearer<'_>,
     now: u64,
 ) -> (
     Judged,
@@ -899,7 +965,7 @@ fn signed_then_keys(
             Verified::Overloaded => return (Judged::Overloaded, None, named, None),
         }
     }
-    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, now);
+    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, bearer, now);
     named.extend(strips);
     (judged, identity, named, resolved)
 }
@@ -911,6 +977,7 @@ fn keys_judged(
     app: &App,
     gov: Option<&crate::governance::GovState>,
     head: &Head,
+    bearer: KeysBearer<'_>,
     now: u64,
 ) -> (
     Judged,
@@ -920,12 +987,15 @@ fn keys_judged(
 ) {
     let carriers = app.auth.carriers();
     let headers = header_map(head);
-    let candidate = crate::auth::carried_credential(carriers, &headers);
+    let candidate = match bearer.proven {
+        Some(token) => Some(token.to_string()),
+        None => crate::auth::carried_credential(carriers, &headers),
+    };
     let strips = carriers
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
         .collect();
-    match crate::auth::keys_arm_verdict(gov, candidate.as_deref(), now, None) {
+    match crate::auth::keys_arm_verdict(gov, candidate.as_deref(), now, bearer.audience) {
         crate::auth::ChainVerdict::Identified {
             principal,
             resolved,
@@ -1335,6 +1405,37 @@ impl Inbound {
                     strips: Vec::new(),
                 });
             }
+            // THE OLD PATH'S JUDGING BEFORE THE CHAIN, once per request, at its first call: a
+            // refused sender or a bearer not bound to this resource is stopped before any auth.
+            let first = matches!(target, Target::Unit(_))
+                && me
+                    .with_state(target, |u| !std::mem::replace(&mut u.screened, true))
+                    .unwrap_or(false);
+            if first {
+                match screen(&table, &head).await {
+                    Screened::Clear(proven) => {
+                        me.with_state(target, |u| u.proven = proven.map(Secret::new));
+                    }
+                    Screened::Refused(refusal) => {
+                        me.with_state(target, |u| u.screen_refusal = Some(refusal));
+                        return Ok(Answer {
+                            flow: FLOW_STOP,
+                            unit,
+                            strips: Vec::new(),
+                        });
+                    }
+                }
+            }
+            if me
+                .with_state(target, |u| u.screen_refusal.is_some())
+                .unwrap_or(false)
+            {
+                return Ok(Answer {
+                    flow: FLOW_STOP,
+                    unit,
+                    strips: Vec::new(),
+                });
+            }
             for p in positions {
                 let undecided = me
                     .with_state(target, |u| {
@@ -1468,7 +1569,22 @@ impl Inbound {
         let (judged, identity, strips, resolved) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
             Judging::Keys(head, signed) => {
-                signed_then_keys(&table.listener.app, gov, head, signed, now)
+                let app = &table.listener.app;
+                let proven = self
+                    .with_state(target, |u| {
+                        u.proven
+                            .as_ref()
+                            .map(|p| p.expose(&crate::seal::lend()).clone())
+                    })
+                    .flatten();
+                let bearer = KeysBearer {
+                    proven: proven.as_deref(),
+                    audience: app
+                        .planes
+                        .admission_for(&head.target)
+                        .map(|a| a.audience.as_str()),
+                };
+                signed_then_keys(app, gov, head, signed, bearer, now)
             }
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
@@ -1659,7 +1775,8 @@ impl Inbound {
         let Some(u) = units.get(&unit.id) else {
             return false;
         };
-        if u.line != h.line || u.generation != h.generation || u.shed {
+        if u.line != h.line || u.generation != h.generation || u.shed || u.screen_refusal.is_some()
+        {
             return false;
         }
         // (b) unless the line's auth is none, a first-hand identity from that line's auth.
@@ -1726,7 +1843,7 @@ impl Inbound {
                         s.head.clone(),
                         s.fixed() == Some(Fixed::Overloaded),
                         s.shed,
-                        Some((refusal, s.presented)),
+                        Some((refusal, s.presented, s.screen_refusal.clone())),
                     )
                 })
             })
@@ -1750,7 +1867,13 @@ impl Inbound {
             .map(Head::path_and_query)
             .unwrap_or_else(|| path.clone());
         let door = table.listener.door_refuser.as_ref();
+        // A stop refused before the chain: the bytes the old path's own function rendered then.
+        let screened = judged
+            .as_ref()
+            .and_then(|(_, _, pre)| pre.clone())
+            .filter(|_| !shed && matches!(r.cause, REFUSE_STOPPED | REFUSE_CHECK_FAILED));
         let resp = match r.cause {
+            _ if screened.is_some() => axum::response::Response::default(),
             // SHED: 1.5.5's outermost cap answered every request past it, whatever its route.
             _ if shed => crate::limits::admission::inbound_overloaded_response(),
             REFUSE_NO_ROUTE => crate::router::fallback_error_response(
@@ -1779,15 +1902,16 @@ impl Inbound {
                     .map(|refuse| (refuse, target));
                 // The data-plane gate's own answer, per cause: on an audience-bound plane its
                 // RFC 6750 challenge, else the path's 401.
-                let (refusal, presented) =
-                    judged.unwrap_or((crate::auth::IdentityRefusal::Denied, None));
+                let (refusal, presented) = judged
+                    .map(|(refusal, presented, _)| (refusal, presented))
+                    .unwrap_or((crate::auth::IdentityRefusal::Denied, None));
                 let presented = presented
                     .unwrap_or_else(|| head.as_ref().is_some_and(|h| carries_credential(app, h)));
                 crate::auth::data_identity_refusal(app, &path, door.as_ref(), refusal, presented)
             }
             _ => return Err(CAUSE_UNKNOWN),
         };
-        let refusal = Refusal::of(resp);
+        let refusal = screened.unwrap_or_else(|| Refusal::of(resp));
         drop(slot);
         if let Some(u) = unit {
             self.exit(u.id);
