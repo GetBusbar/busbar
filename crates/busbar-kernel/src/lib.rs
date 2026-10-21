@@ -269,9 +269,11 @@ pub mod plane_host;
 pub mod plugin_routes;
 /// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
 /// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
-/// admin cleanliness crate reaches them through the kernel it serves, its one-way dependency
-/// (BUSBAR-1.6.0.md:3780, R2/#37), never by naming the loader: `kernel -> plugin-tooling` is a class
-/// the architecture grants and `cleanliness -> plugin-tooling` is not.
+/// admin cleanliness crate reaches them through the kernel it serves, never by naming the loader
+/// (`cleanliness -> plugin-tooling` is not granted). `kernel -> plugin-tooling` is not granted
+/// either: "The kernel never names the loader" (BUSBAR-1.6.0.md:321-322; l.4869
+/// "kernel×plugin-loader REFUSED, drain"). This re-export is the recorded `busbar-kernel -> busbar-plugin-loader` debt in
+/// `qa/kind-isolation.toml`, drained by status row 190 (RootInstall and the contract axes).
 pub mod plugin_admission {
     pub use busbar_plugin_loader::{
         inventory_tarballs, scan_and_validate, sign, supported_abi, tarball, LoadablePlugin,
