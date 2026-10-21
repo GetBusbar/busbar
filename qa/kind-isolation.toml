@@ -1453,8 +1453,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "hooks"
-count = "22"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "21"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 22 -> 21: the kernel-to-loader drain (#1375): the kernel kit's hook double reads its build switch through a neutral feature alias and names no hook instance (law0-slack, the gate's own measure)"
 
 [[law0]]
 crate = "busbar-kernel"
