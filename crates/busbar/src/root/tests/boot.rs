@@ -840,3 +840,42 @@ fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
         "a dry run's registry build replaced the running node's dropped-in secret rows"
     );
 }
+
+/// GREEN TWIN of the dry-run test above: the admission the committing builds make (boot's scan and
+/// the app build, through the install record's `secret_admit`) still REPLACES the dropped-in secret
+/// rows with its own registry's set (BUSBAR-1.6.0.md §3, stages 3a/3e open the secret plugins).
+/// Added with the fix: before it, the registry build was the only admission, so there was no
+/// separate committing path to name.
+#[test]
+fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
+    use busbar_contract::secret::SecretAxis as _;
+    let _held = SECRET_ROWS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let rows = crate::root::linked::secret_rows();
+    rows.set_dropped([dropped_secret("row159-stale-vault")]);
+
+    let off = PluginsCfg::default();
+    let registry = crate::root::boot::registry(
+        RegistryIn {
+            linked: Vec::new(),
+            plugins: Some(&off),
+            data_dir: None,
+        },
+        &mut |_| {},
+    )
+    .expect("a build with the plugins directory off is the linked rows alone");
+    admit_secrets(&registry).expect("no dropped-in secret contests a word");
+    let answers = rows.answers("row159-stale-vault");
+    rows.set_dropped(std::iter::empty());
+    assert!(
+        !answers,
+        "the committing build's admission kept a dropped-in secret its registry no longer has"
+    );
+    // The app build reaches that admission only through the root's install record.
+    assert!(
+        include_str!("../linked.rs")
+            .contains("secret_admit: Some(crate::root::boot::admit_secrets)"),
+        "the root's install record stopped carrying its secret admission"
+    );
+}
