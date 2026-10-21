@@ -1085,17 +1085,25 @@ fn cmd_fixed(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
         }
     }
 
-    let all = match git.files_at(&fix_at) {
-        Ok(f) => f,
-        Err(e) => return die(e),
-    };
     // RE-HASH TO THE FIX COMMIT. This is what makes `fixed` non-self-certifying: the fixer's own
     // pre-fix zero rounds carry the OLD hash and therefore confirm nothing about the fixed tree.
-    let hash = audit::tree_hash(sc, &all);
+    //
+    // The new digest is over the scope's OWN paths at the fix commit, so a `hashed_as` a `move`
+    // left (the paths the audited digest was over) no longer describes it and goes. The hash is
+    // [`audit::fixed_tree_hash`] -- the same computation `--check` holds a fixed scope's top-level
+    // hash to, so what this writes is what that reads.
     let Some(o) = sc.as_object_mut() else {
         return die(format!("scope {sid} is not an object"));
     };
+    o.remove("hashed_as");
     o.insert("fixed_at", Json::Str(fix_at.clone()));
+    let hash = match audit::fixed_tree_hash(sc, git) {
+        Ok(h) => h,
+        Err(e) => return die(e),
+    };
+    let Some(o) = sc.as_object_mut() else {
+        return die(format!("scope {sid} is not an object"));
+    };
     o.insert("tree_hash", hash.clone().map_or(Json::Null, Json::Str));
 
     let mut out = doc.clone();
@@ -1129,7 +1137,9 @@ fn cmd_fixed(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
 //   * the destination must be a scope the tree ACTUALLY implies, or the record would describe
 //     nothing and the next `sync` would drop it again — the same laundering, pointed the other way;
 //   * the source must NOT still be on disk, or the move would leave live code with no record;
-//   * `rounds[]` is MERGED, never replaced — losing a round is the failure this exists to prevent;
+//   * `rounds[]` is MERGED, never replaced — losing a round is the failure this exists to prevent
+//     — in reading order, and the top-level record is the newest reading, whichever scope it
+//     came from;
 //   * a record is re-stamped to the new tree ONLY when the bytes are provably identical and only
 //     the prefix moved ([`audit::relative_files`]); otherwise it keeps the digest it earned and
 //     gains `hashed_as`, the paths that digest is over, so the anti-forgery rule still recomputes
@@ -1274,6 +1284,18 @@ fn hashed_at_key(rec: &Json) -> &'static str {
     }
 }
 
+/// WHEN A RECORD WAS READ: the committer time of the commit its `audited_at` names, asked of git at
+/// most once per commit. `None` when it names none or git cannot date it -- an order is still
+/// produced, and `--check` goes on reporting such a record as the unresolvable stamp it is.
+fn read_time(git: &Git, times: &mut BTreeMap<String, Option<i64>>, rec: &Json) -> Option<i64> {
+    let at = audit::record_at(rec)?;
+    *times.entry(at.to_string()).or_insert_with(|| {
+        git.run(&["log", "-1", "--format=%ct", at, "--"])
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+    })
+}
+
 /// A pre-`rounds` record turned into the round it always was, so a fold cannot drop it.
 ///
 /// `confirmations` reads a register with no `rounds` list by falling back to the top-level record —
@@ -1405,9 +1427,9 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
     let fold = scope_index(&scopes, &to);
     let (target, kind) = match fold {
         // A CONTENT FOLD: the destination already has a record of its own, and the source's
-        // reading is additional evidence about the same directory. The destination's own record is
-        // never overwritten -- its tree just grew, which is why it goes `stale` unless the bytes
-        // prove otherwise.
+        // reading is additional evidence about the same directory. The destination's own rounds
+        // are never overwritten, and its top-level record gives way only to a NEWER reading -- its
+        // tree just grew, which is why it goes `stale` unless the bytes prove otherwise.
         Some(di) => {
             // The destination is re-shaped onto its own DERIVED scope first, so a fold leaves
             // exactly what `sync` would leave -- same id, kind, paths and excludes -- and cannot
@@ -1418,6 +1440,10 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
                 .as_array()
                 .map(<[Json]>::to_vec)
                 .unwrap_or_default();
+            // A pre-`rounds` destination verdict is a round too, or the reading order below could
+            // put a carried round on top of it and lose it.
+            rounds.extend(round_from_record(&dest));
+            let own = rounds.len();
             let mut incoming: Vec<Json> = source
                 .get("rounds")
                 .as_array()
@@ -1445,26 +1471,67 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
                 carried += 1;
                 rounds.push(r);
             }
+            // THE MERGED LIST IS IN READING ORDER: by the committer time of the commit each round
+            // names, ties (and rounds whose commit git cannot date, which sort first) keeping the
+            // order they came in -- the destination's own rounds ahead of the carried ones.
+            // Appending the source's rounds after the destination's would make the last round
+            // whichever scope happened to be named second, not the newest reading.
+            let mut times: BTreeMap<String, Option<i64>> = BTreeMap::new();
+            let mut ordered: Vec<(Option<i64>, bool, Json)> = rounds
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| (read_time(git, &mut times, &r), i >= own, r))
+                .collect();
+            ordered.sort_by_key(|(t, _, _)| *t);
+            let newest_carried = ordered
+                .last()
+                .filter(|(_, carried_in, _)| *carried_in)
+                .map(|(_, _, r)| r.clone());
+            let rounds: Vec<Json> = ordered.into_iter().map(|(_, _, r)| r).collect();
             if let Some(o) = dest.as_object_mut() {
                 o.insert("rounds", Json::Array(rounds));
             }
-            // The destination's OWN record: re-stamped only if its tree is still, byte for byte,
-            // the tree it read. After a fold it almost never is -- it just absorbed somebody
-            // else's code -- and `stale` is the correct, honest answer to that.
-            let key = hashed_at_key(&dest);
-            let dest_shape = dest.clone();
-            carry_one(
-                git,
-                &mut trees,
-                &mut dest,
-                &dest_shape,
-                &to,
-                &dest_shape,
-                &to,
-                key,
-                &at,
-                &now,
-            );
+            match newest_carried {
+                // THE TOP-LEVEL RECORD IS THE NEWEST READING (`register_problems`: it must BE the
+                // last round). When that reading is a carried one -- the destination was never
+                // read, or was read before the source was -- the round goes on top, anchored the
+                // same way, so it still recomputes against the tree it named. A fix stamped on the
+                // destination's older reading does not carry over a newer one, as with `record`.
+                Some(last) => {
+                    if let Some(o) = dest.as_object_mut() {
+                        for key in audit::RECORD_KEYS {
+                            o.insert(key, last.get(key).clone());
+                        }
+                        match last.as_object().and_then(|l| l.get("hashed_as")) {
+                            Some(h) => o.insert("hashed_as", h.clone()),
+                            None => {
+                                o.remove("hashed_as");
+                            }
+                        }
+                        o.insert("fixed_at", Json::Null);
+                    }
+                }
+                // The destination's OWN record is the newest and stays on top: re-stamped only if
+                // its tree is still, byte for byte, the tree it read. After a fold it almost never
+                // is -- it just absorbed somebody else's code -- and `stale` is the correct, honest
+                // answer to that.
+                None => {
+                    let key = hashed_at_key(&dest);
+                    let dest_shape = dest.clone();
+                    carry_one(
+                        git,
+                        &mut trees,
+                        &mut dest,
+                        &dest_shape,
+                        &to,
+                        &dest_shape,
+                        &to,
+                        key,
+                        &at,
+                        &now,
+                    );
+                }
+            }
             note_move(&mut dest, &from);
             scopes[di] = dest;
             scopes.remove(si);
@@ -1674,7 +1741,11 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
         .filter(|i| !have.contains(i))
         .collect();
 
+    // A FIXED SCOPE'S TOP-LEVEL HASH is held to the tree at its fix commit rather than to its last
+    // round's (`register_problems` stands down on that one key while `fixed_at` is set), and the
+    // answer lands in the same list: one rule, moved, not one rule dropped.
     f.problems = audit::register_problems(&doc);
+    f.problems.extend(audit::fixed_problems(&doc, git));
 
     // THE REGISTER'S EXCUSES AND SHAPES ARE THE SOURCE'S, OR THE CHECK IS JUDGING A HAND EDIT.
     // Coverage reads the committed excuse list and every hash reads the committed `exclude`, so
@@ -2040,6 +2111,42 @@ mod move_tests {
             self.run(&["add", "-A"]);
             self.run(&["commit", "-qm", msg]);
             self.git().head().expect("HEAD resolves")
+        }
+
+        /// [`Scratch::commit`] at a fixed committer time (unix seconds), so which reading is
+        /// OLDER and which NEWER is a fact of the history rather than of how fast the test ran.
+        fn commit_dated(&self, msg: &str, unix: i64) -> String {
+            self.run(&["add", "-A"]);
+            let stamp = format!("{unix} +0000");
+            let date = stamp.as_str();
+            crate::gitp::git_with_env(
+                &self.root,
+                &["commit", "-qm", msg],
+                &[("GIT_COMMITTER_DATE", date), ("GIT_AUTHOR_DATE", date)],
+            )
+            .unwrap_or_else(|e| panic!("git commit {msg:?}: {e}"));
+            self.git().head().expect("HEAD resolves")
+        }
+
+        /// Set one top-level key of one scope by hand: the edit the register rules exist to catch.
+        fn set_top(&self, id: &str, key: &str, value: Json) {
+            let mut doc = self.ledger();
+            let mut scopes = doc
+                .get("scopes")
+                .as_array()
+                .map(<[Json]>::to_vec)
+                .unwrap_or_default();
+            for sc in &mut scopes {
+                if sc.get("id").as_str() == Some(id) {
+                    if let Some(o) = sc.as_object_mut() {
+                        o.insert(key, value.clone());
+                    }
+                }
+            }
+            if let Some(d) = doc.as_object_mut() {
+                d.insert("scopes", Json::Array(scopes));
+            }
+            audit::save(&self.register(), &doc).expect("the register is writable");
         }
 
         fn register(&self) -> PathBuf {
@@ -2465,6 +2572,334 @@ mod move_tests {
             "stale",
             "the destination absorbed code nobody read AS PART OF IT, so it owes a fresh reading \
              -- a fold must not re-bless the destination"
+        );
+    }
+
+    /// Two crates, the destination read at `dest_read` and the source read twice at `source_read`
+    /// (unix seconds, each its own dated commit), then folded at a third commit after both. Returns
+    /// the source and destination records as they stood just before `move`.
+    fn fold_read_at(name: &str, dest_read: i64, source_read: i64) -> (Scratch, Json, Json) {
+        let s = scratch(name);
+        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
+        s.crate_at("busbar-plugin-sdk", "pub fn route() {}\n");
+        s.commit_dated("base", dest_read.min(source_read));
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        let read_dest = |s: &Scratch| s.read_by("crates/busbar-plugin-sdk/src", 7, "carol");
+        let read_source = |s: &Scratch| {
+            s.read_by("crates/plugin-sdk/src", 1, "alice");
+            s.read_by("crates/plugin-sdk/src", 2, "bob");
+        };
+        if dest_read <= source_read {
+            read_dest(&s);
+            s.write(
+                "crates/plugin-sdk/src/lib.rs",
+                "pub fn admit() { /* metered */ }\n",
+            );
+            s.commit_dated("the source moves on", source_read);
+            read_source(&s);
+        } else {
+            read_source(&s);
+            s.write(
+                "crates/busbar-plugin-sdk/src/lib.rs",
+                "pub fn route() { /* metered */ }\n",
+            );
+            s.commit_dated("the destination moves on", dest_read);
+            read_dest(&s);
+        }
+        let source = s.scope("crates/plugin-sdk/src").expect("the source record");
+        let dest = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the destination record");
+
+        s.run(&[
+            "mv",
+            "crates/plugin-sdk/src/lib.rs",
+            "crates/busbar-plugin-sdk/src/sdk.rs",
+        ]);
+        s.run(&["rm", "-q", "-r", "crates/plugin-sdk"]);
+        s.commit_dated(
+            "fold plugin-sdk into busbar-plugin-sdk",
+            dest_read.max(source_read) + 86_400,
+        );
+        assert_eq!(
+            s.xtask(&[
+                "move",
+                "crates/plugin-sdk/src",
+                "crates/busbar-plugin-sdk/src"
+            ]),
+            0
+        );
+        (s, source, dest)
+    }
+
+    const Y2020: i64 = 1_577_836_800;
+    const Y2021: i64 = 1_609_459_200;
+
+    /// A FOLD WHOSE CARRIED READINGS ARE NEWER than the destination's own puts the newest carried
+    /// round on top. Before, the destination's older record stayed on top of a rounds list that
+    /// ended in the source's newest round, and `register_problems` reported "the top-level record
+    /// must BE the last round".
+    #[test]
+    fn a_fold_of_newer_readings_puts_the_newest_carried_round_on_top() {
+        let (s, source, dest_before) = fold_read_at("fold-newer", Y2020, Y2021);
+        let dest = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the destination record");
+        let merged = rounds(&dest);
+        let auditors: Vec<Option<&str>> =
+            merged.iter().map(|r| r.get("auditor").as_str()).collect();
+        assert_eq!(
+            auditors,
+            [Some("carol"), Some("alice"), Some("bob")],
+            "the rounds are in reading order: the destination's 2020 reading, then the source's"
+        );
+        assert_eq!(merged[0], rounds(&dest_before)[0]);
+        let last = merged.last().expect("the merged rounds");
+        for key in audit::RECORD_KEYS {
+            assert_eq!(
+                dest.get(key),
+                last.get(key),
+                "the top-level `{key}` is the newest round's"
+            );
+        }
+        assert_eq!(
+            dest.get("tree_hash").as_str(),
+            rounds(&source)[1].get("tree_hash").as_str(),
+            "the top level carries bob's digest, the newest reading"
+        );
+        assert_eq!(
+            dest.get("hashed_as").get("id").as_str(),
+            Some("crates/plugin-sdk/src"),
+            "and names the paths that digest is over, as the round does"
+        );
+        let found = s.check();
+        assert!(
+            found.problems.is_empty(),
+            "the folded register is readable: {:?}",
+            found.problems
+        );
+        assert!(
+            found.stamped.is_empty(),
+            "every record still recomputes to the hash it carries: {:?}",
+            found.stamped
+        );
+        assert_eq!(s.status("crates/busbar-plugin-sdk/src"), "stale");
+    }
+
+    /// A FOLD WHOSE CARRIED READINGS ARE OLDER than the destination's own keeps the destination's
+    /// record on top, and puts the carried rounds BEFORE it so the top level is the last round.
+    /// Before, the carried rounds were appended after it, and the last round was the source's.
+    #[test]
+    fn a_fold_of_older_readings_keeps_the_destination_record_on_top_and_last() {
+        let (s, _source, dest_before) = fold_read_at("fold-older", Y2021, Y2020);
+        let dest = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the destination record");
+        let merged = rounds(&dest);
+        let auditors: Vec<Option<&str>> =
+            merged.iter().map(|r| r.get("auditor").as_str()).collect();
+        assert_eq!(
+            auditors,
+            [Some("alice"), Some("bob"), Some("carol")],
+            "the source's 2020 readings come first, the destination's 2021 reading last"
+        );
+        assert_eq!(
+            merged.last(),
+            rounds(&dest_before).last(),
+            "the destination's own round is untouched"
+        );
+        for key in audit::RECORD_KEYS {
+            assert_eq!(
+                dest.get(key),
+                dest_before.get(key),
+                "the destination's own `{key}` stays on top"
+            );
+        }
+        assert!(
+            dest.as_object().and_then(|o| o.get("hashed_as")).is_none(),
+            "the destination's own record was taken over its own paths"
+        );
+        let found = s.check();
+        assert!(
+            found.problems.is_empty(),
+            "the folded register is readable: {:?}",
+            found.problems
+        );
+        assert!(
+            found.stamped.is_empty(),
+            "every record still recomputes to the hash it carries: {:?}",
+            found.stamped
+        );
+        assert_eq!(s.status("crates/busbar-plugin-sdk/src"), "stale");
+    }
+
+    /// A FOLD INTO A SCOPE NOBODY HAS READ leaves a register `--check` can read: the destination's
+    /// top-level record becomes the last round the fold carried in, anchored to the paths its
+    /// digest is over. Before, the empty `unaudited` record stayed on top of the carried rounds and
+    /// `register_problems` reported "the top-level record must BE the last round" for every key.
+    #[test]
+    fn a_fold_into_an_unread_scope_promotes_the_carried_round_to_the_top_level() {
+        let s = scratch("fold-unread");
+        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
+        s.crate_at("busbar-plugin-sdk", "pub fn route() {}\n");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        s.read_by("crates/plugin-sdk/src", 1, "alice");
+        s.read_by("crates/plugin-sdk/src", 2, "bob");
+        let source = s.scope("crates/plugin-sdk/src").expect("the source record");
+        assert_eq!(
+            s.scope("crates/busbar-plugin-sdk/src")
+                .expect("the destination record")
+                .get("result")
+                .as_str(),
+            Some("unaudited"),
+            "the destination has never been read"
+        );
+
+        s.run(&[
+            "mv",
+            "crates/plugin-sdk/src/lib.rs",
+            "crates/busbar-plugin-sdk/src/sdk.rs",
+        ]);
+        s.run(&["rm", "-q", "-r", "crates/plugin-sdk"]);
+        s.commit("fold plugin-sdk into busbar-plugin-sdk");
+
+        assert_eq!(
+            s.xtask(&[
+                "move",
+                "crates/plugin-sdk/src",
+                "crates/busbar-plugin-sdk/src"
+            ]),
+            0
+        );
+        let dest = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the destination record");
+        let merged = rounds(&dest);
+        assert_eq!(merged.len(), rounds(&source).len());
+        let last = merged.last().expect("the carried rounds");
+        for key in audit::RECORD_KEYS {
+            assert_eq!(
+                dest.get(key),
+                last.get(key),
+                "the top-level `{key}` is the last carried round's"
+            );
+        }
+        assert_eq!(
+            dest.get("hashed_as").get("id").as_str(),
+            Some("crates/plugin-sdk/src"),
+            "the top level names the paths its digest is over, as the round does"
+        );
+        let found = s.check();
+        assert!(
+            found.problems.is_empty(),
+            "the folded register is readable: {:?}",
+            found.problems
+        );
+        assert!(
+            found.stamped.is_empty(),
+            "every record still recomputes to the hash it carries: {:?}",
+            found.stamped
+        );
+        assert_eq!(
+            s.status("crates/busbar-plugin-sdk/src"),
+            "stale",
+            "the destination's tree is not the tree the carried rounds read"
+        );
+    }
+
+    /// One crate with a HIGH finding, the code changed, and `fixed` stamped at that commit.
+    fn fixed_scope(name: &str) -> Scratch {
+        let s = scratch(name);
+        s.crate_at("ingest", "pub fn admit() {}\n");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        assert_eq!(
+            s.xtask(&[
+                "record",
+                "--scope",
+                "crates/ingest/src",
+                "--round",
+                "1",
+                "--result",
+                "findings",
+                "--report",
+                "a path admits an unmetered call",
+                "--auditor",
+                "alice",
+                "--counts",
+                "HIGH=1",
+            ]),
+            0
+        );
+        s.write(
+            "crates/ingest/src/lib.rs",
+            "pub fn admit() { /* metered */ }\n",
+        );
+        s.commit("meter the path");
+        assert_eq!(s.xtask(&["fixed", "--scope", "crates/ingest/src"]), 0);
+        s
+    }
+
+    /// A SCOPE `fixed` STAMPED IS READABLE. `fixed` re-hashes the top level to the fix commit on
+    /// purpose, and before, `register_problems` reported that very hash as "the top-level record
+    /// must BE the last round" -- the verb and the check disagreed about every fixed scope.
+    #[test]
+    fn a_correctly_fixed_scope_is_not_a_register_problem() {
+        let s = fixed_scope("fixed-ok");
+        let sc = s.scope("crates/ingest/src").expect("the fixed record");
+        assert_ne!(
+            sc.get("tree_hash"),
+            rounds(&sc)[0].get("tree_hash"),
+            "the fix re-hashed the top level away from the finding's tree"
+        );
+        let found = s.check();
+        assert!(
+            found.problems.is_empty(),
+            "a fixed scope as `fixed` left it is readable: {:?}",
+            found.problems
+        );
+    }
+
+    /// A FIXED SCOPE'S HASH IS STILL HELD TO SOMETHING: the tree at its fix commit. Before, a fixed
+    /// top level was exempt from the anti-forgery rule and only compared to its last round, so a
+    /// fix stamp over the unfixed tree's hash read as clean bookkeeping.
+    #[test]
+    fn a_fixed_scope_whose_hash_is_not_the_fix_commits_tree_is_a_register_problem() {
+        let s = fixed_scope("fixed-forged");
+        let sc = s.scope("crates/ingest/src").expect("the fixed record");
+        s.set_top(
+            "crates/ingest/src",
+            "tree_hash",
+            rounds(&sc)[0].get("tree_hash").clone(),
+        );
+        let found = s.check();
+        assert!(
+            found
+                .problems
+                .iter()
+                .any(|p| p.starts_with("crates/ingest/src:") && p.contains("fix commit")),
+            "the top-level hash is not the tree at the fix commit: {:?}",
+            found.problems
+        );
+    }
+
+    /// AND AN UNFIXED SCOPE IS STILL HELD TO ITS LAST ROUND: the rule moved for fixed scopes, it
+    /// did not go away for the rest.
+    #[test]
+    fn an_unfixed_scope_whose_hash_is_not_its_last_rounds_is_a_register_problem() {
+        let s = fixed_scope("unfixed-drift");
+        s.set_top("crates/ingest/src", "fixed_at", Json::Null);
+        let found = s.check();
+        assert!(
+            found
+                .problems
+                .iter()
+                .any(|p| p.starts_with("crates/ingest/src:")
+                    && p.contains("tree_hash")
+                    && p.contains("must BE the last round")),
+            "the top-level hash is not the last round's: {:?}",
+            found.problems
         );
     }
 

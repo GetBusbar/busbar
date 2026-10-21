@@ -399,36 +399,36 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A ROLELESS admitted principal — the chain identifies it, but no `role_bindings` row binds its
-/// role, so it earns NO enforcement key — is REFUSED at boot (item 144: an identified principal
-/// with no key is refused, never admitted ungoverned with spend booked to `anonymous`). The stdio
-/// spelling of the HTTP door's `403 insufficient_scope`: nonzero exit, the reason on stderr, and not
-/// one frame served first.
+/// 1.5.5 PARITY (Q128 u27, Q20): an admitted credential under a module with no `role_bindings`
+/// table earns NO enforcement key and is served UNGOVERNED, as 1.5.5 admitted it (v1.5.5
+/// crates/busbar/src/auth/mod.rs:1543): the session binds with the UNGOVERNED warning on stderr,
+/// is never refused `insufficient_scope`, and EOF on stdin is a clean shutdown.
 #[test]
-fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
+fn a_keyless_admitted_credential_is_served_ungoverned_as_1_5_5_served_it() {
     let dir = fixture_dir("roleless");
     install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, Some(&token));
-    let code = wait_bounded(&mut child.child, Duration::from_secs(120));
-    assert_ne!(
-        code, 0,
-        "an admitted credential that earned no key must not serve"
-    );
-    let stderr = child.stderr_so_far();
+    let mut stderr = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !stderr.contains("UNGOVERNED") && std::time::Instant::now() < deadline {
+        stderr.push_str(&child.stderr_so_far());
+        if let Ok(Some(status)) = child.child.try_wait() {
+            stderr.push_str(&child.stderr_so_far());
+            panic!("the session exited ({status}) instead of serving ungoverned: {stderr}");
+        }
+    }
     assert!(
-        stderr.contains("role_bindings") && stderr.contains("insufficient_scope"),
-        "the refusal names the missing binding and its HTTP twin: {stderr}"
+        stderr.contains("UNGOVERNED"),
+        "the keyless session is served ungoverned, and says so: {stderr}"
     );
     assert!(
-        !stderr.contains("UNGOVERNED"),
-        "a keyless principal is refused, never served ungoverned: {stderr}"
+        !stderr.contains("insufficient_scope"),
+        "a keyless principal under an unbound module is not refused: {stderr}"
     );
-    assert!(
-        child.stdout.try_recv().is_err(),
-        "not one frame may be served before the refusal"
-    );
+    let code = child.eof_and_wait(Duration::from_secs(60));
+    assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
