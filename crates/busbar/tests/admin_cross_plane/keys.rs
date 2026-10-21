@@ -2497,9 +2497,10 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_unpriced_usage_reads().await;
     // Every linked engine plane's own error-surface driver (its trust verbs), called here for the
     // same reason as every line above it: a condition witnessed only by a sibling test is witnessed
-    // nowhere. Looped from the kernel's test-seam registry, so this names no plane. Since FLIP-A2A no
-    // engine plane mounts trust verbs (each verb-mounting plane is served through its door, and its
-    // verbs are driven by its door driver above), so the registry may hold none; a plane whose driver
+    // nowhere. Looped from the kernel's test-seam registry, so this names no plane. Since the
+    // agent-style plane's door flip no engine plane mounts trust verbs (each verb-mounting plane is
+    // served through its door, and its verbs are driven by its door driver above), so the registry
+    // may hold none; a plane whose driver
     // went missing still leaves its declared verbs unwitnessed and fails the over-claim walk below.
     crate::ensure_seam();
     for drive in busbar_kernel::test_support::seam::test_plane_seams()
@@ -2841,7 +2842,7 @@ fn linked_export_axis() {
 /// then watch the DELETE get refused because the reference would be left dangling. Every other
 /// fixture leaves it off, since a config whose chain names an undefined provider cannot resolve.
 /// `base_export == false` writes a config that declares NO exporter at all — the deployment that
-/// booted without `export.prometheus`, so `/metrics` was never registered on the router.
+/// booted without a scrape sink under `export:`, so `/metrics` was never registered on the router.
 fn write_named_map_fixture(
     tag: &str,
     reference_corp_ad: bool,
@@ -3839,7 +3840,7 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
 }
 
 /// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
-/// own `serve` op (ARCHITECT Q-L3B-VERBS; P3 DEL-MCP: the deleted engine's error-surface driver
+/// own `serve` op (ARCHITECT Q-L3B-VERBS; P3: the deleted tool-plane engine's error-surface driver
 /// witnessed these): an unregistered name is `404 not_found` on every verb, and `connect` on a
 /// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
 /// operator's refresh has none).
