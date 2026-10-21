@@ -266,9 +266,10 @@ fn assert_transport_hot_path_delta_under_budget() {
     });
     let (slot_p50, slot_p99) = percentiles(|| {
         let f = read_slot(black_box(ops_ptr));
-        black_box(
-            f(black_box(instance), black_box(input), black_box(out)).outcome() == Outcome::Pending,
-        );
+        // SAFETY: the bench's own `carrier_read` behind the table; it reads none of its
+        // arguments.
+        let answered = unsafe { f(black_box(instance), black_box(input), black_box(out)) };
+        black_box(answered.outcome() == Outcome::Pending);
     });
 
     let transport_p50_delta_nanos = slot_p50.saturating_sub(direct_p50);

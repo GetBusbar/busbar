@@ -16,7 +16,7 @@ use std::ptr;
 use busbar_contract::abi::mechanism::call::{
     Blob, Envelope, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, OpsHead, TickOut, ValidateIn,
     LIFECYCLE_SLOTS,
