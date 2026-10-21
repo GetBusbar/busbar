@@ -6,7 +6,8 @@
 //! `#[global_allocator]` (`lib.rs`).
 
 use super::{
-    allocations, allocations_of, allocations_with, freed_unzeroed, marked_key, reset, watch, WINDOW,
+    allocations, allocations_of, allocations_with, freed_unzeroed, last_seen, marked_key, reset,
+    watch, WINDOW,
 };
 
 /// The counter counts: this crate's own test binary installs [`super::Counting`] as its
@@ -108,6 +109,9 @@ fn the_freed_key_witness_sees_any_window_of_a_key_and_not_less() {
         freed_unzeroed(1) >= 1,
         "a window of the key behind other bytes was not seen"
     );
+    let seen = last_seen(1).expect("the sighting is recorded");
+    assert_eq!((seen.at, seen.nth, seen.len), (40, 0, 56), "{seen:?}");
+    assert!(seen.block >= 56, "{seen:?}");
 
     let key = marked_key::<56>(2);
     let short: Vec<u8> = key[30..30 + WINDOW - 1].to_vec();

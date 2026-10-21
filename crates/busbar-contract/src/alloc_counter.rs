@@ -168,6 +168,38 @@ pub fn watch(id: u8, secret: &[u8]) {
     w.len.store(secret.len(), Ordering::Release);
 }
 
+/// Where the witness last saw a secret watched under one id: what a failing zeroise gate names,
+/// so the copy it found can be traced to its holder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    /// The freed block's size.
+    pub block: usize,
+    /// The offset in the block the secret's window starts at.
+    pub at: usize,
+    /// Which of the id's watched secrets it was: `0` is the first watched (a marked key itself),
+    /// in the order [`marked_key`] and [`watch`] were called for the id.
+    pub nth: usize,
+    /// That secret's length.
+    pub len: usize,
+}
+
+/// The last sighting per id: block size, offset, nth secret, its length (`0` block: none yet).
+static LAST_SEEN: [[AtomicUsize; 4]; MARKED_IDS] =
+    [const { [const { AtomicUsize::new(0) }; 4] }; MARKED_IDS];
+
+/// Where a secret watched under `id` was last seen in a freed block, if one was.
+#[must_use]
+pub fn last_seen(id: u8) -> Option<Seen> {
+    let s = &LAST_SEEN[usize::from(id)];
+    let block = s[0].load(Ordering::SeqCst);
+    (block != 0).then(|| Seen {
+        block,
+        at: s[1].load(Ordering::SeqCst),
+        nth: s[2].load(Ordering::SeqCst),
+        len: s[3].load(Ordering::SeqCst),
+    })
+}
+
 /// How many freed blocks were seen still holding a secret watched under `id`.
 #[must_use]
 pub fn freed_unzeroed(id: u8) -> usize {
@@ -207,9 +239,20 @@ fn witness_freed(block: &[u8]) {
         if PREFIXES[bit / 64].load(Ordering::Relaxed) & (1_u64 << (bit % 64)) == 0 {
             continue;
         }
-        for w in &WATCHED[..claimed] {
+        for (slot, w) in WATCHED[..claimed].iter().enumerate() {
             if let Some(id) = window_at(w, block, at) {
                 seen[id] = true;
+                let nth = WATCHED[..slot]
+                    .iter()
+                    .filter(|o| {
+                        o.len.load(Ordering::Acquire) != 0 && o.id.load(Ordering::Relaxed) == id
+                    })
+                    .count();
+                let last = &LAST_SEEN[id];
+                last[1].store(at, Ordering::SeqCst);
+                last[2].store(nth, Ordering::SeqCst);
+                last[3].store(w.len.load(Ordering::Acquire), Ordering::SeqCst);
+                last[0].store(block.len(), Ordering::SeqCst);
             }
         }
     }
