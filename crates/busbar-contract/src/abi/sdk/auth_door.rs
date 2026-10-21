@@ -218,6 +218,9 @@ pub struct VerifyOp<'t> {
     issued: Cell<u32>,
 }
 
+/// A [`VerifyOp`] over a real host's tables, which are its statics (status row 194).
+pub type StaticVerifyOp = VerifyOp<'static>;
+
 impl<'t> VerifyOp<'t> {
     /// The op on `ticket` over `services` (`None`: the host offers none, and every service is
     /// [`ServiceError::Unserved`](crate::abi::sdk::services::ServiceError::Unserved)). The kit

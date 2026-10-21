@@ -22,10 +22,8 @@
 //!     }
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-//! // SAFETY: `open_in`'s fields are this test's own; the host outlives the instance.
-//! let lent = unsafe { host.lend_to(open_in) }; // borrows the host: it cannot outlive it
-//! // SAFETY: as above.
-//! let opened = unsafe { reply::call_hosted(open, None, &lent, open_out) };
+//! let lent = host.lend_in(TestIn::<OpenIn>::new()); // borrows the host: it cannot outlive it
+//! let opened = reply::call_hosted_in(open, None, &lent, open_out);
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable
@@ -83,7 +81,7 @@ mod sealed {
         const REGIONS: &'static [Region];
     }
 
-    /// Only [`super::FakeHost::lend_to`] makes one.
+    /// Only [`super::FakeHost::lend_in`] makes one.
     #[derive(Debug)]
     pub struct HostToken(pub(super) ());
 
@@ -128,7 +126,7 @@ impl<T> sealed::Ptr<T> for *mut T {
 }
 impl<T> RawPtr<T> for *mut T {}
 
-/// An `open` `in` that carries the host's tables (`host`), for [`FakeHost::lend_to`]. Sealed:
+/// An `open` `in` that carries the host's tables (`host`), for [`FakeHost::lend_in`]. Sealed:
 /// the lifecycle `OpenIn` and the plane's `PlaneOpenIn`.
 pub trait TakesHost: sealed::Host {}
 impl sealed::Host for crate::abi::mechanism::lifecycle::OpenIn {
@@ -146,7 +144,7 @@ impl TakesHost for crate::abi::plane::PlaneOpenIn {}
 
 /// An `open` `in` whose `host` names a [`FakeHost`]'s tables, borrowed from that host and from
 /// every byte its [`TestIn`] names: it cannot outlive either, and safe code reads no copy of it
-/// (only [`super::reply::call_hosted`] does).
+/// (only [`super::reply::call_hosted_in`] does).
 #[derive(Debug)]
 pub struct LentIn<'h, I> {
     pub(crate) input: TestIn<'h, I>,
@@ -787,7 +785,7 @@ unsafe extern "C" fn trampoline<S: FakeService, const OP: u32>(
 
 /// A fake host: its three tables, every slot absent until a double is served in it, and the
 /// `HostTables` an `OpenIn::host` names. It owns every table it lends; keep it alive while the
-/// instance opened over it lives. The tables reach the door through [`FakeHost::lend_to`] alone:
+/// instance opened over it lives. The tables reach the door through [`FakeHost::lend_in`] alone:
 /// safe code holds no table and no `ServiceFn` of it. The pairs proving both, and that what it
 /// lends cannot outlive it, sit on the always-compiled `abi::sdk::door::MacroDoor`.
 #[derive(Debug)]
@@ -867,9 +865,9 @@ impl FakeHost {
 
     /// Lend this host's tables to an `open`'s `in` (its `host`): the one consumer of them. The
     /// `in` comes back as a [`LentIn`] that borrows the host, so it cannot outlive it; the test
-    /// hands it to [`super::reply::call_hosted`] and never holds the `in` itself again. No table,
+    /// hands it to [`super::reply::call_hosted_in`] and never holds the `in` itself again. No table,
     /// and no `ServiceFn`, is handed to the test.
-    pub fn lend_to<'h, I: TakesHost + super::AllZero>(
+    pub fn lend_in<'h, I: TakesHost + super::AllZero>(
         &'h self,
         mut input: TestIn<'h, I>,
     ) -> LentIn<'h, I> {

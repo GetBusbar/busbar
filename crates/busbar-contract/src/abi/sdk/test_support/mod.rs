@@ -348,7 +348,7 @@ pub struct DoorView {
 const _: fn(MacroDoor) -> DoorView = DoorView::of;
 
 /// ONE SLOT of a door read through a [`DoorView`] ([`DoorView::op`]): the only `Op`
-/// [`reply::call`] enters. Its fields are private and [`DoorView::op`] is its one maker, so safe
+/// [`reply::call_in`] enters. Its fields are private and [`DoorView::op`] is its one maker, so safe
 /// code cannot hand `call` a raw [`Op`] or a safe `extern "C" fn` (status row 159).
 #[derive(Debug, Clone, Copy)]
 pub struct ViewOp {
@@ -489,10 +489,10 @@ impl DoorView {
         unsafe { &*tail }
     }
 
-    /// ONE SLOT of the door's table, as [`reply::call`] enters it: `pick` names the slot
+    /// ONE SLOT of the door's table, as [`reply::call_in`] enters it: `pick` names the slot
     /// (`|t| &t.head.open`, `|t| &t.resolve`), and the handle remembers which door and which slot
     /// it is. `None` when the door leaves the slot absent. A [`ViewOp`] is made here and nowhere
-    /// else (status row 159), so [`reply::call`] enters only a slot a door the contract's macro
+    /// else (status row 159), so [`reply::call_in`] enters only a slot a door the contract's macro
     /// built states.
     ///
     /// # Panics

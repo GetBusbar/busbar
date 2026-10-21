@@ -450,7 +450,7 @@ slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
     }
     out.set(|o| &o.body, projected);
     out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
-    debug_assert_eq!(out.get(|o| &o.view.signals_len), sw);
+    debug_assert_eq!(out.pick(|o| &o.view.signals_len), sw);
     out.host_str(|o| &o.view.pool, &arena, pool);
     if tw > 0 {
         out.host_rows(|o| &o.prompt.messages, &turns);

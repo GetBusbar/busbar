@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SLOT CALLED AND ITS REPLY COPIED: [`call`] runs one door op and, before it returns, validates
+//! A SLOT CALLED AND ITS REPLY COPIED: [`call_in`] runs one door op and, before it returns, validates
 //! and copies every reviewed reply field (`head.error`, and each `AbiStr`, `Blob` and list a
 //! reviewed `out` names) into owned values. The test never holds a pointer into the plugin's leased
 //! or published memory: the `out` it gets back has every such pointer cleared, so a `release`, a
 //! `retire` or the next generation can run straight after with nothing left to dangle.
 //!
 //! ```ignore
-//! use busbar_contract::abi::sdk::test_support::reply::call;
+//! use busbar_contract::abi::sdk::test_support::reply::call_in;
 //!
 //! let resolve = view.op::<Ops>(|t| &t.resolve).expect("the door states resolve");
-//! // SAFETY: `input`'s fields are this test's own live buffers; the host outlives `instance`.
-//! let resolved = unsafe { call(resolve, Some(&instance), &input, out) };
+//! let input = TestIn::<ResolveIn>::new().blob(|i| &i.settings, br#"{"env": "TOKEN"}"#, BLOB_JSON);
+//! let resolved = call_in(resolve, Some(&instance), &input, out);
 //! assert_eq!(resolved.owned.material(), b"s3cret");
 //! release(instance, resolved.out.head.lease); // the copy is already taken
 //! ```
@@ -68,35 +68,35 @@ mod sealed {
 
 use sealed::Token;
 
-/// A reviewed `out` [`call`] copies. Sealed.
+/// A reviewed `out` [`call_in`] copies. Sealed.
 pub trait Reply: AbiOut + sealed::Take {
     /// The owned copies of its reviewed fields.
     type Owned: fmt::Debug;
 }
 
-/// An INSTANCE a door's `open` answered READY through [`call`] (status row 159): the only instance
-/// [`call`] hands a slot. Its fields are private, it is neither `Clone` nor `Copy`, and it is made
+/// An INSTANCE a door's `open` answered READY through [`call_in`] (status row 159): the only instance
+/// [`call_in`] hands a slot. Its fields are private, it is neither `Clone` nor `Copy`, and it is made
 /// in one place only, [`Called::take_instance`] of an `open` that answered READY, at most once. It
-/// names the door it was opened on, and [`close`] takes it by value: no slot is entered on a
+/// names the door it was opened on, and [`close_in`] takes it by value: no slot is entered on a
 /// forged pointer, another door's instance, or one already closed.
 ///
-/// TIED TO WHAT ITS `open` WAS LENT (status row 194): an `open` through [`call_hosted`] runs over
+/// TIED TO WHAT ITS `open` WAS LENT (status row 194): an `open` through [`call_hosted_in`] runs over
 /// a [`FakeHost`](super::fake::FakeHost)'s tables, and its instance keeps them; `'h` is that
 /// borrow of the host (and of the [`TestIn`] lent with it), so the instance cannot outlive the
-/// host. An `open` through [`call`] is lent no host tables (a `TestIn` names none), so its
+/// host. An `open` through [`call_in`] is lent no host tables (a `TestIn` names none), so its
 /// instance borrows nothing: `Instance<'static>`.
 ///
 /// ```compile_fail,E0505
 /// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
-/// use busbar_contract::abi::sdk::test_support::reply::call_hosted;
+/// use busbar_contract::abi::sdk::test_support::reply::call_hosted_in;
 /// use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
 /// fn opened(open: ViewOp) {
 ///     let host = FakeHost::new();
 ///     let input = TestIn::<OpenIn>::new();
-///     let lent = host.lend_to(input);
-///     let mut called = call_hosted(open, None, &lent, zeroed::<OpenOut>());
+///     let lent = host.lend_in(input);
+///     let mut called = call_hosted_in(open, None, &lent, zeroed::<OpenOut>());
 ///     let instance = called.take_instance();
 ///     drop(host);
 ///     drop(instance);
@@ -108,14 +108,14 @@ pub trait Reply: AbiOut + sealed::Take {
 /// ```
 /// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
-/// use busbar_contract::abi::sdk::test_support::reply::call_hosted;
+/// use busbar_contract::abi::sdk::test_support::reply::call_hosted_in;
 /// use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
 /// fn opened(open: ViewOp) {
 ///     let host = FakeHost::new();
 ///     let input = TestIn::<OpenIn>::new();
-///     let lent = host.lend_to(input);
-///     let mut called = call_hosted(open, None, &lent, zeroed::<OpenOut>());
+///     let lent = host.lend_in(input);
+///     let mut called = call_hosted_in(open, None, &lent, zeroed::<OpenOut>());
 ///     let instance = called.take_instance();
 ///     drop(instance);
 ///     drop(host);
@@ -157,10 +157,10 @@ impl<'h, O: Reply> Called<'h, O> {
 /// the op reads state the sizes of exactly the `I` and `O` passed (`in.head.size`,
 /// `out.head.size`), whatever the caller wrote there: a slot reads and writes no byte past them.
 /// `validate` and `open` run on no instance; every other slot but `close` runs on one its door's
-/// `open` answered ([`Called::take_instance`]); `close` is [`close`]'s.
+/// `open` answered ([`Called::take_instance`]); `close` is [`close_in`]'s.
 ///
 /// Its [`Instance`] is `'static`: no host tables are reachable from a [`TestIn`] (only
-/// [`FakeHost::lend_to`](super::fake::FakeHost::lend_to) lends them, through [`call_hosted`]), so
+/// [`FakeHost::lend_in`](super::fake::FakeHost::lend_in) lends them, through [`call_hosted_in`]), so
 /// an instance this opens borrows nothing.
 ///
 /// SAFE (status rows 159 and 194): `op` is a [`ViewOp`](super::ViewOp), a slot of a door the
@@ -174,12 +174,12 @@ impl<'h, O: Reply> Called<'h, O> {
 /// ```compile_fail,E0308
 /// use busbar_contract::abi::mechanism::call::Blob;
 /// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// use busbar_contract::abi::sdk::test_support::reply::call;
+/// use busbar_contract::abi::sdk::test_support::reply::call_in;
 /// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
 /// fn opened(open: ViewOp) {
 ///     let mut input: OpenIn = zeroed();
 ///     input.settings = Blob::json(b"{}");
-///     let _ = call(open, None, &input, zeroed::<OpenOut>());
+///     let _ = call_in(open, None, &input, zeroed::<OpenOut>());
 /// }
 /// ```
 ///
@@ -187,12 +187,12 @@ impl<'h, O: Reply> Called<'h, O> {
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// use busbar_contract::abi::sdk::test_support::reply::call;
+/// use busbar_contract::abi::sdk::test_support::reply::call_in;
 /// use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
 /// fn opened(open: ViewOp) {
 ///     let input = TestIn::<OpenIn>::new().settings(b"{}");
-///     let _ = call(open, None, &input, zeroed::<OpenOut>());
+///     let _ = call_in(open, None, &input, zeroed::<OpenOut>());
 /// }
 /// ```
 ///
@@ -201,7 +201,7 @@ impl<'h, O: Reply> Called<'h, O> {
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field. Or the
 /// instance is missing, present where none is taken, another door's, or `op` is `close`.
-pub fn call<I: AbiIn, O: Reply>(
+pub fn call_in<I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Option<&Instance<'_>>,
     input: &TestIn<'_, I>,
@@ -210,18 +210,18 @@ pub fn call<I: AbiIn, O: Reply>(
     let at = on(op, instance);
     // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`; every
     // pointer in the `TestIn` borrows memory that outlives this call. An instance this opens was
-    // lent no host tables (a `TestIn` names none: only `FakeHost::lend_to` does, through
-    // `call_hosted`), so it borrows nothing and is `'static`.
+    // lent no host tables (a `TestIn` names none: only `FakeHost::lend_in` does, through
+    // `call_hosted_in`), so it borrows nothing and is `'static`.
     unsafe { run(op, at, input.input, out) }
 }
 
-/// [`call`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to: the
+/// [`call_in`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to: the
 /// borrow of the host lasts the whole call, and the `in` is copied only inside it.
 ///
 /// # Panics
 ///
-/// As [`call`].
-pub fn call_hosted<'h, I: AbiIn, O: Reply>(
+/// As [`call_in`].
+pub fn call_hosted_in<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Option<&Instance<'h>>,
     input: &super::fake::LentIn<'h, I>,
@@ -237,8 +237,8 @@ pub fn call_hosted<'h, I: AbiIn, O: Reply>(
 ///
 /// # Panics
 ///
-/// As [`call`], or `op` is not `close`.
-pub fn close<'h, I: AbiIn, O: Reply>(
+/// As [`call_in`], or `op` is not `close`.
+pub fn close_in<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Instance<'h>,
     input: &TestIn<'h, I>,
@@ -248,11 +248,11 @@ pub fn close<'h, I: AbiIn, O: Reply>(
     assert_eq!(
         index,
         slot::CLOSE,
-        "reply::close: the op is not its door's close"
+        "reply::close_in: the op is not its door's close"
     );
     assert!(
         core::ptr::eq(door, instance.door),
-        "reply::close: the instance is another door's"
+        "reply::close_in: the instance is another door's"
     );
     // SAFETY: the slot is its door's own `close`, on an instance that door's READY `open`
     // answered, closed once (taken by value), over a `TestIn` that outlives the call.
@@ -265,27 +265,27 @@ fn on(op: super::ViewOp, instance: Option<&Instance<'_>>) -> *mut c_void {
     assert_ne!(
         index,
         slot::CLOSE,
-        "reply::call: `close` takes its instance by value (reply::close)"
+        "reply::call_in: `close` takes its instance by value (reply::close_in)"
     );
     match (index, instance) {
         (slot::VALIDATE | slot::OPEN, None) => ptr::null_mut(),
         (slot::VALIDATE | slot::OPEN, Some(_)) => {
-            panic!("reply::call: `validate` and `open` run on no instance")
+            panic!("reply::call_in: `validate` and `open` run on no instance")
         }
         (_, None) => {
-            panic!("reply::call: slot {index} runs on an instance its door's open answered")
+            panic!("reply::call_in: slot {index} runs on an instance its door's open answered")
         }
         (_, Some(i)) => {
             assert!(
                 core::ptr::eq(door, i.door),
-                "reply::call: the instance is another door's"
+                "reply::call_in: the instance is another door's"
             );
             i.ptr
         }
     }
 }
 
-/// [`call`] over a raw slot and instance, for this crate's own stand-in slots that read their
+/// [`call_in`] over a raw slot and instance, for this crate's own stand-in slots that read their
 /// instance as test data.
 ///
 /// # Safety
@@ -303,7 +303,7 @@ pub(crate) unsafe fn call_raw<I: AbiIn, O: Reply>(
     unsafe { run_op(op, None, instance, *input, out) }
 }
 
-/// [`call`]'s body, over the caller's `in`, copied.
+/// [`call_in`]'s body, over the caller's `in`, copied.
 ///
 /// # Safety
 ///

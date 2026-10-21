@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A SLOT'S `in`, BUILT FOR A TEST AND BORROWING WHAT IT NAMES (status row 194). An `in` struct
-//! keeps its fields pub for the host, so a hand-built one can name any pointer; [`reply::call`]
+//! keeps its fields pub for the host, so a hand-built one can name any pointer; [`reply::call_in`]
 //! does not take one. It takes a [`TestIn<'a, I>`], which only this module makes: it starts all
 //! zero (every pointer NULL, every list empty) and each builder sets a pointer only over memory
 //! borrowed for `'a` (a string, a payload, a list, a buffer, a nested `in` built the same way) or
@@ -43,7 +43,7 @@
 //! drop(input);
 //! ```
 //!
-//! [`reply::call`]: super::reply::call
+//! [`reply::call_in`]: super::reply::call_in
 
 use core::marker::PhantomData;
 use core::mem::size_of;
@@ -116,7 +116,7 @@ settled!(
 );
 
 /// A slot's `in` built for a test: every pointer in it borrows memory that lives for `'a`, or is
-/// held by the `TestIn` itself. Only this module makes one; [`super::reply::call`] takes it.
+/// held by the `TestIn` itself. Only this module makes one; [`super::reply::call_in`] takes it.
 #[derive(Debug)]
 pub struct TestIn<'a, I> {
     pub(crate) input: I,

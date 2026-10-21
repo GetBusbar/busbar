@@ -133,6 +133,10 @@ pub struct Host<'t> {
     _tables: std::marker::PhantomData<&'t HostTables>,
 }
 
+/// A [`Host`] over a real host's tables, which are its statics: what an instance holds for its
+/// whole life (status row 194).
+pub type StaticHost = Host<'static>;
+
 // SAFETY: the context is an opaque handle and the table plain code addresses, both valid for the
 // instance's life (the mechanism's host-table rule); every call goes through the host's own
 // synchronisation.

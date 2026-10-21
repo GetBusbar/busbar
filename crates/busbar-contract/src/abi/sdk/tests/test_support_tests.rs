@@ -185,7 +185,7 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
         .expect("the door states close");
 
     let input = TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
-    let mut opened = call(open, None, &input, zeroed::<OpenOut>());
+    let mut opened = call_in(open, None, &input, zeroed::<OpenOut>());
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
     let instance = opened
@@ -196,7 +196,7 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
         "an instance is taken once"
     );
 
-    let closed = super::reply::close(
+    let closed = super::reply::close_in(
         close,
         instance,
         &TestIn::<InHead>::new().set(|h| &h.op, slot::CLOSE),
@@ -385,7 +385,7 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
             crate::abi::mechanism::call::BLOB_ABSENT,
         )
         .buffer(|i| &i.err_buf, |i| &i.err_cap, &mut reason);
-    let mut got = call(open, None, &input, zeroed::<OpenOut>());
+    let mut got = call_in(open, None, &input, zeroed::<OpenOut>());
     assert!(
         got.take_instance().is_none(),
         "a FAILED open hands no instance"
@@ -591,7 +591,7 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
 
 // ── a reply copied before release ───────────────────────────────────────────────────────────────
 
-use super::reply::{call, Reply};
+use super::reply::{call_in, Reply};
 use crate::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
 use crate::abi::export::{CheckOut, ServeOut};
 use crate::abi::mechanism::call::{Blob, RawOutcome};
@@ -1188,8 +1188,8 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     // The lent `in` lives only in this block; the instance it opens borrows the host for as long
     // as it lives (`Instance<'h>`).
     let mut opened = {
-        let lent = host.lend_to(input);
-        super::reply::call_hosted(open, None, &lent, zeroed::<OpenOut>())
+        let lent = host.lend_in(input);
+        super::reply::call_hosted_in(open, None, &lent, zeroed::<OpenOut>())
     };
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
@@ -1201,7 +1201,7 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     let close = view()
         .op::<crate::abi::transport::Ops>(|t| &t.head.close)
         .expect("the door states close");
-    let closed = super::reply::close(
+    let closed = super::reply::close_in(
         close,
         instance,
         &TestIn::<InHead>::new().set(|h| &h.op, slot::CLOSE),

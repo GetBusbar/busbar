@@ -53,7 +53,7 @@ pub use safe::{Instance, Safe, SafeSlot};
 pub mod services;
 pub use services::{
     CredentialSecret, Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed,
-    TrustItem, TrustItems, Wake,
+    StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;

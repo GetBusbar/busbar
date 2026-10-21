@@ -234,6 +234,9 @@ pub struct Wake<'t> {
     _tables: PhantomData<&'t HostTables>,
 }
 
+/// A [`Wake`] over a real host's tables, which are its statics (status row 194).
+pub type StaticWake = Wake<'static>;
+
 // SAFETY: the context is an opaque `u64` handle (#74: no host address crosses) and the wake a plain
 // code address; the mechanism states the wake callable from any thread for the instance's life.
 unsafe impl Send for Wake<'_> {}
@@ -300,6 +303,9 @@ pub struct Services<'t> {
     table: *const HostSlots,
     _tables: PhantomData<&'t HostTables>,
 }
+
+/// [`Services`] over a real host's tables, which are its statics (status row 194).
+pub type StaticServices = Services<'static>;
 
 // SAFETY: the table is the host's static and the context an opaque `u64` handle (#74); the host
 // states both are usable from any thread for the instance's life.

@@ -808,7 +808,7 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
-/// `reply::call` enters only a slot a door view names (status row 159): a `ViewOp` is not built
+/// `reply::call_in` enters only a slot a door view names (status row 159): a `ViewOp` is not built
 /// from a raw `Op` or a safe `extern "C" fn`; a door view's own slot is one:
 ///
 /// ```compile_fail,E0451
@@ -832,7 +832,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call_in, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
 /// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
@@ -872,7 +872,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call_in, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
 /// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
@@ -912,7 +912,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call_in, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
 /// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
@@ -927,7 +927,7 @@ pub const fn door<T: KindOps>(
 ///     let open = view
 ///         .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
 ///         .unwrap();
-///     let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
+///     let mut opened = call_in(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
 ///     opened.out.instance = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
 ///     let _: Instance = opened.out.instance;
 /// }
@@ -954,7 +954,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call_in, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
 /// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
@@ -993,7 +993,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::mechanism::call::{Op, OutHead, RawOutcome};
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-/// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
+/// # use busbar_contract::abi::sdk::test_support::reply::{call_in, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
 /// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
@@ -1008,7 +1008,7 @@ pub const fn door<T: KindOps>(
 ///     let open = view
 ///         .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
 ///         .unwrap();
-///     let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
+///     let mut opened = call_in(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
 ///     let _: Option<Instance> = opened.take_instance();
 /// }
 /// ```
@@ -1029,7 +1029,7 @@ pub const fn door<T: KindOps>(
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
-///     let _ = host.lend_to(TestIn::<OpenIn>::new());
+///     let _ = host.lend_in(TestIn::<OpenIn>::new());
 /// }
 /// ```
 ///
@@ -1040,7 +1040,7 @@ pub const fn door<T: KindOps>(
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
-///     let lent = host.lend_to(TestIn::<OpenIn>::new());
+///     let lent = host.lend_in(TestIn::<OpenIn>::new());
 ///     drop(host);
 ///     drop(lent);
 /// }
@@ -1051,7 +1051,7 @@ pub const fn door<T: KindOps>(
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
-///     let lent = host.lend_to(TestIn::<OpenIn>::new());
+///     let lent = host.lend_in(TestIn::<OpenIn>::new());
 ///     drop(lent);
 ///     drop(host);
 /// }
