@@ -7,17 +7,22 @@
 //! until fat LTO merges the bitcode of two doors ("symbol multiply defined"), which is how the
 //! release leg of the both-ways suites failed to link.
 //!
-//! The loader holds a hot kind's `-plugin` crate as a dev-dependency ONLY so cargo builds its
-//! cdylib. That is safe exactly while nothing NAMES the crate (rustc does not link an unnamed
-//! `--extern`). This test is the guard: no source of this crate names a hot both-ways row's crate,
-//! and the table `build.rs` generates names none either. The real proof is the release profile
-//! with LTO on linking at all.
+//! Every both-ways row names its plugin repo's LOGIC crate, and the loader holds a row's `-plugin`
+//! crate as a dev-dependency ONLY so cargo builds its cdylib. That is safe exactly while nothing
+//! NAMES the `-plugin` crate (rustc does not link an unnamed `--extern`). These tests are the
+//! guard, over EVERY row of the table, not one kind's: no row names a `-plugin` crate, the
+//! generated table's cdylib column is the row's logic crate plus `_plugin`, and no source of this
+//! crate nor the table `build.rs` generates names any row's `-plugin` crate. The real proof is the
+//! release profile with LTO on linking at all.
 
 use std::path::Path;
 
-const HOT_KINDS: &[&str] = &["plane", "transport"];
+/// The suffix of a plugin repo's packaging crate, in snake case.
+const PACKAGING_SUFFIX: &str = "_plugin";
 
-fn hot_crates() -> Vec<String> {
+/// Every `(row, crate)` of `Cargo.toml`'s `[package.metadata.busbar.both-ways]`, the crate in snake
+/// case, read from the manifest itself rather than from the table `build.rs` derives from it.
+fn rows() -> Vec<(String, String)> {
     let manifest = include_str!("../../Cargo.toml");
     let mut in_table = false;
     let mut out = Vec::new();
@@ -27,13 +32,29 @@ fn hot_crates() -> Vec<String> {
             in_table = code == "[package.metadata.busbar.both-ways]";
             continue;
         }
-        if let (true, Some((kind, krate))) = (in_table, code.split_once('=')) {
-            if HOT_KINDS.contains(&kind.trim().trim_matches('"')) {
-                out.push(krate.trim().trim_matches('"').replace('-', "_"));
-            }
+        if let (true, Some((row, krate))) = (in_table, code.split_once('=')) {
+            out.push((
+                row.trim().trim_matches('"').to_string(),
+                krate.trim().trim_matches('"').replace('-', "_"),
+            ));
         }
     }
     out
+}
+
+/// The packaging crate of every row: the row's crate itself when it names one, else its
+/// `-plugin` twin.
+fn packaging_crates() -> Vec<String> {
+    rows()
+        .into_iter()
+        .map(|(_, krate)| {
+            if krate.ends_with(PACKAGING_SUFFIX) {
+                krate
+            } else {
+                format!("{krate}{PACKAGING_SUFFIX}")
+            }
+        })
+        .collect()
 }
 
 /// Whether `line` names `krate` by a path or a `use`.
@@ -53,9 +74,29 @@ fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 }
 
 #[test]
-fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
-    let hot = hot_crates();
-    assert!(!hot.is_empty(), "the table has a hot row to guard");
+fn every_both_ways_row_names_its_logic_crate_never_a_packaging_crate() {
+    let rows = rows();
+    assert!(!rows.is_empty(), "the both-ways table has rows to guard");
+    for (row, krate) in &rows {
+        assert!(
+            !krate.ends_with(PACKAGING_SUFFIX),
+            "both-ways row `{row}` names the packaging crate {krate}: its rlib exports \
+             busbar_plugin_door, so the row names the logic crate and the cdylib is derived"
+        );
+    }
+    for &(row, logic, cdylib) in crate::both_ways::FIXTURES {
+        assert_eq!(
+            cdylib,
+            format!("{logic}{PACKAGING_SUFFIX}"),
+            "the `{row}` row's cdylib is its logic crate's packaging crate"
+        );
+    }
+}
+
+#[test]
+fn nothing_names_a_packaging_crates_rlib_so_none_is_linked() {
+    let packaging = packaging_crates();
+    assert!(!packaging.is_empty(), "the table has a row to guard");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     sources(&root.join("src"), &mut files);
@@ -63,7 +104,7 @@ fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
     let generated = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/both_ways.rs"))
         .expect("the generated table");
     let this = file!();
-    for krate in &hot {
+    for krate in &packaging {
         // `use ::<crate>` / `<crate>::path`: a name that links it. Comments may mention it.
         let uses = |text: &str| {
             text.lines()
@@ -88,7 +129,7 @@ fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
 /// THE RED ARM, KEPT: the matcher the guard uses refuses the line that would link the crate.
 #[test]
 fn the_guard_sees_a_line_that_names_the_crate() {
-    let krate = hot_crates().remove(0);
+    let krate = packaging_crates().remove(0);
     assert!(names(
         &format!("pub(crate) use ::{krate} as alias;"),
         &krate
