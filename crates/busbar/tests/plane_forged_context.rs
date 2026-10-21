@@ -12,6 +12,14 @@
 #[allow(dead_code)]
 mod plane;
 
+/// The test plane's hand-laid door (`tests/fixtures/plane_driver_test_plane.rs`), as a door the
+/// loader may enter (status row 159: it is no `plugin_door!` door, so it is no `MacroDoor`).
+fn plane_door() -> busbar_plugin_loader::dispatch::LoadedDoor {
+    // SAFETY: the fixture's `door` answers its `'static`, fully initialised door, compiled into
+    // this test binary.
+    unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(plane::door) }
+}
+
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome};
@@ -35,7 +43,7 @@ fn a_forged_context_in_a_non_lifecycle_op_answers_fault_and_quarantines() {
         dispatcher: dispatcher.adopter(),
         conns: ConnTable::Probe,
     };
-    let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
+    let row = LinkedRow::of_loaded(plane_door()).expect("the plane states its Statement");
     let plugin = load_linked::<Plane>(&row, bind).expect("the linked door loads");
     let mut open_frame = Frame::new(
         PlaneOpenIn {

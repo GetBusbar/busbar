@@ -77,10 +77,7 @@ fn door_rows() -> &'static [&'static PlaneDecl] {
 /// (`linked_probe`), its facts read as a registration and folded by the kernel
 /// (`plane_driver::door::fold`) — the path the composition root folds every door candidate by
 /// (`root::linked::door_rows`).
-fn fold_door(
-    label: &str,
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> &'static PlaneDecl {
+fn fold_door(label: &str, door: busbar_contract::abi::sdk::door::MacroDoor) -> &'static PlaneDecl {
     use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
     let reg = registration(linked_probe(door, label))
         .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
@@ -153,6 +150,6 @@ pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
 }
 
 /// Every test-linked door plane's door, by its crate's label.
-pub fn doors() -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {
+pub fn doors() -> &'static [(&'static str, busbar_contract::abi::sdk::door::MacroDoor)] {
     TEST_LINKED_DOORS
 }

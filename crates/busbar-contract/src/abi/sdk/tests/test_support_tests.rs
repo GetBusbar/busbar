@@ -188,8 +188,13 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
     let mut opened = call(open, None, &input, zeroed::<OpenOut>());
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
-    let instance = opened.take_instance().expect("a READY open hands its instance");
-    assert!(opened.take_instance().is_none(), "an instance is taken once");
+    let instance = opened
+        .take_instance()
+        .expect("a READY open hands its instance");
+    assert!(
+        opened.take_instance().is_none(),
+        "an instance is taken once"
+    );
 
     let closed = super::reply::close(
         close,
@@ -382,7 +387,10 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
     let mut got = call(open, None, &input, zeroed::<OpenOut>());
-    assert!(got.take_instance().is_none(), "a FAILED open hands no instance");
+    assert!(
+        got.take_instance().is_none(),
+        "a FAILED open hands no instance"
+    );
     assert_eq!(got.outcome, Outcome::Failed);
     assert_eq!(got.error.as_deref(), Some("probe open failed: x"));
     assert_eq!(

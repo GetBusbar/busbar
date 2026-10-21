@@ -246,7 +246,7 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
 /// A compiled-in transport door (a linked row's door function), admitted through the same door
 /// validation as a dropped-in one and bound with `bind`.
 pub fn linked_transport(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
     bind: Bind,
 ) -> Plugin<Transport> {
     let row = LinkedRow::of(door).expect("the linked door states itself");

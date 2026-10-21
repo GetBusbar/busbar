@@ -16,8 +16,9 @@ use std::time::Duration;
 use busbar_contract::abi::hook::{VERB_ABSTAIN, VERB_PREFER};
 use busbar_contract::abi::host::hook::{DecideFrame, DecideView};
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
+use busbar_contract::abi::mechanism::door::MARK_WORD_HOOK;
 use busbar_contract::abi::mechanism::rendering;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookFacts};
 use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
 use busbar_kernel::config::{
@@ -36,7 +37,7 @@ fn linked_axis() -> Arc<dyn HookAxis> {
 /// An axis over the kernel's ranking double alone, on the same dispatcher.
 fn double_axis() -> Arc<dyn HookAxis> {
     let rows = HookRows::new(
-        &[ranking_double::door],
+        &[ranking_double::MACRO_DOOR],
         Some(&PluginRegistry::empty()),
         crate::root::dispatch::dispatcher(),
     )
@@ -315,7 +316,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
 }
 
 /// The linked door that claims `word` as a hook word.
-fn linked_door_claiming(word: &str) -> DoorFn {
+fn linked_door_claiming(word: &str) -> MacroDoor {
     *crate::LINKED
         .hook_doors
         .iter()
@@ -323,7 +324,7 @@ fn linked_door_claiming(word: &str) -> DoorFn {
         .expect("a linked hook door claims the word")
 }
 
-fn read(door: DoorFn) -> rendering::Read {
+fn read(door: MacroDoor) -> rendering::Read {
     let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states");
     rendering::read(&stated).expect("the rendering reads")
 }
@@ -347,7 +348,7 @@ fn hook_words(r: &rendering::Read) -> Vec<String> {
 #[tokio::test]
 async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() {
     let real = read(linked_door_claiming("cheapest"));
-    let double = read(ranking_double::door);
+    let double = read(ranking_double::MACRO_DOOR);
     assert_ne!(
         double.name, real.name,
         "the double states its own name: the kernel names no plugin (C1)"

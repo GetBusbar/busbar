@@ -3511,7 +3511,7 @@ fn other_style_chain() -> AuthMiddleware {
     let registry = busbar_plugin_loader::PluginRegistry::empty()
         .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
             "other-style",
-            other_style::door,
+            other_style::MACRO_DOOR,
         )])
         .expect("the fixture links");
     AuthMiddleware::new(

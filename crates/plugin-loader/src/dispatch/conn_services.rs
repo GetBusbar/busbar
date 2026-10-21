@@ -314,7 +314,11 @@ unsafe fn read_establish(input: *const c_void) -> EstablishIn {
     i
 }
 
-unsafe extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn establish(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -1306,7 +1310,11 @@ fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
     })))
 }
 
-unsafe extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn read_reply(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -1536,7 +1544,11 @@ fn abi(s: &'static str) -> AbiStr {
     }
 }
 
-unsafe extern "C" fn identity(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn identity(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,

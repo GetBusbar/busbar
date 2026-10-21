@@ -113,6 +113,8 @@ impl LoadablePlugin {
                     .ok()
                     .map(|row| row.statement)
             }
+            #[cfg(test)]
+            Some(LinkedEntry::Unstated) => None,
             None => self.manifest.stated_rendering().ok().flatten(),
         }
     }
@@ -195,6 +197,10 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::sdk::door::MacroDoor),
+    /// TEST ONLY: a linked row whose door states nothing and is never opened (a linked row's door
+    /// is a `MacroDoor`, which always states itself).
+    #[cfg(test)]
+    Unstated,
 }
 
 impl LinkedPlugin {
@@ -619,6 +625,8 @@ impl PluginRegistry {
             return match entry {
                 LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
                 LinkedEntry::Door(_) => Err(no_door()),
+                #[cfg(test)]
+                LinkedEntry::Unstated => Err(no_door()),
             };
         }
         let named = |e: String| format!("plugin '{}': {e}", p.key());

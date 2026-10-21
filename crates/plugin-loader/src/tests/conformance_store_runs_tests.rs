@@ -11,7 +11,7 @@ use crate::conformance::{both_ways, red_count, Subject};
 
 fn subject() -> Subject {
     Subject::new(
-        crate::both_ways::store_fixture::door,
+        crate::both_ways::store_fixture::MACRO_DOOR,
         "store_v3_door",
         include_str!("../../tests/fixtures/store_conformance.json"),
     )

@@ -287,7 +287,7 @@ pub(super) fn mint() -> OpId {
     )
 }
 
-fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
+fn open(door: busbar_contract::abi::sdk::door::MacroDoor) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
         &LinkedRow::of(door).expect("the store states its Statement"),
@@ -398,8 +398,8 @@ fn transcript(s: &LoadedStore) -> String {
 
 #[test]
 fn an_op_that_pends_and_resumes_answers_what_the_inline_op_answers() {
-    let inline = transcript(&open(crate::both_ways::store_fixture::door));
-    let pended = transcript(&open(pends_once::door));
+    let inline = transcript(&open(crate::both_ways::store_fixture::MACRO_DOOR));
+    let pended = transcript(&open(pends_once::MACRO_DOOR));
     assert_eq!(pended, inline);
 }
 
@@ -407,7 +407,7 @@ fn an_op_that_pends_and_resumes_answers_what_the_inline_op_answers() {
 /// grants the first attempt applied, and the window counts them once.
 #[test]
 fn a_reserve_cancelled_after_its_write_retries_to_the_same_grants_counted_once() {
-    let s = open(commits_then_pends::door);
+    let s = open(commits_then_pends::MACRO_DOOR);
     let rt = rt();
     let op = mint();
     let cells = [Cell {
@@ -464,14 +464,14 @@ fn a_reserve_cancelled_after_its_write_retries_to_the_same_grants_counted_once()
 
 /// The raw door: its open, and a `session_remove` entry on `ticket` with `flags`.
 fn raw_session_remove(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
     ticket: Ticket,
     flags: u32,
 ) -> Outcome {
     // SAFETY: the SDK's `'static` door and its store table; every call passes the slot's own
     // `in`/`out` shapes, live for the call.
     unsafe {
-        let d = &*door();
+        let d = &*door.door_fn()();
         let ops = &*d.ops.cast::<busbar_contract::abi::store::Ops>();
         let mut oi: OpenIn = std::mem::zeroed();
         oi.head = in_head();
@@ -525,12 +525,16 @@ const TICKET: Ticket = Ticket {
 #[test]
 fn a_resume_with_nothing_parked_is_fault_and_never_a_fresh_run() {
     assert_eq!(
-        raw_session_remove(crate::both_ways::store_fixture::door, TICKET, FLAG_RESUME),
+        raw_session_remove(
+            crate::both_ways::store_fixture::MACRO_DOOR,
+            TICKET,
+            FLAG_RESUME
+        ),
         Outcome::Fault
     );
     // The same op, fresh, runs.
     assert_eq!(
-        raw_session_remove(crate::both_ways::store_fixture::door, TICKET, 0),
+        raw_session_remove(crate::both_ways::store_fixture::MACRO_DOOR, TICKET, 0),
         Outcome::Ready
     );
 }
@@ -538,7 +542,7 @@ fn a_resume_with_nothing_parked_is_fault_and_never_a_fresh_run() {
 #[test]
 fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
     assert_eq!(
-        raw_session_remove(pends_on_nothing::door, TICKET, 0),
+        raw_session_remove(pends_on_nothing::MACRO_DOOR, TICKET, 0),
         Outcome::Fault
     );
 }
@@ -582,7 +586,7 @@ mod remote_denylist {
 /// remote store's every round trip must.
 #[test]
 fn a_store_that_pends_then_answers_completes_a_governance_op_on_the_bridge() {
-    let s = open(remote_denylist::door);
+    let s = open(remote_denylist::MACRO_DOOR);
     RecordStore::add_denylist(&s, "alice", "test").expect("the denylist write");
     assert_eq!(
         RecordStore::list_denylist(&s).expect("the pended read completes"),
@@ -754,7 +758,7 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> = table.clone();
     let p = load_linked::<Store>(
-        &LinkedRow::of(over_tcp::door).expect("the store states its Statement"),
+        &LinkedRow::of(over_tcp::MACRO_DOOR).expect("the store states its Statement"),
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
@@ -831,7 +835,7 @@ mod pends_in_open {
 #[test]
 fn a_store_pending_in_open_completes_the_load_and_serves() {
     let before = PENDS_IN_OPEN_OPENS.load(std::sync::atomic::Ordering::SeqCst);
-    let s = open(pends_in_open::door);
+    let s = open(pends_in_open::MACRO_DOOR);
     assert_eq!(
         PENDS_IN_OPEN_OPENS.load(std::sync::atomic::Ordering::SeqCst) - before,
         1,
@@ -871,7 +875,7 @@ mod connects_over_tcp {
 
 /// `door` loaded over `table` (the host's connection table) and opened.
 fn open_over(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
     table: &Arc<Table>,
 ) -> Result<LoadedStore, String> {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -896,7 +900,7 @@ fn open_over(
 #[test]
 fn a_store_connects_over_the_hosts_table_at_open() {
     let table = Arc::new(Table::default());
-    let s = open_over(connects_over_tcp::door, &table).expect("the reachable backend opens");
+    let s = open_over(connects_over_tcp::MACRO_DOOR, &table).expect("the reachable backend opens");
     assert_eq!(
         *table.opened.lock().expect("opened"),
         vec![(0, "db.internal:5432".to_string())]
@@ -916,7 +920,7 @@ fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
     table
         .refuse
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    let err = open_over(connects_over_tcp::door, &table).expect_err("the load fails");
+    let err = open_over(connects_over_tcp::MACRO_DOOR, &table).expect_err("the load fails");
     assert_eq!(
         err,
         format!(
@@ -1020,7 +1024,7 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
         Arc::new(crate::tcp_conns::TcpConns::new(d.conn_waker()));
     let p = load_linked::<Store>(
-        &LinkedRow::of(over_wire::door).expect("the store states its Statement"),
+        &LinkedRow::of(over_wire::MACRO_DOOR).expect("the store states its Statement"),
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,

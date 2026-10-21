@@ -81,7 +81,7 @@ fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
         .name("throwaway".into())
         .spawn(|| {
             let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-            let row = LinkedRow::of(crate::both_ways::store_fixture::door)
+            let row = LinkedRow::of(crate::both_ways::store_fixture::MACRO_DOOR)
                 .expect("the store states its Statement");
             let plugin = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
             let opened = plugin.call(slot::OPEN, &mut open_frame(b"{}")).outcome;
@@ -159,7 +159,7 @@ fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
     const ROUNDS: usize = 200;
     const THREADS: usize = 8;
     let path = Arc::new(crate::both_ways::example_cdylib("store_v3_door"));
-    let stated = rendering_of(crate::both_ways::store_fixture::door)
+    let stated = rendering_of(crate::both_ways::store_fixture::MACRO_DOOR)
         .expect("the store renders its Statement");
     let stated = Arc::new(stated);
     let threads: Vec<_> = (0..THREADS)

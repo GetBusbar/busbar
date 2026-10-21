@@ -913,9 +913,14 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
 
 // ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load UNCHANGED) ─────────────────────────────
 
-/// A door a registry row carries but these tests never open.
-extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
+/// A linked row over `m` whose door states nothing and that these tests never open.
+fn unopened(m: Manifest) -> LinkedPlugin {
+    LinkedPlugin {
+        manifest: m,
+        entry: LinkedEntry::Unstated,
+        ephemeral: false,
+        keyed_by_alias: false,
+    }
 }
 
 /// The 1.6.0 manifest of a renamed plugin: `name` aliased `alias`, of `kind`, answering `former`.
@@ -946,7 +951,7 @@ fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
 /// The registry over `m` LINKED (the build's own row, no artifact).
 fn linked_in(m: Manifest) -> PluginRegistry {
     PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door(m, unopened_door)])
+        .link(vec![unopened(m)])
         .expect("the linked door admits the row")
 }
 
@@ -1095,7 +1100,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     // webrequest that answers that name.
     let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
     let refused = dropped_in("cross-old", old)
-        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+        .link(vec![unopened(webrequest())])
         .expect_err("a linked row and a dropped-in plugin claiming one name are refused");
     assert!(
         refused.contains("'busbar-webrequest'")
@@ -1106,11 +1111,8 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     // RED: two linked rows claiming one alias.
     let refused = PluginRegistry::empty()
         .link(vec![
-            LinkedPlugin::door(webrequest(), unopened_door),
-            LinkedPlugin::door(
-                renamed("hook", "acme-hook-x", "busbar-webrequest", &[]),
-                unopened_door,
-            ),
+            unopened(webrequest()),
+            unopened(renamed("hook", "acme-hook-x", "busbar-webrequest", &[])),
         ])
         .expect_err("two linked rows claiming one word are refused");
     assert!(
@@ -1134,7 +1136,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         ),
     ] {
         let refused = dropped_in(tag, other)
-            .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+            .link(vec![unopened(webrequest())])
             .expect_err("no door outranks the other");
         assert!(
             refused.contains("claim conflict") && refused.contains("busbar-hook-webrequest"),
@@ -1145,8 +1147,8 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
 
 /// A linked door whose Statement states a version: the store both-ways fixture's.
 #[allow(non_upper_case_globals)]
-const versioned_door: busbar_contract::abi::mechanism::door::DoorFn =
-    crate::both_ways::store_fixture::door;
+const versioned_door: busbar_contract::abi::sdk::door::MacroDoor =
+    crate::both_ways::store_fixture::MACRO_DOOR;
 
 /// The version [`versioned_door`]'s Statement states.
 fn door_version() -> String {
@@ -1281,7 +1283,7 @@ fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
 /// stating the store door's own Statement are one plugin at one version.
 #[test]
 fn the_one_version_rule_compares_statement_versions_only() {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::both_ways::store_fixture::MACRO_DOOR;
     let linked = || {
         vec![LinkedPlugin::store_named(
             "busbar-store-mem",
@@ -1311,10 +1313,13 @@ fn the_one_version_rule_compares_statement_versions_only() {
         assert_eq!(refused, refusal, "{tag}");
     }
     let refused = dropped_in("copy-unopened", stating(m(), None))
-        .link(vec![LinkedPlugin::door_of_kind(
-            "store",
+        .link(vec![LinkedPlugin::built_in(
             "busbar-store-mem",
-            unopened_door,
+            &[],
+            "store",
+            supported_abi("store").first().copied().unwrap_or_default(),
+            LinkedEntry::Unstated,
+            false,
         )])
         .expect_err("a linked row whose door states nothing cannot be compared");
     assert_eq!(refused, refusal);
@@ -1327,11 +1332,18 @@ fn the_one_version_rule_compares_statement_versions_only() {
 /// dropped-in row prints its manifest name.
 #[test]
 fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::both_ways::store_fixture::MACRO_DOOR;
     let reg = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::store_named("busbar-store-mem", "mem", door, true),
-            LinkedPlugin::auth_door_named("busbar-auth-tok", "tok", unopened_door),
+            LinkedPlugin::built_in(
+                "busbar-auth-tok",
+                &["tok"],
+                "auth",
+                supported_abi("auth").first().copied().unwrap_or_default(),
+                LinkedEntry::Unstated,
+                false,
+            ),
         ])
         .expect("the rows register");
     for (word, key) in [

@@ -112,7 +112,7 @@ mod markless_default {
 }
 
 /// The auth rows over `doors`, each linked under its name.
-fn linking(doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)]) -> AuthRows {
+fn linking(doors: &[(&str, busbar_contract::abi::sdk::door::MacroDoor)]) -> AuthRows {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
         workers: 1,
         budgets: Budgets::default(),
@@ -134,7 +134,10 @@ fn linking(doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)]) -> A
 /// none, and no row stating it is none.
 #[test]
 fn the_default_inbound_style_is_the_one_stating_rows_carriers_in_order() {
-    let rows = linking(&[("plain", plain::door), ("default-a", default_a::door)]);
+    let rows = linking(&[
+        ("plain", plain::MACRO_DOOR),
+        ("default-a", default_a::MACRO_DOOR),
+    ]);
     assert_eq!(
         rows.default_inbound_style(),
         Ok(vec![
@@ -145,7 +148,7 @@ fn the_default_inbound_style_is_the_one_stating_rows_carriers_in_order() {
     );
     assert_eq!(rows.carriers("plain").len(), 3, "a row's own carriers");
     assert!(rows.carriers("nobody").is_empty());
-    let none = linking(&[("plain", plain::door)]);
+    let none = linking(&[("plain", plain::MACRO_DOOR)]);
     assert_eq!(none.default_inbound_style(), Ok(Vec::new()));
 }
 
@@ -153,8 +156,8 @@ fn the_default_inbound_style_is_the_one_stating_rows_carriers_in_order() {
 #[test]
 fn two_default_inbound_styles_refuse_naming_both() {
     let rows = linking(&[
-        ("default-a", default_a::door),
-        ("default-b", default_b::door),
+        ("default-a", default_a::MACRO_DOOR),
+        ("default-b", default_b::MACRO_DOOR),
     ]);
     assert_eq!(
         rows.default_inbound_style(),
@@ -169,7 +172,7 @@ fn two_default_inbound_styles_refuse_naming_both() {
 /// refused at load, so it states nothing here.
 #[test]
 fn a_default_inbound_style_with_no_carrier_is_refused_at_load() {
-    let rows = linking(&[("markless-default", markless_default::door)]);
+    let rows = linking(&[("markless-default", markless_default::MACRO_DOOR)]);
     assert_eq!(rows.default_inbound_style(), Ok(Vec::new()));
     let err = rows
         .open(

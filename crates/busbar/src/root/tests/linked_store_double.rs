@@ -10,15 +10,15 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::rendering;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::records::{
     AuditRecord, PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore, UsageDelta, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_kernel::test_support::store_double;
 
-fn read(door: DoorFn) -> rendering::Read {
+fn read(door: MacroDoor) -> rendering::Read {
     let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states");
     rendering::read(&stated).expect("the rendering reads")
 }
@@ -33,7 +33,7 @@ fn real_row() -> &'static busbar_kernel::preflight::LinkedStore {
 }
 
 /// `door`, opened through the store axis on a dispatcher of its own, as boot opens a store.
-fn open(door: DoorFn, label: &str) -> Arc<dyn RecordStore> {
+fn open(door: MacroDoor, label: &str) -> Arc<dyn RecordStore> {
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: {
             let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
@@ -217,7 +217,7 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_kernel_store_double_states_what_the_linked_store_door_states() {
     let row = real_row();
-    let (real, double) = (read(row.2), read(store_double::door));
+    let (real, double) = (read(row.2), read(store_double::MACRO_DOOR));
     assert_ne!(
         double.name, real.name,
         "the double states its own name: the kernel names no plugin (C1)"
@@ -237,7 +237,7 @@ async fn the_kernel_store_double_states_what_the_linked_store_door_states() {
     assert_eq!(double.kind_tail_size, real.kind_tail_size, "the tail");
     assert_eq!(store_double::STORE.1, row.1, "the ephemeral flag");
 
-    let (real_door, double_door) = (row.2, store_double::door);
+    let (real_door, double_door) = (row.2, store_double::MACRO_DOOR);
     let (want, got) = tokio::task::spawn_blocking(move || {
         let want = transcript(open(real_door, "linked-real").as_ref());
         let got = transcript(open(double_door, "linked-double").as_ref());

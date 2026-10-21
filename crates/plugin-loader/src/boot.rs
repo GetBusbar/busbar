@@ -313,6 +313,17 @@ impl Candidate {
         Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
     }
 
+    /// [`Candidate::linked`] over a door the loader may enter: a test's restated door.
+    ///
+    /// # Errors
+    ///
+    /// As [`Candidate::linked`].
+    #[cfg(test)]
+    pub(crate) fn linked_loaded(door: crate::dispatch::LoadedDoor) -> Result<Self, String> {
+        let row = LinkedRow::of_loaded(door).map_err(|e| e.to_string())?;
+        Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
+    }
+
     /// Whether config names this plugin by `word` (its name or an alias).
     fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)

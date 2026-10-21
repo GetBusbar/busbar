@@ -906,7 +906,7 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
     use busbar_contract::store_calls::StoreDoor;
     let opened = crate::test_support::store_axis_stand_in()
         .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
+            StoreDoor::Linked(crate::test_support::store_double::MACRO_DOOR),
             crate::test_support::store_double::NAME,
             br#"{"panic_on_plane_append": true}"#,
         )

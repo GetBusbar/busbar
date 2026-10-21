@@ -14,7 +14,7 @@ use busbar_contract::abi::mechanism::door::Door;
 
 use super::{check, serve, status};
 use crate::conformance::{
-    dispatcher, load, open, test_door, test_op, Leg, Subject, TestDoor, TestOp,
+    dispatcher, load, open, test_loaded, test_op, Leg, Subject, TestDoor, TestOp,
 };
 use crate::dispatch::kinds::export::Export;
 
@@ -105,7 +105,8 @@ impl TestDoor for FaultingDoor {
             return have;
         }
         // SAFETY: the real sink's door and its export table are `'static`.
-        let real: Door = unsafe { crate::export_door::tests::SCRAPE_DOOR().read_unaligned() };
+        let real: Door =
+            unsafe { crate::export_door::tests::SCRAPE_DOOR.door_fn()().read_unaligned() };
         let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
         let ops: &'static Ops = Box::leak(Box::new(Ops {
             status: Some(test_op::<StatusFaults>),
@@ -124,7 +125,7 @@ impl TestDoor for FaultingDoor {
 
 #[test]
 fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
-    let s = Subject::new(test_door::<FaultingDoor>, "unused", "{}");
+    let s = Subject::of_loaded(test_loaded::<FaultingDoor>(), "unused", "{}");
     let d = dispatcher();
     let p = load::<Export>(&s, Leg::Linked, s.bind(&d, "export")).expect("the restated door loads");
     let opened = open(&p, br#"{ "buffer_seconds": 60 }"#);

@@ -28,8 +28,8 @@
 use core::mem::size_of;
 
 use crate::abi::mechanism::call::{AbiStr, Op};
-use crate::abi::mechanism::lifecycle::OpsHead;
 use crate::abi::mechanism::door::{Door, Statement};
+use crate::abi::mechanism::lifecycle::OpsHead;
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC};
 use crate::abi::sdk::door::{AbiIn, AbiOut, KindOps, MacroDoor};
 
@@ -498,7 +498,10 @@ impl DoorView {
     ///
     /// As [`DoorView::ops`], or `pick` answers a reference that is not a slot of the table.
     #[must_use]
-    pub fn op<T: KindOps>(&self, pick: impl FnOnce(&'static T) -> &'static Option<Op>) -> Option<ViewOp> {
+    pub fn op<T: KindOps>(
+        &self,
+        pick: impl FnOnce(&'static T) -> &'static Option<Op>,
+    ) -> Option<ViewOp> {
         let table = self.ops::<T>();
         let slot = pick(table);
         let base = core::ptr::from_ref(table) as usize;

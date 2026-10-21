@@ -934,7 +934,9 @@ fn main() {
 /// # }
 fn main() {
     let view = DoorView::of(plugin::MACRO_DOOR);
-    let open = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open).unwrap();
+    let open = view
+        .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
+        .unwrap();
     let mut opened = call(open, None, &zeroed::<OpenIn>(), zeroed::<OpenOut>());
     opened.out.instance = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
     let _: Instance = opened.out.instance;
@@ -972,7 +974,9 @@ fn main() {
 /// #     RawOutcome(0)
 /// # }
 fn main() {
-    let _ = Instance { ptr: core::ptr::null_mut() };
+    let _ = Instance {
+        ptr: core::ptr::null_mut(),
+    };
 }
 /// ```
 ///
@@ -1008,7 +1012,9 @@ fn main() {
 /// # }
 fn main() {
     let view = DoorView::of(plugin::MACRO_DOOR);
-    let open = view.op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open).unwrap();
+    let open = view
+        .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
+        .unwrap();
     let mut opened = call(open, None, &zeroed::<OpenIn>(), zeroed::<OpenOut>());
     let _: Option<Instance> = opened.take_instance();
 }
@@ -1211,8 +1217,8 @@ macro_rules! plugin_door {
         ///
         /// # Safety
         ///
-        /// The `DoorFn` contract: this image is loaded. The body
-        /// takes no argument and answers a `'static` door.
+        /// The `DoorFn` contract: this image is loaded. The body takes no argument and answers a
+        /// `'static` door.
         pub unsafe extern "C" fn door() -> *const $crate::abi::mechanism::door::Door {
             use $crate::abi::mechanism::lifecycle as __lc;
             use $crate::abi::sdk::door as __sdk;

@@ -810,7 +810,7 @@ mod v3 {
     /// The build's store through its compiled-in door.
     pub fn compiled_in() -> LoadedStore {
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-        let row = LinkedRow::of(store_fixture::door).expect("the store states its Statement");
+        let row = LinkedRow::of(store_fixture::MACRO_DOOR).expect("the store states its Statement");
         let p = load_linked::<Store>(&row, bind_to(&d)).expect("door");
         LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
@@ -838,7 +838,8 @@ mod v3 {
         }
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
         // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
-        let stated = rendering_of(store_fixture::door).expect("the store renders its Statement");
+        let stated =
+            rendering_of(store_fixture::MACRO_DOOR).expect("the store renders its Statement");
         let p = load_dropped::<Store>(&path, &stated, bind_to(&d)).expect("dropped door");
         LoadedStore::open(p, d, b"{}", mint).expect("open")
     }

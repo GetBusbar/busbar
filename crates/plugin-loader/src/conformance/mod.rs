@@ -111,9 +111,9 @@ use crate::dispatch::kinds::{
 use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, out_head, rendering_of_library, Bind, Called,
-    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
-    NoSink, OutFrame, Plugin,
+    in_head, load_dropped, load_linked, out_head, rendering_of_library, Bind, Called, ConnTable,
+    DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError, NoSink,
+    OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -428,9 +428,8 @@ impl Subject {
     /// When the door's Statement does not render or read back.
     #[must_use]
     pub fn needs(&self) -> Vec<rendering::ReadNeed> {
-        let row =
-            LinkedRow::of_loaded(self.door)
-                .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+        let row = LinkedRow::of_loaded(self.door)
+            .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
         rendering::read(&row.statement)
             .unwrap_or_else(|e| panic!("the door's Statement does not read back: {e:?}"))
             .needs
@@ -774,6 +773,14 @@ pub(crate) trait TestDoor {
 #[cfg(test)]
 pub(crate) extern "C" fn test_door<T: TestDoor>() -> *const Door {
     T::door()
+}
+
+/// [`test_door`] as a door the loader may enter.
+#[cfg(test)]
+pub(crate) const fn test_loaded<T: TestDoor>() -> LoadedDoor {
+    // SAFETY: every `TestDoor` in this crate's tests answers NULL or a `'static`, fully initialised
+    // door laid out over a fixture's real one.
+    unsafe { LoadedDoor::from_raw(test_door::<T>) }
 }
 
 /// A test's restated op, written in plain Rust; [`test_op`] is its door-table entry.
@@ -1748,7 +1755,8 @@ pub fn red_ready(s: &Subject) {
     let settings = s.fold_settings("red");
     if s.kind() == KindCode::Store {
         let d = dispatcher();
-        let row = LinkedRow::of_loaded(READY_FAILS_DOOR).expect("the restated door states its Statement");
+        let row =
+            LinkedRow::of_loaded(READY_FAILS_DOOR).expect("the restated door states its Statement");
         let p =
             load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());

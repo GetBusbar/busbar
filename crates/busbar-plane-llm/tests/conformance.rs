@@ -471,7 +471,7 @@ fn assert_the_planes_answers(t: &[String]) {
 }
 
 fn linked(d: &Dispatcher) -> Plugin<Plane> {
-    let row = LinkedRow::of(plane_door::door).expect("the linked door states its Statement");
+    let row = LinkedRow::of(plane_door::MACRO_DOOR).expect("the linked door states its Statement");
     load_linked(&row, bind(d)).expect("the linked door loads")
 }
 
@@ -489,7 +489,7 @@ fn dropped(d: &Dispatcher) -> Plugin<Plane> {
         .into_iter()
         .find(|p| p.exists())
         .unwrap_or_else(|| panic!("the llm_door example ({file}) is not built"));
-    let stated = rendering_of(plane_door::door).expect("the door renders its Statement");
+    let stated = rendering_of(plane_door::MACRO_DOOR).expect("the door renders its Statement");
     load_dropped(&path, &stated, bind(d)).expect("the dropped door loads")
 }
 
@@ -682,7 +682,9 @@ extern "C" fn uncounted_door() -> *const Door {
 fn red_a_door_that_stops_counting_the_far_ends_units_answers_differently() {
     let d = Dispatcher::new(DispatchConfig::default());
     let honest = script(&linked(&d));
-    let row = LinkedRow::of(uncounted_door).expect("the door states its Statement");
+    // SAFETY: `uncounted_door` answers the `'static` door it laid out (leaked) over the llm door's.
+    let door = unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(uncounted_door) };
+    let row = LinkedRow::of_loaded(door).expect("the door states its Statement");
     let red = script(&load_linked::<Plane>(&row, bind(&d)).expect("the door loads"));
     let far_end = |t: &[String]| t.iter().find(|l| l.starts_with("far_end ")).cloned();
     let red_line = far_end(&red).expect("the red door answers the far end");
@@ -708,7 +710,7 @@ mod provider_keys_through_the_loader {
     /// octets, byte for byte the declared text.
     #[test]
     fn the_door_states_its_provider_keys_in_its_statement_extensions() {
-        let stated = rendering_of(plane_door::door).expect("the door renders its Statement");
+        let stated = rendering_of(plane_door::MACRO_DOOR).expect("the door renders its Statement");
         let read = rendering::read(&stated).expect("the rendering reads back");
         assert_eq!(
             read.extensions.fmt,
@@ -724,7 +726,7 @@ mod provider_keys_through_the_loader {
     /// and equal to the declared one.
     #[test]
     fn the_loader_hands_the_provider_keys_on_in_the_registration() {
-        let reg = registration(linked_probe(plane_door::door, "provider-keys-probe"))
+        let reg = registration(linked_probe(plane_door::MACRO_DOOR, "provider-keys-probe"))
             .expect("the linked door binds");
         assert_eq!(
             reg.provider_keys,
@@ -823,7 +825,8 @@ mod door_units {
 
     fn door() -> (Dispatcher, Plugin<Plane>) {
         let d = Dispatcher::new(DispatchConfig::default());
-        let row = LinkedRow::of(plane_door::door).expect("the linked door states its Statement");
+        let row =
+            LinkedRow::of(plane_door::MACRO_DOOR).expect("the linked door states its Statement");
         let p = load_linked(
             &row,
             Bind {
@@ -1439,7 +1442,7 @@ fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
 // Bedrock guardrail traces, an OpenAI per-image answer, a whisper duration), each wanting its
 // counts exactly, so every billable class the tail declares is reported by a case (TODO L-R22).
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_plane_llm::plane_door::door,
+    door: busbar_plane_llm::plane_door::MACRO_DOOR,
     cdylib: "llm_door",
     inputs: include_str!("conformance.json"),
 }

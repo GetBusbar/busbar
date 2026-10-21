@@ -2826,7 +2826,7 @@ fn linked_export_axis() {
         busbar_kernel::test_support::export_axis::install_first_party_door(
             busbar_export_prometheus::NAME,
             busbar_export_prometheus::ALIAS,
-            busbar_export_prometheus::door::door,
+            busbar_export_prometheus::door::MACRO_DOOR,
         );
     });
 }

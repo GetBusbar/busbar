@@ -205,7 +205,7 @@ mod door {
     }
 
     fn linked() -> Plugin<Plane> {
-        let row = LinkedRow::of(plug::door).expect("the linked plane states its Statement");
+        let row = LinkedRow::of(plug::MACRO_DOOR).expect("the linked plane states its Statement");
         load_linked::<Plane>(&row, bind()).expect("the linked plane door loads")
     }
 
@@ -214,7 +214,7 @@ mod door {
     fn dropped() -> Plugin<Plane> {
         let path = crate::both_ways::example_cdylib("plane_door_plugin");
         // The signed manifest's rendering: the linked rlib's door, the same crate.
-        let stated = rendering_of(plug::door).expect("the plane renders its Statement");
+        let stated = rendering_of(plug::MACRO_DOOR).expect("the plane renders its Statement");
         load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped plane door loads")
     }
 
@@ -570,7 +570,10 @@ mod door {
 
     #[test]
     fn red_a_plane_open_over_the_lifecycle_structs_publishes_no_snapshot_and_faults() {
-        let row = LinkedRow::of(lifecycle_open_door).expect("the door states its Statement");
+        // SAFETY: a test's restated door: it answers the `'static` door it laid out over the
+        // fixture's real one.
+        let door = unsafe { crate::dispatch::LoadedDoor::from_raw(lifecycle_open_door) };
+        let row = LinkedRow::of_loaded(door).expect("the door states its Statement");
         let red = load_linked::<Plane>(&row, bind()).expect("the door loads");
         let mut o = open_frame(1);
         assert_eq!(red.call(life::OPEN, &mut o).outcome, Outcome::Fault);

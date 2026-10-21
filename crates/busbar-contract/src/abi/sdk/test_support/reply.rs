@@ -161,7 +161,11 @@ pub fn close<I: AbiIn, O: Reply>(
     out: O,
 ) -> Called<O> {
     let (_, door, index) = op.parts();
-    assert_eq!(index, slot::CLOSE, "reply::close: the op is not its door's close");
+    assert_eq!(
+        index,
+        slot::CLOSE,
+        "reply::close: the op is not its door's close"
+    );
     assert!(
         core::ptr::eq(door, instance.door),
         "reply::close: the instance is another door's"
@@ -174,15 +178,24 @@ pub fn close<I: AbiIn, O: Reply>(
 /// The instance pointer `op` is entered on: NULL for `validate` and `open`, else `instance`'s.
 fn on(op: super::ViewOp, instance: Option<&Instance>) -> *mut c_void {
     let (_, door, index) = op.parts();
-    assert_ne!(index, slot::CLOSE, "reply::call: `close` takes its instance by value (reply::close)");
+    assert_ne!(
+        index,
+        slot::CLOSE,
+        "reply::call: `close` takes its instance by value (reply::close)"
+    );
     match (index, instance) {
         (slot::VALIDATE | slot::OPEN, None) => ptr::null_mut(),
         (slot::VALIDATE | slot::OPEN, Some(_)) => {
             panic!("reply::call: `validate` and `open` run on no instance")
         }
-        (_, None) => panic!("reply::call: slot {index} runs on an instance its door's open answered"),
+        (_, None) => {
+            panic!("reply::call: slot {index} runs on an instance its door's open answered")
+        }
         (_, Some(i)) => {
-            assert!(core::ptr::eq(door, i.door), "reply::call: the instance is another door's");
+            assert!(
+                core::ptr::eq(door, i.door),
+                "reply::call: the instance is another door's"
+            );
             i.ptr
         }
     }
@@ -257,10 +270,9 @@ unsafe fn run_op<I: AbiIn, O: Reply>(
     let opened = out.opened(Token(()));
     out.clear(Token(()));
     let instance = match opens {
-        Some(door) if outcome == Outcome::Ready && !opened.is_null() => Some(Instance {
-            ptr: opened,
-            door,
-        }),
+        Some(door) if outcome == Outcome::Ready && !opened.is_null() => {
+            Some(Instance { ptr: opened, door })
+        }
         _ => None,
     };
     Called {

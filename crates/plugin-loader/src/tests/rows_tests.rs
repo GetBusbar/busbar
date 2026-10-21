@@ -12,7 +12,7 @@ use crate::{LinkedPlugin, PluginRegistry};
 
 /// A registry holding the build's store fixture as its linked in-process store.
 fn registry() -> PluginRegistry {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::both_ways::store_fixture::MACRO_DOOR;
     PluginRegistry::empty()
         .link(vec![LinkedPlugin::store("the-store", door, true)])
         .expect("the linked row registers")

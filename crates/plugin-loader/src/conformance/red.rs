@@ -41,8 +41,8 @@ use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
 use super::{
-    bind, connection_fixture, dispatcher, load, real_door, restated, with_an_outbound_need,
-    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, LAID, PIECED,
+    bind, connection_fixture, dispatcher, load, real_door, restated, with_an_outbound_need, Auth,
+    Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, LAID, PIECED,
     VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;

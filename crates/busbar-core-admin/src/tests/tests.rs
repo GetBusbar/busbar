@@ -11995,7 +11995,7 @@ fn auth_modules_list_inbound_rows_only() {
     let inbound: busbar_kernel::preflight::LinkedAuth = (
         "inbound-row",
         "canonical-name",
-        busbar_kernel::test_support::operator_double::door,
+        busbar_kernel::test_support::operator_double::MACRO_DOOR,
     );
     assert_eq!(
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),

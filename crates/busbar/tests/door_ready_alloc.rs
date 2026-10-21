@@ -214,7 +214,10 @@ fn opened(dispatcher: &Dispatcher) -> Plugin<Plane> {
         dispatcher: dispatcher.adopter(),
         conns: ConnTable::Probe,
     };
-    let row = LinkedRow::of(door).expect("the plane states its Statement");
+    // SAFETY: this binary's own `door` answers the `'static` door it laid out over the test
+    // plane's (`OnceLock`ed, never freed).
+    let door = unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(door) };
+    let row = LinkedRow::of_loaded(door).expect("the plane states its Statement");
     let plugin = load_linked::<Plane>(&row, bind).expect("the linked door loads");
     let mut open = Frame::new(
         PlaneOpenIn {

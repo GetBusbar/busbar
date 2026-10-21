@@ -67,7 +67,7 @@ fn main() {
     // A memory-ABI row: its fixture's door.
     let mut doors = String::from(
         "/// `(row, cdylib crate name, linked door)` of each memory-ABI both-ways fixture.\n\
-         pub(crate) static DOOR_FIXTURES: &[(&str, &str, busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
+         pub(crate) static DOOR_FIXTURES: &[(&str, &str, busbar_contract::abi::sdk::door::MacroDoor)] = &[\n",
     );
     // An export sink row: its logic crate and its `-plugin` cdylib.
     let mut exports = String::from(
@@ -95,7 +95,7 @@ fn main() {
                 ));
             } else if DOOR_ROWS.contains(&kind) {
                 doors.push_str(&format!(
-                    "    (\"{kind}\", \"{snake}\", ::{snake}::door::door),\n"
+                    "    (\"{kind}\", \"{snake}\", ::{snake}::door::MACRO_DOOR),\n"
                 ));
             } else {
                 // The COLD/JSON lane is gone: every row is a door, a HOT decl, an export sink or

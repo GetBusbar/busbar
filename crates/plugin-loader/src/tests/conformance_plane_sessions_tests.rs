@@ -62,7 +62,7 @@ const SESSIONS: &str = r#"[
 
 fn subject() -> Subject {
     Subject::new(
-        crate::plane_door_plugin::door,
+        crate::plane_door_plugin::MACRO_DOOR,
         "plane_door_plugin",
         &format!(r#"{{ "plane": {{ "sessions": {SESSIONS} }} }}"#),
     )
@@ -284,7 +284,7 @@ mod pieces_on_tickets {
     use busbar_contract::abi::plane::{OnPieceIn, Ops};
 
     use super::{fold, sessions_contract, SESSIONS};
-    use crate::conformance::{exact, test_door, test_op, Leg, Subject, TestDoor, TestOp};
+    use crate::conformance::{exact, test_loaded, test_op, Leg, Subject, TestDoor, TestOp};
     use crate::dispatch::ticket::host_wake;
 
     static REAL_ON_PIECE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
@@ -353,8 +353,8 @@ mod pieces_on_tickets {
     /// the script used to, every waiting piece is FAULT and the plane cannot pass.
     #[test]
     fn red_a_piece_that_waits_is_resumed_on_its_units_ticket_never_faulted_ticketless() {
-        let s = Subject::new(
-            test_door::<PendingDoor>,
+        let s = Subject::of_loaded(
+            test_loaded::<PendingDoor>(),
             "plane_door_plugin",
             &format!(r#"{{ "plane": {{ "sessions": {SESSIONS} }} }}"#),
         );

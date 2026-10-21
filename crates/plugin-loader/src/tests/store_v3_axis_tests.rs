@@ -113,7 +113,7 @@ fn transcript(s: &OpenedStore) -> Vec<String> {
 #[test]
 fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
     let axis = axis();
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::both_ways::store_fixture::MACRO_DOOR;
     let linked = axis
         .open(StoreDoor::Linked(door), "store", b"{}")
         .expect("the linked door opens");
@@ -140,7 +140,7 @@ fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
 #[test]
 fn boot_is_handed_a_stores_door_and_a_row_with_none_is_refused() {
     use crate::{LinkedPlugin, PluginRegistry};
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::both_ways::store_fixture::MACRO_DOOR;
     let reg = PluginRegistry::empty()
         .link(vec![
             // A store row whose entry is not the store's own door states none to boot.
@@ -159,7 +159,8 @@ fn boot_is_handed_a_stores_door_and_a_row_with_none_is_refused() {
         panic!("the row's door was not handed to boot");
     };
     assert_eq!(
-        d as usize, door as busbar_contract::abi::mechanism::door::DoorFn as usize,
+        d.door_fn() as usize,
+        door.door_fn() as usize,
         "the row's own door"
     );
     let opened = axis()

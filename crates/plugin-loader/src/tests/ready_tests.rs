@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::sdk::door::{blank_in, blank_out, MacroDoor};
 
 use super::ready_plugins::{with_ready, without_ready};
 use crate::dispatch::kinds::secret::Secret;
@@ -41,7 +41,7 @@ fn bind(d: &Dispatcher) -> Bind {
 }
 
 /// `door` loaded on `d` and opened with `settings`.
-fn opened(d: &Dispatcher, door: DoorFn, settings: &'static [u8]) -> Plugin<Secret> {
+fn opened(d: &Dispatcher, door: MacroDoor, settings: &'static [u8]) -> Plugin<Secret> {
     let row = LinkedRow::of(door).expect("the witness states its Statement");
     let plugin = load_linked::<Secret>(&row, bind(d)).expect("the witness loads");
     let mut i: OpenIn = blank_in();
@@ -63,7 +63,7 @@ fn crossings(p: &Plugin<Secret>) -> u64 {
 #[test]
 fn red_a_ready_that_answers_err_refuses_the_boot_with_its_text() {
     let d = dispatcher();
-    let p = opened(&d, with_ready::door, b"err:discovery answered 503");
+    let p = opened(&d, with_ready::MACRO_DOOR, b"err:discovery answered 503");
     assert!(p.has_ready());
     assert_eq!(
         p.ready(&d, WITHIN),
@@ -74,7 +74,7 @@ fn red_a_ready_that_answers_err_refuses_the_boot_with_its_text() {
 #[test]
 fn a_ready_that_pends_serves_after_its_wake() {
     let d = dispatcher();
-    let p = opened(&d, with_ready::door, b"pend");
+    let p = opened(&d, with_ready::MACRO_DOOR, b"pend");
     let before = crossings(&p);
     let resumed = p.inner.resumes.load(Ordering::Relaxed);
     assert_eq!(p.ready(&d, WITHIN), Ok(()));
@@ -100,7 +100,7 @@ fn a_ready_that_pends_serves_after_its_wake() {
 #[test]
 fn a_ready_that_answers_at_once_serves() {
     let d = dispatcher();
-    let p = opened(&d, with_ready::door, b"{}");
+    let p = opened(&d, with_ready::MACRO_DOOR, b"{}");
     let before = crossings(&p);
     assert_eq!(p.ready(&d, WITHIN), Ok(()));
     assert_eq!(crossings(&p), before + 1);
@@ -110,7 +110,7 @@ fn a_ready_that_answers_at_once_serves() {
 fn a_plugin_without_ready_is_opened_exactly_as_before() {
     let d = dispatcher();
     // Its settings would refuse a `ready`: it is never called.
-    let p = opened(&d, without_ready::door, b"err:never read");
+    let p = opened(&d, without_ready::MACRO_DOOR, b"err:never read");
     assert!(!p.has_ready());
     let before = crossings(&p);
     assert_eq!(p.ready(&d, WITHIN), Ok(()));
@@ -124,7 +124,7 @@ fn a_plugin_without_ready_is_opened_exactly_as_before() {
 #[test]
 fn ready_before_open_is_refused_without_a_crossing() {
     let d = dispatcher();
-    let row = LinkedRow::of(with_ready::door).expect("the witness states its Statement");
+    let row = LinkedRow::of(with_ready::MACRO_DOOR).expect("the witness states its Statement");
     let p = load_linked::<Secret>(&row, bind(&d)).expect("the witness loads");
     assert_eq!(
         p.ready(&d, WITHIN),

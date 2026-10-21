@@ -41,7 +41,7 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SE
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 #[cfg(feature = "plane-decisions")]
-use busbar_plane_decisions::plane_door::door as decisions_door;
+use busbar_plane_decisions::plane_door::MACRO_DOOR as decisions_door;
 #[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -4106,12 +4106,7 @@ const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}
 /// `[package.metadata.busbar.linked-declares]` row a plane's door crate names).
 fn declaring(declares: &'static str) -> crate::root::linked::Linked {
     crate::root::linked::Linked {
-        plane_door_declares: vec![(
-            "busbar-plane-decisions",
-            decisions_door as busbar_contract::abi::mechanism::door::DoorFn,
-            declares,
-        )]
-        .leak(),
+        plane_door_declares: vec![("busbar-plane-decisions", decisions_door, declares)].leak(),
         ..crate::LINKED
     }
 }

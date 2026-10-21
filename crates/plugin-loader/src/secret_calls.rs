@@ -24,9 +24,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::abi::secret::{
     slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
 };

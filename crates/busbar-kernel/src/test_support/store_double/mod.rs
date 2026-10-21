@@ -921,11 +921,11 @@ pub const NAME: &str = "store-double";
 /// store rows ([`crate::preflight::LinkedStore`]). Its key is the store a migrated 1.5.x config names
 /// ([`MIGRATED_STORE_MODULE`]), so a fixture config's `store:` block resolves to it; it claims no
 /// default (Q-STORE = (B)).
-pub const STORE: crate::preflight::LinkedStore = (MIGRATED_STORE_MODULE, true, door, NAME);
+pub const STORE: crate::preflight::LinkedStore = (MIGRATED_STORE_MODULE, true, MACRO_DOOR, NAME);
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`) — what [`STORE`] registers,
 /// and what boot opens through the stand-in store axis.
-pub use v3::door;
+pub use v3::{door, MACRO_DOOR};
 
 mod v3;

@@ -82,9 +82,9 @@ impl ManifestFacts {
 /// A DOOR THE LOADER MAY ENTER (status row 159): one the contract's door macro built (a
 /// [`MacroDoor`], every compiled-in row's), or one the loader read from [`DOOR_SYMBOL`] of a
 /// library it holds open. Its field is private and its only constructors are `From<MacroDoor>`
-/// and the loader's own `unsafe` [`LoadedDoor::from_raw`], so [`enter_door`]'s SAFETY holds by
-/// construction: no safe caller can hand the loader an arbitrary `fn() -> *const Door`. One entry
-/// path for compiled-in and dropped-in doors (Part 2 #2).
+/// and the `unsafe` [`LoadedDoor::from_raw`], so [`enter_door`]'s SAFETY holds by construction: no
+/// safe caller can hand the loader an arbitrary `fn() -> *const Door`. One entry path for
+/// compiled-in and dropped-in doors (Part 2 #2).
 ///
 /// A safe `extern "C" fn` is no door the loader takes:
 ///
@@ -144,13 +144,6 @@ impl LoadedDoor {
     #[must_use]
     pub const unsafe fn from_raw(door: DoorFn) -> Self {
         Self { door }
-    }
-
-    /// The door function's address, for the published suite's proof that a dropped image is an
-    /// image of its own.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn address(self) -> usize {
-        self.door as usize
     }
 }
 

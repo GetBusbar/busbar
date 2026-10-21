@@ -82,7 +82,8 @@ fn bridge_mint() -> OpId {
 
 fn open() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(miscounts::door).expect("the miscounting door states its Statement");
+    let row =
+        LinkedRow::of(miscounts::MACRO_DOOR).expect("the miscounting door states its Statement");
     let p = load_linked::<Store>(
         &row,
         Bind {

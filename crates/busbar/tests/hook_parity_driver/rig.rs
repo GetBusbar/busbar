@@ -430,7 +430,7 @@ fn octets(b: &[u8]) -> Blob {
 
 /// THE LINKED DOOR SERVING THE `pools` MAP, found by what its Statement declares
 /// (`LINKED_PLANE_DOORS`, the manifest's plane-door rows): the plane under proof.
-pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
+pub(crate) fn pools_door() -> busbar_contract::abi::sdk::door::MacroDoor {
     crate::LINKED_PLANE_DOORS
         .iter()
         .copied()

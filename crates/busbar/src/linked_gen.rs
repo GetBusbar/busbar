@@ -184,8 +184,15 @@ pub(crate) const SEAMS: &[(&str, &str)] = &[
 pub(crate) const LINKED_SWAPS: &str = "package.metadata.busbar.linked-swaps";
 
 /// Whether `feature`'s row is linked: its feature is `on`, and no switch that swaps it is.
-pub(crate) fn swapped_in(swaps: &[(String, String)], on: &dyn Fn(&str) -> bool, feature: &str) -> bool {
-    on(feature) && !swaps.iter().any(|(row, switch)| row == feature && on(switch))
+pub(crate) fn swapped_in(
+    swaps: &[(String, String)],
+    on: &dyn Fn(&str) -> bool,
+    feature: &str,
+) -> bool {
+    on(feature)
+        && !swaps
+            .iter()
+            .any(|(row, switch)| row == feature && on(switch))
 }
 
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
@@ -389,8 +396,14 @@ pub(crate) fn linked_source(
             entry.clone()
         };
         if axes.iter().any(|a| {
-            [PLANE_DOOR_AXIS, SECRET_AXIS, DOOR_AXIS, CONNECTOR_DOOR_AXIS, EXPORT_DOOR_AXIS]
-                .contains(&a.as_str())
+            [
+                PLANE_DOOR_AXIS,
+                SECRET_AXIS,
+                DOOR_AXIS,
+                CONNECTOR_DOOR_AXIS,
+                EXPORT_DOOR_AXIS,
+            ]
+            .contains(&a.as_str())
                 || a == AUTH_AXIS
                 || a == "hooks"
         }) {
@@ -537,10 +550,15 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            let canonical =
-                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
-                    .unwrap_or_else(|| name.clone());
-            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::MACRO_DOOR), "));
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .unwrap_or_else(|| name.clone());
+            out.push_str(&format!(
+                "({name:?}, {canonical:?}, {entry}::door::MACRO_DOOR), "
+            ));
         }
     }
     out.push_str("],\n");

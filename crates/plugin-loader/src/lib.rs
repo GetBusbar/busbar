@@ -71,7 +71,7 @@ pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
-/// TEST ONLY: a real door restated with one stream need (the bind tests' subject; no plugin).
+/// TEST ONLY: the one outbound `tcp` need a test door declares (the bind tests' subject; no plugin).
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/needs_restated.rs"]

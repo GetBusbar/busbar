@@ -277,7 +277,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         None,
     )
     .unwrap();
-    let linked = Candidate::linked(plug::door).expect("the linked plane states itself");
+    let linked = Candidate::linked(plug::MACRO_DOOR).expect("the linked plane states itself");
     assert_eq!(linked.verbs, vec!["door".to_string()]);
     let mut cands = vec![linked.clone()];
     let mut uses = Uses::default();
@@ -343,7 +343,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
 #[test]
 fn red_an_instance_that_will_not_bind_is_named() {
     let path = example_cdylib("plane_door_plugin");
-    let mut c = Candidate::linked(plug::door).unwrap();
+    let mut c = Candidate::linked(plug::MACRO_DOOR).unwrap();
     c.origin = Origin::Dropped {
         file: "plane-door.tar.gz".into(),
         bytes: Arc::new(std::fs::read(path).unwrap()),
@@ -377,7 +377,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
 fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let path = example_cdylib("plane_door_plugin");
     let lib = std::fs::read(path).unwrap();
-    let rendering = crate::dispatch::LinkedRow::of(plug::door)
+    let rendering = crate::dispatch::LinkedRow::of(plug::MACRO_DOOR)
         .unwrap()
         .statement;
     let dir = std::env::temp_dir().join(format!(
@@ -442,7 +442,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     };
     let (linked_stated, linked) = bind(
         crate::PluginRegistry::empty()
-            .open_planes(&[plug::door])
+            .open_planes(&[plug::MACRO_DOOR])
             .unwrap(),
     );
     let (dropped_stated, dropped_bound) = bind(dropped.open_planes(&[]).unwrap());
@@ -504,9 +504,12 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     }
 
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
-    let set = crate::PluginRegistry::empty()
-        .open_planes(&[bad_door])
-        .expect("the plane states itself");
+    // SAFETY: a test's restated door: it answers the `'static` door it laid out over the
+    // fixture's real one.
+    let bad = unsafe { crate::dispatch::LoadedDoor::from_raw(bad_door) };
+    let mut set = crate::PluginRegistry::empty().open_planes(&[]).unwrap();
+    set.doors
+        .push(Candidate::linked_loaded(bad).expect("the plane states itself"));
     let err = load_planes(
         &set.doors,
         &logs,
@@ -519,7 +522,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     assert!(err.contains("trust_key.mechanisms"), "{err}");
     // The GREEN twin: the unmodified door binds.
     let ok = crate::PluginRegistry::empty()
-        .open_planes(&[plug::door])
+        .open_planes(&[plug::MACRO_DOOR])
         .unwrap();
     load_planes(
         &ok.doors,
@@ -797,7 +800,11 @@ impl busbar_contract::secret::SecretResolve for Resolver {
 
 /// Boot one auth instance `oidc` of the witness `door` named `name`, its settings block `settings`
 /// (JSON), through the one load with its opening: the number of instances bound, or the refusal.
-fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> {
+fn boot_auth(
+    door: busbar_contract::abi::sdk::door::MacroDoor,
+    name: &str,
+    settings: &str,
+) -> Result<usize, String> {
     use crate::dispatch::{DispatchConfig, Dispatcher};
     let d = Dispatcher::new(DispatchConfig::default());
     let c = Candidate::linked(door).expect("the auth witness states itself");
@@ -839,7 +846,7 @@ fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
     use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
     assert_eq!(
         boot_auth(
-            with_ready::door,
+            with_ready::MACRO_DOOR,
             NAME,
             r#""err:discovery: the issuer answered 503""#
         ),
@@ -849,12 +856,12 @@ fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
         )
     );
     assert_eq!(
-        boot_auth(with_ready::door, NAME, r#""pend""#),
+        boot_auth(with_ready::MACRO_DOOR, NAME, r#""pend""#),
         Ok(1),
         "a ready that pends boots after its wake"
     );
     assert_eq!(
-        boot_auth(with_ready::door, NAME, r#""ok""#),
+        boot_auth(with_ready::MACRO_DOOR, NAME, r#""ok""#),
         Ok(1),
         "the GREEN twin boots"
     );
@@ -869,14 +876,14 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
     use crate::dispatch::ready::ready_plugins::auth::{with_secret, SECRET_NAME};
     assert_eq!(
         boot_auth(
-            with_secret::door,
+            with_secret::MACRO_DOOR,
             SECRET_NAME,
             r#"{"issuer": "https://idp", "client_secret": {"env": "OIDC_SECRET"}}"#
         ),
         Ok(1)
     );
     let unresolved = boot_auth(
-        with_secret::door,
+        with_secret::MACRO_DOOR,
         SECRET_NAME,
         r#"{"client_secret": {"env": "NOT_SET"}}"#,
     )
@@ -885,7 +892,7 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
         unresolved.starts_with("oidc: settings.client_secret: the secret did not resolve"),
         "{unresolved}"
     );
-    let unset = boot_auth(with_secret::door, SECRET_NAME, "{}").unwrap_err();
+    let unset = boot_auth(with_secret::MACRO_DOOR, SECRET_NAME, "{}").unwrap_err();
     assert_eq!(
         unset,
         "oidc: plugin 'secret-auth-witness' open failed: 1 secret(s) handed, not the resolved \
@@ -900,7 +907,7 @@ fn linked_cand(name: &str, version: &str) -> Candidate {
         version: version.into(),
         origin: Origin::Linked(crate::dispatch::LinkedRow {
             statement: Vec::new(),
-            door: crate::dispatch_tests::null_door,
+            door: crate::dispatch_tests::NULL_DOOR,
         }),
         ..cand(KindCode::Hook, name, &["short"], &[], &[])
     }

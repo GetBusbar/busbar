@@ -22,7 +22,7 @@ use crate::store_v3::LoadedStore;
 /// The shipped build's store: its compiled-in door, through the table.
 fn compiled_in() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
+    let row = LinkedRow::of(crate::both_ways::store_fixture::MACRO_DOOR)
         .expect("the store states its Statement");
     let bind = Bind {
         instance: Arc::from("the-instance"),

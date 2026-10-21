@@ -137,5 +137,5 @@ busbar_contract::auth_verify_door!(OperatorDouble, STATEMENT);
 /// Link the double as the operator credential's test registry row, under the stand-in words. The
 /// first install stands (the axis is process-wide).
 pub fn install() {
-    crate::test_support::install_operator_auth_row_as(WORDS, door);
+    crate::test_support::install_operator_auth_row_as(WORDS, MACRO_DOOR);
 }
