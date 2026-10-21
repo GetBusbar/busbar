@@ -635,6 +635,30 @@ fn forbidden_in_host(c: char) -> bool {
         )
 }
 
+/// A code point `url` 2.5.8 refuses in an opaque host, checked on the spelling itself, before any
+/// decode (`Host::parse_opaque`): `%` is not one of them.
+fn forbidden_in_opaque_host(c: char) -> bool {
+    matches!(
+        c,
+        '\0' | '\t'
+            | '\n'
+            | '\r'
+            | ' '
+            | '#'
+            | '/'
+            | ':'
+            | '<'
+            | '>'
+            | '?'
+            | '@'
+            | '['
+            | '\\'
+            | ']'
+            | '^'
+            | '|'
+    )
+}
+
 /// A decoded host read as the ASCII name a dialling stack dials: an ASCII host as it is, a non-ASCII
 /// one through UTS #46 domain-to-ASCII (mapped, normalised, lower-cased, each non-ASCII label
 /// punycoded), the WHATWG forbidden domain code points refused in what the mapping produced.
@@ -735,7 +759,12 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
             None => (host_port, None),
         };
         let decoded = percent_decode_host(raw);
-        let host = if decoded.is_ascii() || is_special_scheme(&scheme) {
+        // A special scheme's host is read decoded, as `url` reads it. Any other scheme's host is
+        // read decoded too while that decode is a plain ASCII host (so `%6c%6fcalhost` is judged
+        // as `localhost`); one that is not, `url` kept as an opaque host and so does this reader.
+        let read_decoded = is_special_scheme(&scheme)
+            || (decoded.is_ascii() && !decoded.contains(forbidden_in_host));
+        let host = if read_decoded {
             // Decoded first, then mapped, then the one trailing root dot dropped: a mapping can
             // make that dot (a full-width `．` reads `.`), and `url` maps the decoded host too.
             let mapped = url_host_to_ascii(decoded.as_ref())?;
@@ -745,8 +774,9 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
             }
             host.to_string()
         } else {
-            // `url`'s opaque host, byte for byte: the spelling percent-encoded, its root dot kept.
-            if decoded.contains(forbidden_in_host) {
+            // `url`'s opaque host, byte for byte: the spelling checked as `url` checks it (so a
+            // `%25` stands), then percent-encoded, its root dot kept.
+            if raw.contains(forbidden_in_opaque_host) {
                 return Err(UrlRefusal::NoHost);
             }
             opaque_host(raw)

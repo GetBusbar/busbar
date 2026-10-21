@@ -521,6 +521,10 @@ fn a_non_special_idn_host_reads_as_urls_opaque_host() {
         ),
         ("ldap://B\u{dc}CHER.Example/x", "B%C3%9CCHER.Example", None),
         ("ldap://b%C3%BCcher.example", "b%C3%BCcher.example", None),
+        // `url` checks an opaque host before any decode, so a `%25` stands, as written.
+        ("ldap://a%25b.example:389", "a%25b.example", Some(389)),
+        ("ldaps://dir%25.example", "dir%25.example", None),
+        ("ldap://evil%40good.example", "evil%40good.example", None),
         ("ldap://\u{4f8b}.example.", "%E4%BE%8B.example.", None),
     ] {
         let got = parse_url(input).unwrap_or_else(|e| panic!("{input:?}: {e}"));
@@ -579,7 +583,7 @@ type DialRow = (
 /// an IPv6 literal's brackets. The `Host` column is that value.
 #[test]
 fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
-    let rows: [DialRow; 18] = [
+    let rows: [DialRow; 19] = [
         // IDN, default port implied and spelled, explicit port.
         (
             "https://b\u{fc}cher.example/",
@@ -699,6 +703,13 @@ fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
             None,
             None,
             "Dir.Example",
+        ),
+        (
+            "ldap://a%25b.example:389",
+            "a%25b.example",
+            Some(389),
+            Some(389),
+            "a%25b.example:389",
         ),
     ];
     for (target, host, port, dial_port, host_header) in rows {
