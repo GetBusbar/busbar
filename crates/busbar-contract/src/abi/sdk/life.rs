@@ -421,7 +421,10 @@ impl<L> std::fmt::Debug for Held<L> {
 }
 
 impl<L: Life> Held<L> {
-    fn new(life: L, host: Option<Host>) -> Self {
+    /// The instance state over `life`, with no lease held and the host tables `host`. A kind
+    /// whose `open` the generic slot cannot serve (the store's, whose connect step pends) builds
+    /// it itself.
+    pub(crate) fn new(life: L, host: Option<Host>) -> Self {
         Self {
             life,
             leases: Leases::default(),
