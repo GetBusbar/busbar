@@ -109,6 +109,7 @@ use busbar_kernel_ledger::checkpoint::{
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
+use busbar_kernel_ledger::migration::OPENING_CHECKPOINT_SEQ;
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
     BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
@@ -332,6 +333,11 @@ pub struct Durability {
     /// THE CHECKPOINT CADENCE (BUSBAR-1.6.0.md THE DESIGN, §7), once [`Durability::arm_checkpoints`] armed
     /// it. `None` on a book nobody armed, which seals nothing on its own.
     cadence: Option<Cadence>,
+    /// THE SEQUENCE NUMBER THE NEXT CHECKPOINT TAKES: one past the highest the chain carries. Taken
+    /// from the chain this book was rebuilt from at boot, and moved by every checkpoint it journals
+    /// since ([`Durability::journal_checkpoint`]), so the cadence numbers on from it without a
+    /// second read of the chain — a read that, failing, would have numbered from one again.
+    next_checkpoint_seq: u64,
     /// THE HOST'S LANE TO THE CONFIGURED STORE the journal ships through, on a book built over one
     /// ([`build_on_store`]). `None` on a book built over a bare shipper.
     lane: Option<JournalLane>,
@@ -402,6 +408,19 @@ impl Durability {
     /// The lane the chain is kept through, on a journal resumed from the store.
     fn store_kept(&self) -> Option<&JournalLane> {
         self.lane.as_ref().filter(|_| self.resumed)
+    }
+
+    /// WHY A CHAIN READ FAILED, in the words the boot refuses with: the same refusal
+    /// [`build_on_store`] gives a store that would not read the chain back the first time. A boot
+    /// step that reads the chain again never takes a failed read for an empty chain.
+    pub(crate) fn unreadable(&self, e: &std::io::Error) -> String {
+        match self.store_kept() {
+            Some(lane) => format!(
+                "the journal could not be read back from the store `{}`: {e}",
+                lane.store()
+            ),
+            None => format!("the journal could not be read back: {e}"),
+        }
     }
 
     /// The host's lane to the configured store, on a book built over one.
@@ -510,6 +529,9 @@ impl Durability {
         // sink that could would leave the head where it was, and `/verify` then reports the head
         // that differs rather than a checkpoint nobody anchored.
         let _anchored = self.anchor.anchor(checkpoint);
+        self.next_checkpoint_seq = self
+            .next_checkpoint_seq
+            .max(checkpoint.checkpoint_seq.saturating_add(1));
         self.checkpoints.push(checkpoint.clone());
         // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
@@ -2775,6 +2797,8 @@ fn build_inner(
         cards_from: None,
         amendments_through: None,
         cadence: None,
+        // Set from the chain below; a chain that cannot be read numbers past the opening.
+        next_checkpoint_seq: OPENING_CHECKPOINT_SEQ.saturating_add(1),
         lane,
         resumed,
         counted: Vec::new(),
@@ -2843,6 +2867,7 @@ fn build_inner(
                 durability.anchor_findings.push(why);
             }
             durability.anchor = SelfAttestingAnchor::seeded(seeded);
+            durability.next_checkpoint_seq = seal::next_checkpoint_seq_on(&records);
             durability.resume_audit(&records);
             (
                 replay_into(&mut durability.ledger, &records, view.as_ref(), false),
@@ -2953,3 +2978,7 @@ fn build_inner(
 #[cfg(test)]
 #[path = "../tests/durability.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/durability_boot_reads.rs"]
+mod boot_reads;
