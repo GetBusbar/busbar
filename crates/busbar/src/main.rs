@@ -1387,10 +1387,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         // registered transports; with none registered the boot is refused here, naming `listen`,
         // before any socket is bound, and the hand-up is never its fallback.
         let framed = root::accepted::DATA_DOOR_FRAMED.then(|| {
-            let framer = root::boot::data_door_framer(door_carriers.iter().map(String::as_str), |c| {
-                root::connector::the().framer_for(c)
-            })
-            .unwrap_or_else(|e| die(e));
+            let framer =
+                root::boot::data_door_framer(door_carriers.iter().map(String::as_str), |c| {
+                    root::connector::the().framer_for(c)
+                })
+                .unwrap_or_else(|e| die(e));
             root::accepted::framed_door(
                 framer,
                 data_router.clone(),
@@ -1448,6 +1449,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(not(unix))]
     {
         let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
+
         // The framed data door binds per data worker, a unix topology; this platform serves the
         // data door through its own socket listener.
         let _ = (&door_carriers, root::accepted::DATA_DOOR_FRAMED);
@@ -1703,7 +1705,11 @@ async fn serve_framed_worker(
 ) {
     let via = crate::root::connector::the()
         .address_via()
-        .unwrap_or_else(|| die(format!("cannot bind listen address '{label}': no carrier serves it")));
+        .unwrap_or_else(|| {
+            die(format!(
+                "cannot bind listen address '{label}': no carrier serves it"
+            ))
+        });
     let limits = AcceptLimits {
         handshake_timeout: std::time::Duration::from_secs(
             busbar_kernel::limits::tls_handshake_timeout_secs(),

@@ -258,7 +258,9 @@ pub const DATA_DOOR_FRAMED: bool = !cfg!(feature = "data-door-handup");
 
 fn routes_slot() -> std::sync::MutexGuard<'static, Option<Arc<DataRoutes>>> {
     static ROUTES: Mutex<Option<Arc<DataRoutes>>> = Mutex::new(None);
-    ROUTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    ROUTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Stage the door planes' routes where they are built (`root::serve::door_mounts`), for the
@@ -436,6 +438,7 @@ pub async fn serve_door(
                 };
                 match b.place_arrived(arrived) {
                     Placed::Here(a, guard) => {
+                        let a = *a;
                         let accepted = composer.compose(a.carried, a.peer, Some(a.slot));
                         spawn_conn(&mut conns, accepted, &door, &stop, Box::new(guard));
                     }
@@ -475,7 +478,12 @@ fn spawn_conn(
     keep: Box<dyn Send>,
 ) {
     if let Ok(accepted) = accepted {
-        conns.spawn(serve_conn(accepted.conn, Arc::clone(door), stop.clone(), keep));
+        conns.spawn(serve_conn(
+            accepted.conn,
+            Arc::clone(door),
+            stop.clone(),
+            keep,
+        ));
     }
 }
 
@@ -851,7 +859,9 @@ impl Conn {
                 fields,
                 end,
                 ..
-            } => conn.emit_head(stream, *status, &fields[..], *end, cx).is_ok(),
+            } => conn
+                .emit_head(stream, *status, &fields[..], *end, cx)
+                .is_ok(),
             Op::Data { bytes, end, .. } => loop {
                 match conn.emit(stream, &bytes[..], *end, false, cx) {
                     Ok(n) if n >= bytes.len() => break true,
@@ -1081,10 +1091,12 @@ async fn read_body(mut body: axum::body::Body, cap: usize) -> Result<Bytes, Body
                 }
             }
             Some(Err(e)) => {
-                return Err(BodyRead::Failed(axum::response::IntoResponse::into_response((
-                    axum::http::StatusCode::BAD_REQUEST,
-                    format!("Failed to buffer the request body: {e}"),
-                ))))
+                return Err(BodyRead::Failed(
+                    axum::response::IntoResponse::into_response((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        format!("Failed to buffer the request body: {e}"),
+                    )),
+                ))
             }
         }
     }
@@ -1157,7 +1169,9 @@ async fn serve_stream(
             }
         }
         HandedDoor::Request { .. } | HandedDoor::Catalog { .. } => {
-            let response = door.layered(request, |req| door.plane(req, &doorway, handed)).await;
+            let response = door
+                .layered(request, |req| door.plane(req, &doorway, handed))
+                .await;
             answer.respond(response).await;
         }
         HandedDoor::Session {
@@ -1251,8 +1265,7 @@ impl DataDoor {
             if !timing {
                 return observed.await;
             }
-            let (mut response, upstream) =
-                busbar_kernel::router::with_upstream_rtt(observed).await;
+            let (mut response, upstream) = busbar_kernel::router::with_upstream_rtt(observed).await;
             if let Some((name, value)) = busbar_kernel::router::server_timing_field(start, upstream)
             {
                 response.headers_mut().insert(name, value);
@@ -1396,7 +1409,10 @@ impl ConnAnswer {
         let size = http_body::Body::size_hint(&body).exact();
         if !bodiless && !parts.headers.contains_key(CONTENT_LENGTH) {
             if let Some(size) = size {
-                field(CONTENT_LENGTH.as_str().as_bytes(), size.to_string().as_bytes());
+                field(
+                    CONTENT_LENGTH.as_str().as_bytes(),
+                    size.to_string().as_bytes(),
+                );
             }
         }
         let end = http_body::Body::is_end_stream(&body) || size == Some(0);
@@ -1417,7 +1433,7 @@ impl ConnAnswer {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     http_body::Body::poll_frame(std::pin::Pin::new(&mut body), cx)
                 })) {
-                    Ok(polled) => polled.map(|f| Ok::<_, ()>(f)),
+                    Ok(polled) => polled.map(Ok::<_, ()>),
                     Err(_) => std::task::Poll::Ready(Err(())),
                 }
             })

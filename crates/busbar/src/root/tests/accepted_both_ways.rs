@@ -257,7 +257,8 @@ fn post(path: &str, content_type: &str, accept: &str, body: &[u8]) -> Vec<u8> {
 /// THE CORPUS, by shape: each case's name and its request bytes.
 fn corpus() -> Vec<(&'static str, Vec<u8>)> {
     let healthz = busbar_kernel::auth::HEALTHZ_PATH;
-    let whole = br#"{"model":"door-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#;
+    let whole =
+        br#"{"model":"door-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#;
     let version = version();
     let mut pipelined = format!("GET {healthz} {version}\r\nHost: door.test\r\n\r\n").into_bytes();
     pipelined.extend_from_slice(&get("GET", healthz));
@@ -268,12 +269,22 @@ fn corpus() -> Vec<(&'static str, Vec<u8>)> {
         ("unknown__path", get("GET", "/v1/unknown/suffix")),
         (
             "body__oversize",
-            post("/v1/messages", "application/json", "*/*", &vec![b'x'; CAP + 4096]),
+            post(
+                "/v1/messages",
+                "application/json",
+                "*/*",
+                &vec![b'x'; CAP + 4096],
+            ),
         ),
         ("credential__absent", get("GET", "/stats")),
         (
             "post__whole",
-            post("/v1/messages", "application/json", "application/json", whole),
+            post(
+                "/v1/messages",
+                "application/json",
+                "application/json",
+                whole,
+            ),
         ),
         (
             "post__event_stream",

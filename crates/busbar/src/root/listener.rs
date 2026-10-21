@@ -337,14 +337,17 @@ impl ConnBalancer {
     pub(crate) fn place_arrived(&self, arrived: busbar_core_connector::listen::Arrived) -> Placed {
         use std::sync::atomic::Ordering;
         let Some(idx) = self.least_loaded() else {
-            return Placed::Here(arrived, self.place_local());
+            return Placed::Here(Box::new(arrived), self.place_local());
         };
         let busbar_core_connector::listen::Arrived {
             carried,
             peer,
             slot,
         } = arrived;
-        let Some(stream) = carried.hand_up().filter(|s| s.set_nonblocking(true).is_ok()) else {
+        let Some(stream) = carried
+            .hand_up()
+            .filter(|s| s.set_nonblocking(true).is_ok())
+        else {
             return Placed::Moved;
         };
         let admitted = Admitted {
@@ -406,7 +409,7 @@ impl ConnBalancer {
 /// WHERE ONE FRAMED CONNECTION WENT ([`ConnBalancer::place_arrived`]).
 pub(crate) enum Placed {
     /// Served here, as admitted, its count held.
-    Here(busbar_core_connector::listen::Arrived, ConnCountGuard),
+    Here(Box<busbar_core_connector::listen::Arrived>, ConnCountGuard),
     /// Handed to another worker (or lost with its socket when it could not be handed up).
     Moved,
     /// The hand-off failed after the socket was handed up: served here, adopted bare.

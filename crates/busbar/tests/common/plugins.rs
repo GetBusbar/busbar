@@ -308,9 +308,9 @@ pub fn framer_cdylib_claiming(key: &str) -> Option<PathBuf> {
         }
         transport_door(p).is_some_and(|(plugin, own)| {
             own == key
-                && plugin.context::<TransportFacts>().is_some_and(|facts| {
-                    facts.role == busbar_contract::abi::transport::ROLE_FRAMER
-                })
+                && plugin
+                    .context::<TransportFacts>()
+                    .is_some_and(|facts| facts.role == busbar_contract::abi::transport::ROLE_FRAMER)
         })
     })
 }
