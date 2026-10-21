@@ -324,8 +324,8 @@ pub struct DiskDest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskRotate {
     /// Truncate the live file in place and append to it from empty: 1.5.5's request-log file sink
-    /// ("roll over by truncation rather than a rename", v1.5.5
-    /// `crates/busbar/src/export/file.rs:96-108`), one bounded file whose older lines are dropped.
+    /// ("roll over by truncation rather than a rename", its v1.5.5 `rotate_mb` size bound,
+    /// lines 96-108 of the sink's module), one bounded file whose older lines are dropped.
     Truncate,
     /// Rename the live file into `<path>.1` .. `<path>.{keep}`, dropping the oldest archive past
     /// `keep`.
