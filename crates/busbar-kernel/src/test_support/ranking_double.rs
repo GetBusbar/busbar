@@ -12,11 +12,13 @@
 //! module of the crate under test, LINKED only — not a workspace crate, not an example plugin, and
 //! not the shipped plugin taken under another name: the kernel names no plugin crate.
 //!
-//! What it copies is the shipped ranking door at the rev the root pins (`7e1285e2e3`):
-//! the same four `MARK_WORD_HOOK` words, the same tail and `max_inflight`, the same `open` refusals
-//! (in its own name), and the same ranking rules. Each copied literal and rule names its source
-//! below. Its Statement name is its OWN, never the plugin's: the kernel spells no plugin name, not
-//! even in a double (C1, `qa/c1-literals.toml`). That the copy holds is proven where the real door
+//! What it copies is the shipped ranking door (the ranking hook row the root's `Cargo.toml`
+//! pins): the same four `MARK_WORD_HOOK` words, the same tail and `max_inflight`, the same `open`
+//! refusals (in its own name). Its ranking rules are 1.5.5's (hook behaviour is frozen at 1.5.5):
+//! each rule cites the v1.5.5 line it copies; its `NaN` rule is the door's (the coordinator's
+//! ruling of 2026-10-18, a total order: a `NaN` sorts after every number); and each literal names
+//! the door item it copies. Its Statement name is its OWN, never the plugin's: the kernel spells no
+//! plugin name, not even in a double (C1, `qa/c1-literals.toml`). That the copy holds is proven where the real door
 //! is linked: the root's `the_kernel_ranking_double_states_what_the_linked_ranking_door_states`
 //! renders both and runs the 1.5.5 parity cases through both. The plugin's own behaviour is proven
 //! in its own repo.
@@ -101,47 +103,77 @@ impl Strategy {
     }
 }
 
-/// The sort key a strategy reads off a candidate, lower first; `None` = absent.
+/// The sort key a strategy reads off a candidate; `None` = absent. Every present key is kept, an
+/// infinity included: 1.5.5 filtered nothing (the v1.5.5 ranking natives' `lib.rs:64-106`; hook
+/// behaviour is frozen at 1.5.5).
 fn key(strategy: Strategy, c: &DecodedCandidate<'_>) -> Option<f64> {
-    let k = match strategy {
-        // `cheapest` = ascending `cost_per_mtok` (`hook-ranking/src/lib.rs`, `rank`).
+    match strategy {
+        // `cheapest` = ascending `cost_per_mtok` (the v1.5.5 ranking natives' `lib.rs:123`).
         Strategy::Cheapest => c.cost_per_mtok,
-        // `fastest` = ascending `latency_ms` (`hook-ranking/src/lib.rs`, `rank`).
+        // `fastest` = ascending `latency_ms` (the v1.5.5 ranking natives' `lib.rs:143`).
         Strategy::Fastest => c.latency_ms,
-        // `least_busy` = descending `available_concurrency` (`hook-ranking/src/lib.rs`, `rank`).
-        Strategy::LeastBusy => Some(-(c.available_concurrency as f64)),
-        // `usage` = descending `rate_headroom` (`hook-ranking/src/lib.rs`, `rank`).
-        Strategy::Usage => c.rate_headroom.map(|h| -h),
+        // `least_busy` = descending `available_concurrency` (the v1.5.5 ranking natives'
+        // `lib.rs:164`).
+        // A `usize` count is exact in an `f64` up to 2^53, so the order is the integer order.
+        Strategy::LeastBusy => Some(c.available_concurrency as f64),
+        // `usage` = descending `rate_headroom` (the v1.5.5 ranking natives' `lib.rs:190`).
+        Strategy::Usage => c.rate_headroom,
         Strategy::Weighted => None,
-    };
-    // A non-finite key sorts as an absent one (`hook-ranking/src/lib.rs`, `rank`).
-    k.filter(|k| k.is_finite())
+    }
 }
 
-/// RANK `candidates` by `strategy` (`hook-ranking/src/lib.rs`, `rank`): a present key before an
-/// absent one, keys in the strategy's order, ties by `idx`; every key absent (or no candidate) is
-/// [`Verdict::Abstain`], and `weighted` abstains.
+/// Whether a strategy prefers the LARGEST key (`least_busy`, `usage`): 1.5.5's
+/// `rank_descending_by` (the v1.5.5 ranking natives' `lib.rs:88-106`).
+fn descending(strategy: Strategy) -> bool {
+    matches!(strategy, Strategy::LeastBusy | Strategy::Usage)
+}
+
+/// THE KEY ORDER the shipped ranking door states (its `key_order`, the coordinator's ruling of
+/// 2026-10-18): present keys by `partial_cmp`, so `-0.0` ties `+0.0` and an
+/// infinity is ordered, exactly as 1.5.5 compared them (the v1.5.5 ranking natives' `lib.rs:77-80`,
+/// `:99-102`); a `NaN` sorts after every number, as an absent key does, and ties every other `NaN`
+/// and every absent key, so the comparator is a total order and no sort can panic on it; then the
+/// index.
+fn key_order(
+    (ia, ka): &(usize, Option<f64>),
+    (ib, kb): &(usize, Option<f64>),
+    desc: bool,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let orderable = |k: &Option<f64>| k.filter(|v| !v.is_nan());
+    let by_key = match (orderable(ka), orderable(kb)) {
+        (Some(a), Some(b)) => {
+            let (x, y) = if desc { (b, a) } else { (a, b) };
+            x.partial_cmp(&y).unwrap_or(Equal)
+        }
+        (Some(_), None) => Less,
+        (None, Some(_)) => Greater,
+        (None, None) => Equal,
+    };
+    by_key.then(ia.cmp(ib))
+}
+
+/// RANK `candidates` by `strategy` as the shipped ranking door ranks them (1.5.5's
+/// `rank_ascending_by` / `rank_descending_by`, the v1.5.5 ranking natives' `lib.rs:64-106`,
+/// under [`key_order`]): present keys in the strategy's order, then every absent or `NaN` key, ties
+/// by `idx`. Only a signal ABSENT on every candidate (or no candidate) is [`Verdict::Abstain`]
+/// (`:70-72`): an all-`NaN` pool states the signal and ranks by index. `weighted` abstains.
 #[must_use]
 pub fn rank(strategy: Strategy, candidates: &[DecodedCandidate<'_>]) -> Verdict {
     if strategy == Strategy::Weighted {
         return Verdict::Abstain;
     }
-    let mut keyed: Vec<(Option<f64>, usize)> = candidates
+    let mut keyed: Vec<(usize, Option<f64>)> = candidates
         .iter()
-        .map(|c| (key(strategy, c), c.idx))
+        .map(|c| (c.idx, key(strategy, c)))
         .collect();
-    // Every key absent abstains (`hook-ranking/src/lib.rs`, `rank`).
-    if keyed.iter().all(|(k, _)| k.is_none()) {
+    // Every key absent abstains (the v1.5.5 ranking natives' `lib.rs:70-72`).
+    if keyed.iter().all(|(_, k)| k.is_none()) {
         return Verdict::Abstain;
     }
-    // Absent last; ties break by `idx` (`hook-ranking/src/lib.rs`, `rank`).
-    keyed.sort_by(|(ka, ia), (kb, ib)| match (ka, kb) {
-        (Some(a), Some(b)) => a.total_cmp(b).then(ia.cmp(ib)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => ia.cmp(ib),
-    });
-    Verdict::Prefer(keyed.into_iter().map(|(_, idx)| idx).collect())
+    let desc = descending(strategy);
+    keyed.sort_by(|a, b| key_order(a, b, desc));
+    Verdict::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
 }
 
 /// One opened instance: the strategy its `policy` setting names.
@@ -181,3 +213,7 @@ busbar_contract::hook_door! {
     open: Open,
     statement: STATEMENT,
 }
+
+#[cfg(test)]
+#[path = "tests/ranking_double_tests.rs"]
+mod ranking_double_tests;
