@@ -244,7 +244,7 @@
           "state": "proven",
           "leg": "root-mcp",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent",
-          "note": "a body the door cannot read as a JSON-RPC envelope is refused at its decode and the tool server hears nothing, while the well-formed tools/call beside it on the same door is served and goes out exactly once"
+          "note": "a body that is not an envelope is refused with -32700 and never becomes a unit -- nothing admitted, the tool server hears nothing -- while the well-formed tools/call beside it on the same door does -- so the decode refusal is proven to happen before the loop opens anything"
         }
       },
       "authenticate": {
@@ -255,7 +255,7 @@
           "state": "proven",
           "leg": "root-mcp",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::only_a_caller_the_chain_authenticates_reaches_the_tool_server",
-          "note": "behind the deployment's closed key chain a call with no credential and one with a bearer this deployment never minted are both 401 before the door with nothing sent, and the minted key's call reaches the server once"
+          "note": "behind the deployment's closed key chain a call with no credential and one with a bearer this deployment never minted are both 401 before the door and open no unit, with nothing sent; the minted key's call reaches the tool server once, carrying the audience-bound token exchanged for that server's resource, never the caller's own"
         }
       },
       "verify": {
@@ -332,7 +332,7 @@
           "state": "proven",
           "leg": "root-mcp",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain",
-          "note": "one call is one terminal: three calls through the door, two served and one refused, append exactly three consecutive records to the plane's chained call log and one kernel audit row each (applied, applied, rejected) -- never a double post, never a dropped one"
+          "note": "one call is one terminal: three calls through the door, two served and one refused, append exactly three consecutive records to the plane's chained call log and one kernel audit row each (applied, applied, rejected exactly once) -- each served call makes one upstream leg and the refused call none -- never a double post, never a dropped one"
         }
       }
     },

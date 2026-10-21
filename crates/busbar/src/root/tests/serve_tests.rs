@@ -2819,18 +2819,30 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-audit";
         let _published = Published(instance);
-        let (port, _heard) = tool_server().await;
+        let (port, mut heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
             app
         });
+        let upstream_calls =
+            |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for _ in 0..2 {
             let (status, answer) =
                 call(&rig, &rig.token, "audited_read_file", serde_json::json!({})).await;
             assert_eq!(status, StatusCode::OK, "{answer}");
+            assert_eq!(
+                upstream_calls(&mut heard),
+                1,
+                "one served call is exactly one upstream leg"
+            );
         }
         let (status, _) = call(&rig, &rig.token, "audited_unlisted", serde_json::json!({})).await;
         assert_ne!(status, StatusCode::OK, "an unknown tool is refused");
+        assert_eq!(
+            upstream_calls(&mut heard),
+            0,
+            "the refused call never made an upstream leg"
+        );
 
         // THE CALL LOG: three records, one chain, each linking the one before (the host's
         // verified read refuses a chain whose links do not hold).
@@ -2860,11 +2872,14 @@ mod tools_door {
         );
         assert!(mine.iter().all(|e| e.outcome == "applied"), "{mine:?}");
         let refused = log.list_filtered(0, 1000, Some(action), Some(&resource("audited_unlisted")));
-        assert!(
-            refused
-                .iter()
-                .any(|e| e.principal == rig.key.id && e.outcome == "rejected"),
-            "the refused call audited rejected: {refused:?}"
+        let rejected: Vec<_> = refused
+            .iter()
+            .filter(|e| e.principal == rig.key.id && e.outcome == "rejected")
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            1,
+            "the refused call audited rejected exactly once: {refused:?}"
         );
         let all = log.list_filtered(0, 1000, None, None);
         for row in &mine {
@@ -2889,6 +2904,7 @@ mod tools_door {
             app
         });
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+        drain(&mut heard);
 
         let (status, body) = send_as(
             &rig.router,
@@ -2900,12 +2916,22 @@ mod tools_door {
         .await;
         let answer = serde_json::from_slice::<serde_json::Value>(&body)
             .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
-        assert!(
-            status.is_client_error() || answer.get("error").is_some(),
-            "an unreadable body is refused at its decode: {status} {answer}"
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "an unreadable body is refused at its decode: {answer}"
         );
-        assert_ne!(status, StatusCode::OK, "never served: {answer}");
-        assert_eq!(calls(&mut heard), 0, "the unreadable call never went out");
+        assert_eq!(
+            answer["error"]["code"],
+            busbar_contract::jsonrpc::PARSE_ERROR,
+            "refused with -32700, the parse error: {answer}"
+        );
+        assert_eq!(rig.admitted(), 0, "it never became a unit: nothing admitted");
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the tool server heard nothing of the unreadable body"
+        );
+        assert!(rig.all_ended(), "the loop opened no unit it left open");
 
         let (status, answer) =
             call(&rig, &rig.token, "decoded_read_file", serde_json::json!({})).await;
@@ -2922,8 +2948,16 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-authenticate";
         let _published = Published(instance);
+        std::env::set_var(SUBJECT, "busbar-own-subject");
         let (port, mut heard) = tool_server().await;
-        let rig = rig_tools(instance, port, registration("authed", port, ""), &|app| app);
+        let extra = format!(
+            "  allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
+             token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+             subject_token: {{ env: {SUBJECT} }}\n"
+        );
+        let rig = rig_tools(instance, port, registration("authed", port, &extra), &|app| {
+            app
+        });
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for token in [None, Some("bb_a_bearer_this_deployment_never_minted")] {
@@ -2943,11 +2977,39 @@ mod tools_door {
             );
             assert_eq!(calls(&mut heard), 0, "{token:?} never reached the server");
         }
+        assert_eq!(rig.admitted(), 0, "a refused caller opens no unit");
+        assert!(rig.all_ended(), "no unit left open");
 
         let (status, answer) =
             call(&rig, &rig.token, "authed_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
-        assert_eq!(calls(&mut heard), 1, "the minted key's call went out once");
+        let requests = wire(&mut heard);
+        let sent: Vec<_> = requests
+            .iter()
+            .filter(|r| r.contains("\"tools/call\""))
+            .map(|r| r.to_ascii_lowercase())
+            .collect();
+        assert_eq!(sent.len(), 1, "the minted key's call went out once");
+        // The token the tool server receives is audience-bound: the one busbar's own subject token
+        // was exchanged for, bound to that server's resource, never the caller's.
+        assert!(
+            sent[0].contains("authorization: bearer tok-authed_read_file"),
+            "the exchanged token reached the server: {}",
+            sent[0]
+        );
+        assert!(
+            !sent[0].contains(&rig.token.to_ascii_lowercase()),
+            "never the caller's own: {}",
+            sent[0]
+        );
+        let exchanges = crate::root::door_steps::tests::tool_door::exchanges(&rig);
+        assert!(!exchanges.is_empty(), "the token endpoint was asked");
+        for (_, form) in &exchanges {
+            assert!(
+                form.contains(&format!("resource=http%3A%2F%2F127.0.0.1%3A{port}")),
+                "bound to the tool server's audience: {form}"
+            );
+        }
     }
 
     /// VERIFY: a caller whose grant names ANOTHER server is refused inside the unit, and the refused
