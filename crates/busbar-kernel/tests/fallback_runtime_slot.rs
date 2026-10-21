@@ -23,9 +23,9 @@
 //! where the fallback plane was not registered yet, which this binary guarantees (its one test, and
 //! a kernel whose built-in plane list is empty).
 
-use crate::plane_driver::doors::register_test_plane;
-use crate::plane_driver::row::PlaneDecl;
-use crate::plane_driver::row::PlaneDeclaration;
+use busbar_kernel::plane_driver::doors::register_test_plane;
+use busbar_kernel::plane_driver::row::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use busbar_kernel::plane_host::runtime_slot_key;
 use busbar_kernel::test_support::TestApp;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -164,7 +164,7 @@ fn an_app_built_while_a_fallback_plane_registers_keeps_each_planes_own_runtime()
     // The precondition the defect needed: no plane declares itself the fallback yet, so the
     // degrading key names the sibling.
     assert_eq!(
-        crate::plane_driver::doors::fallback_key(),
+        busbar_kernel::plane_driver::doors::fallback_key(),
         SIBLING.key,
         "this binary must start with no fallback plane registered, or the probe has no window"
     );
