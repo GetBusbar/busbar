@@ -4642,3 +4642,90 @@ fn a_held_checkpoint_sealed_without_a_retired_window_still_re_derives() {
         durability.sealed_balances_held()
     );
 }
+
+/// RED (row 159 retirement x Q128 A1): WHAT THE NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS ACROSS
+/// RETIREMENTS IS BOUNDED BY THE 31-DAY HORIZON, not by how many windows it ever retired. Forty
+/// windows are sealed while young; each later seal carries one more past the horizon, and the seal
+/// leaves it out. Once every one of them is retired, no held seal kept a window past its horizon,
+/// so nothing is kept. RED with a per-seal record of every retired window: forty instants, one more
+/// per retirement for the life of the process.
+#[test]
+fn many_retirements_across_seals_keep_only_what_the_horizon_requires() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+    const DAY: u64 = 86_400;
+    const WINDOWS: u64 = 40;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_bounded_retirement");
+    for day in 1..=WINDOWS {
+        durability
+            .ledger
+            .book_mut()
+            .entry(key.clone(), day * DAY)
+            .settled = 1;
+    }
+    durability
+        .seal_checkpoint(&token, StepName::Meter, DAY)
+        .expect("the seal goes down");
+    for day in 1..=WINDOWS {
+        durability
+            .seal_checkpoint(&token, StepName::Meter, day * DAY + WINDOW_RETENTION_SECS)
+            .expect("the seal goes down");
+        assert_eq!(
+            durability.ledger.book().get(&key, day * DAY),
+            Totals::zero(),
+            "window {day} leaves the book at the seal that carries it past the horizon"
+        );
+    }
+    assert!(durability.ledger.book().is_empty(), "every window retired");
+    assert_eq!(
+        durability.retirement_windows_held(),
+        0,
+        "no held seal kept a window past its horizon, so nothing is kept to re-derive them"
+    );
+}
+
+/// RED (row 159 retirement x Q128 A1): A WINDOW POSTED AGAIN AFTER ITS RETIREMENT STILL RE-DERIVES.
+/// The second seal leaves the window out and the book lets it go; a late posting then lands on that
+/// window, so the book holds it again with only the new figure, and the third seal carries it. The
+/// walk drops the retired window from its scratch book when it passes the seal that left it out, so
+/// the later posting rebuilds exactly what the book holds. RED with the walk filtering every later
+/// snapshot by the windows retired so far: the third seal reads as diverged, the window it holds
+/// filtered away.
+#[test]
+fn a_window_posted_again_after_its_retirement_still_re_derives() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_reposted");
+    let window = 86_400;
+    settle_one(&mut durability, &key, 1_000, 250, 1);
+    let now = window + WINDOW_RETENTION_SECS + 10;
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the seal goes down");
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the seal goes down");
+    assert!(!second.totals.contains_key(&(key.clone(), window)));
+    assert_eq!(durability.ledger.book().get(&key, window), Totals::zero());
+
+    settle_one(&mut durability, &key, 1_000, 70, 2);
+    assert_eq!(
+        durability.ledger.book().get(&key, window).settled,
+        70,
+        "the late posting rebuilds the window with its own figure only"
+    );
+    let third = durability
+        .seal_checkpoint(&token, StepName::Meter, now + 2)
+        .expect("the seal goes down");
+    assert_eq!(third.totals_for(&key, window).settled, 70);
+
+    let mut served = Vec::new();
+    durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives, the reposted window included");
+    assert_eq!(served, vec![first, second, third], "each as it was sealed");
+}

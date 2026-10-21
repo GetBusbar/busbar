@@ -572,6 +572,16 @@ impl Durability {
             .map_or(0, |sealed| sealed.totals.len())
     }
 
+    /// HOW MANY WINDOW INSTANTS THIS NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS across the book's
+    /// retirement: the bound the 31-day horizon sets on that memory.
+    #[cfg(test)]
+    pub(crate) fn retirement_windows_held(&self) -> usize {
+        self.retired_at
+            .values()
+            .map(std::collections::BTreeSet::len)
+            .sum()
+    }
+
     /// Note that the seal `checkpoint_seq` left `windows` out and the book let them go.
     pub(super) fn note_retired(
         &mut self,
