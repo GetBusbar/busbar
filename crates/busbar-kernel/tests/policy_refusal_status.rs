@@ -4,8 +4,8 @@
 //! A POLICY REFUSAL IS A REFUSAL, NOT A SERVER FAULT (ARCHITECT ruling, policy refusals answer 4xx).
 //!
 //! The kernel's default status per refusal class (`plane_driver::class_status`) is what every plane
-//! that states no row of its own answers: the streaming plane, the mcp and a2a doors, and every
-//! reason the llm plane does not restate. A class that refuses the CALLER'S REQUEST (the caller's
+//! that states no row of its own answers, and every reason a plane that states rows does not
+//! restate. A class that refuses the CALLER'S REQUEST (the caller's
 //! bytes, its authority, its size, its rate, its money, what it named, or a limit it ran into) owes
 //! the caller a 4xx naming that refusal, so the caller does not retry it as though the node broke.
 //! A class that is the node's own state or fault (a shut way to the destination, a node that cannot
@@ -79,7 +79,7 @@ fn a_policy_refusal_defaults_to_a_4xx_and_a_node_state_to_a_5xx() {
 }
 
 /// The three classes that defaulted to 503 take the status the other planes already answer for
-/// them (the one classification): `Rejected` 400 (the llm plane's recorded 1.5.5 `no rate` 400,
+/// them (the one classification): `Rejected` 400 (the recorded 1.5.5 `no rate` 400,
 /// `invalid_request_error`), `NotFound` 404 (its recorded 1.5.5 not-found 404, and the admin
 /// surface's), `Busy` 429 (1.5.5's group in-flight limit, 429 `rate_limit_error`, and the admin
 /// surface's).

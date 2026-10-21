@@ -216,12 +216,12 @@ pub fn refusal_status(reason: ReasonCode) -> u32 {
 ///
 /// * `Rejected` 400: readable, and not taken as asked (an unbillable name, an unpriced class, a
 ///   replayed or superseded idempotency key). 1.5.5's recorded `no rate` refusal, 400
-///   `invalid_request_error`; the llm plane renders the class `invalid_request_error`.
+///   `invalid_request_error`; a plane that restates the class renders it as its request error.
 /// * `Busy` 429: the in-flight table, or the idempotency key's unit, is busy: a limit the
 ///   admission ran into, retryable once it frees. 1.5.5's in-flight limit, 429 `rate_limit_error`;
-///   the admin surface's 429 and the llm plane's `rate_limit_error` for the class.
+///   the admin surface's 429 for the class.
 /// * `NotFound` 404: nowhere for the request to go. 1.5.5's model-not-found 404; the admin
-///   surface's 404 and the llm plane's `not_found_error` for the class.
+///   surface's 404 for the class.
 ///
 /// 402 is no class's status: a spent money cap (`QuotaExhausted`) is 1.5.5's 429
 /// `insufficient_quota`. The node's own states and faults keep their 5xx: a shut way to the
