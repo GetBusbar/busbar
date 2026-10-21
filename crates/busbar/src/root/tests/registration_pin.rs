@@ -269,10 +269,9 @@ fn registration(
         busbar_contract::section::member_target(served.need_targets[at]).expect("a target");
     let trust =
         busbar_contract::section::member_target(served.need_trust[at]).expect("a trust path");
-    let file = |p: &Path| {
-        let mut m = Mapping::new();
-        m.insert("file".into(), p.display().to_string().into());
-        Value::Mapping(m)
+    // A secret reference in the operator's file sugar, as a registration spells it.
+    let file = |p: &Path| -> Value {
+        serde_yaml::from_str(&format!("{{file: '{}'}}", p.display())).expect("a secret reference")
     };
     let mut pin = Mapping::new();
     pin.insert("mechanism".into(), mechanism.into());
