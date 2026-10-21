@@ -1165,6 +1165,16 @@ impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
 }
 
 impl HookStage {
+    /// A hook stage over `host` and `gov`, every other field in its idle state: what a test cell
+    /// builds without naming the stage's fields.
+    #[cfg(test)]
+    pub(crate) fn new(
+        host: busbar_kernel::plane_driver::GenerationHost,
+        gov: Arc<busbar_kernel::governance::GovState>,
+    ) -> Self {
+        Self { host, gov }
+    }
+
     /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
     /// deployment's global and per-pool hooks, bound per unit off the current generation (U22,
     /// ARCHITECT rulings 2026-10-05).
@@ -2315,6 +2325,12 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
              Peer or none does",
             named(mix.0.as_slice()),
             named(mix.1.as_slice())
+        ),
+        GuestRefusal::Malformed(bad) => format!(
+            "{listener}: the line {} matches no request: it breaks {:?} at {}",
+            named(std::slice::from_ref(&bad.0)),
+            bad.1.rule,
+            bad.1.field
         ),
         GuestRefusal::PointNotOffered(line) => format!(
             "{listener}: the line {} needs the auth points {:#x} and its transport offers {:#x}",
