@@ -132,7 +132,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape",
-          "note": "every caller dialect the plane states (one per dialect it declares on the protocol axis, read from its door words) driven through the door: a named model reaches the door and is served, a body-model request with no model is the ladder's own 400 with its missing-model sentence, a malformed body is the arrival's 400 with its parse sentence, and the action the door does not serve is the endpoint's own 404 with its own words"
+          "note": "all 24 legs of the six caller dialects the plane states (read from its door words, held equal to the dialects it declares) driven through the door: 17 answered at decode and asserted with their own sentence (six named reach the door and are served, six malformed are the arrival's 400, four body-model requests with no model are the ladder's 400, the generate dialect's unserved action is its 404), plus 7 proven to resolve before decode to the answer 1.5.5 gave (five other methods on a dialect path are its 405, v1.5.5 ingress/dispatch.rs:311-318, golden http.crosscut|wrong-method|GET-messages; the two URL-model dialects' URLs naming no model are generate's Invalid resource path 404, ingress/mod.rs:838-858, and converse's model-not-found 404 after admission, ingress/dispatch.rs:199 and :220-233)"
         }
       },
       "authenticate": {
@@ -165,7 +165,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing",
-          "note": "a gate seated on the door driven both ways: a vetoing gate is asked and stops the unit with its 451, the far end never dialled, no metering row, its admission kept and its fee refunded as 1.5.5 did; a gate that does not veto is asked too and the unit goes on to the same served end"
+          "note": "the 1.5.5 order on the door: a unit is admitted and charged, then its gate is asked, then a veto refunds its fee (v1.5.5 crates/busbar/src/ingress/dispatch.rs:199 governance_guard admits and charges, :248 forward_with_pool_parsed, crates/busbar/src/proxy/engine/mod.rs:946 the gate chain fires and :1005 a reject returns, dispatch.rs:275 finish_admitted with ingress/mod.rs:469 refunds a non-2xx). A vetoing gate answers its 451, dials nothing, meters nothing, keeps the admission and refunds the fee; a passing gate is asked and the unit is served. The gate-first arm, a plane whose screen stops a unit before the door with nothing admitted, is crates/busbar/src/root/tests/plane_node_money.rs:2645 a_screened_veto_through_the_node_admits_nothing"
         }
       },
       "admit": {
@@ -187,7 +187,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
-          "note": "the walk the route step drives on all six fixtures: each delivered unit dials its far end once and a refused one never, the same-dialect answer is relayed byte for byte, the answer's media type and the budget refusal's Retry-After are the shipped ones, admissions and fees are drawn exactly where the shipped path drew them, and the member's breaker stays closed"
+          "note": "the walk the route step drives on all six fixtures, its response head held to the oracle's recorded 1.5.5 capture of the same request (header names framing aside and content type: llm|openai|openai|request|ok, |ok_stream, |malformed, |over_budget_total, |out_of_scope, and the POST /v1/chat/completions step of neutrality|models-empty|surface): each delivered unit dials once and a refused one never, the same-dialect answer is relayed byte for byte, admissions and fees are drawn where 1.5.5 drew them, and the member's breaker stays closed"
         }
       },
       "meter": {

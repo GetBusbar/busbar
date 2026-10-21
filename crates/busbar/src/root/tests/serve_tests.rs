@@ -10813,32 +10813,81 @@ mod model_door_root_cells {
         );
     }
 
-    /// THE WALK ON EVERY FIXTURE, ON THE DOOR. Door successor of
+    /// The framing a wire adds and the oracle normalises (`hdr.date`, `hdr.length`): what the
+    /// router's own answer carries no counterpart of, so it is not part of the compared head.
+    const FRAMING: [&str; 4] = ["content-length", "transfer-encoding", "connection", "date"];
+
+    /// THE 1.5.5 HEAD OF ONE FIXTURE, from the oracle's recorded golden capture the plane's door
+    /// words name (`route_golden.<fixture> = <repo-relative cell file> [| <step request>]`): its
+    /// header names, framing aside, and its content type.
+    fn golden_head(fixture: Fixture) -> (std::collections::BTreeSet<String>, String) {
+        let key = match fixture {
+            Fixture::BufferedOk => "route_golden.buffered",
+            Fixture::StreamedOk => "route_golden.streamed",
+            Fixture::Malformed => "route_golden.malformed",
+            Fixture::OverBudget => "route_golden.over_budget",
+            Fixture::PoolAcl => "route_golden.pool_acl",
+            Fixture::UnknownModel => "route_golden.unknown_model",
+        };
+        let row: Vec<&str> = door_word(key).split(" | ").map(str::trim).collect();
+        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(row[0]);
+        let cell: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&at)
+                .unwrap_or_else(|e| panic!("the 1.5.5 golden {} reads: {e}", at.display())),
+        )
+        .expect("the golden is JSON");
+        let headers = match row.get(1) {
+            None => cell["headers"].clone(),
+            Some(step) => cell["body"]["json"]["steps"]
+                .as_array()
+                .expect("a capture's steps")
+                .iter()
+                .find(|s| s["request"] == *step)
+                .unwrap_or_else(|| panic!("the capture has a `{step}` step"))["headers"]
+                .clone(),
+        };
+        let headers = headers.as_object().expect("the golden records the head");
+        let names = headers
+            .keys()
+            .map(|k| k.to_ascii_lowercase())
+            .filter(|k| !FRAMING.contains(&k.as_str()))
+            .collect();
+        let media = headers["content-type"]
+            .as_str()
+            .expect("a content type")
+            .to_string();
+        (names, media)
+    }
+
+    /// THE WALK ON EVERY FIXTURE, ON THE DOOR, ANCHORED TO 1.5.5. Door successor of
     /// `plane_node.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture`, whose second leg,
-    /// the shipped entry point, is the door itself since #1161: the fields the original compared
-    /// are asserted per fixture at the value the shipped path left. The caller's status and the
-    /// head it reads (a JSON answer or refusal `application/json`, a streamed answer
-    /// `text/event-stream`, the door's budget refusal carrying its `Retry-After`); the far end
+    /// the shipped entry point, is the door itself since #1161, so each field the original compared
+    /// is held to the value 1.5.5 left. THE HEAD is held to the oracle's recorded 1.5.5 capture of
+    /// the same request (`route_golden.*` in the plane's door words; the PARITY group replays the
+    /// same cells on the wire): the same header names, framing aside, and the same content type,
+    /// the budget refusal's `Retry-After` among them. Beside it: the caller's status; the far end
     /// dialled once by each delivered unit and never by a refused one; the buffered answer relayed
     /// as the far end's very bytes (same dialect, so byte for byte); the key's admissions (drawn by
     /// each delivered unit and by the unit refused after the door, never by one refused at or
     /// before it) and its spend (the one-cent fee of each delivered unit, nothing for a refusal);
     /// and the member's breaker still closed after every walk.
     ///
-    /// RED: a walk that dials a refused unit or dials twice, a rewritten same-dialect answer, a head
-    /// in another media type, an admission or a fee drawn or skipped against the fixture, or a
-    /// member benched by a refusal.
+    /// RED: a head that names a field 1.5.5 did not send or drops one it did, another media type, a
+    /// walk that dials a refused unit or dials twice, a rewritten same-dialect answer, an admission
+    /// or a fee drawn or skipped against the fixture, or a member benched by a refusal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave() {
         let _one = ONE_PUBLISHER.lock().await;
         let mut failures: Vec<String> = Vec::new();
-        for (fixture, status, media, dialled, admitted, spend) in [
-            (Fixture::BufferedOk, 200, "application/json", 1, 1, 1),
-            (Fixture::StreamedOk, 200, "text/event-stream", 1, 1, 1),
-            (Fixture::Malformed, 400, "application/json", 0, 0, 0),
-            (Fixture::OverBudget, 429, "application/json", 0, 0, 0),
-            (Fixture::PoolAcl, 403, "application/json", 0, 0, 0),
-            (Fixture::UnknownModel, 404, "application/json", 0, 1, 0),
+        for (fixture, status, dialled, admitted, spend) in [
+            (Fixture::BufferedOk, 200, 1, 1, 1),
+            (Fixture::StreamedOk, 200, 1, 1, 1),
+            (Fixture::Malformed, 400, 0, 0, 0),
+            (Fixture::OverBudget, 429, 0, 0, 0),
+            (Fixture::PoolAcl, 403, 0, 0, 0),
+            (Fixture::UnknownModel, 404, 0, 1, 0),
         ] {
             let seen = observe("walk", fixture).await;
             if (seen.status, seen.dialled, seen.admitted, seen.spend)
@@ -10850,15 +10899,22 @@ mod model_door_root_cells {
                     seen.status, seen.dialled, seen.admitted, seen.spend
                 ));
             }
-            if !field(&seen.head, "content-type").starts_with(media) {
+            let (names, media) = golden_head(fixture);
+            let door: std::collections::BTreeSet<String> = seen
+                .head
+                .keys()
+                .map(|k| k.as_str().to_ascii_lowercase())
+                .filter(|k| !FRAMING.contains(&k.as_str()))
+                .collect();
+            if door != names {
                 failures.push(format!(
-                    "{fixture:?}: content-type {:?}, expected {media}",
-                    field(&seen.head, "content-type")
+                    "{fixture:?}: the head names {door:?}, 1.5.5 sent {names:?}"
                 ));
             }
-            if fixture == Fixture::OverBudget && field(&seen.head, "retry-after").is_empty() {
+            if field(&seen.head, "content-type") != media {
                 failures.push(format!(
-                    "{fixture:?}: the budget refusal carries no Retry-After"
+                    "{fixture:?}: content-type {:?}, 1.5.5 sent {media:?}",
+                    field(&seen.head, "content-type")
                 ));
             }
             if !seen.breaker_closed {
@@ -11012,28 +11068,35 @@ mod model_door_root_cells {
         );
     }
 
-    /// The four shapes the decode step is asked about.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Shape {
-        /// A well-formed native request naming pool `p`: both halves of the step answer, and the
-        /// unit reaches the door.
-        Named,
-        /// A well-formed native request with no `model` member: the model ladder resolves nothing,
-        /// the decode step's own refusal. Asked of the dialects whose model rides the body; a
-        /// dialect whose model rides the path has no body member to leave out.
-        NoModel,
-        /// Bytes that are not a document at all: refused at arrival, never reaching the ladder.
-        Malformed,
-        /// An action the dialect has and the door does not serve: the handler half of the step.
-        UnsupportedVerb,
+    /// What one decode leg sends.
+    enum Payload {
+        /// A JSON request.
+        Json(serde_json::Value),
+        /// These very bytes.
+        Raw(&'static str),
+        /// No body.
+        Empty,
+    }
+
+    /// One decode leg's request and the answer it is held to.
+    struct Leg {
+        shape: &'static str,
+        method: &'static str,
+        path: &'static str,
+        payload: Payload,
+        status: u16,
+        sentence: Option<&'static str>,
+        dials: usize,
+        admits: u64,
     }
 
     /// One decode leg on a deployment of its own: (status, body, far-end dials, admissions).
     async fn decode_leg(
         label: &str,
+        method: &str,
         path: &str,
-        shape: Shape,
-        request: &serde_json::Value,
+        payload: Payload,
+        served: bool,
     ) -> (u16, String, usize, u64) {
         let instance = deployment(format!("root-door-decode-{label}"));
         let _published = Withdrawn(instance);
@@ -11046,23 +11109,15 @@ mod model_door_root_cells {
             },
         )
         .await;
-        let (status, _, body) = match shape {
-            Shape::Named | Shape::UnsupportedVerb => {
-                rig.send("POST", path, Some(request.clone())).await
-            }
-            Shape::NoModel => {
-                let mut bare = request.clone();
-                let _ = bare
-                    .as_object_mut()
-                    .expect("a body-model request is a JSON object")
-                    .remove("model");
-                rig.send("POST", path, Some(bare)).await
-            }
-            Shape::Malformed => send_raw(&rig, path, "{not json").await,
+        let (status, _, body) = match payload {
+            Payload::Json(request) => rig.send(method, path, Some(request)).await,
+            Payload::Raw(bytes) => send_raw(&rig, path, bytes).await,
+            Payload::Empty => rig.send(method, path, None).await,
         };
-        let admitted = if shape == Shape::Named {
+        let admitted = if served {
             rig.ledger_after(1).await.0
         } else {
+            // A refusal's money settles at the unit's end, where there is one: give it the time.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             rig.ledger_after(0).await.0
         };
@@ -11074,26 +11129,60 @@ mod model_door_root_cells {
         )
     }
 
-    /// **THE DECODE STEP ON EVERY DIALECT THE PLANE STATES.** Door successor of
-    /// `plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`. The
-    /// decode step answers two questions, which handler owns the request and which model the caller
-    /// named, and every step after it is about those two answers, so each caller dialect the plane's
-    /// door words state (as many as the plane declares on the protocol axis, read rather than
-    /// listed) is driven through the door, each shape on its own deployment, and the end each
-    /// reaches is asserted with the refusal's own sentence:
+    /// A door word's row of `<path> | <status> | <sentence> | <admissions>`: one request a caller can
+    /// send and the answer 1.5.5 gave it.
+    fn answer_row(key: &str) -> Option<(&'static str, u16, &'static str, u64)> {
+        let row = DRIVER_WORDS
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)?
+            .1
+            .trim();
+        let cols: Vec<&'static str> = row.split(" | ").map(str::trim).collect();
+        assert_eq!(
+            cols.len(),
+            4,
+            "{key}: `<path> | <status> | <sentence> | <admissions>`"
+        );
+        Some((
+            cols[0],
+            cols[1].parse().expect("a status"),
+            cols[2],
+            cols[3].parse().expect("an admission count"),
+        ))
+    }
+
+    /// **THE DECODE STEP ON EVERY DIALECT THE PLANE STATES, ALL FOUR SHAPES.** Door successor of
+    /// `plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`: each
+    /// caller dialect the plane's door words state (as many as the plane declares on the protocol
+    /// axis, read rather than listed) in each of the four shapes, every leg on its own deployment,
+    /// the end each reaches asserted with the answer's own sentence. Twenty-four legs for six
+    /// dialects:
     ///
-    /// * `Named` reaches the door and is served (200, one dial, one admission): the model WAS
-    ///   resolved, and the dialect is mounted (a dialect missing from the door's claims resolves
-    ///   no arrival and 404s);
-    /// * `NoModel` (each dialect whose model rides the body) is the ladder's own 400 with the
-    ///   missing-model sentence, charged to nobody and dialled nowhere;
-    /// * `Malformed` (every dialect) is refused 400 at arrival with the parse sentence, before the
-    ///   ladder, charged nothing;
-    /// * `UnsupportedVerb` is the handler half: the action the door words name that the door does
-    ///   not serve is the endpoint's own 404 with its own sentence, charged nothing.
+    /// * `Named` (each dialect) reaches the door and is served (200, one dial, one admission): the
+    ///   model WAS resolved, and the dialect is mounted;
+    /// * `Malformed` (each dialect) is refused 400 at arrival with the parse sentence, charged
+    ///   nothing and dialled nowhere;
+    /// * NO MODEL. A dialect whose model rides the body: the ladder's own 400 with the
+    ///   missing-model sentence. A dialect whose model rides the URL has no body member to leave
+    ///   out, so the request a caller can send is the URL naming no model (`no_url_model.<name>`),
+    ///   answered as 1.5.5 answered it before decode: the generate dialect's own `Invalid resource
+    ///   path` 404 (v1.5.5 `crates/busbar/src/ingress/mod.rs:838-858`), the converse dialect's
+    ///   model-not-found 404 naming the empty model after its admission (v1.5.5
+    ///   `ingress/dispatch.rs:199` admits, `:220-233` answers `not_found_message`,
+    ///   `ingress/mod.rs:1005-1013`);
+    /// * UNSUPPORTED VERB. Where the door words name an action the dialect has and the door does
+    ///   not serve (`unserved_action.<name>`), its own 404. Every other dialect resolves no
+    ///   operation on its path that lacks a handler, on 1.5.5 as on the door (v1.5.5
+    ///   `ingress/dispatch.rs:325-336`), so the request a caller can send for a verb its path does
+    ///   not take is another method on that path, answered as 1.5.5 answered it before decode:
+    ///   the dialect's 405 (v1.5.5 `ingress/dispatch.rs:311-318`; the oracle's golden
+    ///   `http.crosscut|wrong-method|GET-messages`).
     ///
-    /// RED: a dialect that does not reach the door, a model-less body that does, a malformed body
-    /// that is charged or dialled, or a refusal in another status or sentence.
+    /// RED: a dialect that does not reach the door, a model-less request that does, a refusal that
+    /// is charged or dialled against 1.5.5, or an answer in another status or sentence.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_decodes_every_dialect_it_mounts_in_every_shape() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11105,71 +11194,115 @@ mod model_door_root_cells {
         );
         let missing_model = door_word("missing_model_sentence");
         let unparsable = door_word("unparsable_sentence");
+        let wrong_verb = door_word("wrong_verb");
+        let wrong_verb_sentence = door_word("wrong_verb_sentence");
         let mut failures: Vec<String> = Vec::new();
         let mut legs = 0usize;
         for caller in &callers {
             let mut shapes = vec![
-                (Shape::Named, 200, None),
-                (Shape::Malformed, 400, Some(unparsable)),
+                Leg {
+                    shape: "named",
+                    method: "POST",
+                    path: caller.path,
+                    payload: Payload::Json(caller.request.clone()),
+                    status: 200,
+                    sentence: None,
+                    dials: 1,
+                    admits: 1,
+                },
+                Leg {
+                    shape: "malformed",
+                    method: "POST",
+                    path: caller.path,
+                    payload: Payload::Raw("{not json"),
+                    status: 400,
+                    sentence: Some(unparsable),
+                    dials: 0,
+                    admits: 0,
+                },
             ];
             if caller.body_model {
-                shapes.push((Shape::NoModel, 400, Some(missing_model)));
+                let mut bare = caller.request.clone();
+                let _ = bare
+                    .as_object_mut()
+                    .expect("a body-model request is a JSON object")
+                    .remove("model");
+                shapes.push(Leg {
+                    shape: "no-model",
+                    method: "POST",
+                    path: caller.path,
+                    payload: Payload::Json(bare),
+                    status: 400,
+                    sentence: Some(missing_model),
+                    dials: 0,
+                    admits: 0,
+                });
+            } else {
+                let (path, status, sentence, admits) =
+                    answer_row(&format!("no_url_model.{}", caller.name))
+                        .unwrap_or_else(|| panic!("no_url_model.{} is stated", caller.name));
+                shapes.push(Leg {
+                    shape: "no-url-model",
+                    method: "POST",
+                    path,
+                    payload: Payload::Json(caller.request.clone()),
+                    status,
+                    sentence: Some(sentence),
+                    dials: 0,
+                    admits,
+                });
             }
-            for (shape, want_status, sentence) in shapes {
+            shapes.push(
+                match answer_row(&format!("unserved_action.{}", caller.name)) {
+                    Some((path, status, sentence, admits)) => Leg {
+                        shape: "unserved-action",
+                        method: "POST",
+                        path,
+                        payload: Payload::Json(caller.request.clone()),
+                        status,
+                        sentence: Some(sentence),
+                        dials: 0,
+                        admits,
+                    },
+                    None => Leg {
+                        shape: "wrong-verb",
+                        method: wrong_verb,
+                        path: caller.path,
+                        payload: Payload::Empty,
+                        status: 405,
+                        sentence: Some(wrong_verb_sentence),
+                        dials: 0,
+                        admits: 0,
+                    },
+                },
+            );
+            for leg in shapes {
                 legs += 1;
-                let label = format!("{}-{shape:?}", caller.name);
+                let (shape, method, path) = (leg.shape, leg.method, leg.path);
+                let label = format!("{}-{shape}", caller.name);
                 let (status, body, dialled, admitted) =
-                    decode_leg(&label, caller.path, shape, &caller.request).await;
-                let want = if shape == Shape::Named {
-                    (want_status, 1, 1)
-                } else {
-                    (want_status, 0, 0)
-                };
-                if (status, dialled, admitted) != want {
+                    decode_leg(&label, method, path, leg.payload, shape == "named").await;
+                if (status, dialled, admitted) != (leg.status, leg.dials, leg.admits) {
                     failures.push(format!(
-                        "{} {shape:?}: (status, dialled, admitted) = ({status}, {dialled}, \
-                         {admitted}), expected {want:?}: {body}",
-                        caller.path
+                        "{method} {path} ({shape}): (status, dialled, admitted) = ({status}, \
+                         {dialled}, {admitted}), expected ({}, {}, {}): {body}",
+                        leg.status, leg.dials, leg.admits
                     ));
                 }
-                if let Some(sentence) = sentence {
+                if let Some(sentence) = leg.sentence {
                     if !body.contains(sentence) {
                         failures.push(format!(
-                            "{} {shape:?}: the refusal does not say {sentence:?}: {body}",
-                            caller.path
+                            "{method} {path} ({shape}): the answer does not say {sentence:?}: \
+                             {body}"
                         ));
                     }
                 }
             }
         }
-        // THE HANDLER HALF, on the action the door words name as one the door does not serve.
-        legs += 1;
-        let unserved = door_word("count_tokens_path");
-        let (status, body, dialled, admitted) = decode_leg(
-            "unserved",
-            unserved,
-            Shape::UnsupportedVerb,
-            &serde_json::json!({"contents": []}),
-        )
-        .await;
-        if (status, dialled, admitted) != (404, 0, 0) {
-            failures.push(format!(
-                "{unserved} UnsupportedVerb: (status, dialled, admitted) = ({status}, {dialled}, \
-                 {admitted}), expected (404, 0, 0): {body}"
-            ));
-        }
-        let sentence = door_word("unserved_action_sentence");
-        if !body.contains(sentence) {
-            failures.push(format!(
-                "{unserved} UnsupportedVerb: the refusal does not say {sentence:?}: {body}"
-            ));
-        }
-        let body_rows = callers.iter().filter(|c| c.body_model).count();
         assert_eq!(
             legs,
-            2 * callers.len() + body_rows + 1,
-            "every dialect named and malformed, every body-model one without a model, and the \
-             unserved action"
+            4 * callers.len(),
+            "every dialect in all four shapes: named, malformed, no model, unsupported verb"
         );
         assert!(
             failures.is_empty(),
