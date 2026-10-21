@@ -11,8 +11,18 @@
 //! Both answer PENDING until they complete. The caller parks the [`Exchange`] on its ticket across
 //! PENDING entries (`abi::sdk::safe::Instance::park`) and passes it back each time, making the same
 //! services in the same order (the replay rule, `abi::sdk::conn`): no service runs twice.
+//!
+//! WHAT CROSSES IS WIPED. A request's fields carry what a plugin authenticates with (a vault token,
+//! an `authorization` value, a client secret) and a reply carries what the far end answered. Every
+//! buffer the SDK holds either in is wiped when it goes: the [`Request`] [`Exchange::request`]
+//! consumes, the head it frames, the body it sends, the read buffer (after each piece is applied as
+//! well), and the reply it gathers (a body that outgrows its allocation wipes the one it leaves).
+//! [`Request`], [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a plugin wipes the ones it holds
+//! (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are unchanged.
 
 use std::task::Poll;
+
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::abi::host::conn::connector::{
     ReplyPiece, RequestPiece, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY,
@@ -50,6 +60,16 @@ pub struct Request {
     pub timeout_ms: u64,
 }
 
+impl Zeroize for Request {
+    fn zeroize(&mut self) {
+        self.method.zeroize();
+        self.target.zeroize();
+        self.fields.zeroize();
+        self.body.zeroize();
+        self.timeout_ms.zeroize();
+    }
+}
+
 /// The far end's reply to an [`exchange`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExchangeResponse {
@@ -64,6 +84,15 @@ pub struct ExchangeResponse {
     pub body: Vec<u8>,
 }
 
+impl Zeroize for ExchangeResponse {
+    fn zeroize(&mut self) {
+        self.status.zeroize();
+        self.reason.zeroize();
+        self.fields.zeroize();
+        self.body.zeroize();
+    }
+}
+
 /// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ack {
@@ -73,30 +102,40 @@ pub struct Ack {
     pub reason: Vec<u8>,
 }
 
-/// What is sent: a framed request's head bytes and descriptors, or raw bytes.
+impl Zeroize for Ack {
+    fn zeroize(&mut self) {
+        self.code.zeroize();
+        self.reason.zeroize();
+    }
+}
+
+/// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
+/// drop; the descriptors (`repr(C)`) hold spans and a timeout, never a byte of the request.
 #[derive(Debug)]
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
-        head: Box<[u8]>,
+        head: Zeroizing<Vec<u8>>,
         head_piece: Box<RequestPiece>,
-        body: Box<[u8]>,
+        body: Zeroizing<Vec<u8>>,
         body_piece: Box<RequestPiece>,
         end_piece: Box<RequestPiece>,
         timeout_ms: u64,
     },
-    Raw(Box<[u8]>),
+    Raw(Zeroizing<Vec<u8>>),
 }
 
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
 /// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
-/// them) and the reply so far. Parked on the ticket.
+/// them) and the reply so far. Parked on the ticket. Every byte it holds of the request or the
+/// reply wipes on drop.
 #[derive(Debug)]
 pub struct Exchange {
     sending: Sending,
-    buf: Box<[u8]>,
+    /// The read buffer: each piece's bytes are wiped once applied, the whole of it on drop.
+    buf: Zeroizing<Box<[u8]>>,
     slot: Box<ReplyPiece>,
-    reply: ExchangeResponse,
+    reply: Zeroizing<ExchangeResponse>,
     code: u32,
     /// How many of this op's services' results are already applied to `reply`.
     applied: u32,
@@ -136,9 +175,9 @@ impl Exchange {
     fn over(sending: Sending) -> Self {
         Self {
             sending,
-            buf: vec![0; READ_CHUNK].into_boxed_slice(),
+            buf: Zeroizing::new(vec![0; READ_CHUNK].into_boxed_slice()),
             slot: Box::default(),
-            reply: ExchangeResponse::default(),
+            reply: Zeroizing::default(),
             code: 0,
             applied: 0,
             ended: None,
@@ -207,11 +246,11 @@ impl Exchange {
     /// # Errors
     /// A field is a pseudo-field (its name starts with `:`), or a name or value carries a line
     /// break: REFUSED, nothing sent.
+    ///
+    /// `request` is the SDK's from here: what it carried is wiped when it goes, framed or refused.
+    /// The head is allocated once at its exact length, so no outgrown copy of a field is left.
     pub fn request(request: Request) -> Result<Self, ConnFailure> {
-        let mut head = Vec::new();
-        head.extend_from_slice(&request.method);
-        head.extend_from_slice(&request.target);
-        let block_at = head.len();
+        let mut request = Zeroizing::new(request);
         for (name, value) in &request.fields {
             if name.first() == Some(&b':') {
                 return Err(ConnFailure::Refused(format!(
@@ -225,12 +264,25 @@ impl Exchange {
                     String::from_utf8_lossy(name)
                 )));
             }
+        }
+        let (m, t) = (request.method.len(), request.target.len());
+        let block: usize = request
+            .fields
+            .iter()
+            .map(|(name, value)| {
+                name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
+            })
+            .sum();
+        let mut head = Zeroizing::new(Vec::with_capacity(m + t + block));
+        head.extend_from_slice(&request.method);
+        head.extend_from_slice(&request.target);
+        let block_at = head.len();
+        for (name, value) in &request.fields {
             head.extend_from_slice(name);
             head.extend_from_slice(fields::SEPARATOR);
             head.extend_from_slice(value);
             head.extend_from_slice(fields::LINE_END);
         }
-        let (m, t) = (request.method.len(), request.target.len());
         let head_piece = Box::new(RequestPiece {
             kind: REQUEST_HEAD,
             method: span(0, m),
@@ -240,9 +292,9 @@ impl Exchange {
             ..RequestPiece::ZERO
         });
         Ok(Self::over(Sending::Framed {
-            head: head.into_boxed_slice(),
+            head,
             head_piece,
-            body: request.body.into_boxed_slice(),
+            body: Zeroizing::new(std::mem::take(&mut request.body)),
             body_piece: piece(REQUEST_BODY),
             end_piece: piece(REQUEST_END),
             timeout_ms: request.timeout_ms,
@@ -252,7 +304,7 @@ impl Exchange {
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
-        Self::over(Sending::Raw(bytes.into_boxed_slice()))
+        Self::over(Sending::Raw(Zeroizing::new(bytes)))
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
@@ -263,7 +315,7 @@ impl Exchange {
         match &self.sending {
             Sending::Framed {
                 head, head_piece, ..
-            } => fields::lines(spanned(head, head_piece.fields)).collect(),
+            } => fields::lines(spanned(&head[..], head_piece.fields)).collect(),
             Sending::Raw(_) => Vec::new(),
         }
     }
@@ -302,11 +354,26 @@ fn write_all(mut write: impl FnMut(&[u8]) -> Answer<usize>, bytes: &[u8]) -> Ans
     Poll::Ready(Ok(()))
 }
 
+/// Append `bytes` to `body`, growing it as `Vec` grows it (to twice its capacity, at least what
+/// it needs, never under 8), but into a fresh allocation, wiping the one it outgrew before that is
+/// freed: a reallocation leaves no copy of what the reply carried. The same allocations as
+/// `extend_from_slice`, one per growth.
+fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
+    let need = body.len().saturating_add(bytes.len());
+    if need > body.capacity() {
+        let mut grown = Vec::with_capacity(need.max(body.capacity().saturating_mul(2)).max(8));
+        grown.extend_from_slice(body);
+        body.zeroize();
+        *body = grown;
+    }
+    body.extend_from_slice(bytes);
+}
+
 /// Send what `state` holds on `stream`.
 fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     let budget = c.budget_ms();
     match &mut state.sending {
-        Sending::Raw(bytes) => write_all(|b| c.write(stream, b), bytes),
+        Sending::Raw(bytes) => write_all(|b| c.write(stream, b), &bytes[..]),
         Sending::Framed {
             head,
             head_piece,
@@ -322,12 +389,15 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
                 (t, None) => t,
             };
             let head_piece: &RequestPiece = head_piece;
-            let taken = ready!(c.write_request(stream, head_piece, head));
+            let taken = ready!(c.write_request(stream, head_piece, &head[..]));
             if taken != head.len() {
                 return failed("the framer took part of the request head");
             }
             let body_piece: &RequestPiece = body_piece;
-            ready!(write_all(|b| c.write_request(stream, body_piece, b), body));
+            ready!(write_all(
+                |b| c.write_request(stream, body_piece, b),
+                &body[..]
+            ));
             ready!(c.write_request(stream, end_piece, &[]));
             Poll::Ready(Ok(()))
         }
@@ -346,7 +416,7 @@ fn send_and_read(
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();
-        let got = match c.read_reply(stream, &mut state.buf, &mut state.slot) {
+        let got = match c.read_reply(stream, &mut state.buf[..], &mut state.slot) {
             Poll::Ready(Ok(got)) => got,
             Poll::Ready(Err(e)) => {
                 // A failed reply: what the stream observed says why, where the caller asks.
@@ -364,24 +434,14 @@ fn send_and_read(
             state.applied = this + 1;
         }
         let p = got.piece;
-        match p.kind {
-            REPLY_HEAD | REPLY_ACK if fresh => {
-                let bytes = &state.buf[..got.len];
-                state.code = p.code;
-                let reason = spanned(bytes, p.reason);
-                state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
-                state.reply.fields = fields::lines(spanned(bytes, p.fields))
-                    .map(|(n, v)| (n.to_vec(), v.to_vec()))
-                    .collect();
-            }
-            REPLY_BODY if fresh => {
-                state.reply.body.extend_from_slice(&state.buf[..got.len]);
-                if state.reply.body.len() > state.reply_ceiling {
-                    return failed(REPLY_OVER_BOUND);
-                }
-            }
-            REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}
-            _ => return failed("the transport answered no reply piece: every request is acked"),
+        let applied = apply(state, p, got.len, fresh);
+        // The piece's bytes are in the reply now (or were, on the entry that first read them):
+        // the read buffer keeps no copy of them into the next read.
+        if let Some(used) = state.buf.get_mut(..got.len) {
+            used.zeroize();
+        }
+        if let Err(text) = applied {
+            return failed(text);
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
@@ -400,6 +460,34 @@ fn send_and_read(
         Poll::Pending => Poll::Pending,
         Poll::Ready(_) => Poll::Ready(Ok(())),
     }
+}
+
+/// Apply one reply piece, `p` and its first `len` bytes of the read buffer, to the reply `state`
+/// gathers (a `fresh` read only: a replayed one was applied on the entry that first saw it). What a
+/// head replaces is wiped first.
+fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result<(), &'static str> {
+    match p.kind {
+        REPLY_HEAD | REPLY_ACK if fresh => {
+            let bytes = &state.buf[..len];
+            state.code = p.code;
+            let reason = spanned(bytes, p.reason);
+            state.reply.reason.zeroize();
+            state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
+            state.reply.fields.zeroize();
+            state.reply.fields = fields::lines(spanned(bytes, p.fields))
+                .map(|(n, v)| (n.to_vec(), v.to_vec()))
+                .collect();
+        }
+        REPLY_BODY if fresh => {
+            extend_wiping(&mut state.reply.body, &state.buf[..len]);
+            if state.reply.body.len() > state.reply_ceiling {
+                return Err(REPLY_OVER_BOUND);
+            }
+        }
+        REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}
+        _ => return Err("the transport answered no reply piece: every request is acked"),
+    }
+    Ok(())
 }
 
 /// Read `stream`'s facts into `state` where it asks ([`Exchange::observing`]): a facts answer the
@@ -429,7 +517,7 @@ pub fn exchange(
     target: Option<&str>,
 ) -> Answer<ExchangeResponse> {
     ready!(send_and_read(c, state, need, target));
-    let mut reply = std::mem::take(&mut state.reply);
+    let mut reply = std::mem::take(&mut *state.reply);
     reply.status = u16::try_from(state.code).unwrap_or(0);
     Poll::Ready(Ok(reply))
 }
