@@ -219,6 +219,13 @@ pub mod bound_credential;
 pub mod egress;
 pub mod endpoints;
 pub mod export;
+/// The pool vocabulary's historical path. The failover module is deleted (row 82 D2); the one
+/// spelling of this path left is a linked plugin's root tests at its pinned rev, which name
+/// `failover::CandidatePoolCfg`. Its rename to `config::pools` is open on the plugin's own
+/// repository, and the repin that carries it strikes this alias.
+pub mod failover {
+    pub use crate::config::pools::CandidatePoolCfg;
+}
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
