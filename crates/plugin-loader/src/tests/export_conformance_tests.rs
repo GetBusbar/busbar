@@ -246,9 +246,10 @@ impl EnvelopeSink for Tape {
 }
 
 /// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
-/// bound for the caller's destination key, rotating by rename first when the file already holds
-/// `rotate_at` bytes and keeping `keep` archives ([`crate::host::rotate`]), then opening it for
-/// append (created if absent) and writing the bytes whole — the same rules the kernel's lane follows.
+/// bound for the caller's destination key, rolling it over first when the file already holds
+/// `rotate_at` bytes — truncated in place when the destination keeps no archives (`keep` 0), else
+/// by rename keeping `keep` archives ([`crate::host::rotate`]) — then opening it (created if
+/// absent) and writing the bytes whole: the same rules the kernel's lane follows.
 struct DiskHost;
 
 impl DiskHost {
@@ -257,7 +258,8 @@ impl DiskHost {
         let due = dest
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-        let (rotated, failed) = if due {
+        let truncate = due && dest.keep == 0;
+        let (rotated, failed) = if due && !truncate {
             crate::host::rotate(std::path::Path::new(&dest.path), dest.keep)
         } else {
             (false, Vec::new())
@@ -277,7 +279,9 @@ impl DiskHost {
         };
         match std::fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .append(!truncate)
+            .write(true)
+            .truncate(truncate)
             .open(&dest.path)
         {
             Ok(mut file) => match file.write_all(bytes) {
@@ -688,7 +692,7 @@ fn opened(
     d: Arc<Dispatcher>,
     settings: &serde_json::Value,
 ) -> ExportInstance {
-    plugin.grant_destinations(&file_declares().destinations);
+    plugin.grant_destinations(&file_declares());
     ExportInstance::open(plugin, d, settings.to_string().as_bytes()).expect("the sink opens")
 }
 
@@ -801,6 +805,43 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
         vec![rotated_record(&path), rotated_record(&path)],
         "observed: {observed:?}"
     );
+}
+
+/// A DESTINATION DECLARED `keep` 0 ROLLS OVER AS 1.5.5'S REQUEST-LOG FILE DID (v1.5.5
+/// `crates/busbar/src/export/file.rs` 96-108, truncation, no rename): the loader binds the
+/// destination with the retention its manifest declares, so the host truncates the live file in
+/// place before each due append — the same file, no `<path>.1`, nothing else beside it — and the
+/// sink is told of no rotation. RED before: the loader bound every destination with
+/// `DISK_KEEP`, so the host renamed the file to `.1` and `.2` and the sink reported two rotations.
+#[test]
+fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
+    let dir = scratch("keep0");
+    let path = dir.join("requests.jsonl");
+    let tape = Arc::new(Tape::default());
+    let d = dispatcher();
+    let row = LinkedRow::of(FILE_DOOR).expect("the door states its Statement");
+    let plugin = load_linked::<Export>(&row, bind("keep0", tape.clone(), &d)).expect("loads");
+    let mut declares = file_declares();
+    declares.keep.insert("path".to_string(), 0);
+    plugin.grant_destinations(&declares);
+    let sink = ExportInstance::open(plugin, d, file_settings(&path).to_string().as_bytes())
+        .expect("the sink opens");
+    for n in 1..=3 {
+        deliver(&sink, &big_line(n));
+    }
+    until("the third line alone in the live file", || {
+        ns(&path) == Some(vec![3])
+    });
+    drop(sink);
+    assert!(!archive(&path, 1).exists(), "keep 0 writes no archive");
+    let files = std::fs::read_dir(&dir).expect("scratch dir").count();
+    assert_eq!(files, 1, "the live file and nothing else");
+    assert!(
+        tape.seen().is_empty(),
+        "a truncation in place is no rotation: {:?}",
+        tape.seen()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **THE AXIS, BOTH WAYS** (DECISIONS #2 rule (1), item 141). The FILE sink registered through the

@@ -316,12 +316,14 @@ pub struct DiskDest {
     pub path: String,
     /// Rotate before an append that finds the file at least this many bytes long; `None` = never.
     pub rotate_at: Option<u64>,
-    /// How many archives a rotation keeps (`<path>.1` .. `<path>.{keep}`).
+    /// How many archives a rotation keeps (`<path>.1` .. `<path>.{keep}`), as the plugin's manifest
+    /// declares it for this destination (`declares.keep`; [`DISK_KEEP`] when it declares none).
+    /// `0`: no archive at all — a due file is truncated in place (1.5.5's request-log rollover).
     pub keep: u32,
 }
 
-/// How many archives the host keeps for a destination it rotates (`<path>.1` .. `<path>.9`): the
-/// retention the disk lane applies, never a plugin's parameter.
+/// How many archives the host keeps for a destination it rotates (`<path>.1` .. `<path>.9`) when
+/// the manifest declares no `keep` for it.
 pub const DISK_KEEP: u32 = 9;
 
 /// The settings key beside a destination that states its rotation threshold, in MiB: the host's

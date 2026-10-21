@@ -86,6 +86,49 @@ fn a_due_file_rotates_by_rename_before_the_append() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// KEEP 0 IS 1.5.5'S ROLLOVER (v1.5.5 `crates/busbar/src/export/file.rs` 96-108: "roll over by
+/// truncation rather than a rename"): a due file that keeps no archives is TRUNCATED IN PLACE —
+/// the same inode, no `<path>.1` or any other file beside it — and the append starts it afresh,
+/// reported as no rotation. Below the threshold it appends as ever. RED before: keep 0 was
+/// clamped to one archive, the live file renamed to `<path>.1` and a new inode created.
+#[test]
+fn a_due_keep_zero_destination_truncates_in_place_and_keeps_no_archive() {
+    let d = dir("keep0");
+    let file = d.join("log.jsonl");
+    let to = DiskDest {
+        keep: 0,
+        ..dest(&file, Some(8))
+    };
+    let first = append(&to, b"abc\n");
+    assert_eq!((first.step, first.rotated, first.faults), (0, false, 0));
+    assert_eq!(append(&to, b"def\n").step, 0);
+    assert_eq!(std::fs::read(&file).unwrap(), b"abc\ndef\n");
+    #[cfg(unix)]
+    let before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&file).unwrap().ino()
+    };
+    let due = append(&to, b"ghi\n");
+    assert_eq!((due.step, due.rotated, due.faults), (0, false, 0));
+    assert_eq!(std::fs::read(&file).unwrap(), b"ghi\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().ino(),
+            before,
+            "the live file is truncated in place, never replaced"
+        );
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&d)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["log.jsonl"], "no archive, nothing else written");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// Retention: at `keep` archives the oldest is dropped, never more than `keep` kept.
 #[test]
 fn rotation_keeps_at_most_keep_archives() {
