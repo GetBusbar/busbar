@@ -1049,6 +1049,11 @@ pub fn url_host(url: &str) -> Option<String> {
 /// `[v6]` or `[v6]:port` authority (a bare v6 literal is kept whole, a zone suffix too). A target
 /// carrying `://`, or opening with a [`UrlFamily::Web`] scheme and `:`, is read as a URL, so its
 /// scheme is never read as the host. `None` when no host can be read.
+///
+/// A URL whose host [`parse_url`] reads only as `url`'s opaque host because its spelling decodes to
+/// a forbidden host code point (`ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi`, a socket path; `%25`,
+/// `%40`) names no host a dial reaches, and reads `None` here: such a target is refused at the
+/// destination check, as it was before the opaque reading, and never dialled as a host.
 #[must_use]
 pub fn target_host(target: &str) -> Option<String> {
     let trimmed = strip_whatwg_removed(target);
@@ -1056,7 +1061,12 @@ pub fn target_host(target: &str) -> Option<String> {
         .split_once(':')
         .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
     if web_scheme || trimmed.contains("://") {
-        url_host(&trimmed)
+        let (parts, raw) = parse_url_raw(&trimmed).ok()?;
+        let literal = parts.host.contains(':');
+        if !literal && percent_decode_host(&raw).contains(forbidden_in_host) {
+            return None;
+        }
+        Some(parts.host)
     } else {
         extract_normalized_authority_host(&trimmed)
     }

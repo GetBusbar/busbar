@@ -521,15 +521,28 @@ fn a_non_special_idn_host_reads_as_urls_opaque_host() {
         ),
         ("ldap://B\u{dc}CHER.Example/x", "B%C3%9CCHER.Example", None),
         ("ldap://b%C3%BCcher.example", "b%C3%BCcher.example", None),
-        // `url` checks an opaque host before any decode, so a `%25` stands, as written.
-        ("ldap://a%25b.example:389", "a%25b.example", Some(389)),
-        ("ldaps://dir%25.example", "dir%25.example", None),
-        ("ldap://evil%40good.example", "evil%40good.example", None),
         ("ldap://\u{4f8b}.example.", "%E4%BE%8B.example.", None),
     ] {
         let got = parse_url(input).unwrap_or_else(|e| panic!("{input:?}: {e}"));
         assert_eq!((got.host.as_str(), got.port), (host, port), "{input:?}");
         assert_eq!(target_host(input).as_deref(), Some(host), "{input:?}");
+    }
+    // `url` checks an opaque host before any decode, so a `%25` stands, as written. Such a host
+    // names no host a dial reaches: as a dial target it reads none, as before the opaque reading.
+    for (input, host, port) in [
+        ("ldap://a%25b.example:389", "a%25b.example", Some(389)),
+        ("ldaps://dir%25.example", "dir%25.example", None),
+        ("ldap://evil%40good.example", "evil%40good.example", None),
+        (
+            "ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi",
+            "%2Fvar%2Frun%2Fslapd%2Fldapi",
+            None,
+        ),
+    ] {
+        let got = parse_url(input).unwrap_or_else(|e| panic!("{input:?}: {e}"));
+        assert_eq!((got.host.as_str(), got.port), (host, port), "{input:?}");
+        assert_eq!(url_host(input).as_deref(), Some(host), "{input:?}");
+        assert_eq!(target_host(input), None, "{input:?}");
     }
     assert_eq!(
         parse_url("ldap://b\u{fc}<cher.example"),
