@@ -3042,3 +3042,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/durability_boot_reads.rs"]
 mod boot_reads;
+
+#[cfg(all(test, feature = "root-admin"))]
+#[path = "../tests/durability_reads_unlocked.rs"]
+mod reads_unlocked;
