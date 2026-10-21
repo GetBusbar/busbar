@@ -9,10 +9,8 @@
 
 use busbar_kernel::proto::registry::ProtocolDecl;
 
-#[path = "neutral_protocols.rs"]
-mod neutral_protocols;
-
-/// The kernel test binary's protocol set — see the module header.
+/// The kernel test binary's protocol set — see the module header. The set is loaded once, by the
+/// kernel's neutral test seam (`crate::testkit`), which a test-support consumer installs too.
 pub fn test_builtin_decls() -> &'static [&'static ProtocolDecl] {
-    neutral_protocols::NEUTRAL_PROTOCOLS
+    crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
 }

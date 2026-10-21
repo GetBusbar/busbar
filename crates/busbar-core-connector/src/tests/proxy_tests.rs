@@ -254,6 +254,22 @@ fn proxy_env_refusals_never_echo_the_proxy_password() {
     }
 }
 
+/// A REFUSAL NAMES THE HOST THE VALUE DIALS, OR NONE. The dialling stack ends a web URL's authority
+/// at a `\` as at a `/`, so in `https://proxy.corp\@victim.example` the text after the `@` is path,
+/// not host. RED before the one authority split: the mask read past the `\` and printed
+/// `***@victim.example`, naming a host the value never dials.
+#[test]
+fn a_proxy_refusal_names_no_host_the_value_does_not_dial() {
+    for v in [
+        "https://proxy.corp\\@victim.example:3128",
+        "https://proxy.corp\\u:pw@victim.example",
+    ] {
+        let err = parse_proxy(v).expect_err("an https:// proxy is refused");
+        assert!(!err.contains("victim.example"), "{v}: {err}");
+        assert!(!err.contains("pw@"), "{v}: {err}");
+    }
+}
+
 /// The proxy's answer is read whole before the tunnel is up: an incomplete head waits, a 2xx
 /// head is the tunnel (and only its own bytes are the head's), any other status refuses in the
 /// engine's words, and an endless head refuses at 8 KiB.

@@ -8,7 +8,7 @@
 //!
 //! THE INBOUND AND LOGIN SCRIPT. Ported from the auth both-ways proofs (#439's
 //! `auth_door_conformance_tests`, the predev `auth_verify_conformance_tests`, and the token cases of
-//! `busbar-auth-admin-tokens`' own conformance test), over the one loader and the one dispatcher.
+//! the static-token verifier's own conformance test), over the one loader and the one dispatcher.
 //!
 //! The script drives the INBOUND family, `verify`, the way the host's identity chain calls it
 //! (`busbar_contract::auth_calls::AuthCalls`): ON THE SPOT (ticket-less, on the caller's thread),
@@ -68,6 +68,10 @@
 //! names. A door whose tail's `inbound_points` hold `POINT_HEAD_BODY` is presented each case at
 //! `HeadBody`, with the case's body (none when it names none); every other door at `Head`. The
 //! request facts (method, `conformance.invalid`, path, query, timestamp) are the case's, at either.
+//!
+//! Every leg's dispatcher serves the host's clock (`clock.now`, the kernel's one clock): a door
+//! reading no host credential runs on a host holding none, which answers the wall clock a login's
+//! token expiry is judged at and refuses every other service.
 //!
 //! A door whose tail states `FACT_READS_CREDENTIALS` reads its secret from the host: its leg's
 //! dispatcher serves the host services, `records.secret` from `host_credentials` (the entry's
@@ -148,8 +152,8 @@ pub fn outbound_plant(s: &Subject, arm: fn(&Subject)) {
 }
 
 use super::{
-    bind_far, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    release, tick, validate, Fold, Leg, Recorder, Subject,
+    bind_far, called, close, crossings, dispatcher_serving, input, load, open, output, ready_step,
+    refresh, release, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{now_ns, DispatchConfig, Dispatcher, Done, Frame, Lent, Plugin};
@@ -579,7 +583,7 @@ fn undeclared<I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
 
 /// The secret `records.secret` answers, not live, for an id the host does not hold: busbar's root
 /// answers the kernel's `auth::DUMMY_SECRET`, these bytes.
-const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
+const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
 
 /// One host-held credential: kind, id, secret, live.
 type HeldCredential = (String, String, String, bool);
@@ -1072,9 +1076,12 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
         );
     }
 
+    // THE HOST'S CLOCK (`clock.now`, THE DESIGN §1: the kernel's one clock, served to every
+    // instance): a door reading no host credential is served by a host holding none, which still
+    // answers the wall clock a login's token expiry is judged at.
     let d = match &hosts {
         Some((host, _)) => served_by(host),
-        None => dispatcher(),
+        None => dispatcher_serving(CredentialHost::new(Vec::new())),
     };
     let p = load::<Auth>(s, leg, bind_far(&d, "auth", s)).expect("the auth door loads");
     let mut r = Recorder::new(crossings(&p));

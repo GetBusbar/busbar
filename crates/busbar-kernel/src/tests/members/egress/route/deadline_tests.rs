@@ -249,7 +249,7 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
 
 use super::walk_tests::{real_egress, route_over, RealBreaker};
 
-/// F25 row 33: rehomed from crates/busbar-llm/src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure.
+/// F25 row 33: rehomed from the retired engine crate's src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure.
 /// A STREAMED send to a member that accepts and never sends its head resolves at the stream
 /// ceiling (300 s from the send, past the walk's 120 s budget: 1.5.5 ran a streamed request under
 /// the client ceiling and never the failover deadline), never hangs, is refused 503, and records
@@ -316,7 +316,7 @@ fn cut_after(secs: u64) -> u128 {
     node.clock.now_millis() - started
 }
 
-/// F25 row 35: rehomed from crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier.
+/// F25 row 35: rehomed from the retired engine crate's src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier.
 /// The same silent hole under two configured ceilings: cut at exactly 7 s under 7, and at exactly
 /// 23 s under 23. The cut is the configured total deadline and nothing else: an idle timer would
 /// fire at the same moment in both runs, and the walk's 120 s budget at neither.

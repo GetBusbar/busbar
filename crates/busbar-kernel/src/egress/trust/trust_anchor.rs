@@ -44,9 +44,8 @@ fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Vec<Vec<u8>>>> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Register a set of parsed extra-root `roots`, returning the opaque `trust_anchor_ref` the plane
-/// carries on its [`EgressDesc`](busbar_contract::abi::hot::EgressDesc). The ONLY thing about the anchors that
-/// crosses the seam is this `u64`; the parsed certificates stay host-side in the registry. Registering
+/// Register a set of parsed extra-root `roots`, returning the opaque `trust_anchor_ref` a caller
+/// carries. The ONLY thing about the anchors that crosses the seam is this `u64`; the parsed certificates stay host-side in the registry. Registering
 /// an EMPTY set still mints a live (nonzero) ref — it simply resolves to no extra roots.
 #[must_use]
 pub fn register(roots: Vec<Vec<u8>>) -> u64 {

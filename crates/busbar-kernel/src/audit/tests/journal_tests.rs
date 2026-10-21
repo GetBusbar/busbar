@@ -3,11 +3,8 @@
 
 //! Tests for the generic scope-keyed [`crate::audit::journal::Journal`].
 //!
-//! Proven over a THROWAWAY record type (`Widget`) that exists nowhere else in the tree, so the
-//! journal's behaviour is exercised WITHOUT any plane's record — the whole point of the cleave is
-//! that this machinery is plane-agnostic. The record type is deliberately unlike the real two (a
-//! different scope noun, a different field set) so "a stream costs a record type and an envelope" is
-//! demonstrated rather than assumed from a copy.
+//! Proven over a THROWAWAY record type (`NeutralRec`) that exists nowhere else in the tree, so the
+//! journal's behaviour is exercised WITHOUT any plane's record — this machinery is plane-agnostic.
 //!
 //! The load-bearing properties, each proven the hard way:
 //!  1. **Durability by RESTART.** A write's `Ok` proves nothing; every durability claim writes
@@ -16,86 +13,13 @@
 //!  3. **LRU + store-resume.** An evicted scope resumes from its persisted tail, never forking at 1.
 //!  4. **Tamper is reported, not deleted.** A corrupted stored row restores AND names the break.
 
-use super::{Journal, JournalRecord, NeutralRecord, Restored};
+use super::{Journal, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::plane::store::{decode, encode, PlaneStore};
+use crate::store::plane_view::{decode, encode, PlaneStore};
 use busbar_contract::records::{
-    PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError,
-    RecordStoreResult,
+    PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
 use std::sync::{Arc, Mutex};
-
-// ── THE THROWAWAY RECORD ────────────────────────────────────────────────────────────────────────
-
-/// "tenant `t` moved `amount`" — a chained record for a stream busbar does not have.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct Widget {
-    tenant: String,
-    seq: u64,
-    amount: u64,
-    prev_hash: String,
-    hash: String,
-}
-
-struct WidgetInput {
-    amount: u64,
-}
-
-const KIND_WIDGET: &str = "widget_test";
-
-impl ChainedRecord for Widget {
-    type Input = WidgetInput;
-    const LABELS: &'static ChainLabels = &ChainLabels {
-        chain: "the widget test chain",
-        scope: "tenant",
-    };
-    const FRAMING: Framing = Framing::LengthPrefixed;
-    fn scope_of(&self) -> &str {
-        &self.tenant
-    }
-    fn seq(&self) -> u64 {
-        self.seq
-    }
-    fn prev_hash(&self) -> &str {
-        &self.prev_hash
-    }
-    fn hash(&self) -> &str {
-        &self.hash
-    }
-    fn link(scope: &str, seq: u64, prev_hash: String, input: WidgetInput) -> Self {
-        Widget {
-            tenant: scope.to_string(),
-            seq,
-            amount: input.amount,
-            prev_hash,
-            hash: String::new(),
-        }
-    }
-    fn set_hash(&mut self, hash: String) {
-        self.hash = hash;
-    }
-    fn digest_fields(&self, d: &mut Digest) {
-        d.text(&self.prev_hash)
-            .text(&self.tenant)
-            .num(self.seq)
-            .num(self.amount);
-    }
-}
-
-impl JournalRecord for Widget {
-    const KIND: &'static str = KIND_WIDGET;
-    fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
-        Ok(PlaneRecord {
-            kind: KIND_WIDGET.to_string(),
-            id: self.tenant.clone(),
-            parent: Some(self.tenant.clone()),
-            seq: self.seq,
-            ts: 0,
-            disposition: PlaneDisposition::Active,
-            body: encode(self)?,
-        })
-    }
-}
 
 // ── A WRITABLE MOCK STORE ───────────────────────────────────────────────────────────────────────
 //
@@ -115,15 +39,6 @@ impl MockStore {
     }
     fn set_failing(&self, on: bool) {
         *self.fail_appends.lock().unwrap() = on;
-    }
-    /// Corrupt the first stored row's body so its chain no longer verifies.
-    fn tamper_first(&self) {
-        let mut rows = self.rows.lock().unwrap();
-        if let Some(r) = rows.first_mut() {
-            let mut w: Widget = serde_json::from_slice(&r.body).unwrap();
-            w.amount = w.amount.wrapping_add(1); // a field the digest covers, hash left stale
-            r.body = serde_json::to_vec(&w).unwrap();
-        }
     }
     /// Corrupt the first stored NEUTRAL row's body so its chain no longer verifies, while leaving the
     /// body a perfectly DECODABLE [`super::NeutralBody`] — so the resume reads it back as a real record
@@ -209,134 +124,6 @@ impl PlaneStore for MockStore {
     ) -> RecordStoreResult<bool> {
         Ok(false)
     }
-}
-
-fn write(j: &Journal<Widget>, tenant: &str, amount: u64) -> Widget {
-    j.record(tenant, WidgetInput { amount }).expect("record")
-}
-
-/// Durability by restart: two records written through one journal are read back, chain intact, by a
-/// fresh journal over the same store — and the fresh journal resumes the sequence at 3.
-#[test]
-fn records_survive_a_restart_and_the_chain_verifies() {
-    let store = Arc::new(MockStore::new());
-    let j1: Journal<Widget> = Journal::new(1024);
-    j1.set_sink(store.clone());
-    write(&j1, "acme", 10);
-    write(&j1, "acme", 20);
-    drop(j1);
-
-    let j2: Journal<Widget> = Journal::new(1024);
-    j2.set_sink(store.clone());
-    let restored = j2.restore_from_store(store.as_ref()).unwrap();
-    assert_eq!(
-        restored,
-        Restored {
-            scopes: 1,
-            records: 2,
-            empty_scopes: vec![],
-            unreadable: 0,
-            chain_breaks: vec![],
-        }
-    );
-    assert_eq!(
-        j2.next_seq("acme"),
-        3,
-        "the resumed chain continues, not forks"
-    );
-}
-
-/// The RAM default: with no sink, writes stay in RAM and a restore over an empty store finds nothing.
-/// The honest zero, not a papered-over one.
-#[test]
-fn no_sink_is_ephemeral() {
-    let j: Journal<Widget> = Journal::new(1024);
-    let r = write(&j, "acme", 1);
-    assert_eq!(r.seq, 1);
-    assert_eq!(j.len(), 1);
-    let store = MockStore::new();
-    let restored = j.restore_from_store(&store).unwrap();
-    assert_eq!(
-        restored,
-        Restored::default(),
-        "nothing persisted, nothing restored"
-    );
-}
-
-/// WRITE-ORDERING: a failed durable append must not burn a sequence. The failing write errors and
-/// leaves the position untouched; the retry after the store recovers reuses the same `seq` and the
-/// chain stays contiguous.
-#[test]
-fn a_failed_write_does_not_burn_a_sequence() {
-    let store = Arc::new(MockStore::new());
-    let j: Journal<Widget> = Journal::new(1024);
-    j.set_sink(store.clone());
-    write(&j, "acme", 1); // seq 1, durable
-    assert_eq!(j.next_seq("acme"), 2);
-
-    store.set_failing(true);
-    let err = j.record("acme", WidgetInput { amount: 2 });
-    assert!(
-        err.is_err(),
-        "the durable write failed, so record must surface it"
-    );
-    assert_eq!(
-        j.next_seq("acme"),
-        2,
-        "a failed write left the position where it was — the seq is NOT burned"
-    );
-
-    store.set_failing(false);
-    let r = write(&j, "acme", 2);
-    assert_eq!(
-        r.seq, 2,
-        "the retry reuses the sequence the failed write did not consume"
-    );
-    // And the whole chain, read back fresh, verifies with no gap.
-    let j2: Journal<Widget> = Journal::new(1024);
-    j2.set_sink(store.clone());
-    let restored = j2.restore_from_store(store.as_ref()).unwrap();
-    assert!(restored.chain_breaks.is_empty());
-    assert_eq!(restored.records, 2);
-}
-
-/// LRU + store-resume: with a cap of 2, writing to a third scope evicts the coldest, latches
-/// overflow, and a later write to the evicted scope RESUMES from its persisted tail rather than
-/// forking a second chain at seq 1.
-#[test]
-fn an_evicted_scope_resumes_from_the_store_not_from_seq_one() {
-    let store = Arc::new(MockStore::new());
-    let j: Journal<Widget> = Journal::new(2);
-    j.set_sink(store.clone());
-    write(&j, "a", 1);
-    write(&j, "a", 1); // a: seq 1,2  (most-recently-used)
-    write(&j, "b", 1);
-    write(&j, "c", 1); // inserting c evicts the coldest (b), overflow latches; a and c resident
-    assert_eq!(j.len(), 2);
-
-    // `a` is still resident (it was used after b); write again — continues its own chain.
-    let ra = write(&j, "a", 9);
-    assert_eq!(ra.seq, 3);
-
-    // Force `a` out: touch b then c again so a becomes coldest and is evicted.
-    write(&j, "b", 1); // resumes b from store tail (b had seq 1) -> seq 2
-    write(&j, "c", 1); // c -> seq 2; inserting pushed a out
-                       // Now a is evicted. Its next write must resume from the store (tail seq 3), not reopen at 1.
-    let ra2 = write(&j, "a", 8);
-    assert_eq!(
-        ra2.seq, 4,
-        "the evicted scope resumed from its persisted tail (seq 3) and continued to 4"
-    );
-
-    // The whole `a` chain verifies end to end.
-    let j2: Journal<Widget> = Journal::new(1024);
-    j2.set_sink(store.clone());
-    let restored = j2.restore_from_store(store.as_ref()).unwrap();
-    assert!(
-        restored.chain_breaks.is_empty(),
-        "no fork: {:?}",
-        restored.chain_breaks
-    );
 }
 
 // ── THE NEUTRAL PATH — a record whose durable body is `{seq, prev_hash, hash, content}` ───────────
@@ -663,66 +450,82 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
 #[test]
 fn a_tampered_row_is_reported_and_still_restored() {
     let store = Arc::new(MockStore::new());
-    let j1: Journal<Widget> = Journal::new(1024);
+    let j1: Journal<NeutralRec> = Journal::new(1024);
     j1.set_sink(store.clone());
-    write(&j1, "acme", 10);
-    write(&j1, "acme", 20);
+    write_neutral(&j1, "acme", b"|first");
+    write_neutral(&j1, "acme", b"|second");
     drop(j1);
-    store.tamper_first();
+    store.tamper_first_neutral();
 
-    let j2: Journal<Widget> = Journal::new(1024);
+    let j2: Journal<NeutralRec> = Journal::new(1024);
     j2.set_sink(store.clone());
-    let restored = j2.restore_from_store(store.as_ref()).unwrap();
+    let restored = j2
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
     assert_eq!(restored.chain_breaks.len(), 1, "the tamper is reported");
     assert_eq!(restored.scopes, 1, "and the scope is still restored");
     assert_eq!(j2.next_seq("acme"), 3, "resumed from the tail, not refused");
 }
 
-/// RUNTIME resume-path tamper is SURFACED, not swallowed (typed path). A scope is evicted from the
-/// LRU, its persisted rows are tampered while it is cold, and it is then written to again — which
-/// resumes it from the (now broken) store tail via `resume_missing`. The resume must STILL proceed
-/// (refusing would let anyone who can write the store delete a scope's history), but the break must be
-/// RECORDED, not discarded: `take_resume_breaks` returns it. The regression this pins is the old
-/// `from_persisted(..).unwrap_or_else(|_brk| ..)` that bound the break to `_brk` and dropped it — with
-/// that swallow restored, `take_resume_breaks` stays empty and this test fails.
+/// The RAM default: with no sink, writes stay in RAM and a restore over an empty store finds nothing.
+/// The honest zero, not a papered-over one.
 #[test]
-fn an_evicted_scopes_tampered_tail_surfaces_a_break_on_resume() {
+fn no_sink_is_ephemeral() {
+    let j: Journal<NeutralRec> = Journal::new(1024);
+    let r = write_neutral(&j, "acme", b"|one");
+    assert_eq!(r.seq, 1);
+    assert_eq!(j.len(), 1);
+    let store = MockStore::new();
+    let restored = j
+        .restore_scoped(KIND_NEUTRAL, &store, &neutral_reframe)
+        .unwrap();
+    assert_eq!(
+        restored,
+        Restored::default(),
+        "nothing persisted, nothing restored"
+    );
+}
+
+/// LRU + store-resume: with a cap of 2, writing to a third scope evicts the coldest, latches
+/// overflow, and the next write to the evicted scope RESUMES from its persisted tail rather than
+/// forking a second chain at seq 1.
+#[test]
+fn an_evicted_scope_resumes_from_the_store_not_from_seq_one() {
     let store = Arc::new(MockStore::new());
-    let j: Journal<Widget> = Journal::new(1); // cap 1 → the next scope evicts this one
+    let j: Journal<NeutralRec> = Journal::new(2);
     j.set_sink(store.clone());
+    write_neutral(&j, "a", b"|1");
+    write_neutral(&j, "a", b"|1"); // a: seq 1,2  (most-recently-used)
+    write_neutral(&j, "b", b"|1");
+    write_neutral(&j, "c", b"|1"); // inserting c evicts the coldest (b), overflow latches
+    assert_eq!(j.len(), 2);
 
-    write(&j, "acme", 10); // acme seq 1, durable and cached
-    write(&j, "other", 1); // inserting `other` evicts `acme`, latching overflow
-    assert_eq!(j.len(), 1, "cap 1: only the most-recent scope is cached");
-    assert!(
-        j.take_resume_breaks().is_empty(),
-        "no break yet — nothing has been resumed"
-    );
+    // `a` is still resident (it was used after b); write again — continues its own chain.
+    assert_eq!(write_neutral(&j, "a", b"|9").seq, 3);
 
-    // Tamper acme's cold persisted row (its is the first stored row).
-    store.tamper_first();
-
-    // Write acme again: it is evicted, so this resumes it from the tampered store tail.
-    let resumed = write(&j, "acme", 20);
+    // Force `a` out: touch b then c again so a becomes coldest and is evicted.
+    write_neutral(&j, "b", b"|1"); // resumes b from store tail (b had seq 1) -> seq 2
+    write_neutral(&j, "c", b"|1"); // c -> seq 2; inserting pushed a out
+    let ra2 = write_neutral(&j, "a", b"|8");
     assert_eq!(
-        resumed.seq, 2,
-        "the resume STILL proceeds from the tail — service is not refused"
+        ra2.seq, 4,
+        "the evicted scope resumed from its persisted tail (seq 3) and continued to 4"
     );
 
-    let breaks = j.take_resume_breaks();
-    assert_eq!(
-        breaks.len(),
-        1,
-        "the runtime resume-path tamper must be RECORDED, not swallowed (this is the fix): {breaks:?}"
-    );
+    // The whole store verifies end to end.
+    let j2: Journal<NeutralRec> = Journal::new(1024);
+    let restored = j2
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
     assert!(
-        j.take_resume_breaks().is_empty(),
-        "the breaks were TAKEN — a second drain is empty, so each is reported once"
+        restored.chain_breaks.is_empty(),
+        "no fork: {:?}",
+        restored.chain_breaks
     );
 }
 
 /// RUNTIME resume-path tamper is SURFACED on the NEUTRAL path too (`append_scoped` → `resume_scoped`).
-/// Same shape as the typed test: evict a scope, tamper its cold rows (kept DECODABLE so the failure is
+/// Evict a scope, tamper its cold rows (kept DECODABLE so the failure is
 /// a chain break rather than an unreadable row), append to it again, and assert the break is recorded
 /// via `take_resume_breaks` while the append still lands.
 #[test]
@@ -763,7 +566,7 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =
         Arc::new(crate::governance::MemoryStore::new());
-    let plane_store = crate::plane::store::PlaneStoreView::narrow(store.clone());
+    let plane_store = crate::store::plane_view::PlaneStoreView::narrow(store.clone());
     let j: Journal<NeutralRec> = Journal::new(1024);
     j.set_sink(plane_store);
     write_neutral(&j, "acme", b"|fresh");
@@ -793,8 +596,8 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
 /// paths short-circuit to a fresh seq-1 chain while `overflowed` is false. On a `usize::MAX` stream —
 /// the cap `journal_register` hardcodes for every ABI-registered stream, whose LRU therefore never
 /// latches it — a forget-then-append minted a SECOND seq-1 row beside the store's seq 1..N, and every
-/// later restore reported busbar's own write as a chain break. Both paths (neutral and typed) must
-/// instead resume from the persisted tail, and the store's chain must still verify end to end.
+/// subsequent restore reported busbar's own write as a chain break. The append must instead resume from
+/// the persisted tail, and the store's chain must still verify end to end.
 #[test]
 fn a_forgotten_scope_on_an_uncapped_stream_resumes_from_the_store_not_seq_one() {
     let store = Arc::new(MockStore::new());
@@ -816,26 +619,6 @@ fn a_forgotten_scope_on_an_uncapped_stream_resumes_from_the_store_not_seq_one() 
         restored.chain_breaks.is_empty(),
         "no fork: {:?}",
         restored.chain_breaks
-    );
-
-    // The typed twin (`resume_missing`) carries the same short-circuit and the same cure.
-    let typed_store = Arc::new(MockStore::new());
-    let t: Journal<Widget> = Journal::new(usize::MAX);
-    t.set_sink(typed_store.clone());
-    write(&t, "acme", 1);
-    t.forget("acme");
-    assert_eq!(
-        write(&t, "acme", 2).seq,
-        2,
-        "the typed resume continued the persisted chain"
-    );
-    let typed = Journal::<Widget>::new(usize::MAX)
-        .restore_from_store(typed_store.as_ref())
-        .unwrap();
-    assert!(
-        typed.chain_breaks.is_empty(),
-        "no typed fork: {:?}",
-        typed.chain_breaks
     );
 
     // Without a sink there is no durable log to fork: a fresh chain stays the honest answer.

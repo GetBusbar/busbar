@@ -439,6 +439,41 @@ impl Drop for Lease {
     }
 }
 
+/// THE INSTANCE'S READ BUFFERS: the [`READ_CHUNK`]-sized buffers its wire ops read into, made once
+/// and reused, so an op's read allocates nothing once the instance has made one (THE DESIGN, the
+/// plugin ABI: "no allocation and no blocking on the hot path"). An op takes one on its first read,
+/// keeps it across a PENDING answer, and gives it back when it answers. The list holds at most as
+/// many as ran at once, and never more than [`READ_BUFS_KEPT`].
+#[derive(Debug, Default)]
+pub(crate) struct ReadBufs(Mutex<Vec<Vec<u8>>>);
+
+/// The most read buffers an instance keeps between ops.
+const READ_BUFS_KEPT: usize = 64;
+
+impl ReadBufs {
+    /// A kept buffer, or a new one when none is free.
+    fn take(&self) -> Vec<u8> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .unwrap_or_else(|| vec![0_u8; READ_CHUNK])
+    }
+
+    /// A buffer for an op with no instance to keep it (a detached op).
+    fn fresh() -> Vec<u8> {
+        vec![0_u8; READ_CHUNK]
+    }
+
+    /// Keep `buf` for the next op (dropped past [`READ_BUFS_KEPT`]).
+    fn give(&self, buf: Vec<u8>) {
+        let mut kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.len() < READ_BUFS_KEPT {
+            kept.push(buf);
+        }
+    }
+}
+
 /// What [`drive`] parks on the op's ticket across a PENDING answer.
 struct Running<T> {
     body: Mutex<Body<T>>,
@@ -446,6 +481,8 @@ struct Running<T> {
     pool: Option<Arc<Pool>>,
     /// The op's claim on one of the set's connections.
     lease: Mutex<Option<Lease>>,
+    /// The read buffer the op took on its first read, kept across a PENDING answer.
+    buf: Mutex<Option<Vec<u8>>>,
 }
 
 /// RUN `start`'s body over the op's own connection, across the op's entries: a fresh entry starts
@@ -490,12 +527,17 @@ fn run<T: 'static>(
                 wire,
                 pool: pool.cloned(),
                 lease: Mutex::new(None),
+                buf: Mutex::new(None),
             }
         }
     };
     let waker = Waker::noop();
     let mut poll_cx = Context::from_waker(waker);
-    let mut buf = vec![0_u8; READ_CHUNK];
+    let mut buf = running
+        .buf
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
     loop {
         let polled = running
             .body
@@ -505,6 +547,9 @@ fn run<T: 'static>(
             .poll(&mut poll_cx);
         if let Poll::Ready(t) = polled {
             finish(cx, &running);
+            if let (Some(b), Some(reads)) = (buf.take(), cx.reads()) {
+                reads.give(b);
+            }
             return Step::Ready(t);
         }
         let ask = running.wire.state().ask.clone();
@@ -516,7 +561,18 @@ fn run<T: 'static>(
             Bound::Passed => Served::Answer(Err(ConnFailure::Failed(
                 crate::conn::ConnError::Timeout.text().to_owned(),
             ))),
-            _ => serve(cx, &running, &ask, &mut buf),
+            _ => {
+                // Only a read reads into the buffer: it is taken on the op's first read.
+                let read = if matches!(ask, Ask::Read) {
+                    buf.get_or_insert_with(|| {
+                        cx.reads().map_or_else(ReadBufs::fresh, ReadBufs::take)
+                    })
+                    .as_mut_slice()
+                } else {
+                    &mut []
+                };
+                serve(cx, &running, &ask, read)
+            }
         };
         let served = match (served, bound) {
             // A pend under a bound comes back at the bound at the latest.
@@ -537,6 +593,7 @@ fn run<T: 'static>(
                 st.answer = Some(a);
             }
             Served::Pending { wake_at_ns } => {
+                *running.buf.lock().unwrap_or_else(PoisonError::into_inner) = buf;
                 cx.park(running);
                 return Step::Pending { wake_at_ns };
             }

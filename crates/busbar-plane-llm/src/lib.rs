@@ -38,6 +38,13 @@ pub mod plane;
 pub mod plane_door;
 pub mod refusal;
 
+/// THE PLANE'S DECLARED METADATA (`declares.json`): the `declares` section its signed tarball carries
+/// and the one the composition root reads for its linked door (`linked-declares`), one file for both
+/// — the transport scheme it needs and every code its catalog holds
+/// ([`codec::diagnostics::DIAGNOSTICS`]; a test holds the two equal), so the host's catalogue learns
+/// this plane's codes from its door's declaration whichever way the plane came in.
+pub const DECLARES: &str = include_str!("../declares.json");
+
 use busbar_contract::ids::LaneId;
 use busbar_contract::ir::egress_prep::LaneCaps;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

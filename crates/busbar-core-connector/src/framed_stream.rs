@@ -127,12 +127,21 @@ impl FramedStream {
     }
 
     /// End the stream refused: `bytes` and the refusal's neutral `status`; the closing field block.
+    /// `head_sent` = the host already sent the stream's response head, so the block is closing
+    /// lines only; otherwise it is the whole answer.
     ///
     /// # Errors
     ///
     /// The framer refused to render it, or its block is no field lines.
-    pub fn refuse(&mut self, bytes: &[u8], status: u32) -> Result<Vec<HeadWords>, Refused> {
-        let y = self.framing.refuse(Some(STREAM), bytes, status)?;
+    pub fn refuse(
+        &mut self,
+        bytes: &[u8],
+        status: u32,
+        head_sent: bool,
+    ) -> Result<Vec<HeadWords>, Refused> {
+        let y = self
+            .framing
+            .refuse(Some(STREAM), bytes, status, head_sent)?;
         closing(&y)
     }
 

@@ -6,7 +6,8 @@
 //! no longer serves. Behavior is byte-identical; only the crate they live in changed.
 
 use axum::Router;
-use busbar_kernel::auth::X_ADMIN_TOKEN;
+/// The operator credential's second line, as the linked operator plugin states it.
+const X_ADMIN_TOKEN: &str = "x-admin-token";
 
 /// A present-but-blank `x-admin-token` must be rejected on
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
@@ -237,7 +238,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     // Mint a key through the admin API using the operator admin token.
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header(busbar_kernel::auth::X_ADMIN_TOKEN, "admintok")
+        .header(X_ADMIN_TOKEN, "admintok")
         .header("content-type", "application/json")
         .body(serde_json::json!({"name": "minted-via-admin"}).to_string())
         .send()
@@ -251,7 +252,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     // Wrong admin token → 401 (admin gate still enforced).
     let bad = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header(busbar_kernel::auth::X_ADMIN_TOKEN, "nope")
+        .header(X_ADMIN_TOKEN, "nope")
         .header("content-type", "application/json")
         .body(serde_json::json!({"name": "x"}).to_string())
         .send()

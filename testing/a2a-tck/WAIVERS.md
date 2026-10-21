@@ -216,16 +216,17 @@ Three independent blockers stand in front of these requirements, in this order:
 1. **THE SCHEME, and it is decided before any address is looked at.** `tck/webhook/server.py`
    builds its URL as `f"http://{webhook_host}:{self.port}/webhook"` — the scheme is a literal and
    the only knob the suite exposes is `--webhook-host`, which substitutes the HOST. busbar refuses a
-   plaintext webhook: `a2a::pushnotify::structural_check` tests the scheme first and returns
-   `Scheme("http")` before the host is parsed for ranges, which the unit test
-   `plaintext_is_refused_and_there_is_no_argument_that_relaxes_it` pins against a PUBLIC address.
-   This refusal is now STRUCTURAL rather than defaulted: the `allow_plaintext` parameter that
-   `structural_check`, `validate` and `revalidate` used to take is DELETED, so there is no argument
-   through which any caller — let alone any config key — could relax it. (It never had a
-   configuration path either: `A2aPlane` built `FetchPolicy::default()` and only `allow_private` was
-   lowered per registration by `fetch_policy_for`. The parameter was an escape hatch nothing was
-   wired to, which is why removing it changes no behaviour and no count.) **A topology change cannot
-   reach this refusal, and neither can a configuration change.**
+   plaintext webhook, and the plane does not decide that. The plane holds no guard, no resolver and
+   no socket: `busbar-plane-a2a`'s `local::judge_callback` asks the host's ONE destination judge
+   (`dest.judge`) and only WORDS the verdict, rendering `DEST_PLAINTEXT` / `DEST_SCHEME` as the text
+   above. The decision is the connector's: `GuardJudge::named`
+   (`crates/busbar-core-connector/src/process.rs`) refuses a non-https destination under the
+   open-web egress class a push callback declares, before the host is judged for ranges
+   (BUSBAR-1.6.0.md, the destination guard: "Every outbound connection of any kind (...
+   webhooks, ...) is checked in ONE place, the connector"). No config key reaches that arm: the egress class
+   of a push callback is the plane's declared need (`door_statement::NEEDS`), not an operator
+   setting. **A topology change cannot reach this refusal, and neither can a configuration
+   change.**
 2. ~~**The caller's credential is never stored, so it can never be echoed.**~~ **BUILT — blocker
    removed.** `PUSH-DELIVER-001` asserts the delivery carries `Authorization: <scheme>
    <credentials>` from the config's `authentication` member, and busbar used to drop that member at
@@ -258,11 +259,10 @@ reason rather than for this number — which is why fixing them moved this numbe
 the expected outcome and is recorded so nobody reads the unchanged red as the fix not landing.
 
 **WHAT IS NOT DONE ABOUT IT, DELIBERATELY.** Nothing here is made green by relaxing a control.
-`a2a/pushnotify.rs` is byte-identical to the commit under test: no `allow_private` for webhooks, no
-loopback exemption, no conformance-only flag, and the unconditional cloud-metadata refusal
-untouched. The alternative — patching the pinned TCK so its receiver advertises `https` — would
-change the instrument to suit the subject, which is the failure mode this whole directory exists to
-refuse.
+The connector's destination judge carries no `allow_private` for webhooks, no loopback exemption,
+no conformance-only flag, and the unconditional cloud-metadata refusal untouched. The alternative
+— patching the pinned TCK so its receiver advertises `https` — would change the instrument to
+suit the subject, which is the failure mode this whole directory exists to refuse.
 
 **WHAT WOULD RETIRE THIS WAIVER**, in the order the checks fire:
 
@@ -276,10 +276,11 @@ refuse.
 3. ~~Wrapping the delivered document in the `StreamResponse` envelope.~~ DONE.
 4. THEN the topology, which is real and is still needed: the receiver binds `0.0.0.0` already, so it
    is `--webhook-host` plus a rig where busbar sees a genuinely public address — busbar and the
-   suite in two containers on a docker network whose subnet is outside every range
-   `net_guard::ip_is_internal` refuses. The host's own addresses do not qualify and must not be
-   argued into qualifying: `10.144.x` is RFC1918, `192.168.x` is RFC1918, the TEST-NET blocks are
-   `is_documentation()`, and `100.64/10` is CGNAT — the guard refuses all of them, correctly.
+   suite in two containers on a docker network whose subnet is outside every range the connector's
+   destination guard (`crates/busbar-core-connector/src/guard.rs`) refuses. The host's own
+   addresses do not qualify and must not be argued into qualifying: `10.144.x` is RFC1918,
+   `192.168.x` is RFC1918, the TEST-NET blocks are `is_documentation()`, and `100.64/10` is
+   CGNAT — the guard refuses all of them, correctly.
 
 Until then the release ships with these three RED and says so.
 

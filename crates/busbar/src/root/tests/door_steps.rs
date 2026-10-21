@@ -282,14 +282,15 @@ fn a_pool_members_tier_is_read_off_its_member() {
 /// is core-owned). RED before the tier: every member written bare, all at tier `0`, rotated.
 #[test]
 fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_names() {
-    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [(
-        "twins".to_string(),
-        busbar_kernel::failover::CandidatePoolCfg {
-            members: vec!["b".to_string(), "a".to_string()],
-            repeatable: vec!["read".to_string()],
-        },
-    )]
-    .into();
+    let stated: std::collections::BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg> =
+        [(
+            "twins".to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: vec!["b".to_string(), "a".to_string()],
+                repeatable: vec!["read".to_string()],
+            },
+        )]
+        .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
     let p = DoorPools::of(&section);
@@ -538,6 +539,19 @@ fn charge_once(
     pool: &str,
     unit: u64,
 ) -> Charged {
+    charge_once_at(app, key, pools, pool, unit, busbar_kernel::store::now())
+}
+
+/// [`charge_once`], the unit having arrived at `arrived` (epoch seconds): the instant the door
+/// hands its money steps (`DoorCaller::arrived`, the node's one arrival reading).
+fn charge_once_at(
+    app: &std::sync::Arc<busbar_kernel::state::App>,
+    key: &std::sync::Arc<busbar_contract::records::VirtualKey>,
+    pools: &DoorPools,
+    pool: &str,
+    unit: u64,
+    arrived: u64,
+) -> Charged {
     use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
     let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
     let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
@@ -555,7 +569,7 @@ fn charge_once(
             principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
             key: Some(std::sync::Arc::clone(key)),
             open: false,
-            arrived: busbar_kernel::store::now(),
+            arrived,
             records: None,
             depth: 0,
             credential: None,
@@ -1123,6 +1137,31 @@ fn a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_
     assert!(sealed_settings(b"[1]", "https://x", &serde_json::json!({})).is_err());
 }
 
+/// THE SIGNING REGION IS THE DIALLED HOST'S. The dialling stack ends a web URL's authority at a
+/// `\` as at a `/`, so `https://svc-runtime.us-west-2.amazonaws.com\@svc-runtime.eu-west-1...`
+/// dials `us-west-2`, and the region the request is signed for must be read off that same host
+/// (v1.5.5's `host_from_base` folded the `\` first). RED before the one authority split: the
+/// region was read past the `\`, off the text after the `@`, and the signature named a region
+/// the request never reached.
+#[test]
+fn the_signing_region_is_read_off_the_host_the_request_dials() {
+    use super::sealed_settings;
+    let params = br#"{"region":{"host_label_after":["svc-runtime"],"default":"us-east-1"}}"#;
+    for base_url in [
+        "https://svc-runtime.us-west-2.amazonaws.com\\@svc-runtime.eu-west-1.amazonaws.com/",
+        "https://svc-runtime.us-west-2.amazonaws.com\\x@svc-runtime.eu-west-1.amazonaws.com",
+    ] {
+        let dialled = busbar_contract::net::url_host(base_url).expect("the base URL reads a host");
+        assert_eq!(dialled, "svc-runtime.us-west-2.amazonaws.com", "{base_url}");
+        let sealed =
+            sealed_settings(params, base_url, &serde_json::json!({})).expect("the parameters seal");
+        assert_eq!(
+            sealed["region"], "us-west-2",
+            "{base_url}: the region is the dialled host's"
+        );
+    }
+}
+
 // ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
 
 /// One open's head fields: `(name, value)`, in the order received.
@@ -1142,6 +1181,27 @@ pub(crate) struct TokenEndpoint {
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.
     answer: Option<fn(&str) -> String>,
+    /// How many exchanges the plugin closed: it closes each one once it has read the token, the
+    /// event a test waits on for a mint (never the wall clock, Law 8; row 176).
+    closes: std::sync::Mutex<usize>,
+    /// Told on each close.
+    closing: tokio::sync::Notify,
+}
+
+impl TokenEndpoint {
+    /// Until the plugin has closed `n` exchanges with this endpoint: the `n`th mint has read its
+    /// token, which the plugin stores in the same crossing.
+    async fn closed(&self, n: usize) {
+        loop {
+            let notified = self.closing.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if *self.closes.lock().unwrap() >= n {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 /// What one open carried: the need, the target, the head target, the body.
@@ -1298,7 +1358,10 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         id: busbar_contract::conn::ConnId,
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.replies.lock().unwrap().remove(&id);
-        self.slab.remove(c, id).map(|_| ())
+        let closed = self.slab.remove(c, id).map(|_| ());
+        *self.closes.lock().unwrap() += 1;
+        self.closing.notify_waiters();
+        closed
     }
 }
 
@@ -1315,11 +1378,22 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 }
 
 /// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
-/// its mint connections declared and opened over `table`.
+/// its mint connections declared and opened over `table`, on a dispatcher serving the host services
+/// the root's own does at boot (`root::dispatch::dispatcher`: [`crate::root::serve::LateServices`],
+/// whose `clock.now` is the kernel's clock before any install). ROW 176: a dispatcher serving none
+/// refuses the plugin's `clock.now`, so its `drive` clock never moves past its last `tick`; a mint
+/// that lands on a `drive` (its binding opened after the first `tick`) then never comes due for its
+/// refresh until the next `tick`, half a minute on.
 fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::with_services(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        crate::root::serve::LateServices::new(),
     ));
+    assert!(
+        dispatcher.host_services().is_some(),
+        "the plugin's clock is the host's: a dispatcher serving no host services answers no \
+         `clock.now`"
+    );
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -1425,21 +1499,32 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             table.declared.lock().unwrap()
         );
 
-        // The first request waits for the first mint (no empty credential), then carries it.
-        let first = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            binding
-                .auth
-                .fields(binding.handle, FieldsRequest::default(), 0),
-        )
-        .await
-        .expect("the first mint lands");
-        assert_eq!(
-            presented(Some(&first)).as_deref(),
-            Some("Bearer oracle-minted-1")
-        );
+        // Before the first mint lands a request carries no credential, as 1.5.5's bearer sent none
+        // in its boot window (v1.5.5 `egress_auth/bearer_token.rs:84-98`); once it lands, every
+        // request carries it.
+        // Each wait is on the endpoint's close of the mint's exchange (the plugin stores the token in
+        // that same crossing), never on the wall clock (Law 8; row 176). HANG_GUARD only turns a
+        // mint that never lands into a failure rather than a hung suite.
+        const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+        let first = tokio::time::timeout(HANG_GUARD, async {
+            table.closed(1).await;
+            loop {
+                let now = binding
+                    .auth
+                    .fields_now(binding.handle, &FieldsRequest::default());
+                match presented(now.as_ref()).as_deref() {
+                    Some("Bearer oracle-minted-1") => return,
+                    None => {}
+                    other => panic!("only the first minted bearer, or none yet: {other:?}"),
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(first.is_ok(), "the first minted bearer is presented");
         // The refresh lands ahead of the first token's expiry; the next request carries it.
-        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let refreshed = tokio::time::timeout(HANG_GUARD, async {
+            table.closed(2).await;
             loop {
                 let now = binding
                     .auth
@@ -1447,7 +1532,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await;
@@ -1797,9 +1882,21 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
         auth.fields(handle, FieldsRequest::default(), 0),
     )
     .await
-    .expect("the first mint lands");
+    .expect("the first ask answers");
+    // With the host's clock served (row 176), the first ask can answer before the mint it set off
+    // has landed. The mint is then waited on at the endpoint's close of its exchange (the plugin
+    // stores the token in that same crossing), never on the wall clock (Law 8), as
+    // `a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer` waits on it.
+    let first = if presented(Some(&first)).is_some() {
+        Some(first)
+    } else {
+        tokio::time::timeout(std::time::Duration::from_secs(120), table.closed(1))
+            .await
+            .expect("the first mint lands");
+        auth.fields_now(handle, &FieldsRequest::default())
+    };
     assert_eq!(
-        presented(Some(&first)).as_deref(),
+        presented(first.as_ref()).as_deref(),
         Some("Bearer oracle-minted-1")
     );
     assert!(table
@@ -1911,7 +2008,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 /// in) and bound through the loader's one load, its need declared on the connector, exactly as its
 /// linked row binds it. The dropped-in fold of the same door is the plane crate's own
 /// conformance suite (`tests/conformance.rs`, one transcript through both loads).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod tool_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -4207,7 +4304,7 @@ pub(crate) mod tool_door {
 /// THE DOOR PLANE'S BOUNDARY, AT THE COMPOSITION ROOT (ARCHITECT Q-L3B-KHARNESS: a door plane's
 /// claims are mounted by the composition root at the data router's construction, Q-SW1, so these
 /// assertions live where the mount does; the kernel keeps no HOT-route assumption).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod door_boundary {
     use std::sync::Arc;
 
@@ -4224,7 +4321,7 @@ pub(crate) mod door_boundary {
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
     pub(crate) fn row() -> &'static PlaneDecl {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
-        busbar_kernel::plane::door::fold(
+        busbar_kernel::plane_driver::door::fold(
             registration(linked_probe(
                 super::tool_door::line_door(),
                 "door-boundary-row",
@@ -4269,11 +4366,11 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
-        let tools = busbar_kernel::plane::door::DoorSection::new(row.config_section, value);
+        let tools = busbar_kernel::plane_driver::door::DoorSection::new(row.config_section, value);
+        let defs = tools.as_defs();
         (row.build)(&BuildCtx {
             endpoint_slot: None,
-            agent_defs: &(),
-            tool_defs: &tools,
+            plane_defs: &defs,
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,
@@ -4314,6 +4411,132 @@ pub(crate) mod door_boundary {
         }
     }
 
+    /// THE MODEL PLANE'S HALF OF THE BOUNDARY: the door that serves the `pools` map, composed as
+    /// production composes it ([`crate::root::serve::hook_seat_tests::rig`]), its key minted on the
+    /// same signing secret as this module's rig. A sibling of that key bound to `audience` (the tool
+    /// door's resource) is no credential on any guarded route of that router; its plain sibling is
+    /// admitted on each. Returns every guarded path walked, as requested.
+    #[cfg(linked_driver_proofs)]
+    async fn pools_door_walk(audience: &str) -> Vec<String> {
+        use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
+        let instance = "door-boundary-pools";
+        let _published = Published(instance);
+        let rig = pools_rig(
+            instance,
+            RigOpts {
+                members: &[(1, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+        let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+        let generation = verifier
+            .verify(&rig.token, 1_700_000_000, None)
+            .expect("plain claims")
+            .generation;
+        let bound = signer.mint_for_audience(
+            &rig.key_id,
+            4_000_000_000,
+            generation.as_deref(),
+            audience,
+            Some("client-1"),
+        );
+        // A route pattern as one concrete request path: a capture is any non-empty segment, and a
+        // pattern this cannot render PANICS rather than being skipped.
+        fn concrete(pattern: &str) -> String {
+            let mut out = String::new();
+            for seg in pattern.split('/').skip(1) {
+                out.push('/');
+                if seg.starts_with('{') && seg.ends_with('}') {
+                    out.push_str(match seg {
+                        "{name}" => "p",
+                        "{provider}" => "oai0",
+                        "{model}" => "m0",
+                        s if s.starts_with("{*") => "probe",
+                        other => panic!(
+                            "route pattern segment {other} has no fixture value: give it one, \
+                             never skip the route"
+                        ),
+                    });
+                } else {
+                    out.push_str(seg);
+                }
+            }
+            if out.is_empty() {
+                "/".to_string()
+            } else {
+                out
+            }
+        }
+        let body = serde_json::json!({
+            "model": "p",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16
+        });
+        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        routes.extend(rig.door_table.iter().cloned());
+        let mut walked: Vec<String> = Vec::new();
+        for (pattern, verb, auth) in &routes {
+            if *auth == RouteAuth::None {
+                continue;
+            }
+            let path = concrete(pattern);
+            let (anon, _, _) = rig.send_bare(verb, &path, Some(body.clone()), &[]).await;
+            let header = format!("Bearer {bound}");
+            let (with_bound, _, _) = rig
+                .send_bare(
+                    verb,
+                    &path,
+                    Some(body.clone()),
+                    &[("authorization", header.as_str())],
+                )
+                .await;
+            assert_eq!(
+                with_bound, anon,
+                "an audience-bound door token is no credential on {verb} {path}"
+            );
+            let (plain, _, _) = rig.send(verb, &path, Some(body.clone())).await;
+            assert_ne!(
+                plain, anon,
+                "the plain sibling is admitted on {verb} {path}"
+            );
+            walked.push(path);
+        }
+        // THE 1.5.5 CONVENIENCE PATHS (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`),
+        // served through the door's `/` claim: an anonymous caller is refused 401, the bound
+        // sibling is no credential, and a keyed caller is admitted (moved here, unchanged, from the
+        // kernel's walk in `crates/busbar/tests/plane_integration.rs`, whose router no longer mounts
+        // them).
+        for path in ["/p/v1/messages", "/oai0/m0/v1/messages"] {
+            let (anon, _, _) = rig.send_bare("POST", path, Some(body.clone()), &[]).await;
+            assert_eq!(
+                anon, 401,
+                "an anonymous caller is refused on the convenience route POST {path}"
+            );
+            let header = format!("Bearer {bound}");
+            let (with_bound, _, _) = rig
+                .send_bare(
+                    "POST",
+                    path,
+                    Some(body.clone()),
+                    &[("authorization", header.as_str())],
+                )
+                .await;
+            assert_eq!(
+                with_bound, anon,
+                "an audience-bound door token is no credential on POST {path}"
+            );
+            let (plain, _, _) = rig.send("POST", path, Some(body.clone())).await;
+            assert!(
+                plain != 401 && plain != 403,
+                "a keyed caller is admitted on the convenience route POST {path}: {plain}"
+            );
+            walked.push(path.to_string());
+        }
+        walked
+    }
+
     /// THE PLANE-BOUNDARY RATCHET (1.6.0), driven by the ROUTER TABLE rather than by a hand-listed
     /// sample: an access token minted for the door plane's resource is admissible on that plane and
     /// nowhere else. The walk covers every core route the kernel mounts and every route the
@@ -4324,6 +4547,9 @@ pub(crate) mod door_boundary {
     /// here; `declared_public` is the mirror ratchet: a route mounted `RouteAuth::None` answers
     /// everyone, so adding one must be a deliberate act that shows up here. The test's NAME is pinned
     /// by `qa/design-bindings.json` (PB-33) and the structure-lint choke-point table.
+    // Its model-plane half walks the door that serves the `pools` map, composed by the driver-proofs
+    // rig, so the cell is compiled where that rig is.
+    #[cfg(linked_driver_proofs)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition() {
         let _one = PUBLISHING.lock().await;
@@ -4526,13 +4752,33 @@ pub(crate) mod door_boundary {
             door_checked > 0,
             "the door's half of the boundary was asserted"
         );
-        // The kernel's own guarded routes (`/stats`, `/v1/models`, `/v1beta/models`): the convenience
-        // body-ingress routes are a plane's and mount only where a plane installs body ingress (the
-        // kernel owns no route that exists for one plugin, BUSBAR-1.6.0.md l.4093), which this rig
-        // does not; a door claims its own paths and is walked in the door arm above.
+        // THE MODEL PLANE'S ROUTES, served by the door that serves the `pools` map: the 1.5.5
+        // convenience paths (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`) and the
+        // list-models routes (`/v1/models`, `/v1beta/models`, ARCHITECT 2026-10-16 3b C) are that
+        // door's claims, its `/` claim catching every path no more specific claim takes (DEV-GREEN
+        // row 83). The same binding's audience-bound sibling buys exactly nothing on any of them, and
+        // its plain sibling is admitted: walked over the data router built with that door's claims.
+        let moved = pools_door_walk(&audience).await;
+        checked += moved.len();
+        // THE FOUR ROUTES THAT MOVED onto that door are each walked guarded, by name: the floor that
+        // counted them on the kernel's router counts them here, and a route the door no longer
+        // guards (or no longer serves) is red, never absorbed by a count of the others.
+        for path in [
+            "/v1/models",
+            "/v1beta/models",
+            "/p/v1/messages",
+            "/oai0/m0/v1/messages",
+        ] {
+            assert!(
+                moved.iter().any(|walked| walked == path),
+                "{path} moved onto the pools door and must be walked guarded there: {moved:?}"
+            );
+        }
+        // The guarded routes beside the door's own: the kernel's (`/stats`) and the model plane's
+        // door's four moved routes, so the floor is the four plus the kernel's own.
         assert!(
-            checked >= 3,
-            "the walk covered only {checked} guarded core routes — it is not seeing the router"
+            checked >= 5,
+            "the walk covered only {checked} guarded routes — it is not seeing the router"
         );
         for path in &boot_plugin_paths {
             let url = format!("http://{addr}{path}");
@@ -4818,7 +5064,7 @@ pub(crate) mod door_boundary {
 /// A fleet is two compositions reading one governance book (one key registry, one signing key),
 /// each binding its own handle on one durable journal; a restart is a composition dropped and a
 /// fresh one on the same journal.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod spent_ledger {
     use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
 
@@ -5082,7 +5328,7 @@ mod spent_ledger {
 /// sampling ask reaches the caller with `inputRequests` verbatim under busbar's sealed state; the
 /// caller's retry goes back to the member that asked, carrying the caller's answers and the
 /// upstream's own state verbatim; a forged state and an ungranted ask are refused.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod upstream_ask_relay {
     use std::sync::Arc;
 
@@ -5226,7 +5472,7 @@ mod upstream_ask_relay {
 }
 
 /// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 #[path = "door_listen.rs"]
 mod door_listen;
 
@@ -5234,7 +5480,7 @@ mod door_listen;
 /// task-supporting `tools/call` is answered with a task, its continuation runs as a nested unit of
 /// the plane's own claim WITHOUT any poll, after the creating unit has exited, and `tasks/get`,
 /// `tasks/cancel` and the `-32021` gate answer as the served engine's tasks did.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod task_continuation {
     use busbar_kernel::governance::{NewKeySpec, PLANE_LANE_SEP};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -5993,7 +6239,7 @@ mod task_continuation {
 /// `hook_tap_tests`), each scenario driven through the door's composition: the same hook documents
 /// (`kind: gate` on the hermetic test cdylib), the same attaches (`tools.hooks`, the section-level
 /// list every server takes), the same verdicts, read off the far end the door dials.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod hook_parity {
     use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
@@ -6351,7 +6597,7 @@ pub(crate) mod hook_parity {
 /// and its script, inline here), one long-lived child per registration, greeted once, its every
 /// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its
 /// own request — on that one child, correlated by id.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod program_member {
     use axum::http::StatusCode;
 
@@ -6478,7 +6724,7 @@ pub(crate) mod program_member {
 /// busbar's sealed state (correlated with `work.*`); the caller's retry writes its answer to the
 /// child under the child's own id and the call the child still owed is answered; a partial answer,
 /// a spent state and a forged one are refused; an ungranted ask is refused on the child's input.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod program_member_ask {
     use axum::http::StatusCode;
 
@@ -8053,5 +8299,237 @@ fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
         super::owned_anchor_refusal("agent_push.ca", &ca),
         Ok(()),
         "the rule itself takes the CA"
+    );
+}
+
+/// RESTART-TO-APPLY, THE ROOT'S HALF (u67 BLOCK 2 item 2; BUSBAR-1.6.0.md Law 7 l.547): the root's
+/// rules name a door plane the boot left unopened as awaiting restart exactly when a configuration
+/// writes its declaring section, and never a plane the boot opened (one it does not hold). The
+/// list is sorted, so the answer that reports it is stable. RED before the fix: the rules held no
+/// unopened plane, so an apply that first wrote one's section reported nothing.
+#[test]
+fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_section() {
+    use busbar_kernel::appbuild::RootRules as _;
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+    )
+    .expect("parses");
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+        .expect("resolves");
+    let rules = super::Rules::default();
+    assert!(
+        rules.planes_awaiting_restart(&cfg).is_empty(),
+        "nothing held, nothing pending"
+    );
+    rules.hold_unopened(["zz-unopened-red", "aa-unopened-red"]);
+    assert!(
+        rules.planes_awaiting_restart(&cfg).is_empty(),
+        "a configuration that writes neither section reports neither"
+    );
+    cfg.plane_sections.insert("zz-unopened-red");
+    cfg.plane_sections.insert("opened-at-boot-red");
+    assert_eq!(
+        rules.planes_awaiting_restart(&cfg),
+        vec!["zz-unopened-red"],
+        "the written section of a plane the boot left unopened, and never one it opened"
+    );
+    cfg.plane_sections.insert("aa-unopened-red");
+    assert_eq!(
+        rules.planes_awaiting_restart(&cfg),
+        vec!["aa-unopened-red", "zz-unopened-red"],
+        "sorted"
+    );
+    assert!(
+        rules.check(&cfg).is_ok(),
+        "awaiting restart is not a refusal: the configuration is accepted and stored"
+    );
+}
+
+/// A REQUIRED CONSUMED SECTION WRITTEN EMPTY STILL OPENS ITS PLANE (ARCHITECT row-82 ruling: a
+/// written consumed|required key counts). The previous release required `models:` and accepted it
+/// empty (v1.5.5 crates/busbar/src/config/mod.rs:2626-2632), answering from its catch-all; the
+/// oracle's `neutrality|models-empty|surface` cell is that document. A plane that requires the
+/// section opens on the declaring section the root hands it, so `models: {}` must still hand it the
+/// pair. RED: the pair was handed only when either map had an entry, so the plane stayed unopened
+/// and every path fell to the kernel's catch-all.
+#[test]
+fn a_required_section_written_empty_hands_the_plane_its_sections() {
+    use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
+    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::test_support::NEUTRAL_FALLBACK;
+    static REQUIRES: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "requires-the-consumed-section",
+            required_config_sections: &[RESERVED_MODELS_KEY],
+            ..NEUTRAL_FALLBACK.declaration
+        },
+        ..NEUTRAL_FALLBACK
+    };
+    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+        .expect("a deployment");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let sections = super::kernel_sections(&cfg);
+    assert_eq!(
+        sections.get(RESERVED_MODELS_KEY),
+        Some(&serde_yaml::Value::Mapping(Default::default())),
+        "the written, empty required section is handed as written: {sections:?}"
+    );
+    assert_eq!(
+        sections.get(RESERVED_POOLS_KEY),
+        Some(&serde_yaml::Value::Mapping(Default::default())),
+        "and the declaring section beside it, so the plane opens: {sections:?}"
+    );
+}
+
+// ── the admission window (#29, admission side) ────────────────────────────────────────────────
+
+/// THE DOOR'S ADMISSION CHECK READS THE ARRIVAL'S WINDOW, NOT THE CLOCK (#29, admission side).
+/// Door successor of `plane_node.rs::the_admission_check_reads_the_arrival_window_and_not_the_clock`
+/// (legacy `ingress_integration_tests.rs::test_admit_check_uses_charged_at_window_not_clock`,
+/// coverage map row 381), on the `$` door of the plane serving the `pools` map (`DoorSteps::charge`,
+/// handed the unit's arrival as `serve.rs` hands it `node.arrived()`). 1.5.5 behaviour, as the
+/// original pinned it: a key's group holds one 1-cent fee a day, and that fee was already charged
+/// into a PAST day; a unit arriving in that past day is refused over budget (429) against the
+/// window it arrived in, where the spend lives; a unit arriving now, in today's empty window, is
+/// admitted.
+///
+/// RED: the door's check keyed off a fresh clock read, admitting the past-day unit against today's
+/// empty window (its charge overshooting the cap of the day it arrived in).
+#[test]
+fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::governance::SECS_PER_DAY;
+    use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
+    // The original's `budget_per_day(FEE_CENTS)` at its `FEE_CENTS = 1` flat fee.
+    let gov = CORE_ENGINE_KIT
+        .governance(CORE_ENGINE_KIT.scratch_store(), None, None)
+        .expect("governance");
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::groups::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Budget,
+                amount: 1,
+                per: Some(LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = CORE_ENGINE_KIT.cost_parts(None, 1, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "dev".to_string(),
+                group: Some("team".to_string()),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("a key");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance_kit(gov)
+        .keys_chain()
+        .cost_kit(cost)
+        .build();
+    let key = std::sync::Arc::new(key);
+    let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
+
+    // The original's `EPOCH`.
+    let past_day: u64 = 1_700_000_000;
+    assert_ne!(
+        past_day / SECS_PER_DAY,
+        busbar_kernel::store::now() / SECS_PER_DAY,
+        "precondition: the arrival day is not today"
+    );
+    gov.try_admit(&app.cost, &key, "", past_day)
+        .expect("the first request fits the cap exactly");
+    assert_eq!(
+        gov.derived_bucket_usage(&app.cost, "group:team@day", "day", true, past_day)
+            .expect("usage read")
+            .spend_cents,
+        1,
+        "precondition: the arrival day's window is at its cap"
+    );
+
+    let pools = pools(DOWNGRADE_SECTION);
+    let refused = charge_once_at(&app, &key, &pools, "frontier", 1, past_day);
+    let reason = refused
+        .admitted
+        .map_err(|(reason, _)| reason)
+        .expect_err("the unit is refused against the window it arrived in, where the spend lives");
+    assert_eq!(reason, busbar_contract::caps::ReasonCode::OverBudget);
+    assert_eq!(
+        busbar_kernel::plane_driver::refusal_status(reason),
+        429,
+        "an over-budget refusal answers 429"
+    );
+    let admitted = charge_once_at(
+        &app,
+        &key,
+        &pools,
+        "frontier",
+        2,
+        busbar_kernel::store::now(),
+    );
+    assert_eq!(
+        admitted.admitted,
+        Ok(()),
+        "today's window is empty, so a unit arriving now is admitted"
+    );
+}
+
+/// LEGACY the retired engine crate's `src/unit/tests/verify.rs::asking_whether_a_name_is_configured_allocates_nothing`
+/// (coordinator ruling 2026-10-17: no-alloc is a Law). ASKING WHETHER A NAME IS CONFIGURED ALLOCATES
+/// NOTHING: the destination guard asks it on every request, so the probe answers from the door's
+/// own pools and entries as they are held, never from a projection built per call. Eight pools, so
+/// an answer that allocates per pool cannot hide in a slack bound, and both answers are asked: a
+/// name that is a pool, one that is an entry, and one that is nothing, because a probe that
+/// allocated only on the miss would still allocate on the request path.
+///
+/// Measured on jemalloc's per-thread allocated-bytes counter, the binary's own allocator.
+/// RED: a probe that builds a list of the configured names to search allocates on every call.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn asking_whether_a_name_is_configured_allocates_nothing() {
+    use busbar_kernel::door::PoolView as _;
+    use tikv_jemalloc_ctl::thread as jethread;
+    let mut yaml = String::from("m: {}\npools:\n");
+    for i in 0..8 {
+        yaml.push_str(&format!("  p{i}:\n    members: [m]\n"));
+    }
+    let p = pools(&yaml);
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let view = super::DoorPoolView {
+        pools: &p,
+        key: None,
+        app: &app,
+    };
+    let allocated = || {
+        jethread::allocatedp::read()
+            .map(|m| m.get())
+            .expect("jemalloc's per-thread counter reads")
+    };
+    // Warm the counter's own read before the measured window.
+    let _ = allocated();
+    let before = allocated();
+    let pool = view.is_configured(std::hint::black_box("p3"));
+    let entry = view.is_configured(std::hint::black_box("m"));
+    let miss = view.is_configured(std::hint::black_box("nothing-by-that-name"));
+    let after = allocated();
+    assert!(pool, "p3 is a configured pool");
+    assert!(entry, "m is a configured entry");
+    assert!(!miss, "nothing by that name is configured");
+    assert_eq!(
+        after - before,
+        0,
+        "a membership probe on the request path allocates nothing"
     );
 }

@@ -736,8 +736,8 @@ impl Instance {
                 continue;
             }
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
-            // registration that names a program is a member, its `command`/`args`/`env` its
+            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5, the member-program upstream ruling (A)):
+            // each registration that names a program is a member, its `command`/`args`/`env` its
             // program (every other key its own), sealed per member: the table keeps one long-lived
             // program per member, and a re-declaration retires a member that changed or is gone.
             if busbar_contract::section::member_program(&need.target_from) {

@@ -58,6 +58,31 @@ fn planted(cx: &Ctx, manifest: &serde_json::Value) -> Ctx {
     cx.with_overlay(ov)
 }
 
+/// A manifest over `ids` (every row a fresh pass at [`SHA`] except `not_run`), plus one fresh-pass
+/// row for each of `extra`.
+fn registered_manifest(ids: &[String], not_run: Option<&str>, extra: &[&str]) -> serde_json::Value {
+    let row = |id: &str| {
+        if Some(id) == not_run {
+            json!({"suite": id, "status": "not-run", "reason": "planted: this leg did not run"})
+        } else {
+            json!({"suite": id, "status": "pass", "commit": SHA})
+        }
+    };
+    let suites: Vec<serde_json::Value> = ids
+        .iter()
+        .map(String::as_str)
+        .chain(extra.iter().copied())
+        .map(row)
+        .collect();
+    json!({
+        "schema": "busbar.conformance.manifest/1",
+        "release": "1.6.0",
+        "commit": SHA,
+        "generated_at": "2026-09-19T14:05:00Z",
+        "suites": suites
+    })
+}
+
 struct Case {
     name: &'static str,
     proven: bool,
@@ -139,17 +164,25 @@ pub fn run(cx: &Ctx) -> i32 {
         "could not be loaded",
     ));
 
-    // ── `--musts` GREEN: every registered suite is a fresh pass.
-    let mut all_pass = base_manifest();
-    if let Some(arr) = all_pass.get_mut("suites").and_then(|v| v.as_array_mut()) {
-        for s in arr.iter_mut() {
-            s["status"] = json!("pass");
-            s["commit"] = json!(SHA);
-        }
+    // The `--musts` cases run over the REAL registry's suite ids: the MUST set is the registry's,
+    // so a manifest of made-up names proves nothing about it.
+    let ids: Vec<String> = crate::gates::conformance_sync::render::parse_registry(cx)
+        .map(|suites| suites.into_iter().map(|s| s.id).collect())
+        .unwrap_or_default();
+    if ids.len() < 2 {
+        eprintln!(
+            "  NOT PROVEN: the registry yields {} suite id(s); the --musts cases need two",
+            ids.len()
+        );
     }
+    let all_pass = registered_manifest(&ids, None, &[]);
+
+    // ── `--musts` GREEN: every registered suite is a fresh pass.
     let all_pass_cx = planted(cx, &all_pass);
     let musts_rows = check_musts(&all_pass_cx, DEFAULT_MANIFEST_PATH, SHA);
-    let musts_green = musts_rows.len() == 2 && musts_rows.iter().all(|r| r.status == Status::Pass);
+    let musts_green = ids.len() >= 2
+        && musts_rows.len() == ids.len()
+        && musts_rows.iter().all(|r| r.status == Status::Pass);
     if !musts_green {
         eprintln!("  NOT PROVEN: --musts GREEN control: rows = {musts_rows:?}");
     }
@@ -158,19 +191,56 @@ pub fn run(cx: &Ctx) -> i32 {
         proven: musts_green,
     });
 
-    // ── `--musts` RED: the single call the `conformance` check makes denies the moment any MUST suite is not a
-    //    fresh pass — here `beta` is not-run.
-    let musts_rows_mixed = check_musts(&planted_cx, DEFAULT_MANIFEST_PATH, SHA);
-    let musts_red = musts_rows_mixed.iter().any(|r| r.status == Status::Fail)
-        && musts_rows_mixed
-            .iter()
-            .any(|r| r.id == "conformance-check:beta" && r.status == Status::Fail);
+    // ── `--musts` RED: the single call the `conformance` check makes denies the moment any MUST
+    //    suite is not a fresh pass — here the first registered suite is not-run.
+    let first = ids.first().cloned().unwrap_or_default();
+    let mixed_cx = planted(cx, &registered_manifest(&ids, Some(&first), &[]));
+    let musts_rows_mixed = check_musts(&mixed_cx, DEFAULT_MANIFEST_PATH, SHA);
+    let musts_red = musts_rows_mixed
+        .iter()
+        .any(|r| r.id == format!("conformance-check:{first}") && r.status == Status::Fail);
     if !musts_red {
         eprintln!("  NOT PROVEN: --musts RED control: rows = {musts_rows_mixed:?}");
     }
     cases.push(Case {
         name: "--musts denies when any registered suite is not fresh-pass (RED)",
         proven: musts_red,
+    });
+
+    // ── `--musts` RED: a manifest that DROPS a registered suite cannot shrink the MUST set into a
+    //    green. Every row it does carry is a fresh pass; the missing one is the refusal.
+    let last = ids.last().cloned().unwrap_or_default();
+    let dropped: Vec<String> = ids.iter().filter(|i| **i != last).cloned().collect();
+    let dropped_cx = planted(cx, &registered_manifest(&dropped, None, &[]));
+    let dropped_rows = check_musts(&dropped_cx, DEFAULT_MANIFEST_PATH, SHA);
+    let dropped_red = dropped_rows.iter().any(|r| {
+        r.id == format!("conformance-check:{last}")
+            && r.status == Status::Fail
+            && format!("{} {}", r.title, r.detail).contains("absent from the manifest")
+    });
+    if !dropped_red {
+        eprintln!("  NOT PROVEN: --musts dropped-suite RED: rows = {dropped_rows:?}");
+    }
+    cases.push(Case {
+        name: "--musts denies a manifest that drops a registered suite (RED, registry denominator)",
+        proven: dropped_red,
+    });
+
+    // ── `--musts` RED: a manifest row the registry does not name is no MUST anybody owes; it is
+    //    refused rather than counted, so a renamed suite cannot stand in for the registered one.
+    let extra_cx = planted(cx, &registered_manifest(&ids, None, &["not-a-suite"]));
+    let extra_rows = check_musts(&extra_cx, DEFAULT_MANIFEST_PATH, SHA);
+    let extra_red = extra_rows.iter().any(|r| {
+        r.id == "conformance-check:not-a-suite"
+            && r.status == Status::Fail
+            && format!("{} {}", r.title, r.detail).contains("not a registered suite")
+    });
+    if !extra_red {
+        eprintln!("  NOT PROVEN: --musts extra-suite RED: rows = {extra_rows:?}");
+    }
+    cases.push(Case {
+        name: "--musts denies a manifest row the registry does not name (RED)",
+        proven: extra_red,
     });
 
     // ── `--musts` RED: the MUST set has a floor derived from the planes the build ships. The same

@@ -98,7 +98,7 @@ fn an_empty_ranking_is_the_plain_floor() {
     assert!(node.pick("p", &members, &mut ctx).is_some());
 }
 
-/// F25 row 552: rehomed from crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_empty_order_is_swrr.
+/// F25 row 552: rehomed from the retired engine crate's src/engine/tests/ordered_walk_tests.rs::ordered_walk_empty_order_is_swrr.
 /// An empty ranking over three healthy members is the weighted floor: nine picks land on more than
 /// one member (it spreads, never pins one); with member 0's breaker tripped Open in the served
 /// breaker, nine more picks land only on member 1 or 2.
@@ -151,7 +151,7 @@ fn ordered_walk_empty_order_is_swrr() {
     }
 }
 
-/// F25 row 553: rehomed from crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::request_ctx_new_huge_deadline_does_not_panic.
+/// F25 row 553: rehomed from the retired engine crate's src/engine/tests/ordered_walk_tests.rs::request_ctx_new_huge_deadline_does_not_panic.
 /// A request context built with an operator's extreme failover timeout (u64::MAX, u64::MAX / 2,
 /// 10^18 seconds) constructs without panicking, and reads back a positive remaining budget now.
 #[test]

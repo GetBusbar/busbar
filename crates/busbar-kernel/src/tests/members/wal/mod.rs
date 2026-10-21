@@ -12,3 +12,4 @@ mod kill_at_every_offset_tests;
 mod no_disk_tests;
 mod poison_tests;
 mod restart_after_a_roll_tests;
+mod store_debt_tests;

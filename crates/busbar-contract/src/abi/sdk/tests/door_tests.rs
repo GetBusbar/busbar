@@ -900,6 +900,83 @@ fn a_secret_plugin_wires_every_kind_op() {
     assert!(t.resolve.is_some(), "secret kind op resolve is NULL");
 }
 
+/// A kind op a door names no slot for is NULL (absent): the secret door above names `resolve`
+/// alone, so its `check` is absent; the auth door names the six ops it was written with, so its
+/// `target` is. The loader admits exactly those two absent (absent = pass) and no other NULL.
+#[test]
+fn a_kind_op_a_door_does_not_name_is_absent() {
+    // SAFETY: the macros' `'static` doors and their tables.
+    let secret = unsafe {
+        &*(*secret_plugin::door())
+            .ops
+            .cast::<crate::abi::secret::Ops>()
+    };
+    let auth = unsafe { &*(*auth_plugin::door()).ops.cast::<crate::abi::auth::Ops>() };
+    assert!(secret.check.is_none(), "an unnamed kind op is absent");
+    assert!(auth.target.is_none(), "an unnamed kind op is absent");
+    assert!(
+        secret.resolve.is_some() && auth.verify.is_some(),
+        "a named one is present"
+    );
+}
+
+mod secret_check_plugin {
+    //! A secret door that SERVES `check`: the slot it names is the one the table holds.
+    use super::*;
+    use crate::abi::secret::{CheckIn, ResolveIn, ResolveOut};
+
+    pub struct Resolve;
+    impl Slot for Resolve {
+        type In = ResolveIn;
+        type Out = ResolveOut;
+        fn call(_: *mut c_void, _: &ResolveIn, _: &mut ResolveOut) -> Outcome {
+            Outcome::Ready
+        }
+    }
+    pub struct Check;
+    impl Slot for Check {
+        type In = CheckIn;
+        type Out = OutHead;
+        fn call(_: *mut c_void, input: &CheckIn, _: &mut OutHead) -> Outcome {
+            if input.settings.len == 0 {
+                Outcome::Failed
+            } else {
+                Outcome::Ready
+            }
+        }
+    }
+
+    crate::plugin_door! {
+        ops: crate::abi::secret::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-secret-check", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: { resolve: Resolve, check: Check },
+    }
+}
+
+#[test]
+fn a_secret_plugin_that_serves_check_answers_it() {
+    use crate::abi::secret::{slot as secret_slot, CheckIn, Ops};
+    // SAFETY: the macro's `'static` door and its secret table.
+    let t = unsafe { &*(*secret_check_plugin::door()).ops.cast::<Ops>() };
+    assert_eq!(t.head.slots, crate::abi::secret::SLOTS);
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: CheckIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<CheckIn>(secret_slot::CHECK, Ticket::NONE);
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.check, &input, &mut out), Outcome::Failed);
+    input.settings.len = 2;
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.check, &input, &mut out), Outcome::Ready);
+    // `check` answers only its own index.
+    input.head.op = secret_slot::RESOLVE;
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.check, &input, &mut out), Outcome::Fault);
+}
+
 mod export_plugin {
     //! A REAL kind table: every export kind op wired to the structs `abi::export` states for it.
     use super::*;
@@ -1341,6 +1418,8 @@ mod plane_plugin {
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
         listed: std::ptr::null(),
         listed_len: 0,
+        arrival_spans: std::ptr::null(),
+        arrival_spans_len: 0,
         resource_facts: Blob {
             ptr: std::ptr::null(),
             len: 0,

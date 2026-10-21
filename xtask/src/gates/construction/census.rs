@@ -11,6 +11,11 @@
 //! So the COUNTS are pinned, in `[gate.census]`, and this row is owed UNCONDITIONALLY — a literal
 //! in `ids()`, not something derived from the config. That is the property the rest of the owed
 //! register lacks and the only reason this row cannot be deleted the same way its subjects could.
+//!
+//! AND THE RULE CEILINGS ARE HELD AGAINST THE SAME BASE ([`raised_ceilings`]). Every rule reads its
+//! ceiling from the file under judgement (`max_sites`, `max_hits`, a per-crate figure), so a
+//! ceiling raised in the change that adds the site it would have caught was green. Law 9: a
+//! ceiling "refuses every rise from that moment".
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -182,6 +187,17 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 moved.insert("plane_crates".to_string(), n as i64);
             }
             bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
+            let (struck, problems) = struck_rule_tables(&cfg.doc, &doc, |dir| {
+                now_deleted.contains(dir) && !cx.abs(dir).exists()
+            });
+            bad.extend(problems);
+            bad.extend(raised_ceilings(
+                &cfg.doc,
+                &doc,
+                base.short(),
+                &now_planes,
+                &struck,
+            ));
         }
         Err(e) => bad.push(e),
     }
@@ -193,7 +209,7 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
             TITLE,
             format!(
                 "{counted} rule-table, plane-crate and kind-glob subject(s) counted, none below \
-                 its pinned floor"
+                 its pinned floor, and no rule ceiling above the base's"
             ),
             counted,
             counted,
@@ -520,6 +536,201 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     }
 }
 
+/// THE INTEGERS UNDER `[rules.*]` THAT BOUND NOTHING: how many of the worst offenders a report
+/// lists. Every other integer of a rule table is a ceiling (a `max_*`, a ratchet `ceiling` or
+/// `figure`, a counted `sites`, a per-crate figure) or a matcher setting whose rise narrows what the
+/// rule sees (`min_block_lines`, `shingle_tokens`), and none of them may rise.
+const NOT_CEILINGS: &[&str] = &["top", "top_pairs"];
+
+/// Every integer under `[rules.*]` but [`NOT_CEILINGS`], by `(table, key)`.
+fn rule_ceilings(doc: &Document) -> BTreeMap<(String, String), i64> {
+    let mut out = BTreeMap::new();
+    for (path, t) in doc.tables() {
+        if !path.starts_with("rules.") {
+            continue;
+        }
+        for key in t.keys() {
+            if NOT_CEILINGS.contains(&key.as_str()) {
+                continue;
+            }
+            if let Some(v) = t.int_of(key) {
+                out.insert((path.to_string(), key.clone()), v);
+            }
+        }
+    }
+    out
+}
+
+/// EVERY RULE CEILING THAT ROSE, or was deleted, since the base (Law 9, BUSBAR-1.6.0.md: a ceiling
+/// "refuses every rise from that moment"). A ceiling read from the file under judgement can be
+/// raised in the same change as the violation it would have caught — a fourth pick site and
+/// `max_sites = 4`, a ban's `max_hits = 0` set to 3 — and every rule would read the new number and
+/// pass. So each is compared with the base's copy, the comparison `lowered_floors` makes for the
+/// census floors, in the other direction. Deleting the key is the cheapest rise and is scored as
+/// one. Two deletions are not rises: a `max_per_crate` figure for a crate that left
+/// `gate.plane_crates`, whose floor the census already holds against the base, and a rule table
+/// whose whole subject was deleted with a ledgered crate ([`struck_rule_tables`]).
+fn raised_ceilings(
+    now_doc: &Document,
+    base_doc: &Document,
+    short: &str,
+    plane_crates_now: &[String],
+    struck: &BTreeSet<String>,
+) -> Vec<String> {
+    let now = rule_ceilings(now_doc);
+    rule_ceilings(base_doc)
+        .into_iter()
+        .filter_map(
+            |((table, key), before)| match now.get(&(table.clone(), key.clone())) {
+                Some(after) if *after > before => Some(format!(
+                "[{table}] {key}: the ceiling rose {before} -> {after} since the base {short}. A \
+                 ceiling refuses every rise (Law 9): drain the sites instead"
+            )),
+                Some(_) => None,
+                None if table.ends_with(".max_per_crate") && !plane_crates_now.contains(&key) => {
+                    None
+                }
+                None if struck.contains(&table) => None,
+                None => Some(format!(
+                "[{table}] {key}: the ceiling {before} at the base {short} is gone from this tree. \
+                 Deleting a ceiling is the cheapest way to raise it"
+            )),
+            },
+        )
+        .collect()
+}
+
+/// THE LEDGER OF RULE TABLES STRUCK WITH THEIR SUBJECT: `[gate.census.deleted_rules]`.
+const DELETED_RULES: &str = "gate.census.deleted_rules";
+
+/// The keys a rule table names its subject by: a directory it scans, the crate it scans (read as
+/// `crates/<name>`), or the one file it allows.
+const SUBJECT_KEYS: &[&str] = &["root", "crate", "allowed_file"];
+
+/// THE RULE TABLES WHOSE CEILINGS LEFT WITH THEIR SUBJECT, and every problem with the ledger that
+/// names them. A rule table is struck only when ALL of these hold, so a ceiling never disappears
+/// silently (Law 9):
+///   * `[gate.census.deleted_rules]` names it, with a non-empty reason (the citation and the
+///     measured value);
+///   * the table is gone from this tree (an entry whose table still stands is stale);
+///   * the base carried it, and it named its subject by at least one of [`SUBJECT_KEYS`];
+///   * every subject path lies under a `[gate.census.deleted]` directory that is absent from the
+///     tree (`gone`), so the rule would measure nothing: its subject is deleted, not moved.
+///
+/// The ledger is add-only against the base, as `[gate.census.deleted]` is. Every struck table's
+/// sub-tables (`[rules.x.y]`) are struck with it. An entry that fails any condition is RED and
+/// excuses nothing.
+fn struck_rule_tables(
+    now_doc: &Document,
+    base_doc: &Document,
+    gone: impl Fn(&str) -> bool,
+) -> (BTreeSet<String>, Vec<String>) {
+    let ledger = |doc: &Document| -> Vec<(String, String)> {
+        let t = doc.table_or_empty(DELETED_RULES);
+        t.keys()
+            .iter()
+            .map(|k| {
+                (
+                    k.trim().trim_matches('"').to_string(),
+                    t.str_of(k).unwrap_or_default().trim().to_string(),
+                )
+            })
+            .collect()
+    };
+    let now = ledger(now_doc);
+    let base = ledger(base_doc);
+    let mut problems: Vec<String> = base
+        .iter()
+        .filter(|(b, _)| !now.iter().any(|(n, _)| n == b))
+        .map(|(b, _)| {
+            format!("[{DELETED_RULES}] `{b}` was removed since the base; the ledger is add-only")
+        })
+        .collect();
+    let mut struck = BTreeSet::new();
+    for (table, why) in &now {
+        if why.is_empty() {
+            problems.push(format!(
+                "[{DELETED_RULES}] `{table}` gives no reason: name what was deleted, the status \
+                 row and the measured value"
+            ));
+            continue;
+        }
+        if now_doc.table(table).is_some() {
+            problems.push(format!(
+                "[{DELETED_RULES}] `{table}` is listed but the table is still in this tree \
+                 (stale entry)"
+            ));
+            continue;
+        }
+        if base.iter().any(|(b, _)| b == table) {
+            // Struck at an earlier base and held there; nothing of it is left to compare.
+            struck.insert(table.clone());
+            continue;
+        }
+        let Some(was) = base_doc.table(table) else {
+            problems.push(format!(
+                "[{DELETED_RULES}] `{table}` names no table the base carried"
+            ));
+            continue;
+        };
+        let subjects: Vec<String> = SUBJECT_KEYS
+            .iter()
+            .filter_map(|k| {
+                was.str_of(k).map(|v| match *k {
+                    "crate" => format!("crates/{v}"),
+                    _ => v.trim_end_matches('/').to_string(),
+                })
+            })
+            .collect();
+        if subjects.is_empty() {
+            problems.push(format!(
+                "[{DELETED_RULES}] `{table}` named no subject path at the base, so nothing shows \
+                 its subject is gone"
+            ));
+            continue;
+        }
+        let live: Vec<&String> = subjects
+            .iter()
+            .filter(|p| !under_a_gone_dir(p, &gone))
+            .collect();
+        if !live.is_empty() {
+            problems.push(format!(
+                "[{DELETED_RULES}] `{table}`: its subject {} is not under a deleted directory \
+                 in [gate.census.deleted] that is gone from the tree, so its ceiling did not \
+                 leave with it",
+                live.iter()
+                    .map(|p| format!("`{p}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            continue;
+        }
+        struck.insert(table.clone());
+    }
+    let subs: Vec<String> = base_doc
+        .tables()
+        .into_iter()
+        .map(|(p, _)| p.to_string())
+        .filter(|p| struck.iter().any(|t| p.starts_with(&format!("{t}."))))
+        .collect();
+    struck.extend(subs);
+    (struck, problems)
+}
+
+/// Whether `path` is, or lies under, a directory `gone` accepts (ledgered and absent).
+fn under_a_gone_dir(path: &str, gone: impl Fn(&str) -> bool) -> bool {
+    let mut at = path;
+    loop {
+        if gone(at) {
+            return true;
+        }
+        match at.rfind('/') {
+            Some(i) => at = &at[..i],
+            None => return false,
+        }
+    }
+}
+
 /// Every integer under `[gate.census]`, including its `plugin_kinds` sub-table, by dotted key.
 fn census_pins(doc: &Document) -> BTreeMap<String, i64> {
     let mut out = BTreeMap::new();
@@ -745,5 +956,73 @@ mod tests {
             lowered_floors(&doc(&down2), &doc(DOC), "abc1234", &moved).len(),
             1
         );
+    }
+
+    const RULE_BASE: &str = "[rules.a]\nroot = \"crates/gone/src/unit\"\nmax_escapes = 0\n\n\
+                             [rules.b]\ncrate = \"gone\"\nallowed_file = \"crates/gone/src/x.rs\"\n\
+                             max_extra_sites = 0\n\n[rules.c]\nroot = \"crates/kept\"\nmax_hits = 0\n";
+
+    fn gone_dir(d: &str) -> bool {
+        d == "crates/gone"
+    }
+
+    /// A ceiling never disappears silently (Law 9): a rule table deleted with no ledger entry is a
+    /// deleted ceiling and stays RED, and so is one whose entry gives no reason.
+    #[test]
+    fn a_rule_table_deleted_without_a_ledger_entry_is_still_a_raised_ceiling() {
+        let now = doc("[rules.c]\nroot = \"crates/kept\"\nmax_hits = 0\n");
+        let (struck, problems) = struck_rule_tables(&now, &doc(RULE_BASE), gone_dir);
+        assert!(
+            struck.is_empty() && problems.is_empty(),
+            "{struck:?} {problems:?}"
+        );
+        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck);
+        assert_eq!(out.len(), 2, "{out:?}");
+        let blank = doc("[gate.census.deleted_rules]\n\"rules.a\" = \"\"\n");
+        let (struck, problems) = struck_rule_tables(&blank, &doc(RULE_BASE), gone_dir);
+        assert!(struck.is_empty(), "{struck:?}");
+        assert!(problems[0].contains("gives no reason"), "{problems:?}");
+    }
+
+    /// THE RULED WAY OUT: a table named in the ledger whose every subject path lies under a deleted,
+    /// absent directory leaves with its subject, and only that table.
+    #[test]
+    fn a_rule_table_whose_subject_was_deleted_is_struck_by_its_ledger_entry() {
+        let now = doc(
+            "[gate.census.deleted_rules]\n\"rules.a\" = \"row 83, measured 0\"\n\
+             \"rules.b\" = \"row 83, measured 0\"\n\n[rules.c]\nroot = \"crates/kept\"\nmax_hits = 0\n",
+        );
+        let (struck, problems) = struck_rule_tables(&now, &doc(RULE_BASE), gone_dir);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(struck, set(&["rules.a", "rules.b"]));
+        assert!(raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck).is_empty());
+    }
+
+    /// A ledger entry for a table whose subject is still in the tree excuses nothing, and neither
+    /// does one whose table still stands.
+    #[test]
+    fn a_ledger_entry_whose_subject_lives_or_whose_table_stands_is_red() {
+        let now = doc(
+            "[gate.census.deleted_rules]\n\"rules.c\" = \"row 83\"\n\"rules.a\" = \"row 83\"\n\n\
+             [rules.a]\nroot = \"crates/gone/src/unit\"\nmax_escapes = 0\n",
+        );
+        let (struck, problems) = struck_rule_tables(&now, &doc(RULE_BASE), gone_dir);
+        assert!(struck.is_empty(), "{struck:?}");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("`rules.a` is listed but the table is still")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("`crates/kept` is not under a deleted")));
+    }
+
+    /// The ledger is add-only against the base.
+    #[test]
+    fn a_rule_ledger_entry_removed_since_the_base_is_red() {
+        let base = format!("{RULE_BASE}\n[gate.census.deleted_rules]\n\"rules.z\" = \"row 1\"\n");
+        let (_, problems) = struck_rule_tables(&doc(RULE_BASE), &doc(&base), gone_dir);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("add-only"), "{problems:?}");
     }
 }

@@ -59,7 +59,7 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     let plane_store = app
         .governance
         .as_ref()
-        .map(|gov| crate::plane::store::PlaneStoreView::narrow(gov.store()));
+        .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store()));
     let ctx = crate::plane::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }

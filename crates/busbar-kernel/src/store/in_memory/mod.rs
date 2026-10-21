@@ -35,7 +35,7 @@ impl HealthState {
         for (idx, lane) in self.lanes.iter().enumerate() {
             let Some(snap) = restored
                 .iter()
-                .find(|s| s.model == lane.model && s.provider == lane.provider)
+                .find(|s| s.member == lane.member && s.route == lane.route)
             else {
                 continue;
             };
@@ -152,8 +152,10 @@ pub struct HealthState {
 // layout change — every constructor uses named fields, so semantics are untouched.
 pub(crate) struct LaneState {
     // ── read-only after boot ──
-    pub(crate) model: String,
-    pub(crate) provider: String,
+    /// The member the lane serves; with `route`, the identity a restore matches on.
+    pub(crate) member: String,
+    /// The route the lane dials.
+    pub(crate) route: String,
     pub(crate) max: usize,
     pub(crate) sem: Arc<Semaphore>,
     // The lane's `max_requests` budget: the one breaker's own counter for this destination, shared.
@@ -240,8 +242,8 @@ impl HealthState {
                     err: 0,
                 });
                 Arc::new(LaneState {
-                    model: ld.model,
-                    provider: ld.provider,
+                    member: ld.member,
+                    route: ld.route,
                     max: ld.max,
                     sem: ld.sem,
                     budget: unit
@@ -273,7 +275,7 @@ impl HealthState {
     }
 
     /// Construct with PRIOR HEALTH STATE restored by stable lane identity: each lane whose
-    /// (model, provider) appears in `restored` starts with that snapshot's breaker/cooldown/streak/
+    /// (member, route) appears in `restored` starts with that snapshot's breaker/cooldown/streak/
     /// hard-down/latency/counters instead of fresh state — the carry-over that makes a lane-set
     /// config APPLY (and, via the persistence layer, a restart) preserve learned reliability.
     /// Matching is by IDENTITY, never position, so added/removed/reordered lanes are immune to the
@@ -430,8 +432,10 @@ impl HealthState {
 
 #[derive(Clone)]
 pub struct LaneData {
-    pub(crate) model: String,
-    pub(crate) provider: String,
+    /// The member the lane serves (the lane's identity, with `route`).
+    pub(crate) member: String,
+    /// The route the lane dials.
+    pub(crate) route: String,
     pub(crate) max: usize,
     pub(crate) sem: Arc<Semaphore>,
     pub(crate) limited: bool,
@@ -443,29 +447,18 @@ pub struct LaneData {
     pub(crate) ok: u64,
     pub(crate) err: u64,
     pub(crate) client_fault: u64,
-    /// Optional upstream model name override. When set, this value is sent to the provider as the
-    /// model identifier in the request body and URL path, instead of `self.model` (the config key).
-    pub(crate) upstream_model: Option<String>,
-    /// Model-level per-attempt time-to-headers cap (ms); flows ModelCfg → LaneData → Lane.
-    pub(crate) attempt_timeout_ms: Option<u64>,
-    /// Operator-declared reasoning-capability flag (see `ModelCfg::reasoning`).
-    pub(crate) reasoning: bool,
-    /// Operator-declared prompt-caching capability flag (see `ModelCfg::prompt_caching`).
-    pub(crate) prompt_caching: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl LaneData {
     /// TEST-SUPPORT constructor: a minimal live lane (alive, unlimited budget, zero counters) with
-    /// the given model/provider/permit count — the shape the relocated probe-guard tests need. Gated
+    /// the given member/route/permit count — the shape the relocated probe-guard tests need. Gated
     /// to the test-support surface so the plane's tests reach a `LaneData` through this public seam
     /// instead of a cross-crate struct literal over its private fields.
-    pub fn for_test(model: &str, provider: &str, max: usize) -> Self {
+    pub fn for_test(member: &str, route: &str, max: usize) -> Self {
         LaneData {
-            reasoning: false,
-            prompt_caching: false,
-            model: model.into(),
-            provider: provider.into(),
+            member: member.into(),
+            route: route.into(),
             max,
             sem: Arc::new(Semaphore::new(max)),
             limited: false,
@@ -477,8 +470,6 @@ impl LaneData {
             ok: 0,
             err: 0,
             client_fault: 0,
-            upstream_model: None,
-            attempt_timeout_ms: None,
         }
     }
 }
@@ -488,8 +479,8 @@ impl LaneData {
 #[allow(dead_code)]
 pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (LaneData, u32) {
     let lane = LaneData {
-        model: format!("lane-{}", id),
-        provider: format!("provider-{}", id),
+        member: format!("lane-{}", id),
+        route: format!("provider-{}", id),
         max: max_permits,
         sem: Arc::new(Semaphore::new(max_permits)),
         limited: false,
@@ -501,10 +492,6 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
         ok: 0,
         err: 0,
         client_fault: 0,
-        upstream_model: None,
-        attempt_timeout_ms: None,
-        reasoning: false,
-        prompt_caching: false,
     };
     (lane, (id as u32) + 1) // weight = id + 1 (so lane 0 has weight 1, lane 1 has weight 2, etc.)
 }
@@ -738,10 +725,10 @@ impl HealthState {
     }
 
     // Production callers: the test-only `record_hard_down` trait wrapper, and
-    // `store::planes::PlaneBreakers::record_signal` — a secondary plane consumer's hard-down is PER
-    // CELL by design (their degenerate cells share one lane index, so the all-cells primitive would
-    // trip every other registered target). With BOTH planes compiled out that consumer is
-    // vestigial, so this reads dead in a non-test both-off build alone.
+    // `store::breaker_admission::PlaneBreakers::record_signal` — a registered target's hard-down is
+    // PER CELL by design (the degenerate cells share one lane index, so the all-cells primitive
+    // would trip every other registered target). With no plane consumer compiled in that caller is
+    // vestigial, so this reads dead in such a non-test build alone.
     #[allow(dead_code)]
     pub(crate) fn record_hard_down_for(&self, pool: &str, lane: usize, reason: &str) {
         let ls = self.get_lane(lane);
@@ -750,7 +737,7 @@ impl HealthState {
         *lock_recover(&ls.dead_reason) = reason.to_string();
         diag_warn!(
             LANE_HARD_DOWN,
-            model = %ls.model,
+            model = %ls.member,
             reason,
             cooldown_secs = self.unit.hard_down_cooldown_secs(),
             "lane hard-down; sticky cooldown (recovers via half-open probe)"

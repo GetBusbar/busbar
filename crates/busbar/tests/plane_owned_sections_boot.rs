@@ -131,7 +131,7 @@ fn registering_an_owning_plane_puts_its_section_into_config_sections() {
     for d in owning_planes() {
         register_test_plane(d);
     }
-    let sections = busbar_kernel::plane::config::config_sections();
+    let sections = busbar_kernel::config::plane_sections::config_sections();
     for d in owning_planes() {
         assert!(
             sections.contains(&d.config_section),

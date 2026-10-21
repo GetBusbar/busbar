@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ORDERED REQUEST VALIDATOR — its transport-neutral half lives in
-//! [`busbar_kernel::trust::validate`], and as of D3 so does the standing-permission primitive
-//! [`Standing`] (with [`Snapshot`], [`Lapsed`] and the [`GovResolve`] re-resolution trait). This
-//! module re-exports that half unchanged so every `crate::trust::validate::*` call site resolves as
-//! before, and supplies the ONE core-side piece the neutral primitive needs: the [`GovResolve`] impl
-//! over [`crate::governance::GovState`], which re-resolves a principal by id against the live
-//! registry. `Standing::still_permitted` drives that impl, so the primitive names no core type.
+//! THE IDENTITY-AND-GRANT JUDGEMENT ([`validate_visibility`]) and the standing-permission
+//! primitive ([`Standing`], with [`Snapshot`], [`Lapsed`] and the [`GovResolve`] re-resolution
+//! trait), plus the one generation source ([`next_generation`]). The [`GovResolve`] impl over
+//! [`crate::governance::GovState`] re-resolves a principal by id against the live registry;
+//! `Standing::still_permitted` drives it, so the primitive names no governance type.
 
 use std::sync::Arc;
 
 use busbar_contract::records::VirtualKey;
-
-// Glob, so a name only a plane consumer or a test uses (e.g. `reason`, `Ask`, `Standing`, `Lapsed`)
-// never reads as an unused import when that consumer is compiled out. The standing-permission types
-// (`Standing`/`Snapshot`/`Lapsed`/`GovResolve`) now arrive through this glob from the substrate.
 
 /// Core-side [`GovResolve`]: re-resolve a principal by its stable subject id against the LIVE
 /// governance registry. This is the one core capability a [`Standing`] re-ask needs; threading it as
@@ -32,10 +26,9 @@ impl GovResolve for crate::governance::GovState {
 #[path = "tests/validate_tests.rs"]
 mod validate_tests;
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Approval, PinnedArtifact, Sighting, TrustState};
+use super::TrustState;
 
 /// THE GENERATION SOURCE. Monotonic, process-global, taken once per snapshot BUILD.
 ///
@@ -199,38 +192,6 @@ pub enum Grant<'a> {
     },
 }
 
-/// WHAT THE UPSTREAM IS OFFERING RIGHT NOW, as the protocol's own reader sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Observed {
-    /// The fingerprint, computed the way this wire format computes one.
-    At(String),
-    /// The reader can produce no fingerprint that could match, and says why in words for an
-    /// operator: nothing has been observed since the approval moved, the last contact failed, the
-    /// capability is no longer offered.
-    Drifted(&'static str),
-}
-
-/// THE PROTOCOL'S ONE CONTRIBUTION: the capability being asked for, and how to fingerprint it.
-///
-/// `observe` is a closure and not a value so that the VALIDATOR decides when it runs. See the module
-/// header: reading the upstream's current shape on behalf of a caller that has no grant is a refusal
-/// that has failed at half its job.
-pub struct Fingerprint<'a> {
-    /// The capability's name AS THE APPROVAL RECORDS IT — the operator's word, never an upstream's
-    /// free text.
-    pub capability: &'a str,
-    /// How this wire format computes its artifact's identity.
-    pub observe: &'a dyn Fn() -> Observed,
-}
-
-impl std::fmt::Debug for Fingerprint<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Fingerprint")
-            .field("capability", &self.capability)
-            .finish_non_exhaustive()
-    }
-}
-
 /// THE GENERATION PAIR: what the request was admitted under, and what is live now.
 ///
 /// A pair rather than one number so the no-op case has to be SAID. A caller admitting for the first
@@ -258,46 +219,12 @@ impl Generations {
     }
 }
 
-/// EVERYTHING THE ORDERED GATE JUDGES, one field per step.
-pub struct Ask<'a, A: PinnedArtifact> {
-    /// STEP 1 — IDENTITY. `None` ONLY where governance is disabled and there is therefore no
-    /// principal to carry a grant. It is not a way past the gate: with no principal there is also no
-    /// grant to narrow, and every step below still runs.
-    pub principal: Option<&'a VirtualKey>,
-    /// Seconds, for the expiry comparison. The caller's clock, so a test can move it.
-    pub now: u64,
-    /// STEP 2 — GRANT. Conjunctive; an empty list is a request that needs no grant, which is a
-    /// statement the call site is making out loud.
-    pub grants: &'a [Grant<'a>],
-    /// STEP 3 — the standing decision, and what was last observed against it. The registration-level
-    /// half of the artifact question is derived from these two by the lifecycle itself.
-    pub approval: &'a Approval<A>,
-    pub sighting: &'a Sighting<A>,
-    /// STEP 3 — the per-capability half, where the wire names a capability. `None` where it names
-    /// none: an ask addressed to the registration itself has no capability to fingerprint, and
-    /// inventing one would be inventing an approval.
-    pub capability: Option<Fingerprint<'a>>,
-    /// STEP 4 — GENERATION.
-    pub generation: Generations,
-}
-
-/// STEPS 1 AND 2 ALONE — IDENTITY, THEN GRANT — for a caller asking WHAT EXISTS rather than asking
-/// to USE something.
+/// IDENTITY, THEN GRANT: the one identity check and the one grant evaluator in busbar.
 ///
-/// ## Why the catalogue stops here, and why that is not a skipped step
-///
-/// A catalogue answers "what may this caller SEE". That is the same identity question and the same
-/// grant question [`validate_request`] asks, and it is deliberately NOT the artifact question: the
-/// MCP catalogue LISTS what it will not dispatch, because an operator's view of what is waiting in
-/// the approval queue is the catalogue's job and hiding a pending entry makes the queue invisible.
-/// A2A's catalogue does ask the artifact question, because on that plane a listing IS an admission —
-/// so the difference is in WHAT EACH PLANE ASKS FOR, stated at its own call site, and never in which
-/// steps a shared function decided to run.
-///
-/// **This is an entry point, not a lenient default.** [`validate_request`] calls it for its first
-/// two steps, so there is exactly ONE identity check and ONE grant evaluator in busbar; a caller
-/// that holds an artifact and calls this instead would be silently excusing the artifact step, which
-/// is why the two are named for the two different questions rather than for a step count.
+/// Identity first, because a principal that no longer exists has no grant to read; grant before
+/// anything about the target, so a refusal never leaks the thing it refuses. Whether a counterparty
+/// and its items are trusted is the kernel's Approve ([`super::book::TrustBook::judge`]), asked
+/// separately.
 pub fn validate_visibility(
     principal: Option<&VirtualKey>,
     now: u64,
@@ -341,83 +268,15 @@ pub fn validate_visibility(
     Ok(())
 }
 
-/// THE ORDERED GATE. Every request, whatever protocol it arrived on, passes through this.
-///
-/// The order is the whole content of the function, and each position is a decision:
-///
-/// 1. **IDENTITY** first, because a principal that no longer exists has no grant to read and no
-///    approval to have been admitted under.
-/// 2. **GRANT** before anything about the upstream, so a refusal never leaks the thing it refuses.
-/// 3. **ARTIFACT**: the registration-level state first — a suspended or quarantined registration
-///    serves nothing whatever a single capability's fingerprint says — and only then the named
-///    capability's fingerprint, computed HERE.
-/// 4. **GENERATION** last, because it is the cheapest and the least specific: "something moved,
-///    retry" is a worse message than any of the three above and should only be reached when none of
-///    them applies.
-pub fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refusal> {
-    // ── 1. IDENTITY, then 2. GRANT ──────────────────────────────────────────────────────────────
-    // The first two steps are [`validate_visibility`], called rather than restated, so the ONE
-    // grant evaluator in busbar stays one. See that function for who else asks for them alone.
-    validate_visibility(ask.principal, ask.now, ask.grants)?;
-
-    // ── 3. ARTIFACT ─────────────────────────────────────────────────────────────────────────────
-    // The registration first. This is the lifecycle's OWN derivation, so the answer a dispatch gets
-    // is by construction the answer the operator's views are computed from.
-    let state = ask.approval.state(ask.sighting);
-    if state != TrustState::Approved {
-        return Err(Refusal::NotServing {
-            state,
-            reason: ask.approval.suspension().map(str::to_string),
-        });
-    }
-    if let Some(fp) = &ask.capability {
-        // THE PROTOCOL'S CLOSURE, RUN HERE AND NOWHERE EARLIER.
-        match (fp.observe)() {
-            Observed::Drifted(why) => {
-                return Err(Refusal::Unobservable {
-                    capability: fp.capability.to_string(),
-                    why,
-                })
-            }
-            Observed::At(digest) => {
-                // `Approval::serves` is the SAME comparison the operator's changes queue is
-                // rendered from, rather than a second opinion that could disagree with it at
-                // exactly the moment a call races a quarantine.
-                if !ask.approval.serves(fp.capability, &digest) {
-                    return Err(Refusal::ArtifactDrifted {
-                        capability: fp.capability.to_string(),
-                        observed: digest,
-                    });
-                }
-            }
-        }
-    }
-
-    // ── 4. GENERATION ───────────────────────────────────────────────────────────────────────────
-    // Movement is refusal, without inspecting the new snapshot. Deciding whether a particular change
-    // mattered means re-deriving the whole selection, and a "did this specific change affect me"
-    // test is exactly the reasoning that lets a revocation slip through.
-    if ask.generation.admitted != ask.generation.live {
-        return Err(Refusal::GenerationMoved {
-            admitted: ask.generation.admitted,
-            live: ask.generation.live,
-        });
-    }
-    Ok(())
-}
-
 // ── THE STANDING-PERMISSION PRIMITIVE (D3, relocated from busbar-core) ────────────────────────────
 //
 // A long-lived response re-asks its principal per frame rather than carrying a resolved
-// `Arc<VirtualKey>` into a `'static` future. The struct and its refusal are pure — they name only
-// `busbar_contract::records::VirtualKey` (already imported), this module's `Refusal`, and std — so
-// they live in the substrate; the ONE thing that names a core type, the governance re-resolution,
-// is threaded through the [`GovResolve`] trait (implemented core-side over `GovState`), so a holder
-// of a `Standing` re-asks it without ever naming governance. Core re-exports these three types +
-// the trait so its in-core call sites (and the tests) are unchanged.
+// `Arc<VirtualKey>` into a `'static` future. The ONE thing that names governance, the
+// re-resolution, is threaded through the [`GovResolve`] trait (implemented over `GovState` above),
+// so a holder of a `Standing` re-asks it without ever naming governance.
 
 /// The governance re-resolution a [`Standing`] performs each frame: re-resolve a principal by its
-/// stable id. Implemented core-side over `busbar_kernel::governance::GovState` (the one core type this
+/// stable id. Implemented over `crate::governance::GovState` (the one governance type this
 /// primitive would otherwise name), so [`Standing::still_permitted`] stays transport-neutral.
 pub trait GovResolve {
     /// Re-resolve the principal with subject id `sub` against the LIVE registry, or `None` when it is
@@ -453,8 +312,8 @@ enum Admitted {
 
 /// A DECISION MADE AT OPEN AND TRUSTED WHILE OPEN — the standing-permission primitive.
 ///
-/// A long-lived response (a poll loop, a detached runner) cannot re-run the whole of
-/// [`validate_request`] per frame, because most of its inputs are re-derived per frame anyway. What
+/// A long-lived response (a poll loop, a detached runner) cannot re-run the whole admission per
+/// frame, because most of its inputs are re-derived per frame anyway. What
 /// it must NOT do is carry the PRINCIPAL forward: an `Arc<VirtualKey>` cloned into a `'static`
 /// future is an identity resolved once and believed for the whole life of the stream, so a key
 /// deleted for compromise does not bite until the stream ends.

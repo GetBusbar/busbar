@@ -138,7 +138,40 @@ impl<V: Clone> IdempotencyCache<V> {
     /// behind is [`Reservation::leak`], which is reserved for a mutation handed to an uncancellable
     /// path — so a leaked sentinel is bounded by real work in flight, never by a header a client
     /// chooses, and this is not a way to grow the map without limit.
+    ///
+    /// The claim's journal write (a durable append) runs on the calling thread: this is for a
+    /// caller already off the async workers. An async handler takes [`Self::probe_off_worker`].
     pub fn probe(&self, key: (String, String), now: u64) -> Probe<'_, V> {
+        let probe = self.reserve(key, now);
+        if let (Probe::Reserved(r), Some(journal)) = (&probe, &self.journal) {
+            journal.journal_claim(&r.key, now);
+        }
+        probe
+    }
+
+    /// [`Self::probe`] for an ASYNC caller: the same reservation, taken at once under the cache's
+    /// lock, and the claim's journal write — an append and a sync on the node's durable journal —
+    /// on a blocking thread, awaited before the reservation is handed back, so the claim is durable
+    /// before the mutation runs exactly as on the synchronous path, and no runtime worker is held
+    /// through the write.
+    pub async fn probe_off_worker(&self, key: (String, String), now: u64) -> Probe<'_, V> {
+        let probe = self.reserve(key, now);
+        if let (Probe::Reserved(r), Some(journal)) = (&probe, &self.journal) {
+            let journal = Arc::clone(journal);
+            let key = r.key.clone();
+            // A write that panicked is a claim the journal never took, as a failed write is (the
+            // journal never refuses the mutation that took the claim); the reservation stands.
+            let _ = tokio::task::spawn_blocking(move || journal.journal_claim(&key, now)).await;
+        }
+        probe
+    }
+
+    /// The reservation half of a probe: sweep, then replay, refuse in flight, or reserve. The claim
+    /// is taken (a durable record of it — never a replay, an in-flight refusal, or a second
+    /// sighting of the same key) by the caller, outside the lock: the sentinel is already visible
+    /// to every other prober, so a slow or failing journal write never holds up the next probe. A
+    /// node with no journal bound (no data dir) takes no journal call at all.
+    fn reserve(&self, key: (String, String), now: u64) -> Probe<'_, V> {
         let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|_, (t, v)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
         match guard.get(&key) {
@@ -147,14 +180,6 @@ impl<V: Clone> IdempotencyCache<V> {
             None => {
                 guard.insert(key.clone(), (now, None));
                 drop(guard);
-                // The claim is taken (a durable record of it — never a replay, an in-flight
-                // refusal, or a second sighting of the same key) exactly here, outside the lock:
-                // the sentinel is already visible to every other prober, so a slow or failing
-                // journal write never holds up the next probe. A node with no journal bound (no
-                // data dir) takes this branch every time it does today — nothing calls out.
-                if let Some(journal) = &self.journal {
-                    journal.journal_claim(&key, now);
-                }
                 Probe::Reserved(Reservation {
                     cache: self,
                     key,

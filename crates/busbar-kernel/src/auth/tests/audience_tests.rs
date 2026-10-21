@@ -131,3 +131,26 @@ fn a_credential_with_no_readable_claims_is_opaque() {
         );
     }
 }
+
+/// THE REFUSAL DESCRIPTIONS ARE ONE LINE OF TEXT. They go verbatim into the challenge's
+/// `error_description` and the JSON body. RED: the gate's literals were split across source lines
+/// with no `\`, so each carried a run of about 26 spaces in the middle of a sentence.
+#[test]
+fn the_audience_refusal_descriptions_are_single_spaced_sentences() {
+    assert_eq!(
+        super::MISMATCH_DESCRIPTION,
+        "The access token's audience does not identify this resource. Request a token whose \
+         `resource` (RFC 8707) is this server's canonical URI."
+    );
+    assert_eq!(
+        super::OPAQUE_DESCRIPTION,
+        "This credential carries no readable audience, so it cannot be shown to have been issued \
+         for this resource. A JWT access token is required here."
+    );
+    for description in [super::MISMATCH_DESCRIPTION, super::OPAQUE_DESCRIPTION] {
+        assert!(
+            !description.contains("  "),
+            "a run of spaces: {description:?}"
+        );
+    }
+}

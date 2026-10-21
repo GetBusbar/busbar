@@ -435,7 +435,7 @@ impl LaneRuntime for HealthState {
         let hard_down_cooldown_secs = self.unit.hard_down_cooldown_secs();
         diag_warn!(
             LANE_HARD_DOWN_ALL_CELLS,
-            model = %ls.model,
+            model = %ls.member,
             reason,
             cooldown_secs = hard_down_cooldown_secs,
             "lane hard-down (all cells); sticky cooldown (recovers via half-open probe)"
@@ -559,8 +559,8 @@ impl LaneRuntime for HealthState {
         // the availability and breaker_state fields from it below (perf: was folded twice).
         let breaker_verdict = self.lane_breaker_verdict(lane, t);
         LaneSnapshot {
-            model: ls.model.clone(),
-            provider: ls.provider.clone(),
+            member: ls.member.clone(),
+            route: ls.route.clone(),
             max_concurrent: ls.max,
             // In-flight count derived from the semaphore (the source of truth): a held permit is an
             // in-flight request. `max - available` rather than a separate counter that can drift.
@@ -611,8 +611,8 @@ impl LaneRuntime for HealthState {
                 // pair of loads can straddle a transition and persist a tripped lane as healthy.
                 let cell = ls.cell.snapshot();
                 LaneHealthSnapshot {
-                    model: ls.model.clone(),
-                    provider: ls.provider.clone(),
+                    member: ls.member.clone(),
+                    route: ls.route.clone(),
                     budget: ls.budget.remaining().unwrap_or(-1),
                     breaker_state: cell.state,
                     cooldown_until: cell.cooldown_until,

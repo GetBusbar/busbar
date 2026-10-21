@@ -12,8 +12,7 @@
 //! - one of the **9 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
 //! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
 //!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
-//!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
-//!   so there is no mutation for dual control to check. They carry no legacy row because they are
+//!   than `Full`: reading a figure changes nothing. They carry no legacy row because they are
 //!   new surface, and the document that describes them is a separate additive one for the same
 //!   reason — the 1.5.5 document's bytes are pinned;
 //! - one of the **named non-admin surfaces** (the self-serve token exchange, the browser token
@@ -339,7 +338,7 @@ pub enum KernelVerb {
     GetAuditKeys,
 
     // ---- named non-admin surfaces ----
-    /// `POST /auth/token` — the self-serve exchange (exempt from dual control in both postures).
+    /// `POST /auth/token` — the self-serve exchange.
     PostAuthToken,
     /// `GET /auth/token` — the browser exchange (unauthenticated exact-path bypass; dispatches on
     /// `?logout` / `?code` / `?method` / `?refresh`).
@@ -672,8 +671,7 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
 ];
 
 /// The 12 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
-/// signed, back-dated rate-card correction the dated-history design adds to the irreducible set —
-/// and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
+/// back-dated rate-card correction the dated-history design adds — and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
 /// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
 /// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
@@ -744,13 +742,9 @@ const fn is_new_verb(verb: KernelVerb) -> bool {
 /// The two new verbs the architecture document binds as `GET` — "POST for every mutating
 /// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
 ///
-/// They stay members of [`NEW_VERBS`] because they ARE two of them, and the operator
-/// ceremony still reaches them through the same gate every other new verb runs (neither is in
-/// [`IRREDUCIBLE_VERBS`], so that gate admits them). What being named here changes is everything
-/// that follows from a verb being a read rather than a mutation: the scope it asks for, the mutation
-/// budget it does not draw, and the maker-checker step it has nothing to wait for. A read held
-/// behind an approval is not delayed, it is refused forever — nobody can approve a mutation that
-/// does not exist.
+/// They stay members of [`NEW_VERBS`] because they ARE two of them. What being named here changes
+/// is everything that follows from a verb being a read rather than a mutation: the scope it asks
+/// for and the mutation budget it does not draw.
 pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
@@ -760,10 +754,9 @@ pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[
 /// The five 1.6.0 ledger views, in the order the admin surface lists them.
 ///
 /// Kept as their own list rather than folded into [`NEW_VERBS`] because membership of that list is
-/// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. A view answers
-/// with figures the ledger already holds: it mutates nothing, so there is no maker-checker step for
-/// dual control to interpose, and it needs no more authority than the legacy `GET /usage` that
-/// reads the same money from the other side.
+/// what makes a verb a `Full`-scoped mutation, and that is not true of a read. A view answers with
+/// figures the ledger already holds: it mutates nothing, and it needs no more authority than the
+/// legacy `GET /usage` that reads the same money from the other side.
 pub const LEDGER_VERBS: &[KernelVerb] = &[
     KernelVerb::GetLedgerTotals,
     KernelVerb::GetLedgerCheckpoints,
@@ -775,10 +768,9 @@ pub const LEDGER_VERBS: &[KernelVerb] = &[
 /// THE THREE AUDIT-CHAIN READS, in the order the admin surface lists them.
 ///
 /// Their own list, for the same reason the ledger views have one: membership of [`NEW_VERBS`] is
-/// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. These three
-/// answer with what the node has already sealed — the head, a window of records, the public keys.
-/// They mutate nothing, so there is no maker-checker step for dual control to interpose, and a read
-/// held behind an approval is not delayed, it is refused forever.
+/// what makes a verb a `Full`-scoped mutation, and that is not true of a read. These three answer
+/// with what the node has already sealed — the head, a window of records, the public keys. They
+/// mutate nothing.
 ///
 /// They are also the one group whose whole purpose is to be read by somebody who does NOT trust the
 /// node: an auditor, a counter-signing service, an operator with `curl` behind a firewall. Gating
@@ -801,22 +793,6 @@ pub const NAMED_SURFACES: &[KernelVerb] = &[
     KernelVerb::GetHealthz,
     KernelVerb::GetMetrics,
     KernelVerb::GetMetricsHooks,
-];
-
-/// The irreducible set, required in both dual-control postures (architecture doc: "Irreducible
-/// set, required in both postures"). `Adjust` is irreducible only ABOVE
-/// `adjust_threshold` — that quantity is not decidable from the verb alone, so callers that need
-/// the threshold-gated form check it themselves (see [`crate::posture`]); it is still listed
-/// here so the closed set names every verb the document calls irreducible, with the caveat carried
-/// in this doc comment rather than silently dropped.
-pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
-    KernelVerb::ChainBreak,
-    KernelVerb::StoreRestore,
-    KernelVerb::CommitUpgrade,
-    KernelVerb::ResealEpochFloor,
-    KernelVerb::Adjust,
-    // `amend_rate_history` rewrites what the past cost, so D38 seals it irreducible.
-    KernelVerb::AmendRateHistory,
 ];
 
 /// THE ONE JOIN between this enum's spelling of a verb and the admin table's spelling of it.

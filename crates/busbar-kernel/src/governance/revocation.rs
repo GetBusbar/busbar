@@ -6,13 +6,12 @@
 //!
 //! ## Why this is its own type
 //!
-//! The re-sync is a `Store` round-trip: SQL over a mutex-guarded connection (`store-sqlite`,
-//! `store-postgres`), a Valkey command, or an FFI/IPC `transport_call` into a store plugin. That is
-//! BLOCKING I/O, and the callers ([`GovState::verify_token`], [`GovState::is_revoked_at`]) run
-//! inline inside `auth_middleware` — an `async fn` on a Tokio worker thread. Running the read there
-//! parks a reactor thread for the full duration of the round-trip; with a hung store (Postgres has
-//! neither reconnect nor a statement timeout **by design** — see `store-postgres/src/lib.rs`) it
-//! parks it FOREVER, and one more worker every staleness window until the runtime serves nothing at
+//! The re-sync is a `Store` round-trip: a call into a store plugin, which may hold a local database
+//! behind a mutex or talk to a network-backed store. That is BLOCKING I/O, and the callers
+//! ([`GovState::verify_token`], [`GovState::is_revoked_at`]) run inline inside `auth_middleware` —
+//! an `async fn` on a Tokio worker thread. Running the read there parks a reactor thread for the
+//! full duration of the round-trip; with a hung store (a network-backed store plugin need have
+//! neither reconnect nor a statement timeout) it parks it FOREVER, and one more worker every staleness window until the runtime serves nothing at
 //! all — not proxied traffic, not `/healthz`, not the admin plane.
 //!
 //! So the request path must never perform the read. It reads the in-memory set (a microsecond

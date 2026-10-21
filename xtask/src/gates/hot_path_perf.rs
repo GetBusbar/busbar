@@ -13,7 +13,7 @@
 //! | row | the claim it holds |
 //! | --- | --- |
 //! | `:instrument-present` | the criterion bench exists AND its OWN `[[bench]]` block says `harness = false` |
-//! | `:vtable-vs-direct` | it measures the REAL `PlaneHostVtable` slot against a direct-call baseline |
+//! | `:vtable-vs-direct` | it measures the REAL `HostSlots` slot against a direct-call baseline |
 //! | `:delta-p50-under-1us` | it asserts `p50_delta_nanos < HOT_PATH_BUDGET_NANOS`, the budget `1_000` |
 //! | `:delta-p99-under-1us` | …and `p99_delta_nanos < HOT_PATH_BUDGET_NANOS` |
 //! | `:per-token-host-calls-zero` | it asserts `per_token_crossings == 0` on the stream |
@@ -40,13 +40,12 @@
 //! skipped-green. It builds the bench profile, so it runs on the qa cadence through
 //! `xtask/tests/hot_path_gates.rs`'s `--ignored` executing tests, not on every push.
 //!
-//! THE PENDING-RIDER DEPENDENCY. `PlaneHostVtable`
-//! (`crates/busbar-contract/src/abi/hot/host.rs`) has NO production caller yet — the keystone
-//! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
-//! has not landed. So the instrument this gate guards is ARMED against the vtable's own construction
-//! (the `#[repr(C)]` subject `crates/busbar-contract/tests/layout_golden.rs` pins), and binds to the
-//! production crossing unchanged when the rider lands: the measured slot is the same fn pointer
-//! either way. This gate is GREEN now and stays green across that transition.
+//! THE SUBJECT. The HOT lane's `PlaneHostVtable` was deleted with `abi/hot` (status row 84). The
+//! crossing that replaced it is the host-services table, `HostSlots`
+//! (`crates/busbar-contract/src/abi/host/service.rs`, THE DESIGN §11.12), and the instrument measures
+//! its `clock.now` slot (§11.9: "a crossing under 1 µs"), ARMED against the table's own construction
+//! (the `#[repr(C)]` subject `crates/busbar-contract/tests/layout_golden.rs` pins): the measured slot
+//! is the same fn pointer a live dispatch calls.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_green, prove_red, prove_red_by_configuration, Gate, Report};
@@ -76,12 +75,12 @@ const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_SUBJECT,
         clauses: &[
-            "use busbar_contract::abi::hot::host::{",
-            "PlaneHostVtable",
+            "use busbar_contract::abi::host::service::{",
+            "HostSlots",
             "bench_function(\"HOT_PATH_DIRECT_CALL\"",
             "bench_function(\"HOT_PATH_VTABLE_CALL\"",
         ],
-        ok: "the instrument measures the real PlaneHostVtable slot against a direct-call baseline",
+        ok: "the instrument measures the real HostSlots slot against a direct-call baseline",
         bad: "the instrument no longer compares the vtable crossing to a direct call",
     },
     Claim {

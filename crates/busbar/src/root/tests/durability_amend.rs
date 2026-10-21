@@ -79,6 +79,10 @@ fn restart_phase() {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
         panic!("restart_phase is the child half of the restart tests: run them, not this");
     };
+    if phase == "store" {
+        store_phase();
+        return;
+    }
     let book = boot(std::path::Path::new(&dir));
     let recorded = counts(1_000);
     match phase.as_str() {
@@ -204,6 +208,164 @@ fn restart_phase() {
         }
         other => panic!("unknown phase {other}"),
     }
+}
+
+/// The node the store-kept chain is written under in the `store` phase.
+const STORE_NODE: u64 = 31;
+
+/// How long one padding record's body is: big enough that a few hundred of them roll the memory
+/// log past one segment, small enough that 256 of them (one block of the store's scan) stay inside
+/// one scan.
+const PAD_BODY: usize = 100_000;
+
+/// The node's boot with NO DATA DIRECTORY over the configured store, as `root::boot` runs it: build
+/// over the store (resuming the chain it kept), rebuild the node amendment journal, share the
+/// book, bind it.
+fn store_boot(slots: &crate::root::store_double::RecordSlots) -> Arc<Mutex<Durability>> {
+    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
+    let mut durability = build_on_store(
+        &DurabilityConfig { data_dir: None },
+        STORE_NODE,
+        lane,
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(|| None),
+        None,
+    )
+    .expect("the store reads back");
+    durability.restore_amendments();
+    let book = Arc::new(Mutex::new(durability));
+    bind_amendments(&book);
+    book
+}
+
+/// Wait until the store took everything the book's lane holds.
+fn store_drained(book: &Arc<Mutex<Durability>>) {
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    assert!(
+        durability
+            .lane()
+            .expect("a book over the store")
+            .drain(std::time::Duration::from_secs(120)),
+        "the store takes the journal's records"
+    );
+}
+
+/// A root correction of the entry `amends` from 1,000 input units to 800.
+fn correct(amends: &str) {
+    correct_counts(
+        busbar_contract::authz::Scope::Full,
+        &counts(1_000),
+        CountCorrection {
+            amends,
+            principal: Some("pseudonym-1"),
+            lane: LANE_M,
+            card_epoch_ms: 1_700_000_000_000,
+            now: counts(800),
+            authorised_by: "root",
+            reason: "duplicate charge on a retried request",
+            pool: None,
+        },
+    )
+    .expect("a root correction to a non-negative count lands");
+}
+
+/// THE `store` PHASE (audit R1#1): a node with no data directory whose chain outgrows one memory
+/// segment. The first boot seals the migration marker and a correction, pads the journal past one
+/// segment, seals a second correction, and stops; the second boot over the same store must see
+/// both corrections and the marker, with no restart finding.
+fn store_phase() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let sealed = MigrationMarker {
+        checkpoint_seq: 0,
+        node: STORE_NODE,
+        sealed_at: 1_700_000_000,
+        body_hash: [7u8; 32],
+        balances: 3,
+        cells_read: 11,
+        rate_card_version: 5,
+    };
+    {
+        let book = store_boot(&slots);
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .migration_records(&token, StepName::Meter)
+            .write_marker(&sealed)
+            .expect("the marker goes on the chain");
+        correct(ENTRY);
+        let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
+        for _ in 0..pads {
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .journal
+                .append(
+                    &token,
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Load, vec![0x5a; PAD_BODY]).at(1_700_000_000, 0)],
+                )
+                .expect("the padding goes on the chain");
+        }
+        correct(POOLED_ENTRY);
+        store_drained(&book);
+        assert!(
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .journal
+                .log()
+                .segments_used()
+                >= 2,
+            "the memory journal rolled past one segment"
+        );
+    }
+
+    let restarted = store_boot(&slots);
+    let mut durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(
+        durability.migration_marker(),
+        Some(sealed.clone()),
+        "the restarted node reads the marker its first boot sealed"
+    );
+    assert_eq!(
+        durability
+            .migration_records(&token, StepName::Meter)
+            .read_marker()
+            .expect("readable"),
+        Some(sealed),
+        "the migration step reads the marker, so it does not seal a second opening"
+    );
+    assert_eq!(
+        counts_now(ENTRY, &counts(1_000)),
+        counts(800),
+        "the correction sealed before the roll survived the restart"
+    );
+    assert_eq!(
+        counts_now(POOLED_ENTRY, &counts(1_000)),
+        counts(800),
+        "the correction sealed after the roll survived the restart"
+    );
+    assert!(
+        durability.restart_findings.is_empty(),
+        "{:?}",
+        durability.restart_findings
+    );
+}
+
+/// A NODE WITH NO DATA DIRECTORY WHOSE CHAIN OUTGREW ONE MEMORY SEGMENT keeps its corrections and its
+/// migration marker across a restart (audit R1#1). The memory log keeps only its newest segment
+/// resident; the store keeps the rest, and every chain read after boot reads the whole of it. With
+/// the reads on the resident segment only, the restart read the marker as absent and the corrections
+/// as never made (the money reverted). See the `store` phase.
+#[test]
+fn a_chain_past_one_memory_segment_keeps_its_corrections_and_marker_over_the_store() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-root-amend-store-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    run_phase("store", &dir);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Run [`restart_phase`] in a fresh process of this test binary.

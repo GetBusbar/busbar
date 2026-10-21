@@ -81,3 +81,33 @@ fn the_section_and_ingress_flags_are_single_distinct_bits() {
         }
     }
 }
+
+/// A plane's help text reads as its slotted rows: bare text is one `Flags:` row (the shape a plane
+/// that states only flags writes), each marked row fills the slot it names, in order, and a row
+/// that names no slot is kept nameless rather than guessed into one.
+#[test]
+fn the_cli_help_grammar_reads_bare_and_slotted_rows() {
+    fn rows(help: &str) -> Vec<(&str, &str)> {
+        cli_help::rows(help).collect()
+    }
+    assert!(rows("").is_empty());
+    assert_eq!(
+        rows("    --x   a flag"),
+        vec![(cli_help::FLAG, "    --x   a flag")]
+    );
+    assert_eq!(
+        rows("\u{1e}tagline\u{1f}a gateway\u{1e}endpoint\u{1f}    POST /a\n    POST /b"),
+        vec![
+            (cli_help::TAGLINE, "a gateway"),
+            (cli_help::ENDPOINT, "    POST /a\n    POST /b"),
+        ]
+    );
+    assert_eq!(
+        rows("    --x\u{1e}endpoint\u{1f}    GET /y\u{1e}unnamed"),
+        vec![
+            (cli_help::FLAG, "    --x"),
+            (cli_help::ENDPOINT, "    GET /y"),
+            ("", "unnamed"),
+        ]
+    );
+}

@@ -85,7 +85,7 @@ fn a_refusals_neutral_status_reaches_the_framer_on_every_re_call() {
     let (mut f, _) = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
     f.bufs = Buffers::new(7, 5, 1);
     let sent: Vec<u8> = (0..200).collect();
-    let y = f.refuse(Some(1), &sent, 401).unwrap();
+    let y = f.refuse(Some(1), &sent, 401, false).unwrap();
     assert_eq!(y.wire, sent);
     let statuses = door.refused_statuses.lock().unwrap().clone();
     assert!(statuses.len() > 1, "re-called while it owed more");

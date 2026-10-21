@@ -5,8 +5,7 @@
 //! ([`init_logging`]) and the one-spot hot-path level policy.
 //!
 //! Spans leave the process as `traces` RECORDS (K9a S7, `crate::export::traces`), which an export
-//! sink subscribed to the stream — the `otlp` module's `busbar-export-otlp` plugin among them —
-//! is handed like any other stream (K9e-2).
+//! sink subscribed to the stream is handed like any other stream (K9e-2).
 
 /// Percent-decode a URL component to its raw UTF-8 string, leaving any byte that is not a valid
 /// `%XX` escape (or invalid UTF-8) untouched so a credential is never silently corrupted. Also used
@@ -44,7 +43,7 @@ pub fn percent_decode(s: &str) -> String {
 ///
 /// Deliberately `DEBUG`, not the `tracing::Level::TRACE` variant: `log_levels()` below is the other
 /// half of the one-spot policy — it floors the OTLP export filter at DEBUG specifically so an
-/// operator who points `observability.otlp_endpoint` at a collector gets every request-path span
+/// operator who points the trace-export endpoint at a collector gets every request-path span
 /// (this crate's own `named`/`adhoc` ingress spans among them) WITHOUT also having to
 /// set `RUST_LOG=debug` and flood stderr with every debug line in the process (see the doc comment
 /// on `log_levels`). If `HOTPATH_LEVEL` were `TRACE` instead, that OTLP floor would need to move to

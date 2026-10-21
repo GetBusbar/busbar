@@ -34,6 +34,20 @@ const BOOTCTX_DECL: &str = "pub struct BootCtx";
 /// The two handles that carry the chain by name.
 const WIDE_HANDLES: [&str; 2] = ["audit::Chain", "GovCtx"];
 
+/// WHERE THE PLANE TRUST-STATE TYPES LIVE, each sink attach this rule judges: the plane module the
+/// rule began over, the trust module the demotion record moved to (row 82 D2 item 13), and the host
+/// work module the handle engine moved to (row 82 D2, #1069). A move out of these homes empties the
+/// scan and the scan-set row refuses it; a home that holds no source is refused the same way. The
+/// AUDIT sink (`audit/`) is deliberately not a home: the audit ring IS the chain.
+#[must_use]
+pub fn sink_scopes(a: &Addresses) -> [String; 3] {
+    [
+        format!("{}/plane", a.core),
+        format!("{}/trust", a.core),
+        format!("{}/host_work", a.core),
+    ]
+}
+
 pub fn finding_sink_scope(scope: &str) -> String {
     format!(
         "PLANE-SINK-SCOPE-MISSING: `{scope}` holds no source, so the plane trust-state types moved. \
@@ -85,15 +99,18 @@ pub fn scan(cx: &Ctx, a: &Addresses, f: &mut Findings) {
 }
 
 fn scan_sinks(cx: &Ctx, a: &Addresses, f: &mut Findings) {
-    let scope = format!("{}/plane", a.core);
-    let Ok(files) = cx.walk(&WalkSpec::new([scope.clone()]).ext("rs")) else {
-        f.sink_scan_set.push(finding_sink_scope(&scope));
-        return;
-    };
-    if files.is_empty() {
-        f.sink_scan_set.push(finding_sink_scope(&scope));
-        return;
+    let scopes = sink_scopes(a);
+    let mut files = Vec::new();
+    for scope in &scopes {
+        match cx.walk(&WalkSpec::new([scope.clone()]).ext("rs")) {
+            Ok(found) if !found.is_empty() => files.extend(found),
+            _ => {
+                f.sink_scan_set.push(finding_sink_scope(scope));
+                return;
+            }
+        }
     }
+    let scope = scopes.join("`, `");
 
     let mut sinks = 0usize;
     for s in &files {
@@ -110,8 +127,8 @@ fn scan_sinks(cx: &Ctx, a: &Addresses, f: &mut Findings) {
             // THE SAME TEST ITS BOOT-SEAM SIBLING MAKES (`scan_bootctx` below): any `dyn ` bound on
             // the attach that is not the narrowed trait. It read `line.contains("dyn Store")` — a
             // bare spelling this tree does not write. Every plane sink here is declared
-            // `dyn crate::plane::store::PlaneStore`, so widening it to
-            // `dyn crate::plane::store::Store` — the exact rename this rule exists to catch — did
+            // `dyn crate::store::plane_view::PlaneStore`, so widening it to
+            // `dyn crate::store::plane_view::Store` — the exact rename this rule exists to catch — did
             // not contain the needle and the rule was near-dead: the co-listed not-narrowed row was
             // what turned its case red.
             let dyn_wide = line.contains("dyn ") && !line.contains(NARROWED);

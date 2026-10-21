@@ -8,12 +8,12 @@
 //! contract's (`busbar_contract::protocol`). Moved verbatim from `busbar-substrate-values` when that
 //! crate was deleted (SD-8); `proto/registry.rs` keeps only the population glue core owns.
 
-use busbar_contract::protocol::{ProtocolDecl, StreamTranslator};
+use busbar_contract::protocol::ProtocolDecl;
 
 // ── TEST-SUPPORT PROTOCOL REGISTRATION (the neutral seam) ──────────────────────────────────────────
 // A protocol crate's test-kit registers its `&'static ProtocolDecl` here — a SUBSTRATE type — exactly
-// as production's composition root `install_protocols` does, so the extracted protocol crates
-// (`busbar-llm`, `busbar-mcp`) reach the neutral ABI (`busbar_kernel::proto::register_test_protocol`)
+// as production's composition root `install_protocols` does, so an extracted protocol crate
+// reaches the neutral ABI (`busbar_kernel::proto::register_test_protocol`)
 // rather than back into `busbar_kernel::proto::registry`. `busbar-core`'s test-support `registry()` folds
 // this list ahead of its built-ins on every read, so a protocol registered by any test before it reads
 // the registry is visible regardless of test order. This is the exact analogue of the plane axis's
@@ -84,7 +84,7 @@ pub fn test_registered_protocols_len() -> usize {
 
 // ── THE PROTOCOL REGISTRY SINGLETON — RELOCATED DOWN from `busbar_kernel::proto::registry` ───────────
 // The declarations, the boot-time aggregates, and the process singleton, moved onto the neutral
-// substrate so an extracted protocol crate (`busbar-llm`) resolves `decl_for` / `known_protocols`
+// substrate so an extracted protocol crate resolves `decl_for` / `known_protocols`
 // through the neutral ABI rather than reaching BACK into `busbar-core` implementation (the
 // reverse-edge rule). `busbar-core` re-exports every item below at its historical
 // `busbar_kernel::proto::registry::…` path, so every in-core / plugin caller compiles unchanged and the
@@ -92,8 +92,7 @@ pub fn test_registered_protocols_len() -> usize {
 // carries none (every protocol is a plugin the composition root installs through `install_protocols`),
 // and core's OWN test binary names its shipped set in a `tests/` file the neutral-purity lint excludes,
 // which reaches this singleton through the [`set_test_builtins`] hook below — so the neutral source here
-// spells no protocol crate. `install_protocols_with_path_ingress` (which names the core-only `Arrival`)
-// stays in `busbar-core`.
+// spells no protocol crate.
 
 /// THE REGISTRY: the declarations, plus the aggregates that used to be three separate `OnceLock`
 /// sweeps. Built once; every field is derived from the declarations and from nothing else, so there
@@ -303,19 +302,6 @@ pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
     );
 }
 
-/// THE BOOT PARITY RULE, as a pure function so a test can drive it without touching the process
-/// singletons: the NAME of the first declaration whose model is in the URL (`has_model_in_url`) that
-/// has NO arrival among `path_ingress_names`, or `None` when every URL-model protocol has one.
-pub fn first_path_model_without_arrival(
-    decls: &[&'static ProtocolDecl],
-    path_ingress_names: &[&str],
-) -> Option<&'static str> {
-    decls
-        .iter()
-        .find(|d| d.has_model_in_url && !path_ingress_names.contains(&d.name))
-        .map(|d| d.name)
-}
-
 /// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per NAME, later same-name
 /// registrations skipped audibly. Split from [`registry`]'s `OnceLock` so its order and skip
 /// semantics are a function a test can drive.
@@ -357,11 +343,11 @@ static TEST_REGISTRY_MEMO: std::sync::Mutex<Option<(usize, &'static Registry)>> 
     std::sync::Mutex::new(None);
 
 /// CORE'S OWN-TEST-BINARY BUILT-IN HOOK. Core's `cfg(test)` build names its shipped protocol set
-/// (`busbar_llm::DECLS` + the MCP protocol) in a `tests/` file the neutral-purity lint excludes, and
+/// in a `tests/` file the neutral-purity lint excludes, and
 /// installs it here as the stable TAIL of the boot fold — exactly as the pre-relocation core registry
 /// folded `builtin_decls()`. The neutral substrate spells no protocol crate; it only holds the fn
-/// pointer core hands it. Unset in every other build (busbar-llm's own test binary registers its
-/// dialects through [`register_test_protocol`] and needs no core tail).
+/// pointer core hands it. Unset in every other build (a protocol crate's own test binary registers
+/// its dialects through [`register_test_protocol`] and needs no core tail).
 #[cfg(any(test, feature = "test-support"))]
 static TEST_BUILTINS_HOOK: std::sync::OnceLock<fn() -> &'static [&'static ProtocolDecl]> =
     std::sync::OnceLock::new();
@@ -411,7 +397,7 @@ pub fn registry() -> &'static Registry {
 // RESOLVE A PROTOCOL BY NAME is [`Registry::decl`] (above). The single free-fn wrapper `decl_for` —
 // the ONE by-name resolution the `structure-lint` census pins — stays in `busbar-core`
 // (`proto::registry::decl_for`) so it can seed core's OWN-test built-in tail before it reads; every
-// other crate (`busbar-llm`) resolves through `registry().decl(name)` directly on this neutral ABI.
+// other crate resolves through `registry().decl(name)` directly on this neutral ABI.
 
 /// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
 /// speaks, or `None` for a path that names none. Folds every registered protocol's
@@ -462,46 +448,12 @@ pub fn known_protocols() -> &'static [&'static str] {
 
 // ── THE REGISTRY-RESOLVED PROTO ACCESSORS — RELOCATED DOWN from `busbar_kernel::proto` ───────────────
 // Thin reads of the registry singleton above, moved onto the neutral substrate so an extracted
-// protocol crate (`busbar-llm`) resolves a protocol fact through the neutral ABI rather than reaching
+// protocol crate resolves a protocol fact through the neutral ABI rather than reaching
 // BACK into `busbar-core` (the reverse-edge rule). `busbar-core` re-exports each at its historical
 // `busbar_kernel::proto::…` path, so every in-core / plugin caller compiles unchanged and the values are
 // byte-identical. They read the SAME singleton `registry()` returns, so — exactly as `known_protocols`
 // already does — under core's own test binary they observe the core-test built-in tail once any core
 // accessor has seeded the substrate hook (idempotent, self-healing).
-
-// ── THE NEUTRAL STREAMING-TRANSLATOR FACTORY — RELOCATED DOWN from `busbar_kernel::proto` ────────────
-// The plugin-provided fn-ptr factory that builds a concrete stream translator for an ingress→egress
-// pair, and the single construction seam both forward paths call. Moved onto the neutral substrate so
-// the `busbar-llm` plugin installs its factory and drives the seam through the neutral ABI rather than
-// reaching BACK into `busbar-core`. The `OnceLock` moving DOWN to the single-compiled substrate is a
-// strict improvement for the "one instance" invariant (core is dual-compilable). `busbar-core` keeps
-// its `#[cfg(test)]` fixture-routing arm (its own test binary routes straight to the netted concrete
-// factory) and re-exports the production arm + the installer at their historical paths.
-
-/// The plugin-provided factory that builds a concrete stream translator for an ingress→egress pair.
-type StreamTranslatorFactory = fn(&str, &str, bool) -> Option<Box<dyn StreamTranslator>>;
-
-static STREAM_TRANSLATOR_FACTORY: std::sync::OnceLock<StreamTranslatorFactory> =
-    std::sync::OnceLock::new();
-
-/// Install the plugin's streaming-translator factory. Idempotent-by-first-write (the composition root
-/// registers once); a second install is ignored so a test harness cannot clobber a live pointer.
-pub fn install_stream_translator_factory(f: StreamTranslatorFactory) {
-    let _ = STREAM_TRANSLATOR_FACTORY.set(f);
-}
-
-/// THE SINGLE streaming-translator construction seam the forward paths call. Neutral in and out. It
-/// routes to the installed pointer (returns `None` — legacy raw passthrough — when no plugin installed
-/// one, e.g. a core-only build with no dialects).
-pub fn new_stream_translator(
-    ingress: &str,
-    egress: &str,
-    is_sse: bool,
-) -> Option<Box<dyn StreamTranslator>> {
-    STREAM_TRANSLATOR_FACTORY
-        .get()
-        .and_then(|f| f(ingress, egress, is_sse))
-}
 
 /// The set of streaming `Content-Type` values across every declared protocol — a registry aggregate
 /// folded once at boot from `ProtocolDecl::streaming_content_type`.
@@ -509,7 +461,7 @@ pub fn streaming_content_types() -> &'static [&'static str] {
     registry().streaming_content_types()
 }
 
-/// The set of array-stream shim keys across every declared protocol (only Gemini declares one), the
+/// The set of array-stream shim keys across every declared protocol (a protocol declares at most one), the
 /// aggregate `proxy::strip_router_shim_keys` reads to remove every protocol's marker while naming none.
 pub fn array_stream_shim_keys() -> &'static [&'static str] {
     registry().array_stream_shim_keys()
@@ -534,8 +486,8 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
 }
 
 /// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
-/// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
-/// lane protocols).
+/// lane-build path, or `None` for an unknown name or one that declares no wire codec (a protocol
+/// with no codec is not a lane protocol).
 pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
     registry()
         .decl(name)

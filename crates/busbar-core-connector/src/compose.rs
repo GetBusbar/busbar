@@ -317,6 +317,18 @@ impl std::fmt::Debug for Connection {
     }
 }
 
+/// A TLS connection whose send buffers are the connection's own: the TLS library's default limit
+/// (64 KiB) is lifted, because every byte it is handed is moved to the connection's write queue at
+/// once ([`Connection::tls_out`]) and that queue is bounded by [`WRITE_BUFFER_BYTES`]. Under the
+/// library's limit a write past it was taken short and failed the connection.
+fn unbounded<C, D>(mut tls: C) -> C
+where
+    C: std::ops::DerefMut<Target = rustls::ConnectionCommon<D>>,
+{
+    tls.set_buffer_limit(None);
+    tls
+}
+
 fn failed(e: impl std::fmt::Display) -> Failure {
     Failure::Failed(e.to_string())
 }
@@ -362,6 +374,7 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
         name: None,
         secure: false,
         offer: Vec::new(),
+        defaults: Vec::new(),
     })
 }
 
@@ -549,9 +562,9 @@ impl Planned {
                     .to_owned(),
             )
             .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))?;
-            Some(rustls::Connection::Client(
+            Some(rustls::Connection::Client(unbounded(
                 rustls::ClientConnection::new(Arc::new(config), name).map_err(failed)?,
-            ))
+            )))
         } else {
             None
         };
@@ -701,6 +714,7 @@ impl Connection {
         program: &busbar_contract::conn::Program,
         env: &crate::spawn_env::HeldEnv,
         dial: Dial,
+        supervision_key: u64,
     ) -> Result<Self, Failure> {
         if !program.command.starts_with('/') {
             return Err(Failure::Refused(
@@ -710,7 +724,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Program(program.clone(), env.clone()),
+            &Dest::Program(program.clone(), env.clone(), supervision_key),
         )
         .map_err(dial_failure)?;
         let established = Established {
@@ -832,9 +846,9 @@ impl Connection {
             Some(base) => {
                 let mut config = (**base).clone();
                 config.alpn_protocols.clone_from(&accept.alpn);
-                Some(rustls::Connection::Server(
+                Some(rustls::Connection::Server(unbounded(
                     rustls::ServerConnection::new(Arc::new(config)).map_err(failed)?,
-                ))
+                )))
             }
         };
         let established = Established {
@@ -1111,6 +1125,7 @@ impl Connection {
             .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")));
             let client = match server
                 .and_then(|n| rustls::ClientConnection::new(Arc::new(config), n).map_err(failed))
+                .map(unbounded)
             {
                 Ok(c) => c,
                 Err(f) => return Poll::Ready(Err(f)),

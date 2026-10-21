@@ -545,18 +545,19 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15);
     }
-    // The doctrine's installed-plane axis, verbatim (the one plane the composition root installs as a
-    // PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, and the door flips after it each took a plane off
-    // it — each is served through its memory-ABI door alone and installs no PlaneDecl).
+    // The doctrine's installed-plane axis, verbatim: EMPTY. P3 DEL-MCP (ARCHITECT 2026-10-05) and the
+    // door flips after it each took a plane off it, and the deletion of the model plane's retired
+    // engine crate (DEV-GREEN row 83, coordinator ruling 2026-10-18) took the last: every plane is
+    // served through its memory-ABI door alone and installs no PlaneDecl from a linked entry.
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
-    assert_eq!(
-        keys.len(),
-        1,
+    assert!(
+        keys.is_empty(),
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from
-    // their own linked entries — two artifacts (the doctrine, the linked table) that must agree.
-    #[cfg(linked_every_plane)]
+    // their own linked entries — two artifacts (the doctrine, the linked table) that must agree. A
+    // linked row that registers on the plane axis again compiles this and finds the axis it pinned.
+    #[cfg(all(linked_every_plane, linked_axis_plane))]
     {
         let pinned: BTreeSet<&str> = keys.iter().copied().collect();
         let installed: BTreeSet<&str> = installed_decls().iter().map(|(k, _)| *k).collect();

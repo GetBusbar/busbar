@@ -461,3 +461,46 @@ fn openai_to_cohere_exactly_cap_stop_sequences_are_forwarded_whole() {
         "an at-cap stop list is forwarded whole: {out}"
     );
 }
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs::openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected`:
+/// six stop sequences onto a Gemini lane are CLAMPED to Gemini's cap of 5 in
+/// `generationConfig.stopSequences` and forwarded, not rejected (v1.5.4's truncate-and-forward).
+#[test]
+fn openai_to_gemini_over_cap_stop_sequences_are_clamped_not_rejected() {
+    let out = rehome_xreq(
+        "openai",
+        "gemini",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": ["a", "b", "c", "d", "e", "f"]
+        }),
+    );
+    assert_eq!(
+        out.pointer("/generationConfig/stopSequences"),
+        Some(&serde_json::json!(["a", "b", "c", "d", "e"])),
+        "an over-cap stop list is clamped to Gemini's cap of 5: {out}"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs::anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected`:
+/// five Anthropic stop sequences onto an OpenAI Chat lane are CLAMPED to OpenAI's cap of 4 in
+/// `stop` and forwarded, not rejected (v1.5.4's truncate-and-forward).
+#[test]
+fn anthropic_to_openai_over_cap_stop_sequences_are_clamped_not_rejected() {
+    let out = rehome_xreq(
+        "anthropic",
+        "openai",
+        &serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "stop_sequences": ["a", "b", "c", "d", "e"]
+        }),
+    );
+    assert_eq!(
+        out.get("stop"),
+        Some(&serde_json::json!(["a", "b", "c", "d"])),
+        "an over-cap stop list is clamped to OpenAI's cap of 4: {out}"
+    );
+}

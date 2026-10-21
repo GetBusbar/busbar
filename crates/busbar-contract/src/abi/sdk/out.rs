@@ -64,6 +64,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::abi::mechanism::call::{
@@ -118,6 +119,7 @@ pub(crate) type Reporting = Cell<Option<Box<Report>>>;
 pub(crate) struct Kept {
     texts: Mutex<VecDeque<Box<str>>>,
     reports: Mutex<VecDeque<Box<Report>>>,
+    routes: Routes,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -163,10 +165,84 @@ impl Kept {
         ring.push_back(report);
     }
 
+    /// `entry`'s name for an answer: the instance's kept copy, else a ring text.
+    pub(crate) fn route(&self, entry: &str) -> AbiStr {
+        self.routes
+            .name(entry)
+            .unwrap_or_else(|| self.text(entry.to_string()))
+    }
+
     /// How many texts and envelopes the instance holds.
     #[cfg(test)]
     pub(crate) fn held(&self) -> (usize, usize) {
         (lock(&self.texts).len(), lock(&self.reports).len())
+    }
+}
+
+/// How many distinct route entry names one instance keeps for its lifetime. A plane names the
+/// entries of its own section, a set its config bounds; a name past these is kept in the text ring.
+pub(crate) const KEPT_ROUTES: usize = 64;
+
+/// THE ROUTE NAMES AN INSTANCE HAS ANSWERED, each kept once for the instance's lifetime: a slot is
+/// claimed once (compare-and-swap from NULL) and only read after, so naming a kept entry again is
+/// a scan of loads — no lock, no heap, no write to memory another worker reads.
+pub(crate) struct Routes {
+    slots: [AtomicPtr<Box<str>>; KEPT_ROUTES],
+}
+
+impl Default for Routes {
+    fn default() -> Self {
+        Self {
+            slots: [const { AtomicPtr::new(ptr::null_mut()) }; KEPT_ROUTES],
+        }
+    }
+}
+
+impl Routes {
+    /// The kept copy of `entry`, keeping it in a free slot if no slot holds it; `None` when every
+    /// slot holds another name.
+    fn name(&self, entry: &str) -> Option<AbiStr> {
+        for slot in &self.slots {
+            let mut at = slot.load(Ordering::Acquire);
+            if at.is_null() {
+                let fresh = Box::into_raw(Box::new(Box::<str>::from(entry)));
+                match slot.compare_exchange(
+                    ptr::null_mut(),
+                    fresh,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => at = fresh,
+                    Err(won) => {
+                        // SAFETY: `fresh` was made above and never published.
+                        drop(unsafe { Box::from_raw(fresh) });
+                        at = won;
+                    }
+                }
+            }
+            // SAFETY: a non-NULL slot holds a box published by `compare_exchange` and freed only
+            // when the table drops, after every call on the instance has returned.
+            let name: &str = unsafe { &*at };
+            if name == entry {
+                return Some(AbiStr {
+                    ptr: name.as_ptr(),
+                    len: name.len(),
+                });
+            }
+        }
+        None
+    }
+}
+
+impl Drop for Routes {
+    fn drop(&mut self) {
+        for slot in &mut self.slots {
+            let at = *slot.get_mut();
+            if !at.is_null() {
+                // SAFETY: published once by `name` and owned by this table alone.
+                drop(unsafe { Box::from_raw(at) });
+            }
+        }
     }
 }
 
@@ -277,11 +353,12 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     /// THE ROUTE a READY arrival names (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): `class`
     /// ([`crate::abi::plane::ROUTE_POOL`] or [`crate::abi::plane::ROUTE_DIRECT`]) and the `entry`
     /// inside the plane's own section it names, the name kept in the instance's memory for the
-    /// answer. An answer with no instance keeps no name, so it names none.
+    /// answer. An answer with no instance keeps no name, so it names none. An entry the instance
+    /// has named before is named from its kept copy, with no heap and no lock.
     pub fn route(&mut self, class: u8, entry: &str) {
         self.set(|o| &o.route, class);
         if let Some(kept) = self.kept {
-            let name = kept.text(entry.to_string());
+            let name = kept.route(entry);
             self.put(|o| &o.pool, name);
         }
     }

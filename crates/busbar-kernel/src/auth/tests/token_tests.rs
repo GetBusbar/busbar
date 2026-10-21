@@ -708,6 +708,7 @@ fn cred_bindings() -> crate::config::RoleBindings {
             allowed_pools: None,
             group: Some("team".into()),
             admin_scope: None,
+            verbs: None,
         },
     );
     let mut outer: crate::config::RoleBindings = BTreeMap::new();

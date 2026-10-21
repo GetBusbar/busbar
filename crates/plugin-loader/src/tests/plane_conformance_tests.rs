@@ -627,9 +627,10 @@ mod door {
         }
     }
 
-    /// DECL-FOLD (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): the registry facts a door states are
-    /// read off its Statement and tail at bind, linked and dropped alike, and its own `validate`
-    /// judges a section: the kernel folds these into its plane registry before the config prepass.
+    /// DECL-FOLD (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): the registry facts a
+    /// door states are read off its Statement and tail at bind, linked and dropped alike, and its
+    /// own `validate` judges a section: the kernel folds these into its plane registry before the
+    /// config prepass.
     #[test]
     fn a_door_states_its_registry_facts_and_judges_its_section() {
         let check = |bind: crate::dispatch::kinds::plane::ProbeBind| {

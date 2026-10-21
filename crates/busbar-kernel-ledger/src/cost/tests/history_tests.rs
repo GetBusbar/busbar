@@ -30,7 +30,6 @@ fn overlapping_history() -> History {
         card: card_at(3.0),
         appended_at: 900,
         author: Author::Amend {
-            operator_fingerprint: "op-1".to_string(),
             reason_hash: [7u8; 32],
         },
     });
@@ -101,11 +100,7 @@ fn a_back_dated_entry_is_visible_as_one() {
     assert_eq!(config.effective_from(), config.appended_at());
     assert!(amend.appended_at() > amend.effective_from());
     match amend.author() {
-        Author::Amend {
-            operator_fingerprint,
-            reason_hash,
-        } => {
-            assert_eq!(operator_fingerprint, "op-1");
+        Author::Amend { reason_hash } => {
             assert_eq!(reason_hash, &[7u8; 32]);
         }
         other => panic!("the amendment's author is an amendment, not {other:?}"),
@@ -141,7 +136,6 @@ fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
         card: card_at(4.0),
         appended_at: 20_000,
         author: Author::Amend {
-            operator_fingerprint: "op".to_string(),
             reason_hash: [0; 32],
         },
     });
@@ -194,7 +188,6 @@ fn correction_cut_names_a_boundary_inside_a_row() {
         card: card_at(4.0),
         appended_at: 4_000,
         author: Author::Amend {
-            operator_fingerprint: "op".to_string(),
             reason_hash: [0; 32],
         },
     });

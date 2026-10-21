@@ -51,7 +51,6 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
         &[
             "resolve_admin_token",
             "resolve_signing_key",
-            "resolve_operator_public_key",
             "validate_builtin_secrets_resolve",
             "build_secret_resolver",
         ],

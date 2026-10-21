@@ -2519,45 +2519,71 @@ fn migrate_export_flags_the_retired_audit_stream() {
     );
 }
 
-// ══ 1.6.0 UNIFIED POOLS MIGRATOR ═════════════════════════════════════════════════════════════════
+// ══ 1.6.0 POOLS-UNDER-THEIR-VERB MIGRATOR ══════════════════════════════════════════════════════════
 
-/// The unreleased 1.6.0-dev `tool_pools:`/`agent_pools:` sections FOLD into the ONE neutral `pools:`
-/// map, verbatim (they already carry the uniform `members:`/`repeatable:` grammar), and the old
-/// section keys disappear.
+/// The unreleased 1.6.0-dev `tool_pools:`/`agent_pools:` sections MOVE under their section's reserved
+/// `pools` sub-key, verbatim (they already carry the uniform `members:`/`repeatable:` grammar), and the
+/// old section keys disappear. The top-level `pools:` is the model plane's alone.
 #[test]
-fn migrate_folds_tool_and_agent_pools_into_pools() {
-    let raw = "providers: {}\nmodels: {}\npools:\n  fast:\n    members: [widget, gizmo]\n\
+fn migrate_moves_tool_and_agent_pools_under_their_verb() {
+    let tools = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
+    let agents = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
+    let raw = "providers: {}\nmodels:\n  widget: {}\n  gizmo: {}\npools:\n  fast:\n    members: [widget, gizmo]\n\
                tool_pools:\n  search:\n    members: [search-eu, search-us]\n    repeatable: [find]\n\
                agent_pools:\n  planner:\n    members: [planner-eu, planner-us]\n";
     let (out, doc) = migrate_to_value(raw);
     assert!(
         dig(&doc, &["tool_pools"]).is_none() && dig(&doc, &["agent_pools"]).is_none(),
-        "the renamed sections are gone"
+        "the unreleased sections are gone"
     );
     assert_eq!(
-        dig(&doc, &["pools", "search", "members"]).unwrap(),
+        dig(&doc, &[tools, "pools", "search", "members"]).unwrap(),
         &serde_yaml::from_str::<serde_yaml::Value>("[search-eu, search-us]").unwrap(),
-        "the tool pool folded into `pools:` verbatim"
+        "the tool pool moved under its verb verbatim"
     );
     assert_eq!(
-        dig(&doc, &["pools", "search", "repeatable"]).unwrap(),
+        dig(&doc, &[tools, "pools", "search", "repeatable"]).unwrap(),
         &serde_yaml::from_str::<serde_yaml::Value>("[find]").unwrap(),
         "the neutral `repeatable:` knob is carried"
     );
     assert!(
-        dig(&doc, &["pools", "planner", "members"]).is_some(),
-        "the agent pool folded in too"
+        dig(&doc, &[agents, "pools", "planner", "members"]).is_some(),
+        "the agent pool moved under its verb too"
+    );
+    assert!(
+        dig(&doc, &["pools", "search"]).is_none() && dig(&doc, &["pools", "fast"]).is_some(),
+        "the top-level `pools:` keeps only the model plane's pool"
     );
     assert!(
         out.changes
             .iter()
-            .any(|c| c.contains("tool_pools.search -> pools.search"))
+            .any(|c| c.contains(&format!("tool_pools.search -> {tools}.pools.search")))
             && out
                 .changes
                 .iter()
-                .any(|c| c.contains("agent_pools.planner -> pools.planner")),
-        "the fold is announced: {:?}",
+                .any(|c| c.contains(&format!("agent_pools.planner -> {agents}.pools.planner"))),
+        "the move is announced: {:?}",
         out.changes
+    );
+    assert!(
+        !out.todos.iter().any(|t| t.contains("pools.fast")),
+        "a model pool raises no todo: {:?}",
+        out.todos
+    );
+}
+
+/// RED ARM: a top-level `pools:` entry whose members name no `models:` entry is another plane's,
+/// and the migrator reports it for the operator to move rather than leaving it silently in place.
+#[test]
+fn migrate_reports_a_top_level_pool_of_another_plane() {
+    let raw = "providers: {}\nmodels: {}\npools:\n  search:\n    members: [search-eu, search-us]\n";
+    let (out, _doc) = migrate_to_value(raw);
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("pools.search") && t.contains("names no `models:` entry")),
+        "the stray pool is reported: {:?}",
+        out.todos
     );
 }
 

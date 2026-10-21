@@ -7,11 +7,12 @@
 //!
 //! The policy is `.github/fleet/deps.toml` at the pin: the socket/TLS ban (BUSBAR-1.6.0.md line
 //! 3980) and the C-dependency allow-list. Cargo.lock parity with busbar's lock is RED
-//! (PLUGIN-TEMPLATE ruling 3b). `declares.json`'s `contract_abi` is the top of the loader's
-//! `supported_abi(kind)` at the pin, min = max (THE DESIGN §11.8).
+//! (PLUGIN-TEMPLATE ruling 3b). `declares.json` states no contract-ABI range (THE DESIGN §2: a
+//! plugin declares its kind's ABI version); while the fleet strips it, a range still stated must be
+//! the top of the loader's `supported_abi(kind)` at the pin, min = max.
 //!
 //! Output is byte-for-byte the Python's, including where Python's `repr` leaks into a finding (the
-//! `sorted(missing)` list of CDEP, the parsed `contract_abi` of DECLARES).
+//! `sorted(missing)` list of CDEP, a stated `contract_abi` of DECLARES).
 //!
 //! READERS. JSON metadata is `serde_json::Value`; `declares.json` goes through the order-preserving
 //! [`crate::json_lite`] because its key order is printed. `Cargo.lock` is read by
@@ -43,6 +44,9 @@ usage:
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
+  cargo xtask plugin-gates gitsources <deps.toml>
+  (every [git-sources] row admits one repository under https://github.com/GetBusbar/, at a 40-hex rev,
+   for named plugin repos, with a reason)
   cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock> [<deps.toml> <repo>] [--advisories <cargo-deny json lines>]
   cargo xtask plugin-gates bothways <conformance --list output>
   cargo xtask plugin-gates declares <busbar-root> <kind> <declares.json>
@@ -899,25 +903,15 @@ fn arm(reg: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Python `got == {"min": want, "max": want}` (`True == 1`, `3.0 == 3`).
-fn abi_matches(got: &Json, want: u64) -> bool {
-    let eq = |v: &Json| match v {
-        Json::Int(i) => i128::from(*i) == i128::from(want),
-        Json::Float(f) => *f == want as f64,
-        Json::Bool(b) => u64::from(*b) == want,
-        _ => false,
-    };
-    match got {
-        Json::Object(o) => {
-            o.len() == 2 && o.get("min").is_some_and(eq) && o.get("max").is_some_and(eq)
-        }
-        _ => false,
-    }
-}
+/// The DECLARES finding for a declares.json that states a contract-ABI range at all.
+pub const STATED_RANGE: &str = "DECLARES states a contract_abi range; a plugin declares its kind's ABI version, never a range (THE DESIGN §2). Re-render it with busbar-release plugin sync.";
 
-/// declares.json states the kind's current contract ABI at the pin, min = max.
-pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
-    let want = kind_abi(root, kind)?;
+/// declares.json states no contract-ABI range (THE DESIGN §2 l.237-240, §9 l.1164-1165: a plugin
+/// declares its kind's ABI version, never a range). THE ORDERED STEP 2, agreed with the fleet: the
+/// fleet's re-render has stripped the field from every repo, so a file that still states it, in any
+/// shape and at any value, is refused ([`STATED_RANGE`]). `_root` and `_kind` are kept for the
+/// callers' one signature across the steps.
+pub fn declares(_root: &Path, _kind: &str, text: &str) -> Res<Vec<String>> {
     let doc = match json_lite::parse(text) {
         Ok(d) => d,
         Err(e) => return Ok(vec![format!("DECLARES declares.json is not JSON: {e}")]),
@@ -925,12 +919,8 @@ pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
     let Json::Object(obj) = &doc else {
         return Err("plugin-gates: declares.json is not a JSON object".to_string());
     };
-    let got = obj.get("contract_abi").cloned().unwrap_or(Json::Null);
-    if !abi_matches(&got, want) {
-        return Ok(vec![format!(
-            "DECLARES contract_abi is {}; busbar at the pin speaks {kind} v{want} (min = max = {want}). Re-render it with busbar-release plugin sync.",
-            py_str(&got)
-        )]);
+    if obj.get("contract_abi").is_some() {
+        return Ok(vec![STATED_RANGE.to_string()]);
     }
     Ok(Vec::new())
 }
@@ -979,6 +969,79 @@ pub fn former_names(
         }
     }
     Ok(out)
+}
+
+// -- gitsources: the [git-sources] rows ----------------------------------------------------------
+
+/// `deps.toml [git-sources]`: one finding per row that admits anything but ONE repository under
+/// https://github.com/GetBusbar/ at a full 40-hex commit, for named plugin repos, with a reason.
+pub fn gitsources(deps: &Json) -> Res<Vec<String>> {
+    let rows = match deps.get("git-sources") {
+        Json::Null => return Ok(Vec::new()),
+        Json::Object(o) => o,
+        _ => return Err("plugin-gates: deps.toml [git-sources] is not a table".to_string()),
+    };
+    let mut out = Vec::new();
+    for (name, row) in rows.iter() {
+        let Some(fields) = row.as_object() else {
+            out.push(format!(
+                "GITSRC {name}: not a table (`git`, `rev`, `repos`, `reason`)"
+            ));
+            continue;
+        };
+        let s = |k: &str| row.get(k).as_str().unwrap_or("");
+        let git = s("git");
+        if !getbusbar_repo(git) {
+            out.push(format!(
+                "GITSRC {name}: `{git}` is not one repository under {GETBUSBAR}"
+            ));
+        }
+        let rev = s("rev");
+        if !full_sha(rev) {
+            out.push(format!(
+                "GITSRC {name}: rev `{rev}` is not a full 40-hex commit"
+            ));
+        }
+        let repos = row.get("repos").as_array().unwrap_or(&[]);
+        if repos.is_empty()
+            || repos
+                .iter()
+                .any(|r| r.as_str().is_none_or(|r| r.trim().is_empty()))
+        {
+            out.push(format!("GITSRC {name}: names no plugin repo"));
+        }
+        if s("reason").trim().is_empty() {
+            out.push(format!("GITSRC {name}: has no reason"));
+        }
+        for k in fields.keys() {
+            if !matches!(k, "git" | "rev" | "repos" | "reason") {
+                out.push(format!(
+                    "GITSRC {name}: `{k}` is not a [git-sources] key (git, rev, repos, reason)"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The one GitHub organisation a `[git-sources]` row may name.
+const GETBUSBAR: &str = "https://github.com/GetBusbar/";
+
+/// `https://github.com/GetBusbar/<repo>`: one path segment of letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`.
+fn getbusbar_repo(git: &str) -> bool {
+    git.strip_prefix(GETBUSBAR).is_some_and(|r| {
+        !r.is_empty()
+            && r != "."
+            && r != ".."
+            && r.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    })
+}
+
+/// A full commit sha: 40 lowercase hex digits.
+fn full_sha(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 // -- the deps.toml reader ------------------------------------------------------------------------
@@ -1650,15 +1713,25 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     };
     if let Err(e) = setup() {
         let msg = format!("plugin-gates: selftest temp dir: {e}");
-        for name in ["declares current", "declares stale", "declares literal"] {
+        for name in [
+            "declares absent",
+            "declares current",
+            "declares stale",
+            "declares literal",
+        ] {
             v.push((name, Err(msg.clone()), false));
         }
         return v;
     }
     v.push((
+        "declares absent",
+        declares(d, "store", r#"{"needs": []}"#),
+        false,
+    ));
+    v.push((
         "declares current",
         declares(d, "store", r#"{"contract_abi": {"min": 4, "max": 4}}"#),
-        false,
+        true,
     ));
     v.push((
         "declares stale",
@@ -1723,10 +1796,29 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     v.push((
         "declares literal",
         declares(d, "auth", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
-        false,
+        true,
     ));
+    let src = |git: &str, rev: &str| -> Res<Vec<String>> {
+        gitsources(&parse_toml(&format!(
+            "[git-sources.x]\ngit = \"{git}\"\nrev = \"{rev}\"\nrepos = [\"busbar-transport-x\"]\nreason = \"r\"\n"
+        ))?)
+    };
+    v.push((
+        "gitsources outside GetBusbar",
+        src("https://github.com/algesten/str0m", FORTY_HEX),
+        true,
+    ));
+    v.push((
+        "gitsources a branch, not a rev",
+        src("https://github.com/GetBusbar/str0m", "main"),
+        true,
+    ));
+    v.push(("gitsources committed", gitsources(&committed), false));
     v
 }
+
+/// A full commit sha, for the `[git-sources]` plants.
+const FORTY_HEX: &str = "a142c64e1fafc5cca029adda1507a51064f81902";
 
 /// The selftest's failure lines (without the `SELFTEST ` prefix).
 fn selftest_failures() -> Vec<String> {
@@ -1916,6 +2008,7 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
             )
         }
         "bothways" => Ok(bothways(&splitlines(&read(a(0)?)?))),
+        "gitsources" => gitsources(&load_toml(a(0)?)?),
         "plane" => plane(Path::new(a(0)?), Path::new(a(1)?), a(2)?),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
         "former-names" => {
@@ -2011,6 +2104,7 @@ mod tests {
         plane_pin_answered_nothing => "plane pin answered nothing",
         bothways_no_red_arm => "bothways no RED arm",
         bothways_no_equality_arm => "bothways no equality arm",
+        declares_absent => "declares absent",
         declares_current => "declares current",
         declares_stale => "declares stale",
         declares_literal => "declares literal",
@@ -2044,6 +2138,81 @@ mod tests {
         assert!(
             red[0].contains("busbar-hook-webrequest") && red[0].contains("'busbar-webrequest'")
         );
+    }
+
+    /// Q128 ruling (2026-10-18): a `[git-sources]` row admits ONE repository under GetBusbar, at a
+    /// 40-hex rev, for the plugin repos it names, with a reason. Anything else is RED, by name.
+    #[test]
+    fn gitsources_refuses_a_row_outside_getbusbar_or_off_a_pinned_rev() {
+        let row = |body: &str| {
+            gitsources(&parse_toml(&format!("[git-sources.str0m]\n{body}")).unwrap()).unwrap()
+        };
+        let good = format!(
+            "git = \"https://github.com/GetBusbar/str0m\"\nrev = \"{FORTY_HEX}\"\nrepos = [\"busbar-transport-webrtc\"]\nreason = \"H2\"\n"
+        );
+        assert_eq!(row(&good), Vec::<String>::new());
+        for (from, to, needle) in [
+            (
+                "https://github.com/GetBusbar/str0m",
+                "https://github.com/algesten/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (
+                "https://github.com/GetBusbar/str0m",
+                "https://github.com/GetBusbar/str0m/../../algesten/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (
+                "https://github.com/GetBusbar/str0m",
+                "http://github.com/GetBusbar/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (FORTY_HEX, "a142c64e1f", "is not a full 40-hex commit"),
+            (FORTY_HEX, "main", "is not a full 40-hex commit"),
+            (
+                FORTY_HEX,
+                "A142C64E1FAFC5CCA029ADDA1507A51064F81902",
+                "is not a full 40-hex commit",
+            ),
+            (
+                "[\"busbar-transport-webrtc\"]",
+                "[]",
+                "names no plugin repo",
+            ),
+            ("\"H2\"", "\" \"", "has no reason"),
+        ] {
+            let got = row(&good.replace(from, to));
+            assert!(
+                got.len() == 1 && got[0].starts_with("GITSRC str0m:") && got[0].contains(needle),
+                "{from} -> {to}: {got:?}"
+            );
+        }
+        let got = row(&good.replace(&format!("rev = \"{FORTY_HEX}\"\n"), ""));
+        assert!(
+            got.len() == 1 && got[0].contains("is not a full 40-hex commit"),
+            "no rev: {got:?}"
+        );
+        let got = row(&format!("{good}branch = \"main\"\n"));
+        assert!(
+            got.len() == 1 && got[0].contains("`branch`"),
+            "an unknown key: {got:?}"
+        );
+        assert!(gitsources(&parse_toml("[git-sources]\nx = 1\n").unwrap())
+            .unwrap()
+            .iter()
+            .any(|f| f.starts_with("GITSRC x:")));
+    }
+
+    /// The committed rows are the H2 forks, each admitted for busbar-transport-webrtc only.
+    #[test]
+    fn the_committed_git_sources_are_the_h2_forks_for_webrtc_only() {
+        let committed = parse_toml(COMMITTED_POLICY).unwrap();
+        assert_eq!(gitsources(&committed).unwrap(), Vec::<String>::new());
+        let rows = committed.get("git-sources").as_object().unwrap();
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["str0m", "dimpl"]);
+        for (_, row) in rows.iter() {
+            assert_eq!(str_list(row.get("repos")), ["busbar-transport-webrtc"]);
+        }
     }
 
     #[test]
@@ -2251,10 +2420,9 @@ mod tests {
 
     #[test]
     fn declares_text() {
-        assert_eq!(
-            found("declares stale"),
-            ["DECLARES contract_abi is {'min': 3, 'max': 3}; busbar at the pin speaks store v4 (min = max = 4). Re-render it with busbar-release plugin sync."]
-        );
+        assert_eq!(found("declares stale"), [STATED_RANGE]);
+        assert_eq!(found("declares current"), [STATED_RANGE]);
+        assert_eq!(found("declares literal"), [STATED_RANGE]);
     }
 
     #[test]
@@ -2290,27 +2458,20 @@ mod tests {
             "\"auth\" => &[1, 3],",
         )
         .unwrap();
-        let tail = "; busbar at the pin speaks auth v3 (min = max = 3). Re-render it with busbar-release plugin sync.";
-        let go = |json: &str| declares(d, "auth", json).unwrap().remove(0);
-        assert_eq!(go("{}"), format!("DECLARES contract_abi is None{tail}"));
-        assert_eq!(
-            go(r#"{"contract_abi": {"max": 3, "min": true, "x": [1, "a", null, false]}}"#),
-            format!("DECLARES contract_abi is {{'max': 3, 'min': True, 'x': [1, 'a', None, False]}}{tail}")
-        );
-        assert_eq!(
-            go(r#"{"contract_abi": "s"}"#),
-            format!("DECLARES contract_abi is s{tail}")
-        );
-        assert!(
-            !declares(d, "auth", r#"{"contract_abi": {"max": 3.0, "min": true}}"#)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            declares(d, "auth", r#"{"contract_abi": {"max": 3, "min": 3.0}}"#)
-                .unwrap()
-                .is_empty()
-        );
+        let go = |json: &str| declares(d, "auth", json).unwrap();
+        // ABSENT is the shape every plugin declares: it passes.
+        assert!(go("{}").is_empty());
+        assert!(go(r#"{"needs": ["http"]}"#).is_empty());
+        // STATED, in any shape and at any value (the kind's own version included), it is refused.
+        for stated in [
+            r#"{"contract_abi": {"max": 3, "min": true, "x": [1, "a", null, false]}}"#,
+            r#"{"contract_abi": "s"}"#,
+            r#"{"contract_abi": {"max": 3.0, "min": true}}"#,
+            r#"{"contract_abi": {"max": 3, "min": 3}}"#,
+            r#"{"contract_abi": null}"#,
+        ] {
+            assert_eq!(go(stated), [STATED_RANGE], "{stated}");
+        }
     }
 
     #[test]

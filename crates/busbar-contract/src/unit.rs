@@ -183,6 +183,10 @@ pub enum RefusalReason {
     Untrusted,
     /// The member's own credential, re-resolved for this request, is unavailable.
     CredentialUnavailable,
+    /// The request's method is one no route at its path takes.
+    MethodNotAllowed,
+    /// The node failed in a way it names to no caller.
+    Internal,
 }
 
 /// The closed reason codes a failure may carry.

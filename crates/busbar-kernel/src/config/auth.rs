@@ -151,6 +151,55 @@ pub struct RoleBindingCfg {
     /// module), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
     pub admin_scope: Option<String>,
+    /// The PER-VERB ALLOW-LIST this role grants (#77(9), OWNER-LOCKED,
+    /// `docs/design/BUSBAR-1.6.0.md` l.2279: "Each verb is a plain scoped verb authorized by the
+    /// per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
+    /// `full` stay the 1.5.5 shorthands)"). Either [`ALL_ADMIN_VERBS`] — every verb, exactly what
+    /// `admin_scope: full` grants — or a list of the closed admin table's operation names
+    /// (`[get_keys, post_keys]`), each admitted whatever rung it needs. `admin_scope:` keeps its
+    /// 1.5.5 meaning beside it; a principal holds the UNION of both across its bound roles. ABSENT =
+    /// only what `admin_scope` grants, byte for byte the 1.5.5 grant.
+    ///
+    /// Held as the value the operator wrote and read through [`RoleBindingCfg::verb_grant`];
+    /// `config_validate` refuses any other shape and any name the closed table does not declare
+    /// (fail closed: a typo'd verb must never sit inert while the operator believes it granted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbs: Option<serde_json::Value>,
+}
+
+/// The `verbs:` spelling that grants EVERY admin verb — exactly `admin_scope: full` (#77(9)).
+pub const ALL_ADMIN_VERBS: &str = "*";
+
+/// One role binding's `verbs:` grant, read off the value the operator wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerbGrant {
+    /// `verbs: "*"` — every verb, the same grant as `admin_scope: full`.
+    All,
+    /// `verbs: [ … ]` — exactly these closed-table operation names.
+    Named(Vec<String>),
+}
+
+impl RoleBindingCfg {
+    /// This binding's `verbs:` grant: `None` when the key is absent; `Some(Err(shape))` when the
+    /// value is neither [`ALL_ADMIN_VERBS`] nor a list of names (`shape` says what it was instead,
+    /// for the validation message). Whether each NAME is a verb is the closed table's to say, at
+    /// validation ([`crate::admin::seam::admin_verb_rung`]).
+    pub fn verb_grant(&self) -> Option<Result<VerbGrant, String>> {
+        let value = self.verbs.as_ref()?;
+        Some(match value {
+            serde_json::Value::String(s) if s == ALL_ADMIN_VERBS => Ok(VerbGrant::All),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("a list holding {item}"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(VerbGrant::Named),
+            other => Err(other.to_string()),
+        })
+    }
 }
 
 /// `role_bindings:` - module name -> role name -> grant.
@@ -210,7 +259,9 @@ pub struct MintCeilingCfg {
     /// OMITTED (`None`) = ALL pools; explicit `[]` = NO pools; `[list]` = exactly those. The ceiling
     /// is an upper bound: an enforced mint must request a subset.
     pub allowed_pools: Option<Vec<String>>,
-    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies.
+    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies. Present,
+    /// it narrows the block-level list: every entry must be one the block-level list allows (refused
+    /// at validation), and a mint must satisfy both.
     pub binding_modes: Option<Vec<BindingMode>>,
 }
 
@@ -248,9 +299,10 @@ pub struct AuthPolicyCfg {
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
 /// this block is what makes a provider show a button on the hosted login page; a provider WITHOUT it
-/// is headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
-/// the CORE (never the plugin) during the code→token exchange. `deny_unknown_fields`: a typo here
-/// (e.g. `client_secrets:`) must fail boot, not silently disable the button.
+/// is headless-only (still usable via `POST /auth/token`). Names the confidential-client secret the
+/// plugin is lent at `open` for its own code→token exchange (the host keeps none of it; see
+/// `client_secret`). `deny_unknown_fields`: a typo here (e.g. `client_secrets:`) must fail boot, not
+/// silently disable the button.
 // `Serialize` for the same single reason `IdentityProviderCfg` has it: it is a nested field of one,
 // so the overlay's per-entry merge projection needs it. Config-internal, never a reader-facing view.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -302,9 +354,6 @@ pub struct AuthDeployCfg {
     /// See [`AuthCfg::signing_key`].
     #[serde(default)]
     pub signing_key: Option<SecretRef>,
-    /// See [`AuthCfg::operator_pub`].
-    #[serde(default)]
-    pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication chain, as ordered PROVIDER NAMES. Empty (the default) is the
     /// open front door. `keys` is the built-in signed-key verifier, referenced bare.
     #[serde(default)]
@@ -335,7 +384,6 @@ impl Default for AuthDeployCfg {
     fn default() -> Self {
         Self {
             signing_key: None,
-            operator_pub: None,
             chain: Vec::new(),
             admin_auth: default_admin_auth_names(),
             role_bindings: RoleBindings::new(),
@@ -358,16 +406,6 @@ pub struct AuthCfg {
     /// behavior boot-looped a read-only config mount) - generate one with
     /// `busbar --generate-signing-key`. Rotating it revokes every outstanding key.
     pub signing_key: Option<SecretRef>,
-    /// The POLICY-SEALED operator public key: a SECRET REFERENCE resolving to the raw 32-byte
-    /// ed25519 VERIFYING key the fleet's operator ceremony sealed (`operator.pub` — 32 raw bytes or
-    /// 64 hex chars). This is the key D38's `amend_rate_history` verifies a back-dated rate
-    /// correction's detached signature against. Fleet-shared, like `signing_key`. ABSENT (the
-    /// default) ⇒ the operator ceremony has not run: the verb-execution unit's `OperatorState::Unset`, so
-    /// every irreducible money-governance verb (amend included) is refused at the ceremony gate,
-    /// byte-for-byte as the release without this field. Present ⇒
-    /// the verb-execution unit's `OperatorState::Set`, which lifts that gate for the sealed key and makes
-    /// a valid-signed amend performable + verified.
-    pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication CHAIN — resolved provider entries in config order. Empty is the
     /// open front door.
     pub chain: Vec<AuthChainEntry>,
@@ -384,8 +422,9 @@ pub struct AuthCfg {
     /// `DEFAULT_KEY_TTL_SECS` (90d).
     pub key_ttl: Option<String>,
     /// The resolved `auth.policy:` token-mint POLICY block (1.6.0, additive). Carried verbatim from
-    /// [`AuthDeployCfg::policy`]; `Default` when the block is omitted. Parsed/validated/carried in
-    /// this increment; consulted by the mint path in a later, Store-touching increment.
+    /// [`AuthDeployCfg::policy`]; `Default` when the block is omitted. Enforced at mint:
+    /// `self_mint` gates the self-serve exchange and the TTL / pool / binding-mode ceilings are
+    /// applied at `MintPolicy::check_mint` (see [`AuthPolicyCfg`]).
     pub policy: AuthPolicyCfg,
 }
 
@@ -394,7 +433,6 @@ impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
             signing_key: None,
-            operator_pub: None,
             chain: vec![],
             admin_auth: default_admin_auth(),
             role_bindings: RoleBindings::new(),

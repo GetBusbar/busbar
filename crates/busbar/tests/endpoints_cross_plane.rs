@@ -5,16 +5,16 @@
 //! (the "fix the 85" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in this file
 //! builds a `TestApp` with real lanes/pools and reads the topology back through `App::engine_tables_view`,
 //! which projects the FALLBACK plane's own runtime slot through that plane decl's `viewer` fn-pointer
-//! (`state.rs::App::engine_tables_view`'s doc). Only the REAL `busbar_llm` plane sets `viewer`/
+//! (`state.rs::App::engine_tables_view`'s doc). Only the REAL the retired engine crate plane sets `viewer`/
 //! `build_runtime` to something that actually returns lane/pool tables — a neutral fake plane (all
 //! hooks `None`/no-op) would leave every one of these reading the empty `EMPTY_VIEW` projection, which
 //! is a different, false-negative failure than what these tests exist to pin. That only type-checks
 //! with ONE `busbar_kernel` in the graph, which is exactly what an integration-test target gives. See
 //! `crates/busbar/tests/plane_integration.rs`'s header for the same rationale, first written there.
 //!
-//! `endpoints::{stats, list_models, list_models_v1beta}` were widened from `pub(crate)` to `pub` for
-//! exactly this move — nothing about the tests themselves changed; they still drive the real handler
-//! functions directly, not a shim or a real HTTP round trip.
+//! `endpoints::stats` was widened from `pub(crate)` to `pub` for exactly this move; the `/v1/models`
+//! cells read the kernel's names for a caller (`endpoints::catalog_names`), which the claiming plane
+//! renders unit-less (ARCHITECT ruling 2026-10-16, 3b C; the envelopes are the plane's own cells).
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
 //! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
@@ -23,9 +23,9 @@
 
 mod linked;
 
-use axum::{extract::Extension, http::HeaderMap};
+use axum::extract::Extension;
 use busbar_contract::records::{ScopeRef, VirtualKey};
-use busbar_kernel::endpoints::{list_models, list_models_v1beta, stats};
+use busbar_kernel::endpoints::{catalog_names, stats};
 use busbar_kernel::governance::GovCtx;
 use busbar_kernel::state::{App, CurrentApp};
 use busbar_kernel::store::now;
@@ -332,21 +332,7 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
 }
 
 async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
-    let resp = list_models(CurrentApp(app), Extension(gov), HeaderMap::new()).await;
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .expect("collect /v1/models body");
-    let body: Value = serde_json::from_slice(&bytes).expect("/v1/models body is JSON");
-    assert_eq!(body["object"], "list", "default `object: list` envelope");
-    body["data"]
-        .as_array()
-        .expect("data array")
-        .iter()
-        .map(|m| {
-            assert_eq!(m["object"], "model", "default `object: model` entry");
-            m["id"].as_str().expect("model id").to_string()
-        })
-        .collect()
+    catalog_names(&app, &gov)
 }
 
 /// `models.list()` is the first call an OpenAI SDK or a self-hosted UI makes. An
@@ -390,60 +376,6 @@ async fn test_v1_models_empty_allowed_pools_sees_all() {
     assert_eq!(ids.len(), 5);
 }
 
-async fn models_body(app: Arc<App>, headers: HeaderMap, beta: bool) -> Value {
-    let resp = if beta {
-        list_models_v1beta(CurrentApp(app), Extension(GovCtx::default()), headers).await
-    } else {
-        list_models(CurrentApp(app), Extension(GovCtx::default()), headers).await
-    };
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .expect("collect body");
-    serde_json::from_slice(&bytes).expect("JSON body")
-}
-
-/// The models-list fingerprint header dialect `proto` declares, read off its declaration exactly as
-/// `list_models` reads it (`ProtocolDecl::list_models_fingerprint_headers`).
-fn fingerprint_header(proto: &str) -> &'static str {
-    register_planes();
-    busbar_kernel::proto::decl_for(proto)
-        .and_then(|d| d.list_models_fingerprint_headers.first().copied())
-        .unwrap_or_else(|| panic!("the `{proto}` dialect declares a fingerprint header"))
-}
-
-/// The Anthropic SDK always sends `anthropic-version` (their API requires it) — the
-/// same path answers in the Anthropic list envelope for those callers.
-#[tokio::test]
-async fn test_v1_models_anthropic_fingerprint_gets_anthropic_envelope() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        fingerprint_header(busbar_kernel::proto::PROTO_ANTHROPIC),
-        "2023-06-01".parse().unwrap(),
-    );
-    let body = models_body(topology_app(), headers, false).await;
-    assert_eq!(body["has_more"], false, "`has_more` list envelope");
-    let first = &body["data"][0];
-    assert_eq!(first["type"], "model");
-    assert_eq!(first["id"], "pool-a");
-    assert!(body.get("object").is_none(), "no `object` envelope field");
-}
-
-/// Gemini callers (x-goog-api-key header, or the /v1beta path their SDK uses) get the
-/// Gemini models envelope with `models/<id>` resource names.
-#[tokio::test]
-async fn test_v1_models_gemini_fingerprint_gets_gemini_envelope() {
-    let mut headers = HeaderMap::new();
-    headers.insert("x-goog-api-key", "k".parse().unwrap());
-    let body = models_body(topology_app(), headers, false).await;
-    assert_eq!(body["models"][0]["name"], "models/pool-a");
-
-    let beta = models_body(topology_app(), HeaderMap::new(), true).await;
-    assert_eq!(
-        beta["models"][0]["name"], "models/pool-a",
-        "the /v1beta path implies the `models/<id>` envelope"
-    );
-}
-
 // ── each plane generation's listed names (THE DESIGN section 2) ──────────────────────────────────
 
 /// The scope kind the listing door states: a grant of it names a listed name.
@@ -457,7 +389,7 @@ fn with_listing_door(
     names: &'static [&'static str],
 ) -> Arc<App> {
     use busbar_contract::plane_calls::{DoorFacing, PlaneRegistration};
-    use busbar_kernel::plane::door::{fold, DoorSection, DoorSlot};
+    use busbar_kernel::plane_driver::door::{fold, DoorSection, DoorSlot};
     let reg = PlaneRegistration {
         key,
         section,
@@ -473,6 +405,7 @@ fn with_listing_door(
         audit_kind: "listing_entry",
         signing: None,
         dialects: Vec::new(),
+        dialect_flags: Vec::new(),
         scope_kinds: vec![LISTING_KIND],
         billable_classes: Vec::new(),
         fee_units: Vec::new(),
@@ -551,41 +484,23 @@ async fn test_v1_models_appends_each_plane_generations_listed_names() {
     );
 }
 
-/// PIN: A PLANE GENERATION THAT LISTS NOTHING LEAVES `/v1/models` BYTE-IDENTICAL (the 1.5.5 bytes):
-/// every envelope, governed or not, is the same bytes as the app with no plane slot at all.
+/// PIN: A PLANE GENERATION THAT LISTS NOTHING LEAVES `/v1/models` UNCHANGED (the 1.5.5 bytes): every
+/// caller, governed or not, is listed the same names as the app with no plane slot at all, so the
+/// plane renders the same bytes.
 #[tokio::test]
 async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
-    async fn bytes(app: Arc<App>, gov: GovCtx, headers: HeaderMap) -> Vec<u8> {
-        let resp = list_models(CurrentApp(app), Extension(gov), headers).await;
-        axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .expect("collect body")
-            .to_vec()
-    }
     let quiet = with_listing_door("v1-models-quiet", "v1_models_quiet", &[]);
-    let mut fingerprints = vec![HeaderMap::new()];
-    let mut h = HeaderMap::new();
-    h.insert(
-        fingerprint_header(busbar_kernel::proto::PROTO_ANTHROPIC),
-        "2023-06-01".parse().unwrap(),
-    );
-    fingerprints.push(h);
-    let mut h = HeaderMap::new();
-    h.insert("x-goog-api-key", "k".parse().unwrap());
-    fingerprints.push(h);
-    for headers in fingerprints {
-        for gov in [
-            GovCtx::default(),
-            GovCtx {
-                key: Some(vkey(&["pool-a"])),
-            },
-        ] {
-            assert_eq!(
-                bytes(Arc::clone(&quiet), gov.clone(), headers.clone()).await,
-                bytes(topology_app(), gov, headers.clone()).await,
-                "a plane listing nothing moves no byte"
-            );
-        }
+    for gov in [
+        GovCtx::default(),
+        GovCtx {
+            key: Some(vkey(&["pool-a"])),
+        },
+    ] {
+        assert_eq!(
+            catalog_names(&quiet, &gov),
+            catalog_names(&topology_app(), &gov),
+            "a plane listing nothing moves no name"
+        );
     }
 }
 
@@ -593,7 +508,7 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
 
 /// A door plane whose open answers for every generation, folded as the composition root folds one.
 fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
-    busbar_kernel::plane::door::fold(busbar_contract::plane_calls::PlaneRegistration {
+    busbar_kernel::plane_driver::door::fold(busbar_contract::plane_calls::PlaneRegistration {
         key: "healthz-lanes-door",
         section: "healthz_lanes_door",
         owns: Vec::new(),
@@ -608,6 +523,7 @@ fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         audit_kind: "door_member",
         signing: None,
         dialects: Vec::new(),
+        dialect_flags: Vec::new(),
         scope_kinds: Vec::new(),
         billable_classes: Vec::new(),
         fee_units: Vec::new(),
@@ -639,21 +555,21 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     let door = opening_door();
     let _isolated =
         busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[fallback, door]);
-    let section = busbar_kernel::plane::door::DoorSection::new(
+    let section = busbar_kernel::plane_driver::door::DoorSection::new(
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
     );
+    let section_defs = section.as_defs();
     let slot = (door.build)(&busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
-        agent_defs: &(),
-        tool_defs: &section,
+        plane_defs: &section_defs,
         public_url: None,
         prior: None,
         providers: None,
     })
     .expect("the configured door builds its generation's slot");
     assert!(
-        busbar_kernel::plane::door::opened(slot.as_ref()),
+        busbar_kernel::plane_driver::door::opened(slot.as_ref()),
         "the door opened"
     );
     let mut fixture = TestApp::new()

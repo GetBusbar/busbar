@@ -45,7 +45,6 @@ pub(crate) const NODE_UNIT: &str = "node";
 /// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
-    ("path-ingress", "path_ingress", "PATH_INGRESS"),
     ("body-ingress", "body_ingress", "BODY_INGRESS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),

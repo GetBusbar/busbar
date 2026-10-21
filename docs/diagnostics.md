@@ -596,26 +596,26 @@ A token-exchange request presented a principal id that is unsafe as a self-serve
 **What to do:** None — self-heals; the client must present a valid subject id. If a legitimate identity is being rejected, its id needs to be reshaped to avoid the reserved prefixes and separators.
 
 <a id="egress-apikey-invalid-bytes"></a>
-### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted) — RETIRED *(retired)*
+### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-apikey-invalid-bytes`
 
-RETIRED. A configured static egress credential contained bytes that are invalid in a header value, so the auth header was omitted and the upstream rejected the request. Nothing raises this code.
+A configured static egress credential contains bytes that are invalid in a header value (an ASCII control character, such as a trailing newline), so the auth plugin omits the auth header and the upstream rejects the request with 401. It is raised on each request that would have carried the header.
 
-**What to do:** Nothing emits this code.
+**What to do:** Fix the credential's configured value: strip the control character (often a trailing newline in the secret's source). Egress to that upstream 401s until it is fixed.
 
 <a id="egress-oauth-token-invalid-bytes"></a>
-### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted) — RETIRED *(retired)*
+### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-oauth-token-invalid-bytes`
 
-RETIRED. An OAuth token minted for egress contained bytes invalid in a header value, so the `Bearer` auth header was omitted and the upstream rejected the request. Nothing raises this code.
+A token minted for egress contains bytes invalid in a header value, so the `Bearer` auth header is omitted and the upstream rejects the request with 401. It is raised when such a token is minted.
 
-**What to do:** Nothing emits this code.
+**What to do:** Investigate the token endpoint: a minted token with a control character in it is malformed. Egress to that upstream 401s until a well-formed token is minted.
 
 <a id="egress-oauth-empty-token"></a>
 ### BUSBAR-4015 — OAuth token endpoint returned a 200 with an empty access_token
@@ -1616,11 +1616,11 @@ The request carried more stop sequences than the target protocol's documented ca
 <a id="proto-auth-invalid-header-bytes"></a>
 ### BUSBAR-7087 — Egress credential has invalid header bytes (auth header omitted)
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `proto-auth-invalid-header-bytes`
 
-An egress authorization credential contained bytes that are not valid in an HTTP header (e.g. an ASCII control character), so the Authorization header was omitted entirely rather than sent malformed — the upstream will reject the request with 401. The key itself is never logged, only the protocol name. This is a bad-credential misconfig that can recur per request, so it is logged at debug.
+An egress authorization credential contains bytes that are not valid in an HTTP header (e.g. an ASCII control character), so the Authorization header is omitted entirely rather than sent malformed — the upstream will reject the request with 401. The key itself is never logged, only the protocol name. It is raised on each request that would have carried the header.
 
 **What to do:** Fix the misconfigured lane's credential — the configured secret contains invalid header bytes. The protocol name in the log line locates the lane.
 
@@ -1724,26 +1724,26 @@ The durable plane demotion records could NOT be read at boot, so any upstream th
 **What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
 <a id="trust-verify-refused-on-drift"></a>
-### BUSBAR-7097 — Verify-on-call refused a call because the upstream's advertised surface drifted
+### BUSBAR-7097 — Verify-on-call refused a call because the upstream's advertised surface drifted — RETIRED *(retired)*
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `trust-verify-refused-on-drift`
 
-On the request path, verify-on-call re-fetched the upstream's advertised surface (a tool's name+args+description, or an agent card) within `verify_ttl` and found it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so persistent drift does not spam.
+RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book (BUSBAR-4019).
 
-**What to do:** Review the change on the trust surface and re-approve the new fingerprint if it is legitimate, or investigate the upstream if it is not.
+**What to do:** Nothing emits this code. See BUSBAR-4019.
 
 <a id="trust-verify-unreachable"></a>
-### BUSBAR-7098 — Verify-on-call could not reach an upstream to re-verify, and refused fail-closed
+### BUSBAR-7098 — Verify-on-call could not reach an upstream to re-verify, and refused fail-closed — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-verify-unreachable`
 
-On the request path, verify-on-call needed to re-verify an upstream whose recorded observation was older than `verify_ttl`, and the re-fetch FAILED (unreachable or unverifiable). The call was REFUSED fail-closed rather than served against a snapshot older than the operator's bound. Latched per subject.
+RETIRED. Nothing emits this code: the verify-on-call gate that re-fetched a stale observation is deleted (Q128 p8#3).
 
-**What to do:** Restore reachability to the named upstream. Calls to it are refused until a re-fetch succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window and is an explicit, documented security downgrade.
+**What to do:** Nothing emits this code.
 
 <a id="plane-task-abandon-unrecorded"></a>
 ### BUSBAR-7099 — Abandoned plane task could not be transitioned to canceled (durable store write failed)

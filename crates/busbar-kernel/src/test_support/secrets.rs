@@ -9,11 +9,11 @@
 //! plugin crate.
 //!
 //! FAITHFUL TEXT (coordinator ruling on #565, 2026-10-07): every refusal the double produces is the
-//! shipped source's, byte for byte, and its error kind is the source's; each string cites the line
-//! of the pinned source it reproduces (`env src/lib.rs` is the env source's at rev 495318c,
-//! `file src/lib.rs` the file source's at rev 479c833 — the revs the workspace root pins; the
-//! module names are the contract's constants, never spelled here). A rev bump that changes a
-//! refusal changes it here too; the root's suite
+//! shipped source's, byte for byte, and its error kind is the source's; each string cites the ITEM
+//! of the source it reproduces (`env::resolve` is the env source's `resolve`, `file::io_refusal`
+//! the file source's `io_refusal`, at whatever rev the workspace root pins: an item name does not
+//! go stale when a pin moves its lines; the module names are the contract's constants, never
+//! spelled here). A pin bump that changes a refusal changes it here too; the root's suite
 //! (`crates/busbar/src/root/tests/linked_secret_sources.rs`, `root/tests/linked.rs`) pins the real
 //! sources' words through the linked axis, so the two cannot drift silently apart.
 //!
@@ -56,11 +56,11 @@ fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
 }
 
-/// The env source's refusal of a missing / blank `key` (env src/lib.rs:42-45 @ 495318c).
+/// The env source's refusal of a missing / blank `key` (`env::resolve`).
 const ENV_NEEDS_KEY: &str = "secret module 'env' requires settings.key naming the environment \
      variable (e.g. `{ env: MY_VAR }` or `{ module: env, settings: { key: MY_VAR } }`)";
 
-/// The file source's refusal of a missing / blank `path` (file src/lib.rs:83-86 @ 479c833).
+/// The file source's refusal of a missing / blank `path` (`file::resolve`).
 const FILE_NEEDS_PATH: &str = "secret module 'file' requires settings.path naming the file \
      (e.g. `{ file: /run/secrets/x }` or `{ module: file, settings: { path: /run/secrets/x } }`)";
 
@@ -70,7 +70,7 @@ fn setting(settings: &[u8], field: &str, missing: &str) -> Result<String, Secret
     // The kernel's resolver hands every call the reference's settings as a JSON object
     // (`config::secret::SecretResolver::resolve`), so a document that is not one is a broken
     // caller, not an operator's refusal: the double does not produce the sources' "secret settings
-    // are not a JSON object" refusal (env src/lib.rs:95 @ 495318c, file src/lib.rs:141 @ 479c833),
+    // are not a JSON object" refusal (`env::settings_of`, `file::settings_of`),
     // and a test that reaches this fails loudly.
     let doc: serde_json::Map<String, serde_json::Value> = if settings.is_empty() {
         serde_json::Map::new()
@@ -88,7 +88,7 @@ fn setting(settings: &[u8], field: &str, missing: &str) -> Result<String, Secret
 fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
     let var = setting(settings, SECRET_ENV_SETTING_KEY, ENV_NEEDS_KEY)?;
     let Some(raw) = std::env::var_os(&var) else {
-        // env src/lib.rs:55-57 @ 495318c (NotFound).
+        // `env::resolve`, the unset variable (NotFound).
         return Err(refused(
             ERROR_KIND_NOT_FOUND,
             format!(
@@ -98,7 +98,7 @@ fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
         ));
     };
     let value = raw.into_string().map_err(|_| {
-        // env src/lib.rs:62-67 @ 495318c (Invalid).
+        // `env::resolve`, the non-UTF-8 value (Invalid).
         refused(
             ERROR_KIND_INVALID,
             format!(
@@ -111,7 +111,7 @@ fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
         )
     })?;
     if value.is_empty() {
-        // env src/lib.rs:68-71 @ 495318c (Invalid).
+        // `env::resolve`, the empty value (Invalid).
         return Err(refused(
             ERROR_KIND_INVALID,
             format!(
@@ -126,8 +126,7 @@ fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
 fn resolve_file(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
     let path = setting(settings, SECRET_FILE_SETTING_PATH, FILE_NEEDS_PATH)?;
     let bytes = std::fs::read(&path).map_err(|e| {
-        // The kind is the source's io mapping (file src/lib.rs:62-67 @ 479c833), the text its io
-        // refusal (file src/lib.rs:68 @ 479c833).
+        // The kind is the source's io mapping and the text its io refusal (`file::io_refusal`).
         let kind = match e.kind() {
             std::io::ErrorKind::NotFound => ERROR_KIND_NOT_FOUND,
             std::io::ErrorKind::PermissionDenied => ERROR_KIND_DENIED,
@@ -140,7 +139,7 @@ fn resolve_file(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
         )
     })?;
     if bytes.is_empty() {
-        // file src/lib.rs:112-115 @ 479c833 (Invalid).
+        // `file::resolve`, the empty file (Invalid).
         return Err(refused(
             ERROR_KIND_INVALID,
             format!(

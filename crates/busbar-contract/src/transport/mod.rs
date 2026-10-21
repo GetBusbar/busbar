@@ -12,9 +12,9 @@
 // (DECISIONS #38): a KIND is a match-arm, not a crate, so the transport half lives here as one
 // module tree rather than a sibling crate the contract depended on.
 pub mod dest;
-pub mod driver;
 pub mod registry;
-// THE TWO TRANSPORT ROLES (TRANSPORT-STACK): a transport plugin is a carrier or a framer.
+// THE TWO TRANSPORT ROLES (TRANSPORT-STACK): a transport plugin is a carrier or a framer. Which one
+// is the export its door makes, never a derivation from what it composes over.
 pub mod stack;
 pub mod surface;
 // The transport-axis enum (`Transport`) keeps its own file name from the folded
@@ -26,8 +26,8 @@ pub mod trust;
 pub mod wire;
 
 pub use stack::{
-    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed,
-    Framer, FramerOut, HostTime, Located, Role, Side, TransportRow,
+    BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed, Framer,
+    FramerOut, HostTime, Located, Side, TransportRow,
 };
 
 use crate::ids::StreamId;
@@ -80,12 +80,6 @@ pub use surface::{
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
     MAX_CAPTURES,
 };
-
-/// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
-///
-/// Re-exported for the one reader who is neither a transport author nor a plugin author: the
-/// composition root IMPLEMENTS this, and it reaches the transport contract through this module.
-pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 
 /// Where a dial lands, as the transport family that dials it spells it — named at the transport
 /// module root because a plane builds one when it says where a unit wants to go.

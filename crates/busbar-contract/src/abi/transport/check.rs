@@ -104,6 +104,7 @@ pub fn check_locate(
     name_cap: u64,
     alpn_cap: u64,
     alpn: &[u8],
+    defaults_cap: u64,
 ) -> Result<(), Fault> {
     code(u64::from(out.secure), 0, 1, "locate.secure")?;
     code(u64::from(out.has_name), 0, 1, "locate.has_name")?;
@@ -134,6 +135,13 @@ pub fn check_locate(
                 cap: alpn_cap,
                 max: MAX_ALPN_BYTES,
                 field: "locate.alpn",
+            },
+            Dim {
+                written: out.defaults_written,
+                needed: out.defaults_needed,
+                cap: defaults_cap,
+                max: MAX_BYTES,
+                field: "locate.defaults",
             },
         ],
     )?;

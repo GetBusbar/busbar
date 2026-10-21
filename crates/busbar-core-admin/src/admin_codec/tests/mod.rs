@@ -20,10 +20,7 @@
 //! * the walk itself (a real verb, through the real mount, past the loop's steps, onto the audit
 //!   chain) is `crates/busbar/src/root/units_admin/tests/admin_path_without_plane_face.rs`.
 
-use busbar_contract::plane::PlaneMeta;
-
 use crate::admin_codec::verbs::{self, VERB_COUNT};
-use crate::admin_codec::AdminPlane;
 
 // ── the closed table ───────────────────────────────────────────────────────────────────────────
 
@@ -56,22 +53,14 @@ fn combined_table_has_unique_verb_names() {
 
 // ── what the surface declares about itself ─────────────────────────────────────────────────────
 
-/// `AdminPlane` has no fields — asserted structurally, not just by comment. It is a NAME the boot
-/// registry holds the admin surface under, and there is nothing about one operator's request for it
-/// to carry across calls.
-#[test]
-fn admin_plane_carries_no_fields() {
-    assert_eq!(std::mem::size_of::<AdminPlane>(), 0);
-}
-
-/// The registry only requires `SessionPlane` when a claimed transport declares itself session
-/// shaped; this surface's one claim is over `"http"`, and its `PlaneMeta` row carries a `CLAIMS`
-/// slice of length one, matching `claims::CLAIMS`.
+/// The surface's one claim is over `"http"` and is the whole of what it declares: a cleanliness
+/// crate's route, sealed under [`crate::admin_codec::KEY`].
 #[test]
 fn declares_exactly_one_claim_over_http() {
-    let claims = <AdminPlane as PlaneMeta>::CLAIMS;
+    let claims = crate::admin_codec::claims::CLAIMS;
     assert_eq!(claims.len(), 1);
     assert_eq!(claims[0].transport, "http");
+    assert_eq!(crate::admin_codec::KEY, "admin");
 }
 
 // ── the entry face is gone, and this is what says so ───────────────────────────────────────────
@@ -113,7 +102,8 @@ fn no_shipped_source_of_this_crate_implements_the_plane_entry_face() {
 }
 
 /// The scan above is a filter and not a wall: it sees the shape it forbids when that shape is put
-/// in front of it, and it does not see `PlaneMeta`, which is a DECLARATION and stays.
+/// in front of it, and it does not see `PlaneMeta`, a declaration (which `tests/no_plugin_face.rs`
+/// forbids the surface separately).
 #[test]
 fn the_entry_face_scan_sees_the_impl_it_forbids_and_not_the_declaration() {
     let sees = |line: &str| {

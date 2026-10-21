@@ -451,13 +451,13 @@ mod resumed_open {
 }
 
 /// RED (Q-P4-7): the store script writes, and looks up, the credential kind the plugin's
-/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold,
-/// `sigv4` in 1.5.5's), never a kind of its own a schema-constrained store refuses; a
-/// `conformance.json` that names none is refused by name.
+/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold),
+/// never a kind of its own a schema-constrained store refuses; a `conformance.json` that names none
+/// is refused by name.
 #[test]
 fn the_store_script_writes_the_credential_kind_the_plugin_names() {
     use super::store::{secret, Inputs};
-    assert_eq!(secret("sigv4", "c1", "k1", "pub1").meta.kind, "sigv4");
+    assert_eq!(secret("signed", "c1", "k1", "pub1").meta.kind, "signed");
     let none = serde_json::json!({ "node": 1 });
     let text = std::panic::catch_unwind(|| Inputs::of(&none).credential_kind.to_owned())
         .expect_err("no credential kind named");
@@ -670,21 +670,30 @@ mod namespace_hooks {
 #[test]
 fn red_declares_needs_that_are_not_the_statements_are_refused() {
     use super::declared_needs_are;
-    let http = ["http".to_owned()];
-    let tcp_http = ["http".to_owned(), "tcp".to_owned()];
-    assert_eq!(declared_needs_are(r#"{"needs": ["http"]}"#, &http), Ok(()));
+    let framed = ["framed".to_owned()];
+    let stream_framed = ["framed".to_owned(), "stream".to_owned()];
     assert_eq!(
-        declared_needs_are(r#"{"needs": ["tcp", "http", "tcp"]}"#, &tcp_http),
+        declared_needs_are(r#"{"needs": ["framed"]}"#, &framed),
+        Ok(())
+    );
+    assert_eq!(
+        declared_needs_are(
+            r#"{"needs": ["stream", "framed", "stream"]}"#,
+            &stream_framed
+        ),
         Ok(())
     );
     assert_eq!(declared_needs_are(r#"{"contract_abi": {}}"#, &[]), Ok(()));
-    let e = declared_needs_are(r#"{"needs": ["http", "tcp"]}"#, &http).unwrap_err();
-    assert!(e.contains(r#"names ["tcp"] the Statement does not"#), "{e}");
-    let e = declared_needs_are(r#"{"needs": ["http"]}"#, &tcp_http).unwrap_err();
-    assert!(e.contains(r#"misses ["tcp"]"#), "{e}");
-    let e = declared_needs_are(r#"{}"#, &http).unwrap_err();
-    assert!(e.contains(r#"misses ["http"]"#), "{e}");
-    assert!(declared_needs_are(r#"{"needs": "http"}"#, &http).is_err());
+    let e = declared_needs_are(r#"{"needs": ["framed", "stream"]}"#, &framed).unwrap_err();
+    assert!(
+        e.contains(r#"names ["stream"] the Statement does not"#),
+        "{e}"
+    );
+    let e = declared_needs_are(r#"{"needs": ["framed"]}"#, &stream_framed).unwrap_err();
+    assert!(e.contains(r#"misses ["stream"]"#), "{e}");
+    let e = declared_needs_are(r#"{}"#, &framed).unwrap_err();
+    assert!(e.contains(r#"misses ["framed"]"#), "{e}");
+    assert!(declared_needs_are(r#"{"needs": "framed"}"#, &framed).is_err());
 }
 
 /// The declares file is found at the workspace root or one directory below it.

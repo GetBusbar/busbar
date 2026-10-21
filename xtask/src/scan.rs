@@ -105,6 +105,9 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
     let mut in_test = false;
     let mut pending = false;
     let mut pend_age = 0u32;
+    // Parens and brackets opened since the attribute: a `,` inside a parameter list does not end
+    // the item.
+    let mut pend_open: i32 = 0;
     let mut depth: i32 = 0;
     let mut lex = LexState::default();
 
@@ -127,8 +130,19 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
         } else if pending {
             gated = true;
             let t = code.trim_start();
+            pend_open += delta(&counted, '(', ')') + delta(&counted, '[', ']');
             if code.trim().is_empty() || t.starts_with("#[") {
                 pend_age += 1;
+            } else if ends_field(&code, pend_open) {
+                // A FIELD, VARIANT OR ARM: a brace-less item ended by `,`. It gates this line and
+                // no more, or the attribute stays armed past the struct's `}` and gates the next
+                // braced item, which is production code.
+                pending = false;
+            } else if braces(&counted) < 0 {
+                // The ENCLOSING item closed before the attribute found its own: nothing of the
+                // attribute's reaches past this brace.
+                pending = false;
+                gated = false;
             } else if counted.contains('{') {
                 pending = false;
                 depth = braces(&counted);
@@ -158,9 +172,12 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
             // The attribute holds no literal, so the blanked line strips to the same remainder —
             // and that remainder is the one the braces are counted off.
             let rest_counted = strip_cfg_attr(&counted);
+            pend_open = delta(&rest_counted, '(', ')') + delta(&rest_counted, '[', ']');
             if rest.trim().is_empty() {
                 pending = true;
                 pend_age = 0;
+            } else if ends_field(&rest, pend_open) {
+                // `#[cfg(test)] calls: u32,` — a field on the attribute's own line.
             } else if rest_counted.contains('{') {
                 depth = braces(&rest_counted);
                 if depth > 0 {
@@ -205,6 +222,12 @@ fn code_of(line: &str, comment_at: Option<usize>) -> String {
         Some(at) => line.chars().take(at).collect(),
         None => line.to_string(),
     }
+}
+
+/// A brace-less item that ends in `,` — a struct field, an enum variant, a match arm — with no
+/// paren or bracket the attribute's item opened still open.
+fn ends_field(code: &str, open: i32) -> bool {
+    open <= 0 && code.trim_end().ends_with(',')
 }
 
 /// Brace depth of ONE ALREADY-BLANKED line. Takes [`blank_code`] output and nothing else, which is
@@ -777,4 +800,60 @@ fn normalize_rel(p: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+/// One memo of a per-file reading ([`file_reading`]): a cell per key, handed out under the lock and
+/// FILLED OUTSIDE it, so concurrent cases that need the same file take one reading between them.
+pub type FileReadingMemo<T> = std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::OnceLock<std::sync::Arc<T>>>>,
+    >,
+>;
+
+/// `read(f.text)`, MEMOISED ON THE KEY [`cfg_test_module_files`] KEYS A FILE'S DECLARATIONS ON. A
+/// file the overlay does not touch is read from disk (or the base layer), so its ABSOLUTE PATH is a
+/// promise that its bytes are the same for the life of the process; a planted file is keyed on its
+/// path AND its bytes, so a plant is always a reading of its own.
+///
+/// A self-test case IS a gate run over a tree one plant away from the last. A gate that re-reads
+/// every unchanged file of a whole-tree scan on every run pays for the scan once per case; keying
+/// the unchanged files on their bytes would still hash the whole tree every time. Keyed this way a
+/// run reads its planted files and looks the rest up. Same bytes, same reading, so the memo cannot
+/// change a verdict — and each gate that reads through here holds its memoised verdict equal to a
+/// full walk's on planted trees in its own tests.
+pub fn file_reading<T: Send + Sync + 'static>(
+    memo: &'static FileReadingMemo<T>,
+    cx: &crate::ctx::Ctx,
+    f: &crate::ctx::SourceFile,
+    read: impl FnOnce(&str) -> T,
+) -> std::sync::Arc<T> {
+    use std::hash::{Hash, Hasher};
+    let planted = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| *p == f.rel));
+    let key = if planted {
+        let mut a = std::collections::hash_map::DefaultHasher::new();
+        f.text.hash(&mut a);
+        let mut b = std::collections::hash_map::DefaultHasher::new();
+        (f.text.len(), &f.text).hash(&mut b);
+        0x5ca_u32.hash(&mut b);
+        format!(
+            "planted\u{0}{}\u{0}{}\u{0}{:016x}{:016x}",
+            f.rel_str(),
+            f.text.len(),
+            a.finish(),
+            b.finish()
+        )
+    } else {
+        format!("stable\u{0}{}", f.abs.to_string_lossy())
+    };
+    let cell = memo
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| std::sync::Arc::new(read(&f.text)))
+        .clone()
 }

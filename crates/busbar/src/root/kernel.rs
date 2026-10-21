@@ -1512,7 +1512,6 @@ pub(crate) fn journalled_cards(
 fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
     let amendment = crate::root::units_admin::amendment_from_body(body)?;
     let author = busbar_kernel_ledger::cost::Author::Amend {
-        operator_fingerprint: amendment.operator_fingerprint,
         reason_hash: amendment.reason_hash,
     };
     // An UNPRICED cell (`None`) is left off, so a hit on it refuses (#42) exactly as it did on the

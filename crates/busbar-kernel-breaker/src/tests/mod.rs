@@ -691,7 +691,7 @@ fn win_probe(unit: &BreakerUnit, d: DestinationId) -> u64 {
         .expect("precondition: this caller must WIN the single-flight probe")
 }
 
-/// F25 row 568: rehomed from crates/busbar-llm/src/engine/tests/probe_guard_tests.rs::dropping_armed_guard_releases_probe.
+/// F25 row 568: rehomed from the retired engine crate's src/engine/tests/probe_guard_tests.rs::dropping_armed_guard_releases_probe.
 /// A won probe given back without a dispatch (what an armed guard's drop does; the egress unit's
 /// `ProbeGuard` making exactly this call is pinned in busbar-kernel
 /// `src/tests/members/egress/route/probe_tests.rs`) releases it on the REAL breaker: the cell goes
@@ -721,7 +721,7 @@ fn dropping_armed_guard_releases_probe() {
     );
 }
 
-/// F25 row 570: rehomed from crates/busbar-llm/src/engine/tests/probe_guard_tests.rs::stalled_guard_does_not_release_a_newer_probe.
+/// F25 row 570: rehomed from the retired engine crate's src/engine/tests/probe_guard_tests.rs::stalled_guard_does_not_release_a_newer_probe.
 /// A STALLED guard (it won an earlier probe, whose outcome was since recorded, and a newer probe
 /// was won on the re-opened cell) drops late: its owner-checked release is a no-op, and the current
 /// owner keeps its HalfOpen cell and its probe.

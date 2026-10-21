@@ -672,8 +672,8 @@ pub struct ProtocolDecl {
 
     /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
     /// URL path rather than the body, so a same-protocol passthrough strips body
-    /// `model`. A protocol declaring `true` MUST register a `path_ingress` (see
-    /// `busbar_kernel::ingress::path_ingress`); the composition root asserts this at boot.
+    /// `model`. The plane that declares it serves those arrivals through its own door claims; the
+    /// kernel registers no URL-model arrival (ARCHITECT 2026-10-16 ruling 3 item 1).
     pub has_model_in_url: bool,
 
     /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a

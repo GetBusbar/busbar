@@ -16,7 +16,7 @@
 
 mod linked;
 
-use busbar_kernel::plane::config::{config_sections, refuse_cross_plane_reference};
+use busbar_kernel::config::plane_sections::{config_sections, refuse_cross_plane_reference};
 use busbar_kernel::plane::{PlaneSections, RefError};
 
 /// Register every test-linked plane in the process registry — idempotent (first-wins), so every

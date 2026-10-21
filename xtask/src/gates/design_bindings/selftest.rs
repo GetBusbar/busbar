@@ -746,14 +746,14 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         ov.set_command(
             NOTE_TABLE_KEY,
             format!(
-                "PB-1\tResolved: the behavioural half is where the behaviour is, at admit.rs's \
+                "PB-1\tResolved: the behavioural half is where the behaviour is, at serve_tests.rs's \
                  {note}."
             ),
         );
         ov
     };
     let green_base = cx.with_overlay(fixture(
-        "over_budget_refuses_with_no_charge_and_nothing_to_refund",
+        "the_pools_door_refuses_a_spent_budget_without_charging_anything",
     ));
     r.push(prove_rows_red(
         &green_base,
@@ -773,7 +773,7 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         gate,
         "a note whose named witness resolves to a real fn is accepted",
         &[super::ROW_NOTE_WITNESS],
-        fixture("over_budget_refuses_with_no_charge_and_nothing_to_refund"),
+        fixture("the_pools_door_refuses_a_spent_budget_without_charging_anything"),
     ));
 
     // X-1207: A CITED FILE PATH IS A WITNESS TOO. The rule read identifier-shaped tokens only, so a
@@ -786,7 +786,7 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         "a note citing a file path that is not on disk is refused (X-1207)",
         &[super::ROW_NOTE_WITNESS],
         fixture(
-            "over_budget_refuses_with_no_charge_and_nothing_to_refund, declared in \
+            "the_pools_door_refuses_a_spent_budget_without_charging_anything, declared in \
              crates/busbar-caps/src/decision.rs",
         ),
         &["crates/busbar-caps/src/decision.rs"],
@@ -797,7 +797,7 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         "a note citing a file path on disk is accepted",
         &[super::ROW_NOTE_WITNESS],
         fixture(
-            "over_budget_refuses_with_no_charge_and_nothing_to_refund, declared in \
+            "the_pools_door_refuses_a_spent_budget_without_charging_anything, declared in \
              crates/busbar-contract/src/caps/seat_verdict.rs",
         ),
     ));

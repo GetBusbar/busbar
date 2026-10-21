@@ -11,10 +11,13 @@
 //!
 //! ## WHAT COUNTS AS AN ABI SHAPE
 //!
-//! * **`repr-c`** — a `#[repr(C …)]` struct, enum or union. `#[repr(u8)]`/`#[repr(transparent)]`
+//! * **`repr-c`** — a struct, enum or union whose `repr(…)` names `C` among its hints, however
+//!   the attribute is spelled: `#[repr(C)]`, `#[repr(align(8), C)]`, a `#[repr(C)]` sharing its
+//!   line with a `#[derive(…)]`, or `#[cfg_attr(…, repr(C))]`. `#[repr(u8)]`/`#[repr(transparent)]`
 //!   alone are not counted: they fix a discriminant or a wrapper, not a C layout, and the tree uses
 //!   them for on-disk frames and newtypes that never meet a plugin.
-//! * **`extern-fn`** — an `extern "C"` / `extern "C-unwind"` / `extern "system"` fn DEFINITION
+//! * **`extern-fn`** — an `extern "C"` / `extern "C-unwind"` / `extern "system"` / bare `extern`
+//!   (the C ABI with its string left out) fn DEFINITION
 //!   whose signature is NOT one of the ABI's fn types: a slot signature invented outside `abi/`.
 //!   A definition whose parameter and return types EQUAL an `extern "C…" fn(…)` pointer type
 //!   written under `abi/` (`Op`, `DoorFn`, `WakeFn`, …) is an IMPLEMENTATION of that shape, not a
@@ -310,14 +313,43 @@ impl Joined {
     }
 }
 
-/// A line that IS a `#[repr(…)]` attribute naming `C` among its representation hints.
+/// A line holding a `repr(…)` naming `C` among its representation hints, wherever it stands: a
+/// `#[repr(…)]` of its own, one sharing its line with a `#[derive(…)]`, or one inside a
+/// `#[cfg_attr(…, repr(…))]`. The hint list is read to its BALANCED close, so `C` after a hint
+/// that carries parentheses of its own (`#[repr(align(8), C)]`) is still read.
 fn is_repr_c(counted: &str) -> bool {
-    let t = counted.trim_start();
-    let Some(rest) = t.strip_prefix("#[repr(") else {
-        return false;
-    };
-    let inner = rest.split(')').next().unwrap_or("");
-    inner.split(',').any(|h| h.trim() == "C")
+    let c: Vec<char> = counted.chars().collect();
+    let mut i = 0;
+    while i < c.len() {
+        if !word_at(&c, i, "repr") {
+            i += 1;
+            continue;
+        }
+        let open = skip_ws(&c, i + 4);
+        i += 4;
+        if c.get(open) != Some(&'(') {
+            continue;
+        }
+        let close = close_of(&c, open).unwrap_or(c.len());
+        let (mut depth, mut from) = (0i32, open + 1);
+        let mut hints = Vec::new();
+        for (k, ch) in c.iter().enumerate().take(close).skip(open + 1) {
+            match ch {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    hints.push(c[from..k].iter().collect::<String>());
+                    from = k + 1;
+                }
+                _ => {}
+            }
+        }
+        hints.push(c[from..close.min(c.len())].iter().collect::<String>());
+        if hints.iter().any(|h| h.trim() == "C") {
+            return true;
+        }
+    }
+    false
 }
 
 /// The name of the struct/enum/union a `#[repr(C)]` attribute applies to: the first
@@ -364,25 +396,31 @@ fn extern_items(c: &[char], r: &[char]) -> Vec<ExternItem> {
         }
         let at = i;
         let mut j = skip_ws(c, i + 6);
-        if c.get(j) != Some(&'"') {
+        // `extern fn` with no ABI string is the C ABI: Rust reads the omitted string as "C".
+        let (abi, k) = if word_at(c, j, "fn") {
             i += 6;
-            continue;
-        }
-        let open = j;
-        j += 1;
-        while j < c.len() && c[j] != '"' && c[j] != '\n' {
+            ("C".to_string(), j)
+        } else {
+            if c.get(j) != Some(&'"') {
+                i += 6;
+                continue;
+            }
+            let open = j;
             j += 1;
-        }
-        if j >= c.len() || c[j] != '"' {
-            i = j;
-            continue;
-        }
-        let abi: String = r
-            .get(open + 1..j)
-            .map(|s| s.iter().collect())
-            .unwrap_or_default();
-        let k = skip_ws(c, j + 1);
-        i = j + 1;
+            while j < c.len() && c[j] != '"' && c[j] != '\n' {
+                j += 1;
+            }
+            if j >= c.len() || c[j] != '"' {
+                i = j;
+                continue;
+            }
+            let abi: String = r
+                .get(open + 1..j)
+                .map(|s| s.iter().collect())
+                .unwrap_or_default();
+            i = j + 1;
+            (abi, skip_ws(c, j + 1))
+        };
         if !matches!(abi.as_str(), "C" | "C-unwind" | "system" | "system-unwind") {
             continue;
         }
@@ -617,19 +655,57 @@ struct Ledger {
 }
 
 fn load_ledger(cx: &Ctx) -> Ledger {
-    let text = match cx.read(LEDGER) {
-        Ok(t) => t,
-        Err(e) => {
-            return Ledger {
-                external_root: "..".into(),
-                errors: vec![format!(
-                    "{LEDGER} is unreadable ({e}); every shape outside {ONE_HOME} is therefore NEW"
-                )],
-                ..Ledger::default()
-            }
-        }
+    match cx.read(LEDGER) {
+        Ok(text) => parse_ledger(&text),
+        Err(e) => Ledger {
+            external_root: "..".into(),
+            errors: vec![format!(
+                "{LEDGER} is unreadable ({e}); every shape outside {ONE_HOME} is therefore NEW"
+            )],
+            ..Ledger::default()
+        },
+    }
+}
+
+/// THE LEDGER AGAINST ITS BASE (Law 9: a ceiling "refuses every rise"): every `[[offender]]` row
+/// and every `[[not_abi]]` exclusion this change wrote over the base's copy of the ledger, as
+/// multisets (one row per shape). A row added beside the shape it forgives is that shape landing
+/// green; it is MINTED and RED. A ledger the base does not carry is the gate's own arming. The
+/// base is `ceiling-census`'s ([`crate::gates::construction::ceilings::base_copy`]); a base that
+/// cannot be established is RED, never a skipped comparison.
+fn against_base(cx: &Ctx, now: &Ledger) -> Vec<String> {
+    let (base, text) = match crate::gates::construction::ceilings::base_copy(cx, LEDGER) {
+        Ok((base, Some(text))) => (base, text),
+        Ok((_, None)) => return Vec::new(),
+        Err(e) => return vec![e],
     };
-    let doc = crate::toml_lite::parse_text(&text);
+    let was = parse_ledger(&text);
+    let short = base.short().to_string();
+    let mut out: Vec<String> =
+        crate::gates::construction::ceilings::minted(&now.offenders, &was.offenders)
+            .iter()
+            .map(|k| {
+                format!(
+                "MINTED row {}: in no copy of {LEDGER} at the base {short} -- define the shape in \
+                 {ONE_HOME}, never add its row",
+                describe_key(k)
+            )
+            })
+            .collect();
+    out.extend(
+        crate::gates::construction::ceilings::minted(&now.not_abi, &was.not_abi)
+            .iter()
+            .map(|(file, item)| {
+                format!(
+                    "MINTED [[not_abi]] {file} {item}: in no copy of {LEDGER} at the base {short}"
+                )
+            }),
+    );
+    out
+}
+
+fn parse_ledger(text: &str) -> Ledger {
+    let doc = crate::toml_lite::parse_text(text);
     let mut led = Ledger {
         external_root: doc
             .table("external")
@@ -943,6 +1019,7 @@ impl Gate for AbiLocationGate {
         }
 
         let mut ledger_problems: Vec<String> = ledger.errors.clone();
+        ledger_problems.extend(against_base(cx, &ledger));
         ledger_problems.extend(stale.iter().map(|k| {
             format!(
                 "STALE row (no such shape in the tree — strike it in the draining commit): {}",
@@ -977,6 +1054,10 @@ impl Gate for AbiLocationGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
+        // The ledger row compares the ledger with the base: the unplanted baseline is measured
+        // against `HEAD`, since a detached battery checkout has no other base.
+        let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+        let cx = &pinned;
         report.push(prove_green(
             cx,
             self,
@@ -1048,8 +1129,41 @@ impl Gate for AbiLocationGate {
             ],
         ));
 
-        // TEST DOUBLES: under tests/, and under #[cfg(test)], and in comments/strings — all GREEN.
+        // EVERY LEGAL SPELLING OF A C LAYOUT AND A C SLOT: `C` after another hint, a `repr` that
+        // shares its line with a `derive`, a `repr` under `cfg_attr`, and `extern` with its ABI
+        // string left out (which Rust reads as "C"), as a definition and as a pointer type.
+        let spelled = "crates/busbar-kernel/src/planted_spellings.rs";
         let mut ov = Overlay::new();
+        ov.set(
+            spelled,
+            "#[repr(align(8), C)]\npub struct PlantedAligned {\n    pub a: u32,\n}\n\
+             #[derive(Clone, Copy)] #[repr(C)]\npub struct PlantedSameLine {\n    pub a: u32,\n}\n\
+             #[cfg_attr(target_os = \"linux\", repr(C))]\npub struct PlantedCfgAttr {\n    pub a: u32,\n}\n\
+             pub extern fn planted_bare_slot(x: u32) -> u32 {\n    x\n}\n\
+             pub type PlantedBarePtr = Option<unsafe extern fn(u32) -> u32>;\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "#[repr(align(8), C)], a same-line #[derive] #[repr(C)], #[cfg_attr(.., repr(C))] and \
+             an ABI-less `extern fn` (definition and pointer type) outside abi/ are RED",
+            &[ROW_REPR_C, ROW_EXTERN],
+            ov,
+            &[
+                "PlantedAligned",
+                "PlantedSameLine",
+                "PlantedCfgAttr",
+                "extern-fn crates/busbar-kernel/src/planted_spellings.rs:13 planted_bare_slot",
+                "fn-ptr crates/busbar-kernel/src/planted_spellings.rs:16 fn-ptr-1",
+            ],
+        ));
+
+        // TEST DOUBLES: under tests/, and under #[cfg(test)], and in comments/strings — all GREEN.
+        // Layered over the pinned context's overlay, so the case keeps the base pinned to `HEAD`:
+        // a fresh overlay would drop the pin and leave the ledger row to derive a base from the
+        // checkout's history, which a detached battery checkout does not have (the case would then
+        // report the environment, not the rule).
+        let mut ov = cx.overlay().cloned().unwrap_or_default();
         ov.set(
             "crates/busbar-kernel/tests/planted_double.rs",
             "#[repr(C)]\npub struct Double { pub a: u32 }\n\
@@ -1141,6 +1255,36 @@ impl Gate for AbiLocationGate {
                 &["unplantable"],
             )),
         }
+
+        // THE LEDGER AGAINST ITS BASE (Law 9): a row or a not-a-slot exclusion the base's ledger
+        // does not carry was written by this change, and an added row is a new shape forgiven.
+        const SYN: &str = "zz-abi-location-base";
+        let minted = |extra: &str| {
+            let mut ov =
+                crate::gates::construction::ceilings::synthetic_base(SYN, LEDGER, ledger.clone());
+            ov.set(LEDGER, format!("{ledger}{extra}"));
+            ov
+        };
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an [[offender]] row the base's ledger does not carry is MINTED, and refused",
+            &[ROW_LEDGER],
+            minted(
+                "\n[[offender]]\nfile = \"crates/busbar-kernel/src/planted_minted.rs\"\nshape = \"repr-c\"\nitem = \"PlantedMinted\"\n",
+            ),
+            &["MINTED", "PlantedMinted"],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a [[not_abi]] exclusion the base's ledger does not carry is MINTED, and refused",
+            &[ROW_LEDGER],
+            minted(
+                "\n[[not_abi]]\nfile = \"crates/busbar-kernel/src/planted_minted.rs\"\nitem = \"planted_minted_slot\"\nwhy = \"planted\"\n",
+            ),
+            &["MINTED", "planted_minted_slot"],
+        ));
 
         report
     }

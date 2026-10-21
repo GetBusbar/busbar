@@ -472,20 +472,25 @@ impl Reply {
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
                 // The end's report replaces a floor stated while relaying, even when it is zero.
-                // A stream the far end itself ended as FAILED (its terminal error, or a translation
-                // that aborted) delivered no completed generation and bills no tokens, as 1.5.5
-                // billed none (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its
-                // buffered twin (a `failed` status) reports none either (row-159 L3#4). A FAILED
-                // GENERATION is not one of those: 1.5.5's reader raised no error for it and billed
-                // what it reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]).
-                let units = if end.stream_fault.is_some() && !failed_generation {
-                    Units::default()
-                } else {
-                    Units {
-                        stated: units.floor,
-                        ..Units::of(end.usage.as_ref(), end.open_units)
-                    }
-                };
+                // A stream the far end itself ended as FAILED (its in-band terminal error)
+                // delivered no completed generation and bills no tokens, as 1.5.5 billed none
+                // (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its buffered twin
+                // (a `failed` status) reports none either (row-159 L3#4). A FAILED GENERATION is
+                // not one of those: 1.5.5's reader raised no error for it and billed what it
+                // reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]). A
+                // TRANSLATION THAT ABORTED after the first byte is a mid-stream cut, not a refund:
+                // it bills what the far end reported before it (#62, OWNER-LOCKED 2026-09-20;
+                // ruled for this case 2026-10-17), as a caller that leaves after it does.
+                let translate_aborted = end.stream_fault == Some("stream-translate-abort");
+                let units =
+                    if end.stream_fault.is_some() && !failed_generation && !translate_aborted {
+                        Units::default()
+                    } else {
+                        Units {
+                            stated: units.floor,
+                            ..Units::of(end.usage.as_ref(), end.open_units)
+                        }
+                    };
                 self.ended_partial = partial && fault.is_none();
                 self.state = State::Done;
                 Piece {

@@ -879,3 +879,42 @@ fn a_login_carries_no_decision_strip_or_credential() {
         red(Rule::Contradiction, "complete_login.unexpected")
     );
 }
+
+/// RED: `target` names its URL within the host's buffer, or nothing; a failure names nothing.
+#[test]
+fn a_target_is_a_span_in_the_buffer_or_absent() {
+    use busbar_contract::abi::auth::{check_target, TargetOut};
+    let mut o: TargetOut = zeroed();
+    o.target = sp(0, 30);
+    assert_eq!(check_target(Outcome::Ready, &o, CAP), Ok(()));
+    o.target = ABSENT;
+    assert_eq!(check_target(Outcome::Ready, &o, CAP), Ok(()));
+    assert_eq!(check_target(Outcome::Failed, &o, CAP), Ok(()));
+    assert_eq!(check_target(Outcome::Refused, &o, CAP), Ok(()));
+
+    o.target = sp(40, 30);
+    assert_eq!(
+        check_target(Outcome::Ready, &o, CAP),
+        red(Rule::SpanOutOfBounds, "target.target.out_of_bounds")
+    );
+    o.target = sp(0, 0);
+    assert_eq!(
+        check_target(Outcome::Ready, &o, CAP),
+        red(Rule::Missing, "target.target.empty")
+    );
+    o.target = Span {
+        offset: SPAN_ABSENT,
+        len: 3,
+    };
+    assert_eq!(
+        check_target(Outcome::Ready, &o, CAP),
+        red(Rule::SpanNotAbsent, "target.target.absent_with_len")
+    );
+    o.target = sp(0, 30);
+    for outcome in [Outcome::Failed, Outcome::Refused] {
+        assert_eq!(
+            check_target(outcome, &o, CAP),
+            red(Rule::Contradiction, "target.target.unexpected")
+        );
+    }
+}

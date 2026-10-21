@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the ABI a URL-model dialect's ingress (gemini/bedrock) calls
-//! to reach the core request pipeline WITHOUT naming a `busbar-core` type, and the protocol-name-keyed
-//! side-table the composition root registers those arrivals through.
+//! THE NEUTRAL ARRIVAL SEAM — the ABI a dialect's ingress calls to reach the core request pipeline
+//! WITHOUT naming a `busbar-core` type, and the protocol-name-keyed body-model side-table the
+//! composition root registers those arrivals through. The URL-model (path-model) side-table is
+//! deleted (ARCHITECT 2026-10-16 ruling 3 item 1): recognising a model in the URL is the plane's own
+//! logic, and the plane's door claims and serves those paths itself.
 //!
 //! ## Why this lives in the neutral substrate
 //!
 //! A path-model dialect (Gemini keeps the model in `/v1beta/models/{model}:generateContent`, Bedrock
 //! in `/model/{id}/converse`) parses its OWN model out of the URL and then runs the SAME resolution +
 //! forward every other dialect runs. That parsing is the dialect's statement about its own URL space,
-//! so it belongs in the dialect's crate (`busbar-llm`), not in core. But the resolution + forward it
+//! so it belongs in the dialect's crate (the retired engine crate), not in core. But the resolution + forward it
 //! then calls (`ingress_path_model`, `operation_ingress`, the `finish_rejected`/`ingress_error`
 //! error-shaping, the mount-aware `envelope_dialect`) is deeply `App`/`GovCtx`/`CallerToken`-bound and
 //! stays in core. [`ArrivalHost`] is the seam between the two: core implements it over its live `App`;
@@ -125,7 +127,7 @@ pub trait ArrivalHost: Send + Sync {
 
 /// ONE ARRIVAL, as a PATH-MODEL DIALECT RECEIVES IT — everything the catch-all already extracted, plus
 /// the [`ArrivalHost`] it calls back through and the opaque [`ArrivalCtx`] it threads into every host
-/// method. A struct because it crosses a `fn` pointer ([`PathIngress`]); the neutral fields
+/// method. A struct because it crosses a `fn` pointer ([`BodyIngress`]); the neutral fields
 /// (`path`/`uri`/`headers`/`body`) the dialect reads directly, the core-bound state only through `ctx`.
 pub struct Arrival {
     /// The core pipeline the dialect calls back through.
@@ -147,90 +149,20 @@ pub struct Arrival {
     pub body: Bytes,
 }
 
-/// A path-model dialect's own ingress: one arrival in, one boxed [`PlaneAnswer`] future out (#28) —
-/// the plane answers, and the catch-all that awaits it is the outer handler that serves it. `pub` so
-/// the composition root and the dialect crate (`busbar-llm`) name the registration-pair type. Boxed
-/// deliberately: as a `match` arm every arrival's future inlined into the dispatch coroutine's union,
-/// inflating the future every request carried regardless of dialect — a `fn` pointer to a boxed future
-/// keeps that cost on the requests that take it.
-pub type PathIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
-
-/// One protocol-name → arrival pairing, the element of an installed / test arrival table.
-pub type PathIngressEntry = (&'static str, PathIngress);
-
-/// A fn that yields a `&'static` arrival table — the shape the core-test/`test-support` hook seeds.
-#[cfg(any(test, feature = "test-support"))]
-pub type PathIngressFn = fn() -> &'static [PathIngressEntry];
-
-/// The arrivals the COMPOSITION ROOT installed, protocol-name-keyed. Set once by
-/// [`install_path_ingress`]; consulted by [`path_ingress_for`]. A `Vec`, not a `&'static [_]`, because
-/// the composition root ASSEMBLES it from whichever protocol crates are linked.
-static INSTALLED_PATH_INGRESS: std::sync::OnceLock<Vec<(&'static str, PathIngress)>> =
-    std::sync::OnceLock::new();
-
-/// INSTALL THE PATH-MODEL ARRIVALS — the composition root's one write, folded into
-/// [`crate::proto::install_protocols_with_path_ingress`] beside the decl install so the two cannot
-/// drift. Set-once, mirroring `install_protocols`.
-///
-/// # Panics
-/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
-pub fn install_path_ingress(arrivals: Vec<(&'static str, PathIngress)>) {
-    assert!(
-        INSTALLED_PATH_INGRESS.set(arrivals).is_ok(),
-        "install_path_ingress called twice: there is one composition root, and it registers once"
-    );
-}
-
-/// THE CORE-TEST/`test-support` ARRIVAL HOOK — the analogue of [`crate::proto::set_test_builtins`]. A
-/// build with no composition root (core's own test binary, a downstream `test-support` consumer) seeds
-/// the dialect crate's `PATH_INGRESS` slice here from a `tests/` file / the LLM test-kit, so
-/// [`path_ingress_for`] resolves the URL-model arrivals without a set-once `install_path_ingress`.
-#[cfg(any(test, feature = "test-support"))]
-static TEST_PATH_INGRESS_HOOK: std::sync::OnceLock<PathIngressFn> = std::sync::OnceLock::new();
-
-/// SEED THE CORE-TEST/`test-support` ARRIVAL HOOK. Idempotent (first writer wins; the slice is the same
-/// linked `PATH_INGRESS` either way), so several tests / the LLM test-kit may call it freely.
-#[cfg(any(test, feature = "test-support"))]
-pub fn set_test_path_ingress(f: PathIngressFn) {
-    let _ = TEST_PATH_INGRESS_HOOK.set(f);
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn test_path_ingress() -> &'static [PathIngressEntry] {
-    TEST_PATH_INGRESS_HOOK.get().map(|f| f()).unwrap_or(&[])
-}
-
-/// RESOLVE A PATH-MODEL DIALECT'S ARRIVAL BY NAME — the by-name lookup the catch-all performs.
-/// Consults the installed table first (the shipped path), then the test hook (test/`test-support`
-/// only). `None` for a body-model protocol (its model is not in the URL): core then reaches the
-/// universal ingress, exactly as before.
-pub fn path_ingress_for(name: &str) -> Option<PathIngress> {
-    if let Some(installed) = INSTALLED_PATH_INGRESS.get() {
-        if let Some((_, f)) = installed.iter().find(|(n, _)| *n == name) {
-            return Some(*f);
-        }
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some((_, f)) = test_path_ingress().iter().find(|(n, _)| *n == name) {
-        return Some(*f);
-    }
-    None
-}
-
 // ============================================================================
 // THE NEUTRAL BODY-MODEL ARRIVAL SEAM — the ABI a body-model dialect's universal ingress (the LLM
-// plane's relocated `operation_ingress`) is registered through, mirroring the path-model seam above.
+// plane's relocated `operation_ingress`) is registered through. (Its path-model twin is deleted: a
+// dialect whose model rides the URL is the plane's own arrival, served through its door; ARCHITECT
+// 2026-10-16 ruling 3 item 1.)
 // A body-model protocol keeps the model IN THE BODY, so its arrival does no URL parsing; but the
 // resolution + forward tail (`operation_ingress` → the one engine) reads the LLM routing tables and
-// so RELOCATED into `busbar-llm`. Core's `protocol_dispatch` resolves the body-arrival by protocol
+// so RELOCATED into the retired engine crate. Core's `protocol_dispatch` resolves the body-arrival by protocol
 // name and calls it, naming no LLM type — exactly the plane ABI, reusing `Arrival`/`ArrivalHost`/
 // `ArrivalCtx`.
 // ============================================================================
 
 /// A body-model dialect's own universal ingress: one arrival in, one boxed [`PlaneAnswer`] future
-/// out. Structurally identical to [`PathIngress` ] (it too takes an [`Arrival`] and returns a boxed
-/// answer future); a distinct alias names the DIFFERENT registration table it lands in (the
-/// body-model side-table, not the path-model one).
+/// out: it takes an [`Arrival`] and returns a boxed answer future.
 pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 
 /// One protocol-name → body-arrival pairing, the element of an installed / test body-arrival table.
@@ -246,8 +178,7 @@ pub type BodyIngressFn = fn() -> &'static [BodyIngressEntry];
 static INSTALLED_BODY_INGRESS: std::sync::OnceLock<Vec<(&'static str, BodyIngress)>> =
     std::sync::OnceLock::new();
 
-/// INSTALL THE BODY-MODEL ARRIVALS — the composition root's one write, mirroring
-/// [`install_path_ingress`]. Set-once.
+/// INSTALL THE BODY-MODEL ARRIVALS — the composition root's one write. Set-once.
 ///
 /// # Panics
 /// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
@@ -258,7 +189,7 @@ pub fn install_body_ingress(arrivals: Vec<(&'static str, BodyIngress)>) {
     );
 }
 
-/// THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK — the analogue of [`set_test_path_ingress`]. A
+/// THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK. A
 /// build with no composition root seeds the LLM plane's `BODY_INGRESS` slice here so
 /// [`body_ingress_for`] resolves the universal ingress without a set-once `install_body_ingress`.
 #[cfg(any(test, feature = "test-support"))]

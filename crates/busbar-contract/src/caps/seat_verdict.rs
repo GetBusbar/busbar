@@ -46,7 +46,7 @@
 //!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
 //!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
 //!         | Superseded | ClientGone | DeadlineExceeded | Untrusted
-//!         | CredentialUnavailable => false,
+//!         | CredentialUnavailable | MethodNotAllowed | Internal => false,
 //!     }
 //! }
 //! assert!(is_the_callers_money(ReasonCode::OverBudget));
@@ -223,6 +223,12 @@ reasons! {
     /// The member's own credential, re-resolved for this request, is unavailable (it no longer
     /// resolves, or its new value would not bind): nothing was dialled.
     CredentialUnavailable => "credential_unavailable", CredentialUnavailable,
+    /// The request's method is one no route at its path takes: the kernel's own refusal, decided
+    /// before any unit (ARCHITECT ruling 2026-10-16, 3b B).
+    MethodNotAllowed => "method_not_allowed", MethodNotAllowed,
+    /// The node failed in a way it names to no caller (a request handler panicked): the kernel's
+    /// own refusal, decided before any unit (ARCHITECT ruling 2026-10-16, 3b B).
+    Internal => "internal", Internal,
 }
 
 impl std::fmt::Display for ReasonCode {

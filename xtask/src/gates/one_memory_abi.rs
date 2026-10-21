@@ -2,8 +2,9 @@
 //!
 //! > "Plugins speak Memory ABI ONLY." — OWNER, 2026-09-27
 //!
-//! One door per plugin, one call shape, no COLD/JSON lane. What this gate measures, workspace-wide
-//! over production code:
+//! One door per plugin, one call shape, no COLD/JSON lane. What this gate measures, over the
+//! production code of every workspace member AND every pinned plugin crate the root manifest
+//! resolves (the logic crate and its cdylib twin, read at the pinned commit: [`pinned_sources`]):
 //!
 //! * **`exported-symbol`** — every `#[no_mangle]` / `#[unsafe(no_mangle)]` / `#[export_name]`
 //!   item whose symbol is not `busbar_plugin_door`. A plugin exports exactly one symbol.
@@ -109,6 +110,137 @@ fn is_dispatcher(rel: &str) -> bool {
     rel.starts_with("crates/plugin-loader/") || rel.contains("/dispatch")
 }
 
+/// The rules over one production file.
+fn scan_file(rel: &str, text: &str, findings: &mut Vec<Finding>) {
+    let all = crate::scan::test_scope(text);
+    for (idx, sl) in all.iter().enumerate() {
+        if sl.gated || sl.is_comment {
+            continue;
+        }
+        if is_export_attr(&sl.counted) {
+            let sym = exported_symbol(&all, idx);
+            let kernel_root = sym == KERNEL_ROOT_SYMBOL && rel == KERNEL_ROOT_HOME;
+            if sym != DOOR_SYMBOL && !kernel_root {
+                findings.push(Finding::new(ROW_EXPORTED, rel, sym, sl.no));
+            }
+        }
+        if !rel.starts_with(COLD_HOME) {
+            for n in COLD_NEEDLES {
+                if sl.counted.contains(n) {
+                    findings.push(Finding::new(ROW_COLD, rel, *n, sl.no));
+                }
+            }
+        }
+        if is_dispatcher(rel) && one_abi::has_word(&sl.counted, "spawn_blocking") {
+            findings.push(Finding::new(
+                ROW_SPAWN_BLOCKING,
+                rel,
+                "spawn_blocking",
+                sl.no,
+            ));
+        }
+        if sl.raw.contains("\"C-unwind\"") && sl.counted.contains("extern") {
+            findings.push(Finding::new(
+                ROW_C_UNWIND,
+                rel,
+                "extern \"C-unwind\"",
+                sl.no,
+            ));
+        }
+    }
+}
+
+/// THE FLOOR UNDER THE PINNED PLUGINS' FILES (Law 8). 205 production files on the day the pinned
+/// plugins joined this scan (30 pinned crates); a reading under this floor has lost most of them.
+/// Each pinned crate must also yield at least one file of its own.
+pub const PINNED_FILES_FLOOR: usize = 100;
+
+/// THE PINNED PLUGIN CRATES' PRODUCTION FILES, `(path, text)` at `crates/<package>/…` (Law 8; the
+/// ARCHITECT P5 ruling 2026-10-14 that the gates keep reading extracted plugin code). Every `git+`
+/// package `cargo metadata` resolves over the root manifest (every feature on) that is a plugin crate
+/// ([`one_abi::is_plugin_crate`]) and no workspace member: the logic crate AND its `-plugin` cdylib
+/// twin, since a cdylib is where an export is written. THE TREE WINS: a crate this tree lays at
+/// `crates/<package>` (on disk, or the pinned planes' base layer) is read from it; every other one is
+/// read at its pinned commit through the audit ledger's pinned mount ([`crate::audit_pinned`]), with
+/// any planted file of the overlay laid over it. A pin that cannot be read is an error, never a skip.
+fn pinned_sources(cx: &Ctx, members: &[one_abi::Member]) -> Result<Vec<(String, String)>, String> {
+    let meta: serde_json::Value =
+        serde_json::from_str(&cx.cargo_metadata_all_features("Cargo.toml")?)
+            .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
+    let have: std::collections::BTreeSet<&str> = members.iter().map(|m| m.name.as_str()).collect();
+    let store = crate::audit_pinned::PinStore::new(
+        crate::audit_pinned::default_cargo_home(),
+        cx.root().join("target").join("ledger-pins"),
+    );
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for p in meta["packages"].as_array().into_iter().flatten() {
+        let (Some(name), Some(source)) = (p["name"].as_str(), p["source"].as_str()) else {
+            continue;
+        };
+        if !source.starts_with("git+")
+            || !one_abi::is_plugin_crate(name)
+            || have.contains(name)
+            || !seen.insert(name.to_string())
+        {
+            continue;
+        }
+        let dir = format!("crates/{name}");
+        let src = format!("{dir}/src/");
+        let mut files: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        if cx.is_dir(&dir) {
+            for f in one_abi::rs_files(cx, &dir)? {
+                files.insert(f.rel_str(), f.text);
+            }
+        } else {
+            let pin = crate::audit_pinned::Pin::from_source(name, source).ok_or_else(|| {
+                format!("pinned plugin {name}: its source `{source}` names no commit")
+            })?;
+            let mount = store.mount(&pin)?;
+            for (rel, oid) in &mount.files {
+                let production = rel.starts_with("src/")
+                    && rel.ends_with(".rs")
+                    && !rel.contains("/tests/")
+                    && !rel.contains("/benches/");
+                if production {
+                    let text = crate::gitp::git(&mount.db, &["cat-file", "blob", oid])
+                        .map_err(|e| format!("pinned plugin {name} @ {}: {rel}: {e}", pin.sha))?;
+                    files.insert(format!("{dir}/{rel}"), text);
+                }
+            }
+            // A plant into the pinned crate is the top layer, as it is over a crate on disk.
+            let planted: Vec<String> = cx
+                .overlay()
+                .map(|ov| {
+                    ov.paths()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .filter(|p| p.starts_with(&src) && p.ends_with(".rs"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for rel in planted {
+                match cx.read(&rel) {
+                    Ok(text) => {
+                        files.insert(rel, text);
+                    }
+                    Err(_) => {
+                        files.remove(&rel);
+                    }
+                }
+            }
+        }
+        if files.is_empty() {
+            return Err(format!(
+                "pinned plugin {name} read as no production file under {src}: a pinned crate the \
+                 scan cannot see is a crate it answers for as clean"
+            ));
+        }
+        out.extend(files);
+    }
+    Ok(out)
+}
+
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
@@ -127,49 +259,31 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         };
         files += list.len();
         for f in &list {
-            let rel = f.rel_str();
-            let all = crate::scan::test_scope(&f.text);
-            for (idx, sl) in all.iter().enumerate() {
-                if sl.gated || sl.is_comment {
-                    continue;
-                }
-                if is_export_attr(&sl.counted) {
-                    let sym = exported_symbol(&all, idx);
-                    let kernel_root = sym == KERNEL_ROOT_SYMBOL && rel == KERNEL_ROOT_HOME;
-                    if sym != DOOR_SYMBOL && !kernel_root {
-                        findings.push(Finding::new(ROW_EXPORTED, &rel, sym, sl.no));
-                    }
-                }
-                if !rel.starts_with(COLD_HOME) {
-                    for n in COLD_NEEDLES {
-                        if sl.counted.contains(n) {
-                            findings.push(Finding::new(ROW_COLD, &rel, *n, sl.no));
-                        }
-                    }
-                }
-                if is_dispatcher(&rel) && one_abi::has_word(&sl.counted, "spawn_blocking") {
-                    findings.push(Finding::new(
-                        ROW_SPAWN_BLOCKING,
-                        &rel,
-                        "spawn_blocking",
-                        sl.no,
-                    ));
-                }
-                if sl.raw.contains("\"C-unwind\"") && sl.counted.contains("extern") {
-                    findings.push(Finding::new(
-                        ROW_C_UNWIND,
-                        &rel,
-                        "extern \"C-unwind\"",
-                        sl.no,
-                    ));
-                }
-            }
+            scan_file(&f.rel_str(), &f.text, &mut findings);
         }
     }
     if files < 500 {
         errors.push(format!(
             "the workspace read as {files} production file(s); the scan has gone blind"
         ));
+    }
+    match pinned_sources(cx, &members) {
+        Ok(pinned) => {
+            if pinned.len() < PINNED_FILES_FLOOR {
+                errors.push(format!(
+                    "the pinned plugin crates read as {} production file(s), under the floor of \
+                     {PINNED_FILES_FLOOR}; the scan of the pinned plugins has gone blind",
+                    pinned.len()
+                ));
+            }
+            for (rel, text) in &pinned {
+                scan_file(rel, text, &mut findings);
+            }
+        }
+        Err(e) => errors.push(format!(
+            "the pinned plugin crates could not be read, so no pinned plugin is held to these \
+             rules: {e}"
+        )),
     }
     (findings, errors)
 }
@@ -288,6 +402,32 @@ impl Gate for OneMemoryAbiGate {
             &[ROW_COLD],
             counted(2),
         ));
+        // A PINNED PLUGIN IS A PLUGIN (Law 8; ARCHITECT P5 ruling 2026-10-14): a plugin that left
+        // this tree for its own repo is still linked, so a second export or an unwinding slot
+        // written in its source is read and RED, at the path its crate is mounted at.
+        match one_abi::pinned_plugin_members(cx) {
+            Ok(pinned) if !pinned.is_empty() => {
+                let rel = format!("{}/src/planted_pinned_export.rs", pinned[0].dir);
+                let mut ov = Overlay::new();
+                ov.set(
+                    &rel,
+                    "#[no_mangle]\npub extern \"C\" fn busbar_planted_pinned() {}\n\
+                     pub extern \"C-unwind\" fn planted_pinned_slot() {}\n",
+                );
+                report.push(crate::gates::prove_rows_red(
+                    cx,
+                    self,
+                    "a pinned plugin's second export and its extern \"C-unwind\" slot are RED",
+                    &[ROW_EXPORTED, ROW_C_UNWIND],
+                    ov,
+                    &[rel.as_str(), "busbar_planted_pinned", "C-unwind"],
+                ));
+            }
+            other => report.note_infra_failure(format!(
+                "no pinned plugin crate resolved, so the plant into a pinned plugin is unproven: {}",
+                other.err().unwrap_or_else(|| "cargo metadata names none".to_string())
+            )),
+        }
         report
     }
 }

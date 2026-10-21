@@ -13,6 +13,9 @@
 //   decl, `HOT_KINDS`), and for a `-plugin` row its logic crate's `linked` module as
 //   `<kind>_linked`;
 // * `DOOR_FIXTURES`: `(row, cdylib crate name, linked door)` of each memory-ABI row (`DOOR_ROWS`);
+// * `EXPORT_FIXTURES`: `(row, logic crate name, cdylib crate name)` of each export sink row
+//   (`EXPORT_KIND`): the row names the LOGIC crate (its `door`, linked) and the repo's `-plugin`
+//   crate is its dropped-in `cdylib`;
 // * the per-row alias `<kind>_fixture`, the fixture crate itself.
 //
 // The `store` row (`STORE_ROWS`) is also written to `$OUT_DIR/store_fixture.rs` (its crate alias and
@@ -35,6 +38,11 @@ const DOOR_ROWS: &[&str] = &["auth", "auth-verify"];
 /// The rows whose fixture is reached only by its crate and its door example (`store_door.rs`): no
 /// cold entry, no `door::door` (the store kind's door is the crate's own `door`).
 const STORE_ROWS: &[&str] = &["store"];
+
+/// The kind whose rows (`export`, `export-<proof>`) are sinks on the export kind's memory ABI: each
+/// row names the sink's LOGIC crate (the linked `door`; no door symbol in its rlib), and its
+/// dropped-in `cdylib` is that crate's `-plugin` twin from the same repo.
+const EXPORT_KIND: &str = "export";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -61,6 +69,12 @@ fn main() {
         "/// `(row, cdylib crate name, linked door)` of each memory-ABI both-ways fixture.\n\
          pub(crate) static DOOR_FIXTURES: &[(&str, &str, busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
     );
+    // An export sink row: its logic crate and its `-plugin` cdylib.
+    let mut exports = String::from(
+        "/// `(row, logic crate name, cdylib crate name)` of each export both-ways fixture.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static EXPORT_FIXTURES: &[(&str, &str, &str)] = &[\n",
+    );
     let mut in_table = false;
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
@@ -75,15 +89,20 @@ fn main() {
                 hot.push_str(&format!("    (\"{kind}\", \"{snake}\"),\n"));
             } else if STORE_ROWS.contains(&kind) {
                 // Reached by its crate alias and its door example below; no table row.
+            } else if kind.split('-').next() == Some(EXPORT_KIND) {
+                exports.push_str(&format!(
+                    "    (\"{kind}\", \"{snake}\", \"{snake}_plugin\"),\n"
+                ));
             } else if DOOR_ROWS.contains(&kind) {
                 doors.push_str(&format!(
                     "    (\"{kind}\", \"{snake}\", ::{snake}::door::door),\n"
                 ));
             } else {
-                // The COLD/JSON lane is gone: every row is a door, a HOT decl or the store.
+                // The COLD/JSON lane is gone: every row is a door, a HOT decl, an export sink or
+                // the store.
                 panic!(
                     "Cargo.toml: both-ways row `{kind}` ({snake}) is on no door: add it to \
-                     DOOR_ROWS, HOT_KINDS or STORE_ROWS"
+                     DOOR_ROWS, HOT_KINDS, STORE_ROWS or the EXPORT_KIND rows"
                 );
             }
             if kind == "store" {
@@ -130,6 +149,8 @@ fn main() {
     out.push_str(&hot);
     doors.push_str("];\n");
     out.push_str(&doors);
+    exports.push_str("];\n");
+    out.push_str(&exports);
     out.push_str(&crates);
     let dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(dir.join("both_ways.rs"), out).expect("write both_ways.rs");

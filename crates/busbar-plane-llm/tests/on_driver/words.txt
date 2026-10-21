@@ -42,3 +42,12 @@ truncated_tail_bytes_per_token = 4
 # That far dialect's 2xx answer its reader refuses (a role no answer has), with usage stated (7 in,
 # 3 out): untranslatable to the caller's dialect, so the caller gets its own 500 and no tokens bill.
 unreadable_answer = {"id":"msg_1","type":"message","role":"wizard","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":7,"output_tokens":3}}
+# The dialect whose callers and members rerank (the root's door money cells), its rerank path on
+# pool `p`, a rerank request in it, and that dialect's rerank answer billing 50 search units, 1
+# search unit, and none.
+rerank_dialect = cohere
+rerank_path = /v2/rerank
+rerank_body = {"model":"p","query":"which is fastest","documents":["a","b","c"]}
+rerank_answer_50 = {"id":"rr-1","results":[{"index":0,"relevance_score":0.9}],"meta":{"billed_units":{"search_units":50}}}
+rerank_answer_1 = {"id":"rr-1","results":[{"index":0,"relevance_score":0.9}],"meta":{"billed_units":{"search_units":1}}}
+rerank_answer_unbilled = {"id":"rr-1","results":[{"index":0,"relevance_score":0.9}]}

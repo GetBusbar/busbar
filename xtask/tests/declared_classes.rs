@@ -46,7 +46,8 @@ const SCANNED: &[&str] = &[
     "crates/busbar-plane-a2a/src",
     "crates/busbar-plane-streaming/src",
     "crates/busbar-plane-decisions/src",
-    "crates/busbar-llm/src",
+    // `crates/busbar-llm/src` STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the engine
+    // is deleted; the llm plane is `crates/busbar-plane-llm/src`, scanned above.
     // `crates/busbar-mcp/src` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the
     // mcp plane is `crates/busbar-plane-mcp/src`, scanned above. `crates/busbar-a2a/src` STRUCK the
     // same way (FLIP-A2A): the a2a plane is `crates/busbar-plane-a2a/src`, scanned above.
@@ -67,7 +68,10 @@ const SHAPES: &[&str] = &[
 
 /// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
 const DECLARATIONS: &[(&str, &str)] = &[
-    ("llm", "crates/busbar-llm/src/lib.rs"),
+    // DEV-GREEN row 83: the llm plane is a door; its classes are its Statement's
+    // `BILLABLE_CLASSES` table, written as `billable(i)` / `open_class(k)` rows over its token and
+    // open class tables plus the fee row (`class: abi_str(FEE_CLASS)`), each read off its source.
+    ("llm", "crates/busbar-plane-llm/src/plane_door.rs"),
     // mcp and a2a carry no row: each is door-only (P3 DEL-MCP; FLIP-A2A) and lists no site below.
     // FLIP-STREAMING: the streaming plane is a door; its classes are its Statement's
     // `BILLABLE_CLASSES` table (`class(<class>, <family>)` rows).
@@ -110,16 +114,9 @@ const SITES: &[Site] = &[
         emits: &["busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS"],
         dead: None,
     },
-    // The Meter step's billed map: the tiers above plus the tap's `Billing::Counted` classes,
-    // FORWARDED verbatim — it mints no class of its own.
-    Site {
-        plane: "llm",
-        file: "crates/busbar-llm/src/unit/meter.rs",
-        shape: "usage_units.entry(",
-        occurrences: 1,
-        emits: &[],
-        dead: None,
-    },
+    // The engine's Meter step (`busbar-llm/src/unit/meter.rs`, which forwarded the tiers above
+    // verbatim and minted no class) is STRUCK with its crate (DEV-GREEN row 83): the door reports
+    // the same classes by INDEX into its declared `BILLABLE_CLASSES`.
     // The engine's `busbar-mcp/src/mcp/method.rs` report site is STRUCK with its crate (P3 DEL-MCP,
     // ARCHITECT 2026-10-05). The mcp door reports through none of the SHAPES above (a door plane
     // bills through the plane driver's money seam), so it lists no site here; were it to grow one,
@@ -217,6 +214,21 @@ fn defining<'p>(cx: &Ctx, path: &'p str) -> Result<(PathBuf, String, &'p str), S
     Ok((file.clone(), src, name))
 }
 
+/// The rows of the `[&str; N]` constant `name` in `src`, one constant path per line.
+fn const_rows<'s>(src: &'s str, name: &str) -> Option<Vec<&'s str>> {
+    let at = src.find(&format!("const {name}: [&str; "))?;
+    let body = &src[at..];
+    let open = body.find("= [")? + 3;
+    let end = body[open..].find("];")?;
+    Some(
+        body[open..open + end]
+            .lines()
+            .map(|l| l.trim().trim_end_matches(','))
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .collect(),
+    )
+}
+
 /// The string literal `const name` is defined as in `src`.
 fn literal_of(src: &str, name: &str) -> Option<String> {
     let at = src.find(&format!("const {name}:"))?;
@@ -247,7 +259,62 @@ fn door_classes(cx: &Ctx, file: &str, src: &str) -> Result<Option<BTreeSet<Strin
         .replace('-', "_");
     let mut classes = BTreeSet::new();
     for line in body[..end].lines() {
-        let Some(row) = line.trim().strip_prefix("class(") else {
+        // The llm door's rows: `billable(i)` is its `TOKEN_CLASSES[i]`, `open_class(k)` its
+        // `OPEN_CLASSES[k]` (the codec's table, imported by path), and `class: abi_str(NAME)` a
+        // constant of the same file — each resolved off its own source, never restated here.
+        let l = line.trim();
+        if let Some(i) = l
+            .strip_prefix("billable(")
+            .and_then(|r| r.strip_suffix("),"))
+        {
+            let i: usize = i.parse().map_err(|_| format!("{file}: `billable({i})`"))?;
+            let rows = const_rows(src, "TOKEN_CLASSES")
+                .ok_or_else(|| format!("{file}: billable() with no TOKEN_CLASSES table"))?;
+            let path = rows
+                .get(i)
+                .ok_or_else(|| format!("{file}: billable({i}) past TOKEN_CLASSES"))?;
+            classes.insert(resolve(cx, path)?);
+            continue;
+        }
+        if let Some(k) = l
+            .strip_prefix("open_class(")
+            .and_then(|r| r.strip_suffix("),"))
+        {
+            let k: usize = k
+                .parse()
+                .map_err(|_| format!("{file}: `open_class({k})`"))?;
+            let import = src
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("pub use crate::"))
+                .filter_map(|l| l.strip_suffix(';'))
+                .find(|l| l.ends_with("::OPEN_CLASSES"))
+                .ok_or_else(|| format!("{file}: open_class() with no OPEN_CLASSES import"))?;
+            let open = open_classes(cx, &format!("{krate}::{import}"))?;
+            let class = open
+                .get(k)
+                .ok_or_else(|| format!("{file}: open_class({k}) past OPEN_CLASSES"))?;
+            classes.insert(class.clone());
+            continue;
+        }
+        if let Some(name) = l
+            .strip_prefix("class: abi_str(")
+            .and_then(|r| r.strip_suffix("),"))
+        {
+            let path = src
+                .lines()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix(&format!("pub const {name}: &str = "))
+                        .and_then(|r| r.strip_suffix(';'))
+                })
+                .ok_or_else(|| format!("{file}: `{name}` is no `pub const {name}: &str`"))?;
+            classes.insert(match path.strip_prefix('"') {
+                Some(lit) => lit.trim_end_matches('"').to_string(),
+                None => resolve(cx, path)?,
+            });
+            continue;
+        }
+        let Some(row) = l.strip_prefix("class(") else {
             continue;
         };
         let expr = row.split(',').next().unwrap_or("").trim();

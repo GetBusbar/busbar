@@ -568,7 +568,10 @@ pub(crate) async fn create_key(
     let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+        match replays
+            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
+            .await
+        {
             // The first (and only) probe of a request that presented no key replays nothing.
             Probe::NoKey => {}
             // A COMPLETED prior mint (the real 201 object): replay it verbatim.
@@ -792,7 +795,11 @@ pub(crate) async fn create_key(
         minted_by: Some(actor.clone()),
         binding_mode: Some(requested_binding_mode.to_string()),
     };
-    let issue_aws = req.issue_aws_credential;
+    // The second credential (1.5.5's `issue_aws_credential`) is the one the linked host-held
+    // credentials' verifier states the shape of: its kind and shape, never a format of this crate's.
+    let issued = req
+        .issue_aws_credential
+        .then(|| app.auth.issued_credential());
     let want_group = req.group.clone();
     let want_parent = req.parent.clone();
     let gov = gov.clone();
@@ -865,9 +872,17 @@ pub(crate) async fn create_key(
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
-                if issue_aws {
-                    // Issues the AccessKeyId + secret access key alongside the bearer secret.
-                    gov.mint_signed_with_aws(spec, exp, now)
+                if let Some(issued) = &issued {
+                    // Issues the verifier's public id + secret alongside the signed token. A build
+                    // whose verifiers state no shape issues none: fail closed, as a mint that
+                    // cannot draw its credential.
+                    let Some((kind, shape)) = issued else {
+                        return Err(busbar_kernel::governance::RecordStoreError(
+                            "no linked auth plugin states the shape of the credential to issue"
+                                .to_string(),
+                        ));
+                    };
+                    gov.mint_signed_with_credential(spec, exp, now, kind, shape)
                         .map(|m| MintOutcome::Aws(Box::new(m)))
                 } else {
                     gov.mint_signed(spec, exp, now)
@@ -961,7 +976,7 @@ pub(crate) async fn create_key(
     );
     let mut body = key_meta(&key);
     // A freshly minted key is deterministically "active" — `mint_signed`/
-    // `mint_signed_with_aws` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
+    // `mint_signed_with_credential` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
     // CSPRNG draw that cannot already be on the revocation denylist. No `gov.is_revoked` round-trip
     // needed (and `gov` is not in scope here — moved into the mint closure above).
     body["state"] = json!("active");
@@ -1426,7 +1441,10 @@ pub(crate) async fn rotate_key(
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+        match replays
+            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
+            .await
+        {
             Probe::NoKey => {}
             Probe::Replay(cached) => return json_response(StatusCode::OK, cached),
             Probe::InFlight => {
@@ -1452,8 +1470,25 @@ pub(crate) async fn rotate_key(
     // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
     // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
-    // `expires_at` would receive (rotate takes no body today).
-    let exp = busbar_kernel::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
+    // `expires_at` would receive (rotate takes no body today) — and, being a mint, under the SAME
+    // lifetime ceiling (`auth.policy.max_ttl` and the caller's role cap): a default is clamped,
+    // never refused, so a rotate is answered exactly as before wherever no ceiling is configured.
+    // The pool and mode ceilings are not asked: a rotate re-mints the key's existing binding.
+    let now = busbar_kernel::store::now();
+    let caller_roles: &[String] = principal.0.as_ref().map_or(&[], |p| p.roles.as_slice());
+    let ttl = app
+        .mint_policy
+        .check_mint(&MintRequest {
+            roles: caller_roles,
+            requested_pools: Some(&[]),
+            requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
+            explicit_ttl: false,
+            requested_mode: None,
+        })
+        // A default naming no pools and no mode is clamped, never refused; were it refused, the
+        // token would be minted already expired rather than past the ceiling (fail closed).
+        .unwrap_or(0);
+    let exp = now.saturating_add(ttl);
     // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
     // dropped handler future (client disconnect) must NOT clear the sentinel. See
     // `Reservation::in_flight`.

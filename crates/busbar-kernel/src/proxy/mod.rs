@@ -29,7 +29,7 @@ pub use proxy_vocab::{
 // Canonical error-KIND tokens: produced by `cross_protocol_error_kind` / passed to `ingress_error`
 // as the `kind` argument. Each string is the protocol-agnostic discriminant that the per-protocol
 // writer maps to its native error category. RELOCATED DOWN to the neutral `busbar_kernel::proxy`
-// leaf (so the `busbar-llm` dialect writers name them without reaching into `busbar-core`) and
+// leaf (so the the retired engine crate dialect writers name them without reaching into `busbar-core`) and
 // re-exported here at their historical `crate::proxy::KIND_*` paths; the values are byte-identical
 // (each aliases the ERR_TYPE_* bank at its substrate home).
 
@@ -62,7 +62,7 @@ pub use busbar_kernel::egress::engine::{
 
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /
-// *_degrade / egress_dropped_controls_audit / alloc_gate / … ) RELOCATED to `busbar-llm`
+// *_degrade / egress_dropped_controls_audit / alloc_gate / … ) RELOCATED to the retired engine crate
 // (`src/engine/tests/`, declared under `engine/mod.rs`) with the engine they drive
 // (`forward_with_pool` et al.).
 
@@ -202,17 +202,17 @@ pub fn build_egress_client(
 // ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────
 // The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
 // fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
-// `busbar-llm` shapes an ingress error through the neutral ABI rather than reaching BACK into
+// the retired engine crate shapes an ingress error through the neutral ABI rather than reaching BACK into
 // `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
 // resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
-// being dropped with the `busbar-llm` plane. `busbar-core` re-exports both at their historical
+// being dropped with the the retired engine crate plane. `busbar-core` re-exports both at their historical
 // `busbar_kernel::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
 // unchanged.
 
 /// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
 /// response, attaching the protocol-appropriate headers via the resolved writer vtable. When `ingress`
 /// resolves to no protocol the body is the neutral `agnostic_error_envelope` and no protocol headers
-/// are attached — the shape that survives every LLM dialect being dropped with the `busbar-llm` plane.
+/// are attached — the shape that survives every LLM dialect being dropped with the the retired engine crate plane.
 pub fn ingress_error(
     ingress: &str,
     status: axum::http::StatusCode,

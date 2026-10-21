@@ -691,9 +691,11 @@ fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_co
 
 /// THE RATCHET (the served engine's
 /// `the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion`, the kernel's half):
-/// the book (drift, quarantine, the recovery backoff), the cadence it keeps and the verify gate
-/// every kind runs are scanned for a knob that would slow detection or hold a demotion, and the
-/// cadence policy's field set is enumerated: the ONLY held direction it may name is recovery.
+/// the book (drift, quarantine, the recovery backoff), the cadence it keeps and the trust-key
+/// parser that reads the cadence a plane declares are scanned for a knob that would slow detection
+/// or hold a demotion, and the cadence policy's field set is enumerated: the ONLY held direction it
+/// may name is recovery. (The verify-on-call gate this once scanned is deleted, Q128 p8#3: it was
+/// never constructed in production; the parser takes its place, it does not shrink the scan.)
 #[test]
 fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // A path that silently stopped resolving would be this guard quietly covering nothing: a file
@@ -716,7 +718,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     for rel in [
         "src/trust/book.rs",
         "src/trust/reverify.rs",
-        "src/trust/verify.rs",
+        "src/trust/section.rs",
     ] {
         let src = code(&read(rel));
         for banned in [
@@ -748,4 +750,168 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
         recovery_backoff_ms: 2,
     };
     assert_eq!((ttl_ms, recovery_backoff_ms), (1, 2));
+}
+
+/// A pin of the kind-neutral `mechanism`: an authenticity root holding `key`, or the no-root
+/// spelling (no root, no material, no fingerprint).
+fn pinned_by(mechanism: &str, root: bool, key: Option<&str>) -> TrustEntry {
+    TrustEntry {
+        pin: Some(DeclaredPin {
+            mechanism: mechanism.into(),
+            root,
+            peer_key: false,
+            key: key.map(Into::into),
+            fingerprint: None,
+        }),
+        ..entry(None, 0, 0)
+    }
+}
+
+/// AN IDENTITY CHANGE NEVER RIDES THE OLD APPROVAL (Q128 p8#1; `section.rs`: a registration with
+/// no authenticity root approves nothing). A counterparty approved, with an item, under a root is
+/// re-admitted with its pin changed to the no-root spelling, and then to another root: neither
+/// keeps the approvals. RED arm: the re-admit compared only the declared fingerprint, which is
+/// absent on both sides, so the subject was kept and `judge` answered `Ok` for both facts.
+#[test]
+fn a_pin_changed_to_no_root_or_another_root_keeps_no_approval() {
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    let item = TrustFacts {
+        counterparty: "cp",
+        item: Some("t"),
+        digest: Some("d1"),
+    };
+    let approved = |b: &TrustBook, i: &Arc<str>| {
+        b.sight(i, "cp", "h1", 1).unwrap();
+        b.decide(i, "cp", None, Ruling::Approve, None).unwrap();
+        b.sight_item(i, "cp", "t", "d1").unwrap();
+        b.decide(i, "cp", Some("t"), Ruling::Approve, None).unwrap();
+        assert_eq!(b.judge(i, &whole), Ok(()));
+        assert_eq!(b.judge(i, &item), Ok(()));
+    };
+
+    let (b, i) = book(pinned_by("root-kind", true, Some("K")));
+    approved(&b, &i);
+    b.admit(&i, [("cp".to_string(), pinned_by("none", false, None))], []);
+    assert_ne!(b.judge(&i, &whole), Ok(()), "rootless now");
+    assert_ne!(b.judge(&i, &item), Ok(()), "its item too");
+    assert_eq!(
+        b.sight(&i, "cp", "h1", 2),
+        Ok((Sight::New, Effect::None)),
+        "nothing is pinned at a rootless counterparty"
+    );
+
+    let (b, i) = book(pinned_by("root-kind", true, Some("K")));
+    approved(&b, &i);
+    b.admit(
+        &i,
+        [("cp".to_string(), pinned_by("root-kind", true, Some("K2")))],
+        [],
+    );
+    assert_ne!(b.judge(&i, &whole), Ok(()), "another root starts afresh");
+    assert_ne!(b.judge(&i, &item), Ok(()));
+    // The same declaration keeps them.
+    let (b, i) = book(pinned_by("root-kind", true, Some("K")));
+    approved(&b, &i);
+    b.admit(
+        &i,
+        [("cp".to_string(), pinned_by("root-kind", true, Some("K")))],
+        [],
+    );
+    assert_eq!(b.judge(&i, &whole), Ok(()));
+    assert_eq!(b.judge(&i, &item), Ok(()));
+}
+
+/// NO APPROVAL REPLAYS ONTO A ROOTLESS REGISTRATION (Q128 p8#1): even a kept row recorded under
+/// the very same no-root declaration replays as nothing, while a kept revocation still holds.
+#[test]
+fn a_kept_approval_never_replays_onto_a_rootless_registration() {
+    let rootless = pinned_by("none", false, None);
+    let (b, i) = book(rootless.clone());
+    let row = |item: Option<&str>, approved: Option<&str>| RulingRow {
+        instance: "inst".into(),
+        counterparty: "cp".into(),
+        item: item.map(Into::into),
+        approved: approved.map(Into::into),
+        declared: rootless.pin.clone(),
+    };
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    b.admit_decided(&i, [&row(None, Some("h1")), &row(Some("t"), Some("d1"))]);
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    let item = TrustFacts {
+        counterparty: "cp",
+        item: Some("t"),
+        digest: Some("d1"),
+    };
+    assert_ne!(b.judge(&i, &whole), Ok(()));
+    assert_ne!(b.judge(&i, &item), Ok(()));
+    b.admit_decided(&i, [&row(None, None)]);
+    assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
+}
+
+/// A RESTART AGREES WITH A RELOAD (Q128 p8#2): a declared fingerprint edited while the process was
+/// down starts the counterparty afresh, pending until the operator approves again, exactly as the
+/// same edit applied in-process does. RED arm: the kept approval was replayed whatever the
+/// declaration, so the fresh book served the counterparty at the old fingerprint.
+#[test]
+fn a_kept_approval_does_not_replay_over_a_declaration_changed_while_down() {
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    let (b, i) = book(entry(Some("fp"), 0, 0));
+    b.sight(&i, "cp", "fp", 1).unwrap();
+    let (_, kept) = b
+        .decide(&i, "cp", None, Ruling::Approve, Some("fp"))
+        .unwrap();
+    assert_eq!(b.judge(&i, &whole), Ok(()));
+
+    let (same, s) = book(entry(Some("fp"), 0, 0));
+    same.admit_decided(&s, [&kept]);
+    assert_eq!(
+        same.judge(&s, &whole),
+        Ok(()),
+        "the same declaration replays"
+    );
+
+    let (moved, m) = book(entry(Some("fp2"), 0, 0));
+    moved.admit_decided(&m, [&kept]);
+    assert_eq!(
+        moved.judge(&m, &whole),
+        Err(Distrust::NotApproved),
+        "a changed declaration is pending again"
+    );
+    // ... as the in-process re-admit has it.
+    b.admit(&i, [("cp".to_string(), entry(Some("fp2"), 0, 0))], []);
+    assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
+}
+
+/// A RULING TAKES NOTHING UNTIL IT IS APPLIED (Q128 p5#2): `rule` answers the fact to keep and
+/// leaves the book as it was; `apply` takes it.
+#[test]
+fn a_ruling_changes_nothing_until_it_is_applied() {
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    let (b, i) = book(entry(None, 0, 0));
+    b.sight(&i, "cp", "h1", 1).unwrap();
+    let fact = b.rule(&i, "cp", None, Ruling::Approve, Some("h1")).unwrap();
+    assert_eq!(fact.approved.as_deref(), Some("h1"));
+    assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
+    let row = b.apply(&fact).unwrap();
+    assert_eq!(row.approved.as_deref(), Some("h1"));
+    assert_eq!(b.judge(&i, &whole), Ok(()));
+    // A fact whose declaration moved under it is not taken.
+    b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);
+    assert_eq!(b.apply(&fact), Err(Undecided::Stale));
 }

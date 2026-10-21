@@ -148,7 +148,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     let (data_port, admin_port) = (free_port(), free_port());
     let (collector_port, seen) = common::otlp::collector();
     write_configs(&dir, data_port, admin_port, collector_port);
-    // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
+    // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {

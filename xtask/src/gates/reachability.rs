@@ -21,8 +21,8 @@
 //!
 //! `crates/busbar/Cargo.toml` declares ONE `[[bin]]` and **no `[lib]`**. There is no
 //! `src/lib.rs`, so nothing outside the crate can link `busbar::root::…` — not another crate, and
-//! not even the crate's own integration tests under `crates/busbar/tests/`, which is why
-//! `tests/plane_meter_seam_reachability.rs` resorts to scanning source text. For this crate,
+//! not even the crate's own integration tests under `crates/busbar/tests/`, which can only scan
+//! source text. For this crate,
 //! therefore, **"reachable" can only mean "reached from `fn main()` in `crates/busbar/src/main.rs`"**,
 //! and the whole scan is scoped to `crates/busbar/src/**` on exactly that ground.
 //!
@@ -276,12 +276,12 @@ const ROSTER: &[Plane] = &[
         key: "llm",
         on_disk: "llm",
         module: "units_llm",
-        linked_crate: "busbar-llm",
+        linked_crate: "busbar-plane-llm",
         register_tokens: &["LlmPlane"],
-        note: "the 1.5.5 plane; `plane-llm` carries the crate edge, the protocol DECLS and the \
-               plane decl together. Its pre-unification module is gone: what the root keeps is \
-               the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
-               axis)",
+        note: "a DOOR plane since its retired engine crate was deleted (DEV-GREEN row 83, \
+               coordinator ruling 2026-10-18): served through its memory-ABI door (`plane-llm-door`, \
+               the `plane-door` row linking `busbar-plane-llm`), the one composition's driver and \
+               the data route driving it; its pre-unification module is gone",
     },
     // RE-POINTED TO THE DOOR SHAPE (P3 DEL-MCP, ARCHITECT 2026-10-05): the legacy engine
     // `busbar-mcp` is deleted and the plane is served through its memory-ABI door alone — the
@@ -1773,7 +1773,6 @@ fn manifest_table(manifest: &str, table: &str) -> Vec<(String, String)> {
 const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("plane", &["PLANE_DECLARATION", "PLANE_HOOKS"]),
     ("protocols", &["PROTOCOLS"]),
-    ("path-ingress", &["PATH_INGRESS"]),
     ("body-ingress", &["BODY_INGRESS"]),
     ("protocol-seams", &["install_protocol_seams"]),
     ("diagnostics", &["DIAGNOSTICS"]),
@@ -3060,13 +3059,13 @@ impl Gate for ReachabilityGate {
             "`busbar-plane-zzz`",
         ));
         // A NAME IS NOT A THING: a crate named for a roster plane, declaring no key and linked by no
-        // roster row, maps to nothing. (The subject is the llm plane crate, whose roster row links
-        // `busbar-llm`: since FLIP-A2A the a2a row links `busbar-plane-a2a` itself and since
-        // FLIP-STREAMING the streaming row links `busbar-plane-streaming`, so each of those crates
-        // is mapped by its row and is no longer a crate named and nothing more. The streaming
-        // subject this case carried went green on that flip (9bd2a58981); the fixture's missing
+        // roster row, maps to nothing. (The subject is `busbar-plane-decision`, named for the roster's
+        // `decision` key, whose row links `busbar-plane-decisions`. Every other roster row now links
+        // the `busbar-plane-<key>` crate itself: the llm row since DEV-GREEN row 83, the a2a row
+        // since FLIP-A2A and the streaming row since FLIP-STREAMING, so each of those crates is
+        // mapped by its row and is no longer a crate named and nothing more. The fixture's missing
         // root manifest, which #935's pinned-plane read needs, reddened every case as DID NOT RUN
-        // and hid it until 0736b5defc laid that `Cargo.toml`.)
+        // and hid an earlier subject's green until 0736b5defc laid that `Cargo.toml`.)
         report.push(red_over(
             self,
             cx,
@@ -3076,12 +3075,16 @@ impl Gate for ReachabilityGate {
             evidenced({
                 let mut ov = Overlay::new();
                 ov.set(
-                    "crates/busbar-plane-llm/src/lib.rs",
-                    "pub struct LlmPlane;\n",
+                    "crates/busbar-plane-decision/Cargo.toml",
+                    "[package]\nname = \"busbar-plane-decision\"\nversion = \"0.0.0\"\n",
+                );
+                ov.set(
+                    "crates/busbar-plane-decision/src/lib.rs",
+                    "pub struct DecisionPlane;\n",
                 );
                 ov
             }),
-            "`busbar-plane-llm`",
+            "`busbar-plane-decision`",
         ));
         // A CENSUS THAT FINDS NO PLANE CRATE FOUND NOTHING, which is not zero findings.
         report.push(red_over(

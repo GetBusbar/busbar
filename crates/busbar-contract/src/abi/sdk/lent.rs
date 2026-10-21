@@ -501,7 +501,7 @@ use crate::abi::hook::{
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
-    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
+    ArriveIn, CatalogIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
     ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
 use crate::abi::transport::{
@@ -566,6 +566,13 @@ lend! {
         buf(arena_buf, arena_cap) -> u8;
         buf(records_buf, records_cap) -> RecordWrite;
     }
+    CatalogIn {
+        list(fields, fields_len) -> Field;
+        list(names, names_len) -> AbiStr;
+        buf(reply_buf, reply_cap) -> u8;
+        buf(fields_buf, fields_cap) -> OutField;
+        buf(arena_buf, arena_cap) -> u8;
+    }
     PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
     PlaneCancelIn {
         buf(records_buf, records_cap) -> RecordWrite;
@@ -598,6 +605,7 @@ lend! {
         buf(authority_buf, authority_cap) -> u8;
         buf(name_buf, name_cap) -> u8;
         buf(alpn_buf, alpn_cap) -> u8;
+        buf(defaults_buf, defaults_cap) -> u8;
     }
     BeginIn {
         one(facts) -> ConnFacts;

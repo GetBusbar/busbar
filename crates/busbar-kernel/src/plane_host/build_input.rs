@@ -17,7 +17,7 @@
 //! the dual-compile hazard. This carrier therefore holds NO `busbar_kernel::` type: only owned `String`s,
 //! numbers, `bool`s, `Vec`/`HashMap` of those, and the neutral `busbar_contract::config::UpstreamCreds`. It lives in
 //! `busbar-substrate` (compiled ONCE for the whole workspace) so its own `TypeId` is stable across the
-//! dual compile, and so a zero-plane binary that `git-rm`'d `busbar-llm` (the `plane-delete-test --all`
+//! dual compile, and so a zero-plane binary that `git-rm`'d the retired engine crate (the `plane-delete-test --all`
 //! posture) still compiles `appbuild` — which populates this — without naming the plane crate.
 //!
 //! ## What it does NOT carry
@@ -321,7 +321,7 @@ pub struct ClientSettingsInput {
 
 /// THE NEUTRAL LLM-RUNTIME BUILD CARRIER — see the module docs. Populated field-by-field by
 /// `busbar-core`'s `appbuild` from the resolved `RootCfg`, passed as `&dyn Any` to the LLM plane's
-/// `PlaneDecl::build_runtime`, and downcast (single-compiled-safe) in `busbar-llm`.
+/// `PlaneDecl::build_runtime`, and downcast (single-compiled-safe) in the retired engine crate.
 #[derive(Clone, Debug)]
 pub struct PlaneBuildInput {
     /// Every lane, in the deterministic sorted-by-model order core assigns indices in (so

@@ -271,7 +271,8 @@ fn inserting_a_self_consistent_forgery_is_detected_by_its_link() {
 
 /// THE STREAMS STAY SEPARATE. One mechanism does not mean one chain: a record from another scope
 /// appearing in this one is refused outright, so one caller's evidence can never be made to depend
-/// on another caller's rows. store-mysql had a real cross-principal read defect of this exact shape.
+/// on another caller's rows. A store backend once had a real cross-principal read defect of this
+/// exact shape.
 #[test]
 fn a_foreign_scopes_record_cannot_hide_inside_this_chain() {
     let mut records = a_chain();
@@ -387,42 +388,30 @@ fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero()
     assert_eq!(Chain::<Nonsense>::default().next_seq(), 1);
 }
 
-// ══ THE THREE REAL DIGESTS DID NOT MOVE ═════════════════════════════════════════════════════════
+// ══ THE FRAMED DIGESTS DID NOT MOVE ═════════════════════════════════════════════════════════════
 
-/// The MCP per-call digest is byte-for-byte what `mcp/calllog.rs` computed before the unification:
-/// length-prefixed, in this field order. Minted through the NEUTRAL journal seam — a genesis
-/// `StreamRecord` over the plane's pre-framed `call_suffix` content, which is the exact shape
-/// production persists — and required to agree with the legacy single-buffer formula, recomputed
-/// here the OLD way. (The typed `Chain<McpCallRecord>` is gone; the seam is what production hashes.)
+/// A scoped LengthPrefixed stream's digest is the single-buffer formula: the host-framed prelude
+/// (`prev_hash`, scope, `seq`) followed RAW by the stream's own length-prefixed content suffix equals
+/// every field length-prefixed into one buffer. Minted through the neutral journal record
+/// (`StreamRecord`), the shape production persists. The fields are neutral stand-ins: which fields a
+/// stream's suffix carries is that stream's business, and its own crate pins them.
 #[test]
-fn the_length_prefixed_call_digest_is_unchanged_by_the_unification() {
-    let (prev_hash, principal, seq) = (String::new(), "vk_alice", 1u64);
-    let (ts, server, tool, outcome, reason, tool_digest, pin_generation) = (
-        1_700_000_000u64,
-        "srv",
-        "srv_tool",
-        crate::audit::vocab::OUTCOME_DISPATCHED,
-        "",
-        "abc123",
-        7u64,
-    );
+fn a_scoped_length_prefixed_stream_digest_is_the_single_buffer_formula() {
+    let (prev_hash, scope, seq) = (String::new(), "scope-1", 1u64);
+    let (ts, field_a, field_b, count) = (1_700_000_000u64, "alpha", "beta|gamma", 7u64);
 
     let lp = |out: &mut Vec<u8>, bytes: &[u8]| {
         out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
         out.extend_from_slice(bytes);
     };
-    // The plane's LengthPrefixed content suffix (the tail after the prelude), as `calllog::call_suffix`
-    // builds it: ts, server, tool, outcome, reason, tool_digest, pin_generation.
+    // The stream's LengthPrefixed content suffix (the tail after the prelude).
     let mut content: Vec<u8> = Vec::new();
     lp(&mut content, &ts.to_be_bytes());
-    lp(&mut content, server.as_bytes());
-    lp(&mut content, tool.as_bytes());
-    lp(&mut content, outcome.as_bytes());
-    lp(&mut content, reason.as_bytes());
-    lp(&mut content, tool_digest.as_bytes());
-    lp(&mut content, &pin_generation.to_be_bytes());
+    lp(&mut content, field_a.as_bytes());
+    lp(&mut content, field_b.as_bytes());
+    lp(&mut content, &count.to_be_bytes());
     let rec = crate::audit::stream_registry::StreamRecord::from_parts(
-        principal.to_string(),
+        scope.to_string(),
         seq,
         prev_hash.clone(),
         String::new(),
@@ -433,42 +422,30 @@ fn the_length_prefixed_call_digest_is_unchanged_by_the_unification() {
 
     let mut buf: Vec<u8> = Vec::new();
     lp(&mut buf, prev_hash.as_bytes());
-    lp(&mut buf, principal.as_bytes());
+    lp(&mut buf, scope.as_bytes());
     lp(&mut buf, &seq.to_be_bytes());
     lp(&mut buf, &ts.to_be_bytes());
-    lp(&mut buf, server.as_bytes());
-    lp(&mut buf, tool.as_bytes());
-    lp(&mut buf, outcome.as_bytes());
-    lp(&mut buf, reason.as_bytes());
-    lp(&mut buf, tool_digest.as_bytes());
-    lp(&mut buf, &pin_generation.to_be_bytes());
+    lp(&mut buf, field_a.as_bytes());
+    lp(&mut buf, field_b.as_bytes());
+    lp(&mut buf, &count.to_be_bytes());
     assert_eq!(
         digest(&rec),
         busbar_contract::redacted::sha256_hex(&buf),
-        "a length-prefixed per-call digest that moved would report every deployment's persisted chain as tampered"
+        "a length-prefixed scoped digest that moved would report every deployment's persisted chain as tampered"
     );
 }
 
-/// The A2A task provenance digest is byte-for-byte what `a2a/provenance.rs` computed before the
-/// unification, and byte-for-byte the formula the retired agent engine's `TaskEventRow` publishes. Minted through the
-/// NEUTRAL journal seam over the plane's pre-framed `task_event_suffix` content (PipeSeparated), which
-/// is the exact shape production persists, and required to agree with the legacy canonical string.
+/// A scoped PipeSeparated stream's digest is the single canonical string: the host-framed prelude
+/// `prev_hash|scope|seq` followed RAW by the stream's own `|`-led content suffix equals every field
+/// joined by `|` in one string. Neutral stand-in fields, as above.
 #[test]
-fn the_pipe_separated_task_event_digest_is_unchanged_by_the_unification() {
-    let (prev_hash, task_id, seq) = (String::new(), "task-1", 1u64);
-    let (ts, kind, context_id, principal, agent_id, state) = (
-        1_700_000_000u64,
-        busbar_contract::vocab::EV_SUBMITTED,
-        "ctx-1",
-        "vk_alice",
-        "planner",
-        "submitted",
-    );
-    // The plane's PipeSeparated content suffix (leading `|`), as `taskstore::task_event_suffix` builds
-    // it: `|ts|kind|context_id|principal|agent_id|state`.
-    let content = format!("|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}").into_bytes();
+fn a_scoped_pipe_separated_stream_digest_is_the_single_canonical_string() {
+    let (prev_hash, scope, seq) = (String::new(), "scope-1", 1u64);
+    let (ts, field_a, field_b, field_c) = (1_700_000_000u64, "alpha", "beta", "gamma");
+    // The stream's PipeSeparated content suffix (leading `|`).
+    let content = format!("|{ts}|{field_a}|{field_b}|{field_c}").into_bytes();
     let rec = crate::audit::stream_registry::StreamRecord::from_parts(
-        task_id.to_string(),
+        scope.to_string(),
         seq,
         prev_hash.clone(),
         String::new(),
@@ -476,13 +453,11 @@ fn the_pipe_separated_task_event_digest_is_unchanged_by_the_unification() {
         Framing::PipeSeparated,
         true,
     );
-    let canonical = format!(
-        "{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}"
-    );
+    let canonical = format!("{prev_hash}|{scope}|{seq}|{ts}|{field_a}|{field_b}|{field_c}");
     assert_eq!(
         digest(&rec),
         busbar_contract::redacted::sha256_hex(canonical.as_bytes()),
-        "a pipe-separated task-event digest that moved would report every persisted chain as tampered"
+        "a pipe-separated scoped digest that moved would report every persisted chain as tampered"
     );
 }
 
@@ -528,10 +503,12 @@ fn a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification() {
     );
 }
 
-/// THE OTHER HALF: the SAME fields, sealed through the REAL, unmodified `seal` path this build
-/// actually uses, now produce a DIFFERENT digest — scheme 2, length-prefixed. Nothing mints scheme 1
-/// any longer; a fresh record's digest changing is exactly what closes the collision a caller-
-/// controlled `|` inside `resource` opens under scheme 1 (see `crates/busbar-kernel-audit`'s
+/// THE OTHER HALF: the SAME fields, sealed through the REAL, unmodified `seal` path the in-process
+/// ring uses, produce a DIFFERENT digest — scheme 2, whose caller-supplied fields are length-prefixed.
+/// Its recipe is the one the durable seam seals a scheme-2 record under (the `prev_hash|seq` prelude,
+/// then the safe suffix), so a served scheme-2 record recomputes under its own tag (Q128 p12#1). A
+/// fresh record's digest differing from scheme 1 is what closes the collision a caller-controlled
+/// `|` inside `resource` opens under scheme 1 (see `crates/busbar-kernel-audit`'s
 /// `digest_framing_tests` for the collision demonstrated end to end).
 #[test]
 fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
@@ -551,22 +528,23 @@ fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
         entry.scheme,
         crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED
     );
-    let mut d = Digest::new(Framing::LengthPrefixed);
-    d.text(&entry.prev_hash)
-        .num(entry.seq)
-        .num(entry.ts)
-        .text(&entry.action)
-        .text(&entry.resource)
-        .text(&entry.outcome)
-        .text(&entry.principal);
+    let mut seam_bytes =
+        crate::audit::frame_prelude(Framing::PipeSeparated, &entry.prev_hash, None, entry.seq);
+    seam_bytes.extend_from_slice(&crate::audit::auditlog::audit_suffix_safe(
+        entry.ts,
+        &entry.action,
+        &entry.resource,
+        &entry.outcome,
+        &entry.principal,
+    ));
     assert_eq!(
         entry.hash,
-        d.finish(),
-        "a fresh entry's digest is not the length-prefixed formula over the same fields"
+        busbar_contract::redacted::sha256_hex(&seam_bytes),
+        "a fresh entry's digest is not the seam's scheme-2 bytes over the same fields"
     );
     assert_eq!(
         entry.hash,
-        "badff1f0c637b690487f849e6be3ed8f30924bb9a6cd20b97e77e83d4c58ff37"
+        "f2c494b4787520f876ad96bbffa6967385f1464082582600f28dd9d2071d09c7"
     );
 }
 

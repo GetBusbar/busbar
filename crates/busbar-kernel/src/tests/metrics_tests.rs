@@ -870,3 +870,225 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "and the new card's figure differs from the old one's"
     );
 }
+
+/// A test plane declaration carrying only `billable_classes` (and the fallback flag): the meter
+/// classes the spend gauges read, and nothing else a plane states.
+macro_rules! gauge_plane {
+    ($name:ident, $key:literal, $fallback:literal, $classes:expr) => {
+        static $name: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+            declaration: crate::plane::registry::PlaneDeclaration {
+                key: $key,
+                fallback: $fallback,
+                config_section: $key,
+                scope_kinds: &[],
+                subject_noun: "member",
+                admin_noun: "member",
+                audit_kind: "member",
+                card_signing_domain: None,
+                card_kid_prefix: None,
+                owned_config_sections: &[],
+                billable_classes: $classes,
+                fee_units: &[],
+                metric_families: &[],
+                record_kinds: &[],
+                required_config_sections: &[],
+                trust_keys: &[],
+                served_op_classes: &[],
+                caller_credential_refusal: None,
+            },
+            wire_format_names: || &[],
+            provider_dialects: || &[],
+            claims: |_| Vec::new(),
+            admission: |_| None,
+            build: |_| None,
+            routes: None,
+            admin_routes: None,
+            openapi: None,
+            hydrate: None,
+            start: None,
+            config_validate: None,
+            named_def_list: None,
+            named_def_get: None,
+            registry_contains: None,
+            reresolve_gates: None,
+            openapi_schemas: None,
+            on_swap: None,
+            parse_section: None,
+            parse_endpoint: None,
+            lower_endpoint: None,
+            build_runtime: None,
+            viewer: None,
+            retain_verify_gates: None,
+            default_section: None,
+            resolve_provider: None,
+        };
+    };
+}
+
+/// One declared class of `family`.
+const fn gauge_class(
+    class: &'static str,
+    family: &'static str,
+) -> crate::plane::registry::BillableClass {
+    crate::plane::registry::BillableClass { class, family }
+}
+
+// The fallback plane's shape: the four 1.5.5 token tiers, then a class in another family.
+gauge_plane!(
+    GAUGE_FALLBACK_PLANE,
+    "gauge-fallback",
+    true,
+    &[
+        gauge_class("input", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("output", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("cache_read", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("cache_write", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("search_units", "units"),
+    ]
+);
+
+// A plane whose token classes are not the four tiers, beside a class in another family.
+gauge_plane!(
+    GAUGE_AUDIO_PLANE,
+    "gauge-audio",
+    false,
+    &[
+        gauge_class("audio_tokens_in", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("audio_tokens_out", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("audio_seconds_in", "duration"),
+    ]
+);
+
+/// Every exposition line of `family` whose labels carry `needle`, sorted.
+fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
+    let mut lines: Vec<String> = (out.lines())
+        .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains(needle))
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// **THE 1.5.5 MONEY-GAUGE BYTES, WHOLE LINES** for a lane of the fallback plane: one
+/// `busbar_bucket_tokens` series per token tier, zeros included, the `tier` label spelled as 1.5.5
+/// spelled it, and the key's spend and token-total gauges. A class outside the token family
+/// (`search_units`) is priced, never a token series. Any change to a metric name, a label key, a
+/// label value or a figure fails here.
+#[test]
+fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
+    init();
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        &GAUGE_FALLBACK_PLANE,
+        &GAUGE_AUDIO_PLANE,
+    ]);
+    let key = sample_vkey("vk_gauge_bytes");
+    let gov = gov_with_key(key.clone());
+    let card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        crate::config::RateEntryCfg {
+            input_utok: 100.0,
+            units: std::collections::BTreeMap::from([(
+                "search_units".to_string(),
+                busbar_kernel_ledger::cost::UnitRate::from_whole_micros(0).expect("0 is a rate"),
+            )]),
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(Some(&card), 0, &Default::default());
+    gov.record_usage(
+        &cost,
+        &key,
+        "",
+        "m",
+        &std::collections::BTreeMap::from([
+            ("input".to_string(), 10_000u64),
+            ("output".to_string(), 7),
+            ("search_units".to_string(), 3),
+        ]),
+        1_700_000_000,
+    );
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
+        .pool("pool-gauge-bytes", &[(0, 1)])
+        .cost(cost)
+        .governance(gov)
+        .build();
+    refresh_scrape_gauges(&app);
+    let out = render();
+    let needle = "=\"vk_gauge_bytes\"";
+    assert_eq!(
+        lines_of(&out, BUCKET_TOKENS, needle),
+        [
+            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"cache_read\"} 0",
+            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"cache_write\"} 0",
+            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"input\"} 10000",
+            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"output\"} 7",
+        ],
+        "the fallback plane's token series are 1.5.5's, line for line; got:\n{out}"
+    );
+    assert_eq!(
+        lines_of(&out, KEY_SPEND_CENTS, needle),
+        ["busbar_key_spend_cents{key=\"vk_gauge_bytes\"} 100"],
+        "10,000 input tokens at 100 micro-units each is 100 cents; got:\n{out}"
+    );
+    assert_eq!(
+        lines_of(&out, KEY_TOKENS_TOTAL, needle),
+        ["busbar_key_tokens_total{key=\"vk_gauge_bytes\"} 10007"],
+        "the key's token total counts the token family only; got:\n{out}"
+    );
+}
+
+/// **A PLANE'S OWN TOKEN CLASSES ARE GAUGED, NOT THE FALLBACK PLANE'S TIERS** (audit K2#2): a lane
+/// of a plane declaring `audio_tokens_in`/`audio_tokens_out` gets one `busbar_bucket_tokens` series
+/// per class it declares in the token family, zeros included, and none for the four tiers it never
+/// declared. Its duration class is priced, never a token series.
+#[test]
+fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
+    init();
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        &GAUGE_FALLBACK_PLANE,
+        &GAUGE_AUDIO_PLANE,
+    ]);
+    let key = sample_vkey("vk_gauge_audio");
+    let gov = gov_with_key(key.clone());
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &Default::default());
+    gov.record_usage(
+        &cost,
+        &key,
+        "",
+        &format!("gauge-audio{}srv", crate::governance::PLANE_LANE_SEP),
+        &std::collections::BTreeMap::from([
+            ("audio_tokens_in".to_string(), 9u64),
+            ("audio_seconds_in".to_string(), 4u64),
+        ]),
+        1_700_000_000,
+    );
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
+        .pool("pool-gauge-audio", &[(0, 1)])
+        .cost(cost)
+        .governance(gov)
+        .build();
+    refresh_scrape_gauges(&app);
+    let out = render();
+    let tiers: Vec<(String, String)> = lines_of(&out, BUCKET_TOKENS, "=\"vk_gauge_audio\"")
+        .iter()
+        .map(|l| {
+            let tier = l
+                .split("tier=\"")
+                .nth(1)
+                .and_then(|t| t.split('"').next())
+                .unwrap_or_default()
+                .to_string();
+            (tier, l.rsplit(' ').next().unwrap_or_default().to_string())
+        })
+        .collect();
+    assert_eq!(
+        tiers,
+        [
+            ("audio_tokens_in".to_string(), "9".to_string()),
+            ("audio_tokens_out".to_string(), "0".to_string()),
+        ],
+        "the lane's plane's token classes, and only those; got:\n{out}"
+    );
+}

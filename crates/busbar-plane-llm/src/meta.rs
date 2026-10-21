@@ -208,17 +208,22 @@ const CONFIG_SCHEMA: &str = r#"{
   }
 }"#;
 
+/// [`HELP_TAGLINE`]'s text, spelled once for it and for [`CLI_HELP_TEXT`].
+macro_rules! help_tagline {
+    () => {
+        "native-protocol LLM gateway"
+    };
+}
+
 /// The one-line description `busbar --help` opens with (`busbar <version> — <this>`), byte for byte
 /// as the binary has always printed it (shadow-oracle cells `cli__--help` / `cli__-h`). It names
 /// this plane, so this plane owns it (#47/#49) and the composition root reads it from here.
-pub const HELP_TAGLINE: &str = "native-protocol LLM gateway";
+pub const HELP_TAGLINE: &str = help_tagline!();
 
-/// This plane's lines in the `ENDPOINTS` block of `busbar --help` — the doors its dialects answer
-/// on — byte for byte as the binary has always printed them (shadow-oracle cells `cli__--help` /
-/// `cli__-h`). They name this plane's dialects, so this plane owns them (#47/#49); no trailing
-/// newline, the root splices them between two lines it owns.
-pub const HELP_ENDPOINTS: &str =
-    "    POST /<model>/v1/messages              Anthropic-format ingress (single model)
+/// [`HELP_ENDPOINTS`]'s text, spelled once for it and for [`CLI_HELP_TEXT`].
+macro_rules! help_endpoints {
+    () => {
+        "    POST /<model>/v1/messages              Anthropic-format ingress (single model)
     POST /<pool>/v1/messages               route to a configured pool
     POST /<provider>/<model>/v1/messages   ad-hoc direct route
     POST /v1/chat/completions              OpenAI-format ingress
@@ -228,12 +233,30 @@ pub const HELP_ENDPOINTS: &str =
     POST /v1beta/models/<model>:<action>   Gemini-format ingress
     POST /model/<modelId>/converse         Bedrock Converse ingress
     POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
-    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)";
+    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)"
+    };
+}
+
+/// This plane's lines in the `ENDPOINTS` block of `busbar --help` — the doors its dialects answer
+/// on — byte for byte as the binary has always printed them (shadow-oracle cells `cli__--help` /
+/// `cli__-h`). They name this plane's dialects, so this plane owns them (#47/#49); no trailing
+/// newline, the root splices them between two lines it owns.
+pub const HELP_ENDPOINTS: &str = help_endpoints!();
 
 /// This plane's rows of `busbar --help`, as the composition root's CLI-help axis reads them:
 /// `("tagline", …)` the one-line description the help opens with, `("endpoint", …)` its rows of the
 /// `ENDPOINTS` block.
 pub const CLI_HELP: &[(&str, &str)] = &[("tagline", HELP_TAGLINE), ("endpoint", HELP_ENDPOINTS)];
+
+/// THE SAME ROWS AS THE DOOR'S TAIL STATES THEM (`PlaneTail::cli_help`), in the contract's grammar
+/// (`busbar_contract::abi::plane::cli_help`): the tagline row, then the `ENDPOINTS` row. The host
+/// reads them off the door, so a dropped-in build of this plane prints the same help as a linked one.
+pub const CLI_HELP_TEXT: &str = concat!(
+    "\u{1e}tagline\u{1f}",
+    help_tagline!(),
+    "\u{1e}endpoint\u{1f}",
+    help_endpoints!()
+);
 
 /// The operation class this plane serves ONE LEVEL DOWN, to another plane's unit that names only the
 /// class it needs, and the display name a refusal naming this plane reads — byte for byte the word

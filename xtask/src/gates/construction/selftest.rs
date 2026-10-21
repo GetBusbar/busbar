@@ -399,35 +399,28 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_shape.rs",
+        "crates/busbar-plane-llm/src/zz_planted_shape.rs",
         "pub fn planted_second_attempt_site() {\n    let _ = \
          ctx.client().get().request(method, url);\n}\n\npub fn planted_extra_door() {\n    \
          unit.finish_inner(end);\n}\n\npub fn planted_door_caller() {\n    \
          finish_admitted(end);\n    finish_rejected(end);\n}\n\npub fn planted_pick_a() {\n    \
          pick_among(lanes);\n}\n\npub fn planted_pick_b() {\n    pick_among(lanes);\n}\n",
     );
+    // A second unit attempt goes where the rule scans (a crate that drives a unit's walk).
     ov.set(
-        "crates/busbar-llm/src/unit/zz_planted_escape.rs",
-        "pub fn planted_response_escape() -> Response {\n    Response::new()\n}\n",
+        "crates/busbar-kernel-egress/src/zz_planted_attempt.rs",
+        "pub fn planted_second_attempt_site() {\n    let _ = e.conns.open(caller, need, &desc);\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a second attempt site, a second terminal door, a door outside Audit, two more lane picks \
-         and a Response escaping a step other than Audit",
-        &[
-            "one-attempt-seam",
-            "single-terminal",
-            "terminal-doors-in-audit-step",
-            "one-pick-site",
-            "no-response-escapes-audit",
-        ],
+        "a second attempt site, a second terminal door and two more lane picks",
+        &["one-attempt-seam", "single-terminal", "one-pick-site"],
         ov,
         &[
             "planted_second_attempt_site",
             "planted_extra_door",
             "zz_planted_shape.rs",
-            "planted_response_escape",
         ],
     ));
 
@@ -454,7 +447,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // not appended: the end of a request-path file is a `#[cfg(test)]` module, and a function
     // planted inside one is test code the rule is right to ignore.
     let mut ov = on(base);
-    let target = "crates/busbar-llm/src/engine/pipeline.rs";
+    let target = "crates/busbar-kernel/src/limits/admission.rs";
     if let Ok(basetext) = cx.read(target) {
         let body: String = (0..400)
             .map(|i| format!("    let _planted_{i} = {i};\n"))
@@ -493,17 +486,38 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["does not resolve"],
     ));
 
-    let planes = ConstructionGate::cfg(cx)
-        .and_then(|c| c.plane_crates())
+    // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
+    // `[gate.plugin_kinds].plane` matches, the same set the gate owes `ports-only` rows for (a
+    // pinned door the base layer lays is one of them, and a plant into it is read like any other). A plane-less
+    // tree owes no `ports-only:<crate>` row, so there is no row for a plant to turn red.
+    let mut planes: Vec<String> = ConstructionGate::cfg(cx)
+        .map(|c| {
+            let mut v = c.plane_crates().unwrap_or_default();
+            v.extend(
+                dirs_for_globs(cx, &c.kind_globs("plane").unwrap_or_default())
+                    .iter()
+                    .map(|d| crate_name_of_dir(d)),
+            );
+            v
+        })
         .unwrap_or_default();
+    planes.sort();
+    planes.dedup();
+    if planes.is_empty() {
+        return r;
+    }
     let mut ov = on(base);
+    // Each row names the files carrying the most hits, so a plant must OUT-RANK every real file of
+    // the crate or the row goes red without naming it (the busbar-llm test tree already holds a
+    // file of 217 such lines). PLANTED_REACH sits far above any file the tree carries.
+    const PLANTED_REACH: usize = 2000;
     for p in &planes {
         // item 376 (Q11/Q32): the needle moved from `busbar_core::` (a deleted crate, absorbed
         // into busbar-kernel) to `busbar_kernel::`, so the plant must name the live needle or it
         // adds zero hits and the row it is proving red stays green.
         ov.set(
             format!("crates/{p}/src/zz_planted_ports.rs"),
-            (0..40)
+            (0..PLANTED_REACH)
                 .map(|i| format!("pub fn planted_reach_{i}() {{ busbar_kernel::internals(); }}\n"))
                 .collect::<String>(),
         );
@@ -511,7 +525,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             format!("crates/{p}/src/zz_planted_ports_tests.rs"),
             format!(
                 "#[cfg(test)]\nmod tests {{\n{}}}\n",
-                (0..40)
+                (0..PLANTED_REACH)
                     .map(|i| format!("    fn planted_{i}() {{ busbar_kernel::internals(); }}\n"))
                     .collect::<String>()
             ),
@@ -536,7 +550,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_token.rs",
+        "crates/busbar-plane-llm/src/zz_planted_token.rs",
         "pub fn planted_forged_token() {\n    let _ = UnitToken::mint(seal);\n    let _ = \
          KernelSeal::acquire_for_kernel(x);\n    let _ = AdmitToken::mint(y);\n}\n",
     );
@@ -559,7 +573,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // path-prefixed form is reached. Covering that row here proves the DELEGATION too: six planted
     // forgeries, five counted by `token-sealed` and the sixth by its own row, never one twice.
     ov.set(
-        "crates/busbar-llm/src/zz_planted_sealed.rs",
+        "crates/busbar-plane-llm/src/zz_planted_sealed.rs",
         "pub fn planted_forged_kernel_values() {\n    let _ = CallId::seal(seal, 7);\n    let _ = \
          Origin::seal(seal, kind);\n    let _ = SessionId::mint(seal, 9);\n    let _ = \
          IdempotencyKey::mint(seal, digest);\n    let _ = UnitEnd::seal(exit, outcome, \
@@ -600,19 +614,19 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         // pre-#73 constructor, and that it reported the planted `AdmitToken::mint(` line (4) as an
         // offender SITE — so the label can no longer be green on a symbol the scan cannot see.
         &[
-            "`UnitToken::mint(` at crates/busbar-llm/src/zz_planted_token.rs",
+            "`UnitToken::mint(` at crates/busbar-plane-llm/src/zz_planted_token.rs",
             "call site(s) of `KernelSeal::acquire_for_kernel(`",
             "pre-#73 name `AdmitToken::mint(`",
-            "(ceiling 0): crates/busbar-llm/src/zz_planted_token.rs:4",
+            "(ceiling 0): crates/busbar-plane-llm/src/zz_planted_token.rs:4",
             // X-178. One string per symbol, each naming the SPELLING and the SITE, so a row that
             // goes red for some other reason cannot satisfy this case.
-            "`CallId::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:2",
-            "`Origin::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:3",
-            "`SessionId::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:4",
-            "`IdempotencyKey::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:5",
-            "`UnitEnd::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:6",
+            "`CallId::seal(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:2",
+            "`Origin::seal(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:3",
+            "`SessionId::mint(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:4",
+            "`IdempotencyKey::mint(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:5",
+            "`UnitEnd::seal(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:6",
             // The verbs-unit symbol lands on its own sub-row, which prints sites as `path:line`.
-            "(ceiling 0): crates/busbar-llm/src/zz_planted_sealed.rs:7",
+            "(ceiling 0): crates/busbar-plane-llm/src/zz_planted_sealed.rs:7",
             // Q-GG2: a mint in busbar-contract source is caught, data file beside it or not.
             "`Pass::mint(` at crates/busbar-contract/src/caps/fixtures/zz_planted_contract_mint.rs:2",
         ],
@@ -620,7 +634,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_loop.rs",
+        "crates/busbar-plane-llm/src/zz_planted_loop.rs",
         "pub fn planted_loop_entry_a() {\n    let _ = run_unit(ctx);\n}\n\npub fn \
          planted_loop_entry_b() {\n    let _ = run_unit(ctx);\n}\n\npub fn \
          planted_legacy_a() {\n    run_gauntlet(unit);\n}\n\npub fn planted_legacy_b() {\n    \
@@ -830,7 +844,7 @@ fn unit_crate_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
 }
 
 /// THE RULES PLANTED THROUGH THE CEILINGS FILE rather than through the tree: the per-crate reach
-/// figures, the census floors and the `one-attempt-seam` scan set. Each reads a NUMBER or a string
+/// figures, and the census floors. Each reads a NUMBER or a string
 /// in `qa/construction.toml`, and the honest plant for a rule about a number is a different number.
 fn ceiling_file_cases<'a>(
     gate: &'a dyn Gate,
@@ -958,7 +972,7 @@ fn ceiling_file_cases<'a>(
     // The plant makes the verb match nothing ANYWHERE, so `extra` is empty too and the row's single
     // offender is the arm under test — nothing else can be what turned it red.
     let verbless = combined.replace(
-        r#"send_verb = '\.client\(\)\.get\(\)\.request\('"#,
+        r#"send_verb = '\.conns\.open\('"#,
         r#"send_verb = '\.zz_planted_verb_that_matches_nothing\('"#,
     );
     if verbless != combined {
@@ -1160,6 +1174,55 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
         garbled,
         &["does not parse"],
     ));
+
+    // A CEILING RAISED IN THE CHANGE THAT NEEDS IT (Law 9: a ceiling "refuses every rise"). The
+    // fixture's base copy of the ceilings file is the fixture itself, so this plant raises a
+    // zero-armed ban and a per-crate count ratchet against that base: each is the edit that would
+    // make a new violation green in the same commit, and each is RED on the census row.
+    let Ok(text) = cx.read(CEILINGS) else {
+        r.note_infra_failure("the ceilings file could not be read, so no ceiling can be raised");
+        return r;
+    };
+    let crate_figure = ConstructionGate::cfg(cx).ok().and_then(|cfg| {
+        let table = cfg.doc.table_or_empty("rules.ports-only.max_per_crate");
+        let name = table.keys().first().cloned()?;
+        let figure = table.int_of(&name)?;
+        Some((name, figure))
+    });
+    let raised =
+        ceilings::set_int(&text, "rules.lean-core", "max_hits", 3).and_then(
+            |t| match &crate_figure {
+                Some((name, figure)) => {
+                    ceilings::set_int(&t, "rules.ports-only.max_per_crate", name, figure + 1)
+                }
+                None => Some(t),
+            },
+        );
+    match (raised, crate_figure) {
+        (Some(raised), Some((name, figure))) => {
+            let mut ov = on(base);
+            ov.set(CEILINGS, raised);
+            let rose = format!("{figure} -> {}", figure + 1);
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a rule ceiling raised against the base is refused: a zero-armed ban and a \
+                 per-crate count ratchet",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.lean-core] max_hits",
+                    "0 -> 3",
+                    name.as_str(),
+                    rose.as_str(),
+                ],
+            ));
+        }
+        _ => r.note_infra_failure(
+            "[rules.lean-core] max_hits or a [rules.ports-only.max_per_crate] figure could not be \
+             raised, so the rule that refuses a raised ceiling is unproven",
+        ),
+    }
     r
 }
 
@@ -1446,7 +1509,7 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
          pub fn planted_spelled(holds: Vec<Hold>) -> &'static [Hold] {\n    Vec::leak(holds)\n}\n\n\
          pub fn planted_words(words: String) -> &'static str {\n    String::leak(words)\n}\n",
     );
-    let door = "crates/busbar-kernel/src/plane/door.rs";
+    let door = "crates/busbar-kernel/src/plane_driver/door.rs";
     if let Ok(basetext) = cx.read(door) {
         ov.set(
             door,
@@ -1468,7 +1531,7 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
             "zz_planted_leak.rs:2",
             "zz_planted_leak.rs:6",
             "zz_planted_leak.rs:10",
-            "plane/door.rs",
+            "plane_driver/door.rs",
         ],
     ));
 

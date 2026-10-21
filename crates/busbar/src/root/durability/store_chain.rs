@@ -214,6 +214,44 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
     Ok(records)
 }
 
+/// THE WHOLE CHAIN A JOURNAL RESUMED FROM THE STORE HOLDS, oldest first, decoded and verified:
+/// what [`Journal::replay`] answers on a log that keeps every segment.
+///
+/// A memory log keeps only its newest segment resident ([`busbar_kernel_wal::Wal::memory_seeded`]);
+/// the rest of the chain is in the store. So the chain is the union of what the store holds, what
+/// waits in the lane for it, what the log retained after a refusal, and the resident segment, each
+/// `(node, node_seq)` once. The lane is copied BEFORE the store is scanned: a record leaves the lane
+/// only once the store took it, so none can fall between the two reads. Called under the book's
+/// lock, so the journal appends nothing meanwhile.
+///
+/// # Errors
+///
+/// The store would not read the chain back, or the log could not be read.
+pub(super) fn whole_chain(
+    journal: &busbar_kernel_wal::Journal,
+    lane: &JournalLane,
+) -> std::io::Result<Result<Vec<busbar_kernel_wal::JournalRecord>, busbar_kernel_wal::JournalBreak>>
+{
+    let node = journal.node();
+    let queued = lane.queued();
+    let stored =
+        off_runtime(|| read_chain(lane.calls().as_ref(), node)).map_err(std::io::Error::other)?;
+    let resident = journal.log().read_back()?.records;
+    let mut chain: std::collections::BTreeMap<u64, Record> = std::collections::BTreeMap::new();
+    for record in stored
+        .into_iter()
+        .chain(queued)
+        .chain(journal.log().owed().iter().cloned())
+        .chain(resident)
+        .filter(|record| record.node == node)
+    {
+        chain.entry(record.node_seq).or_insert(record);
+    }
+    let records: Vec<Record> = chain.into_values().collect();
+    Ok(busbar_kernel_wal::decode_run(&records)
+        .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded)))
+}
+
 /// Close the record being reassembled: whole, it joins `records`; short, it is noted as torn.
 fn finish(
     at: &mut Option<(u64, u16, Vec<u8>, u16)>,
@@ -417,6 +455,11 @@ impl JournalLane {
     #[must_use]
     pub fn pending(&self) -> usize {
         self.lane.lock().queue.len()
+    }
+
+    /// The records that wait for the store, oldest first: a copy taken under the lane's lock.
+    fn queued(&self) -> Vec<Record> {
+        self.lane.lock().queue.iter().cloned().collect()
     }
 
     /// WHY A NEW MONEY-BEARING UNIT IS REFUSED, or `None` while the lane has room. One atomic read

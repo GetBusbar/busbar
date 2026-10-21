@@ -823,6 +823,8 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    busbar_kernel::test_support::register_neutral_test_plane();
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
     use busbar_kernel_wal::RecordClass;
 
@@ -996,6 +998,8 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    busbar_kernel::test_support::register_neutral_test_plane();
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
@@ -1251,6 +1255,8 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn one_seal_after_two_reloads() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    busbar_kernel::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
     for decls in crate::LINKED.protocols {

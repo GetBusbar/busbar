@@ -226,8 +226,13 @@ pub fn parse_text(raw: &str) -> Document {
         // The key ends at the first `=` outside a quoted key: a dialect mapping row's quoted wire
         // path may itself hold `=` (a union arm, `messages[].content[].type=text.text`).
         let key_len = split_top(trimmed, '=').first().map_or(0, |k| k.len());
-        if let Some((key, value)) =
-            (key_len < trimmed.len()).then(|| (&trimmed[..key_len], &trimmed[key_len + 1..]))
+        if let Some((key, value)) = (key_len < trimmed.len())
+            .then(|| (&trimmed[..key_len], &trimmed[key_len + 1..]))
+            // A line is `key = value` only when the text before its `=` IS a key. Any `=` used to
+            // be enough, so a stray prose line holding one (`this line is neither a header nor key
+            // = value`) was placed as a key named by its first words and the checked reader read
+            // the document as whole. It is a line this reader cannot place, and is recorded so.
+            .filter(|(key, _)| is_key(key))
         {
             let key = key.trim().to_string();
             let value = value.trim();
@@ -259,6 +264,40 @@ pub fn parse_text(raw: &str) -> Document {
     }
     commit_table(&mut doc, &cur_path, cur_is_array, cur_table);
     doc
+}
+
+/// A TOML key: one or more `.`-joined parts, each a bare key (`A-Za-z0-9_-`, non-empty) or a
+/// quoted one (`"..."` / `'...'`), with blanks allowed only around the dots.
+fn is_key(key: &str) -> bool {
+    let (mut parts, mut quote, mut escaped, mut start) = (Vec::new(), None::<char>, false, 0);
+    for (i, c) in key.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '.' => {
+                parts.push(&key[start..i]);
+                start = i + 1;
+            }
+            None => {}
+        }
+    }
+    if quote.is_some() {
+        return false;
+    }
+    parts.push(&key[start..]);
+    parts.iter().all(|part| {
+        let p = part.trim();
+        let quoted = p.len() >= 2
+            && ((p.starts_with('"') && p.ends_with('"'))
+                || (p.starts_with('\'') && p.ends_with('\'')));
+        quoted
+            || (!p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    })
 }
 
 /// Split `body` on every `sep` that is outside a double-quoted string and outside `[..]` / `{..}`.
@@ -443,6 +482,32 @@ patterns = [ 'libc' ]
         let err = parse_text_checked(raw).expect_err("refused");
         assert!(err.contains("line 3: `this line is not toml`"), "{err}");
         assert!(parse_text_checked("[a]\nk = \"v\"\n").is_ok());
+    }
+
+    /// RED: a stray line HOLDING AN `=` is still a line the reader cannot place. Any `=` used to
+    /// make a line `key = value`, so this one was read as a key named `this line is neither a
+    /// header nor key` and the checked reader called the document whole.
+    #[test]
+    fn a_stray_line_holding_an_equals_sign_is_refused_not_read_as_a_key() {
+        let raw = "[rules.demo]\nkinds = [\"a\"]\nthis line is neither a header nor key = value\n";
+        let doc = parse_text(raw);
+        assert_eq!(
+            doc.unread,
+            vec![(
+                3,
+                "this line is neither a header nor key = value".to_string()
+            )]
+        );
+        assert!(doc
+            .table("rules.demo")
+            .get_one("this line is neither a header nor key")
+            .is_none());
+        assert!(parse_text_checked(raw).is_err());
+        // Every key shape the committed configs use still reads.
+        let ok = "[a]\nk = 1\nk-2_x = 2\na.b = 3\n\"q=w.x\" = 4\n'lit' = 5\n\"x\" . y = 6\n";
+        let doc = parse_text_checked(ok).expect("every key placed");
+        assert_eq!(doc.table("a").get_one("\"q=w.x\""), Some("4"));
+        assert!(parse_text_checked("[a]\n= 1\n").is_err());
     }
 
     /// The cause X-1206 hid in `qa/construction.toml`: a multi-line array whose items are regexes

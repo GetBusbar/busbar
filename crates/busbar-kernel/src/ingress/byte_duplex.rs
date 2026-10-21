@@ -470,7 +470,7 @@ fn spawn_handler<P: DuplexPlane>(
         // is plane code: if it panics, the task unwinds past any statement written after it, and a
         // key left behind here is one the EOF drain waits the full `EOF_DRAIN` on, then reports as
         // a phantom straggler — for every later drain of the session. The guard runs on normal
-        // completion and on unwind alike (the sibling boundary in `plane::handle_engine` catches the
+        // completion and on unwind alike (the sibling boundary in `host_work::handle_engine` catches the
         // equivalent plane callback for the same reason).
         let _slot = InflightSlot {
             shared: for_cleanup,

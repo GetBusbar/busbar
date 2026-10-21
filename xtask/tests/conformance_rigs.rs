@@ -671,6 +671,11 @@ fn oidf(log: &str, exit: Option<i32>) -> OidfRun {
 }
 
 const OIDF_LOG: &str = "\
+3 modules to test:
+  [1:1] fapi2-security-profile-final-happy-flow
+  [1:2] fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request
+  [1:3] fapi2-security-profile-final-refresh-token
+
 Test [1:1] fapi2-security-profile-final-happy-flow abc123 FINISHED - result \u{1b}[32mPASSED\u{1b}[0m. 120 log entries - 100 SUCCESS 0 FAILURE, 0 WARNING, 12.3 seconds
 Test [1:2] fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request def456 FINISHED - result REVIEW. 40 log entries - 30 SUCCESS 0 FAILURE, 0 WARNING, 4.0 seconds
 Test [1:3] fapi2-security-profile-final-refresh-token ghi789 FINISHED - result WARNING. 50 log entries - 40 SUCCESS 0 FAILURE, 1 WARNING, 5.0 seconds";
@@ -717,6 +722,54 @@ fn oidf_passes_only_when_every_module_finished_without_failure() {
     refused.subject = Err("the subject refused the plan's client registration".into());
     refused.boot_failed = true;
     assert_eq!(decide_oidf(&refused).status, Status::Fail);
+}
+
+/// The plan's own module list (`N modules to test:`) is the denominator, and the runner's exit is
+/// its own verdict: a green set of parsed lines is no pass when either disagrees.
+#[test]
+fn oidf_holds_the_parsed_modules_to_the_plan_and_the_runners_exit() {
+    // Every listed module PASSED, but the runner exited 1: an unattributed red is no pass.
+    let all_passed = OIDF_LOG
+        .replace("result REVIEW", "result PASSED")
+        .replace("result WARNING", "result PASSED");
+    assert_eq!(
+        decide_oidf(&oidf(&all_passed, Some(0))).status,
+        Status::Pass
+    );
+    let o = decide_oidf(&oidf(&all_passed, Some(1)));
+    assert_eq!(o.status, Status::Fail, "{o:?}");
+    assert!(o.reason.unwrap().contains("exit 1"));
+    assert_ne!(decide_oidf(&oidf(&all_passed, None)).status, Status::Pass);
+
+    // The plan owns four modules; three printed a result and the fourth `did not run`.
+    let short = all_passed.replace("3 modules to test:", "4 modules to test:").replace(
+        "  [1:3] fapi2-security-profile-final-refresh-token\n",
+        "  [1:3] fapi2-security-profile-final-refresh-token\n  [1:4] fapi2-security-profile-final-par-attempt-reuse-request_uri\n",
+    ) + "\nTest [1:4] fapi2-security-profile-final-par-attempt-reuse-request_uri did not run";
+    let o = decide_oidf(&oidf(&short, Some(0)));
+    assert_eq!(o.status, Status::Fail, "{o:?}");
+    let why = o.reason.unwrap();
+    assert!(why.contains("par-attempt-reuse-request_uri"), "{why}");
+
+    // The same short run with the unread line gone: three results for a four-module plan.
+    let silent = short.replace(
+        "\nTest [1:4] fapi2-security-profile-final-par-attempt-reuse-request_uri did not run",
+        "",
+    );
+    let o = decide_oidf(&oidf(&silent, Some(0)));
+    assert_eq!(o.status, Status::Fail, "{o:?}");
+    assert!(o.reason.unwrap().contains("3 of the plan's 4"));
+
+    // No module list at all: the denominator is unknown, so nothing is judged.
+    let unlisted: String = all_passed
+        .lines()
+        .filter(|l| l.starts_with("Test ["))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        decide_oidf(&oidf(&unlisted, Some(0))).status,
+        Status::NotRun
+    );
 }
 
 #[test]

@@ -7,7 +7,9 @@
 //! * `busbar_key_spend_cents` / `busbar_key_tokens_total` — per virtual key.
 //! * `busbar_bucket_spend_cents` / `busbar_bucket_budget_remaining_cents` — per budget-group bucket,
 //!   derived from the ledger x the CURRENT rate card (reprice-on-read).
-//! * `busbar_bucket_tokens` — per (bucket, model, tier), the counts every spend figure is priced from.
+//! * `busbar_bucket_tokens` — per (bucket, model, tier), the counts every spend figure is priced from:
+//!   one series per token class the lane's plane declares ([`crate::governance::token_series`]),
+//!   whose `tier` label is the class name.
 //!
 //! # INTEGERS UP TO ONE NAMED BOUNDARY
 //!
@@ -156,19 +158,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
             for (model, tokens) in
                 gov.bucket_model_tokens(&app.cost, &key.id, crate::governance::WINDOW_TOTAL, now)
             {
-                let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
-                for (tier, v) in [
-                    ("input", tier_v(busbar_contract::records::UNIT_INPUT)),
-                    ("output", tier_v(busbar_contract::records::UNIT_OUTPUT)),
-                    (
-                        "cache_read",
-                        tier_v(busbar_contract::records::UNIT_CACHE_READ),
-                    ),
-                    (
-                        "cache_write",
-                        tier_v(busbar_contract::records::UNIT_CACHE_WRITE),
-                    ),
-                ] {
+                for (tier, v) in crate::governance::token_series(&model, &tokens) {
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
                     for (k, val) in metric_labels(key) {
@@ -229,23 +219,11 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                 for (model, tokens) in
                     gov.bucket_model_tokens(&app.cost, &bucket.bucket_id, bucket.window, now)
                 {
-                    let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
-                    for (tier, v) in [
-                        ("input", tier_v(busbar_contract::records::UNIT_INPUT)),
-                        ("output", tier_v(busbar_contract::records::UNIT_OUTPUT)),
-                        (
-                            "cache_read",
-                            tier_v(busbar_contract::records::UNIT_CACHE_READ),
-                        ),
-                        (
-                            "cache_write",
-                            tier_v(busbar_contract::records::UNIT_CACHE_WRITE),
-                        ),
-                    ] {
+                    for (tier, v) in crate::governance::token_series(&model, &tokens) {
                         set_gauge(
                             metrics::gauge!(
                                 BUCKET_TOKENS,
-                                dims(&[("model", model.clone()), ("tier", tier.to_string())])
+                                dims(&[("model", model.clone()), ("tier", tier)])
                             ),
                             v,
                         );

@@ -18,18 +18,3 @@ file = "crates/busbar-contract/src/abi/sdk/door.rs"
 item = "thread_local!"
 cite = "ARCHITECT ruling 2026-10-14: the plugin-logging capture is the ONE sanctioned per-thread slot (BUSBAR-1.6.0.md l.1297-1300, one slot per thread per plugin image, expanded by the door macro in the plugin image)"
 drain = "none — mandated by SPEC 1297"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/host.rs"
-item = "LIVE_GENERATIONS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/host.rs"
-item = "NEXT_GENERATION"
-
-[[finding]]
-rule = "contract-stateless:thread-local"
-file = "crates/busbar-contract/src/abi/hot/host.rs"
-item = "thread_local!"

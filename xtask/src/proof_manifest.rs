@@ -552,24 +552,26 @@ fn verdict_byte_identity(root: &Path, run_cargo: bool) -> Json {
     let oracles = [
         (
             "egress-differential",
-            "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs",
+            "crates/busbar-kernel/src/egress/engine/tests/dial_judge_tests.rs",
         ),
         (
             "crossproto-billing",
-            "crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs",
+            "crates/busbar/src/root/tests/serve_tests.rs",
         ),
         (
             "on-exhausted",
-            "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs",
+            "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs",
         ),
         (
             "pool-upstream-creds",
-            "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs",
+            "crates/busbar/src/root/tests/model_egress.rs",
         ),
         // busbar-core's ingress suite, relocated whole into busbar-llm (03ee7227c, a git rename).
+        // DEV-GREEN row 83 deleted that crate; each oracle above and this one point at the home its
+        // tests were ported to (the port ledger, gist a3e42036): the llm arrival's own decode suite.
         (
             "usage-decode-tap",
-            "crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs",
+            "crates/busbar-plane-llm/tests/exchange_arrive.rs",
         ),
     ];
     for (oid, opath) in oracles {

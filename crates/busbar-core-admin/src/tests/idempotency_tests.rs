@@ -288,3 +288,68 @@ fn a_reservation_marked_in_flight_survives_a_drop_and_still_commits() {
     drop(r);
     assert!(matches!(cache.probe(key, 21), Probe::InFlight));
 }
+
+/// A journal whose durable write cannot finish until another task on the runtime has run: it
+/// announces it started, then waits (bounded) for that task's word, and records whether it came.
+struct WaitsForTheRuntime {
+    started: Arc<tokio::sync::Notify>,
+    word: Mutex<std::sync::mpsc::Receiver<()>>,
+    heard: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ClaimJournal for WaitsForTheRuntime {
+    fn journal_claim(&self, _key: &(String, String), _now: u64) {
+        self.started.notify_one();
+        let heard = self
+            .word
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok();
+        self.heard.store(heard, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// THE CLAIM'S DURABLE WRITE RUNS OFF THE ASYNC WORKER. On a durable node the claim journal is an
+/// append and a sync on the node's journal under its process-wide lock; a mint or rotate carrying
+/// an `Idempotency-Key` used to make it inline in the async handler, holding a runtime worker
+/// through it. On a one-worker runtime that worker is the only one, so a sibling task can run while
+/// the write is in progress only if the write is on a blocking thread.
+///
+/// RED while `POST /keys` journalled the claim on the worker: the sibling never ran, and the write
+/// waited out its bound without hearing it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_mints_claim_journal_write_runs_off_the_async_worker() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let (tell, word) = std::sync::mpsc::channel();
+    let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let journal = Arc::new(WaitsForTheRuntime {
+        started: Arc::clone(&started),
+        word: Mutex::new(word),
+        heard: Arc::clone(&heard),
+    });
+    // The sibling: it runs once the write has started, and gives the write its word.
+    let sibling = tokio::spawn(async move {
+        started.notified().await;
+        let _ = tell.send(());
+    });
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        crate::new_test_app().build(),
+    ));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("idempotency-key", "claim-off-worker".parse().unwrap());
+    let _ = crate::keys::create_key(
+        axum::extract::State(handle),
+        axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
+        headers,
+        axum::Extension(Arc::new(crate::keys::KeyReplayCache::with_journal(journal))),
+        axum::body::Bytes::from(r#"{"name":"claim-off-worker"}"#),
+    )
+    .await;
+    sibling.await.expect("the sibling task runs");
+    assert!(
+        heard.load(std::sync::atomic::Ordering::SeqCst),
+        "the claim's journal write held the async worker: no other task ran while it was in \
+         progress"
+    );
+}

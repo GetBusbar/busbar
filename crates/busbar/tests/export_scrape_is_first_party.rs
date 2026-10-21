@@ -285,7 +285,7 @@ fn kind_rank(kind: &str) -> u8 {
 /// in both; WHICH FAMILY comes first WITHIN a kind is not (hash order), so this test does not pin
 /// that.
 ///
-/// Before the fix this binary's scrape sink (`busbar-export-prometheus`) sorted families by name
+/// Before the fix this binary's linked scrape sink sorted families by name
 /// alone, so a counter whose name sorts after a distribution's — `busbar_requests_total` and
 /// `busbar_upstream_attempts_total` both sort after `busbar_request_duration_seconds` — rendered
 /// AFTER that summary, which v1.5.5 never does. RED on the parent: the parent's exposition is

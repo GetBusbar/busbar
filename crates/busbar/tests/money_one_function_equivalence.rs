@@ -650,7 +650,6 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
         card: ledger_card(Some(&[(LANE, [30.0, 160.0, 0.0, 0.0])]), 0),
         appended_at: bucket_start_ms + 48 * 3_600_000,
         author: Author::Amend {
-            operator_fingerprint: "operator".to_string(),
             reason_hash: [0u8; 32],
         },
     });

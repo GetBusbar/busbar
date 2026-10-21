@@ -17,12 +17,12 @@ use crate::state::App;
 // wrote it via `install_body_ingress`) or the test hook (`set_test_body_ingress`). Core's OWN
 // `#[cfg(test)]` binary used to auto-seed the test hook here with the extracted dialects'
 // `BODY_INGRESS` slice — the A6/HostCtx dev-dependency-cycle cleanup removed that (it named
-// `busbar_llm` directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
+// the retired engine crate directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
 // needs a real body-model arrival now registers it itself
-// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS)`, idempotent,
+// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| the retired engine crate::BODY_INGRESS)`, idempotent,
 // first-wins) from an integration-test target, exactly the posture an external `test-support`
 // consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
+pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -572,13 +572,13 @@ fn finish_inner(
     // rendered series/values are identical to the macro emission. Unregistered label values (e.g.
     // a bare test `App`) fall back to the cached-handle helpers in `metrics.rs` inside the helper.
     // This plane labels its own requests from in here rather than at the plane ingress
-    // boundary (`plane::observe`), and that is a consequence of the spine's rule rather than a
+    // boundary (`ingress::observe`), and that is a consequence of the spine's rule rather than a
     // carve-out: this plane speaks several dialects, so `ingress_protocol` is a fact only its reader
     // knows (`Plane::sole_wire_format` is `None` for it). This is the v1.5.4 request path: it emits
     // `busbar_requests_total` / `busbar_request_duration_seconds` with the exact 1.5.4 label set
     // `{ingress_protocol, pool, outcome}` and NO `plane` label, so a deployment with only this plane's
     // `/metrics` scrape is byte-identical to 1.5.4. Other mounted planes emit their own
-    // `busbar_plane_*` families from `plane::observe` instead — same helper, same `outcome`
+    // `busbar_plane_*` families from `ingress::observe` instead — same helper, same `outcome`
     // vocabulary, one family apart.
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(
@@ -676,6 +676,9 @@ pub mod native;
 
 /// The protocol catch-all.
 pub mod dispatch;
+/// THE PLANE INGRESS BOUNDARY: one request-observability layer over every mounted plane's door, and
+/// the [`observe::Counted`] marker a plane's handler sets on a response it has already labelled.
+pub mod observe;
 // `protocol_dispatch` is the axum catch-all fallback the core router mounts and nothing outside core
 // names, so it stays crate-private — keeping the confidential `CallerToken` it takes off the public
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`

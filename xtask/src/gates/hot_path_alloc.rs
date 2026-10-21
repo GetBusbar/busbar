@@ -12,7 +12,7 @@
 //! | --- | --- |
 //! | `:instrument-present` | the criterion bench exists AND its OWN `[[bench]]` block says `harness = false` |
 //! | `:global-allocator` | it installs a counting `#[global_allocator]` |
-//! | `:pod-batch-zero` | it asserts `allocations == 0` across the isolated `PlaneHostVtable` POD batch |
+//! | `:pod-batch-zero` | it asserts `allocations == 0` across the isolated `HostSlots` call batch |
 //!
 //! Each row holds its own comparison as lexed CODE clauses, and the registration is read from this
 //! bench's own `[[bench]]` block — the matchers are `hot-path-perf`'s (see its header for why a
@@ -28,21 +28,20 @@
 //! global allocation(s)` panic is the RED evidence, `BUSBAR_ALLOC_INJECT` the real plant). A bench
 //! that did not run is RED, never skipped-green.
 //!
-//! THE DOOR LANE'S WITNESS (`hot-path-alloc:door-ready-zero`). The POD batch above is the HOT lane's
-//! `PlaneHostVtable`, which row 84 deletes with `abi/hot`; the request path crosses the door lane.
+//! THE DOOR LANE'S WITNESS (`hot-path-alloc:door-ready-zero`). The batch above is a plugin's call
+//! into the host table; the request path crosses the door lane.
 //! `crates/busbar/tests/door_ready_alloc.rs` is that lane's counting-allocator witness (A.8: "0 for
 //! each request-path op"): every op the plane contract marks `request_path`, READY through the one
 //! dispatcher, zero host allocations. This row holds its clauses as code, so the witness cannot lose
 //! its allocator, its contract-table coverage or its zero assertion while the gate stays green; the
 //! test itself runs in the workspace suite.
 //!
-//! THE PENDING-RIDER DEPENDENCY. As with the perf instrument, `PlaneHostVtable`
-//! (`crates/busbar-contract/src/abi/hot/host.rs`) has no production caller yet — the keystone
-//! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
-//! has not landed — so the instrument is ARMED against the vtable's own construction (the subject
-//! `crates/busbar-contract/tests/layout_golden.rs` pins) and binds to the production crossing
-//! unchanged when the rider lands: an allocation-free POD call is allocation-free wherever it is
-//! made. This gate is GREEN now and stays green across that transition.
+//! THE SUBJECT. The HOT lane's `PlaneHostVtable` was deleted with `abi/hot` (status row 84); the
+//! batch crosses the host-services table that replaced it, `HostSlots`
+//! (`crates/busbar-contract/src/abi/host/service.rs`, THE DESIGN §11.12), through its `clock.now`
+//! slot, ARMED against the table's own construction (the subject
+//! `crates/busbar-contract/tests/layout_golden.rs` pins): an allocation-free call is allocation-free
+//! wherever it is made.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::hot_path_perf::{
@@ -77,14 +76,14 @@ const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_POD_BATCH,
         clauses: &[
-            "use busbar_contract::abi::hot::host::{",
-            "PlaneHostVtable",
+            "use busbar_contract::abi::host::service::{",
+            "HostSlots",
             "bench_function(\"POD_HOST_CALL_BATCH\"",
             "ALLOC_COUNT.store(0,",
             "let allocations = ALLOC_COUNT.load(",
             "assert_eq!(allocations, 0,",
         ],
-        ok: "the instrument asserts zero allocations across the isolated PlaneHostVtable POD batch",
+        ok: "the instrument asserts zero allocations across the isolated HostSlots call batch",
         bad: "the instrument no longer asserts zero allocations across the isolated POD batch",
     },
 ];

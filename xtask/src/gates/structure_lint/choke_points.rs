@@ -291,19 +291,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             rules: Vec::new(),
             why: "openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list".into(),
         },
-        // ── F ── the trusted-upstream trust LIFECYCLE: one plane-neutral machine, the pinned
-        //         artifact a type parameter. Enforced differently — the hazard is not a call
-        //         somebody hand-rolls, it is a plane's VOCABULARY leaking into the machine, after
-        //         which the sibling plane can no longer parameterise it and writes a parallel copy.
-        ChokeRow {
-            id: "F-trust-lifecycle".into(),
-            tag: "TRUST-PLANE-LEAK".into(),
-            owner: format!("{substrate}/trust/mod.rs (Approval / TrustState / Drift, generic over PinnedArtifact)"),
-            class_test: format!("{substrate}/trust/tests/genericity_tests.rs::the_lifecycle_names_no_plane_in_its_code"),
-            remedy: "keep the plane noun in the artifact, the capability name or the caller, never in the lifecycle".into(),
-            rules: Vec::new(),
-            why: "the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit".into(),
-        },
+        // ── F ── ROW DELETED WITH ITS SUBJECT. It held the generic trust lifecycle (`Approval` /
+        //         `Drift` over `PinnedArtifact`) plane-neutral; that machine had no production
+        //         construction site and left the tree (Q128 p8#3, THE DESIGN l.1934-1937). The
+        //         kernel's trust book is the one lifecycle, held by rows G and I.
         // ── G ── the same choke point from the OTHER side: a plane's trust is DECIDED BY THE
         //         KERNEL from the facts the plane declares, never by a lifecycle the plane runs on
         //         its own authority. F stops a plane's vocabulary leaking INTO the machine; this
@@ -319,7 +310,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             tag: "TRUST-MACHINE-FORK".into(),
             owner: "crates/busbar-plane-a2a/src/card_trust.rs (CardPin, the artifact, plus the one plane-specific refusal, jws_refusal) + the kernel's HostSlots trust.* service (the verbs a plane calls; BUSBAR-1.6.0.md Part 3 §4)".into(),
             class_test: "crates/busbar-plane-a2a/tests/purity.rs::the_a2a_plane_declares_no_trust_state_of_its_own".into(),
-            remedy: "declare the facts (identity, registration state, artifact outcome) and let the kernel's Approval decide; a plane may narrow the kernel's verdict, never assert Allow over it".into(),
+            remedy: "declare the facts (identity, registration state, artifact outcome) and let the kernel's Approve (TrustBook::judge) decide; a plane may narrow the kernel's verdict, never assert Allow over it".into(),
             rules: Vec::new(),
             why: "two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined".into(),
         },
@@ -344,10 +335,9 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             )],
             why: "the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name".into(),
         },
-        // ── I ── THE ONE TRUST COMPARISON, negative half. `Approval::serves` is the single answer
-        //         to "may this upstream serve this capability at this digest?" and the census keeps
-        //         it single. This row stops the other shape of the same defect: a call site
-        //         re-deriving the answer INLINE from the raw registration fields.
+        // ── I ── THE ONE TRUST COMPARISON. `TrustBook::judge`, the kernel's Approve, is the single
+        //         answer to "may this upstream serve this capability at this digest?". This row stops
+        //         a call site re-deriving the answer INLINE from the raw registration fields.
         ChokeRow {
             id: "I-trust-serve-derivation".into(),
             tag: "TRUST-COMPARISON-BYPASS".into(),
@@ -355,9 +345,9 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             // (item approvals as a declared trust key, sightings) and asks `trust.serves`, which is
             // `TrustBook::judge`; the engine's routed gate and its class test are deleted, and the
             // class test is ported to the kernel against a neutral double of the declared facts.
-            owner: format!("{substrate}/trust/book.rs (TrustBook::judge, the kernel's Approve; Approval::serves for a whole-catalogue pin)"),
+            owner: format!("{substrate}/trust/book.rs (TrustBook::judge, the kernel's Approve)"),
             class_test: format!("{substrate}/trust/tests/serve_gate_tests.rs::the_kernels_approve_answers_exactly_what_the_deleted_inline_decision_answered"),
-            remedy: "state the facts and ask the kernel (trust.serves / TrustBook::judge, or Approval::serves); never re-derive the answer from the raw registration fields".into(),
+            remedy: "state the facts and ask the kernel (trust.serves / TrustBook::judge); never re-derive the answer from the raw registration fields".into(),
             rules: vec![
                 BanRule::new(
                     r"schema_hash[[:space:]]*\.is_some",
@@ -372,12 +362,12 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                 BanRule::new(
                     r"\.pin[[:space:]]*\.is_some",
                     "an inline \"is this upstream pinned?\" test",
-                    &[format!("{substrate}/trust/mod.rs")],
+                    &[],
                 ),
                 BanRule::new(
                     r"\.pin[[:space:]]*\.is_none",
                     "an inline \"is this upstream unpinned?\" test",
-                    &[format!("{substrate}/trust/mod.rs")],
+                    &[],
                 ),
             ],
             why: "a second answer to \"may this serve?\" diverges from the first the moment either is fixed, and the divergence is discovered as an in-flight call that served after the operator revoked it".into(),

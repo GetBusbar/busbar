@@ -1031,6 +1031,53 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
     );
 }
 
+/// THE CATALOGUE ENTRY OF A RAISED CREDENTIAL LINE MATCHES THE SEVERITY IT IS RAISED AT. The auth
+/// rows name these codes in their Statements and raise each at warn: the bearer and static-header
+/// lines per request, the token lines per mint. The catalogue must not contradict that: an entry
+/// marked retired documents a code as dead while a plugin still raises it, and a benign-recurring
+/// entry makes the main log demote the plugin's warn to debug. RED with 4013 and 4014 catalogued
+/// retired and 7087 catalogued benign-recurring.
+#[test]
+fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_entry() {
+    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
+    use busbar_contract::diagnostic::Severity;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    for code in [4013u16, 4014, 4015, 4016, 7087] {
+        let entry = busbar_kernel::diagnostics::by_code(code)
+            .unwrap_or_else(|| panic!("BUSBAR-{code:04} is in the catalogue"));
+        assert!(
+            !entry.retired,
+            "BUSBAR-{code:04} is raised by an auth row, so its entry is not retired"
+        );
+        assert_eq!(
+            entry.severity,
+            Severity::Actionable,
+            "BUSBAR-{code:04} is raised at warn, so its entry is actionable"
+        );
+        let name = format!("BUSBAR-{code:04}");
+        // A WARN-and-above capture: a line the sink demoted to debug or info is not in it.
+        let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            sink.diag(Diagnostic {
+                id: 0,
+                name: name.as_bytes(),
+                severity: 1,
+                text: b"a raised credential line",
+            });
+        });
+        assert_eq!(
+            cap.messages()
+                .into_iter()
+                .map(|m| m.trim_end().to_string())
+                .collect::<Vec<_>>(),
+            vec![format!("a raised credential line diag={name}")],
+            "the main log writes {name} at the warn it was raised at"
+        );
+    }
+}
+
 /// LEGACY the retiring engine crate's keyless-lane test in `src/engine/tests/auth_style_tests.rs`
 /// (coverage map v2 row 73; its name spells an auth plugin's crate id, which the root may not). 1.5.5: a lane whose provider declared `api_key: none` (a keyless
 /// local upstream) holds an empty key, and an empty key presents NO auth header at all under any

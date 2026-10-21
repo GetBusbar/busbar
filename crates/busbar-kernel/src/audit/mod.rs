@@ -36,8 +36,8 @@
 //! must not re-merge the STREAMS, and it does not: [`ChainedRecord::scope_of`] is what keeps them
 //! apart, and the verifier REFUSES a record whose scope is not the chain's
 //! ([`ChainBreakKind::ForeignScope`]), so one caller's evidence can never be made to depend on
-//! another caller's rows. store-mysql had a real cross-principal read defect of exactly that shape
-//! (a case-insensitive collation let one key id read another's chain), and the
+//! another caller's rows. A store backend once had a real cross-principal read defect of exactly
+//! that shape (a case-insensitive collation let one key id read another's chain), and the
 //! scope check is the engine-side half of not repeating it.
 //!
 //! ## WHAT A PLUGIN STILL OWNS: which fields the digest covers
@@ -311,7 +311,8 @@ impl<R: ChainedRecord> Chain<R> {
         }
     }
 
-    /// The sequence the next appended record will carry.
+    /// TEST ONLY: the sequence the next appended record will carry.
+    #[cfg(test)]
     pub(crate) fn next_seq(&self) -> u64 {
         self.next_seq
     }

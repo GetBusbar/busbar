@@ -395,3 +395,50 @@ fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
     assert_eq!(drive(inst, DRIVE_STATE_LEASE), Outcome::Failed);
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
+
+/// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN, the plugin ABI: "no allocation
+/// and no blocking on the hot path"). Every worker on an instance enters through the same `Head`;
+/// an entry on an instance with nothing parked must not touch the parked table's mutex, so it
+/// cannot wait on another worker holding it.
+#[test]
+fn an_entry_with_nothing_parked_takes_no_parked_lock() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // SAFETY: the instance the SDK minted above, alive until the `close` below.
+    let h = unsafe { super::head(inst) }.expect("an open instance has a head");
+    let held = h.parked();
+    let at = inst as usize;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(tick(at as *mut c_void));
+    });
+    let answered = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    worker.join().expect("the worker returns");
+    assert_eq!(
+        answered.ok(),
+        Some((Outcome::Ready, 42)),
+        "an entry with nothing parked waited on the parked table's lock"
+    );
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// A CROSSING ALLOCATES NOTHING, ITS PER-CALL LOG SCOPE INCLUDED (THE DESIGN, the plugin ABI: "no
+/// allocation and no blocking on the hot path"; the per-call scoped capture is kept). The
+/// thread's capture dispatcher is built once, on the worker's first crossing; every later crossing
+/// scopes the body under it with a reference-count clone and a thread-local swap, and allocates
+/// nothing.
+#[test]
+fn a_crossing_with_its_scoped_capture_allocates_nothing() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // The worker's first crossings build its capture slot.
+    assert_eq!(tick(inst), (Outcome::Ready, 42));
+    assert_eq!(tick(inst), (Outcome::Ready, 42));
+    crate::abi::CountingAlloc::reset();
+    let answered = tick(inst);
+    let allocations = crate::abi::CountingAlloc::count();
+    assert_eq!(answered, (Outcome::Ready, 42));
+    assert_eq!(allocations, 0, "a warm crossing allocated");
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}

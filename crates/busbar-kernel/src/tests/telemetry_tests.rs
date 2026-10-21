@@ -20,7 +20,7 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
 /// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
 /// anything about the real LLM dialect, so it needs a plane to exist as fallback, never the real
-/// `busbar_llm` plane (which this crate's own `#[cfg(test)]` binary cannot reach; see that fn's doc).
+/// the retired engine crate plane (which this crate's own `#[cfg(test)]` binary cannot reach; see that fn's doc).
 /// Mounted planes emit the separate `busbar_plane_*` families and are exercised in
 /// `plane::metrics_tests` / `a2a::relay_tests`.
 fn model_plane_key() -> &'static str {
@@ -730,7 +730,7 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
     );
 }
 
-/// F25 row 379: rehomed from crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::
+/// F25 row 379: rehomed from the retired engine crate's src/engine/tests/ingress_integration_tests.rs::
 /// test_finish_outcome_mapping_503_is_exhausted. A served unit that ends 503 is counted on
 /// `busbar_requests_total` under `outcome="exhausted"` (a pool ran dry), through the end-of-unit
 /// emit the composition root's serve path calls (`model_request_finished`), exactly once, and

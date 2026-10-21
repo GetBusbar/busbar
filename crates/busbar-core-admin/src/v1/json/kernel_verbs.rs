@@ -423,7 +423,7 @@ pub(crate) struct AdjustView {
     now: BTreeMap<String, String>,
 }
 
-/// `POST /ledger/amend-rate-history`: a signed, back-dated correction to the dated rate-card
+/// `POST /ledger/amend-rate-history`: a back-dated correction to the dated rate-card
 /// history. It out-ranks the entry it corrects and rewrites nothing.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
@@ -435,11 +435,6 @@ pub(crate) struct AmendRateHistoryReq {
     /// `effective_from`. Absent or null: open-ended.
     #[serde(default)]
     effective_until: Option<u64>,
-    /// `sha256` of the fleet's sealed operator key, as hex: which key signed this correction.
-    operator_fingerprint: String,
-    /// The detached ed25519 signature (128 hex characters) over the canonical correction payload,
-    /// verified strictly against the sealed operator key.
-    signature: String,
     /// Why. Required and non-empty; the record keeps its SHA-256, not the text.
     reason: String,
     /// The corrected flat per-request fee. Never negative.
@@ -475,7 +470,6 @@ pub(crate) struct AmendRateHistoryView {
     effective_until: Option<u64>,
     /// When the correction was appended, in milliseconds.
     amended_at: u64,
-    operator_fingerprint: String,
     /// The SHA-256 of the reason, as hex.
     reason_sha256: String,
 }
@@ -701,14 +695,13 @@ struct VerbDoc {
     errors: Vec<(&'static str, String)>,
 }
 
-/// The refusal a posture-gated verb earns, in the one status the root renders it at
+/// The refusal a new mutating verb earns, in the one status the root renders it at
 /// (`units_admin::answer_for` / `scope_answer`): every gate the new verbs run answers `403`.
 #[cfg(feature = "openapi-schema")]
 fn gated_403() -> (&'static str, String) {
     (
         "403",
-        "`forbidden`: the credential does not hold `full` (the message names the scope), the \
-         fleet's operator key is not set, dual control holds the mutation for an approval, the verb's \
+        "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's \
          per-principal rate class is exhausted, or an idempotent retry is still in flight"
             .to_string(),
     )
@@ -775,7 +768,7 @@ fn doc_for(
     Some(match verb {
         // ── the three disaster-recovery verbs: their effect lands on the store ──
         KernelVerb::ChainBreak => VerbDoc {
-            summary: "Deliberately break the journal chain (disaster recovery; irreducible)",
+            summary: "Deliberately break the journal chain (disaster recovery)",
             description: "Admitted through the same gates as every other new verb, then handed to \
                           the store. The request body is not read."
                 .to_string(),
@@ -792,10 +785,10 @@ fn doc_for(
             ],
         },
         KernelVerb::StoreRestore => VerbDoc {
-            summary: "Restore the store from a named backup (disaster recovery; irreducible)",
+            summary: "Restore the store from a named backup (disaster recovery)",
             description: "The body names the backup; there is no default. A body that names none \
-                          is refused before the ceremony runs. Otherwise admitted through the same \
-                          gates as every other new verb, then handed to the store."
+                          is refused before it reaches the store. Otherwise admitted through the \
+                          same gates as every other new verb, then handed to the store."
                 .to_string(),
             success: Success::NoContent("Applied: the store is restored. No body"),
             request: Some(schema_of(req_gen.subschema_for::<StoreRestoreReq>())),
@@ -817,7 +810,7 @@ fn doc_for(
             ],
         },
         KernelVerb::ResealEpochFloor => VerbDoc {
-            summary: "Reseal the epoch floor after a chain break or restore (irreducible)",
+            summary: "Reseal the epoch floor after a chain break or restore",
             description: "Admitted through the same gates as every other new verb, then handed to \
                           the store. The request body is not read."
                 .to_string(),
@@ -1011,7 +1004,7 @@ fn doc_for(
             ],
         },
         KernelVerb::CommitUpgrade => VerbDoc {
-            summary: "Commit the fleet to the release this node runs (irreducible)",
+            summary: "Commit the fleet to the release this node runs",
             description: "The body names the release; one this node does not run is refused and \
                           seals nothing. The committed release is sealed on the node journal \
                           before the answer names its position and chain hash. Honors an \
@@ -1047,8 +1040,7 @@ fn doc_for(
         },
         // ── the two money verbs whose effect is the node's amendment journal ──
         KernelVerb::Adjust => VerbDoc {
-            summary: "Correct a recorded unit's COUNTS, never a money figure (irreducible above \
-                      `adjust_threshold`)",
+            summary: "Correct a recorded unit's COUNTS, never a money figure",
             description: "Takes counts, never a money figure: what a recorded unit costs stays a \
                           read-time view of its counts at its own card epoch. The principal, lane, \
                           card epoch and what the counts WERE are read from the book by the digest \
@@ -1085,14 +1077,11 @@ fn doc_for(
             ],
         },
         KernelVerb::AmendRateHistory => VerbDoc {
-            summary: "Append a signed, back-dated correction to the dated rate-card history \
-                      (irreducible)",
+            summary: "Append a back-dated correction to the dated rate-card history",
             description: "The correction out-ranks the entry it corrects and rewrites nothing; \
-                          recompute reprices the corrected window against the new entry. It must \
-                          be signed by the fleet's sealed operator key (`operator_fingerprint` \
-                          names it; `signature` verifies strictly over the canonical payload). A \
-                          body carrying `currency` is refused. The durable record is written ahead \
-                          of the append."
+                          recompute reprices the corrected window against the new entry. A body \
+                          carrying `currency` is refused. The durable record is written ahead of \
+                          the append."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<AmendRateHistoryView>()),
@@ -1105,9 +1094,8 @@ fn doc_for(
                     "400",
                     format!(
                         "`invalid_request`: malformed body, an empty or inverted window, no \
-                         signer, signature or reason, a `currency` key, a negative fee or rate, \
-                         a correction that moves no figure, an unknown operator fingerprint, a \
-                         signature that does not verify, or {BODY_UNREADABLE}"
+                         reason, a `currency` key, a negative fee or rate, a correction that \
+                         moves no figure, or {BODY_UNREADABLE}"
                     ),
                 ),
                 gated_403(),

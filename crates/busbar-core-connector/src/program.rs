@@ -172,7 +172,13 @@ pub(crate) struct Member {
     alpn: Vec<Vec<u8>>,
     state: Mutex<State>,
     fan: Arc<Fan>,
+    /// Its supervision key (`DialIn::supervision_key`): minted at [`Member::new`], never `0`, and
+    /// kept for as long as this member is, so a re-declaration that keeps the member keeps it.
+    supervision_key: u64,
 }
+
+/// The next member's supervision key: process-wide, from `1`.
+static NEXT_SUPERVISION_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn map(f: &Failure) -> ConnError {
     match f {
@@ -280,6 +286,8 @@ impl Member {
                 supervisor: Supervisor::default(),
             }),
             fan: Arc::new(Fan::default()),
+            supervision_key: NEXT_SUPERVISION_KEY
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -333,7 +341,13 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
             };
-            match Connection::spawn(&self.via, &self.program, &self.env, dial) {
+            match Connection::spawn(
+                &self.via,
+                &self.program,
+                &self.env,
+                dial,
+                self.supervision_key,
+            ) {
                 Ok(conn) => {
                     st.generation += 1;
                     let generation = st.generation;

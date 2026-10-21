@@ -10,7 +10,7 @@
 //! boot rehydrate and verifier the call log and the admin audit log use), under the store kind
 //! [`KIND_RESIDUAL`]. It does NOT ride the admin audit ring: that ring is operator-rate and holds
 //! [`crate::audit::MAX_AUDIT_ENTRIES`] rows in RAM, and a residual is request-rate (one per request
-//! on a deployment that runs a Bedrock guardrail on every call), so sharing it would evict both the
+//! on a deployment whose guardrail reports units on every call), so sharing it would evict both the
 //! residuals and every admin mutation behind them ([`crate::audit`]'s stream table: "one chain per
 //! PRINCIPAL | request-rate").
 //!
@@ -30,8 +30,8 @@ use std::sync::Arc;
 use crate::audit::journal::NeutralBody;
 use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
-use crate::plane::store::{decode, PlaneStore, KIND_RESIDUAL};
 use crate::plane_host::USAGE_RESIDUAL_ACTION;
+use crate::store::plane_view::{decode, PlaneStore, KIND_RESIDUAL};
 use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResult};
 
 /// The host-assigned `kind_id` the residual stream is registered under. Distinct from the
@@ -243,7 +243,7 @@ pub(crate) fn register_residual_stream_as(kind_id: u32, app: &Arc<crate::state::
         MAX_TRACKED_PRINCIPALS,
         app.governance
             .as_ref()
-            .map(|gov| crate::plane::store::PlaneStoreView::narrow(gov.store())),
+            .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store())),
     );
 }
 
@@ -493,7 +493,7 @@ pub(crate) fn register_and_restore(app: &Arc<crate::state::App>) {
     let Some(gov) = app.governance.as_ref() else {
         return;
     };
-    let store = crate::plane::store::PlaneStoreView::narrow(gov.store());
+    let store = crate::store::plane_view::PlaneStoreView::narrow(gov.store());
     match RESIDUALS.restore_from_store(store.as_ref()) {
         Ok(r) if r.records > 0 || r.unreadable > 0 => tracing::debug!(
             principals = r.principals,

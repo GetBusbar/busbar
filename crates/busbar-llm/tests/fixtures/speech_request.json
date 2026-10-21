@@ -1,6 +1,0 @@
-{
-  "model": "gpt-4o-mini-tts",
-  "input": "SPEAK-THIS",
-  "voice": "alloy",
-  "instructions": "STYLE-INSTRUCTIONS"
-}

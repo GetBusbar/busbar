@@ -30,9 +30,10 @@
 //!   HTML-comment note in the doc itself pointing at the plugin-free substitute example.
 
 // The shipped/marked examples this file validates assume the DEFAULT feature set (what a real
-// user's copy-pasted config targets) -- an admin-tokens block in an example fails closed under
-// `--no-default-features` (correct production behavior, not a bug this file should catch).
-#![cfg(feature = "auth-admin-tokens")]
+// user's copy-pasted config targets) -- an operator-credential block in an example fails closed
+// under `--no-default-features` (correct production behavior, not a bug this file should catch).
+// Gated on the operator credential's linked row (`linked_operator_auth`, build.rs).
+#![cfg(linked_operator_auth)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

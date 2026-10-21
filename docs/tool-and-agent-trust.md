@@ -11,8 +11,7 @@ bounds staleness with `verify_ttl` and coalesces load with single-flight, why it
 one honest limit of any proxy, and the single knob you have over it.
 
 Cross-references: [MCP](/docs/mcp/) (the tool plane) · [A2A](/docs/a2a/) (the agent plane) ·
-[Configuration](/docs/configuration/) (field reference) · [Diagnostics](/docs/diagnostics/)
-(BUSBAR-7097 / BUSBAR-7098).
+[Configuration](/docs/configuration/) (field reference) · [Diagnostics](/docs/diagnostics/).
 
 ---
 
@@ -89,8 +88,8 @@ notification's body is never read.
 
 If the re-verification fetch fails — the upstream is unreachable or unverifiable — the call is
 **refused**, not served against a snapshot older than `verify_ttl`. An unreachable upstream at verify
-derives the trust state `Error`, which serves nothing (`BUSBAR-7098`, latched). A fingerprint that
-moved derives a quarantine, and the call is refused before dispatch (`BUSBAR-7097`, warn-once). In
+derives the trust state `Error`, which serves nothing. A fingerprint that
+moved derives a quarantine, and the call is refused before dispatch. In
 both cases the refusal is the signal, and the upstream's tool call never reaches the wire.
 
 This is the same fail-closed floor a first-ever call takes: a server nobody has verified is verified

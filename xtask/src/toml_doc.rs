@@ -612,8 +612,9 @@ forbidden = [
                 .expect("gate table")
                 .list_of("plane_crates"),
             // busbar-mcp left at P3 DEL-MCP (ARCHITECT 2026-10-05), busbar-a2a at FLIP-A2A and
-            // busbar-voice at FLIP-STREAMING (all named in [gate.census.deleted]).
-            vec!["busbar-llm"]
+            // busbar-voice at FLIP-STREAMING, and busbar-llm at DEV-GREEN row 83 (all named in
+            // [gate.census.deleted]): the list is empty, and still read whole.
+            Vec::<String>::new()
         );
         assert_eq!(
             doc.children("rules.legacy-reach.prefixes")

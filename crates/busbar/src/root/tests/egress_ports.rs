@@ -388,6 +388,31 @@ async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
     }
 }
 
+/// NO LOST WAKEUP: a slot freed in the window around the moment a waiter parks is kept for it, so
+/// the waiter dispatches well inside a short wait rather than missing the wake and timing out.
+/// Driven fifty times so the free lands on both sides of the park. Rehomes
+/// the retired engine crate's `src/engine/tests/on_exhausted_tests.rs::queue_no_lost_wakeup_when_permit_freed_in_the_window`.
+/// RED: a wake fired before the waiter registered is lost, and the waiter waits out its bound.
+#[tokio::test]
+async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
+    for _ in 0..50 {
+        let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
+        let held = permits.try_acquire(A).expect("the one slot");
+        let waiter = {
+            let permits = std::sync::Arc::clone(&permits);
+            tokio::spawn(async move { permits.acquire_any(&[A]).await })
+        };
+        tokio::task::yield_now().await;
+        drop(held);
+        let got = tokio::time::timeout(Duration::from_millis(400), waiter)
+            .await
+            .expect("the freed slot reaches the waiter inside the short wait")
+            .expect("joined")
+            .expect("the slot was handed over");
+        assert_eq!(got.0, A);
+    }
+}
+
 /// LEGACY the retiring engine crate's `src/engine/tests/signal_catalog_tests.rs::latency_reservoir_p95_is_nearest_rank_and_bounded`
 /// (coverage map v2 row 612). 1.5.5: the reservoir behind `CandidateLatencyP95Ms` reads `None`
 /// until a sample lands (never a fabricated 0); its p95 is nearest-rank in whole milliseconds

@@ -133,9 +133,14 @@ impl FramerDoor for LengthDoor {
                 ok
             }
             Call::Refuse(i, o) => {
+                // Head lines only where no head went out: then the block is the whole answer.
+                let head = if i.head_sent == 0 {
+                    format!(":status: 200\r\nlp-status: {}\r\n", i.status)
+                } else {
+                    format!("lp-status: {}\r\n", i.status)
+                };
                 let block = format!(
-                    "lp-status: {}\r\nlp-reason: {}\r\n",
-                    i.status,
+                    "{head}lp-reason: {}\r\n",
                     String::from_utf8_lossy(raw(i.bytes, i.len))
                 );
                 wire(&i.sink, o, block.as_bytes());
@@ -227,11 +232,29 @@ fn a_final_status_past_the_claims_numbering_never_crosses() {
     assert!(refused.error.contains("finish.final_status"), "{refused:?}");
     assert!(d.finishes.lock().unwrap().is_empty(), "nothing crossed");
     // The stream can still be ended another way.
-    let block = s.refuse(b"plane fault", 502).expect("refuse");
+    let block = s.refuse(b"plane fault", 502, false).expect("refuse");
     assert_eq!(
         block,
-        pairs(&[("lp-status", "502"), ("lp-reason", "plane fault")])
+        pairs(&[
+            (":status", "200"),
+            ("lp-status", "502"),
+            ("lp-reason", "plane fault")
+        ])
     );
+}
+
+/// RED (Q128 framer L1): a refusal after the stream's response head went out is told so, and its
+/// block is closing lines with no head line in them; one before the head is the whole answer.
+#[test]
+fn a_refusal_after_the_head_is_told_the_head_went_out() {
+    for head_sent in [false, true] {
+        let d = door();
+        let mut s = FramedStream::open(Arc::clone(&d) as Arc<dyn FramerDoor>, "lp", "/", &[])
+            .expect("open");
+        let block = s.refuse(b"cut", 4, head_sent).expect("refuse");
+        let has_head = block.iter().any(|(name, _)| name.as_slice() == b":status");
+        assert_eq!(has_head, !head_sent, "head_sent={head_sent}: {block:?}");
+    }
 }
 
 #[test]

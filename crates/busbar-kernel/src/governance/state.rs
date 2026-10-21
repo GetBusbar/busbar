@@ -321,7 +321,7 @@ impl GovState {
     }
 
     /// Whether `sub` is currently revoked. Consulted by BOTH auth paths: the signed-token path
-    /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
+    /// (`verify_token`) and the host-held credential read (`records.secret`), so a
     /// revoked subject's credentials are rejected identically regardless of which credential is presented.
     pub fn is_revoked(&self, sub: &str) -> bool {
         self.is_revoked_at(sub, busbar_kernel::store::now())
@@ -358,20 +358,23 @@ impl GovState {
         Ok((binding, token.into()))
     }
 
-    /// MINT a signed-token key that ALSO carries an AWS-style credential for inbound SigV4 (the
-    /// MinIO/S3-compatible model). Persists the binding + AWS credential atomically and issues the
-    /// signed token. Returns `(binding, token, aws_access_key_id, aws_secret_access_key)` - the
-    /// token and the AWS secret are shown ONCE. See `mint_signed` for the binding shape.
+    /// MINT a signed-token key that ALSO carries a host-held credential of `kind`, drawn over the
+    /// `shape` its verifier's Statement states ([`super::issue_credential`]): the binding and the
+    /// credential persist atomically and the signed token is issued. Returns `(binding, token,
+    /// public_id, secret)`; the token and the secret are shown ONCE. Kind and shape are the
+    /// verifier's words: governance stamps the credential row and names no credential format.
     ///
     /// Both secrets come back as [`Secret`](busbar_contract::redacted::Secret): a `{:?}`/`{}` of
     /// either (or of the tuple) prints `[REDACTED]`, so the one-time values cannot reach a log line
-    /// by accident; the caller reads them once, at the response boundary, via the sealed `expose`. The
-    /// AccessKeyId is not secret (it travels in the SigV4 header) and stays a plain `String`.
-    pub fn mint_signed_with_aws(
+    /// by accident; the caller reads them once, at the response boundary, via the sealed `expose`.
+    /// The public id is the lookup handle, not secret, and stays a plain `String`.
+    pub fn mint_signed_with_credential(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
+        kind: &str,
+        shape: &busbar_contract::auth_calls::IssuedShape,
     ) -> RecordStoreResult<(VirtualKey, Secret<String>, String, Secret<String>)> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
@@ -379,22 +382,22 @@ impl GovState {
             ));
         };
         let (binding, generation) = signed_binding(spec, now)?;
-        let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key = Secret::new(generate_aws_secret_access_key().store()?);
+        let (public_id, secret_value) = super::issue_credential(shape).store()?;
+        let secret_value = Secret::new(secret_value);
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let cred_id = format!("cred_{}", hex::encode(cred_raw));
-        // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike
-        // the signed token above (see CredentialMeta's doc). `secret_form: Recoverable` — HMAC
-        // verification needs the plaintext back, so it cannot be a one-way digest.
+        // The credential is row-looked-up (by its public id), unlike the signed token above (see
+        // CredentialMeta's doc). `secret_form: Recoverable`: its verifier re-derives from the
+        // plaintext, so it cannot be a one-way digest.
         let secret = CredentialSecret {
             meta: CredentialMeta {
                 id: cred_id,
                 key_id: binding.id.clone(),
-                kind: "sigv4".to_string(),
+                kind: kind.to_string(),
                 slot: 0,
-                public_id: access_key_id.clone(),
+                public_id: public_id.clone(),
                 secret_form: SecretForm::Recoverable,
                 created_at: now,
                 updated_at: now,
@@ -403,15 +406,12 @@ impl GovState {
                 revoke_reason: None,
                 revision: 0,
             },
-            secret: format!(
-                "v1:plain:{}",
-                secret_access_key.expose(&crate::seal::lend())
-            ),
+            secret: format!("v1:plain:{}", secret_value.expose(&crate::seal::lend())),
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
         let token = material.signer.mint(&binding.id, exp, Some(&generation));
-        Ok((binding, token.into(), access_key_id, secret_access_key))
+        Ok((binding, token.into(), public_id, secret_value))
     }
 
     /// THE CALLER-REFERENCE KEY a door plane's units are lent their caller's opaque reference under
@@ -654,25 +654,31 @@ impl GovState {
 
     /// ONE METERED REQUEST on `lane`'s metering row, keyed exactly as [`GovState::meter_classes`]
     /// keys the same lane, so a unit's request and its classes never split across two rows: an
-    /// unqualified (pools) lane meters on `(lane, provider)` with the token split, and with no
-    /// serving provider it meters nothing (1.5.5 metered no response it could not attribute to a
-    /// serving lane); a plane-qualified lane `"<plane>\u{1f}<subject>"` meters on
-    /// `(subject, plane)` with no token split, its classes carried by the mirror.
+    /// unqualified (pools) lane meters on `(lane, provider)` with the row's own count columns read
+    /// from `units` ([`MeterCounts::request`]), and with no serving provider it meters nothing
+    /// (1.5.5 metered no response it could not attribute to a serving lane); a plane-qualified lane
+    /// `"<plane>\u{1f}<subject>"` meters on `(subject, plane)` with the request alone, its classes
+    /// carried by the mirror. `units` are the unit's counts by opaque class name: this function
+    /// names no class.
     pub fn record_lane_metering(
         &self,
         key_id: &str,
         lane: &str,
         provider: Option<&str>,
-        usage: Option<&crate::billing::TokenUsage>,
+        units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
         match split_plane_lane(lane) {
             ("", _) => {
                 if let Some(provider) = provider {
-                    self.record_metering(key_id, lane, provider, usage, now);
+                    let add = MeterCounts::request(units);
+                    self.record_metered_request(key_id, lane, provider, add, now);
                 }
             }
-            (plane, subject) => self.record_metering(key_id, subject, plane, None, now),
+            (plane, subject) => {
+                let add = MeterCounts::request(&std::collections::BTreeMap::new());
+                self.record_metered_request(key_id, subject, plane, add, now);
+            }
         }
     }
 
@@ -722,6 +728,54 @@ impl GovState {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     ) {
+        let add = MeterCounts {
+            requests: 1,
+            tokens_input: usage.map(|u| u.input).unwrap_or(0),
+            tokens_output: usage.map(|u| u.output).unwrap_or(0),
+            tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
+            tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
+            usage_units: std::collections::BTreeMap::new(),
+        };
+        self.record_metered_request(key_id, model, provider, add, now);
+    }
+
+    /// Accrue `add` (one request's counts) onto the `(key, day bucket, model, provider, card
+    /// instant)` metering cell: the one place both [`GovState::record_metering`] and
+    /// [`GovState::record_lane_metering`] date and accrue a metered request.
+    fn record_metered_request(
+        &self,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        add: MeterCounts,
+        now: u64,
+    ) {
+        self.record_metered_request_dated(
+            key_id,
+            model,
+            provider,
+            add,
+            now,
+            &crate::store::now_ms,
+            &crate::rate_apply::effective_from_at,
+        );
+    }
+
+    /// [`Self::record_metered_request`] with the price-instant clock and the rate dater passed in,
+    /// so a test drives the dating behaviourally against a dater double rather than the
+    /// process-wide `OnceLock` holder. The production path passes the wall clock in milliseconds
+    /// and the installed holder.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_metered_request_dated(
+        &self,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        add: MeterCounts,
+        now: u64,
+        clock_ms: &dyn Fn() -> u64,
+        dater: &dyn Fn(u64) -> u64,
+    ) {
         // THE CELL'S PRICE INSTANT (DECISION #79): when the card this response was served under
         // STARTED, not which card it is. A build with no root ledger in it answers zero, the
         // opening entry's own `effective_from`, so the cell still dates to a card that covers it
@@ -736,7 +790,7 @@ impl GovState {
         // two card publishes and still resolving to the first. Two clocks of different resolution
         // cannot order two events inside one tick of the coarser one, so the accrual reads the
         // finer one, which is the one the thing it is being compared against was written on.
-        let priced_from_ms = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        let priced_from_ms = dater(clock_ms());
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
@@ -744,14 +798,6 @@ impl GovState {
             provider.to_string(),
             priced_from_ms,
         );
-        let add = MeterCounts {
-            requests: 1,
-            tokens_input: usage.map(|u| u.input).unwrap_or(0),
-            tokens_output: usage.map(|u| u.output).unwrap_or(0),
-            tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
-            tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
-            usage_units: std::collections::BTreeMap::new(),
-        };
         // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
         // concurrent completions for different keys no longer serialize on one process-wide mutex.
         // The bound (and the coalesce-never-drop behaviour) is enforced per shard inside `accrue`.
@@ -1060,8 +1106,10 @@ impl GovState {
         let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
         let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
         self.ensure_id_free_for_hash(&id, &hash)?;
-        let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key = generate_aws_secret_access_key().store()?;
+        // The shape and kind the linked signed-request verifier states, as the test double holds
+        // them (`test_support::issued`).
+        let (kind, shape) = crate::test_support::issued::double();
+        let (access_key_id, secret_access_key) = super::issue_credential(&shape).store()?;
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
@@ -1093,7 +1141,7 @@ impl GovState {
                 meta: CredentialMeta {
                     id: cred_id,
                     key_id: id,
-                    kind: "sigv4".to_string(),
+                    kind,
                     slot: 0,
                     public_id: access_key_id.clone(),
                     secret_form: SecretForm::Recoverable,
@@ -2307,12 +2355,7 @@ impl GovState {
                         // Advance the acked baselines: the cell still holds the window written.
                         cell.flushed_requests = acked.requests;
                         cell.flushed_billable_requests = acked.billable_requests;
-                        for s in &acked.models {
-                            let seg = |m: &&mut ModelCell| m.model == s.model && m.era == s.era;
-                            if let Some(mc) = cell.models.iter_mut().find(seg) {
-                                mc.flushed = s.cur.clone();
-                            }
-                        }
+                        cell.advance_model_baselines(&acked.models);
                     } else if cell.window_start > snap.window {
                         // The cell rolled while this write was in flight, and the roll parked
                         // everything past the baseline — this delta included. It has landed now,
@@ -2401,10 +2444,10 @@ impl GovState {
         Ok(map)
     }
 
-    /// Resolve a wire-supplied `(kind, public_id)` pair (SigV4: `kind = "sigv4"`, `public_id` = the
-    /// AccessKeyId parsed in plaintext from the `Credential=` field of the `Authorization` header)
-    /// to the owning virtual key plus the resolved credential secret. Used ONLY by the
-    /// SigV4-credential verify path (today's sole row-looked-up kind). Returns `None` for an
+    /// Resolve a wire-supplied `(kind, public_id)` pair (the kind a host-held credentials'
+    /// verifier states, and the public id it read off the request) to the owning virtual key plus
+    /// the resolved credential secret. Used ONLY by the host-held credential read (`records.secret`).
+    /// Returns `None` for an
     /// unknown pair — the verify path is written so an unknown identifier and a bad signature reject
     /// indistinguishably (no enumeration oracle): on the `None` branch the caller still runs a
     /// constant-time signature comparison against a dummy secret before rejecting.

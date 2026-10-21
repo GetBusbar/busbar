@@ -107,7 +107,9 @@ plane_ondisk_key() {
     # P3 DEL-MCP / FLIP-A2A: the engine is deleted; the plane is its one plane-kind crate.
     mcp) printf 'plane-mcp' ;;
     a2a) printf 'plane-a2a' ;;
-    llm) printf '%s' "$1" ;;
+    # DEV-GREEN row 83 (coordinator ruling 2026-10-18): the engine crate `crates/busbar-llm` is
+    # deleted; the llm key's home is its door crate. Twin of xtask::planes::plane_key_crate.
+    llm) printf 'plane-llm' ;;
     *) printf '' ;;
   esac
 }
@@ -116,13 +118,15 @@ plane_ondisk_key() {
 # (`git rm -r`) or, for a plane pinned from its own repo, as the root's `busbar-<key>` pin row: `PLANE_KEYS`, plus the on-disk key of every locked plane that has one and is
 # not already in it. DERIVED, so a locked plane that gains an on-disk key joins the harness with no
 # second edit, and a key that is not on disk is never invented.
-PLANE_KEYS_DELETE="$PLANE_KEYS"
-for _lp in $PLANE_KEYS_LOCKED; do
+# Every entry is an ON-DISK key: a PLANE_KEYS key is mapped through `plane_ondisk_key` too, so the
+# llm key enters as `plane-llm` (its door crate), never as a deleted `crates/busbar-llm`.
+PLANE_KEYS_DELETE=""
+for _lp in $PLANE_KEYS $PLANE_KEYS_LOCKED; do
   _od="$(plane_ondisk_key "$_lp")"
   [ -n "$_od" ] || continue
   case " $PLANE_KEYS_DELETE " in
     *" $_od "*) : ;;
-    *) PLANE_KEYS_DELETE="$PLANE_KEYS_DELETE $_od" ;;
+    *) PLANE_KEYS_DELETE="${PLANE_KEYS_DELETE:+$PLANE_KEYS_DELETE }$_od" ;;
   esac
 done
 unset _lp _od
@@ -148,10 +152,33 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
   # derived one that stops naming a crate the tree deleted, which `require_roots` would otherwise
   # kill the gate over. The folded dialect is scanned by the plane-kind regime, not by this list.
   for k in $PLANE_KEYS; do
-    out="${out:+$out }crates/busbar-${k}/src"
+    out="${out:+$out }$(plane_key_src "$k")"
     [ -d "crates/busbar-${k}-codec/src" ] && out="$out crates/busbar-${k}-codec/src"
   done
   printf '%s' "$out"
+}
+
+# plane_key_src <key> → the src root a PLANE_KEYS key's sources live in TODAY: `crates/busbar-<on-disk
+# key>/src`. llm's is its door crate, `crates/busbar-plane-llm/src` (DEV-GREEN row 83). Twin of
+# xtask::planes::plane_key_src.
+plane_key_src() {
+  local od
+  od="$(plane_ondisk_key "$1")"
+  printf 'crates/busbar-%s/src' "${od:-$1}"
+}
+
+# require_plane_key_roots — every gate keyed on PLANE_KEYS calls this before it scans: a key whose
+# root is not a directory is scanned as ZERO files, and zero is the passing answer to every ban
+# (row 115). Prints the missing roots and returns 1; a caller exits on it.
+require_plane_key_roots() {
+  local k r missing=""
+  for k in $PLANE_KEYS; do
+    r="$(plane_key_src "$k")"
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  printf 'plane-keys: a PLANE_KEYS root is not a directory on disk: %s -- a gate keyed on it would scan zero files and pass every ban\n' "$missing" >&2
+  return 1
 }
 
 # ── THE NEUTRAL (ABI-side) SRC ROOTS ────────────────────────────────────────────────────────────────

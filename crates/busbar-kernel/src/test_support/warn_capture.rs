@@ -21,7 +21,7 @@
 //!
 //! SERIALIZATION (why every `WarnCapture` holds a process-global gate): although `with_default` is
 //! thread-local, `tracing`'s callsite-interest / max-level hint is cached PROCESS-GLOBALLY. When two
-//! `WarnCapture` tests run in PARALLEL (the default `cargo test` harness, and the busbar-llm test
+//! `WarnCapture` tests run in PARALLEL (the default `cargo test` harness, and the the retired engine crate test
 //! binary is large), a warn callsite first evaluated under a concurrent test's subscriber that does
 //! not want it can be cached "disabled", so a sibling `WarnCapture` intermittently sees an EMPTY
 //! capture — an intermittent flake. Every `WarnCapture` therefore holds a REENTRANT process-global

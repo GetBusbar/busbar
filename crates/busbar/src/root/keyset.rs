@@ -207,7 +207,7 @@ fn read_cached(file: &Path) -> Result<Option<AuditSigningKey>, KeysetError> {
 /// back yields none: the journal's own finding already names that, and a Bootstrap nobody can read
 /// is not one this node can be refused over.
 fn sealed_fingerprint(durability: &Durability) -> Option<[u8; 32]> {
-    let records = durability.journal.replay().ok()?.ok()?;
+    let records = durability.chain().ok()?.ok()?;
     records
         .iter()
         .filter(|r| r.class == RecordClass::Bootstrap)

@@ -258,25 +258,6 @@ pub const REPORT_ONLY: &[Posture] = &[
             figures: STRUCTURE_LINT_STANDING_FIGURES,
         }),
     },
-    Posture {
-        name: "kind-isolation",
-        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps` and `:closure` \
-              carry the measured coupling the Phase 4 kind-isolation drain removes (their rises \
-              await owner questions Q77/Q77a). `:matrix` is no longer excused here because it no \
-              longer fails: it is report-only (owner 2026-10-03). They are excused FINDING BY FINDING: \
-              every finding they carry must be in qa/kind-isolation.standing.txt at or below its \
-              recorded figure. A new edge, cell or rise reds the posture, and every other row \
-              blocks exactly as it always did. The snapshot only shrinks: `--posture \
-              --write-standing` strikes and lowers and never adds.",
-        excuse: Excused::Snapshot(standing_snapshot::SnapshotReds {
-            rows: &[
-                "kind-isolation:deps",
-                "kind-isolation:test-deps",
-                "kind-isolation:closure",
-            ],
-            file: "qa/kind-isolation.standing.txt",
-        }),
-    },
 ];
 
 /// THE CONSTRUCTION GATE'S STANDING REDS, BY NAME.
@@ -4458,46 +4439,6 @@ mod posture_tests {
             excused_from_all("design-bindings", &cx, &verdict(vec![known, fresh])).is_none(),
             "a red about anything else was never excused and still is not"
         );
-    }
-
-    /// THE KIND-ISOLATION POSTURE IS A SNAPSHOT OF FINDINGS, and the snapshot is well-formed: it
-    /// parses, it is keyed only by the rows the posture names, and every one of those rows is a row
-    /// the gate owes. The judgement itself (GREEN when the snapshot equals the tree, RED on a new
-    /// edge and on a rise, stale entries reported and not scored) is proven in
-    /// `standing_snapshot::tests`.
-    #[test]
-    fn the_kind_isolation_snapshot_names_only_rows_the_gate_owes() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let p = REPORT_ONLY
-            .iter()
-            .find(|p| p.name == "kind-isolation")
-            .expect("kind-isolation has a posture");
-        let Excused::Snapshot(sr) = &p.excuse else {
-            panic!("the kind-isolation posture is a snapshot");
-        };
-        let owed = REGISTRY
-            .iter()
-            .find(|r| r.name == "kind-isolation")
-            .map(|r| (r.build)().owed())
-            .expect("kind-isolation is registered");
-        for row in sr.rows {
-            assert!(
-                owed.contains(&row.to_string()),
-                "{row} is not a row the gate owes"
-            );
-        }
-        let snapshot = standing_snapshot::load(&cx, sr).expect("the snapshot parses");
-        assert!(
-            !snapshot.is_empty(),
-            "an empty snapshot excuses nothing and should be struck"
-        );
-        for key in snapshot.keys() {
-            let row = key.split('\t').next().unwrap_or("");
-            assert!(
-                sr.rows.contains(&row),
-                "{key} is keyed by a row the posture does not name"
-            );
-        }
     }
 
     /// THE KIND-ISOLATION POSTURE DOES NOT HOLD OVER A RED IT CANNOT READ (X5 finding 10). A

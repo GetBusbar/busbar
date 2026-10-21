@@ -5,7 +5,7 @@
 //!
 //! A token (`Pass<S>`, `Grant<C>`) and the kernel's sealed values (`Origin`) are built only inside
 //! `crates/busbar-kernel/src` (construction row `token-sealed*`). A dependent crate's tests (the
-//! composition root's, busbar-llm's, busbar-core-admin's) still need real tokens to drive a unit, so
+//! composition root's, the retired engine crate's, busbar-core-admin's) still need real tokens to drive a unit, so
 //! the kernel acquires the seal HERE and hands the minted value out: the caller names one of these
 //! functions and never the seal acquisition or a constructor.
 //!

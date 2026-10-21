@@ -59,11 +59,10 @@ pub enum Author {
         /// The policy epoch the configuration that produced it belonged to.
         policy_epoch: u64,
     },
-    /// The signed amendment verb. Effective from an instant the operator named, which is in the
-    /// past — that is what makes it an amendment rather than a configuration write.
+    /// The amendment verb. Effective from an instant the operator named, which is in the past —
+    /// that is what makes it an amendment rather than a configuration write. It names no signer:
+    /// no admin verb carries an operator signature (#77(9), BUSBAR-1.6.0.md l.2279).
     Amend {
-        /// Who signed it.
-        operator_fingerprint: String,
         /// The digest of the stated reason. The reason itself is free text and is not the record;
         /// its hash is, so the record is fixed-width and the text cannot be edited under it.
         reason_hash: [u8; 32],

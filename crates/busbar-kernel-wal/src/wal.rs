@@ -9,16 +9,17 @@
 //! gets. There is no file, no directory probe, no preallocation and no boot warning — a node in this
 //! mode leaves a disk exactly as it found it, and the log does not survive the process. A batch is
 //! committed to the local buffer and handed synchronously to the bound shipper, and a refusal fails
-//! the commit. What the shipped build binds there keeps nothing: the store adapter acknowledges every
-//! batch and holds only a count and the last identity. What survives a restart in this mode is what
-//! survived one in the previous release, the settlement rows the ledger dual-writes onto the
-//! configured store — not the log.
+//! the commit. Over a configured store the composition root binds a shipper that hands each batch to
+//! the store's records and refuses when its own bounded queue is full; what survives a restart is
+//! the chain the store kept, which the log is seeded with ([`Wal::memory_seeded`]). With no store
+//! behind the shipper the chain lives as long as the process.
 //!
 //! **On-disk** is what a deployment that writes a data directory gets. Segments are real files,
 //! group commits are a positional write and a data sync, and a sync that fails poisons its segment.
 //! A store that refuses a batch here does not fail the commit — the bytes are on the medium — but
 //! the batch stays owed to the store and is offered again on the next commit, in order, without
-//! being written to the medium a second time.
+//! being written to the medium a second time. Past [`STORE_BACKLOG_RECORDS`] what is owed is read
+//! back from the segments rather than held in memory; it is never given up on.
 //!
 //! Everything below is written so that the mode is a value, not a set of conditionals scattered
 //! through the append path. There is one `append_batch`; what differs is which factory built the
@@ -71,7 +72,7 @@ use std::io;
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 
 use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
-use crate::record::Record;
+use crate::record::{Record, FRAME_BYTES};
 use crate::recover::{recover_and_truncate, Quarantine, Recovered};
 use crate::segment::{Segment, SegmentError, SEGMENT_BYTES};
 use crate::ship::{NullShipper, ShipError, Shipper};
@@ -87,15 +88,17 @@ const RECENT_HOLES: usize = 8192;
 /// How many records an on-disk log will hold for a store that has not taken them yet.
 ///
 /// Pinned rather than configurable, exactly like the memory-buffered buffer's own bound: an operator
-/// who could raise it could turn a store outage into an out-of-memory kill. Past it the oldest are
-/// dropped from the catch-up queue and counted. Nothing is lost by that — on disk the segments are
-/// the record, and this queue is only the log's offer of a shortcut to the store.
+/// who could raise it could turn a store outage into an out-of-memory kill. Past it the records
+/// still owed are not held in memory: the log remembers where on its medium they start and reads
+/// them back from the segments, oldest first, once the store takes what the queue holds. The bound
+/// costs memory, never the store's copy of a record.
 pub const STORE_BACKLOG_RECORDS: usize = 8192;
 
 /// Where a log keeps its bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// No data directory: nothing is written to any disk, and the store is where durability lives.
+    /// No data directory: nothing is written to any disk. The bound shipper's answer is part of the
+    /// commit; over a configured store that is where the chain is kept.
     MemoryBuffered,
     /// A data directory: segments are files, and a group commit is a write plus a data sync.
     OnDisk,
@@ -169,8 +172,13 @@ pub struct Wal {
     /// Records the store has not acknowledged, oldest first. On disk only: a refusal there does not
     /// fail the commit, so this is the only thing that remembers the store is still owed them.
     owed_to_store: Vec<Record>,
-    /// How many records the store's catch-up queue has given up on at its bound.
+    /// How many records the store's catch-up queue has left on the medium at its bound, to be read
+    /// back from there.
     store_debt_dropped: u64,
+    /// Where on the medium the store's debt continues past the queue: the segment and the byte the
+    /// first record the queue did not take starts at. Every record from there to the end of the log
+    /// is owed to the store, after the queue's own.
+    store_owed_from: Option<(u64, u64)>,
     /// Records recovered from the tail at open time, in order.
     recovered: Vec<Record>,
     /// How many segments have been rolled through, poison included.
@@ -198,7 +206,7 @@ impl std::fmt::Debug for Wal {
 impl Wal {
     /// A memory-buffered log shipping to `shipper`: the default, and the shape a deployment that
     /// names no data directory runs. The buffer stages, and the shipper decides what, if anything,
-    /// is kept (the shipped store adapter keeps a count and the last identity only).
+    /// is kept; a node over a configured store resumes through [`Wal::memory_seeded`] instead.
     ///
     /// A node built this way cannot create a file even by mistake, because the only thing that
     /// knows how to open one is the directory factory and this log does not hold one.
@@ -312,6 +320,7 @@ impl Wal {
             lost_batch: Vec::new(),
             owed_to_store: Vec::new(),
             store_debt_dropped: 0,
+            store_owed_from: None,
             recovered: Vec::new(),
             segments_used,
             quarantined: Vec::new(),
@@ -343,9 +352,35 @@ impl Wal {
     /// `(node, node_seq)`. Handing one of those numbers out again would put a NEW record under an
     /// identity a deduplicating store passes over as a re-offer — a lost write reported as a
     /// success. Marking them costs a visible gap in the numbering and never a record.
+    ///
+    /// An UNVERIFIED identity ([`Quarantine::unverified`]) is read from a frame whose header does
+    /// not check, so its number may be the damaged byte. Taken at its word, one altered frame could
+    /// move the node's mark anywhere, up to the top of the range, where every number after it is
+    /// one the log already holds and every record sealed under it is passed over behind an `Ok`. So
+    /// an unverified number is taken only as far as the set-aside bytes could have numbered: no
+    /// further past the node's verified mark than there are records in the remainder. That still
+    /// covers the number the record was written under: a writer numbers without gaps, so its
+    /// records in the remainder are numbered inside that run.
     fn take_quarantine(&mut self, quarantine: Quarantine) {
         for &(node, node_seq) in &quarantine.identities {
-            self.mark_written(node, node_seq);
+            if !quarantine.unverified.contains(&(node, node_seq)) {
+                self.mark_written(node, node_seq);
+            }
+        }
+        let reach = quarantine.identities.len() as u64;
+        let ceilings: Vec<u64> = quarantine
+            .unverified
+            .iter()
+            .map(|(node, _)| {
+                self.high_water
+                    .get(node)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(reach)
+            })
+            .collect();
+        for (&(node, node_seq), ceiling) in quarantine.unverified.iter().zip(ceilings) {
+            self.mark_written(node, u64::min(node_seq, ceiling));
         }
         self.quarantined.push(quarantine);
     }
@@ -385,8 +420,9 @@ impl Wal {
         &self.owed_to_store
     }
 
-    /// How many records the store's catch-up queue has dropped at its bound. They are still in the
-    /// segments; what was given up on is the log's offer to hand them over.
+    /// How many records the store's catch-up queue has left on the medium at its bound. They are
+    /// still owed: the log reads them back from its segments and offers them, in order, once the
+    /// store takes what the queue holds.
     pub fn store_debt_dropped(&self) -> u64 {
         self.store_debt_dropped
     }
@@ -538,7 +574,8 @@ impl Wal {
                     return Err(DurabilityLost::observed(token, at));
                 }
             } else if self.mode == Mode::OnDisk {
-                self.offer_store_debt(&[]);
+                let at = (self.segment.index(), self.segment.write_offset());
+                self.offer_store_debt(&[], at);
             }
             return Ok(BatchAck {
                 appended: 0,
@@ -568,7 +605,9 @@ impl Wal {
                     // failure does not fail the commit. The batch stays owed to the store and is
                     // offered again — the seam's contract is that an error means the batch is
                     // still owed, and an answer that is discarded honours neither half of it.
-                    self.offer_store_debt(&batch);
+                    let frames: u64 = batch.iter().map(|r| r.frame_count() as u64).sum();
+                    let start = end - frames * FRAME_BYTES as u64;
+                    self.offer_store_debt(&batch, (self.segment.index(), start));
                 }
                 Ok(BatchAck {
                     appended: batch.len(),
@@ -642,25 +681,81 @@ impl Wal {
     /// the order the records were written. A refusal keeps the lot owed for the next commit.
     ///
     /// On disk only, and it never fails a commit: the bytes are on the medium either way. The queue
-    /// is bounded for the same reason the memory-buffered buffer is — a store that is unreachable
-    /// for an hour must not be answered by exhausting the node's memory — and at the bound the
-    /// OLDEST go, which are the ones a reader is least likely to be waiting on. What went is counted
-    /// rather than merely dropped, so a node can say how far its store is behind and how much of the
-    /// catch-up it has given up on. Those records are still in the segments.
-    fn offer_store_debt(&mut self, batch: &[Record]) {
-        self.owed_to_store.extend_from_slice(batch);
-        if self.owed_to_store.len() > STORE_BACKLOG_RECORDS {
-            let excess = self.owed_to_store.len() - STORE_BACKLOG_RECORDS;
-            self.owed_to_store.drain(0..excess);
-            self.store_debt_dropped = self.store_debt_dropped.saturating_add(excess as u64);
+    /// in memory is bounded for the same reason the memory-buffered buffer is — a store that is
+    /// unreachable for an hour must not be answered by exhausting the node's memory. Past the bound
+    /// the records are not dropped: they are on the medium, so the log keeps only where they start
+    /// (`batch_at`, the segment and byte `batch` was written at) and reads them back from there, in
+    /// order, each time the store takes what the queue holds. A record the store was owed reaches
+    /// it, whatever the outage's length.
+    fn offer_store_debt(&mut self, batch: &[Record], batch_at: (u64, u64)) {
+        // Already past the bound: this batch is on the medium after the mark, owed from there.
+        let mut queued = 0;
+        if self.store_owed_from.is_none() {
+            let room = STORE_BACKLOG_RECORDS.saturating_sub(self.owed_to_store.len());
+            queued = usize::min(room, batch.len());
+            self.owed_to_store.extend_from_slice(&batch[..queued]);
+            if queued < batch.len() {
+                let frames: u64 = batch[..queued].iter().map(|r| r.frame_count() as u64).sum();
+                self.store_owed_from = Some((batch_at.0, batch_at.1 + frames * FRAME_BYTES as u64));
+            }
         }
-        if self.owed_to_store.is_empty() {
-            return;
+        self.store_debt_dropped = self
+            .store_debt_dropped
+            .saturating_add((batch.len() - queued) as u64);
+        loop {
+            if self.owed_to_store.is_empty() && !self.refill_store_debt() {
+                return;
+            }
+            let debt = std::mem::take(&mut self.owed_to_store);
+            let shipped: Result<(), ShipError> = self.shipper.ship(&debt);
+            if shipped.is_err() {
+                self.owed_to_store = debt;
+                return;
+            }
+            if self.store_owed_from.is_none() {
+                return;
+            }
         }
-        let debt = std::mem::take(&mut self.owed_to_store);
-        let shipped: Result<(), ShipError> = self.shipper.ship(&debt);
-        if shipped.is_err() {
-            self.owed_to_store = debt;
+    }
+
+    /// Read the next run of what the store is owed off the medium into the queue, from where the
+    /// queue's bound left it, and move that mark on. `false` when there was nothing to read: the
+    /// debt is all in the queue again, or the medium could not be read (the mark stays, so the
+    /// next commit tries again).
+    fn refill_store_debt(&mut self) -> bool {
+        let Some((mut index, mut from)) = self.store_owed_from else {
+            return false;
+        };
+        loop {
+            let read = if index == self.segment.index() {
+                crate::recover::records_from(&self.segment, from, STORE_BACKLOG_RECORDS)
+            } else {
+                match self.factory.existing(index) {
+                    Ok(Some(backend)) => Segment::open_at(backend, index, 0, self.ceiling)
+                        .and_then(|earlier| {
+                            crate::recover::records_from(&earlier, from, STORE_BACKLOG_RECORDS)
+                        }),
+                    // A segment that is not there holds nothing more to read.
+                    Ok(None) => Ok((Vec::new(), from)),
+                    Err(e) => Err(e),
+                }
+            };
+            let Ok((records, end)) = read else {
+                self.store_owed_from = Some((index, from));
+                return false;
+            };
+            if !records.is_empty() {
+                self.owed_to_store = records;
+                self.store_owed_from = Some((index, end));
+                return true;
+            }
+            if index >= self.segment.index() {
+                // Read to the end of the log: everything owed is in the queue or shipped.
+                self.store_owed_from = None;
+                return false;
+            }
+            index += 1;
+            from = 0;
         }
     }
 

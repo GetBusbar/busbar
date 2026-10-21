@@ -710,6 +710,47 @@ pub fn mcp_node_platform(os: &str, arch: &str) -> Option<(&'static str, &'static
     MCP_NODE_SHA256.iter().find(|(p, _)| *p == plat).copied()
 }
 
+/// Whether `recording` may be judged as the recording of the subject whose release binary has
+/// sha256 `subject_sha256`. The tie is the provenance the oracle recorder already writes: its
+/// `meta.json` names the `binary_sha256` of the busbar it recorded (`bin/oracle record --bin`). A
+/// recording with no rows, no `meta.json`, no `binary_sha256`, or one naming another build is
+/// refused: judging it would write six `llm-*` verdicts under HEAD for bytes HEAD did not produce.
+pub fn recording_for_subject(recording: &Path, subject_sha256: &str) -> Result<(), String> {
+    let has_rows = read_opt(&recording.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
+    if !has_rows {
+        return Err(format!(
+            "the recording {} has no ledger rows: the oracle recorded nothing to judge",
+            recording.display()
+        ));
+    }
+    let meta = recording.join("meta.json");
+    let Some(text) = read_opt(&meta) else {
+        return Err(format!(
+            "the recording carries no {}: nothing ties it to the build under HEAD, so it is not \
+             judged",
+            meta.display()
+        ));
+    };
+    let recorded = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("binary_sha256")?.as_str().map(str::to_string))
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    let Some(recorded) = recorded else {
+        return Err(format!(
+            "{} names no binary_sha256: nothing ties the recording to the build under HEAD",
+            meta.display()
+        ));
+    };
+    if !recorded.eq_ignore_ascii_case(subject_sha256) {
+        return Err(format!(
+            "the recording {} is of the busbar with sha256 {recorded}, but this checkout's release \
+             build is {subject_sha256}: a recording of another build is never judged under HEAD",
+            recording.display()
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn read_opt(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
@@ -800,6 +841,50 @@ impl Runner {
                 }
             })
             .clone()
+    }
+
+    /// The sha256 of THIS checkout's release busbar, built by the oracle's own command
+    /// (`cargo build --locked --release -p busbar --bin busbar`, `.ci/predev.yaml` `oracle:`), so a
+    /// recording the oracle made of this checkout names the same digest in its `meta.json`. Over a
+    /// target dir the oracle already built, the build is a no-op. A failed build names no digest.
+    fn release_busbar_sha256(&self) -> Result<String, String> {
+        let rig = Rig::Llm;
+        let code = self.leg(
+            rig,
+            "subject-release-build",
+            &[
+                "cargo",
+                "build",
+                "--locked",
+                "--release",
+                "-p",
+                "busbar",
+                "--bin",
+                "busbar",
+            ],
+            None,
+            &[],
+        );
+        let bin = self.target.join("release").join("busbar");
+        if code != Some(0) || !bin.is_file() {
+            return Err(format!(
+                "`cargo build --locked --release -p busbar --bin busbar` {}: no build of HEAD to \
+                 tie the recording to",
+                rc(code)
+            ));
+        }
+        let mut f = std::fs::File::open(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+        let mut h = crate::sha256::Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = std::io::Read::read(&mut f, &mut buf)
+                .map_err(|e| format!("{}: {e}", bin.display()))?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+        }
+        Ok(h.hexdigest())
     }
 
     pub fn run(&self, rig: Rig) -> BTreeMap<String, Outcome> {
@@ -967,15 +1052,12 @@ impl Runner {
                 ),
             );
         };
-        let has_rows = read_opt(&rec.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
-        if !has_rows {
-            return fan(
-                ids(),
-                &Outcome::not_run(format!(
-                    "the recording {} has no ledger rows: the oracle recorded nothing to judge",
-                    rec.display()
-                )),
-            );
+        let built = match self.release_busbar_sha256() {
+            Ok(h) => h,
+            Err(why) => return fan(ids(), &Outcome::not_run(why)),
+        };
+        if let Err(why) = recording_for_subject(rec, &built) {
+            return fan(ids(), &Outcome::not_run(why));
         }
         if self.leg(rig, "pyyaml", &["python3", "-c", "import yaml"], None, &[]) != Some(0) {
             return fan(

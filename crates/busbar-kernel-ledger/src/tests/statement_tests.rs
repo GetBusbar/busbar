@@ -24,7 +24,6 @@ const EARLY_MS: u64 = 1_767_225_600_000;
 /// Outside it, so a statement can prove an amendment moved SOME lines and not all of them.
 const LATE_MS: u64 = 1_767_229_200_000;
 const TIER_BP: u32 = 9_000;
-const FINGERPRINT: &str = "op-1";
 const REASON: [u8; 32] = [9u8; 32];
 
 fn card(rate_in: f64, rate_out: f64) -> RateCard {
@@ -55,7 +54,6 @@ fn amended() -> History {
         card: card(4.0, 10.0),
         appended_at: LATE_MS,
         author: Author::Amend {
-            operator_fingerprint: FINGERPRINT.to_string(),
             reason_hash: REASON,
         },
     });

@@ -8,7 +8,7 @@
 use super::{append_full, handle, register, seed, Decode, StreamRecord};
 use crate::audit::journal::NeutralBody;
 use crate::audit::Framing;
-use crate::plane::store::{decode, encode};
+use crate::store::plane_view::{decode, encode};
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use std::sync::atomic::{AtomicU32, Ordering};
 

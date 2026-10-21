@@ -9,13 +9,6 @@
 //! type: [`ResourceMetadata`] (which extends the moved [`Words`] trait cross-crate) and the
 //! [`metadata_handler`] axum handler over [`crate::state::CurrentApp`].
 
-// This JSON-RPC discovery/metadata ingress is served only by a JSON-RPC-fronted plane; with none such
-// compiled in the re-export and the two `App`-facing stayers (`ResourceMetadata`, `metadata_handler`)
-// read dead, exactly as the pre-split module did. Gated on the neutral `jsonrpc-ingress` CAPABILITY
-// marker (naming a capability, not a plane, per the plane-purity lint) — enabled transitively by
-// `plane-mcp`/`plane-a2a`, so `not(feature = "jsonrpc-ingress")` is byte-identical to the original
-// `not(any(feature = "plane-mcp", feature = "plane-a2a"))` gate this replaced.
-#![cfg_attr(not(feature = "jsonrpc-ingress"), allow(dead_code, unused_imports))]
 use axum::response::Response;
 
 // Glob, so the re-export is never an unused import when a plane consumer is compiled out.
@@ -108,10 +101,6 @@ pub enum CoreRefusal<'a> {
         id: Value,
         status: StatusCode,
         message: String,
-        // MCP-only field: the MCP shaper reads this machine-readable reason; the A2A shaper omits it
-        // (A2A section 5.4 owns a fixed `reason` vocabulary busbar strings are not in), so with
-        // `plane-mcp` off (and A2A on) it is constructed but never read.
-        #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
         reason: Option<&'a str>,
     },
 }
@@ -358,9 +347,6 @@ pub fn metadata(m: &Metadata<'_>) -> Response {
 /// A JSON body with a status: the shape three of the refusals above are rendered in on planes whose
 /// answer to them is not a JSON-RPC envelope. Kept here so a protocol's [`Words`] impl is a table
 /// of SENTENCES rather than a table of `into_response` chains.
-// MCP-only helper: only the MCP plane's `Words` impl renders a refusal as a bare JSON body here;
-// the A2A plane answers with an envelope, so with `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn json_refusal(status: StatusCode, body: Value) -> Response {
     (status, axum::Json(body)).into_response()
 }

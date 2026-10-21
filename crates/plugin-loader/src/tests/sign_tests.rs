@@ -273,7 +273,7 @@ fn secret_kind_is_known_and_signs_like_any_plugin() {
     assert!(KNOWN_KINDS.contains(&"secret"));
     let release = test_key(1);
     let artifact = b"\x7fELF secret plugin";
-    let mut m0 = manifest("busbar-secret-vault", "vault", FIRST_PARTY_PUBLISHER);
+    let mut m0 = manifest("busbar-secret-delta", "delta", FIRST_PARTY_PUBLISHER);
     m0.kind = "secret".to_string();
     let m = sign(&release, m0, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)
@@ -302,7 +302,7 @@ fn export_kind_is_known_and_signs_like_any_plugin() {
     assert!(KNOWN_KINDS.contains(&"export"));
     let release = test_key(1);
     let artifact = b"\x7fELF export plugin";
-    let mut m0 = manifest("busbar-export-otlp", "otlp", FIRST_PARTY_PUBLISHER);
+    let mut m0 = manifest("busbar-export-sink", "sink", FIRST_PARTY_PUBLISHER);
     m0.kind = "export".to_string();
     let m = sign(&release, m0, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)
@@ -1156,75 +1156,26 @@ fn signature_does_not_verify_under_a_weak_key() {
     );
 }
 
-/// THE SUPERSEDED CONTRACT-ABI RANGE (`declares.contract_abi`, THE DESIGN §2 table and §11.2) is no
-/// longer enforced: the kind's one `abi_version` is the only version fact admission reads. A
-/// manifest whose range excludes this binary (or is empty, or excludes its own stamp) still loads
-/// when its stamp is the kind's current version, and a wrong stamp is still refused.
+/// THE SUPERSEDED CONTRACT-ABI RANGE (`contract_abi`) IS NOT A DECLARATION (THE DESIGN §2 l.237-240,
+/// §9 l.1164-1165: a plugin declares its kind's ABI version, the manifest's `abi_version`, and that
+/// is the only version fact admission reads). A declares FILE that still states it, until the
+/// fleet's re-render strips it from every repo, is read and the range dropped, never carried into
+/// a manifest; a SIGNED manifest's `declares` that states it is refused as an unknown key. RED
+/// before the parse was removed: the range was parsed, carried and signed.
 #[test]
-fn a_declared_contract_abi_range_no_longer_decides_admission() {
-    let supported: &dyn Fn(&str) -> &'static [u32] = &crate::registry::supported_abi;
-    let host = crate::registry::supported_abi("store");
-    let (floor, max) = (host[0], host[host.len() - 1]);
-    let with_range = |min: u32, hi: u32, stamp: u32| {
-        let mut m = manifest("busbar-store-future", "future", FIRST_PARTY_PUBLISHER);
-        m.abi_version = stamp;
-        m.declares.contract_abi = Some(ContractAbiRange { min, max: hi });
-        m
-    };
+fn a_contract_abi_range_is_never_carried_and_a_signed_manifest_stating_one_is_refused() {
+    let d = Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4}}"#)
+        .expect("a declares file's stale range is read and dropped");
+    assert_eq!(d, Declares::default());
+    assert!(d.is_empty());
+    assert_eq!(serde_json::to_value(&d).unwrap(), serde_json::json!({}));
 
-    // A range wholly above this binary's, wholly below it, empty, and one excluding its own stamp:
-    // each loads on the kind's current version.
-    for (min, hi) in [
-        (max + 1, max + 3),
-        (0, floor.saturating_sub(1)),
-        (max + 5, max),
-    ] {
-        validate_abi(&with_range(min, hi, max), supported)
-            .unwrap_or_else(|e| panic!("range v{min}..=v{hi} must not decide admission: {e}"));
-    }
-
-    // The stamp is still the one fact: a version off the kind's window is refused whatever range
-    // the manifest states, and the refusal does not speak of a range.
-    let err = validate_abi(&with_range(max + 1, max + 1, max + 1), supported)
-        .expect_err("a stamp above the kind's version is refused");
+    let m = manifest("busbar-store-ranged", "ranged", FIRST_PARTY_PUBLISHER);
+    let mut wire = serde_json::to_value(&m).expect("encodes");
+    wire["declares"] = serde_json::json!({ "contract_abi": { "min": 3, "max": 4 } });
     assert!(
-        err.contains(&format!("abi_version {}", max + 1)) && !err.contains("contract-ABI range"),
-        "{err}"
-    );
-
-    // ABSENT, the manifest is judged on its stamp alone, as it always was.
-    let mut plain = manifest("busbar-store-plain", "plain", FIRST_PARTY_PUBLISHER);
-    plain.abi_version = max;
-    validate_abi(&plain, supported).expect("a manifest without a range loads on its stamp");
-}
-
-/// The declared range is SIGNED like every other `declares` statement (a tampered range fails the
-/// signature), spelled `{"contract_abi": {"min": .., "max": ..}}` in a declares file, and left off
-/// the wire when absent so every manifest packed before the field existed keeps its signed bytes.
-#[test]
-fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
-    let d =
-        Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4}}"#).expect("parses");
-    assert_eq!(d.contract_abi, Some(ContractAbiRange { min: 3, max: 4 }));
-    assert!(!d.is_empty());
-    assert!(
-        Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4, "x": 1}}"#).is_err()
-    );
-    assert!(Declares::default().is_empty());
-    assert_eq!(
-        serde_json::to_value(Declares::default()).unwrap(),
-        serde_json::json!({})
-    );
-
-    let mut m = manifest("busbar-store-ranged", "ranged", FIRST_PARTY_PUBLISHER);
-    m.declares.contract_abi = Some(ContractAbiRange { min: 3, max: 4 });
-    let signed = canonical_manifest_bytes(&m);
-    let mut widened = m.clone();
-    widened.declares.contract_abi = Some(ContractAbiRange { min: 1, max: 9 });
-    assert_ne!(
-        signed,
-        canonical_manifest_bytes(&widened),
-        "the range is covered by the signature"
+        serde_json::from_value::<Manifest>(wire).is_err(),
+        "a signed manifest stating a contract-ABI range is refused"
     );
 }
 
@@ -1239,7 +1190,6 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
     let key = test_key(12);
     let mut quiet = manifest("busbar-plane-quiet", "quiet", FIRST_PARTY_PUBLISHER);
     quiet.kind = "plane".to_string();
-    quiet.declares.contract_abi = Some(ContractAbiRange { min: 1, max: 2 });
     let quiet = sign(&key, quiet, b"door");
     let wire = serde_json::to_vec(&quiet).expect("encodes");
     assert!(

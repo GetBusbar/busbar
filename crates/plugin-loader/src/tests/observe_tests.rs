@@ -308,7 +308,7 @@ fn a_secret_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: transport` — the real tcp transport's door (the `transport` both-ways row).
+/// `kind: transport` — the real transport door of the `transport` both-ways row.
 #[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
@@ -317,11 +317,11 @@ fn a_transport_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: export` — the real request-log file sink's door.
+/// `kind: export` — the real sink door of the `export` both-ways row.
 #[test]
 fn an_export_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
-        busbar_export_file::door,
+        crate::both_ways::export_fixture::door,
         busbar_contract::abi::mechanism::kind::EXPORT,
     );
 }

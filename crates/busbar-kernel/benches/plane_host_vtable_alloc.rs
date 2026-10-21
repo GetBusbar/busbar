@@ -8,13 +8,14 @@
 //!
 //! # What is measured
 //!
-//! The HOT tier promises "zero alloc / zero serde on the call": a plane crossing into the host
-//! through the [`PlaneHostVtable`] slots — POD args by pointer, results by value — must not touch the
-//! global allocator at all. This file proves it with a counting `#[global_allocator]`
-//! ([`CountingAlloc`]) that is ARMED only around the isolated POD host-call batch
-//! (`POD_HOST_CALL_BATCH`): a batch of `govern_admit` crossings, each passing a `#[repr(C)]`
-//! [`Facts`] POD by pointer and reading a [`Decision`] back by value. The allocation counter is
-//! asserted `== 0` over that region.
+//! The memory ABI promises "no allocation on the hot path" (THE DESIGN §11.2, §11.9): a plugin
+//! crossing into the host through the host-services table ([`HostSlots`], §11.12) — the `in` by
+//! pointer, the answer written into the caller's `out` — must not touch the global allocator at all.
+//! This file proves it with a counting `#[global_allocator]` ([`CountingAlloc`]) that is ARMED only
+//! around the isolated host-call batch (`POD_HOST_CALL_BATCH`): a batch of `clock.now` crossings
+//! ([`op::CLOCK_NOW`]), each passing a `#[repr(C)]` [`ClockNowIn`] by pointer, the service writing
+//! its [`ClockReading`] into the caller's buffer and its outcome back by value. The allocation
+//! counter is asserted `== 0` over that region.
 //!
 //! Arming ONLY the batch is load-bearing: criterion itself allocates freely, so a global counter
 //! that was live for the whole process would measure the harness, not the seam. `ARMED` gates the
@@ -23,33 +24,32 @@
 //! The `BUSBAR_ALLOC_INJECT` environment knob allocates inside the armed region on purpose, which is
 //! how the `== 0` assertion is proven RED-able rather than vacuously green.
 //!
-//! # THE PENDING-RIDER DEPENDENCY
-//!
-//! Like the perf instrument, this measures the vtable's own construction — the `#[repr(C)]` subject
-//! `crates/busbar-contract/tests/layout_golden.rs` pins — because [`PlaneHostVtable`] has no
-//! production rider yet (the keystone loop-unification in `crates/busbar/src/root/kernel.rs` +
-//! `main.rs`, reserved for the keystone wave). When the rider lands, the batch binds to the
-//! production crossing unchanged: an allocation-free POD call is allocation-free wherever it is made.
+//! The instrument is ARMED against the table's own construction — the `#[repr(C)]` subject
+//! `crates/busbar-contract/tests/layout_golden.rs` pins: an allocation-free call is allocation-free
+//! wherever it is made.
 //!
 //! # Running it
 //!
 //! ```text
-//! cargo bench -p busbar-core --bench plane_host_vtable_alloc
+//! cargo bench -p busbar-kernel --bench plane_host_vtable_alloc
 //! ```
 //!
 //! `cargo xtask gate hot-path-alloc` enforces that this instrument keeps making the alloc-budget claim; this
 //! file is what measures it.
 
-use busbar_contract::abi::hot::host::{GovernAdmitFn, HostCtx, PlaneHostVtable};
-use busbar_contract::abi::hot::pod::{Decision, Facts};
-use busbar_contract::abi::AbiPreamble;
+use busbar_contract::abi::host::service::{
+    op, ClockNowIn, ClockReading, HostSlots, ServiceFn, ServiceHead, ServiceOut, SERVICES,
+};
+use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Counts allocations ONLY while [`ARMED`], delegating to the system allocator otherwise. The window
-/// is armed around the isolated POD host-call batch and nowhere else, so criterion's own churn is
+/// is armed around the isolated host-call batch and nowhere else, so criterion's own churn is
 /// never counted.
 struct CountingAlloc;
 
@@ -79,51 +79,77 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
-/// The host capability under measurement: an `extern "C-unwind"` admit that reads the POD [`Facts`]
-/// by pointer and returns a [`Decision`] by value. It allocates nothing — the whole point.
-extern "C-unwind" fn host_govern_admit(_host: HostCtx, facts: *const Facts) -> Decision {
-    // SAFETY: the batch below hands a live `&Facts`. Reading a scalar field crosses no allocation.
-    let tokens = unsafe { (*facts).tokens };
-    if tokens > 1_000_000 {
-        Decision::Throttle
-    } else {
-        Decision::Admit
+/// The host service under measurement: `clock.now` on the one service call shape, reading its
+/// [`ClockNowIn`] by pointer and writing the [`ClockReading`] into the caller's buffer. It allocates
+/// nothing — the whole point.
+extern "C" fn host_clock_now(
+    _ctx: HostCtx,
+    input: *const c_void,
+    _out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: the batch below hands a live `ClockNowIn` whose `reading` addresses a live
+    // `ClockReading`. Writing scalar fields crosses no allocation.
+    unsafe {
+        let input = &*input.cast::<ClockNowIn>();
+        (*input.reading).wall_ns = 42;
+        (*input.reading).mono_ns = 7;
     }
+    RawOutcome::of(Outcome::Ready)
 }
 
-/// A [`PlaneHostVtable`] with `govern_admit` populated and every other slot `None` — see the perf
+/// A [`HostSlots`] table with `clock_now` populated and every other slot `None` — see the perf
 /// instrument's `armed_vtable` for the soundness of the zeroed construction.
-fn armed_vtable() -> PlaneHostVtable {
-    // SAFETY: every field of `PlaneHostVtable` is valid all-zero (integer/`AbiPreamble` header;
-    // `Option<extern "C-unwind" fn>` slots whose `None` is the null-pointer niche).
-    let mut vt: PlaneHostVtable = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
-    vt.abi = AbiPreamble::CURRENT;
-    vt.size = std::mem::size_of::<PlaneHostVtable>() as u32;
-    vt.version = 1;
-    vt.govern_admit = Some(host_govern_admit as GovernAdmitFn);
+fn armed_vtable() -> HostSlots {
+    // SAFETY: every field of `HostSlots` is valid all-zero (an integer header; `Option<extern "C"
+    // fn>` slots whose `None` is the null-pointer niche).
+    let mut vt: HostSlots = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
+    vt.size = std::mem::size_of::<HostSlots>() as u32;
+    vt.slots = SERVICES;
+    vt.clock_now = Some(host_clock_now as ServiceFn);
     vt
 }
 
-/// A zeroed `#[repr(C)]` [`Facts`], with the sized-struct header set. All-zero is a valid `Facts`:
-/// every field is a scalar or a borrowed pointer the host fn above never dereferences.
-fn pod_facts() -> Facts {
-    // SAFETY: `Facts` is a `#[repr(C)]` POD of scalars and borrowed raw pointers; all-zero is a
-    // valid, fully-initialised value (null borrowed pointers the measured call never reads).
-    let mut f: Facts = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
-    f.size = std::mem::size_of::<Facts>() as u32;
-    f.tokens = 42;
-    f
+/// The `clock.now` call's `in`, the reading it names and the host's `out`, built once before the
+/// armed window so the batch itself builds nothing.
+struct ClockCall {
+    reading: ClockReading,
+    input: ClockNowIn,
+    out: ServiceOut,
+}
+
+fn clock_call() -> Box<ClockCall> {
+    // SAFETY: `ClockReading` and `ServiceOut` are integers, a null-able `AbiStr` and padding, all
+    // valid zeroed; the `in` is written whole below.
+    let mut call = Box::new(ClockCall {
+        reading: unsafe { std::mem::MaybeUninit::zeroed().assume_init() },
+        input: ClockNowIn {
+            head: ServiceHead {
+                size: std::mem::size_of::<ClockNowIn>() as u32,
+                op: op::CLOCK_NOW,
+                handle: CompletionHandle {
+                    ticket: Ticket::NONE,
+                    seq: 0,
+                    _reserved: 0,
+                },
+            },
+            reading: std::ptr::null_mut(),
+        },
+        out: unsafe { std::mem::MaybeUninit::zeroed().assume_init() },
+    });
+    call.input.reading = std::ptr::addr_of_mut!(call.reading);
+    call
 }
 
 /// THE ALLOC-BUDGET ASSERTION — zero allocations across the isolated POD host-call batch.
 fn assert_zero_alloc_pod_batch() {
-    let null: HostCtx = HostCtx::NULL;
+    let null: HostCtx = HostCtx::NONE;
     let vt = armed_vtable();
-    let facts = pod_facts();
-    let facts_ptr: *const Facts = &facts;
+    let mut call = clock_call();
+    let input: *const c_void = std::ptr::addr_of!(call.input).cast();
+    let out: *mut ServiceOut = std::ptr::addr_of_mut!(call.out);
     let inject = std::env::var_os("BUSBAR_ALLOC_INJECT").is_some();
 
-    let admit = vt.govern_admit.expect("govern_admit slot is armed");
+    let clock_now = vt.clock_now.expect("clock_now slot is armed");
     let mut sink: u64 = 0;
 
     // POD_HOST_CALL_BATCH: arm the counter, cross the seam N times, disarm. Nothing but the crossing
@@ -131,8 +157,8 @@ fn assert_zero_alloc_pod_batch() {
     ALLOC_COUNT.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
     for _ in 0..100_000u32 {
-        let decision = admit(null, black_box(facts_ptr));
-        sink = sink.wrapping_add(decision as u64);
+        let answered = clock_now(null, black_box(input), black_box(out));
+        sink = sink.wrapping_add(u64::from(answered.0));
         if inject {
             // The RED shape: an allocation inside the isolated batch, which the budget forbids.
             let v: Vec<u8> = Vec::with_capacity(16);
@@ -146,19 +172,20 @@ fn assert_zero_alloc_pod_batch() {
     assert_eq!(
         allocations, 0,
         "HOT-PATH ALLOC: the isolated POD host-call batch performed {allocations} global \
-         allocation(s); the budget requires 0 (zero alloc / zero serde on the HOT-tier crossing)."
+         allocation(s); the budget requires 0 (no allocation on the host-table crossing)."
     );
 }
 
 fn hot_path_alloc(c: &mut Criterion) {
-    let null: HostCtx = HostCtx::NULL;
+    let null: HostCtx = HostCtx::NONE;
     let vt = armed_vtable();
-    let facts = pod_facts();
-    let facts_ptr: *const Facts = &facts;
-    let admit = vt.govern_admit.expect("govern_admit slot is armed");
+    let mut call = clock_call();
+    let input: *const c_void = std::ptr::addr_of!(call.input).cast();
+    let out: *mut ServiceOut = std::ptr::addr_of_mut!(call.out);
+    let clock_now = vt.clock_now.expect("clock_now slot is armed");
 
     c.bench_function("POD_HOST_CALL_BATCH", |b| {
-        b.iter(|| black_box(admit(null, black_box(facts_ptr))) as u64);
+        b.iter(|| u64::from(black_box(clock_now(null, black_box(input), black_box(out))).0));
     });
 
     // The gating assertion runs once per invocation: any allocation in the armed window takes the

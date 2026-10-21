@@ -517,14 +517,20 @@ fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
 /// for one shape, and a permissive general-purpose parser is the wrong tool for a value whose whole
 /// job is to be compared for exact equality. A lenient parse that normalised `HTTPS://Host:443/as`
 /// would hand back a string that no longer equals the `iss` a client recorded.
+///
+/// The authority is read by the one split ([`busbar_contract::net::url_authority`]), where every
+/// browser and HTTP client ends it. A URL those readers would split elsewhere than this text reads
+/// is not the one shape: one with a `\` (a dialling stack reads it as `/`, so
+/// `https://as.example\@evil.example` is `as.example`'s path) or with an empty host is refused.
 fn split_absolute(uri: &str) -> Option<(&str, &str)> {
     let rest = uri
         .strip_prefix("https://")
         .or_else(|| uri.strip_prefix("http://"))?;
-    let authority_len = rest.find('/').unwrap_or(rest.len());
-    if authority_len == 0 {
+    let parts = busbar_contract::net::url_authority(uri);
+    if parts.host_port.is_empty() || uri.contains('\\') {
         return None;
     }
+    let authority_len = rest.len() - parts.tail.len();
     let split = uri.len() - rest.len() + authority_len;
     Some((&uri[..split], &uri[split..]))
 }

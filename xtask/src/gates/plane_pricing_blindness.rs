@@ -204,10 +204,10 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // SPLIT row: "Session, turn and dialect rules -> 16-20. But unit/{admit,approve,meter,route}
     // and runtime/metering.rs decide admission and price - that is defs 5/6, not a plane." THIS
     // GATE IS THAT SENTENCE. These four are where the money actually is.
-    PlaneCrate {
-        dir: "busbar-llm",
-        placement: "#83 SPLIT -> def 16-20",
-    },
+    // `busbar-llm` IS DELETED (DEV-GREEN row 83, coordinator ruling 2026-10-18): the SPLIT finished —
+    // the llm plane is its door crate, `busbar-plane-llm`, scanned by the CLEAN row above — so its
+    // entry is struck in this reviewed diff, as the `plane-roots` row asks of a folded crate. The
+    // selftest's planted plane crate moves to `busbar-plane-streaming`, a roster row.
     // `busbar-mcp` IS DELETED (P3 DEL-MCP, ARCHITECT 2026-10-05): the SPLIT finished — the mcp plane
     // is its door crate, `busbar-plane-mcp`, scanned by the CLEAN row above — so its entry is struck
     // in this reviewed diff, as the `plane-roots` row asks of a folded crate.
@@ -834,7 +834,35 @@ fn baseline(cx: &Ctx) -> Vec<Debt> {
     let Ok(text) = cx.read(BASELINE) else {
         return Vec::new();
     };
-    let Ok(doc) = crate::toml_doc::parse_str(&text) else {
+    parse_baseline(&text)
+}
+
+/// THE BASELINE AGAINST ITS BASE (Law 9: a ceiling "refuses every rise"): every `(category, file)`
+/// row this change wrote over the base's copy of the baseline. A row written beside the money
+/// reference it records moves that reference off [`ROW_UNDOCUMENTED`] in the same change, so it is
+/// MINTED and refused there. A baseline the base does not carry is its own arming. The base is
+/// `ceiling-census`'s ([`crate::gates::construction::ceilings::base_copy`]); one that cannot be
+/// established is an `Err`, reported RED, never a skipped comparison.
+fn minted_debts(cx: &Ctx, now: &[Debt]) -> Result<Vec<String>, String> {
+    use crate::gates::construction::ceilings;
+    let (base, text) = match ceilings::base_copy(cx, BASELINE)? {
+        (base, Some(text)) => (base, text),
+        (_, None) => return Ok(Vec::new()),
+    };
+    let was = baseline_keys(&parse_baseline(&text));
+    Ok(ceilings::minted(&baseline_keys(now), &was)
+        .into_iter()
+        .map(|(c, f)| {
+            format!(
+                "MINTED {c}@{f}: in no copy of {BASELINE} at the base {}",
+                base.short()
+            )
+        })
+        .collect())
+}
+
+fn parse_baseline(text: &str) -> Vec<Debt> {
+    let Ok(doc) = crate::toml_doc::parse_str(text) else {
         return Vec::new();
     };
     doc.array_of_tables("debt")
@@ -1252,6 +1280,10 @@ impl Gate for PlanePricingBlindnessGate {
             .map(|f| format!("{}@{}", f.category.key(), f.file))
             .collect();
         undocumented.sort();
+        match minted_debts(cx, &debts) {
+            Ok(minted) => undocumented.extend(minted),
+            Err(e) => undocumented.push(e),
+        }
         rows.push(if undocumented.is_empty() {
             Row::pass(
                 ROW_UNDOCUMENTED,
@@ -1264,8 +1296,9 @@ impl Gate for PlanePricingBlindnessGate {
                 "a live money reference in a plane crate is NOT in the baseline",
                 format!(
                     "{} undocumented: {} — a NEW money reference landed in a crate the roster calls \
-                     a plane. Move it kernel-side, or (if it is genuine debt) record it in \
-                     {BASELINE} with the act it performs.",
+                     a plane, or a {BASELINE} row this change wrote records one. Move it \
+                     kernel-side: the baseline is drain-only (Law 9), and a row it did not carry \
+                     at the base is refused.",
                     undocumented.len(),
                     undocumented.join(", ")
                 ),
@@ -1311,7 +1344,7 @@ impl Gate for PlanePricingBlindnessGate {
         //
         // `xtask/fixtures/plane-money/` is: a contract plane that declares its meter classes,
         // emits a raw count and renders a kernel money refusal (every LEGITIMATE shape, so the
-        // green controls are proofs of the exclusions); a legacy plane crate carrying one planted
+        // green controls are proofs of the exclusions); a second plane crate carrying one planted
         // violation per category; a NON-plane crate carrying the same violations (so the scope is
         // proved to be the roster's plane set and not the whole tree); and a baseline naming one
         // GHOST row and none of the live ones.
@@ -1326,7 +1359,7 @@ impl Gate for PlanePricingBlindnessGate {
                 format!("a plane crate that {} reds its census row", cat.act()),
                 &[cat.row()],
                 FIX,
-                &["crates/busbar-llm/src/unit/money.rs"],
+                &["crates/busbar-plane-streaming/src/unit/money.rs"],
             ));
         }
 
@@ -1344,6 +1377,39 @@ impl Gate for PlanePricingBlindnessGate {
             FIX,
             &["undocumented"],
         ));
+
+        // THE BASELINE AGAINST ITS BASE (Law 9), over the real tree: a `[[debt]]` row the base's
+        // baseline does not carry is a NEW money reference forgiven by the same change that wrote
+        // it, and reds the undocumented row. The unplanted run is measured against `HEAD` (a
+        // detached battery checkout has no other base); the plant is a synthetic base.
+        {
+            let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+            let was = cx.read(BASELINE).unwrap_or_default();
+            let mut ov = crate::gates::construction::ceilings::synthetic_base(
+                "zz-plane-pricing-base",
+                BASELINE,
+                was.clone(),
+            );
+            ov.set(
+                BASELINE,
+                format!(
+                    "{was}\n[[debt]]\ncategory = \"{}\"\ncrate = \"busbar-plane-llm\"\n\
+                     file = \"crates/busbar-plane-llm/src/planted_minted.rs\"\ncount = 1\n\
+                     placement = \"production\"\nact = \"{}\"\nreach = \"reachable\"\n\
+                     why = \"planted\"\n",
+                    CATEGORIES[0].key(),
+                    CATEGORIES[0].act()
+                ),
+            );
+            report.push(crate::gates::prove_rows_red(
+                &pinned,
+                self,
+                "a [[debt]] row the base's baseline does not carry is MINTED, and refused",
+                &[ROW_UNDOCUMENTED],
+                ov,
+                &["MINTED", "planted_minted.rs"],
+            ));
+        }
 
         // THE STALE ROW: the fixture baseline names a ghost the tree does not have.
         report.push(prove_rows_red_at(
@@ -1416,7 +1482,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_PRICE, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-plane-streaming/src/unit/money.rs",
                     "//! This plane never reads a rate_card, never computes a price and holds no\n\
                      //! nanos. A Hold, an AccrualMeter and a PostingStamp are all kernel-side.\n\
                      /* block comment: cost_settle, settled_nanos, UnitKey::new, pricing_enabled */\n\
@@ -1438,7 +1504,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_PRICE, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-plane-streaming/src/unit/money.rs",
                     "pub fn why() -> &'static str {\n\
                      \x20   \"no rate_card is configured for this model, so the \\\n\
                      \x20     Hold and its settled_nanos and every PostingStamp are \\\n\
@@ -1458,7 +1524,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_PRICE],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-plane-streaming/src/unit/money.rs",
                     "pub fn stamp(clock: &Clock) -> u128 {\n\
                      \x20   let a = clock.monotonic_nanos;\n\
                      \x20   let b = std::time::SystemTime::now().elapsed().unwrap().as_nanos();\n\
@@ -1480,7 +1546,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_SWITCH, ROW_PRICE, ROW_UNIT_KEY, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-plane-streaming/src/unit/money.rs",
                     "const CLASSES: &[MeterClassDecl] = &[MeterClassDecl {\n\
                      \x20   key: MeterClassId::new(\"audio_seconds_in\"),\n\
                      \x20   family: \"duration\",\n\
@@ -1510,7 +1576,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_SWITCH, ROW_PRICE, ROW_UNIT_KEY, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-plane-streaming/src/unit/money.rs",
                     "pub fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {\n\
                      \x20   match reason {\n\
                      \x20       RefusalReason::OverBudget\n\
@@ -1597,11 +1663,11 @@ fn switch_is_narrower(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str)
     };
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-llm/src/unit/plain.rs",
+        "crates/busbar-plane-streaming/src/unit/plain.rs",
         "pub fn pricing_enabled(&self) -> bool { self.flag }\n",
     );
     ov.set(
-        "crates/busbar-llm/src/unit/branch.rs",
+        "crates/busbar-plane-streaming/src/unit/branch.rs",
         "pub fn go(&self) { if host.cost_pricing_enabled(&self.cost) { self.meter(); } }\n",
     );
     let verdict = execute(gate, &fcx.with_overlay(ov));
@@ -1881,7 +1947,7 @@ fn scope_is_the_roster(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str
         .find(|r| r.id == ROW_HOLD)
         .map(|r| r.detail.clone())
         .unwrap_or_default();
-    let names_plane = detail.contains("busbar-llm/src/unit/money.rs");
+    let names_plane = detail.contains("busbar-plane-streaming/src/unit/money.rs");
     let names_kernel = detail.contains("busbar-kernel");
     Case {
         name,

@@ -4,12 +4,9 @@
 //! THE DOOR'S KERNEL-SIDE ACTS A PLANE ASKS FOR (#43/#71): a plane reports units and the kernel
 //! holds and meters, so the hold a plane's admission carries is opened here, never in the plane.
 
-use busbar_contract::caps::{
-    Admission, Admittance, Grant, Hold, MeterClassId, PrincipalId, QuantitySource, ReasonCode,
-    Refusal, UsageLine,
-};
+use busbar_contract::caps::{Admission, Admittance, Grant, Hold, PrincipalId, ReasonCode};
 use busbar_contract::caps::{AuditFacts, OpClassId};
-use busbar_contract::{ClassDirection, FinishClass};
+use busbar_contract::FinishClass;
 
 /// The admission of a unit the door admitted at zero: its own hold, reserving nothing, for this
 /// principal, opened with the admittance grant the loop lent for this call.
@@ -96,99 +93,6 @@ fn boot_node() -> u64 {
         }
     }
     panic!("the OS entropy source answered nothing usable; a store op_id cannot be minted")
-}
-
-/// The door's admission answer, in the ADMIT step's terms: the verdict, whether the charge landed,
-/// and the pool it landed on when a budget downgrade re-pooled it.
-#[derive(Debug)]
-pub struct AdmitVerdict {
-    /// `Ok` when the door admitted the unit; the refusal when a budget in its chain had no headroom.
-    pub verdict: Result<(), Refusal>,
-    /// Whether the charge LANDED. An admission without a grant (governance off, no resolved key)
-    /// charged nothing, so a non-2xx end must not refund it.
-    pub charged: bool,
-    /// `Some` when `on_exhaust: downgrade` re-pooled the admission onto this pool.
-    pub effective_pool: Option<String>,
-}
-
-/// Read the door's admission outcome as the ADMIT step's verdict. `Ok` carries the grant (absent
-/// when the door admitted without charging) and the downgrade pool; `Err` carries the refusal's
-/// `Retry-After`, in whole seconds, as the door rendered it. A refusal here is always a budget in
-/// the chain without headroom: the door refuses for no other reason.
-pub fn admit_verdict(
-    outcome: Result<(Option<&crate::plane_host::AdmitHandle>, Option<String>), Option<u32>>,
-) -> AdmitVerdict {
-    match outcome {
-        Ok((grant, effective_pool)) => AdmitVerdict {
-            verdict: Ok(()),
-            charged: grant.is_some(),
-            effective_pool,
-        },
-        Err(retry_after) => {
-            let mut refusal = Refusal::new(ReasonCode::OverBudget);
-            if let Some(secs) = retry_after {
-                refusal = refusal.retry_after(secs);
-            }
-            AdmitVerdict {
-                verdict: Err(refusal),
-                charged: false,
-                effective_pool: None,
-            }
-        }
-    }
-}
-
-/// The unit's usage lines: one per non-zero tier, in canonical order. A response that reported
-/// nothing reports no lines: zero, not a floor.
-pub fn usage_lines(reported: Option<&busbar_contract::billing::TokenUsage>) -> Vec<UsageLine> {
-    let mut lines = Vec::new();
-    if let Some(u) = reported {
-        push_line(&mut lines, CLASS_INPUT, ClassDirection::Input, u.input);
-        push_line(&mut lines, CLASS_OUTPUT, ClassDirection::Response, u.output);
-        push_line(
-            &mut lines,
-            CLASS_CACHE_READ,
-            ClassDirection::CacheRead,
-            u.cache_read.unwrap_or(0),
-        );
-        push_line(
-            &mut lines,
-            CLASS_CACHE_WRITE,
-            ClassDirection::CacheWrite,
-            u.cache_creation.unwrap_or(0),
-        );
-    }
-    lines
-}
-
-const CLASS_INPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_INPUT);
-const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_OUTPUT);
-const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_CACHE_READ);
-const CLASS_CACHE_WRITE: MeterClassId =
-    MeterClassId::new(busbar_contract::records::UNIT_CACHE_WRITE);
-
-/// One line, if the tier carries anything. A zero-quantity line is not a fact about anything.
-fn push_line(
-    lines: &mut Vec<UsageLine>,
-    class: MeterClassId,
-    direction: ClassDirection,
-    quantity: u64,
-) {
-    if quantity == 0 {
-        return;
-    }
-    lines.push(UsageLine {
-        class,
-        quantity,
-        // The figure came from the destination's own response, read at the locator the dialect's
-        // reader knows, not from a byte count of ours. The four directions partition the tiers:
-        // uncached input, the response, and the two additive cache sides.
-        source: QuantitySource::Locator {
-            direction,
-            ptr: busbar_contract::caps::LocatorPtr::new(class.as_str()),
-        },
-        estimated: false,
-    });
 }
 
 /// The metering row a delivered response accrues, in the shape the flush writes to the store.

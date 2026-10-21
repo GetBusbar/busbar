@@ -197,7 +197,7 @@ impl Durability {
         if !self.keeps_chain() {
             return;
         }
-        let (run, set_aside) = match self.journal.replay() {
+        let (run, set_aside) = match self.chain() {
             Ok(Ok(records)) => linked_run(&records),
             // The book's own rebuild already reported a chain it could not read.
             _ => return,

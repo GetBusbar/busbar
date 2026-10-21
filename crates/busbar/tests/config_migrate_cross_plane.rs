@@ -3,7 +3,7 @@
 
 //! CROSS-PLANE MIGRATE→RESOLVE TESTS, relocated here from `src/config/tests/migrate_tests.rs` (the
 //! "fix the 85" pass after the A6/HostCtx dev-dependency-cycle cleanup): the fixture below configures
-//! a real `tools:`/`agents:` block and then asserts on `cfg.tool_pools`/`cfg.agent_pools`, which only
+//! a real `tools:`/`agents:` block and then asserts on `cfg.plane_pools`, which only
 //! exist once a registered plane actually claims each section — `resolve()` refuses a
 //! `tools:`/`agents:` section as "compiled without the plane that owns it" unless the owning plane
 //! is registered. `tools:` is a linked plane's; `agents:` is the roster's DOOR row (a
@@ -119,18 +119,18 @@ agent_pools:
     busbar_kernel::config_validate::validate(&cfg)
         .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
 
-    // The tool/agent pools folded into the ONE neutral `pools:` map and resolve by INFERRED kind:
-    // `search` (tool members) onto the tool-kind pool map, `planner` (agent members) onto the
-    // agent-kind pool map, and the model pool `fast` onto the model-kind pool map.
+    // The tool/agent pools moved under their verbs (`tools.pools`, `agents.pools`) and resolve
+    // onto those planes' failover maps; the model pool `fast` stays on the model plane.
+    let pools_of = |section: &str| cfg.plane_pools.get(section).cloned().unwrap_or_default();
     assert!(
-        cfg.tool_pools.contains_key("search"),
-        "the folded tool pool resolves onto the `tools:` plane's failover map: {:?}",
-        cfg.tool_pools.keys().collect::<Vec<_>>()
+        pools_of("tools").contains_key("search"),
+        "the moved tool pool resolves onto the `tools:` plane's failover map: {:?}",
+        cfg.plane_pools
     );
     assert!(
-        cfg.agent_pools.contains_key("planner"),
-        "the folded agent pool resolves onto the `agents:` plane's failover map: {:?}",
-        cfg.agent_pools.keys().collect::<Vec<_>>()
+        pools_of("agents").contains_key("planner"),
+        "the moved agent pool resolves onto the `agents:` plane's failover map: {:?}",
+        cfg.plane_pools
     );
     assert!(
         cfg.pools.contains_key("fast"),

@@ -50,8 +50,34 @@ pub(crate) async fn exchange(
         return crate::auth::token::credential_submit(&app, &handle, cookie, form).await;
     }
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
-    // carriers as any data-plane token (Authorization: Bearer / x-api-key / x-goog-api-key).
-    let candidate = AuthMiddleware::extract_client_token(&req);
+    // carriers as any data-plane token (the default inbound style's, in its order).
+    let candidate = app.auth.extract_client_token(req.headers());
+    // THE SENDER CONSTRAINT THE DATA PLANE HOLDS (RFC 9449; `auth::dpop`), held here too wherever
+    // this deployment runs its own authorization server (`oauth_as:`, new in 1.6.0, the only issuer
+    // of the DPoP-bound tokens it would swap): this route runs the chain itself, past the
+    // middleware, and such a token presented as a bearer (or with a proof that does not verify)
+    // must not mint itself an unbound key. With no authorization server the exchange answers
+    // exactly as 1.5.5's did (v1.5.5 `auth/exchange.rs`, which read no DPoP at all), whatever the
+    // presented token's claims.
+    let judged = if app.oauth_as.is_some() {
+        crate::auth::dpop::judge(
+            &app,
+            req.method(),
+            req.uri().path(),
+            req.headers(),
+            candidate.as_deref(),
+        )
+        .await
+    } else {
+        crate::auth::dpop::SenderConstraint::Unconstrained
+    };
+    let candidate = match judged {
+        crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
+        crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
+        crate::auth::dpop::SenderConstraint::Refused => {
+            return refusal(ExchangeError::Unauthorized)
+        }
+    };
     let verdict = AuthMiddleware::run_chain_on_request_path(
         &app.auth,
         candidate,

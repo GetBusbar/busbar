@@ -602,27 +602,29 @@ fn test_credential_generators_contract() {
         "bearer body is lowercase hex: {hex_part}"
     );
 
-    // AWS AccessKeyId: `AKIA` prefix + uppercase-alphanumeric body, fixed total length 20.
-    let akid = generate_aws_access_key_id().expect("OS entropy available");
-    assert_eq!(akid.len(), AWS_ACCESS_KEY_ID_LEN);
-    assert!(
-        akid.starts_with(AWS_ACCESS_KEY_PREFIX),
-        "akid prefix: {akid}"
-    );
+    // The issued credential over the linked verifier's stated shape (the test double's): the
+    // public id is its prefix then 16 symbols of its alphabet, 20 in all; the secret 40 symbols of
+    // its alphabet. 1.5.5's AccessKeyId and secret access key formats, byte for byte.
+    let (_, shape) = crate::test_support::issued::double();
+    let (akid, sak) = issue_credential(&shape).expect("OS entropy available");
+    assert_eq!(akid.len(), 20);
+    assert!(akid.starts_with("AKIA"), "akid prefix: {akid}");
     assert!(
         akid.bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
         "akid is uppercase-alphanumeric: {akid}"
     );
-
-    // AWS secret access key: fixed 40 chars (240 bits over a base64-ish alphabet).
-    let sak = generate_aws_secret_access_key().expect("OS entropy available");
-    assert_eq!(sak.len(), AWS_SECRET_ACCESS_KEY_LEN);
+    assert_eq!(sak.len(), 40);
+    assert!(
+        sak.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'),
+        "the secret is over the stated alphabet: {sak}"
+    );
 
     // Each draw differs — proves the CSPRNG is actually read, not returning a constant.
     assert_ne!(generate_secret().unwrap(), s, "secrets must not repeat");
     assert_ne!(
-        generate_aws_access_key_id().unwrap(),
+        issue_credential(&shape).unwrap().0,
         akid,
         "akids must not repeat"
     );
@@ -697,7 +699,7 @@ fn test_refresh_updates_both_indices_atomically() {
     );
     let gov = GovState::new_with_signer(store, None, Some(signer)).unwrap();
     let (key, _token, akid, _secret) = gov
-        .mint_signed_with_aws(
+        .mint_signed_with_credential(
             NewKeySpec {
                 name: "dual-index-key".to_string(),
                 allowed_pools: None,
@@ -707,6 +709,8 @@ fn test_refresh_updates_both_indices_atomically() {
             },
             2_000_000_000,
             1_700_000_000,
+            &crate::test_support::issued::double().0,
+            &crate::test_support::issued::double().1,
         )
         .unwrap();
 
@@ -743,7 +747,7 @@ fn test_aws_credential_debug_redacts_secret() {
     // is the generalized successor to the old AWS-specific `AwsCredential`/`AwsKeyEntry` pair (its
     // own redaction test lives in `busbar_contract::records::tests::debug_redacts_secret_equivalents`) —
     // this regression stays at the governance-crate level too since it's the type actually flowing
-    // through `create_key_with_aws`/`mint_signed_with_aws`.
+    // through `create_key_with_aws`/`mint_signed_with_credential`.
     let cred = CredentialSecret {
         meta: CredentialMeta {
             id: "cred_x".to_string(),
@@ -3228,12 +3232,18 @@ mod signed_token {
         );
     }
 
-    /// mint_signed_with_aws issues both a token and an AWS credential for the same subject.
+    /// mint_signed_with_credential issues both a token and an AWS credential for the same subject.
     #[test]
     fn mint_with_aws_issues_token_and_credential() {
         let g = gov();
         let (binding, token, akid, secret) = g
-            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_with_credential(
+                spec("bob", None, None),
+                2_000,
+                1_000,
+                &crate::test_support::issued::double().0,
+                &crate::test_support::issued::double().1,
+            )
             .expect("mint+aws");
         assert!(token.expose(&crate::seal::lend()).starts_with("bbk_"));
         assert!(akid.starts_with("AKIA"));
@@ -3245,7 +3255,7 @@ mod signed_token {
         assert_eq!(resolved_key.id, binding.id);
     }
 
-    /// The two one-time secrets `mint_signed_with_aws` hands back (the bearer token and the AWS
+    /// The two one-time secrets `mint_signed_with_credential` hands back (the bearer token and the AWS
     /// secret access key) are sealed: a `{:?}` or `{}` of either, or a `{:?}` of the whole returned
     /// tuple, never carries the plaintext (DESIGN #54: secret material Debug/Display => REDACTED).
     /// The stored credential row still holds the exact plaintext, so SigV4 verification and the
@@ -3254,7 +3264,13 @@ mod signed_token {
     fn mint_with_aws_secrets_never_print() {
         let g = gov();
         let minted = g
-            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_with_credential(
+                spec("bob", None, None),
+                2_000,
+                1_000,
+                &crate::test_support::issued::double().0,
+                &crate::test_support::issued::double().1,
+            )
             .expect("mint+aws");
         let token = minted.1.expose(&crate::seal::lend()).clone();
         let aws_secret = minted.3.expose(&crate::seal::lend()).clone();
@@ -5605,28 +5621,41 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 /// two card publishes and still resolved to the first — 52,500,000 where #79 says 277,530,000.
 /// Reading the finer clock made the same script answer 277,530,000 exactly.
 ///
-/// A source witness rather than a behavioural one on purpose: the rate-epoch holder is a
-/// process-wide `OnceLock`, and a test that installed one would date every other accrual in this
-/// binary too. What has to stay true is which clock this line reads, and that is what is asserted.
+/// Behavioural: `record_metered_request_dated` is driven with a wall-clock double and a rate-dater
+/// double (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
+/// dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
+/// inside the same second as both. The cell must carry the SECOND card's start. An accrual that
+/// lifts `now * 1_000` into milliseconds asks the dater for `T0` and dates the cell at the first
+/// card, which is the RED arm: this test fails against that implementation.
 #[test]
 fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
-    let src = include_str!("../state.rs");
-    let body = src
-        .split("pub fn record_metering(")
-        .nth(1)
-        .expect("record_metering is declared")
-        .split("\n    }")
-        .next()
-        .expect("its body closes");
-    assert!(
-        body.contains("effective_from_at(crate::store::now_ms())"),
-        "the metering accrual stopped dating itself on the millisecond clock the rate-card \
-         history is dated on: {body}"
-    );
-    assert!(
-        !body.contains("saturating_mul(1_000)"),
-        "the metering accrual is lifting a SECOND into milliseconds again — a card applied later \
-         in the same second would sort after every response of that second (#79): {body}"
+    const T0: u64 = 1_700_000_000_000;
+    let cards = [T0, T0 + 500];
+    // The entry in force at `at_ms`: the latest card starting at or before it.
+    let dater = |at_ms: u64| {
+        cards
+            .iter()
+            .copied()
+            .filter(|s| *s <= at_ms)
+            .max()
+            .unwrap_or(0)
+    };
+    let clock = || T0 + 700;
+
+    let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+    let add = MeterCounts {
+        requests: 1,
+        ..MeterCounts::default()
+    };
+    gov.record_metered_request_dated("vk_dated", "m", "p", add, T0 / 1_000, &clock, &dater);
+
+    let drained = gov.pending_metering.drain();
+    assert_eq!(drained.len(), 1, "one response, one cell");
+    assert_eq!(
+        drained[0].0 .4,
+        T0 + 500,
+        "a response served after the second card published in the same second must date at that \
+         card (#79), not at the first card the lifted second resolves to"
     );
 }
 
@@ -6104,43 +6133,49 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     );
 }
 
-/// THE CREDENTIAL READ'S COST does not say whether the id exists: over many interleaved runs, the
-/// median time of a known id's read and an unknown id's read stay within a factor of each other. A
-/// short-circuit on the unknown id (no copy, no revocation check) moves the medians apart well
-/// beyond run-to-run jitter, which the median over many runs absorbs.
+/// THE CREDENTIAL READ'S WORK does not say whether the id exists. Every read, known id or unknown,
+/// takes the revocation check, and the check is what advances the denylist's staleness clock: with
+/// the clock one window stale, a read that skipped the check (a short-circuit on the unknown id)
+/// leaves `synced_at` where it was. The assertion is on that structural effect, counted per read,
+/// not on a wall-clock ratio, so a loaded runner cannot flip it.
+///
+/// RED arm: `credential_secret` returning early on an unknown id (before `is_revoked_at`) leaves
+/// `synced_at` at its old value on the unknown-id reads, and the second assertion fails.
 #[test]
-fn the_credential_read_costs_the_same_for_a_known_and_an_unknown_id() {
+fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
     let now = busbar_kernel::store::now();
     let (_key, _bearer, akid, _secret) = gov
         .create_key_with_aws(
             NewKeySpec {
-                name: "timing".to_string(),
+                name: "work".to_string(),
                 ..Default::default()
             },
             now,
         )
         .unwrap();
     let kind = signed_kind();
-    let time = |id: &str| {
-        let t = std::time::Instant::now();
-        for _ in 0..64 {
-            std::hint::black_box(gov.credential_secret(&kind, std::hint::black_box(id), now));
-        }
-        t.elapsed().as_nanos()
-    };
-    let (mut known, mut unknown) = (Vec::new(), Vec::new());
-    for _ in 0..401 {
-        known.push(time(&akid));
-        unknown.push(time("AKIAdoesnotexist0000"));
+    // No Tokio runtime in this test: a stale denylist refreshes inline, so the effect is visible
+    // as soon as the read returns.
+    let window = REVOCATION_SYNC_TTL_SECS;
+    let mut at = gov.denylist.synced_at();
+    for (round, id) in [
+        akid.as_str(),
+        "AKIAdoesnotexist0000",
+        akid.as_str(),
+        "AKIAdoesnotexist0000",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        at += window;
+        gov.credential_secret(&kind, id, at);
+        assert_eq!(
+            gov.denylist.synced_at(),
+            at,
+            "read {round} of {id:?} did not take the revocation check: the known and the unknown \
+             id's reads must run the same steps"
+        );
     }
-    known.sort_unstable();
-    unknown.sort_unstable();
-    let (k, u) = (known[200] as f64, unknown[200] as f64);
-    assert!(
-        (0.5..=2.0).contains(&(u / k)),
-        "median known {k} ns vs unknown {u} ns per 64 reads: the unknown id's read takes a \
-         different path"
-    );
 }

@@ -45,9 +45,41 @@ fn every_plane_code_is_the_catalog_entry_of_its_number() {
 }
 
 #[test]
-fn the_plane_declares_fifteen_distinct_codes() {
+fn the_plane_declares_thirty_one_distinct_codes() {
     let mut codes: Vec<u16> = DIAGNOSTICS.iter().map(|d| d.code).collect();
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 15, "a plane code is listed twice or missing");
+    assert_eq!(codes.len(), 31, "a plane code is listed twice or missing");
+}
+
+/// THE DOOR'S `declares.json` IS THE PLANE'S CATALOG: the declared section the host folds this plane's
+/// codes from (linked or dropped in) states exactly the entries [`DIAGNOSTICS`] holds, in order and
+/// field for field, beside the transport scheme the plane needs — so the catalogue the host renders
+/// from the declaration is the one this plane defines, and neither can drift from the other.
+#[test]
+fn the_declares_file_states_the_catalog() {
+    let declared: serde_json::Value =
+        serde_json::from_str(crate::DECLARES).expect("declares.json is JSON");
+    let want: Vec<serde_json::Value> = DIAGNOSTICS
+        .iter()
+        .map(|d| {
+            assert!(!d.retired, "a declared code is a live one");
+            serde_json::json!({
+                "code": d.code,
+                "slug": d.slug,
+                "title": d.title,
+                "severity": d.severity.as_str(),
+                "summary": d.summary,
+                "action": d.action,
+                "since": d.since,
+            })
+        })
+        .collect();
+    let whole = serde_json::json!({ "needs": ["http"], "diagnostics": want });
+    assert_eq!(
+        declared,
+        whole,
+        "declares.json drifted from the catalog; expected:\n{}",
+        serde_json::to_string_pretty(&whole).unwrap()
+    );
 }

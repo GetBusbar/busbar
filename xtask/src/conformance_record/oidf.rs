@@ -24,7 +24,10 @@
 //! (REVIEW is the suite's "no failure; a human looks at the screenshot" result) ⇒ `pass`. Any
 //! FAILED, INTERRUPTED, SKIPPED or unfinished module ⇒ `fail` naming it. busbar refusing to boot,
 //! to publish its metadata or to run the FAPI 2.0 posture ⇒ `fail`. A run that produced no
-//! module result at all ⇒ `not-run`.
+//! module result at all ⇒ `not-run`. The pass is held to the plan's own denominator and the
+//! runner's own verdict (Law 8): a `Test [` line that carries no result (`did not run`, `missing
+//! module info/logs`), fewer results than the `N modules to test:` list the runner printed, or a
+//! non-zero exit ⇒ `fail`; no module list at all ⇒ `not-run`.
 //!
 //! ARCHITECT RULINGS 2026-10-02 (handoff CONFORMANCE-RIGS.md). `oidf-oauth2` is the plan under
 //! `openid=plain_oauth` (the registry's words); `fapi2` is the FAPI2 Security Profile plan under the
@@ -601,6 +604,38 @@ pub fn module_results(log: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// How many modules the plan owns, as `run-test-plan.py` printed it before running any
+/// (`N modules to test:`), summed over every plan the log ran; `None` when it printed none.
+pub fn plan_module_count(log: &str) -> Option<usize> {
+    let counts: Vec<usize> = log
+        .lines()
+        .map(strip_ansi)
+        .filter_map(|l| {
+            l.trim()
+                .strip_suffix(" modules to test:")
+                .and_then(|n| n.parse().ok())
+        })
+        .collect();
+    (!counts.is_empty()).then(|| counts.iter().sum())
+}
+
+/// Every `Test [` line [`module_results`] could not read as a result: the runner's `did not run`
+/// and `missing module info/logs` lines, or any shape it was not written for.
+pub fn unread_module_lines(log: &str) -> Vec<String> {
+    let read = module_results(log).len();
+    let all: Vec<String> = log
+        .lines()
+        .map(strip_ansi)
+        .filter_map(|l| l.find("Test [").map(|at| l[at..].trim().to_string()))
+        .collect();
+    if all.len() == read {
+        return Vec::new();
+    }
+    all.into_iter()
+        .filter(|l| module_results(l).is_empty())
+        .collect()
+}
+
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
@@ -662,10 +697,8 @@ pub fn decide_oidf(run: &OidfRun) -> Outcome {
         })
         .map(|(m, status, result)| format!("{m} {status}/{result}"))
         .collect();
-    if red.is_empty() {
-        Outcome::pass(run.evidence.clone())
-    } else {
-        Outcome::fail(
+    if !red.is_empty() {
+        return Outcome::fail(
             format!(
                 "{} of {} module(s) not passed: {}",
                 red.len(),
@@ -673,8 +706,49 @@ pub fn decide_oidf(run: &OidfRun) -> Outcome {
                 super::rigs::first_few(&red)
             ),
             run.evidence.clone(),
-        )
+        );
     }
+    let unread = unread_module_lines(&run.log);
+    if !unread.is_empty() {
+        return Outcome::fail(
+            format!(
+                "{} module line(s) carry no result: {}",
+                unread.len(),
+                super::rigs::first_few(&unread)
+            ),
+            run.evidence.clone(),
+        );
+    }
+    // The plan's own module list is the denominator: without it, a green over the lines that
+    // happened to print measures nothing anybody declared.
+    let Some(owned) = plan_module_count(&run.log) else {
+        return Outcome::not_run(format!(
+            "the runner never printed the plan's module list (`N modules to test:`), so {} \
+             result(s) have no denominator ({})",
+            results.len(),
+            super::rigs::rc(run.exit)
+        ));
+    };
+    if results.len() != owned {
+        return Outcome::fail(
+            format!(
+                "{} of the plan's {owned} module(s) printed a result",
+                results.len()
+            ),
+            run.evidence.clone(),
+        );
+    }
+    if run.exit != Some(0) {
+        return Outcome::fail(
+            format!(
+                "every one of the plan's {owned} module(s) passed but run-test-plan.py {}; an \
+                 unattributed red is no pass",
+                super::rigs::rc(run.exit)
+            ),
+            run.evidence.clone(),
+        );
+    }
+    Outcome::pass(run.evidence.clone())
 }
 
 /// A fresh ES256 key as a private JWK and its public half.

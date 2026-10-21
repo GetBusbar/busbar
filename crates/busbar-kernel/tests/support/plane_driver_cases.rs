@@ -1069,7 +1069,7 @@ async fn a_served_unit_writes_exactly_one_metering_row() {
                 &std::collections::BTreeMap::new(),
             )),
             pool: String::new(),
-            model: "opened".into(),
+            lane: "opened".into(),
             classes: Arc::from(vec!["input".to_string()]),
             arrived: at,
             mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,

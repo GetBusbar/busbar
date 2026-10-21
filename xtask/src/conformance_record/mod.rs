@@ -65,9 +65,9 @@ pub use oidf::{
     SUITES as OIDF_SUITES,
 };
 pub use rigs::{
-    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, mcp_node_platform, rig_for,
-    voice_config_command, Inputs, LlmRun, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS,
-    MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
+    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, mcp_node_platform,
+    recording_for_subject, rig_for, voice_config_command, Inputs, LlmRun, VoiceRun, WebrtcRun,
+    WsRun, LLM_DIALECTS, MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
 };
 pub use slsa::{
     decide_slsa, dev_bin_assets, provenance_commit, SlsaRun, SOURCE_BRANCH, SOURCE_URI,

@@ -1,71 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ORDER IS THE PROPERTY, so the assertions are about WHICH STEP refused rather than about
-//! whether a bad request was refused.
-//!
-//! A test that only asserts "this is refused" passes on a validator whose four steps run in any
-//! order, and passes on one that runs only the last of them. Every case below is set up so that
-//! SEVERAL steps would refuse it, and asserts the EARLIEST one answers — which is the only shape of
-//! assertion that a re-ordering breaks.
-//!
-//! ## The red proof each of these was watched to fail as
-//!
-//! Each `#[test]` names, in its own doc, the mutation that makes it fail. They were run: deleting
-//! the identity block makes `identity_is_asked_before_the_grant` report step 2; moving the
-//! fingerprint closure above the grant loop makes `an_ungranted_caller_never_causes_the_artifact_to
-//! _be_read` see the counter at 1; deleting the generation comparison makes
-//! `the_generation_is_the_last_step_and_it_exists` return `Ok`.
+//! Identity, then grant ([`validate_visibility`]), the generation source and the
+//! standing-permission primitive. The identity-and-grant cases are set up so that BOTH steps would
+//! refuse, and assert the EARLIEST one answers: the only shape of assertion a re-ordering breaks.
 
 use crate::trust::validate::{
-    next_generation, reason, validate_request, Ask, Fingerprint, Generations, Grant, Lapsed,
-    Observed, Refusal, Snapshot, Standing,
+    next_generation, reason, validate_visibility, Grant, Lapsed, Refusal, Snapshot, Standing,
 };
-use crate::trust::Observation;
-use crate::trust::{Approval, PinnedArtifact, Sighting, TrustState};
 use busbar_contract::records::{ScopeRef, VirtualKey};
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::time::Duration;
-
-/// A two-part artifact, so nothing below can quietly assume a single-value pin.
-#[derive(Clone, Debug, PartialEq)]
-struct TwoPart {
-    root: &'static str,
-    body: &'static str,
-}
-
-impl PinnedArtifact for TwoPart {
-    fn mechanism(&self) -> &'static str {
-        "two_part"
-    }
-    fn digest(&self) -> String {
-        format!("{}+{}", self.root, self.body)
-    }
-}
-
-const PIN: TwoPart = TwoPart {
-    root: "ROOT",
-    body: "BODY",
-};
-
-fn seen(caps: &[(&str, &str)]) -> Sighting<TwoPart> {
-    Sighting::Seen(Observation {
-        pin: Some(PIN),
-        capabilities: caps
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect::<BTreeMap<_, _>>(),
-    })
-}
-
-/// An APPROVED registration serving one capability at `d1`.
-fn approved() -> (Approval<TwoPart>, Sighting<TwoPart>) {
-    let sighting = seen(&[("work", "d1")]);
-    let mut approval = Approval::registered();
-    approval.approve(&sighting, None).expect("approve");
-    (approval, sighting)
-}
 
 fn key(scopes: Option<Vec<ScopeRef>>) -> VirtualKey {
     VirtualKey {
@@ -93,360 +38,93 @@ fn granting() -> VirtualKey {
 
 /// The happy path, so every refusal below is a difference from something that works.
 #[test]
-fn a_request_that_passes_every_step_is_admitted() {
-    let (approval, sighting) = approved();
+fn a_live_granted_caller_is_admitted() {
     let k = granting();
-    let observe = || Observed::At("d1".to_string());
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Scope {
-            kind: "thing",
-            name: "one",
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::at_admission(7),
-    };
-    assert_eq!(validate_request(&ask), Ok(()));
+    let grants = [Grant::Scope {
+        kind: "thing",
+        name: "one",
+    }];
+    assert_eq!(validate_visibility(Some(&k), 100, &grants), Ok(()));
 }
 
-/// STEP 1 BEFORE STEP 2. The key is expired AND ungranted AND the registration is suspended AND the
-/// generation has moved: four steps would refuse it and identity must be the one that does.
-///
-/// RED: delete the identity block from `validate_request` and this reports step 2.
+/// STEP 1 BEFORE STEP 2: the key is expired AND ungranted, and identity is the step that answers.
 #[test]
 fn identity_is_asked_before_the_grant() {
-    let (mut approval, sighting) = approved();
-    approval.suspend("operator");
     let mut k = key(None); // wildcard scopes: the grant below would otherwise pass
     k.expires_at = Some(50);
-    let observe = || Observed::At("MOVED".to_string());
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Scope {
-            kind: "thing",
-            name: "nobody-holds-this",
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::since(1, 2),
-    };
-    let refusal = validate_request(&ask).expect_err("four steps would refuse this");
-    assert_eq!(
-        refusal.step(),
-        1,
-        "identity is the first step, not the last"
-    );
+    let grants = [Grant::Scope {
+        kind: "thing",
+        name: "nobody-holds-this",
+    }];
+    let refusal = validate_visibility(Some(&k), 100, &grants).expect_err("both steps refuse");
+    assert_eq!(refusal.step(), 1, "identity is the first step");
     assert_eq!(refusal.reason(), reason::IDENTITY_NOT_LIVE);
 }
 
-/// STEP 2 BEFORE STEP 3, and this is the leak the order exists to prevent: a caller with no grant
-/// must learn that it is ungranted and NOTHING about what the upstream is currently offering.
-///
-/// Asserted on the fingerprint closure's OWN call counter rather than inferred from the refusal
-/// word, because a refusal that happens to name the grant proves nothing about whether the artifact
-/// was read on the way past.
-///
-/// RED: move the `capability` block above the grant loop and the counter reads 1.
-#[test]
-fn an_ungranted_caller_never_causes_the_artifact_to_be_read() {
-    let (approval, sighting) = approved();
-    let k = granting();
-    let reads = Cell::new(0u32);
-    let observe = || {
-        reads.set(reads.get() + 1);
-        Observed::At("d1".to_string())
-    };
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Scope {
-            kind: "thing",
-            name: "two",
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::at_admission(7),
-    };
-    let refusal =
-        validate_request(&ask).expect_err("the caller holds `thing:one`, not `thing:two`");
-    assert_eq!(refusal.step(), 2);
-    assert_eq!(refusal.reason(), reason::NOT_GRANTED);
-    assert_eq!(
-        reads.get(),
-        0,
-        "the artifact was fingerprinted on behalf of a caller with no grant to see it"
-    );
-}
-
-/// AND THE CONTROL for the test above: on a granted caller the closure IS run. Without this, the
-/// counter assertion would pass on a validator that never fingerprints anything at all.
-#[test]
-fn a_granted_caller_does_cause_the_artifact_to_be_read() {
-    let (approval, sighting) = approved();
-    let k = granting();
-    let reads = Cell::new(0u32);
-    let observe = || {
-        reads.set(reads.get() + 1);
-        Observed::At("d1".to_string())
-    };
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Scope {
-            kind: "thing",
-            name: "one",
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::at_admission(7),
-    };
-    assert_eq!(validate_request(&ask), Ok(()));
-    assert_eq!(reads.get(), 1);
-}
-
 /// `not_granted` and `egress_denied` are TWO WORDS, and they stay two: one is fixed on the caller's
-/// key and the other on the target's standing list, so an operator handed one word for both is sent
-/// to the wrong file half the time.
+/// key and the other on the target's standing list.
 #[test]
 fn the_two_grant_refusals_stay_distinguishable() {
-    let (approval, sighting) = approved();
     let k = key(None);
     let allowed = vec!["someone-else".to_string()];
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Egress {
-            from: "me",
-            allowed: &allowed,
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: None,
-        generation: Generations::at_admission(7),
-    };
-    let refusal = validate_request(&ask).expect_err("not on the list");
+    let grants = [Grant::Egress {
+        from: "me",
+        allowed: &allowed,
+    }];
+    let refusal = validate_visibility(Some(&k), 100, &grants).expect_err("not on the list");
     assert_eq!(refusal.step(), 2);
     assert_eq!(refusal.reason(), reason::EGRESS_DENIED);
     assert_ne!(reason::EGRESS_DENIED, reason::NOT_GRANTED);
-    // AND NEITHER IS THE WORD FOR A CALL THAT WENT OUT AND BROKE. Reached through `audit::vocab`,
-    // because that is where the vocabulary lives and this assertion is about the shared list rather
-    // than about this module's view of it.
     assert_ne!(
         reason::NOT_GRANTED,
         crate::audit::vocab::REASON_UPSTREAM_FAILED
     );
+    let narrow = granting();
+    let ungranted = [Grant::Scope {
+        kind: "thing",
+        name: "two",
+    }];
+    assert_eq!(
+        validate_visibility(Some(&narrow), 100, &ungranted)
+            .expect_err("not granted")
+            .reason(),
+        reason::NOT_GRANTED
+    );
 }
 
-/// AN EMPTY EGRESS LIST IS NOBODY, never everybody. The fail-closed reading, pinned here because the
-/// other reading is the one somebody writes by accident.
+/// AN EMPTY EGRESS LIST IS NOBODY, never everybody.
 #[test]
 fn an_empty_egress_list_grants_nobody() {
-    let (approval, sighting) = approved();
     let k = key(None);
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Egress {
-            from: "me",
-            allowed: &[],
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: None,
-        generation: Generations::at_admission(7),
-    };
+    let grants = [Grant::Egress {
+        from: "me",
+        allowed: &[],
+    }];
     assert_eq!(
-        validate_request(&ask)
+        validate_visibility(Some(&k), 100, &grants)
             .expect_err("empty is nobody")
             .reason(),
         reason::EGRESS_DENIED
     );
 }
 
-/// STEP 3, HALF ONE, BEFORE HALF TWO. A suspended registration serves nothing whatever a single
-/// capability's fingerprint says, and the refusal names the SUSPENSION rather than the drift —
-/// because "resume this registration" and "re-approve this capability" are two operator actions.
-///
-/// RED: drop the `state != Approved` block and this reports `artifact_drifted`, sending an operator
-/// to work a changes queue on a registration they suspended by hand.
+/// GOVERNANCE DISABLED: with no principal there is no scope grant to narrow, and the target's own
+/// standing egress list still applies.
 #[test]
-fn the_registration_state_outranks_the_capability_fingerprint() {
-    let (mut approval, sighting) = approved();
-    approval.suspend("anomaly breaker: error rate");
-    let k = key(None);
-    let observe = || Observed::At("MOVED".to_string());
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::at_admission(7),
-    };
-    let refusal = validate_request(&ask).expect_err("suspended");
-    assert_eq!(refusal.step(), 3);
-    assert_eq!(refusal.reason(), reason::NOT_SERVING);
+fn an_ungoverned_caller_holds_every_scope_but_not_a_closed_egress_list() {
+    let scope = [Grant::Scope {
+        kind: "thing",
+        name: "anything",
+    }];
+    assert_eq!(validate_visibility(None, 100, &scope), Ok(()));
+    let egress = [Grant::Egress {
+        from: "me",
+        allowed: &[],
+    }];
     assert!(matches!(
-        refusal,
-        Refusal::NotServing {
-            state: TrustState::Suspended,
-            reason: Some(_)
-        }
+        validate_visibility(None, 100, &egress),
+        Err(Refusal::EgressDenied { .. })
     ));
-}
-
-/// THE RUG-PULL. The registration is `Approved` and the capability is offered at a fingerprint
-/// nobody approved.
-#[test]
-fn a_moved_fingerprint_is_refused_and_named() {
-    let (approval, sighting) = approved();
-    let k = key(None);
-    let observe = || Observed::At("MOVED".to_string());
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::at_admission(7),
-    };
-    let refusal = validate_request(&ask).expect_err("drifted");
-    assert_eq!(refusal.step(), 3);
-    assert_eq!(refusal.reason(), reason::ARTIFACT_DRIFTED);
-    assert!(
-        format!("{refusal}").contains("MOVED"),
-        "the refusal must name what was observed, or an operator cannot compare it"
-    );
-}
-
-/// A reader that can produce NO fingerprint says so in words for an operator, and those words reach
-/// the refusal instead of being replaced by a generic one.
-#[test]
-fn a_reader_with_nothing_to_compare_refuses_in_its_own_words() {
-    let (approval, sighting) = approved();
-    let k = key(None);
-    let observe = || Observed::Drifted("this capability is not in the last observed set");
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::at_admission(7),
-    };
-    let refusal = validate_request(&ask).expect_err("nothing to compare");
-    assert_eq!(refusal.reason(), reason::ARTIFACT_DRIFTED);
-    assert_eq!(refusal.step(), 3);
-    assert!(matches!(refusal, Refusal::Unobservable { .. }));
-    assert!(format!("{refusal}").contains("not in the last observed set"));
-}
-
-/// STEP 4 EXISTS, and it is LAST. Everything else about this request is fine; only the generation
-/// moved.
-///
-/// RED: delete the generation comparison and this returns `Ok(())`.
-#[test]
-fn the_generation_is_the_last_step_and_it_exists() {
-    let (approval, sighting) = approved();
-    let k = granting();
-    let observe = || Observed::At("d1".to_string());
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[Grant::Scope {
-            kind: "thing",
-            name: "one",
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: Some(Fingerprint {
-            capability: "work",
-            observe: &observe,
-        }),
-        generation: Generations::since(4, 5),
-    };
-    let refusal = validate_request(&ask).expect_err("the snapshot moved");
-    assert_eq!(refusal.step(), 4);
-    assert_eq!(refusal.reason(), reason::GENERATION_MOVED);
-    assert_eq!(
-        refusal,
-        Refusal::GenerationMoved {
-            admitted: 4,
-            live: 5
-        }
-    );
-}
-
-/// AT ADMISSION the step runs and cannot fail: there is no earlier snapshot to have outlived. Pinned
-/// so `at_admission` cannot quietly become a way of passing a mismatched pair.
-#[test]
-fn admission_compares_the_snapshot_against_itself() {
-    let (approval, sighting) = approved();
-    let k = key(None);
-    let ask = Ask {
-        principal: Some(&k),
-        now: 100,
-        grants: &[],
-        approval: &approval,
-        sighting: &sighting,
-        capability: None,
-        generation: Generations::at_admission(99),
-    };
-    assert_eq!(validate_request(&ask), Ok(()));
-}
-
-/// GOVERNANCE DISABLED is not a skipped gate. There is no principal, so there is no grant to narrow
-/// — and every other step still runs, which is what this asserts: the same ask is refused on its
-/// artifact.
-#[test]
-fn an_ungoverned_deployment_still_passes_through_every_other_step() {
-    let (mut approval, sighting) = approved();
-    approval.suspend("operator");
-    let ask = Ask::<TwoPart> {
-        principal: None,
-        now: 100,
-        grants: &[Grant::Scope {
-            kind: "thing",
-            name: "anything",
-        }],
-        approval: &approval,
-        sighting: &sighting,
-        capability: None,
-        generation: Generations::at_admission(1),
-    };
-    let refusal = validate_request(&ask).expect_err("suspended, principal or no principal");
-    assert_eq!(refusal.step(), 3);
 }
 
 /// THE GENERATION SOURCE is monotonic and never answers 0, so `0` stays usable as "nothing

@@ -53,6 +53,8 @@ pub use services::{
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
+// THE ONE WIPED HMAC-SHA256 an auth plugin keys over secret material.
+pub mod hmac;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
 // inbound verdict cache inside itself (THE DESIGN, section 11.11).
 pub mod auth_door;

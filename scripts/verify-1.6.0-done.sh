@@ -1739,7 +1739,10 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "caps fixtures (busbar-contract)" cargo test -p busbar-contract --quiet
-  step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
+  # "attempt identity (busbar-llm)" STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): both
+  # tests were the retired engine crate's own scaffolding, the parity of its two attempt paths and
+  # its normalizer, and both paths left with the crate. The one attempt's bytes are pinned at
+  # crates/busbar-plane-llm/tests/exchange_attempt.rs and golden_parity.rs.
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi
@@ -1914,7 +1917,7 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
 # behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
 # away is RED (VACUITY), never a green that ran nothing.
-step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-llm -p xtask --quiet p_item_refusal_reason_collapse
+step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse
 step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
 step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
 step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution

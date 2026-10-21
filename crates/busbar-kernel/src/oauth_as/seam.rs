@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SEAM core's own `router.rs`/`appbuild.rs` call through to reach the authorization-server
-//! plane's runtime object and mount its routes, without naming `busbar_core_oauth2::plane::AsPlane` —
-//! the reverse edge Cargo refuses (`busbar-core-oauth2` depends on `busbar-core`, never the other way).
+//! THE SEAM the kernel's router and app build call through to reach the authorization server's
+//! runtime object and mount its routes, without naming its crate: the reverse edge Cargo refuses
+//! (`busbar-core-oauth2` depends on `busbar-kernel`, never the other way).
 //!
-//! Registered once by the composition root (`crates/busbar`'s `main`), exactly the discipline
-//! `plane::registry::install_planes` documents for the CRUD-shaped planes (MCP/A2A). `oauth_as` is
-//! a SINGLETON plane — no named-definition map, no scope-kind grants, no admin CRUD verbs — so it
-//! rides this small bespoke fn-pointer pair rather than the full `PlaneDecl` vocabulary, which was
-//! built for a different shape of plane and would force several of its fields to fictions here.
+//! Registered once by the composition root, the discipline `plane::registry::install_planes`
+//! documents for the registry planes. `oauth_as` is a SINGLETON (no named-definition map, no
+//! scope-kind grants, no admin CRUD verbs), so it rides this small bespoke fn-pointer set rather
+//! than the full `PlaneDecl` vocabulary, which would force several of its fields to fictions here.
 
 use std::any::Any;
 use std::future::Future;
@@ -75,9 +74,10 @@ pub struct AsPlaneSeam {
     /// sessions, an ephemeral key) carries across the generation swap. And the deployment's
     /// configured store (its typed records and its single-use claims; `None` without one): the
     /// server keeps what it holds there, under the kernel's own record kinds, so every node on one
-    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also spawns the
-    /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
-    /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
+    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also hands
+    /// the plane's expired-record sweep to the kernel's one clock ([`crate::tick::on_clock`]),
+    /// starting no task of its own — the seam owns the whole "how do I come alive" act, not just
+    /// allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error
     /// rendered to a string (boot refuses with it exactly as it did when this call was inline).
     pub build: AsPlaneBuildFn,
@@ -98,13 +98,11 @@ pub struct AsPlaneSeam {
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
 
 /// Register the authorization-server plane's seam. Called EXACTLY ONCE, by the composition root
-/// (`crates/busbar`'s `main`, alongside `plane::registry::install_planes`), before any config is
-/// loaded. `oauth-as` is a NORMAL (always-linked, non-optional) dependency of the shipped binary —
-/// unlike MCP/A2A/voice, `oauth_as:` carries no feature flag — so every real build registers this.
-/// Only busbar-core's OWN test binary (`cargo test -p busbar-core`) never links `busbar-core-oauth2`
-/// (linking it would be the forbidden reverse edge) and so never calls this; that binary also never
-/// configures `oauth_as:` on any `App` it builds, so an unregistered seam and an always-`None` plane
-/// agree with each other there.
+/// (alongside `plane::registry::install_planes`), before any config is loaded. `oauth_as:` carries
+/// no feature flag, so every shipped build registers this. The kernel's own test binary never links
+/// `busbar-core-oauth2` (that would be the forbidden reverse edge) and so never calls this; it also
+/// never configures `oauth_as:` on any `App` it builds, so an unregistered seam and an always-`None`
+/// plane agree with each other there.
 ///
 /// # Panics
 /// If called more than once — one composition root, one registration, the same discipline
@@ -119,4 +117,28 @@ pub fn install_as_plane_seam(seam: AsPlaneSeam) {
 /// Read the registered seam, or `None` when this binary never linked `busbar-core-oauth2`.
 pub(crate) fn seam() -> Option<&'static AsPlaneSeam> {
     SEAM.get()
+}
+
+/// THE WORK HANDED TO THE KERNEL'S ONE CLOCK (`crate::tick::on_clock`), held weakly: the
+/// authorization server's expired-record sweep, one per live generation. The owner keeps the work
+/// alive, never the clock, so letting a generation go takes its sweep off the clock.
+static CLOCK_WORK: std::sync::Mutex<Vec<std::sync::Weak<dyn crate::tick::ClockWork>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Hold `work` on the clock (`crate::tick::on_clock`).
+pub(crate) fn hold_clock_work(work: std::sync::Weak<dyn crate::tick::ClockWork>) {
+    let mut held = CLOCK_WORK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|w| w.strong_count() > 0);
+    held.push(work);
+}
+
+/// Every live work on the clock, for one beat (`crate::tick::beat`); work let go leaves here.
+pub(crate) fn clock_work() -> Vec<Arc<dyn crate::tick::ClockWork>> {
+    let mut held = CLOCK_WORK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|w| w.strong_count() > 0);
+    held.iter().filter_map(std::sync::Weak::upgrade).collect()
 }
