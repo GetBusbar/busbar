@@ -1349,6 +1349,15 @@ fn auth_host(route: &Waking) -> Option<Arc<dyn AuthHandleHost>> {
     route.route.upgrade()?.auth_handle()
 }
 
+/// The framing an auth-handle call made on ticket `t` names: as the caller's dispatcher ties `t`
+/// to a framing ([`super::ticket::WakeRoute::framing_of`]), else `t`'s own reading.
+fn framing_of(route: &Waking, t: busbar_contract::abi::mechanism::ticket::Ticket) -> u64 {
+    route
+        .route
+        .upgrade()
+        .map_or_else(|| t.framing(), |r| r.framing_of(t))
+}
+
 /// An auth ref, verified for `owner` at the published generation: `None` when it passes.
 fn refused_ref(owner: u64, r: &svc::AuthRef) -> Option<Answered> {
     super::auth_handle::verify_auth_ref(owner, super::auth_handle::generation(), r)
@@ -1570,7 +1579,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 request,
                 body,
                 deadline: op_remaining(),
-                framing: super::auth_handle::framing_of(head.handle.ticket),
+                framing: framing_of(&route, head.handle.ticket),
             };
             serve_with(
                 &store,
@@ -1631,7 +1640,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
                 stream: i.stream,
                 request,
                 framing: (!head.handle.ticket.is_none())
-                    .then(|| super::auth_handle::framing_of(head.handle.ticket)),
+                    .then(|| framing_of(&route, head.handle.ticket)),
             };
             match host.hand_in(ask) {
                 Ok((flow, unit)) => {

@@ -882,6 +882,10 @@ impl WakeRoute for Pool {
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         self.env.inline.waker_of(t)
     }
+
+    fn framing_of(&self, t: Ticket) -> u64 {
+        self.env.inline.framing_of(t)
+    }
 }
 
 impl Pool {
@@ -1907,6 +1911,14 @@ impl Dispatcher {
     #[must_use]
     pub fn inline_ticket(&self) -> Option<super::inline::InlineTicket> {
         self.pool.env.inline.mint()
+    }
+
+    /// A ticket for an op of the framing whose begin ticket is `framing`, taken while another of
+    /// its ops is parked on its own ([`super::inline::InlineTickets::mint_of`]): every auth-handle
+    /// call made on it names that framing. `None` when every inline slot is held.
+    #[must_use]
+    pub fn inline_ticket_of(&self, framing: Ticket) -> Option<super::inline::InlineTicket> {
+        self.pool.env.inline.mint_of(framing)
     }
 
     /// The handle a [`super::Bind`] carries to be adopted by this dispatcher at bind.

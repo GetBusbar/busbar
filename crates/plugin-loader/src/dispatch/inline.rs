@@ -121,6 +121,10 @@ pub struct InlineTickets {
     /// Told when a ticket is retired: the kernel's side of the auth handle, whose per-framing
     /// state ends with the connection side the ticket drove.
     ended: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
+    /// THE FRAMING EACH HELD TICKET OF A FRAMING'S OWN WORKS FOR ([`InlineTickets::mint_of`]):
+    /// a ticket a framing takes for an op while another of its ops is parked, mapped to the
+    /// framing's identity (its begin ticket's [`Ticket::framing`]). Gone with the ticket.
+    framings: Mutex<std::collections::HashMap<Ticket, u64>>,
 }
 
 impl std::fmt::Debug for InlineTickets {
@@ -136,6 +140,7 @@ impl InlineTickets {
             key,
             slots: Mutex::default(),
             ended: std::sync::OnceLock::new(),
+            framings: Mutex::default(),
         }
     }
 
@@ -172,7 +177,36 @@ impl InlineTickets {
             ticket,
             slot,
             owner: Arc::clone(self),
+            of: None,
         })
+    }
+
+    /// MINT A TICKET FOR AN OP OF THE FRAMING `framing` NAMES (its begin ticket, held by the
+    /// framing for its life): the ticket a framing takes while another of its ops is parked on
+    /// its own. Every auth-handle call made on it names THAT framing ([`InlineTickets::framing_of`]),
+    /// never the new ticket's own, and retiring it ends nothing: the framing ends with its begin
+    /// ticket. `None` when every slot is held.
+    pub(crate) fn mint_of(self: &Arc<Self>, framing: Ticket) -> Option<InlineTicket> {
+        let mut t = self.mint()?;
+        let id = self.framing_of(framing);
+        self.framings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(t.ticket, id);
+        t.of = Some(id);
+        Some(t)
+    }
+
+    /// THE FRAMING ticket `t` works for, as the auth handle names it (`AuthCallAsk::framing`,
+    /// `HandInAsk::framing`): the framing's identity for a ticket minted for one of its ops
+    /// ([`InlineTickets::mint_of`]), else `t`'s own reading ([`Ticket::framing`]).
+    pub(crate) fn framing_of(&self, t: Ticket) -> u64 {
+        self.framings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&t)
+            .copied()
+            .unwrap_or_else(|| t.framing())
     }
 
     /// The slot `t` names; `None` for no slot.
@@ -279,6 +313,8 @@ pub struct InlineTicket {
     ticket: Ticket,
     slot: Arc<Slot>,
     owner: Arc<InlineTickets>,
+    /// The framing it was minted for an op of ([`InlineTickets::mint_of`]); `None` = its own.
+    of: Option<u64>,
 }
 
 impl InlineTicket {
@@ -300,11 +336,22 @@ impl InlineTicket {
 
 impl Drop for InlineTicket {
     fn drop(&mut self) {
+        // The ticket's tie to its framing goes before its slot is handed out again.
+        if self.of.is_some() {
+            self.owner
+                .framings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&self.ticket);
+        }
         let (_, index) = decode(self.ticket.slot);
         self.owner.recycle(index, &self.slot);
-        // The connection side this ticket drove is gone: so is what the kernel held for it.
-        if let Some(host) = self.owner.ended.get() {
-            host.framing_ended(super::auth_handle::framing_of(self.ticket));
+        // The connection side this ticket drove is gone: so is what the kernel held for it. A
+        // ticket an op of another framing took ends nothing: that framing ends with its own.
+        if self.of.is_none() {
+            if let Some(host) = self.owner.ended.get() {
+                host.framing_ended(super::auth_handle::framing_of(self.ticket));
+            }
         }
     }
 }

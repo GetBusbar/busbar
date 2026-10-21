@@ -125,6 +125,17 @@ pub trait FramerDoor: Send + Sync {
     fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
         None
     }
+    /// A NEW TICKET for a ticketed op of the framing whose begin crossed on `framing`, taken
+    /// while another of its ops holds a parked ticket: the host ties it to that framing, so every
+    /// auth-handle call made on it names the framing's identity ([`Framing::framing_id`]), never
+    /// the new ticket's own. The default: [`FramerDoor::framing_side`], tied to nothing.
+    fn framing_side_of(
+        &self,
+        framing: busbar_contract::abi::mechanism::ticket::Ticket,
+    ) -> Option<Box<dyn crate::carrier::Side>> {
+        let _ = framing;
+        self.framing_side()
+    }
     /// One crossing of a TICKETED framer op on `side`'s ticket (a RESUME of the op that pended on
     /// it when `resume`: the same op, re-issued on the same ticket, so every service it calls
     /// answers its stored result). Any other op crosses as [`FramerDoor::cross`] does.
@@ -1465,16 +1476,29 @@ impl Framing {
                 error: format!("more than {MAX_PARKED} ops are parked on the framing"),
             });
         }
-        self.door.framing_side().map(Some).ok_or_else(|| Refused {
+        // A fresh ticket is the framing's: tied to its begin ticket, so the host names the
+        // framing's id on every auth-handle call made on it.
+        let fresh = match self.home {
+            Some(home) => self.door.framing_side_of(home),
+            None => self.door.framing_side(),
+        };
+        fresh.map(Some).ok_or_else(|| Refused {
             outcome: Outcome::Fault,
             error: "no ticket is left for the framing's op".into(),
         })
     }
 
-    /// A ticket whose op completed: kept idle for the next op, or let go.
+    /// A ticket whose op completed: kept idle for the next op, or let go. The framing's begin
+    /// ticket is always kept, and taken first: it is the framing's identity for its whole life
+    /// ([`Framing::framing_id`]), and the host ends the framing when it goes.
     fn give_back(&mut self, ticket: Option<Box<dyn crate::carrier::Side>>) {
-        if let Some(t) = ticket.filter(|_| self.idle.len() < IDLE_TICKETS) {
+        let Some(t) = ticket else {
+            return;
+        };
+        if self.home == Some(t.ticket()) {
             self.idle.push(t);
+        } else if self.idle.len() < IDLE_TICKETS {
+            self.idle.insert(0, t);
         }
     }
 

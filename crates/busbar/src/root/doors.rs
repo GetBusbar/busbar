@@ -284,6 +284,20 @@ impl FramerDoor for Dispatched {
             .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
     }
 
+    /// A fresh ticket for an op of the framing whose begin ticket is `framing`, tied to it by
+    /// the dispatcher, so every auth-handle call made on it names that framing.
+    fn framing_side_of(
+        &self,
+        framing: busbar_contract::abi::mechanism::ticket::Ticket,
+    ) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket_of(framing)
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
     fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
         let (p, t) = (&self.plugin, side.ticket());
         match call {

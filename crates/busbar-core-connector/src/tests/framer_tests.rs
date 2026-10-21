@@ -952,3 +952,57 @@ fn red_an_accepting_framings_identity_is_the_framing_the_loader_names() {
     .unwrap();
     assert_eq!(ticketless.framing_id(), None);
 }
+
+/// RED (/status row 192 B, the unit's pairing): a framing's identity is fixed at its begin ticket
+/// for its whole life. While one op is parked on a pending auth call, the fresh ticket another op
+/// takes is asked for AS THE FRAMING'S ([`FramerDoor::framing_side_of`]), so the host names that
+/// framing's id on every auth-handle call made on it: a request admitted on another stream
+/// meanwhile is handed in under [`Framing::framing_id`], the id its unit pairs by
+/// (`Inbound::handed_on`). Once the parked op completes the framing crosses on its begin ticket
+/// again.
+#[test]
+fn a_request_admitted_while_an_auth_call_is_parked_pairs_under_framing_id() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
+    let (mut f, _) = Framing::begin_lent(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        Some(two_lines(0)),
+    )
+    .unwrap();
+    let id = f.framing_id().expect("a ticketed framing");
+    f.emit(1, b"held", true, false).unwrap();
+    assert!(f.parked(), "stream 1's op waits on its auth call");
+    f.ingest(b"request on another stream", false).unwrap();
+    f.emit(3, b"answer", true, false).unwrap();
+    door.host.complete(9);
+    match f.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(_)) => {}
+        other => panic!("the parked op completes: {other:?}"),
+    }
+    f.ingest(b"after", false).unwrap();
+    let on = door.on.lock().unwrap().clone();
+    assert!(
+        on.iter()
+            .map(|(_, t, _)| *t)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            > 1,
+        "an op crossed on a fresh ticket while another was parked: {on:?}"
+    );
+    for (op, t, resume) in &on {
+        assert_eq!(
+            door.named(*t),
+            id,
+            "`{op}` (resume: {resume}) on {t:?} names the framing's id"
+        );
+    }
+    assert_eq!(f.framing_id(), Some(id), "the id never moves");
+    let last = on.last().expect("crossed").1;
+    assert_eq!(
+        last.framing(),
+        id,
+        "once nothing is parked the framing crosses on its begin ticket again"
+    );
+}

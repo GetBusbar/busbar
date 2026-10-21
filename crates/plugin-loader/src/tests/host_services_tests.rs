@@ -3266,3 +3266,48 @@ fn red_the_loaders_framing_is_the_contracts_reading_of_the_ticket() {
         "no two tickets name one framing"
     );
 }
+
+/// RED (/status row 192 B, the unit's pairing): a framing's identity is fixed at its begin ticket
+/// for its whole life. A fresh ticket its op takes while another of its ops is parked
+/// (`Dispatcher::inline_ticket_of`) reports THAT framing's id on every auth-handle call, never its
+/// own; retiring it ends nothing, and its tie goes with it, so the slot minted again reports its
+/// own. The framing ends with its begin ticket, once.
+#[test]
+fn a_fresh_ticket_taken_while_an_op_is_parked_reports_its_framings_id() {
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let side = Arc::new(KernelSide::default());
+    let host: Arc<dyn AuthHandleHost> = side.clone();
+    assert!(dispatcher.install_auth_handle(host));
+    let tickets = dispatcher.inline_tickets();
+    let begin = dispatcher.inline_ticket().expect("a ticket");
+    let id = begin.ticket().framing();
+    let fresh = dispatcher
+        .inline_ticket_of(begin.ticket())
+        .expect("a ticket");
+    assert_ne!(fresh.ticket(), begin.ticket());
+    assert_eq!(
+        tickets.framing_of(fresh.ticket()),
+        id,
+        "the fresh ticket reports its framing's id"
+    );
+    assert_eq!(tickets.framing_of(begin.ticket()), id);
+    let fresh_ticket = fresh.ticket();
+    drop(fresh);
+    assert!(
+        side.ended.lock().unwrap().is_empty(),
+        "retiring an op's fresh ticket ends nothing"
+    );
+    assert_eq!(
+        tickets.framing_of(fresh_ticket),
+        fresh_ticket.framing(),
+        "the tie went with the ticket"
+    );
+    let again = dispatcher.inline_ticket().expect("a ticket");
+    assert_eq!(tickets.framing_of(again.ticket()), again.ticket().framing());
+    drop(begin);
+    assert_eq!(
+        *side.ended.lock().unwrap(),
+        vec![id],
+        "the framing ends with its begin ticket"
+    );
+}
