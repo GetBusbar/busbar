@@ -1361,6 +1361,7 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // reason; they were four whole-gate drives (a red and a green per half) and are two now.
     let mut ov = on(base);
     let (mut held_ids, mut tracked_ids) = (Vec::new(), Vec::new());
+    let mut held_by_half: Vec<(&str, Vec<String>)> = Vec::new();
     for (kinds_key, missing_key, rid) in UNSAFE_HALVES {
         let prefix = format!("{rid}:");
         // THE PLANT IS THE WHOLE KIND; THE PROOF IS THE HELD HALF. Every crate of the kind loses
@@ -1396,6 +1397,7 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         }
         held_ids.extend(ids(&prefix, &held));
         tracked_ids.extend(ids(&prefix, &tracked));
+        held_by_half.push((rid, held));
     }
     r.push(prove_red(
         cx,
@@ -1412,7 +1414,87 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &refs(&tracked_ids),
         ov,
     ));
+
+    // THE RULED PAIR, AND NOTHING WEAKER (ARCHITECT ruling 2026-10-21, allocation-counting
+    // gates). A crate whose one test-only allocation counter needs `unsafe` carries
+    // `#![cfg_attr(not(test), forbid(unsafe_code))]` and `#![cfg_attr(test, deny(unsafe_code))]`
+    // in place of the literal. GREEN: every held crate of BOTH halves respelled to exactly that
+    // pair still carries its attribute. RED, one plant per weaker spelling, over every held crate
+    // of the forbid half: each reads MISSING.
+    let respelled = |to: &str| {
+        let mut ov = on(base);
+        for (_, held) in &held_by_half {
+            for c in held {
+                for rel in ["src/lib.rs", "src/main.rs"] {
+                    let path = format!("crates/{c}/{rel}");
+                    if let Ok(basetext) = cx.read(&path) {
+                        ov.set(&path, respell_unsafe_attribute(&basetext, to));
+                    }
+                }
+            }
+        }
+        ov
+    };
+    let held_of = |want: &str| -> Vec<String> {
+        held_by_half
+            .iter()
+            .filter(|(rid, _)| *rid == want)
+            .flat_map(|(rid, held)| ids(&format!("{rid}:"), held))
+            .collect()
+    };
+    let ruled_pair = format!("{NOT_TEST_FORBID}\n{TEST_DENY}");
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "every held unsafe-attribute crate respelled to the ruled cfg_attr pair still carries it",
+        &refs(&held_ids),
+        respelled(&ruled_pair),
+    ));
+    let forbid_held = held_of(UNSAFE_HALVES[0].2);
+    for (case, weaker) in [
+        (
+            "the ruled pair's `not(test)` forbid half alone is not the attribute",
+            NOT_TEST_FORBID.to_string(),
+        ),
+        (
+            "the ruled pair's test-build deny half alone is not the attribute",
+            TEST_DENY.to_string(),
+        ),
+        (
+            "a deny in the `not(test)` arm is not the attribute",
+            format!("#![cfg_attr(not(test), deny(unsafe_code))]\n{TEST_DENY}"),
+        ),
+        (
+            "an allow in the test arm is not the attribute",
+            format!("{NOT_TEST_FORBID}\n#![cfg_attr(test, allow(unsafe_code))]"),
+        ),
+        (
+            "an allow crate attribute beside the whole ruled pair unmakes it",
+            format!("{ruled_pair}\n#![cfg_attr(test, allow(unsafe_code))]"),
+        ),
+    ] {
+        r.push(prove_red(
+            cx,
+            gate,
+            case,
+            &refs(&forbid_held),
+            respelled(&weaker),
+            &["MISSING"],
+        ));
+    }
     r
+}
+
+/// The ruled pair's two halves (ARCHITECT ruling 2026-10-21), as a crate root spells them.
+const NOT_TEST_FORBID: &str = "#![cfg_attr(not(test), forbid(unsafe_code))]";
+const TEST_DENY: &str = "#![cfg_attr(test, deny(unsafe_code))]";
+
+/// `text` with its crate-level unsafe attribute (the literal `forbid` or `deny`, or the ruled
+/// pair) respelled to `to`.
+fn respell_unsafe_attribute(text: &str, to: &str) -> String {
+    text.replace(&format!("{NOT_TEST_FORBID}\n{TEST_DENY}"), to)
+        .replace("#![forbid(unsafe_code)]", to)
+        .replace("#![deny(unsafe_code)]", to)
 }
 
 /// The vocabulary, the kind traits, the seals and the two raw-text scans.

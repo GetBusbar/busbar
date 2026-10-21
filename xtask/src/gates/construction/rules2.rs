@@ -919,15 +919,35 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
     // `#![forbid(unsafe_code)]` (busbar-contract's `json_grammar.rs`, `caps/mod.rs`) does not bind
     // the crate either. So: the blanked text (literal bodies emptied), production lines only, the
     // `#![...]` inner-attribute spelling, in `src/lib.rs` or `src/main.rs`.
+    //
+    // THE RULED PAIR (ARCHITECT ruling 2026-10-21, allocation-counting gates). A crate whose one
+    // test-only `GlobalAlloc` counter needs `unsafe` (`src/tests/alloc_counter.rs`, its own
+    // `#[allow(unsafe_code)]` scope) carries EXACTLY `#![cfg_attr(not(test), forbid(unsafe_code))]`
+    // and `#![cfg_attr(test, deny(unsafe_code))]` in place of the literal. A shipped (non-test)
+    // build is `forbid` unchanged, which is what BUSBAR-1.6.0.md l.273 holds a plane to; the test
+    // build is `deny`, which no item can widen without naming its own `allow`. BOTH halves, both in
+    // the crate root, both on production lines, or the crate does not carry it: the `not(test)`
+    // half alone leaves the test build with no lint at all, a `deny` in the `not(test)` arm lets a
+    // shipped item `allow` itself, and an `allow`/`warn`/`expect(unsafe_code)` crate attribute
+    // beside either spelling unmakes it. The pair is stronger than `deny` in both arms, so it
+    // carries the deny half too.
     let forbid_rx = Regex::new(r"#!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")?;
     let deny_rx = Regex::new(r"#!\s*\[\s*(forbid|deny)\s*\(\s*unsafe_code\s*\)\s*\]")?;
+    let pair_forbid_rx = Regex::new(
+        r"#!\s*\[\s*cfg_attr\s*\(\s*not\s*\(\s*test\s*\)\s*,\s*forbid\s*\(\s*unsafe_code\s*\)\s*\)\s*\]",
+    )?;
+    let pair_deny_rx =
+        Regex::new(r"#!\s*\[\s*cfg_attr\s*\(\s*test\s*,\s*deny\s*\(\s*unsafe_code\s*\)\s*\)\s*\]")?;
+    let weakened_rx = Regex::new(
+        r"#!\s*\[\s*(cfg_attr\s*\(.*,\s*)?(allow|warn|expect)\s*\(([^)]*,)?\s*unsafe_code\b",
+    )?;
     let mut rows = Vec::new();
     for (kinds_key, level, rid_prefix, label, missing_key, rx_pat) in [
         (
             "forbid_kinds",
             "forbid",
             "forbid-unsafe",
-            "#![forbid(unsafe_code)]",
+            "#![forbid(unsafe_code)] (or the ruled cfg_attr pair)",
             "known_missing_forbid",
             &forbid_rx,
         ),
@@ -935,7 +955,7 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
             "deny_kinds",
             "deny",
             "forbid-unsafe-deny",
-            "#![deny(unsafe_code)] (or stronger)",
+            "#![deny(unsafe_code)] (or stronger, the ruled cfg_attr pair included)",
             "known_missing_deny",
             &deny_rx,
         ),
@@ -951,9 +971,13 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
             let roots = [format!("{d}/src/lib.rs"), format!("{d}/src/main.rs")];
             let has_it = roots.iter().any(|rel| {
                 tree.files.get(rel.as_str()).is_some_and(|lines| {
-                    lines
-                        .iter()
-                        .any(|l| !l.intest && rx_pat.is_match(l.blank.as_bytes()))
+                    let carries = |rx: &Regex| {
+                        lines
+                            .iter()
+                            .any(|l| !l.intest && rx.is_match(l.blank.as_bytes()))
+                    };
+                    !carries(&weakened_rx)
+                        && (carries(rx_pat) || (carries(&pair_forbid_rx) && carries(&pair_deny_rx)))
                 })
             });
             let current = i64::from(!has_it);

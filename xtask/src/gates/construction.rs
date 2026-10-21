@@ -718,6 +718,68 @@ mod tests {
         assert!(lacks.detail.contains("MISSING"), "{}", lacks.detail);
     }
 
+    /// RED: THE RULED PAIR, AND NOTHING WEAKER (ARCHITECT ruling 2026-10-21, allocation-counting
+    /// gates). A plane whose test-only allocation counter needs `unsafe` carries
+    /// `#![cfg_attr(not(test), forbid(unsafe_code))]` and `#![cfg_attr(test, deny(unsafe_code))]`
+    /// in its root; the rule read only the literal, so the ruled spelling read as MISSING. Every
+    /// weaker spelling must still read MISSING: either half alone, a `deny` in the `not(test)` arm,
+    /// an `allow` in the test arm, and an `allow` crate attribute beside the whole pair.
+    #[test]
+    fn forbid_unsafe_accepts_the_ruled_pair_and_nothing_weaker() {
+        let bare = Ctx::workspace().expect("workspace").without_base();
+        let probe = "crates/busbar-plane-mcp";
+        assert!(
+            !bare.abs(probe).exists(),
+            "the control needs a plane that is not on disk"
+        );
+        let cfg = ConstructionGate::cfg(&bare).expect("ceilings");
+        let row = |attrs: &str| {
+            let mut base = crate::ctx::Overlay::new();
+            base.set(
+                format!("{probe}/Cargo.toml"),
+                "[package]\nname = \"busbar-plane-mcp\"\n",
+            );
+            base.set(
+                format!("{probe}/src/lib.rs"),
+                format!("//! A plane.\n{attrs}\npub fn f() {{}}\n"),
+            );
+            let cx = bare.with_base(base);
+            let tree = Tree::load(
+                &cx,
+                &cfg.scan_roots().expect("scan roots"),
+                &cfg.test_path_fragments().expect("fragments"),
+            )
+            .expect("tree");
+            rules2::forbid_unsafe(&cx, &tree, &cfg)
+                .expect("the rule runs")
+                .into_iter()
+                .find(|r| r.id == "forbid-unsafe:busbar-plane-mcp")
+                .expect("a forbid-unsafe row for the base-laid plane")
+        };
+        const NOT_TEST_FORBID: &str = "#![cfg_attr(not(test), forbid(unsafe_code))]";
+        const TEST_DENY: &str = "#![cfg_attr(test, deny(unsafe_code))]";
+        let pair = row(&format!("{NOT_TEST_FORBID}\n{TEST_DENY}"));
+        assert_eq!(pair.status, Status::Pass, "{}", pair.detail);
+        assert!(pair.detail.contains("present"), "{}", pair.detail);
+        let swapped = row(&format!("{TEST_DENY}\n{NOT_TEST_FORBID}"));
+        assert_eq!(swapped.status, Status::Pass, "{}", swapped.detail);
+        for weaker in [
+            NOT_TEST_FORBID.to_string(),
+            TEST_DENY.to_string(),
+            format!("#![cfg_attr(not(test), deny(unsafe_code))]\n{TEST_DENY}"),
+            format!("{NOT_TEST_FORBID}\n#![cfg_attr(test, allow(unsafe_code))]"),
+            format!("{NOT_TEST_FORBID}\n{TEST_DENY}\n#![cfg_attr(test, allow(unsafe_code))]"),
+            "#![forbid(unsafe_code)]\n#![allow(dead_code, unsafe_code)]".to_string(),
+            "#![cfg_attr(test, forbid(unsafe_code))]\n#![cfg_attr(not(test), deny(unsafe_code))]"
+                .to_string(),
+            format!("// {NOT_TEST_FORBID}\n// {TEST_DENY}"),
+        ] {
+            let r = row(&weaker);
+            assert_eq!(r.status, Status::Fail, "{weaker}: {}", r.detail);
+            assert!(r.detail.contains("MISSING"), "{weaker}: {}", r.detail);
+        }
+    }
+
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
     /// seven rows the rule never emitted. Every in-tree transport crate gets a row. The transport
     /// crates live in their own plugin repos now (P5), so a tree with none owes none: the rule's
