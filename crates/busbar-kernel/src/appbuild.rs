@@ -29,9 +29,9 @@ use crate::{
     observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
     state, store, telemetry, tls, transport, trust,
 };
-use busbar_kernel::plane_host::{
-    AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
-    HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
+use busbar_kernel::plane_driver::route_input::{
+    AffinityInput, AuthStyleInput, FailoverInput, HealthInput, HealthModeInput, LaneInput,
+    OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
@@ -917,7 +917,7 @@ pub fn build_app_from_config(
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
         let facts = &lane_model_facts[idx];
-        let legacy = crate::plane_host::LegacyLaneKeys::of(provider_cfg);
+        let legacy = crate::plane_driver::route_input::LegacyLaneKeys::of(provider_cfg);
         // The provider entry's lane-capability keys, carried unread in its table and resolved
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
@@ -1135,51 +1135,25 @@ pub fn build_app_from_config(
         )),
     };
 
-    // The global default failover config, the fallback-pool routing table, and the upstream HTTP
-    // client (with its warm-pool carry-over) are all part of the fallback plane's runtime bundle now —
-    // rebuilt IN-PLANE by that plane's `build_runtime` from the neutral `PlaneBuildInput` carrier
-    // (1.6.0 money-path Phase 3-4 C). Core no longer names the plane's own failover-config/
-    // upstream-clients types or the moved egress-client builders here; it carries only the neutral
-    // client-affecting scalars below.
-
-    // The client-affecting subset of the resolved limits (timeout, pool sizing, protocol posture).
-    // Carried onto `App` so the NEXT apply can compare; the `redirect: none` SSRF posture and every
-    // other builder input is a compile-time constant, so this snapshot is exhaustive over what the
-    // client build reads from config. The plane's `build_runtime` reuses the prior warm client iff
-    // its own copy of these scalars is unchanged.
-    // The upstream protocol posture comes from `advanced.upstream_h2_prior_knowledge` /
-    // `advanced.upstream_http1_only` in config.yaml (carried on `cfg.limits`). The deprecated
-    // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` / `BUSBAR_UPSTREAM_HTTP1_ONLY` env vars still override
-    // those values so an existing pin keeps working across the upgrade; each is read here, at
-    // client-build time, and the deprecation warning fires once, on the first build (a reload that
-    // reuses the warm client does not repeat it). If both are set, http1-only wins because the
-    // plane's client builder applies it last.
-    let h2_env = std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE);
-    if h2_env.is_some() && prior.is_none() {
+    // The deprecated `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` / `BUSBAR_UPSTREAM_HTTP1_ONLY` env vars
+    // (migrated to `advanced.upstream_h2_prior_knowledge` / `advanced.upstream_http1_only`): the
+    // deprecation warning fires once, on the first build, exactly as it always has. The client the
+    // posture configured is the plane's own, built behind its door from its sections; the kernel
+    // hands no runtime build a client posture any more (status row 82).
+    if std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE).is_some() && prior.is_none() {
         diag_warn!(
             DEPRECATED_ENV_VAR_HONORED,
             "{ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE} is DEPRECATED; set \
              `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
         );
     }
-    let h2_prior_knowledge =
-        upstream_bool_env_override(h2_env, cfg.limits.upstream_h2_prior_knowledge);
-    let http1_env = std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY);
-    if http1_env.is_some() && prior.is_none() {
+    if std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY).is_some() && prior.is_none() {
         diag_warn!(
             DEPRECATED_ENV_VAR_HONORED,
             "{ENV_UPSTREAM_HTTP1_ONLY} is DEPRECATED; set `advanced.upstream_http1_only` in \
              config.yaml (honored for now)."
         );
     }
-    let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
-    let fallback_client_settings = ClientSettingsInput {
-        upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
-        pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
-        pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
-        http1_only,
-        h2_prior_knowledge,
-    };
 
     // The hook plugin-resolution environment: the validated registry and the root's hook axis over
     // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
@@ -1627,7 +1601,7 @@ pub fn build_app_from_config(
     // from-config constructor used to be called directly — it is still lowered ONCE, now through the
     // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
     // admission facts and the registry the re-verification job sweeps).
-    let mut plane_slots: std::collections::BTreeMap<
+    let plane_slots: std::collections::BTreeMap<
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
@@ -1661,17 +1635,9 @@ pub fn build_app_from_config(
             .collect()
     };
 
-    // THE FALLBACK PLANE'S RUNTIME for this config generation — the pool/lane/failover/egress bundle,
-    // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<fallback
-    // plane key>)`), the SAME opaque slot the container planes ride, now composed through the fallback
-    // plane's OWN type-erasing `build_runtime` seam (1.6.0 money-path Phase 3-4 C — THE PIVOT): core
-    // populates the neutral `PlaneBuildInput` carrier from the resolved config and hands it across the
-    // `&dyn Any` seam; the plane rebuilds its own lane/pool/runtime tables IN-PLANE. Core names no
-    // plane runtime type here, exactly as it composes a container plane's runtime above.
-    //
     // NEUTRAL telemetry label projections (money-path Phase 3-4 B): pool→member-idx list, the
     // direct-model index, and a lane-idx→model resolver — banked into `AppSlots::build` from the neutral
-    // carrier's `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no plane-owned lane
+    // rows `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no plane-owned lane
     // or pool type.
     let ts_pools: Vec<(&str, Vec<usize>)> = pool_inputs
         .iter()
@@ -1693,65 +1659,19 @@ pub fn build_app_from_config(
         crate::plane::fallback_key(),
     ));
 
-    // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
-    // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
-    // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
-    // contributes a runtime of its own.
+    // THE KERNEL'S OWN TABLES over the resolved sections, for the read seam (no plane contributes a
+    // runtime of its own).
     let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
         &lane_inputs,
         &pool_inputs,
         &by_model,
         cfg.upstream_credentials,
     ));
-    let fallback_build_input = PlaneBuildInput {
-        lanes: lane_inputs,
-        pools: pool_inputs,
-        upstream_credentials: cfg.upstream_credentials,
-        allow_metadata_hosts: cfg.allow_metadata_hosts.clone(),
-        allow_all_metadata: cfg.allow_all_metadata,
-        blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
-        client_settings: fallback_client_settings,
-        // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
-        // table — fallback-plane vocabulary, carried through the neutral carrier so the plane's
-        // `build_runtime` stamps them onto its own runtime object (they no longer live on `App`).
-        global_default_max_tokens: cfg.limits.default_max_tokens,
-        reasoning_budgets: {
-            let b = cfg.limits.reasoning_effort_budgets;
-            [b.minimal, b.low, b.medium, b.high]
-        },
-        // The FIXED global-default failover (production has no operator knob for it) — carried so the
-        // plane's `build_runtime` sets its own runtime object's failover config identically to the
-        // pre-pivot inline lowering, and so the test fixture can override the whole-App deadline.
-        default_failover: Some(busbar_kernel::plane_host::FailoverInput {
-            timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-            exclusions: None,
-            max_hops: crate::config::DEFAULT_FAILOVER_CAP,
-        }),
-        // THE BUILD'S AUTH AXIS over the SAME validated registry the inbound chain opened its
-        // positions on: each lane's credential is bound by the auth plugin serving its style.
-        auths: crate::preflight::auth_axis(plugin_registry.clone())
-            .map(busbar_kernel::plane_host::AuthReach),
-    };
-
-    // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
-    // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
-    // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
-    // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
-    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
-    // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
-    // the runtime read from two registry snapshots could name two different planes — the runtime then
-    // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
-    // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
-    // default — byte-identical to the featureless zero-plane boot.
+    // The fallback plane's runtime slot KEY (`runtime_slot_key(<fallback plane key>)`): with no
+    // registry plane building a runtime of its own (every plane is a door plane), no slot is
+    // inserted under it and the read seam walks the kernel's own tables above.
     let fallback = crate::plane::fallback_decl();
     let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
-    if let Some(f) = fallback.and_then(|d| d.build_runtime) {
-        let slot = f(
-            &fallback_build_input as &dyn std::any::Any,
-            prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
-        );
-        plane_slots.insert(fallback_runtime_key, slot);
-    }
 
     // THE AUTHORIZATION SERVER, built once per generation, and only when the operator asked for
     // one. Everything
@@ -1843,10 +1763,9 @@ pub fn build_app_from_config(
         // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same
         // slots, so hot-path counters accumulate monotonically across config generations.
         tslots,
-        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the bundle itself was composed
-        // above into `plane_slots` under this interned key through that plane's `build_runtime`
-        // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
-        // slot on the money path. Absent slot (featureless build) reads the empty default.
+        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the snapshot names only the
+        // `&'static str` key; no slot is composed under it (every plane is a door plane), so its
+        // read answers the empty default and the read seam walks `config_tables`.
         fallback_runtime_key,
         config_tables,
         store,

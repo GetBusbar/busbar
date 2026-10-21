@@ -20,8 +20,7 @@ pub(crate) mod admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
-    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 // The body-cap default is no longer read by any accessor on this page (the translate cap moved to
 // its own home); the tests below still assert the uninstalled fallback against it.
@@ -106,30 +105,6 @@ pub(crate) fn usage_flush_interval_ms() -> u64 {
     get()
         .map(|l| l.usage_flush_interval_ms)
         .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
-}
-
-/// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
-///
-/// `pub(crate)`: the PUBLIC form of this reading is the host seam
-/// `busbar_kernel::plane_host::PlaneHost::default_probe_interval_secs`, whose own doc already
-/// names itself "the neutral home" for it — the accessor cannot relocate by identity because it
-/// reads the process-global slot, so the seam is the home and this free fn is the one line behind
-/// it. Its single caller is this crate's `impl PlaneHost` (`plane_host/mod.rs`).
-pub(crate) fn default_probe_interval_secs() -> u64 {
-    get()
-        .map(|l| l.default_probe_interval_secs)
-        .unwrap_or(DEFAULT_PROBE_INTERVAL_SECS)
-}
-
-/// Process-wide active-probe timeout fallback (seconds). Per-lane `health.timeout_secs` overrides.
-///
-/// `pub(crate)`, for the same reason as its interval twin above: the public form is
-/// `busbar_kernel::plane_host::PlaneHost::default_probe_timeout_secs`, and this crate's
-/// `impl PlaneHost` is its only caller.
-pub(crate) fn default_probe_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.default_probe_timeout_secs)
-        .unwrap_or(DEFAULT_PROBE_TIMEOUT_SECS)
 }
 
 /// Global default routing-policy timeout (ms). Per-policy `policy.timeout_ms` overrides.

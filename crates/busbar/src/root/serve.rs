@@ -1157,7 +1157,7 @@ pub struct HookStage {
 /// budget chain (the generation's card, through its meter pin); a hook handed the prompt leaves its
 /// access amendment through the engine host.
 struct GovCaller {
-    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: Arc<dyn busbar_kernel::plane_driver::EngineHost>,
     gov: Arc<busbar_kernel::governance::GovState>,
 }
 

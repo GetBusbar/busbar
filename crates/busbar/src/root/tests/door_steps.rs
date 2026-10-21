@@ -2690,7 +2690,7 @@ pub(crate) mod tool_door {
                 host: {
                     let live_app = Arc::clone(&live_app);
                     Arc::new(move || {
-                        busbar_kernel::plane_host::engine_host(
+                        busbar_kernel::plane_driver::engine_host(
                             live_app
                                 .get()
                                 .expect("the rig's App is built before any unit"),
@@ -2731,7 +2731,7 @@ pub(crate) mod tool_door {
             // attaches it over its live snapshot.
             if let Some(kernel) = late.kernel() {
                 let _attached = kernel
-                    .attach_standing(busbar_kernel::plane_host::standing_over(Arc::clone(&app)));
+                    .attach_standing(busbar_kernel::plane_driver::standing_over(Arc::clone(&app)));
             }
             // Its tick schedule and ready-session fan-out, as the process spawns them.
             served.spawn_ticks();

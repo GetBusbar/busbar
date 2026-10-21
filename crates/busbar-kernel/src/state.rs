@@ -35,7 +35,7 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 /// key would change the bare key's presence semantics, and with it the dispatch table
 /// `build_dispatch` derives from it). Composed into `plane_slots` by `appbuild` and read back by the
 /// owning plane, each passing its decl key — so this crate names no plane runtime type or token.
-pub use busbar_kernel::plane_host::runtime_slot_key;
+pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 /// One plane's per-container resolved submission-gate map: container name → resolved
 /// `(hook_id, ResolvedPolicy)` gate list. The value half of [`App::plane_gates`].
@@ -119,8 +119,7 @@ pub struct App {
     /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
     /// the frozen `config-schema.snapshot.json` / config-stability gate.
     pub incremental_scan: bool,
-    /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
+    /// THE PER-PLANE FAILOVER POOL MAPS, keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
@@ -526,7 +525,7 @@ impl App {
     }
 
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
-    /// (`busbar_kernel::plane_host`) read seam — the projection the core-resident scrape/discovery
+    /// (`busbar_kernel::plane_driver::route_tables`) read seam — the projection the core-resident scrape/discovery
     /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not know which plane
     /// crate the routing tables actually live in. The view is sourced by projecting the fallback
     /// plane's opaque runtime slot through that plane decl's `viewer` fn-pointer (the plane downcasts
@@ -824,11 +823,11 @@ pub struct AppHandle {
     /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
     /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
     /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
-    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>>,
+    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_driver::EngineHost>>>,
     /// What re-attaches the per-generation workers (the active health probers) to a NEW generation's
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
-    attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
+    attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_driver::EngineHost>)>,
     /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
     /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
@@ -882,7 +881,7 @@ impl AppHandle {
     /// outgoing one is dropped — the composition root passes the plane's prober spawner, so the
     /// probers the swap retires are replaced by probers on the snapshot that replaced them. First
     /// binding wins: there is one set of per-generation workers per process.
-    pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)) {
+    pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_driver::EngineHost>)) {
         let _ = self.attach.set(attach);
     }
 
@@ -891,7 +890,7 @@ impl AppHandle {
     /// spawned against this same host, so the handle owns the only strong reference the probers depend
     /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
     /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
-    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_host::EngineHost>) {
+    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_driver::EngineHost>) {
         *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
@@ -977,7 +976,7 @@ impl AppHandle {
         // (item 552: no plane's `on_swap` did, so the first admin mutation stopped health probing for
         // the life of the process). The spawner is the composition root's binding, so core still
         // names no plane's `spawn_probers`.
-        let host = crate::plane_host::engine_host(&next);
+        let host = crate::plane_driver::engine_host(&next);
         if let Some(attach) = self.attach.get() {
             attach(&host);
         }

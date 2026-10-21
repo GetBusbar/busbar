@@ -2,6 +2,20 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::config::{DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS};
+
+/// The installed active-probe interval fallback (seconds), read straight off the process-global slot
+/// (the door plane's probe unit reads its own sections; no accessor reads this field).
+fn default_probe_interval_secs() -> u64 {
+    get().map_or(DEFAULT_PROBE_INTERVAL_SECS, |l| {
+        l.default_probe_interval_secs
+    })
+}
+
+/// The installed active-probe timeout fallback (seconds), read the same way.
+fn default_probe_timeout_secs() -> u64 {
+    get().map_or(DEFAULT_PROBE_TIMEOUT_SECS, |l| l.default_probe_timeout_secs)
+}
 
 /// Put the process-global slot back exactly as it was found, on the way out of a test — INCLUDING
 /// the failure path, where an `assert!` panics before any hand-written restore line could run.

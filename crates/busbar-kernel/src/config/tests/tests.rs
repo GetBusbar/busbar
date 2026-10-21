@@ -4502,7 +4502,7 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
     // legacy lane carrier reads them.
     let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_host::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
+        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
     };
     assert_eq!(tenant(&def, &deploy).organization, None);
     def.organization = Some("org-catalog".to_string());
