@@ -519,9 +519,8 @@ fn clock_now_reads_the_one_clock_without_a_ticket() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(check_clock_now(&i, ret, &o), Ok(Filled::Written));
     assert_eq!(
@@ -696,9 +695,8 @@ fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::VERIFY_HIT);
     assert_eq!(&buf[..o.len as usize], b"entry");
@@ -715,9 +713,8 @@ fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), NO_VERIFY_KEY);
     assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
@@ -743,9 +740,8 @@ fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert!(check_verify_store(&i, ret, &o).is_ok());
     assert_eq!(
@@ -757,9 +753,8 @@ fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), NO_VERIFY_KEY);
 }
@@ -805,9 +800,8 @@ fn content_scan_scans_for_the_unit_the_crossing_serves() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNTICKETED);
     assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
@@ -926,9 +920,8 @@ fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
         // SAFETY: the host's own static service table on a context the dispatcher minted (or a
         // forged handle its handle table refuses unread); the `in` is a local of the service's
         // type, its buffers locals, and `o` a local `ServiceOut`.
-        let ret = unsafe {
-            HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-        };
+        let ret =
+            unsafe { HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
         assert_eq!(ret.outcome(), outcome, "{why}");
         if outcome == Outcome::Refused {
             assert_eq!(error(&o), why);
@@ -1259,9 +1252,8 @@ fn call_claim(d: &Double, i: &RecordsClaimIn) -> (RawOutcome, ServiceOut) {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.records_claim.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.records_claim.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -1279,9 +1271,8 @@ fn a_caller_scoped_service_with_no_caller_is_refused() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), NO_CALLER);
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
@@ -1321,9 +1312,8 @@ fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::FOUND);
     assert_eq!(&buf[..4], b"k1=v");
@@ -1357,9 +1347,8 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.trust_due.unwrap()(d.ctx, std::ptr::from_ref(&due).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.trust_due.unwrap()(d.ctx, std::ptr::from_ref(&due).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     let seen = d.route.provider.scoped.lock().unwrap().clone();
     assert_eq!(
@@ -1397,9 +1386,8 @@ fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!((o.value, o.len), (3, 4));
     assert_eq!(&buf[..4], b"peer");
@@ -1434,9 +1422,8 @@ fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Fault);
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
@@ -1686,9 +1673,8 @@ fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.records_secret.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.records_secret.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -2028,9 +2014,8 @@ fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fa
         // SAFETY: the host's own static service table on a context the dispatcher minted (or a
         // forged handle its handle table refuses unread); the `in` is a local of the service's
         // type, its buffers locals, and `o` a local `ServiceOut`.
-        let ret = unsafe {
-            HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o)
-        };
+        let ret =
+            unsafe { HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o) };
         (ret, o)
     };
     let unreached = sight(svc::TRUST_UNREACHABLE);
@@ -2087,9 +2072,8 @@ fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Fault);
     let seen = d.route.provider.scoped.lock().unwrap().clone();
     assert_eq!(
@@ -2295,9 +2279,8 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
         // SAFETY: the host's own static service table on a context the dispatcher minted (or a
         // forged handle its handle table refuses unread); the `in` is a local of the service's
         // type, its buffers locals, and `o` a local `ServiceOut`.
-        unsafe {
-            HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-        }.outcome()
+        unsafe { HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) }
+            .outcome()
     };
     assert_eq!(call(SNAPSHOT_SCOPES, at, 4096), Outcome::Fault);
     assert_eq!(call(0, at.wrapping_add(1), 4095), Outcome::Fault);
@@ -2348,9 +2331,8 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
         // SAFETY: the host's own static service table on a context the dispatcher minted (or a
         // forged handle its handle table refuses unread); the `in` is a local of the service's
         // type, its buffers locals, and `o` a local `ServiceOut`.
-        let ret = unsafe {
-            HOST_SLOTS.clock_now.unwrap()(forged, std::ptr::from_ref(&i).cast(), &mut o)
-        };
+        let ret =
+            unsafe { HOST_SLOTS.clock_now.unwrap()(forged, std::ptr::from_ref(&i).cast(), &mut o) };
         assert_eq!(ret.outcome(), Outcome::Refused, "{forged:?}");
         crate::dispatch::ticket::host_wake(forged, woken);
         assert!(
@@ -2362,9 +2344,8 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
     // buffers locals, and `o` a local `ServiceOut`.
-    let ret = unsafe {
-        HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-    };
+    let ret =
+        unsafe { HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     crate::dispatch::ticket::host_wake(d.ctx, woken);
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![woken]);
