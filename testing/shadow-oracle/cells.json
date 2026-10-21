@@ -51,14 +51,14 @@
     },
     {
       "outcome": "ok_cachepoint_document",
-      "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position \u2014 the index-space disagreement the `ping` fixture's single text block cannot produce"
+      "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position — the index-space disagreement the `ping` fixture's single text block cannot produce"
     }
   ],
   "counts": {
-    "total": 2591,
+    "total": 2604,
     "by_plane": {
       "a2a": 468,
-      "core": 1008,
+      "core": 1021,
       "llm": 203,
       "mcp": 912
     },
@@ -85,7 +85,7 @@
       "export": 3,
       "hazard": 2,
       "hooks": 11,
-      "http.crosscut": 23,
+      "http.crosscut": 36,
       "ledger": 5,
       "llm.wire": 196,
       "mcp": 913,
@@ -238,7 +238,7 @@
           ]
         ]
       },
-      "why": "PREDEV FENCE (no 1.5.5 baseline: 1.5.5 had no a2a plane). One registered agent on a loopback capture mock, pinned by `jws_issuer_key` to the oracle's card key: every request busbar sends the agent (the agent-card fetch and the message/send hop \u2014 method, target, every header in wire order, body) and the caller's answer, recorded from a named predev build. The kernel egress (plane_host/egress.rs) moving onto the connector and the http door is compared against this."
+      "why": "PREDEV FENCE (no 1.5.5 baseline: 1.5.5 had no a2a plane). One registered agent on a loopback capture mock, pinned by `jws_issuer_key` to the oracle's card key: every request busbar sends the agent (the agent-card fetch and the message/send hop — method, target, every header in wire order, body) and the caller's answer, recorded from a named predev build. The kernel egress (plane_host/egress.rs) moving onto the connector and the http door is compared against this."
     },
     {
       "id": "a2a|grpc|client|client|CancelTask|malformed",
@@ -5774,7 +5774,7 @@
           }
         ]
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks-webrequest",
+      "why": "ok: null — no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks-webrequest",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -6025,7 +6025,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate — the one handler that never calls the bound — falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|DeleteKeysId|unauth",
@@ -6217,7 +6217,7 @@
           }
         ]
       },
-      "why": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks-webrequest (p",
+      "why": "ok: null — needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks-webrequest (p",
       "config_variant": "hooks-webrequest",
       "mask": {
         "json_keys": [
@@ -6598,7 +6598,7 @@
           }
         ]
       },
-      "why": "200 ConfigDiffView (hook-surface diff between two retained versions). `from` and `to` are REQUIRED integers (missing \u21d2 400); an unknown version \u21d2 404. Version 0"
+      "why": "200 ConfigDiffView (hook-surface diff between two retained versions). `from` and `to` are REQUIRED integers (missing ⇒ 400); an unknown version ⇒ 404. Version 0"
     },
     {
       "id": "admin.ops|GetConfigDiff|unauth",
@@ -6998,7 +6998,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "why": "ok: null — no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -7047,7 +7047,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "why": "ok: null — no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -7096,7 +7096,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "why": "ok: null — no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -7145,7 +7145,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "why": "ok: null — no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -7178,7 +7178,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 Page_HookView \u2014 empty on the oracle config (no hooks: block).",
+      "why": "200 Page_HookView — empty on the oracle config (no hooks: block).",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -7291,7 +7291,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 InfoView {BuildInfo, TopologyInfo,...}; version/build fields differ 1.5.5 vs 1.6.0 by design \u2014 normalise."
+      "why": "200 InfoView {BuildInfo, TopologyInfo,...}; version/build fields differ 1.5.5 vs 1.6.0 by design — normalise."
     },
     {
       "id": "admin.ops|GetInfo|unauth",
@@ -7339,7 +7339,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 KeyMeteringView for the current UTC-day bucket; governance off \u21d2 404."
+      "why": "200 KeyMeteringView for the current UTC-day bucket; governance off ⇒ 404."
     },
     {
       "id": "admin.ops|GetKeysIdUsage|overlong-id",
@@ -7355,7 +7355,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate — the one handler that never calls the bound — falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|GetKeysIdUsage|unauth",
@@ -7419,7 +7419,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate — the one handler that never calls the bound — falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|GetKeysId|unauth",
@@ -7755,7 +7755,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks-webrequest (published webrequest loaded; o",
+      "why": "ok: null — needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks-webrequest (published webrequest loaded; o",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -7788,7 +7788,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400. | oracle: ?type=hook (the param is required)",
+      "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown ⇒ 400. | oracle: ?type=hook (the param is required)",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -8125,7 +8125,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 UsageView for the current UTC-day bucket {window, as_of, currency, total, by_model, by_key}; `window` (a past bucket start epoch) is optional, invalid \u21d2 400"
+      "why": "200 UsageView for the current UTC-day bucket {window, as_of, currency, total, by_model, by_key}; `window` (a past bucket start epoch) is optional, invalid ⇒ 400"
     },
     {
       "id": "admin.ops|GetUsage|unauth",
@@ -8510,7 +8510,7 @@
           }
         ]
       },
-      "why": "200 GroupView; `limits` REPLACES the whole list. Body is deny_unknown_fields (additionalProperties:false) \u21d2 `bogus` 400. Patching a base-defined group is 409 (C"
+      "why": "200 GroupView; `limits` REPLACES the whole list. Body is deny_unknown_fields (additionalProperties:false) ⇒ `bogus` 400. Patching a base-defined group is 409 (C"
     },
     {
       "id": "admin.ops|PatchGroupsName|unauth",
@@ -8637,7 +8637,7 @@
           }
         ]
       },
-      "why": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: va",
+      "why": "ok: null — needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: va",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -8942,7 +8942,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate — the one handler that never calls the bound — falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|PatchKeysId|unauth",
@@ -9856,7 +9856,7 @@
           }
         ]
       },
-      "why": "Creates the NEW group `oracle-added`. Inventory ADM-022: handler returns 200 GroupView although the spec also declares 201 \u2014 record whichever 1.5.5 emits. Re-cr"
+      "why": "Creates the NEW group `oracle-added`. Inventory ADM-022: handler returns 200 GroupView although the spec also declares 201 — record whichever 1.5.5 emits. Re-cr"
     },
     {
       "id": "admin.ops|PostGroups|unauth",
@@ -10025,7 +10025,7 @@
           }
         ]
       },
-      "why": "200 RevokeView; denylists {KEY_BROKE} durably but keeps the binding (GET still 200). Idempotent: revoking again is 200. Governance off \u21d2 409."
+      "why": "200 RevokeView; denylists {KEY_BROKE} durably but keeps the binding (GET still 200). Idempotent: revoking again is 200. Governance off ⇒ 409."
     },
     {
       "id": "admin.ops|PostKeysIdRevoke|overlong-id",
@@ -10041,7 +10041,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate — the one handler that never calls the bound — falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|PostKeysIdRevoke|unauth",
@@ -10133,7 +10133,7 @@
           }
         ]
       },
-      "why": "200 RotatedKeyView (new secret shown once; old stops resolving \u2014 so {ORACLE_TOKEN_OK} is dead afterwards: run after every data-plane epoch). Idempotency keyed ("
+      "why": "200 RotatedKeyView (new secret shown once; old stops resolving — so {ORACLE_TOKEN_OK} is dead afterwards: run after every data-plane epoch). Idempotency keyed ("
     },
     {
       "id": "admin.ops|PostKeysIdRotate|overlong-id",
@@ -10151,7 +10151,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate — the one handler that never calls the bound — falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|PostKeysIdRotate|unauth",
@@ -10434,7 +10434,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; ",
+      "why": "ok: null — needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required ⇒ bad_body 400; ",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -10478,7 +10478,7 @@
           }
         ]
       },
-      "why": "200 PluginReloadView (dlclose/dlopen cycle + swap). Oracle config has plugins disabled/no plugin dir: expect 200 with an empty reload or 400 \u2014 record whatever 1"
+      "why": "200 PluginReloadView (dlclose/dlopen cycle + swap). Oracle config has plugins disabled/no plugin dir: expect 200 with an empty reload or 400 — record whatever 1"
     },
     {
       "id": "admin.ops|PostPluginsReload|unauth",
@@ -10667,7 +10667,7 @@
           }
         ]
       },
-      "why": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untr",
+      "why": "ok: null — needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required ⇒ bad_body 400; bad filename 400 Cond::InvalidFilename; untr",
       "config_variant": "hooks-webrequest",
       "mask": {
         "json_keys": [
@@ -10760,7 +10760,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "202 RestartView {restarting, supervisor_detected, note}; drains BOTH listeners and exits \u2014 the process is gone afterwards, so this is its own final epoch. Witho"
+      "why": "202 RestartView {restarting, supervisor_detected, note}; drains BOTH listeners and exits — the process is gone afterwards, so this is its own final epoch. Witho"
     },
     {
       "id": "admin.ops|PostRestart|unauth",
@@ -10794,7 +10794,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 SigningKeyRotateView \u2014 rotates NOTHING in 1.5.5: reports the current kid and instructs the operator (audit action `signing_key.report`). Governance off / no"
+      "why": "200 SigningKeyRotateView — rotates NOTHING in 1.5.5: reports the current kid and instructs the operator (audit action `signing_key.report`). Governance off / no"
     },
     {
       "id": "admin.ops|PostSigningKeyRotate|unauth",
@@ -11222,7 +11222,7 @@
           }
         ]
       },
-      "why": "200 ConfigSettingsView; durable by default (overlay `root`); a locked config refuses with 400. Every top-level key must be a known settings section (unknown \u21d2 4"
+      "why": "200 ConfigSettingsView; durable by default (overlay `root`); a locked config refuses with 400. Every top-level key must be a known settings section (unknown ⇒ 4"
     },
     {
       "id": "admin.ops|PutConfigSettings|unauth",
@@ -11347,7 +11347,7 @@
           }
         ]
       },
-      "why": "200 NamedDefView (upsert: PUT on an unknown name CREATES it, so there is no 404 on this op \u2014 the not_found probe is expected to return 200 and create `does-not-"
+      "why": "200 NamedDefView (upsert: PUT on an unknown name CREATES it, so there is no 404 on this op — the not_found probe is expected to return 200 and create `does-not-"
     },
     {
       "id": "admin.ops|PutExportName|unauth",
@@ -11508,7 +11508,7 @@
           }
         ]
       },
-      "why": "200 GroupView (replace). `config` is required \u21d2 bad_body 400. Unlike the named-map PUTs this is NOT an upsert: unknown name is 404. Base-defined 409. Stale If-M"
+      "why": "200 GroupView (replace). `config` is required ⇒ bad_body 400. Unlike the named-map PUTs this is NOT an upsert: unknown name is 404. Base-defined 409. Stale If-M"
     },
     {
       "id": "admin.ops|PutGroupsName|unauth",
@@ -11641,7 +11641,7 @@
           }
         ]
       },
-      "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compi",
+      "why": "ok: null — 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compi",
       "inventory": [
         "CONF-220"
       ],
@@ -11982,7 +11982,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "minting a key with expires_at in the past (Unix epoch + 1): 1.5.5 never enforces a stored key-level expiry on the request path, only a signed token's own exp claim, so the admin API's own expires_at-must-be-future validation makes this expiry path unreachable through the admin API (400 at mint, spend never attempted) \u2014 recorded as the real outcome rather than assumed from the plan"
+      "why": "minting a key with expires_at in the past (Unix epoch + 1): 1.5.5 never enforces a stored key-level expiry on the request path, only a signed token's own exp claim, so the admin API's own expires_at-must-be-future validation makes this expiry path unreachable through the admin API (400 at mint, spend never attempted) — recorded as the real outcome rather than assumed from the plan"
     },
     {
       "id": "auth.lifecycle|key-revoke",
@@ -12214,7 +12214,7 @@
           }
         ]
       },
-      "why": "3 requests: 3 / 54 / 750 \u2014 no truncation drift across rows"
+      "why": "3 requests: 3 / 54 / 750 — no truncation drift across rows"
     },
     {
       "id": "billing|key-usage|after-cross-protocol",
@@ -12449,7 +12449,7 @@
           }
         ]
       },
-      "why": "RECORDED TRUTH (published 1.5.5, binary 48e2800c). Three hypotheses, three totals: read-time derivation over the whole ledger = 1000120000; priced per row at charge time = 257530000; restart-to-apply = 10000000. RECORDED: 1000120000 \u2014 4 requests at 250030000 each. A complete `rate_card` (+ per_request_fee) written through PUT /api/v1/admin/config/settings mid-window is LIVE and RETROACTIVE: /admin/usage prices the entire ledger off the card in force at READ time, so the request before the write, the request after it, and the recorder's two boot priming requests all come back at the new rate. No restart, no epoch boundary, no row left at the old price. The money class this pins is the retroactivity itself \u2014 a rate correction silently re-prices history, so an invoice already read off this endpoint is not reproducible from it afterwards. (An earlier pass concluded restart-to-apply by driving a PARTIAL card, which 1.5.5 refuses 400 as incomplete; the write never landed and a `pre` need only be answered, not 2xx, so the refusal was invisible. This card is complete and the write is a 200.)",
+      "why": "RECORDED TRUTH (published 1.5.5, binary 48e2800c). Three hypotheses, three totals: read-time derivation over the whole ledger = 1000120000; priced per row at charge time = 257530000; restart-to-apply = 10000000. RECORDED: 1000120000 — 4 requests at 250030000 each. A complete `rate_card` (+ per_request_fee) written through PUT /api/v1/admin/config/settings mid-window is LIVE and RETROACTIVE: /admin/usage prices the entire ledger off the card in force at READ time, so the request before the write, the request after it, and the recorder's two boot priming requests all come back at the new rate. No restart, no epoch boundary, no row left at the old price. The money class this pins is the retroactivity itself — a rate correction silently re-prices history, so an invoice already read off this endpoint is not reproducible from it afterwards. (An earlier pass concluded restart-to-apply by driving a PARTIAL card, which 1.5.5 refuses 400 as incomplete; the write never landed and a `pre` need only be answered, not 2xx, so the refusal was invisible. This card is complete and the write is a 200.)",
       "config_variant": "rate-card-epoch"
     },
     {
@@ -12465,7 +12465,7 @@
       "bindings": [
         "PB-103"
       ],
-      "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent per_request_fee), with a chat before the first, between the two and after the second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH (published 1.5.5, binary 48e2800c): both PUTs are 200, all three chats are 200, and the three reads total 25,000,000 / 500,060,000 / 750,090,000 micro-units \u2014 every read prices the ENTIRE window at the card in force at READ time. The arithmetic says so unambiguously: chat1 ALONE reads back at 25,000,000 (one request at CARD A) when it was earned at 2,500,000 under the boot card, and by the final read all three requests sit at 250,030,000 each. Priced-at-charge would have given 2,500,000 / 27,500,000 / 277,530,000 \u2014 no leading digit in common \u2014 so the reading is measured, not inferred. THE CONSEQUENCE, which is the finding: the first request is reported at THREE different prices over the life of ONE window, so an invoice read off this endpoint stops being reproducible from it the moment a rate is corrected, and the number depends only on when you looked. This is the cell the 1.6.0 divergence is judged on (the money-as-a-lookup binding): under the dated rate-card history the two pre-edit requests keep the boot and 10x cards, the final answer becomes 277,530,000, and ONLY the final read moves \u2014 the two earlier reads were already the honest figure at their own instant and stay byte-identical. The script driver, not `pre`, because a `pre` request's response is never recorded (record.sh run_pre_request checks only that busbar ANSWERED) and this cell's finding is the relation between the three reads, not any one of them."
+      "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent per_request_fee), with a chat before the first, between the two and after the second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH (published 1.5.5, binary 48e2800c): both PUTs are 200, all three chats are 200, and the three reads total 25,000,000 / 500,060,000 / 750,090,000 micro-units — every read prices the ENTIRE window at the card in force at READ time. The arithmetic says so unambiguously: chat1 ALONE reads back at 25,000,000 (one request at CARD A) when it was earned at 2,500,000 under the boot card, and by the final read all three requests sit at 250,030,000 each. Priced-at-charge would have given 2,500,000 / 27,500,000 / 277,530,000 — no leading digit in common — so the reading is measured, not inferred. THE CONSEQUENCE, which is the finding: the first request is reported at THREE different prices over the life of ONE window, so an invoice read off this endpoint stops being reproducible from it the moment a rate is corrected, and the number depends only on when you looked. This is the cell the 1.6.0 divergence is judged on (the money-as-a-lookup binding): under the dated rate-card history the two pre-edit requests keep the boot and 10x cards, the final answer becomes 277,530,000, and ONLY the final read moves — the two earlier reads were already the honest figure at their own instant and stay byte-identical. The script driver, not `pre`, because a `pre` request's response is never recorded (record.sh run_pre_request checks only that busbar ANSWERED) and this cell's finding is the relation between the three reads, not any one of them."
     },
     {
       "id": "boot.deprecated-env|BUSBAR_CONFIG_OVERLAY",
@@ -12854,7 +12854,7 @@
         "config": "mutation:BOOT-001",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b security.blocked_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not",
+      "why": "expect exit 1; stderr ∋ security.blocked_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not",
       "needs_fixture": false
     },
     {
@@ -12871,7 +12871,7 @@
         "config": "mutation:BOOT-002",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b security.allow_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not s",
+      "why": "expect exit 1; stderr ∋ security.allow_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not s",
       "needs_fixture": false
     },
     {
@@ -12888,7 +12888,7 @@
         "config": "mutation:BOOT-003",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' allow_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' allow_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR",
       "needs_fixture": false
     },
     {
@@ -12905,7 +12905,7 @@
         "config": "mutation:BOOT-004",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.reasoning_effort_budgets entries must be > 0 (got 0/4096/8192/16384)",
+      "why": "expect exit 1; stderr ∋ limits.reasoning_effort_budgets entries must be > 0 (got 0/4096/8192/16384)",
       "needs_fixture": false
     },
     {
@@ -12922,7 +12922,7 @@
         "config": "mutation:BOOT-005",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.reasoning_effort_budgets must be ascending (minimal <= low <= medium <= h",
+      "why": "expect exit 1; stderr ∋ limits.reasoning_effort_budgets must be ascending (minimal <= low <= medium <= h",
       "needs_fixture": false
     },
     {
@@ -12939,7 +12939,7 @@
         "config": "mutation:BOOT-010",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' references unknown provider 'nope'",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' references unknown provider 'nope'",
       "needs_fixture": false
     },
     {
@@ -12956,7 +12956,7 @@
         "config": "mutation:BOOT-011",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' has default_max_tokens: 0; must be > 0",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' has default_max_tokens: 0; must be > 0",
       "needs_fixture": false
     },
     {
@@ -12973,7 +12973,7 @@
         "config": "mutation:BOOT-012a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' has max_concurrent: 0; must be >= 1, or omit it (default = unbo",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' has max_concurrent: 0; must be >= 1, or omit it (default = unbo",
       "needs_fixture": false
     },
     {
@@ -12990,7 +12990,7 @@
         "config": "mutation:BOOT-012b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' has max_concurrent: 2305843009213693952; must be <= 23058430092",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' has max_concurrent: 2305843009213693952; must be <= 23058430092",
       "needs_fixture": false
     },
     {
@@ -13007,7 +13007,7 @@
         "config": "mutation:BOOT-012c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' has max_requests: 0; a lane with a zero lifetime budget never a",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' has max_requests: 0; a lane with a zero lifetime budget never a",
       "needs_fixture": false
     },
     {
@@ -13024,7 +13024,7 @@
         "config": "mutation:BOOT-012d",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' has attempt_timeout_ms: 0; a zero cap fails every attempt insta",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' has attempt_timeout_ms: 0; a zero cap fails every attempt insta",
       "needs_fixture": false
     },
     {
@@ -13041,7 +13041,7 @@
         "config": "mutation:BOOT-012e",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-gemini' has an empty upstream_model; set a non-empty provider model id",
+      "why": "expect exit 1; stderr ∋ model 'm-gemini' has an empty upstream_model; set a non-empty provider model id",
       "needs_fixture": false
     },
     {
@@ -13058,7 +13058,7 @@
         "config": "mutation:BOOT-013",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model name 'admin' is reserved: 'admin' is a built-in management prefix",
+      "why": "expect exit 1; stderr ∋ model name 'admin' is reserved: 'admin' is a built-in management prefix",
       "needs_fixture": false
     },
     {
@@ -13075,7 +13075,7 @@
         "config": "mutation:BOOT-014",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool name 'gemini' conflicts with provider name 'gemini'; pools and providers mu",
+      "why": "expect exit 1; stderr ∋ pool name 'gemini' conflicts with provider name 'gemini'; pools and providers mu",
       "needs_fixture": false
     },
     {
@@ -13092,7 +13092,7 @@
         "config": "mutation:BOOT-015",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool name 'm-gemini' conflicts with model name 'm-gemini'; pools and models must",
+      "why": "expect exit 1; stderr ∋ pool name 'm-gemini' conflicts with model name 'm-gemini'; pools and models must",
       "needs_fixture": false
     },
     {
@@ -13109,7 +13109,7 @@
         "config": "mutation:BOOT-016",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool name 'admin' is reserved: 'admin' is a built-in management prefix",
+      "why": "expect exit 1; stderr ∋ pool name 'admin' is reserved: 'admin' is a built-in management prefix",
       "needs_fixture": false
     },
     {
@@ -13126,7 +13126,7 @@
         "config": "mutation:BOOT-017",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider name 'admin' is reserved: 'admin' is a built-in management prefix",
+      "why": "expect exit 1; stderr ∋ provider name 'admin' is reserved: 'admin' is a built-in management prefix",
       "needs_fixture": false
     },
     {
@@ -13143,7 +13143,7 @@
         "config": "mutation:BOOT-020",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' has unknown protocol 'bogus': must be one of:",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' has unknown protocol 'bogus': must be one of:",
       "needs_fixture": false
     },
     {
@@ -13160,7 +13160,7 @@
         "config": "mutation:BOOT-021a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' health.interval_secs must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' health.interval_secs must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13177,7 +13177,7 @@
         "config": "mutation:BOOT-021b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' health.timeout_secs must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' health.timeout_secs must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13194,7 +13194,7 @@
         "config": "mutation:BOOT-022",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' error_map code 'E1': invalid StatusClass 'bogus', must be one ",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' error_map code 'E1': invalid StatusClass 'bogus', must be one ",
       "needs_fixture": false
     },
     {
@@ -13211,7 +13211,7 @@
         "config": "mutation:BOOT-023",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' base_url must use https for a public host (got 'http://example",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' base_url must use https for a public host (got 'http://example",
       "needs_fixture": false
     },
     {
@@ -13228,7 +13228,7 @@
         "config": "mutation:BOOT-024",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' base_url must use http or https (got 'ftp://127.0.0.1')",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' base_url must use http or https (got 'ftp://127.0.0.1')",
       "needs_fixture": false
     },
     {
@@ -13245,7 +13245,7 @@
         "config": "mutation:BOOT-025",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' base_url 'https://169.254.169.254' targets a blocked cloud-met",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' base_url 'https://169.254.169.254' targets a blocked cloud-met",
       "needs_fixture": false
     },
     {
@@ -13262,7 +13262,7 @@
         "config": "mutation:BOOT-026",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' path 'v1/chat' must begin with '/': a path override is appende",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' path 'v1/chat' must begin with '/': a path override is appende",
       "needs_fixture": false
     },
     {
@@ -13279,7 +13279,7 @@
         "config": "mutation:BOOT-027",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' base_url+path 'https://127.0.0.1@169.254.169.254/' targets a b",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' base_url+path 'https://127.0.0.1@169.254.169.254/' targets a b",
       "needs_fixture": false
     },
     {
@@ -13296,7 +13296,7 @@
         "config": "mutation:BOOT-028",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' path_base 'v1beta' must begin with '/': it is appended to base",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' path_base 'v1beta' must begin with '/': it is appended to base",
       "needs_fixture": false
     },
     {
@@ -13313,7 +13313,7 @@
         "config": "mutation:BOOT-029",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' base_url+path_base 'https://127.0.0.1@169.254.169.254/' target",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' base_url+path_base 'https://127.0.0.1@169.254.169.254/' target",
       "needs_fixture": false
     },
     {
@@ -13330,7 +13330,7 @@
         "config": "mutation:BOOT-030",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' uses auth: oauth-client-credentials but has no `token_url`",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' uses auth: oauth-client-credentials but has no `token_url`",
       "needs_fixture": false
     },
     {
@@ -13347,7 +13347,7 @@
         "config": "mutation:BOOT-031",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' token_url must use https for a public host (got 'http://exampl",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' token_url must use https for a public host (got 'http://exampl",
       "needs_fixture": false
     },
     {
@@ -13364,7 +13364,7 @@
         "config": "mutation:BOOT-032",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' token_url must use http or https (got 'ftp://127.0.0.1/token')",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' token_url must use http or https (got 'ftp://127.0.0.1/token')",
       "needs_fixture": false
     },
     {
@@ -13381,7 +13381,7 @@
         "config": "mutation:BOOT-033",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' token_url 'https://169.254.169.254/token' targets a blocked cl",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' token_url 'https://169.254.169.254/token' targets a blocked cl",
       "needs_fixture": false
     },
     {
@@ -13398,7 +13398,7 @@
         "config": "mutation:BOOT-034",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' uses auth: oauth-client-credentials but has no `scope`",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' uses auth: oauth-client-credentials but has no `scope`",
       "needs_fixture": false
     },
     {
@@ -13415,7 +13415,7 @@
         "config": "mutation:BOOT-035",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' oauth-client-credentials credential (from env:ORACLE_UPSTREAM_",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' oauth-client-credentials credential (from env:ORACLE_UPSTREAM_",
       "needs_fixture": false
     },
     {
@@ -13432,7 +13432,7 @@
         "config": "mutation:BOOT-036",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' jwt-bearer credential (from env:ORACLE_UPSTREAM_KEY) is invali",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' jwt-bearer credential (from env:ORACLE_UPSTREAM_KEY) is invali",
       "needs_fixture": false
     },
     {
@@ -13449,7 +13449,7 @@
         "config": "mutation:BOOT-040",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' has no members; a pool with an empty member list is un-rout",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' has no members; a pool with an empty member list is un-rout",
       "needs_fixture": false
     },
     {
@@ -13466,7 +13466,7 @@
         "config": "mutation:BOOT-041",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' member 'm-openai-chat' weight must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' member 'm-openai-chat' weight must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13483,7 +13483,7 @@
         "config": "mutation:BOOT-042",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' member 'm-openai-chat' has attempt_timeout_ms: 0; a zero ca",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' member 'm-openai-chat' has attempt_timeout_ms: 0; a zero ca",
       "needs_fixture": false
     },
     {
@@ -13500,7 +13500,7 @@
         "config": "mutation:BOOT-043a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' member 'm-openai-chat' references model 'm-openai-chat', wh",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' member 'm-openai-chat' references model 'm-openai-chat', wh",
       "needs_fixture": false
     },
     {
@@ -13517,7 +13517,7 @@
         "config": "mutation:BOOT-043b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' references unknown model 'nope'",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' references unknown model 'nope'",
       "needs_fixture": false
     },
     {
@@ -13534,7 +13534,7 @@
         "config": "mutation:BOOT-044a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker base_cooldown_secs must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker base_cooldown_secs must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13551,7 +13551,7 @@
         "config": "mutation:BOOT-044b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker max_cooldown_secs must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker max_cooldown_secs must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13568,7 +13568,7 @@
         "config": "mutation:BOOT-044c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker max_cooldown_secs (20) must be >= base_cooldown_sec",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker max_cooldown_secs (20) must be >= base_cooldown_sec",
       "needs_fixture": false
     },
     {
@@ -13585,7 +13585,7 @@
         "config": "mutation:BOOT-044d",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker trip.min_requests must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker trip.min_requests must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13602,7 +13602,7 @@
         "config": "mutation:BOOT-044e",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker trip.window_secs must be >= 1 (got 0)",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker trip.window_secs must be >= 1 (got 0)",
       "needs_fixture": false
     },
     {
@@ -13619,7 +13619,7 @@
         "config": "mutation:BOOT-044f",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker trip.threshold must be in (0.0, 1.0] for error_rate",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker trip.threshold must be in (0.0, 1.0] for error_rate",
       "needs_fixture": false
     },
     {
@@ -13636,7 +13636,7 @@
         "config": "mutation:BOOT-044g",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' breaker trip.consecutive_n must be >= 1 for consecutive mod",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' breaker trip.consecutive_n must be >= 1 for consecutive mod",
       "needs_fixture": false
     },
     {
@@ -13653,7 +13653,7 @@
         "config": "mutation:BOOT-045a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' failover.timeout_secs must be >= 1; a 0 budget rejects the ",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' failover.timeout_secs must be >= 1; a 0 budget rejects the ",
       "needs_fixture": false
     },
     {
@@ -13670,7 +13670,7 @@
         "config": "mutation:BOOT-045b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' failover.timeout_secs (86401) exceeds the maximum of 86400 ",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' failover.timeout_secs (86401) exceeds the maximum of 86400 ",
       "needs_fixture": false
     },
     {
@@ -13687,7 +13687,7 @@
         "config": "mutation:BOOT-045c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' failover.exclusions references 'm-gemini', which is not a m",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' failover.exclusions references 'm-gemini', which is not a m",
       "needs_fixture": false
     },
     {
@@ -13704,7 +13704,7 @@
         "config": "mutation:BOOT-046",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' on_exhausted references unknown fallback pool 'nope'",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' on_exhausted references unknown fallback pool 'nope'",
       "needs_fixture": false
     },
     {
@@ -13721,7 +13721,7 @@
         "config": "mutation:BOOT-047",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' on_exhausted references itself as its fallback pool ('oracl",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' on_exhausted references itself as its fallback pool ('oracl",
       "needs_fixture": false
     },
     {
@@ -13738,7 +13738,7 @@
         "config": "mutation:BOOT-048",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b fallback_pool cycle detected:",
+      "why": "expect exit 1; stderr ∋ fallback_pool cycle detected:",
       "needs_fixture": false
     },
     {
@@ -13755,7 +13755,7 @@
         "config": "mutation:BOOT-049a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' on_exhausted.queue.max_ms must be > 0; a 0 wait never queue",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' on_exhausted.queue.max_ms must be > 0; a 0 wait never queue",
       "needs_fixture": false
     },
     {
@@ -13772,7 +13772,7 @@
         "config": "mutation:BOOT-049b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' on_exhausted.queue.max_ms (120001 ms) exceeds the resolved ",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' on_exhausted.queue.max_ms (120001 ms) exceeds the resolved ",
       "needs_fixture": false
     },
     {
@@ -13789,7 +13789,7 @@
         "config": "mutation:BOOT-050",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' affinity.header_name must not be empty",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' affinity.header_name must not be empty",
       "needs_fixture": false
     },
     {
@@ -13806,7 +13806,7 @@
         "config": "mutation:BOOT-051",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' affinity.header_name 'x-sessi\u00f3n' must be ASCII",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' affinity.header_name 'x-sessión' must be ASCII",
       "needs_fixture": false
     },
     {
@@ -13823,7 +13823,7 @@
         "config": "mutation:BOOT-052",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' affinity.header_name is 65 chars; must be <= 64",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' affinity.header_name is 65 chars; must be <= 64",
       "needs_fixture": false
     },
     {
@@ -13840,7 +13840,7 @@
         "config": "mutation:BOOT-053",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hook 'h53' names no plugin: set `module:` to a `kind: hook` plugin's signed-mani",
+      "why": "expect exit 1; stderr ∋ hook 'h53' names no plugin: set `module:` to a `kind: hook` plugin's signed-mani",
       "needs_fixture": false
     },
     {
@@ -13857,7 +13857,7 @@
         "config": "mutation:BOOT-054",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hook 'h54' is a tap with `prompt: rw`, but only a gate can rewrite (a tap never ",
+      "why": "expect exit 1; stderr ∋ hook 'h54' is a tap with `prompt: rw`, but only a gate can rewrite (a tap never ",
       "needs_fixture": false
     },
     {
@@ -13874,7 +13874,7 @@
         "config": "mutation:BOOT-055",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b is a tap with `default: true`, but a tap cannot be a pool's base ordering",
+      "why": "expect exit 1; stderr ∋ is a tap with `default: true`, but a tap cannot be a pool's base ordering",
       "needs_fixture": false
     },
     {
@@ -13891,7 +13891,7 @@
         "config": "mutation:BOOT-056",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.weighted: 'weighted' is a reserved name (an on_error terminal, built-in ra",
+      "why": "expect exit 1; stderr ∋ hooks.weighted: 'weighted' is a reserved name (an on_error terminal, built-in ra",
       "needs_fixture": false
     },
     {
@@ -13908,7 +13908,7 @@
         "config": "mutation:BOOT-057",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b more than one hook sets `default: true`",
+      "why": "expect exit 1; stderr ∋ more than one hook sets `default: true`",
       "needs_fixture": false
     },
     {
@@ -13925,7 +13925,7 @@
         "config": "mutation:BOOT-058a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' references unknown hook 'nohook'; define it under top-level",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' references unknown hook 'nohook'; define it under top-level",
       "needs_fixture": false
     },
     {
@@ -13942,7 +13942,7 @@
         "config": "mutation:BOOT-058b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b pool 'oracle-unused' hook 'h58' is a tap, but a hook named in a pool's `hooks:` ",
+      "why": "expect exit 1; stderr ∋ pool 'oracle-unused' hook 'h58' is a tap, but a hook named in a pool's `hooks:` ",
       "needs_fixture": false
     },
     {
@@ -13959,7 +13959,7 @@
         "config": "mutation:BOOT-059a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_error names the built-in ranking strategy",
+      "why": "expect exit 1; stderr ∋ on_error names the built-in ranking strategy",
       "needs_fixture": true
     },
     {
@@ -13976,7 +13976,7 @@
         "config": "mutation:BOOT-059b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hook on_error chain does not terminate:",
+      "why": "expect exit 1; stderr ∋ hook on_error chain does not terminate:",
       "needs_fixture": false
     },
     {
@@ -13993,7 +13993,7 @@
         "config": "mutation:BOOT-059c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hook 'h59' on_error names unknown fallback 'nohook'",
+      "why": "expect exit 1; stderr ∋ hook 'h59' on_error names unknown fallback 'nohook'",
       "needs_fixture": false
     },
     {
@@ -14010,7 +14010,7 @@
         "config": "mutation:BOOT-059d",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hook 'h59' on_error fallback 'h59t' is a tap; a fallback must be a gate (fire-an",
+      "why": "expect exit 1; stderr ∋ hook 'h59' on_error fallback 'h59t' is a tap; a fallback must be a gate (fire-an",
       "needs_fixture": false
     },
     {
@@ -14027,7 +14027,7 @@
         "config": "mutation:BOOT-060",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b public_url must be an absolute http(s) URL (got 'ftp://127.0.0.1')",
+      "why": "expect exit 1; stderr ∋ public_url must be an absolute http(s) URL (got 'ftp://127.0.0.1')",
       "needs_fixture": false
     },
     {
@@ -14044,7 +14044,7 @@
         "config": "mutation:BOOT-061",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b public_url 'https://' has no host",
+      "why": "expect exit 1; stderr ∋ public_url 'https://' has no host",
       "needs_fixture": false
     },
     {
@@ -14061,7 +14061,7 @@
         "config": "mutation:BOOT-062",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b public_url must use https for a public host (got 'http://example.com')",
+      "why": "expect exit 1; stderr ∋ public_url must use https for a public host (got 'http://example.com')",
       "needs_fixture": false
     },
     {
@@ -14078,7 +14078,7 @@
         "config": "mutation:BOOT-063",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b public_url must be a bare origin (scheme://host[:port]) with no path, query, or ",
+      "why": "expect exit 1; stderr ∋ public_url must be a bare origin (scheme://host[:port]) with no path, query, or ",
       "needs_fixture": false
     },
     {
@@ -14095,7 +14095,7 @@
         "config": "mutation:BOOT-064",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b public_url 'https://169.254.169.254' targets a blocked cloud-metadata host '169.",
+      "why": "expect exit 1; stderr ∋ public_url 'https://169.254.169.254' targets a blocked cloud-metadata host '169.",
       "needs_fixture": false
     },
     {
@@ -14112,7 +14112,7 @@
         "config": "mutation:BOOT-070",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.methods has a `browser_login` method but top-level `public_url:` is unset",
+      "why": "expect exit 1; stderr ∋ auth.methods has a `browser_login` method but top-level `public_url:` is unset",
       "needs_fixture": false
     },
     {
@@ -14129,7 +14129,7 @@
         "config": "mutation:BOOT-071",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.key_ttl 'bogus' is not a valid duration:",
+      "why": "expect exit 1; stderr ∋ auth.key_ttl 'bogus' is not a valid duration:",
       "needs_fixture": false
     },
     {
@@ -14146,7 +14146,7 @@
         "config": "mutation:BOOT-072",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b role_bindings names module 'oracle-oidc', which appears in neither auth.chain no",
+      "why": "expect exit 1; stderr ∋ role_bindings names module 'oracle-oidc', which appears in neither auth.chain no",
       "needs_fixture": false
     },
     {
@@ -14163,7 +14163,7 @@
         "config": "mutation:BOOT-073a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b role_bindings.admin-tokens binds role 'admin', which shadows the reserved operat",
+      "why": "expect exit 1; stderr ∋ role_bindings.admin-tokens binds role 'admin', which shadows the reserved operat",
       "needs_fixture": false
     },
     {
@@ -14180,7 +14180,7 @@
         "config": "mutation:BOOT-073b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b role_bindings.admin-tokens.dev has unknown admin_scope 'bogus': expected read-on",
+      "why": "expect exit 1; stderr ∋ role_bindings.admin-tokens.dev has unknown admin_scope 'bogus': expected read-on",
       "needs_fixture": false
     },
     {
@@ -14197,7 +14197,7 @@
         "config": "mutation:BOOT-073c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b role_bindings.admin-tokens.dev names group 'nogroup', which does not exist.",
+      "why": "expect exit 1; stderr ∋ role_bindings.admin-tokens.dev names group 'nogroup', which does not exist.",
       "needs_fixture": false
     },
     {
@@ -14214,7 +14214,7 @@
         "config": "mutation:BOOT-074a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown max_admin_scope 'bogus': expected read-only or full",
+      "why": "expect exit 1; stderr ∋ unknown max_admin_scope 'bogus': expected read-only or full",
       "needs_fixture": false
     },
     {
@@ -14231,7 +14231,7 @@
         "config": "mutation:BOOT-074b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b sets `token:`, which belongs to the built-in `admin-tokens` module only",
+      "why": "expect exit 1; stderr ∋ sets `token:`, which belongs to the built-in `admin-tokens` module only",
       "needs_fixture": true
     },
     {
@@ -14248,7 +14248,7 @@
         "config": "mutation:BOOT-074c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b identity-providers.oracle-keys: `token:` is the built-in `admin-tokens` operator",
+      "why": "expect exit 1; stderr ∋ identity-providers.oracle-keys: `token:` is the built-in `admin-tokens` operator",
       "needs_fixture": false
     },
     {
@@ -14265,7 +14265,7 @@
         "config": "mutation:BOOT-074d",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b identity-providers.oracle-blank.module must be a non-empty module name",
+      "why": "expect exit 1; stderr ∋ identity-providers.oracle-blank.module must be a non-empty module name",
       "needs_fixture": false
     },
     {
@@ -14282,7 +14282,7 @@
         "config": "mutation:BOOT-074e",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.chain references 'oracle-missing', which is not defined in `identity-provid",
+      "why": "expect exit 1; stderr ∋ auth.chain references 'oracle-missing', which is not defined in `identity-provid",
       "needs_fixture": false
     },
     {
@@ -14299,7 +14299,7 @@
         "config": "mutation:BOOT-075",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.signing_key is required for signed-token auth (auth.chain names the built-i",
+      "why": "expect exit 1; stderr ∋ auth.signing_key is required for signed-token auth (auth.chain names the built-i",
       "needs_fixture": false
     },
     {
@@ -14316,7 +14316,7 @@
         "config": "mutation:BOOT-076",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.chain names the built-in `keys` verifier but no admin credential can mint o",
+      "why": "expect exit 1; stderr ∋ auth.chain names the built-in `keys` verifier but no admin credential can mint o",
       "needs_fixture": false
     },
     {
@@ -14333,7 +14333,7 @@
         "config": "mutation:BOOT-077",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b the static-token allowlist module was REMOVED in 1.5.0",
+      "why": "expect exit 1; stderr ∋ the static-token allowlist module was REMOVED in 1.5.0",
       "needs_fixture": true
     },
     {
@@ -14350,7 +14350,7 @@
         "config": "mutation:BOOT-078",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b global_hooks references unknown hook 'nohook'; define it under top-level `hooks:",
+      "why": "expect exit 1; stderr ∋ global_hooks references unknown hook 'nohook'; define it under top-level `hooks:",
       "needs_fixture": false
     },
     {
@@ -14367,7 +14367,7 @@
         "config": "mutation:BOOT-079",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b ranking strategy but this binary was built WITHOUT the `hooks-ranking` feature",
+      "why": "expect exit 1; stderr ∋ ranking strategy but this binary was built WITHOUT the `hooks-ranking` feature",
       "needs_fixture": true
     },
     {
@@ -14384,7 +14384,7 @@
         "config": "mutation:BOOT-080",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstre",
+      "why": "expect exit 1; stderr ∋ limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstre",
       "needs_fixture": false
     },
     {
@@ -14401,7 +14401,7 @@
         "config": "mutation:BOOT-081",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.tls_handshake_timeout_secs must be >= 1 (0 would abort every TLS handshak",
+      "why": "expect exit 1; stderr ∋ limits.tls_handshake_timeout_secs must be >= 1 (0 would abort every TLS handshak",
       "needs_fixture": false
     },
     {
@@ -14418,7 +14418,7 @@
         "config": "mutation:BOOT-082",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request ",
+      "why": "expect exit 1; stderr ∋ limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request ",
       "needs_fixture": false
     },
     {
@@ -14435,7 +14435,7 @@
         "config": "mutation:BOOT-083a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-pe",
+      "why": "expect exit 1; stderr ∋ export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-pe",
       "needs_fixture": false
     },
     {
@@ -14452,7 +14452,7 @@
         "config": "mutation:BOOT-083b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.request-log-webhook.settings.max_inflight_deliveries must be <= 230584300",
+      "why": "expect exit 1; stderr ∋ export.request-log-webhook.settings.max_inflight_deliveries must be <= 230584300",
       "needs_fixture": false
     },
     {
@@ -14469,7 +14469,7 @@
         "config": "mutation:BOOT-084",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every ",
+      "why": "expect exit 1; stderr ∋ limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every ",
       "needs_fixture": false
     },
     {
@@ -14486,7 +14486,7 @@
         "config": "mutation:BOOT-085",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.hard_down_cooldown_secs must be >= 1 (a 0 sticky cooldown would re-ready ",
+      "why": "expect exit 1; stderr ∋ limits.hard_down_cooldown_secs must be >= 1 (a 0 sticky cooldown would re-ready ",
       "needs_fixture": false
     },
     {
@@ -14503,7 +14503,7 @@
         "config": "mutation:BOOT-086a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.request_body_max_bytes (65535) is below the 65536-byte floor",
+      "why": "expect exit 1; stderr ∋ limits.request_body_max_bytes (65535) is below the 65536-byte floor",
       "needs_fixture": false
     },
     {
@@ -14520,7 +14520,7 @@
         "config": "mutation:BOOT-086b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.request_body_max_bytes (1073741825) exceeds the 1073741824-byte ceiling",
+      "why": "expect exit 1; stderr ∋ limits.request_body_max_bytes (1073741825) exceeds the 1073741824-byte ceiling",
       "needs_fixture": false
     },
     {
@@ -14537,7 +14537,7 @@
         "config": "mutation:BOOT-087",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream er",
+      "why": "expect exit 1; stderr ∋ limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream er",
       "needs_fixture": false
     },
     {
@@ -14554,7 +14554,7 @@
         "config": "mutation:BOOT-088",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.default_max_tokens must be >= 1 (0 would be injected verbatim and rejecte",
+      "why": "expect exit 1; stderr ∋ limits.default_max_tokens must be >= 1 (0 would be injected verbatim and rejecte",
       "needs_fixture": false
     },
     {
@@ -14571,7 +14571,7 @@
         "config": "mutation:BOOT-089a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b health.default_probe_interval_secs must be >= 1",
+      "why": "expect exit 1; stderr ∋ health.default_probe_interval_secs must be >= 1",
       "needs_fixture": false
     },
     {
@@ -14588,7 +14588,7 @@
         "config": "mutation:BOOT-089b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b health.default_probe_timeout_secs must be >= 1",
+      "why": "expect exit 1; stderr ∋ health.default_probe_timeout_secs must be >= 1",
       "needs_fixture": false
     },
     {
@@ -14605,7 +14605,7 @@
         "config": "mutation:BOOT-089c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b routing.default_policy_timeout_ms must be >= 1 (0 would make every policy decisi",
+      "why": "expect exit 1; stderr ∋ routing.default_policy_timeout_ms must be >= 1 (0 would make every policy decisi",
       "needs_fixture": false
     },
     {
@@ -14622,7 +14622,7 @@
         "config": "mutation:BOOT-089d",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-",
+      "why": "expect exit 1; stderr ∋ advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-",
       "needs_fixture": false
     },
     {
@@ -14639,7 +14639,7 @@
         "config": "mutation:BOOT-089e",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b limits.max_inbound_concurrent must be <= 2305843009213693951",
+      "why": "expect exit 1; stderr ∋ limits.max_inbound_concurrent must be <= 2305843009213693951",
       "needs_fixture": false
     },
     {
@@ -14656,7 +14656,7 @@
         "config": "mutation:BOOT-089f",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export instance targeting 'https://127.0.0.1/oracle-hook' (#",
+      "why": "expect exit 1; stderr ∋ export instance targeting 'https://127.0.0.1/oracle-hook' (#",
       "needs_fixture": false
     },
     {
@@ -14673,7 +14673,7 @@
         "config": "mutation:BOOT-090",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b secret module 'env' requires settings.key (the environment variable name)",
+      "why": "expect exit 1; stderr ∋ secret module 'env' requires settings.key (the environment variable name)",
       "needs_fixture": false
     },
     {
@@ -14690,7 +14690,7 @@
         "config": "mutation:BOOT-091",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b secret module 'file' requires settings.path (the file to read)",
+      "why": "expect exit 1; stderr ∋ secret module 'file' requires settings.path (the file to read)",
       "needs_fixture": false
     },
     {
@@ -14707,7 +14707,7 @@
         "config": "mutation:BOOT-092",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b secrets.env: the built-in 'env' secret module takes no module-level config",
+      "why": "expect exit 1; stderr ∋ secrets.env: the built-in 'env' secret module takes no module-level config",
       "needs_fixture": false
     },
     {
@@ -14724,7 +14724,7 @@
         "config": "mutation:BOOT-093",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b store.module must be non-empty; use `memory` (the compiled-in RAM store) or a st",
+      "why": "expect exit 1; stderr ∋ store.module must be non-empty; use `memory` (the compiled-in RAM store) or a st",
       "needs_fixture": false
     },
     {
@@ -14741,7 +14741,7 @@
         "config": "mutation:BOOT-094",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b an admin-tokens token is configured but this binary was built WITHOUT the `auth-",
+      "why": "expect exit 1; stderr ∋ an admin-tokens token is configured but this binary was built WITHOUT the `auth-",
       "needs_fixture": true
     },
     {
@@ -14758,7 +14758,7 @@
         "config": "mutation:BOOT-100",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b model 'm-openai-chat' has conflicting context_max across pools (",
+      "why": "expect exit 1; stderr ∋ model 'm-openai-chat' has conflicting context_max across pools (",
       "needs_fixture": false
     },
     {
@@ -14775,7 +14775,7 @@
         "config": "mutation:BOOT-101",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b the `module: prometheus` export instance sets settings.buffer_seconds: 0, which ",
+      "why": "expect exit 1; stderr ∋ the `module: prometheus` export instance sets settings.buffer_seconds: 0, which ",
       "needs_fixture": false
     },
     {
@@ -14792,7 +14792,7 @@
         "config": "mutation:BOOT-102",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.metrics2: a second `module: prometheus` instance (already defined as 'met",
+      "why": "expect exit 1; stderr ∋ export.metrics2: a second `module: prometheus` instance (already defined as 'met",
       "needs_fixture": false
     },
     {
@@ -14809,7 +14809,7 @@
         "config": "mutation:BOOT-103",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.traces2: a second `module: otlp` instance (already defined as 'traces'). ",
+      "why": "expect exit 1; stderr ∋ export.traces2: a second `module: otlp` instance (already defined as 'traces'). ",
       "needs_fixture": false
     },
     {
@@ -14826,7 +14826,7 @@
         "config": "mutation:BOOT-105a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b rate_card['m-gemini'].input_utok must be a finite, non-negative number of micro-",
+      "why": "expect exit 1; stderr ∋ rate_card['m-gemini'].input_utok must be a finite, non-negative number of micro-",
       "needs_fixture": false
     },
     {
@@ -14843,7 +14843,7 @@
         "config": "mutation:BOOT-105b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b rate_card is present but 5 configured models have no rate entry (rate_card is AU",
+      "why": "expect exit 1; stderr ∋ rate_card is present but 5 configured models have no rate entry (rate_card is AU",
       "needs_fixture": false
     },
     {
@@ -14860,7 +14860,7 @@
         "config": "mutation:BOOT-105c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b rate_card names model 'nope', which is not defined under models:",
+      "why": "expect exit 1; stderr ∋ rate_card names model 'nope', which is not defined under models:",
       "needs_fixture": false
     },
     {
@@ -14877,7 +14877,7 @@
         "config": "mutation:BOOT-106",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b per_request_fee must be >= 0 (got -1); a negative fee would credit every request",
+      "why": "expect exit 1; stderr ∋ per_request_fee must be >= 0 (got -1); a negative fee would credit every request",
       "needs_fixture": false
     },
     {
@@ -14894,7 +14894,7 @@
         "config": "mutation:BOOT-107",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b groups.broke.limits has `pool: nopool`, but no such pool exists",
+      "why": "expect exit 1; stderr ∋ groups.broke.limits has `pool: nopool`, but no such pool exists",
       "needs_fixture": false
     },
     {
@@ -14911,7 +14911,7 @@
         "config": "mutation:BOOT-108",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b groups.broke.limits has `downgrade_to: nopool`, but no such pool exists",
+      "why": "expect exit 1; stderr ∋ groups.broke.limits has `downgrade_to: nopool`, but no such pool exists",
       "needs_fixture": false
     },
     {
@@ -14928,7 +14928,7 @@
         "config": "mutation:BOOT-109a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b groups.broke names parent 'nogroup', which does not exist.",
+      "why": "expect exit 1; stderr ∋ groups.broke names parent 'nogroup', which does not exist.",
       "needs_fixture": false
     },
     {
@@ -14945,7 +14945,7 @@
         "config": "mutation:BOOT-109b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b is CYCLIC (",
+      "why": "expect exit 1; stderr ∋ is CYCLIC (",
       "needs_fixture": false
     },
     {
@@ -14962,7 +14962,7 @@
         "config": "mutation:BOOT-110",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b groups.broke has a `requests` limit of 0, which rejects every request through th",
+      "why": "expect exit 1; stderr ∋ groups.broke has a `requests` limit of 0, which rejects every request through th",
       "needs_fixture": false
     },
     {
@@ -14979,7 +14979,7 @@
         "config": "mutation:BOOT-120",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b cannot read config file '/nonexistent/oracle/config.yaml':",
+      "why": "expect exit 1; stderr ∋ cannot read config file '/nonexistent/oracle/config.yaml':",
       "needs_fixture": false
     },
     {
@@ -14996,7 +14996,7 @@
         "config": "mutation:BOOT-121",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b cannot read providers file '/nonexistent/oracle/providers.yaml':",
+      "why": "expect exit 1; stderr ∋ cannot read providers file '/nonexistent/oracle/providers.yaml':",
       "needs_fixture": false
     },
     {
@@ -15013,7 +15013,7 @@
         "config": "mutation:BOOT-122",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b providers.yaml: invalid YAML:",
+      "why": "expect exit 1; stderr ∋ providers.yaml: invalid YAML:",
       "needs_fixture": false
     },
     {
@@ -15030,7 +15030,7 @@
         "config": "mutation:BOOT-123",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b was written by a newer busbar (overlay version",
+      "why": "expect exit 1; stderr ∋ was written by a newer busbar (overlay version",
       "needs_fixture": false
     },
     {
@@ -15047,7 +15047,7 @@
         "config": "mutation:BOOT-124",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b config.overlay: `true` names no backend \u2014 use `{ file: <path> }`, or `false` tog",
+      "why": "expect exit 1; stderr ∋ config.overlay: `true` names no backend — use `{ file: <path> }`, or `false` tog",
       "needs_fixture": false
     },
     {
@@ -15064,7 +15064,7 @@
         "config": "mutation:BOOT-125",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b config is mutable (config.locked: false) but has no writable overlay backend",
+      "why": "expect exit 1; stderr ∋ config is mutable (config.locked: false) but has no writable overlay backend",
       "needs_fixture": false
     },
     {
@@ -15079,7 +15079,7 @@
         "config": "mutation:BOOT-130",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b store.module: 'sqlite' requires the plugin subsystem, but plugins.enabled is fal",
+      "why": "expect exit 1; stderr ∋ store.module: 'sqlite' requires the plugin subsystem, but plugins.enabled is fal",
       "needs_fixture": false
     },
     {
@@ -15094,7 +15094,7 @@
         "config": "mutation:BOOT-131",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.chain names plugin module(s) [",
+      "why": "expect exit 1; stderr ∋ auth.chain names plugin module(s) [",
       "needs_fixture": false
     },
     {
@@ -15109,7 +15109,7 @@
         "config": "mutation:BOOT-132",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b the hooks registry names plugin module(s) [",
+      "why": "expect exit 1; stderr ∋ the hooks registry names plugin module(s) [",
       "needs_fixture": false
     },
     {
@@ -15124,7 +15124,7 @@
         "config": "mutation:BOOT-133",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b require(s) the plugin subsystem, but plugins.enabled is false (the default). Wit",
+      "why": "expect exit 1; stderr ∋ require(s) the plugin subsystem, but plugins.enabled is false (the default). Wit",
       "needs_fixture": false
     },
     {
@@ -15139,7 +15139,7 @@
         "config": "mutation:BOOT-134",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b plugins.trust is invalid: plugins.trust.publishers['oracle-pub']:",
+      "why": "expect exit 1; stderr ∋ plugins.trust is invalid: plugins.trust.publishers['oracle-pub']:",
       "needs_fixture": false
     },
     {
@@ -15154,7 +15154,7 @@
         "config": "mutation:BOOT-135",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b plugin validation failed:",
+      "why": "expect exit 1; stderr ∋ plugin validation failed:",
       "needs_fixture": false
     },
     {
@@ -15169,7 +15169,7 @@
         "config": "mutation:BOOT-136",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b resolves to plugin",
+      "why": "expect exit 1; stderr ∋ resolves to plugin",
       "needs_fixture": false
     },
     {
@@ -15184,7 +15184,7 @@
         "config": "mutation:BOOT-137a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b not an `auth` plugin",
+      "why": "expect exit 1; stderr ∋ not an `auth` plugin",
       "needs_fixture": false
     },
     {
@@ -15199,7 +15199,7 @@
         "config": "mutation:BOOT-137b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b but it was not loaded:",
+      "why": "expect exit 1; stderr ∋ but it was not loaded:",
       "needs_fixture": false
     },
     {
@@ -15214,7 +15214,7 @@
         "config": "mutation:BOOT-137c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b no plugin matching auth.chain module 'oidc' is installed in '/nonexistent/oracle",
+      "why": "expect exit 1; stderr ∋ no plugin matching auth.chain module 'oidc' is installed in '/nonexistent/oracle",
       "needs_fixture": false
     },
     {
@@ -15229,7 +15229,7 @@
         "config": "mutation:BOOT-138a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b not a `hook` plugin",
+      "why": "expect exit 1; stderr ∋ not a `hook` plugin",
       "needs_fixture": false
     },
     {
@@ -15244,7 +15244,7 @@
         "config": "mutation:BOOT-138b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b but it was not loaded:",
+      "why": "expect exit 1; stderr ∋ but it was not loaded:",
       "needs_fixture": false
     },
     {
@@ -15259,7 +15259,7 @@
         "config": "mutation:BOOT-138c",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b no plugin matching the hook reference 'oracle-hook' is installed in '/nonexisten",
+      "why": "expect exit 1; stderr ∋ no plugin matching the hook reference 'oracle-hook' is installed in '/nonexisten",
       "needs_fixture": false
     },
     {
@@ -15274,7 +15274,7 @@
         "config": "mutation:BOOT-139a",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b not an `auth` plugin. A provider's `module:` must be a built-in or a `kind: auth",
+      "why": "expect exit 1; stderr ∋ not an `auth` plugin. A provider's `module:` must be a built-in or a `kind: auth",
       "needs_fixture": false
     },
     {
@@ -15289,7 +15289,7 @@
         "config": "mutation:BOOT-139b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b but it was not loaded:",
+      "why": "expect exit 1; stderr ∋ but it was not loaded:",
       "needs_fixture": false
     },
     {
@@ -15304,7 +15304,7 @@
         "config": "mutation:BOOT-140",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b plugins.fetch: cannot create plugins dir '/dev/null/oracle-plugins':",
+      "why": "expect exit 1; stderr ∋ plugins.fetch: cannot create plugins dir '/dev/null/oracle-plugins':",
       "needs_fixture": false
     },
     {
@@ -15319,7 +15319,7 @@
         "config": "mutation:BOOT-141",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b plugins.fetch failed:",
+      "why": "expect exit 1; stderr ∋ plugins.fetch failed:",
       "needs_fixture": false
     },
     {
@@ -15336,7 +15336,7 @@
         "config": "mutation:BOOT-150",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b only a `kind: secret` plugin can back a secret reference",
+      "why": "expect exit 1; stderr ∋ only a `kind: secret` plugin can back a secret reference",
       "needs_fixture": false
     },
     {
@@ -15353,7 +15353,7 @@
         "config": "mutation:BOOT-151",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b references secret module 'vault', which is not a built-in (`env` | `file`) and n",
+      "why": "expect exit 1; stderr ∋ references secret module 'vault', which is not a built-in (`env` | `file`) and n",
       "needs_fixture": false
     },
     {
@@ -15368,7 +15368,7 @@
         "config": "mutation:BOOT-152b",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b provider 'gemini' api_key (env:ORACLE_UNSET_SECRET_152B) did not resolve",
+      "why": "expect exit 1; stderr ∋ provider 'gemini' api_key (env:ORACLE_UNSET_SECRET_152B) did not resolve",
       "needs_fixture": false
     },
     {
@@ -15385,7 +15385,7 @@
         "config": "mutation:BOOT-152",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b secret env:ORACLE_UNSET_SECRET_152 cannot resolve: environment variable 'ORACLE_",
+      "why": "expect exit 1; stderr ∋ secret env:ORACLE_UNSET_SECRET_152 cannot resolve: environment variable 'ORACLE_",
       "needs_fixture": false
     },
     {
@@ -15400,7 +15400,7 @@
         "config": "mutation:BOOT-153",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth.signing_key did not resolve:",
+      "why": "expect exit 1; stderr ∋ auth.signing_key did not resolve:",
       "needs_fixture": false
     },
     {
@@ -15415,7 +15415,7 @@
         "config": "mutation:BOOT-160",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b references unknown provider",
+      "why": "expect exit 1; stderr ∋ references unknown provider",
       "needs_fixture": true
     },
     {
@@ -15430,7 +15430,7 @@
         "config": "mutation:BOOT-161",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b references unknown model",
+      "why": "expect exit 1; stderr ∋ references unknown model",
       "needs_fixture": true
     },
     {
@@ -15445,7 +15445,7 @@
         "config": "mutation:BOOT-162",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b auth chain construction failed:",
+      "why": "expect exit 1; stderr ∋ auth chain construction failed:",
       "needs_fixture": false
     },
     {
@@ -15460,7 +15460,7 @@
         "config": "mutation:BOOT-170",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b settings:",
+      "why": "expect exit 1; stderr ∋ settings:",
       "needs_fixture": false
     },
     {
@@ -15475,7 +15475,7 @@
         "config": "mutation:BOOT-171",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b plugin load failed:",
+      "why": "expect exit 1; stderr ∋ plugin load failed:",
       "needs_fixture": false
     },
     {
@@ -15490,7 +15490,7 @@
           "budget-hydration"
         ]
       },
-      "why": "expect exit 1; stderr \u220b governance boot: budget hydration failed ("
+      "why": "expect exit 1; stderr ∋ governance boot: budget hydration failed ("
     },
     {
       "id": "boot.refusal|BOOT-173|boot",
@@ -15504,7 +15504,7 @@
         "config": "mutation:BOOT-173",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b governance boot: could not read stored keys to validate budget_group references ",
+      "why": "expect exit 1; stderr ∋ governance boot: could not read stored keys to validate budget_group references ",
       "needs_fixture": true
     },
     {
@@ -15519,7 +15519,7 @@
           "dangling-group"
         ]
       },
-      "why": "expect exit 1; stderr \u220b which does not exist in the top-level groups block."
+      "why": "expect exit 1; stderr ∋ which does not exist in the top-level groups block."
     },
     {
       "id": "boot.refusal|BOOT-175|boot",
@@ -15533,7 +15533,7 @@
           "governance-init"
         ]
       },
-      "why": "expect exit 1; stderr \u220b governance init failed:"
+      "why": "expect exit 1; stderr ∋ governance init failed:"
     },
     {
       "id": "boot.refusal|BOOT-180|boot",
@@ -15547,7 +15547,7 @@
         "config": "mutation:BOOT-180",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b cannot bind listen address '192.0.2.1:18080':",
+      "why": "expect exit 1; stderr ∋ cannot bind listen address '192.0.2.1:18080':",
       "needs_fixture": false
     },
     {
@@ -15562,7 +15562,7 @@
         "config": "mutation:BOOT-181",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b TLS configuration error for '",
+      "why": "expect exit 1; stderr ∋ TLS configuration error for '",
       "needs_fixture": false
     },
     {
@@ -15577,7 +15577,7 @@
         "config": "mutation:BOOT-182",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b server error on '",
+      "why": "expect exit 1; stderr ∋ server error on '",
       "needs_fixture": true
     },
     {
@@ -15592,7 +15592,7 @@
         "config": "mutation:BOOT-183",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b failed to build the tokio runtime",
+      "why": "expect exit 1; stderr ∋ failed to build the tokio runtime",
       "needs_fixture": true
     },
     {
@@ -15607,7 +15607,7 @@
         "config": "mutation:BOOT-184",
         "env": {}
       },
-      "why": "expect exit 2; stderr \u220b busbar: unrecognized argument '--bogus-flag'. Try 'busbar --help'.",
+      "why": "expect exit 2; stderr ∋ busbar: unrecognized argument '--bogus-flag'. Try 'busbar --help'.",
       "needs_fixture": false
     },
     {
@@ -15624,7 +15624,7 @@
         "config": "mutation:BOOT-MCP-01",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b mcp.canonical_uri `https://gateway.example.com/api/mcp` names the path `/api/mcp",
+      "why": "expect exit 1; stderr ∋ mcp.canonical_uri `https://gateway.example.com/api/mcp` names the path `/api/mcp",
       "needs_fixture": false
     },
     {
@@ -15641,7 +15641,7 @@
         "config": "mutation:BOOT-P01",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `listne`",
+      "why": "expect exit 1; stderr ∋ unknown field `listne`",
       "needs_fixture": false
     },
     {
@@ -15658,7 +15658,7 @@
         "config": "mutation:BOOT-P02",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unclosed variable reference starting at '${",
+      "why": "expect exit 1; stderr ∋ unclosed variable reference starting at '${",
       "needs_fixture": false
     },
     {
@@ -15675,7 +15675,7 @@
         "config": "mutation:BOOT-P03",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b empty variable name in ${}",
+      "why": "expect exit 1; stderr ∋ empty variable name in ${}",
       "needs_fixture": false
     },
     {
@@ -15690,7 +15690,7 @@
         "config": "mutation:BOOT-P04",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unset environment variable: ORACLE_UNSET_VAR_P04",
+      "why": "expect exit 1; stderr ∋ unset environment variable: ORACLE_UNSET_VAR_P04",
       "needs_fixture": false
     },
     {
@@ -15707,7 +15707,7 @@
         "config": "mutation:BOOT-P05",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b environment variable 'ORACLE_CTRL_VAR' contains a control character (U+0009)",
+      "why": "expect exit 1; stderr ∋ environment variable 'ORACLE_CTRL_VAR' contains a control character (U+0009)",
       "needs_fixture": false
     },
     {
@@ -15724,7 +15724,7 @@
         "config": "mutation:BOOT-P06",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b would change the config's YAML structure when interpolated",
+      "why": "expect exit 1; stderr ∋ would change the config's YAML structure when interpolated",
       "needs_fixture": false
     },
     {
@@ -15741,7 +15741,7 @@
         "config": "mutation:BOOT-P07",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a pool may not be named `hooks`: that key is RESERVED at the `pools:` section le",
+      "why": "expect exit 1; stderr ∋ a pool may not be named `hooks`: that key is RESERVED at the `pools:` section le",
       "needs_fixture": false
     },
     {
@@ -15758,7 +15758,7 @@
         "config": "mutation:BOOT-P08",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b the reserved `pools.hooks:` all-pools attach must be a list of hook names:",
+      "why": "expect exit 1; stderr ∋ the reserved `pools.hooks:` all-pools attach must be a list of hook names:",
       "needs_fixture": false
     },
     {
@@ -15775,7 +15775,7 @@
         "config": "mutation:BOOT-P09",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b the reserved `pools.upstream_credentials:` all-pools default must be `own` or `p",
+      "why": "expect exit 1; stderr ∋ the reserved `pools.upstream_credentials:` all-pools default must be `own` or `p",
       "needs_fixture": false
     },
     {
@@ -15792,7 +15792,7 @@
         "config": "mutation:BOOT-P10",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a pool `hooks:` entry must be a non-empty strategy keyword or hook name",
+      "why": "expect exit 1; stderr ∋ a pool `hooks:` entry must be a non-empty strategy keyword or hook name",
       "needs_fixture": false
     },
     {
@@ -15809,7 +15809,7 @@
         "config": "mutation:BOOT-P11",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a pool `hooks:` list names more than one ordering strategy; a pool has one base ",
+      "why": "expect exit 1; stderr ∋ a pool `hooks:` list names more than one ordering strategy; a pool has one base ",
       "needs_fixture": false
     },
     {
@@ -15826,7 +15826,7 @@
         "config": "mutation:BOOT-P12",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_error keyword 'bogus' is not one of the reserved terminals (nothing | weighte",
+      "why": "expect exit 1; stderr ∋ on_error keyword 'bogus' is not one of the reserved terminals (nothing | weighte",
       "needs_fixture": false
     },
     {
@@ -15843,7 +15843,7 @@
         "config": "mutation:BOOT-P13",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_error: { hook: \u2026 } must name a non-empty hook",
+      "why": "expect exit 1; stderr ∋ on_error: { hook: … } must name a non-empty hook",
       "needs_fixture": false
     },
     {
@@ -15860,7 +15860,7 @@
         "config": "mutation:BOOT-P14",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_error is a bare terminal (nothing | weighted | reject | first) or a structure",
+      "why": "expect exit 1; stderr ∋ on_error is a bare terminal (nothing | weighted | reject | first) or a structure",
       "needs_fixture": false
     },
     {
@@ -15877,7 +15877,7 @@
         "config": "mutation:BOOT-P15",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown on_exhausted keyword 'bogus': the bare keywords are `reject` | `least_ba",
+      "why": "expect exit 1; stderr ∋ unknown on_exhausted keyword 'bogus': the bare keywords are `reject` | `least_ba",
       "needs_fixture": false
     },
     {
@@ -15894,7 +15894,7 @@
         "config": "mutation:BOOT-P16",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_exhausted takes exactly one of `fallback_pool` | `queue`, not both",
+      "why": "expect exit 1; stderr ∋ on_exhausted takes exactly one of `fallback_pool` | `queue`, not both",
       "needs_fixture": false
     },
     {
@@ -15911,7 +15911,7 @@
         "config": "mutation:BOOT-P17",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_exhausted: { fallback_pool: \u2026 } must name a non-empty pool",
+      "why": "expect exit 1; stderr ∋ on_exhausted: { fallback_pool: … } must name a non-empty pool",
       "needs_fixture": false
     },
     {
@@ -15928,7 +15928,7 @@
         "config": "mutation:BOOT-P18",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b on_exhausted is `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or `{ queue:",
+      "why": "expect exit 1; stderr ∋ on_exhausted is `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or `{ queue:",
       "needs_fixture": false
     },
     {
@@ -15945,7 +15945,7 @@
         "config": "mutation:BOOT-P19",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a limit takes exactly ONE metric key; found both 'requests' and 'tokens'",
+      "why": "expect exit 1; stderr ∋ a limit takes exactly ONE metric key; found both 'requests' and 'tokens'",
       "needs_fixture": false
     },
     {
@@ -15962,7 +15962,7 @@
         "config": "mutation:BOOT-P20",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a limit needs exactly one metric key (requests | tokens | budget | concurrent)",
+      "why": "expect exit 1; stderr ∋ a limit needs exactly one metric key (requests | tokens | budget | concurrent)",
       "needs_fixture": false
     },
     {
@@ -15979,7 +15979,7 @@
         "config": "mutation:BOOT-P21",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `concurrent` is a per-group in-flight gauge and takes NO `pool:` qualifier; remo",
+      "why": "expect exit 1; stderr ∋ `concurrent` is a per-group in-flight gauge and takes NO `pool:` qualifier; remo",
       "needs_fixture": false
     },
     {
@@ -15996,7 +15996,7 @@
         "config": "mutation:BOOT-P22",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `concurrent` is an instantaneous in-flight cap and takes NO `per:` window; remov",
+      "why": "expect exit 1; stderr ∋ `concurrent` is an instantaneous in-flight cap and takes NO `per:` window; remov",
       "needs_fixture": false
     },
     {
@@ -16013,7 +16013,7 @@
         "config": "mutation:BOOT-P23",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a `requests` limit requires a `per:` window (minute | hour | day | month | total",
+      "why": "expect exit 1; stderr ∋ a `requests` limit requires a `per:` window (minute | hour | day | month | total",
       "needs_fixture": false
     },
     {
@@ -16030,7 +16030,7 @@
         "config": "mutation:BOOT-P24",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `on_exhaust: downgrade` requires `downgrade_to: <pool>` - where should the exhau",
+      "why": "expect exit 1; stderr ∋ `on_exhaust: downgrade` requires `downgrade_to: <pool>` - where should the exhau",
       "needs_fixture": false
     },
     {
@@ -16047,7 +16047,7 @@
         "config": "mutation:BOOT-P25",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `downgrade_to` only makes sense with `on_exhaust: downgrade`",
+      "why": "expect exit 1; stderr ∋ `downgrade_to` only makes sense with `on_exhaust: downgrade`",
       "needs_fixture": false
     },
     {
@@ -16064,7 +16064,7 @@
         "config": "mutation:BOOT-P26",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `on_exhaust` is a BUDGET-exhaustion behavior; a `requests` limit does not take i",
+      "why": "expect exit 1; stderr ∋ `on_exhaust` is a BUDGET-exhaustion behavior; a `requests` limit does not take i",
       "needs_fixture": false
     },
     {
@@ -16081,7 +16081,7 @@
         "config": "mutation:BOOT-P27",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `on_exhaust: downgrade` requires a `pool:` scope on the limit - a GROUP-WIDE bud",
+      "why": "expect exit 1; stderr ∋ `on_exhaust: downgrade` requires a `pool:` scope on the limit - a GROUP-WIDE bud",
       "needs_fixture": false
     },
     {
@@ -16098,7 +16098,7 @@
         "config": "mutation:BOOT-P28",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `downgrade_to` must name a DIFFERENT pool than the limit's own `pool:`",
+      "why": "expect exit 1; stderr ∋ `downgrade_to` must name a DIFFERENT pool than the limit's own `pool:`",
       "needs_fixture": false
     },
     {
@@ -16115,7 +16115,7 @@
         "config": "mutation:BOOT-P29",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus`",
       "needs_fixture": false
     },
     {
@@ -16132,7 +16132,7 @@
         "config": "mutation:BOOT-P30",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }`",
+      "why": "expect exit 1; stderr ∋ a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }`",
       "needs_fixture": false
     },
     {
@@ -16149,7 +16149,7 @@
         "config": "mutation:BOOT-P31",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a secret value must be a REFERENCE, never an inline literal (the value is not ec",
+      "why": "expect exit 1; stderr ∋ a secret value must be a REFERENCE, never an inline literal (the value is not ec",
       "needs_fixture": false
     },
     {
@@ -16166,7 +16166,7 @@
         "config": "mutation:BOOT-P32",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b expected a secret reference map: { module: <secret-module>, settings: {\u2026} }, { e",
+      "why": "expect exit 1; stderr ∋ expected a secret reference map: { module: <secret-module>, settings: {…} }, { e",
       "needs_fixture": false
     },
     {
@@ -16183,7 +16183,7 @@
         "config": "mutation:BOOT-P33",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a secret reference takes exactly one of `env:` / `file:`",
+      "why": "expect exit 1; stderr ∋ a secret reference takes exactly one of `env:` / `file:`",
       "needs_fixture": false
     },
     {
@@ -16200,7 +16200,7 @@
         "config": "mutation:BOOT-P34",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a secret reference is either `{ module: \u2026, settings: \u2026 }` or the `{ env: \u2026 }` / ",
+      "why": "expect exit 1; stderr ∋ a secret reference is either `{ module: …, settings: … }` or the `{ env: … }` / ",
       "needs_fixture": false
     },
     {
@@ -16217,7 +16217,7 @@
         "config": "mutation:BOOT-P35",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b the `{ env: \u2026 }` / `{ file: \u2026 }` sugar takes no `settings:`",
+      "why": "expect exit 1; stderr ∋ the `{ env: … }` / `{ file: … }` sugar takes no `settings:`",
       "needs_fixture": false
     },
     {
@@ -16234,7 +16234,7 @@
         "config": "mutation:BOOT-P36",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a secret reference `module:` must be non-empty",
+      "why": "expect exit 1; stderr ∋ a secret reference `module:` must be non-empty",
       "needs_fixture": false
     },
     {
@@ -16251,7 +16251,7 @@
         "config": "mutation:BOOT-P37",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a `{ env: \u2026 }` secret reference must name a non-empty value",
+      "why": "expect exit 1; stderr ∋ a `{ env: … }` secret reference must name a non-empty value",
       "needs_fixture": false
     },
     {
@@ -16268,7 +16268,7 @@
         "config": "mutation:BOOT-P38",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b a secret reference needs `module:` (with optional `settings:`) or the `{ env: <V",
+      "why": "expect exit 1; stderr ∋ a secret reference needs `module:` (with optional `settings:`) or the `{ env: <V",
       "needs_fixture": false
     },
     {
@@ -16285,7 +16285,7 @@
         "config": "mutation:BOOT-P39",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus`, expected one of `module`, `settings`, `env`, `file`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus`, expected one of `module`, `settings`, `env`, `file`",
       "needs_fixture": false
     },
     {
@@ -16302,7 +16302,7 @@
         "config": "mutation:BOOT-P40",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b duplicate field `module`",
+      "why": "expect exit 1; stderr ∋ duplicate field `module`",
       "needs_fixture": false
     },
     {
@@ -16319,7 +16319,7 @@
         "config": "mutation:BOOT-P41",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b `providers.gemini.api_key_env:` (secret fields are now secret references: api_ke",
+      "why": "expect exit 1; stderr ∋ `providers.gemini.api_key_env:` (secret fields are now secret references: api_ke",
       "needs_fixture": false
     },
     {
@@ -16336,7 +16336,7 @@
         "config": "mutation:LAW0-EXP-SET-FILE-TYPE",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.file.settings: invalid type: integer `7`, expected a string",
+      "why": "expect exit 1; stderr ∋ export.file.settings: invalid type: integer `7`, expected a string",
       "needs_fixture": false
     },
     {
@@ -16353,7 +16353,7 @@
         "config": "mutation:LAW0-EXP-SET-OTLP-UNKNOWN",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.trace.settings: unknown field `bogus`, expected `url`",
+      "why": "expect exit 1; stderr ∋ export.trace.settings: unknown field `bogus`, expected `url`",
       "needs_fixture": false
     },
     {
@@ -16370,7 +16370,7 @@
         "config": "mutation:LAW0-EXP-SET-PROM-MISSING",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.metrics.settings: missing field `buffer_seconds`",
+      "why": "expect exit 1; stderr ∋ export.metrics.settings: missing field `buffer_seconds`",
       "needs_fixture": false
     },
     {
@@ -16387,7 +16387,7 @@
         "config": "mutation:LAW0-EXP-SET-PROM-UNKNOWN",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or `ke",
+      "why": "expect exit 1; stderr ∋ export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or `ke",
       "needs_fixture": false
     },
     {
@@ -16404,7 +16404,7 @@
         "config": "mutation:LAW0-EXP-UNKNOWN",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b export.x.module: unknown exporter 'nosuch'; the built-in export modules are prom",
+      "why": "expect exit 1; stderr ∋ export.x.module: unknown exporter 'nosuch'; the built-in export modules are prom",
       "needs_fixture": false
     },
     {
@@ -16421,7 +16421,7 @@
         "config": "mutation:LAW0-HOOKWORD-admin-tokens",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.admin-tokens: 'admin-tokens' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.admin-tokens: 'admin-tokens' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16438,7 +16438,7 @@
         "config": "mutation:LAW0-HOOKWORD-cheapest",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.cheapest: 'cheapest' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.cheapest: 'cheapest' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16455,7 +16455,7 @@
         "config": "mutation:LAW0-HOOKWORD-fastest",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.fastest: 'fastest' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.fastest: 'fastest' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16472,7 +16472,7 @@
         "config": "mutation:LAW0-HOOKWORD-first",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.first: 'first' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.first: 'first' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16489,7 +16489,7 @@
         "config": "mutation:LAW0-HOOKWORD-least_busy",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.least_busy: 'least_busy' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.least_busy: 'least_busy' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16506,7 +16506,7 @@
         "config": "mutation:LAW0-HOOKWORD-nothing",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.nothing: 'nothing' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.nothing: 'nothing' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16523,7 +16523,7 @@
         "config": "mutation:LAW0-HOOKWORD-reject",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.reject: 'reject' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.reject: 'reject' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16540,7 +16540,7 @@
         "config": "mutation:LAW0-HOOKWORD-tokens",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.tokens: 'tokens' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.tokens: 'tokens' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16557,7 +16557,7 @@
         "config": "mutation:LAW0-HOOKWORD-usage",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b hooks.usage: 'usage' is a reserved name",
+      "why": "expect exit 1; stderr ∋ hooks.usage: 'usage' is a reserved name",
       "needs_fixture": false
     },
     {
@@ -16574,7 +16574,7 @@
         "config": "mutation:BOOT-W01",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b heterogeneous pool: cross-protocol failover translates via the IR and may not pr",
+      "why": "expect exit 0; stderr ∋ heterogeneous pool: cross-protocol failover translates via the IR and may not pr",
       "needs_fixture": false
     },
     {
@@ -16591,7 +16591,7 @@
         "config": "mutation:BOOT-W02",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b auth chain entry grants max_admin_scope: full - principals identified by this mo",
+      "why": "expect exit 0; stderr ∋ auth chain entry grants max_admin_scope: full - principals identified by this mo",
       "needs_fixture": false
     },
     {
@@ -16608,7 +16608,7 @@
         "config": "mutation:BOOT-W03",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) \u2014 A",
+      "why": "expect exit 0; stderr ∋ auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — A",
       "needs_fixture": false
     },
     {
@@ -16625,7 +16625,7 @@
         "config": "mutation:BOOT-W04",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b upstream_credentials: passthrough with a NON-EMPTY configured api_key for this p",
+      "why": "expect exit 0; stderr ∋ upstream_credentials: passthrough with a NON-EMPTY configured api_key for this p",
       "needs_fixture": false
     },
     {
@@ -16640,7 +16640,7 @@
         "config": "mutation:BOOT-W10",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b metadata protection DISABLED \u2014 all cloud-metadata endpoints reachable",
+      "why": "expect exit 0; stderr ∋ metadata protection DISABLED — all cloud-metadata endpoints reachable",
       "needs_fixture": false
     },
     {
@@ -16655,7 +16655,7 @@
         "config": "mutation:BOOT-W11",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b auth is DISABLED (auth.chain is empty) \u2014 busbar is running as an OPEN RELAY; do ",
+      "why": "expect exit 0; stderr ∋ auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do ",
       "needs_fixture": false
     },
     {
@@ -16670,7 +16670,7 @@
         "config": "mutation:BOOT-W12",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b auth is DISABLED: no `auth:` block in config \u2014 busbar is running as an OPEN RELA",
+      "why": "expect exit 0; stderr ∋ auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELA",
       "needs_fixture": false
     },
     {
@@ -16685,7 +16685,7 @@
           "inert-keys"
         ]
       },
-      "why": "expect exit 0; stderr \u220b does not name the `keys` verifier \u2014 those keys are INERT and NOT enforced"
+      "why": "expect exit 0; stderr ∋ does not name the `keys` verifier — those keys are INERT and NOT enforced"
     },
     {
       "id": "boot.warning|BOOT-W14|boot",
@@ -16699,7 +16699,7 @@
         "config": "mutation:BOOT-W14",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on restart",
+      "why": "expect exit 0; stderr ∋ store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on restart",
       "needs_fixture": false
     },
     {
@@ -16714,7 +16714,7 @@
         "config": "mutation:BOOT-W15",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b store settings hold a secret reference that does not resolve here; the store is ",
+      "why": "expect exit 0; stderr ∋ store settings hold a secret reference that does not resolve here; the store is ",
       "needs_fixture": false
     },
     {
@@ -16729,7 +16729,7 @@
         "config": "mutation:BOOT-W16",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b provider api_key did not resolve: secret env:ORACLE_UNSET_SECRET_W16 cannot reso",
+      "why": "expect exit 0; stderr ∋ provider api_key did not resolve: secret env:ORACLE_UNSET_SECRET_W16 cannot reso",
       "needs_fixture": false
     },
     {
@@ -16744,7 +16744,7 @@
         "config": "mutation:BOOT-W17",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b [warn] provider gemini api_key (env:ORACLE_UNSET_SECRET_W17) empty",
+      "why": "expect exit 0; stderr ∋ [warn] provider gemini api_key (env:ORACLE_UNSET_SECRET_W17) empty",
       "needs_fixture": false
     },
     {
@@ -16759,7 +16759,7 @@
         "config": "mutation:BOOT-W18",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b the config overlay backend is NOT WRITABLE (is the config directory mounted read",
+      "why": "expect exit 0; stderr ∋ the config overlay backend is NOT WRITABLE (is the config directory mounted read",
       "needs_fixture": false
     },
     {
@@ -16774,7 +16774,7 @@
         "config": "mutation:BOOT-W19",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b config overlay is present but unreadable/corrupt; starting on base config.yaml A",
+      "why": "expect exit 0; stderr ∋ config overlay is present but unreadable/corrupt; starting on base config.yaml A",
       "needs_fixture": false
     },
     {
@@ -16789,7 +16789,7 @@
         "config": "mutation:BOOT-W20",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b SAFE MODE: config overlay NOT merged \u2014 running on base config.yaml alone",
+      "why": "expect exit 0; stderr ∋ SAFE MODE: config overlay NOT merged — running on base config.yaml alone",
       "needs_fixture": false
     },
     {
@@ -16804,7 +16804,7 @@
         "config": "mutation:BOOT-W21",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b definition this binary cannot parse; it is NOT applied (edit or remove it, then ",
+      "why": "expect exit 0; stderr ∋ definition this binary cannot parse; it is NOT applied (edit or remove it, then ",
       "needs_fixture": false
     },
     {
@@ -16819,7 +16819,7 @@
         "config": "mutation:BOOT-W22",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b plugin present but NOT loaded (trust policy)",
+      "why": "expect exit 0; stderr ∋ plugin present but NOT loaded (trust policy)",
       "needs_fixture": false
     },
     {
@@ -16834,7 +16834,7 @@
         "config": "mutation:BOOT-W23",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
+      "why": "expect exit 0; stderr ∋ plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
       "needs_fixture": false
     },
     {
@@ -16847,7 +16847,7 @@
         "name": "plugins-fetch-reload-miss.sh",
         "args": []
       },
-      "why": "expect exit 0; stderr \u220b plugins.fetch: miss on reload; keeping current artifact"
+      "why": "expect exit 0; stderr ∋ plugins.fetch: miss on reload; keeping current artifact"
     },
     {
       "id": "boot.warning|BOOT-W25|boot",
@@ -16861,7 +16861,7 @@
         "config": "mutation:BOOT-W25",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v'); ",
+      "why": "expect exit 0; stderr ∋ anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v'); ",
       "needs_fixture": false
     },
     {
@@ -16876,7 +16876,7 @@
         "config": "mutation:BOOT-W26",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b this pin REPLACES the binary-version floor, so the plugin is refused uncondition",
+      "why": "expect exit 0; stderr ∋ this pin REPLACES the binary-version floor, so the plugin is refused uncondition",
       "needs_fixture": false
     },
     {
@@ -16893,7 +16893,7 @@
         "config": "mutation:BOOT-W30",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b [warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst",
+      "why": "expect exit 0; stderr ∋ [warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst",
       "needs_fixture": false
     },
     {
@@ -16908,7 +16908,7 @@
         "config": "mutation:BOOT-W31",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set",
+      "why": "expect exit 0; stderr ∋ BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set",
       "needs_fixture": false
     },
     {
@@ -16923,7 +16923,7 @@
         "config": "mutation:BOOT-W32",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b [warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in con",
+      "why": "expect exit 0; stderr ∋ [warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in con",
       "needs_fixture": false
     },
     {
@@ -16938,7 +16938,7 @@
         "config": "mutation:BOOT-W33",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b [warn] TOKIO_WORKER_THREADS=\"abc\" is not a positive integer; ignoring it and usi",
+      "why": "expect exit 0; stderr ∋ [warn] TOKIO_WORKER_THREADS=\"abc\" is not a positive integer; ignoring it and usi",
       "needs_fixture": false
     },
     {
@@ -16953,7 +16953,7 @@
         "config": "mutation:BOOT-W34",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b [warn] advanced.worker_threads: 0 in config.yaml is not a positive integer (it m",
+      "why": "expect exit 0; stderr ∋ [warn] advanced.worker_threads: 0 in config.yaml is not a positive integer (it m",
       "needs_fixture": false
     },
     {
@@ -16968,7 +16968,7 @@
         "config": "mutation:BOOT-W35",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set `advanced.upstream_h2_prio",
+      "why": "expect exit 0; stderr ∋ BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set `advanced.upstream_h2_prio",
       "needs_fixture": false
     },
     {
@@ -16983,7 +16983,7 @@
         "config": "mutation:BOOT-W36",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in ",
+      "why": "expect exit 0; stderr ∋ BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in ",
       "needs_fixture": false
     },
     {
@@ -16998,7 +16998,7 @@
         "config": "mutation:BOOT-W40",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b did not parse; printing the built-in metadata denylist only (security.blocked_me",
+      "why": "expect exit 0; stderr ∋ did not parse; printing the built-in metadata denylist only (security.blocked_me",
       "needs_fixture": false
     },
     {
@@ -17013,7 +17013,7 @@
         "config": "mutation:BOOT-W41",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b failed to interpolate; printing the built-in metadata denylist only (security.bl",
+      "why": "expect exit 0; stderr ∋ failed to interpolate; printing the built-in metadata denylist only (security.bl",
       "needs_fixture": false
     },
     {
@@ -17028,7 +17028,7 @@
         "config": "mutation:BOOT-W42",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b [warn] config not readable (",
+      "why": "expect exit 0; stderr ∋ [warn] config not readable (",
       "needs_fixture": false
     },
     {
@@ -17126,7 +17126,7 @@
         "config": "baseline",
         "env": {}
       },
-      "why": "built-in denylist \u222a security.blocked_metadata_hosts"
+      "why": "built-in denylist ∪ security.blocked_metadata_hosts"
     },
     {
       "id": "cli|--safe-mode|first-arg",
@@ -17161,7 +17161,7 @@
         "config": "baseline",
         "env": {}
       },
-      "why": "ok: config valid \u2014 N provider(s) \u2026; exit 0"
+      "why": "ok: config valid — N provider(s) …; exit 0"
     },
     {
       "id": "cli|--version",
@@ -17225,7 +17225,7 @@
         "config": "missing",
         "env": {}
       },
-      "why": "config path does not exist; [error] \u2026; exit 1"
+      "why": "config path does not exist; [error] …; exit 1"
     },
     {
       "id": "cli|env|RUST_LOG-crate-filter",
@@ -17243,7 +17243,7 @@
           "RUST_LOG": "busbar=debug"
         }
       },
-      "why": "bare tracing::Level only \u2014 a crate filter silently falls back",
+      "why": "bare tracing::Level only — a crate filter silently falls back",
       "bindings": [
         "PB-51"
       ]
@@ -17281,7 +17281,7 @@
       "concurrent": {
         "n": 8
       },
-      "why": "limits.max_inbound_concurrent: 2 sheds the excess immediately (never queued) with the static overloaded 503 body + Retry-After: 1 \u2014 2 admitted, 6 shed",
+      "why": "limits.max_inbound_concurrent: 2 sheds the excess immediately (never queued) with the static overloaded 503 body + Retry-After: 1 — 2 admitted, 6 shed",
       "fresh": true,
       "config_variant": "inbound-concurrency-2",
       "mock_control": {
@@ -17305,7 +17305,7 @@
       "concurrent": {
         "n": 4
       },
-      "why": "pool oracle-lc1's one member has models.<m>.max_concurrent: 1: 1 admitted, the other 3 hit AtCapacity and are skipped within the pick, falling through to the pool's default on_exhausted 503 (Retry-After: the 2s AT_CAPACITY floor \u2014 no breaker cooldown is involved here, so it never beats that floor)",
+      "why": "pool oracle-lc1's one member has models.<m>.max_concurrent: 1: 1 admitted, the other 3 hit AtCapacity and are skipped within the pick, falling through to the pool's default on_exhausted 503 (Retry-After: the 2s AT_CAPACITY floor — no breaker cooldown is involved here, so it never beats that floor)",
       "fresh": true,
       "mock_control": {
         "*": "slow"
@@ -17328,7 +17328,7 @@
       "concurrent": {
         "n": 8
       },
-      "why": "8 parallel requests against an UNBOUNDED lane: all 200, usage = 8x \u2014 concurrency alone must never perturb billing",
+      "why": "8 parallel requests against an UNBOUNDED lane: all 200, usage = 8x — concurrency alone must never perturb billing",
       "fresh": true
     },
     {
@@ -17343,7 +17343,7 @@
         "config": "mutation:LAW0-MIG-OPERATOR-14X",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b None",
+      "why": "expect exit 0; stderr ∋ None",
       "needs_fixture": false
     },
     {
@@ -17358,7 +17358,7 @@
         "config": "mutation:LAW0-MIG-OPERATOR-INLINE",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b None",
+      "why": "expect exit 0; stderr ∋ None",
       "needs_fixture": false
     },
     {
@@ -20185,7 +20185,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "a PARTIAL rate card (one model of the nine) through PUT /config/settings. RECORDED (published 1.5.5): 400 `invalid_request` \u2014 \"config validation failed: rate_card is present but 8 configured models have no rate entry (rate_card is AUTHORITATIVE and COMPLETE: you either price nothing or price everything)\", followed by all eight missing models named one per line with a paste-ready zero-rate stub. The sentence used to be quoted from the source; it is now bytes, INCLUDING the remediation block, so a later binary that keeps the refusal but drops the list of what is missing is a diff. This is the refusal an earlier pass at the epoch cell tripped over WITHOUT seeing it (a `pre` need only be ANSWERED, not 2xx, so a refused write was recorded as a pricing epoch), and it is the precondition for the append-not-replace rule: a config PUT can APPEND a dated entry to the history precisely because the thing it carries is always a WHOLE card, never a patch. Under 1.6.0 this stays a 400 and the accepted sibling appends instead of overwriting \u2014 which is what /ledger/rate-history shows, and what makes 'append, not replace' a property of a well-defined object rather than a slogan.",
+      "why": "a PARTIAL rate card (one model of the nine) through PUT /config/settings. RECORDED (published 1.5.5): 400 `invalid_request` — \"config validation failed: rate_card is present but 8 configured models have no rate entry (rate_card is AUTHORITATIVE and COMPLETE: you either price nothing or price everything)\", followed by all eight missing models named one per line with a paste-ready zero-rate stub. The sentence used to be quoted from the source; it is now bytes, INCLUDING the remediation block, so a later binary that keeps the refusal but drops the list of what is missing is a diff. This is the refusal an earlier pass at the epoch cell tripped over WITHOUT seeing it (a `pre` need only be ANSWERED, not 2xx, so a refused write was recorded as a pricing epoch), and it is the precondition for the append-not-replace rule: a config PUT can APPEND a dated entry to the history precisely because the thing it carries is always a WHOLE card, never a patch. Under 1.6.0 this stays a 400 and the accepted sibling appends instead of overwriting — which is what /ledger/rate-history shows, and what makes 'append, not replace' a property of a well-defined object rather than a slogan.",
       "config_variant": "rate-card-partial",
       "bindings": [
         "PB-103"
@@ -20200,7 +20200,7 @@
         "name": "cooldown-trip.sh"
       },
       "outcome": "ok",
-      "why": "base_cooldown_secs 1 with a consecutive-1 trip: the failing member is tripped (503, nothing billed), the SAME request is still refused 503 while the cooldown runs even though the upstream is healthy again, and once the cooldown is past it is served (200, billed) \u2014 the breaker's own trip-then-recover cycle, both arms. The first trip computes off streak 1, so the draw is a whole second in [1, 3] (base << 1 = 2, +/-1s jitter, clamped): the script issues the trip just after a second boundary, refuses at +0.3s (inside every possible draw) and serves at +4.5s (past every possible draw), so neither arm can land in the jitter window. Proven on the CUMULATIVE counters busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> 0) by the time this cell's one before/after snapshot is taken, plus the requests-vs-billable_requests split in the usage delta."
+      "why": "base_cooldown_secs 1 with a consecutive-1 trip: the failing member is tripped (503, nothing billed), the SAME request is still refused 503 while the cooldown runs even though the upstream is healthy again, and once the cooldown is past it is served (200, billed) — the breaker's own trip-then-recover cycle, both arms. The first trip computes off streak 1, so the draw is a whole second in [1, 3] (base << 1 = 2, +/-1s jitter, clamped): the script issues the trip just after a second boundary, refuses at +0.3s (inside every possible draw) and serves at +4.5s (past every possible draw), so neither arm can land in the jitter window. Proven on the CUMULATIVE counters busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> 0) by the time this cell's one before/after snapshot is taken, plus the requests-vs-billable_requests split in the usage delta."
     },
     {
       "id": "crosscut.traps|exhausted-retry-after-floor",
@@ -20361,7 +20361,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "CHANGELOG:309-310 (1.5.0) 'POST /api/v1/admin/restart applies the settings that need a restart \u2026 without shell access' \u2014 a PUT advanced.response_headers.server_timing stages in the overlay (the response itself says so), POST /restart drains and exits the process, and a fresh launch against the same config+overlay serves /healthz WITH the Server-Timing header the pre-restart PUT staged (admin/restart.rs:4-18; admin/v1/json/handlers.rs:2386-2439)"
+      "why": "CHANGELOG:309-310 (1.5.0) 'POST /api/v1/admin/restart applies the settings that need a restart … without shell access' — a PUT advanced.response_headers.server_timing stages in the overlay (the response itself says so), POST /restart drains and exits the process, and a fresh launch against the same config+overlay serves /healthz WITH the Server-Timing header the pre-restart PUT staged (admin/restart.rs:4-18; admin/v1/json/handlers.rs:2386-2439)"
     },
     {
       "id": "documented|changelog|contradicted-providers-env-wins",
@@ -20373,7 +20373,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "PARTIALLY CONTRADICTED: CHANGELOG:134-137 (1.5.3) says of the deprecated env vars '\u2026 and the config key wins if you set both.' For BUSBAR_PROVIDERS specifically the doc is wrong \u2014 the ENV VAR wins over `providers_file:` (main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; `--validate`'s own success line echoes back which path it actually resolved (the ops-observability env-set inventory) \u2014 the golden names the env-set file, pinning the code's actual precedence as the parity target."
+      "why": "PARTIALLY CONTRADICTED: CHANGELOG:134-137 (1.5.3) says of the deprecated env vars '… and the config key wins if you set both.' For BUSBAR_PROVIDERS specifically the doc is wrong — the ENV VAR wins over `providers_file:` (main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; `--validate`'s own success line echoes back which path it actually resolved (the ops-observability env-set inventory) — the golden names the env-set file, pinning the code's actual precedence as the parity target."
     },
     {
       "id": "documented|changelog|docker-boots-and-mutation-refused",
@@ -20388,7 +20388,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "CHANGELOG:36-38 (1.5.4) 'The Docker image starts again' (previously exited 1 before binding a port on an unwritable overlay) + CHANGELOG:40-46 'Busbar boots, serves traffic, warns clearly \u2026 and refuses admin-API config changes outright' \u2014 both confirmed by the same boot+mutation-attempt facts as the README:272 CONTRADICTED cell above (main.rs:856-865)"
+      "why": "CHANGELOG:36-38 (1.5.4) 'The Docker image starts again' (previously exited 1 before binding a port on an unwritable overlay) + CHANGELOG:40-46 'Busbar boots, serves traffic, warns clearly … and refuses admin-API config changes outright' — both confirmed by the same boot+mutation-attempt facts as the README:272 CONTRADICTED cell above (main.rs:856-865)"
     },
     {
       "id": "documented|changelog|headers-off-default",
@@ -20404,7 +20404,7 @@
         "auth": "none",
         "listener": "data"
       },
-      "why": "CHANGELOG:107-109 (1.5.3) 'Response headers are off by default \u2026 `observability.emit_server_timing` no longer exists.' \u2014 the oracle's baseline config never sets advanced.response_headers, so no Server-Timing header rides an ordinary response (main.rs:798-807, :3885-3897)"
+      "why": "CHANGELOG:107-109 (1.5.3) 'Response headers are off by default … `observability.emit_server_timing` no longer exists.' — the oracle's baseline config never sets advanced.response_headers, so no Server-Timing header rides an ordinary response (main.rs:798-807, :3885-3897)"
     },
     {
       "id": "documented|changelog|lane-available-metric",
@@ -20420,7 +20420,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "CHANGELOG:229 (1.5.1) '`busbar_lane_at_capacity` is replaced by `busbar_lane_available`.' \u2014 the golden shows `busbar_lane_available` series lines and NO `busbar_lane_at_capacity` line at all (metrics.rs:260; negative assertion metrics.rs:1446-1447)",
+      "why": "CHANGELOG:229 (1.5.1) '`busbar_lane_at_capacity` is replaced by `busbar_lane_available`.' — the golden shows `busbar_lane_available` series lines and NO `busbar_lane_at_capacity` line at all (metrics.rs:260; negative assertion metrics.rs:1446-1447)",
       "body_lines": "^busbar_lane_(available|at_capacity)"
     },
     {
@@ -20437,7 +20437,7 @@
         "config": "mutation:BOOT-P41",
         "env": {}
       },
-      "why": "CHANGELOG:247-250 (1.5.0) 'The config file changed shape and a 1.x config refuses to start. Run `busbar --migrate-config <old.yaml> > config.yaml` \u2026 then run `busbar --validate`.' \u2014 same legacy-marker fail-closed fixture as the README:282 migrate-config-freeze cell (main.rs:1619-1631)"
+      "why": "CHANGELOG:247-250 (1.5.0) 'The config file changed shape and a 1.x config refuses to start. Run `busbar --migrate-config <old.yaml> > config.yaml` … then run `busbar --validate`.' — same legacy-marker fail-closed fixture as the README:282 migrate-config-freeze cell (main.rs:1619-1631)"
     },
     {
       "id": "documented|changelog|no-keygen-at-boot",
@@ -20451,7 +20451,7 @@
         "config": "mutation:BOOT-075",
         "env": {}
       },
-      "why": "CHANGELOG:210-214 (1.5.1) 'Busbar no longer generates a signing key at boot. \u2026 1.5.0 wrote this file itself beside your config, which boot-looped on a read-only mount.' \u2014 a missing `auth.signing_key` now REFUSES to start (fail-closed) rather than silently writing one (main.rs:2255-2258)"
+      "why": "CHANGELOG:210-214 (1.5.1) 'Busbar no longer generates a signing key at boot. … 1.5.0 wrote this file itself beside your config, which boot-looped on a read-only mount.' — a missing `auth.signing_key` now REFUSES to start (fail-closed) rather than silently writing one (main.rs:2255-2258)"
     },
     {
       "id": "documented|changelog|no-per-key-gauge",
@@ -20467,7 +20467,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "CHANGELOG:258-259 (1.5.0) 'The per-key `busbar_key_budget_remaining_cents` gauge is gone with them, so use the bucket gauges.' \u2014 the golden is an empty body; any such series on a later binary is a diff (metrics.rs:1179 negative assertion)",
+      "why": "CHANGELOG:258-259 (1.5.0) 'The per-key `busbar_key_budget_remaining_cents` gauge is gone with them, so use the bucket gauges.' — the golden is an empty body; any such series on a later binary is a diff (metrics.rs:1179 negative assertion)",
       "body_lines": "^busbar_key_budget_remaining_cents"
     },
     {
@@ -20484,7 +20484,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "CHANGELOG:235 (1.5.1) '`Retry-After` on an exhaustion 503 always said one second under saturation, rather than the real cooldown.' \u2014 every member of pool oracle-fo driven down; the on_exhausted 503's Retry-After is pinned (>= 2s, the breaker's own 15s base_cooldown_secs jittered), never the old 1-second floor (endpoints.rs:477-481)",
+      "why": "CHANGELOG:235 (1.5.1) '`Retry-After` on an exhaustion 503 always said one second under saturation, rather than the real cooldown.' — every member of pool oracle-fo driven down; the on_exhausted 503's Retry-After is pinned (>= 2s, the breaker's own 15s base_cooldown_secs jittered), never the old 1-second floor (endpoints.rs:477-481)",
       "keep": {
         "headers_min": {
           "retry-after": 2
@@ -20521,7 +20521,7 @@
           }
         ]
       },
-      "why": "CHANGELOG:315-316 (1.5.0) 'Spend, budget-remaining and token metrics are labelled by group and window, and key labels set at mint time echo onto per-key series.' \u2014 after one served spend, the label set on these series carries group=/window= (metrics.rs:233-243, :767-800)",
+      "why": "CHANGELOG:315-316 (1.5.0) 'Spend, budget-remaining and token metrics are labelled by group and window, and key labels set at mint time echo onto per-key series.' — after one served spend, the label set on these series carries group=/window= (metrics.rs:233-243, :767-800)",
       "body_lines": "^busbar_(spend_cents|budget_remaining_cents|tokens)_"
     },
     {
@@ -20538,7 +20538,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "CHANGELOG:218-219 (1.5.1) '/stats and /metrics report why a lane cannot take a request \u2026 and how many requests are parked.' (endpoints.rs:89-135)"
+      "why": "CHANGELOG:218-219 (1.5.1) '/stats and /metrics report why a lane cannot take a request … and how many requests are parked.' (endpoints.rs:89-135)"
     },
     {
       "id": "documented|changelog|validate-checks",
@@ -20582,7 +20582,7 @@
         "config": "mutation:BOOT-W34",
         "env": {}
       },
-      "why": "CHANGELOG:190 (1.5.3) '`advanced.worker_threads: 0` was silently ignored instead of reported.' \u2014 now a boot WARN names the ignored value (main.rs:612-621)"
+      "why": "CHANGELOG:190 (1.5.3) '`advanced.worker_threads: 0` was silently ignored instead of reported.' — now a boot WARN names the ignored value (main.rs:612-621)"
     },
     {
       "id": "documented|readme|config-locked",
@@ -20597,7 +20597,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "README:217 `config: { locked: true }` for GitOps/read-only root (config/overlay.rs:34,:48-49) \u2014 boots clean and refuses a live PUT /api/v1/admin/config/settings with the fixed no-writable-overlay message"
+      "why": "README:217 `config: { locked: true }` for GitOps/read-only root (config/overlay.rs:34,:48-49) — boots clean and refuses a live PUT /api/v1/admin/config/settings with the fixed no-writable-overlay message"
     },
     {
       "id": "documented|readme|contradicted-overlay-boots",
@@ -20612,7 +20612,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "CONTRADICTED: README:272 says '`config: { locked: true }` is what lets the root filesystem be read-only \u2026 Busbar refuses to boot without one [a writable overlay path]'. The doc is wrong \u2014 1.5.4 code boots, serves traffic normally, WARNs 'config is READ-ONLY (the overlay backend is not writable)', and refuses only admin-API config MUTATIONS, never the boot itself (main.rs:856-865; config/overlay.rs:44-53; CHANGELOG.md:40-46). This cell pins the code's actual behaviour as the parity target."
+      "why": "CONTRADICTED: README:272 says '`config: { locked: true }` is what lets the root filesystem be read-only … Busbar refuses to boot without one [a writable overlay path]'. The doc is wrong — 1.5.4 code boots, serves traffic normally, WARNs 'config is READ-ONLY (the overlay backend is not writable)', and refuses only admin-API config MUTATIONS, never the boot itself (main.rs:856-865; config/overlay.rs:44-53; CHANGELOG.md:40-46). This cell pins the code's actual behaviour as the parity target."
     },
     {
       "id": "documented|readme|docker-defaults",
@@ -20624,7 +20624,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "README:188-192 `docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar` \u2014 the EXACT shipped docker/config.yaml (listen port rewritten off 8080 only) boots and answers /healthz + /v1/models with only those two env vars set (Dockerfile:33, docker/config.yaml:22,30)"
+      "why": "README:188-192 `docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar` — the EXACT shipped docker/config.yaml (listen port rewritten off 8080 only) boots and answers /healthz + /v1/models with only those two env vars set (Dockerfile:33, docker/config.yaml:22,30)"
     },
     {
       "id": "documented|readme|env-launch",
@@ -20640,7 +20640,7 @@
         "config": "baseline",
         "env": {}
       },
-      "why": "README:182 `BUSBAR_CONFIG=./config.yaml ./busbar &` \u2014 plain `--version` under the same BUSBAR_CONFIG-driven launch path (main.rs:120, :224) exits 0"
+      "why": "README:182 `BUSBAR_CONFIG=./config.yaml ./busbar &` — plain `--version` under the same BUSBAR_CONFIG-driven launch path (main.rs:120, :224) exits 0"
     },
     {
       "id": "documented|readme|export-standards",
@@ -20656,7 +20656,7 @@
         "config": "baseline",
         "env": {}
       },
-      "why": "README:280 'observability over open standards: Prometheus, OTLP and a per-request audit webhook' \u2014 the oracle's own baseline config runs a prometheus export sink clean through --validate; OTLP/webhook module existence is separately pinned by PB-74's EXPORT_MODULES freeze"
+      "why": "README:280 'observability over open standards: Prometheus, OTLP and a per-request audit webhook' — the oracle's own baseline config runs a prometheus export sink clean through --validate; OTLP/webhook module existence is separately pinned by PB-74's EXPORT_MODULES freeze"
     },
     {
       "id": "documented|readme|healthz-probes",
@@ -20672,7 +20672,7 @@
         "auth": "none",
         "listener": "data"
       },
-      "why": "README:247-248 readinessProbe and livenessProbe both httpGet {path: /healthz, port: http} \u2014 one path serves both (main.rs, endpoints.rs:269-283, plugin_routes.rs:21,53)"
+      "why": "README:247-248 readinessProbe and livenessProbe both httpGet {path: /healthz, port: http} — one path serves both (main.rs, endpoints.rs:269-283, plugin_routes.rs:21,53)"
     },
     {
       "id": "documented|readme|migrate-config-freeze",
@@ -20688,7 +20688,7 @@
         "config": "mutation:BOOT-P41",
         "env": {}
       },
-      "why": "README:282 'config.yaml \u2026 changes always ship with `busbar --migrate-config` and a loud fail-closed boot' \u2014 a 1.x-shaped config (legacy `providers.<name>.api_key_env`) fails closed naming the migrator (config/migrate.rs:277-289)"
+      "why": "README:282 'config.yaml … changes always ship with `busbar --migrate-config` and a loud fail-closed boot' — a 1.x-shaped config (legacy `providers.<name>.api_key_env`) fails closed naming the migrator (config/migrate.rs:277-289)"
     },
     {
       "id": "documented|readme|six-protocols|anthropic",
@@ -20706,7 +20706,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "README:22 six protocols + README:97-99 pool name in the base URL (http://localhost:8080/fast) \u2014 the Anthropic route actually serves (main.rs:234)"
+      "why": "README:22 six protocols + README:97-99 pool name in the base URL (http://localhost:8080/fast) — the Anthropic route actually serves (main.rs:234)"
     },
     {
       "id": "documented|readme|six-protocols|cohere",
@@ -20722,7 +20722,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "README:22 six protocols + README:113-115 Cohere v2 client.chat(model=\"fast\") \u2014 the Cohere route actually serves (main.rs:237)"
+      "why": "README:22 six protocols + README:113-115 Cohere v2 client.chat(model=\"fast\") — the Cohere route actually serves (main.rs:237)"
     },
     {
       "id": "documented|readme|six-protocols|gemini",
@@ -20738,7 +20738,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "README:22 six protocols + README:108-110 base_url=http://localhost:8080 \u2014 the Gemini route actually serves (main.rs:239-240)"
+      "why": "README:22 six protocols + README:108-110 base_url=http://localhost:8080 — the Gemini route actually serves (main.rs:239-240)"
     },
     {
       "id": "documented|readme|six-protocols|openai-chat",
@@ -20754,7 +20754,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "README:22 'Six wire protocols, first class on both sides' + README:85-88 base_url=http://localhost:8080/v1, model = pool name \u2014 the OpenAI-chat route actually serves (main.rs:233-244, :236)"
+      "why": "README:22 'Six wire protocols, first class on both sides' + README:85-88 base_url=http://localhost:8080/v1, model = pool name — the OpenAI-chat route actually serves (main.rs:233-244, :236)"
     },
     {
       "id": "documented|readme|six-protocols|openai-responses",
@@ -20770,7 +20770,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "README:22 six protocols + README:103 client.responses.create(model=\"fast\") \u2014 the Responses route actually serves (main.rs:238)"
+      "why": "README:22 six protocols + README:103 client.responses.create(model=\"fast\") — the Responses route actually serves (main.rs:238)"
     },
     {
       "id": "documented|readme|tls-mtls",
@@ -20782,7 +20782,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "README:280 'native TLS and mTLS with no reverse proxy in front' (config/mod.rs:472; tls::serve mTLS arm main.rs:1111-1125) \u2014 a self-signed cert + `tls: {cert, key}` boots and serves /healthz over HTTPS directly, and the same port refuses plain HTTP once TLS is configured"
+      "why": "README:280 'native TLS and mTLS with no reverse proxy in front' (config/mod.rs:472; tls::serve mTLS arm main.rs:1111-1125) — a self-signed cert + `tls: {cert, key}` boots and serves /healthz over HTTPS directly, and the same port refuses plain HTTP once TLS is configured"
     },
     {
       "id": "documented|readme|validate-ci",
@@ -21278,7 +21278,7 @@
         ],
         "mask": []
       },
-      "why": "an openai bearer request over HTTP/2 prior knowledge (`advanced.upstream_h2_prior_knowledge: true`, h2c): the client's SETTINGS and frame sequence, and every header field in wire order WITH its HPACK representation (indexed / literal / never-indexed, Huffman or raw) and its exact bytes \u2014 the credential's representation is part of what 1.5.5 sent. Only the `:authority` field (it carries the run's port) keeps its representation without its bytes. KERNEL<>PLUGINS step 22's h2 bearer bytes are compared against this."
+      "why": "an openai bearer request over HTTP/2 prior knowledge (`advanced.upstream_h2_prior_knowledge: true`, h2c): the client's SETTINGS and frame sequence, and every header field in wire order WITH its HPACK representation (indexed / literal / never-indexed, Huffman or raw) and its exact bytes — the credential's representation is part of what 1.5.5 sent. Only the `:authority` field (it carries the run's port) keeps its representation without its bytes. KERNEL<>PLUGINS step 22's h2 bearer bytes are compared against this."
     },
     {
       "id": "egress.auth|jwt-bearer|mint-refresh",
@@ -21481,7 +21481,7 @@
           "auth-oidc"
         ]
       },
-      "why": "the hosted browser login's token-exchange HOP: GET /auth/token?method=oidc (the 302 to the IdP; its state and login cookie carried forward), then the IdP's callback GET /auth/token?code=\u2026&state=\u2026, on which busbar POSTs the published auth-oidc module's authorization-code form to the token endpoint with the configured client_secret injected. Recorded: every byte of that POST (method, target, every header in wire order \u2014 1.5.5's reqwest `request().form()` adds its own \u2014 and the form body, field order and encoding included) and the callback's status. Only the PKCE `code_verifier` and the login `state` (random per login) are masked. KERNEL<>PLUGINS step 21 (the auth kind's login call) and the connector/http-door move of the kernel egress are compared against this."
+      "why": "the hosted browser login's token-exchange HOP: GET /auth/token?method=oidc (the 302 to the IdP; its state and login cookie carried forward), then the IdP's callback GET /auth/token?code=…&state=…, on which busbar POSTs the published auth-oidc module's authorization-code form to the token endpoint with the configured client_secret injected. Recorded: every byte of that POST (method, target, every header in wire order — 1.5.5's reqwest `request().form()` adds its own — and the form body, field order and encoding included) and the callback's status. Only the PKCE `code_verifier` and the login `state` (random per login) are masked. KERNEL<>PLUGINS step 21 (the auth kind's login call) and the connector/http-door move of the kernel egress are compared against this."
     },
     {
       "id": "egress.auth|oauth-cc|mint-refresh",
@@ -21793,7 +21793,7 @@
           "secs": 30
         }
       },
-      "why": "a `plugins.fetch: [{ url, sha256 }]` entry at boot: the download GET busbar sends (1.5.5's `Client::new().get()` \u2014 method, target, every header in wire order, the client's own defaults included), then, the body not hashing to the pin, the fatal boot refusal (fatal-on-miss at boot) and its exit code. The connector/http-door move of the kernel egress is compared against this."
+      "why": "a `plugins.fetch: [{ url, sha256 }]` entry at boot: the download GET busbar sends (1.5.5's `Client::new().get()` — method, target, every header in wire order, the client's own defaults included), then, the body not hashing to the pin, the fatal boot refusal (fatal-on-miss at boot) and its exit code. The connector/http-door move of the kernel egress is compared against this."
     },
     {
       "id": "egress.headers|forwarded|anthropic-beta",
@@ -22378,7 +22378,7 @@
           ]
         ]
       },
-      "why": "the prometheus export sink's PULL stream: a live `GET /metrics`, the exposition's stable structure (the kind runs, every family's HELP/TYPE lines and samples, block separators, the document end, the well-known route's response headers; the family order within a kind is 1.5.5's hash order and is not pinned) \u2014 the one export sink a loopback oracle rig can scrape directly. KERNEL<>PLUGINS step 39 (the export ABI's Metrics stream) is compared against this."
+      "why": "the prometheus export sink's PULL stream: a live `GET /metrics`, the exposition's stable structure (the kind runs, every family's HELP/TYPE lines and samples, block separators, the document end, the well-known route's response headers; the family order within a kind is 1.5.5's hash order and is not pinned) — the one export sink a loopback oracle rig can scrape directly. KERNEL<>PLUGINS step 39 (the export ABI's Metrics stream) is compared against this."
     },
     {
       "id": "export|request-log-file|jsonl",
@@ -22545,7 +22545,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "boot on a config with no data directory and no peers, serve one chat request, shut down: the process's working directory and the config's OWN directory must hold exactly the files 1.5.5 leaves \u2014 no WAL, no keyset, no journal, no probe file"
+      "why": "boot on a config with no data directory and no peers, serve one chat request, shut down: the process's working directory and the config's OWN directory must hold exactly the files 1.5.5 leaves — no WAL, no keyset, no journal, no probe file"
     },
     {
       "id": "hazard|no-data-dir|logs",
@@ -22614,7 +22614,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "1.5.5 `persist:` boolean control key \u2014 accepted (boolean-validated) then ignored, never an unknown-field 400 (the legacy-hook-spelling rule)",
+      "why": "1.5.5 `persist:` boolean control key — accepted (boolean-validated) then ignored, never an unknown-field 400 (the legacy-hook-spelling rule)",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -22631,7 +22631,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "an embedded system-role turn folded out of `messages` by the IR \u2014 message_count parity (the folded-system-turn parity rule)",
+      "why": "an embedded system-role turn folded out of `messages` by the IR — message_count parity (the folded-system-turn parity rule)",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -22738,7 +22738,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` \u2014 must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (the legacy-hook-spelling rule)",
+      "why": "1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` — must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (the legacy-hook-spelling rule)",
       "config_variant": "hooks-webrequest"
     },
     {
@@ -22774,7 +22774,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "oversize on the A2A JSON-RPC mount (busbar-a2a-codec MOUNT_PATH) \u2014 needs a recorder config that mounts the agents: block",
+      "why": "oversize on the A2A JSON-RPC mount (busbar-a2a-codec MOUNT_PATH) — needs a recorder config that mounts the agents: block",
       "needs_fixture": true
     },
     {
@@ -22847,7 +22847,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "oversize on the MCP streamable-http mount: which envelope answers before the plane is reached (JSON-RPC error vs the path-inferred dialect envelope) \u2014 needs a recorder config that mounts the mcp: block",
+      "why": "oversize on the MCP streamable-http mount: which envelope answers before the plane is reached (JSON-RPC error vs the path-inferred dialect envelope) — needs a recorder config that mounts the mcp: block",
       "needs_fixture": true
     },
     {
@@ -23045,7 +23045,7 @@
         "auth": "none",
         "listener": "data"
       },
-      "why": "flat {\"error\":\u2026} envelope",
+      "why": "flat {\"error\":…} envelope",
       "bindings": [
         "PB-100"
       ]
@@ -23183,6 +23183,216 @@
       "why": "second carrier, invalid"
     },
     {
+      "id": "http.crosscut|unknown-op|openai",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/unknown-op",
+        "headers": {},
+        "body": "{\"model\":\"p\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the chat-completions dialect does not serve, under its versioned prefix"
+    },
+    {
+      "id": "http.crosscut|unknown-op|anthropic",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages/unknown-op",
+        "headers": {
+          "anthropic-version": "2023-06-01"
+        },
+        "body": "{\"model\":\"p\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the messages dialect does not serve, under its path"
+    },
+    {
+      "id": "http.crosscut|unknown-op|responses",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/responses/unknown-op",
+        "headers": {},
+        "body": "{\"model\":\"p\",\"input\":\"hi\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the responses dialect does not serve, under its path"
+    },
+    {
+      "id": "http.crosscut|unknown-op|cohere",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v2/unknown-op",
+        "headers": {},
+        "body": "{\"model\":\"p\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the v2 chat dialect does not serve, under its versioned prefix"
+    },
+    {
+      "id": "http.crosscut|unknown-op|gemini",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/p:unknownVerb",
+        "headers": {},
+        "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a colon verb the generate dialect does not serve"
+    },
+    {
+      "id": "http.crosscut|unknown-op|bedrock",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/model/p/unknown-op",
+        "headers": {},
+        "body": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation segment the converse dialect does not serve"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-chat-completions",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the chat-completions path"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-v2-chat",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v2/chat",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the v2 chat path"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-responses",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/responses",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the responses path"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-converse",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/model/p/converse",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the converse path"
+    },
+    {
+      "id": "http.crosscut|unserved-action|gemini-countTokens",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/p:countTokens",
+        "headers": {},
+        "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "the generate dialect's token-count action, which is not served"
+    },
+    {
+      "id": "http.crosscut|url-model-missing|gemini",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/:generateContent",
+        "headers": {},
+        "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a generate URL naming no model"
+    },
+    {
+      "id": "http.crosscut|url-model-missing|bedrock",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/model//converse",
+        "headers": {},
+        "body": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a converse URL naming no model"
+    },
+    {
       "id": "ledger|amend|adjusting-entries",
       "plane": "core",
       "family": "ledger",
@@ -23199,7 +23409,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "POST /api/v1/admin/ledger/amend-rate-history, SIGNED, against the binary that has no ledger route table. RECORDED (published 1.5.5): 404 with code `not_found` and message \"resource not found\" \u2014 the ROUTER's generic miss, NOT a 405 from a path that exists for another method, and the `X-Busbar-Signature` header is never read (it cannot be: nothing routes). That distinction is the point of recording it rather than assuming it: a 405 would have meant the path already exists in some form. The refusal is the proof the 1.6.0 verb is ADDITIVE \u2014 no 1.5.5 operator can be relying on an answer here, because there is no answer here \u2014 and it is recorded before the verb is built, so the claim is a diff rather than an assertion.",
+      "why": "POST /api/v1/admin/ledger/amend-rate-history, SIGNED, against the binary that has no ledger route table. RECORDED (published 1.5.5): 404 with code `not_found` and message \"resource not found\" — the ROUTER's generic miss, NOT a 405 from a path that exists for another method, and the `X-Busbar-Signature` header is never read (it cannot be: nothing routes). That distinction is the point of recording it rather than assuming it: a 405 would have meant the path already exists in some form. The refusal is the proof the 1.6.0 verb is ADDITIVE — no 1.5.5 operator can be relying on an answer here, because there is no answer here — and it is recorded before the verb is built, so the claim is a diff rather than an assertion.",
       "config_variant": "rate-card-amend",
       "bindings": [
         "PB-103"
@@ -23221,7 +23431,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "the same amend call with NO operator signature. RECORDED (published 1.5.5): 404 `not_found` / \"resource not found\", BYTE-IDENTICAL to the signed sibling \u2014 which is the whole value of the pair. 1.5.5 is refusing the ROUTE and knows nothing about signatures, so the two calls cannot be told apart; had they differed, the premise that this verb is new would be false and the additive registration would be wrong. Under 1.6.0 the two separate \u2014 signed proceeds and journals a repricing record, unsigned is refused AND journalled \u2014 and this cell is the recorded baseline that separation is measured against.",
+      "why": "the same amend call with NO operator signature. RECORDED (published 1.5.5): 404 `not_found` / \"resource not found\", BYTE-IDENTICAL to the signed sibling — which is the whole value of the pair. 1.5.5 is refusing the ROUTE and knows nothing about signatures, so the two calls cannot be told apart; had they differed, the premise that this verb is new would be false and the additive registration would be wrong. Under 1.6.0 the two separate — signed proceeds and journals a repricing record, unsigned is refused AND journalled — and this cell is the recorded baseline that separation is measured against.",
       "config_variant": "rate-card-amend-unsigned",
       "bindings": [
         "PB-103"
@@ -23263,7 +23473,7 @@
           }
         ]
       },
-      "why": "a complete card priced at ONE micro-unit per token \u2014 a whole request costs 11+7 = 18 micro-units against a USD minor unit of 10,000 \u2014 then GET /admin/usage. RECORDED (published 1.5.5): every per-key row is spend_micros 18, and the per-model row and the total are 54, an EXACT sum of three exact rows. So on this endpoint 1.5.5 does NOT project to a minor unit at all: `spend_micros` is carried at full micro-unit precision and nothing is truncated to cents anywhere in the view \u2014 the cents truncation lives on the paths that REPORT cents, not here. That is the baseline the minor-unit rule must be compatible with, and it makes the compatible reading precise: 'divide by 10^(9-exp) ONCE per row, truncating' has to leave THIS endpoint's figures alone, or the identity test's statement 2 \u2014 exact against the published 1.5.5 binary for a single-entry history \u2014 fails on any window worth less than a cent, which is every window on a quiet day. Recorded on the currency 1.5.5 already has, so the zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have a USD baseline that is a measurement rather than a belief.",
+      "why": "a complete card priced at ONE micro-unit per token — a whole request costs 11+7 = 18 micro-units against a USD minor unit of 10,000 — then GET /admin/usage. RECORDED (published 1.5.5): every per-key row is spend_micros 18, and the per-model row and the total are 54, an EXACT sum of three exact rows. So on this endpoint 1.5.5 does NOT project to a minor unit at all: `spend_micros` is carried at full micro-unit precision and nothing is truncated to cents anywhere in the view — the cents truncation lives on the paths that REPORT cents, not here. That is the baseline the minor-unit rule must be compatible with, and it makes the compatible reading precise: 'divide by 10^(9-exp) ONCE per row, truncating' has to leave THIS endpoint's figures alone, or the identity test's statement 2 — exact against the published 1.5.5 binary for a single-entry history — fails on any window worth less than a cent, which is every window on a quiet day. Recorded on the currency 1.5.5 already has, so the zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have a USD baseline that is a measurement rather than a belief.",
       "config_variant": "rate-card-minor-unit",
       "bindings": [
         "PB-103"
@@ -23285,7 +23495,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "a complete card that prices ONE lane in a second currency natively (m-openai-chat in JPY, the rest USD) \u2014 the shape the native-currency rule requires and the shape 1.5.5 has no field for. RECORDED (published 1.5.5): 400 `invalid_request`, \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\" \u2014 1.5.5 REFUSES the key rather than accepting and dropping it, and names the four it does know. That is the good answer and it is worth pinning as bytes, because the alternative was a card that says JPY while /usage keeps labelling the money USD: a mislabelled invoice no cell would have caught. Since the field is refused today, 1.6.0 accepting it is purely ADDITIVE \u2014 the known-key list IS the contract, and this cell is what proves `currency` was outside it before the history landed. Fixing the wording also holds a 1.6.0 build that accepts `currency` to refusing every OTHER misspelling the same way.",
+      "why": "a complete card that prices ONE lane in a second currency natively (m-openai-chat in JPY, the rest USD) — the shape the native-currency rule requires and the shape 1.5.5 has no field for. RECORDED (published 1.5.5): 400 `invalid_request`, \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\" — 1.5.5 REFUSES the key rather than accepting and dropping it, and names the four it does know. That is the good answer and it is worth pinning as bytes, because the alternative was a card that says JPY while /usage keeps labelling the money USD: a mislabelled invoice no cell would have caught. Since the field is refused today, 1.6.0 accepting it is purely ADDITIVE — the known-key list IS the contract, and this cell is what proves `currency` was outside it before the history landed. Fixing the wording also holds a 1.6.0 build that accepts `currency` to refusing every OTHER misspelling the same way.",
       "config_variant": "rate-card-currency",
       "bindings": [
         "PB-103"
@@ -23337,7 +23547,7 @@
           }
         ]
       },
-      "why": "a mid-window 100x card, then GET /admin/usage?as_of=1 \u2014 the snapshot selector 1.6.0 gives every ledger read, sent to the binary that has no history to select from. RECORDED (published 1.5.5): 200, and the parameter is SILENTLY IGNORED. The body is the current-card reprice `billing|rate-card|epoch-mid-window` records \u2014 total 1,000,120,000, all four rows at the newest card \u2014 and the response's OWN `as_of` field comes back 0, not the 1 that was asked for. So 1.5.5 neither honours the snapshot nor refuses the request: it answers a DIFFERENT question under a name that promises a snapshot, and reports an `as_of` that contradicts the one in the URL. A caller who guesses this parameter today gets a confident wrong answer. Under 1.6.0 the same URL returns the snapshot it names \u2014 a changed number under unchanged request bytes, which is exactly why the additive registration has to name this cell instead of resting on the ledger endpoints being new.",
+      "why": "a mid-window 100x card, then GET /admin/usage?as_of=1 — the snapshot selector 1.6.0 gives every ledger read, sent to the binary that has no history to select from. RECORDED (published 1.5.5): 200, and the parameter is SILENTLY IGNORED. The body is the current-card reprice `billing|rate-card|epoch-mid-window` records — total 1,000,120,000, all four rows at the newest card — and the response's OWN `as_of` field comes back 0, not the 1 that was asked for. So 1.5.5 neither honours the snapshot nor refuses the request: it answers a DIFFERENT question under a name that promises a snapshot, and reports an `as_of` that contradicts the one in the URL. A caller who guesses this parameter today gets a confident wrong answer. Under 1.6.0 the same URL returns the snapshot it names — a changed number under unchanged request bytes, which is exactly why the additive registration has to name this cell instead of resting on the ledger endpoints being new.",
       "config_variant": "rate-card-as-of",
       "bindings": [
         "PB-103"
@@ -23848,7 +24058,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_cachepoint_document",
-      "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position \u2014 the index-space disagreement the `ping` fixture's single text block cannot produce"
+      "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position — the index-space disagreement the `ping` fixture's single text block cannot produce"
     },
     {
       "id": "llm|bedrock|bedrock|request|ok_stream",
@@ -26111,7 +26321,7 @@
           ]
         ]
       },
-      "why": "PREDEV FENCE (no 1.5.5 baseline: 1.5.5 had no mcp plane). One registered MCP server on a loopback capture mock (a JSON-RPC responder at /mcp answering tools/list and tools/call), its one tool pre-approved by schema hash: every request busbar sends it (the connect-time tools/list and the tools/call hop \u2014 method, target, every header in wire order, body) and the caller's answer, recorded from a named predev build. The kernel egress (plane_host/egress.rs) moving onto the connector and the http door is compared against this."
+      "why": "PREDEV FENCE (no 1.5.5 baseline: 1.5.5 had no mcp plane). One registered MCP server on a loopback capture mock (a JSON-RPC responder at /mcp answering tools/list and tools/call), its one tool pre-approved by schema hash: every request busbar sends it (the connect-time tools/list and the tools/call hop — method, target, every header in wire order, body) and the caller's answer, recorded from a named predev build. The kernel egress (plane_host/egress.rs) moving onto the connector and the http door is compared against this."
     },
     {
       "id": "mcp|stdio|client|client|DELETE /mcp (terminate session)|malformed",
@@ -36325,7 +36535,7 @@
         "config": "mutation:NEUT-U-auth",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_key`",
       "needs_fixture": false
     },
     {
@@ -36342,7 +36552,7 @@
         "config": "mutation:NEUT-U-export",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_key`",
       "needs_fixture": false
     },
     {
@@ -36359,7 +36569,7 @@
         "config": "mutation:NEUT-U-groups",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_key`",
       "needs_fixture": false
     },
     {
@@ -36376,7 +36586,7 @@
         "config": "mutation:NEUT-U-identity-providers",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_key`",
       "needs_fixture": false
     },
     {
@@ -36393,7 +36603,7 @@
         "config": "mutation:NEUT-U-models",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_key`",
       "needs_fixture": false
     },
     {
@@ -36410,7 +36620,7 @@
         "config": "mutation:NEUT-U-providers",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_key`",
       "needs_fixture": false
     },
     {
@@ -36427,7 +36637,7 @@
         "config": "mutation:NEUT-U-top",
         "env": {}
       },
-      "why": "expect exit 1; stderr \u220b unknown field `bogus_top_level_key`",
+      "why": "expect exit 1; stderr ∋ unknown field `bogus_top_level_key`",
       "needs_fixture": false
     },
     {
@@ -36444,7 +36654,7 @@
           "RUST_LOG": "info"
         }
       },
-      "why": "the exact ordered set of boot log lines at INFO and above on a pure 1.5.5-shaped config (no mcp/agents/streams section) \u2014 every 1.6.0-additive plane stays silent and out of order",
+      "why": "the exact ordered set of boot log lines at INFO and above on a pure 1.5.5-shaped config (no mcp/agents/streams section) — every 1.6.0-additive plane stays silent and out of order",
       "body_lines": "\\b(INFO|WARN|ERROR)\\b"
     },
     {
@@ -36699,7 +36909,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "the served path list: absent mcp:/agents:/streams: sections, the document must list only the 1.5.5 admin surface \u2014 the `paths` object is kept raw (no version/id scrubbing under it) so an added path is a visible diff",
+      "why": "the served path list: absent mcp:/agents:/streams: sections, the document must list only the 1.5.5 admin surface — the `paths` object is kept raw (no version/id scrubbing under it) so an added path is a visible diff",
       "keep": {
         "json_keys": [
           "paths"
@@ -37002,7 +37212,7 @@
         ],
         "mask": []
       },
-      "why": "the response HEADER ORDER (and status line) of the surfaces a client or a scraper reads \u2014 /healthz on both listeners, /v1/models, a buffered chat, a streamed chat, an unauthenticated chat, an unknown path and the admin /info \u2014 as 1.5.5 writes them; the http family compares headers as a map, so order is checked nowhere else. KERNEL<>PLUGINS steps 20 and 25 (the http framer, inbound serving) are compared against this."
+      "why": "the response HEADER ORDER (and status line) of the surfaces a client or a scraper reads — /healthz on both listeners, /v1/models, a buffered chat, a streamed chat, an unauthenticated chat, an unknown path and the admin /info — as 1.5.5 writes them; the http family compares headers as a map, so order is checked nowhere else. KERNEL<>PLUGINS steps 20 and 25 (the http framer, inbound serving) are compared against this."
     },
     {
       "id": "ops.scrape|healthz|admin",
@@ -37212,7 +37422,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "1.5.5 has no retrieve rung on the models resource: GET /v1/models/{id} is 405, not a model view \u2014 recorded so the llm plane's model rung can never claim it silently"
+      "why": "1.5.5 has no retrieve rung on the models resource: GET /v1/models/{id} is 405, not a model view — recorded so the llm plane's model rung can never claim it silently"
     },
     {
       "id": "ops.scrape|v1models|anthropic-fp",
@@ -37378,7 +37588,7 @@
           "secs": 15
         }
       },
-      "why": "ABI-o1 (spec \u00a711.8): the PUBLISHED store-sqlite v1.0.6 (built against the 1.5.5 JSON plugin contract) staged and named by the config. 1.5.5 loads it and serves; 1.6.0's boot is to REFUSE it, naming the rebuild. Recorded: the boot's exit code within 15 s and every log line (timestamps, ports, the work dir and D-1's code masked); a boot that does NOT exit is serving, so the steps then drive the plugin's JSON contract (a key minted = a store write through the plugin, a served chat = a usage posting, the usage read = a store read back) \u2014 from 1.5.5 and the candidate, the bytes the `breaking` register entry rests on"
+      "why": "ABI-o1 (spec §11.8): the PUBLISHED store-sqlite v1.0.6 (built against the 1.5.5 JSON plugin contract) staged and named by the config. 1.5.5 loads it and serves; 1.6.0's boot is to REFUSE it, naming the rebuild. Recorded: the boot's exit code within 15 s and every log line (timestamps, ports, the work dir and D-1's code masked); a boot that does NOT exit is serving, so the steps then drive the plugin's JSON contract (a key minted = a store write through the plugin, a served chat = a usage posting, the usage read = a store read back) — from 1.5.5 and the candidate, the bytes the `breaking` register entry rests on"
     },
     {
       "id": "plugins.load|auth-github",
@@ -37629,7 +37839,7 @@
       "concurrent": {
         "n": 3
       },
-      "why": "on_exhausted: queue{max_ms: 4000}: 1 admitted immediately, the other 2 queue on the freed permit and are served once the first request completes \u2014 all 200; busbar_pool_queued is the park-depth gauge for this",
+      "why": "on_exhausted: queue{max_ms: 4000}: 1 admitted immediately, the other 2 queue on the freed permit and are served once the first request completes — all 200; busbar_pool_queued is the park-depth gauge for this",
       "fresh": true
     },
     {
@@ -37949,7 +38159,7 @@
         ],
         "mask": []
       },
-      "why": "`hooks: [cheapest]` over two lanes priced 100x apart: the first chat is served by the cheap lane; a rate-card swap through the admin API (PUT config/settings) inverts the prices, and the next chat is served by the OTHER lane \u2014 the ranking reads the card in force at the time of the request, not the one at boot (1.5.5 re-projects cost_per_mtok when the settings apply). The upstream bodies name the lane each chat reached. KERNEL<>PLUGINS step 30 (hooks-ranking inline, route_cost) is compared against this."
+      "why": "`hooks: [cheapest]` over two lanes priced 100x apart: the first chat is served by the cheap lane; a rate-card swap through the admin API (PUT config/settings) inverts the prices, and the next chat is served by the OTHER lane — the ranking reads the card in force at the time of the request, not the one at boot (1.5.5 re-projects cost_per_mtok when the settings apply). The upstream bodies name the lane each chat reached. KERNEL<>PLUGINS step 30 (hooks-ranking inline, route_cost) is compared against this."
     },
     {
       "id": "route.failover|fb|all-down",
@@ -38030,7 +38240,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "a STREAM served by the fallback lane (oracle-fo's openai-chat member): the usage delta is the contract \u2014 a fallback stream must bill exactly as the hot path does",
+      "why": "a STREAM served by the fallback lane (oracle-fo's openai-chat member): the usage delta is the contract — a fallback stream must bill exactly as the hot path does",
       "weight": 10,
       "mock_control": {
         "m-cohere": "down"
@@ -38222,7 +38432,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "attempt exceeds upstream_request_timeout? (default 300 s: NOT cut; the mock sleeps 8 s then answers) \u2014 records the real 1.5.5 wait",
+      "why": "attempt exceeds upstream_request_timeout? (default 300 s: NOT cut; the mock sleeps 8 s then answers) — records the real 1.5.5 wait",
       "mock_control": {
         "m-openai-chat": "slow"
       }
@@ -39952,7 +40162,7 @@
           "webrequest-hook"
         ]
       },
-      "why": "a gate whose sidecar abstains (`200 {}`): the decide POST the published webrequest forwarder sends (method, path, header order, the op-discriminated projection with `prompt: no` \u2014 shapes only), and the chat served as if no hook ran. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+      "why": "a gate whose sidecar abstains (`200 {}`): the decide POST the published webrequest forwarder sends (method, path, header order, the op-discriminated projection with `prompt: no` — shapes only), and the chat served as if no hook ran. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
     },
     {
       "id": "webrequest|gate|order",
@@ -40150,7 +40360,7 @@
           "webrequest-hook"
         ]
       },
-      "why": "`prompt: ro`: the decide projection additionally carries the flattened system + messages text \u2014 the exact bytes a screening sidecar receives. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+      "why": "`prompt: ro`: the decide projection additionally carries the flattened system + messages text — the exact bytes a screening sidecar receives. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
     },
     {
       "id": "webrequest|gate|reject",
@@ -40547,7 +40757,7 @@
         ],
         "sort_upstream": true
       },
-      "why": "a tap: one notify POST per observation stage (request, candidate, routing, response) \u2014 the stage payloads the forwarder relays; a tap is never answered and never delays the chat. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+      "why": "a tap: one notify POST per observation stage (request, candidate, routing, response) — the stage payloads the forwarder relays; a tap is never answered and never delays the chat. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
     },
     {
       "id": "webrequest|transform|rewrite",
