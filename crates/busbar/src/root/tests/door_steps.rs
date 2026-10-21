@@ -2603,7 +2603,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
-                busbar_kernel::config::secret::resolve_linked_string_at_config,
+                busbar_kernel::test_support::resolve_stand_in_secret_at_config,
             )
             .expect("the connector builds");
             let plane = bound(
