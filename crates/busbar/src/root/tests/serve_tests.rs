@@ -2130,7 +2130,7 @@ pub(super) mod session_door {
             .expect("the caller's close");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let billed = loop {
+        let (billed, written) = loop {
             let rows = s.book.durability.lock().expect("unpoisoned").read_back();
             let seconds = rows
                 .iter()
@@ -2138,14 +2138,26 @@ pub(super) mod session_door {
                 .filter(|c| c.lane.ends_with("m-cap"))
                 .find_map(|c| c.classes.get(AUDIO_CLASS).copied());
             if seconds.is_some() || std::time::Instant::now() > deadline {
-                break seconds;
+                // What the book holds, so a red names whether the line was never written or was
+                // written without the audio the provider read.
+                let written: Vec<String> = rows
+                    .iter()
+                    .map(|p| match &p.counts {
+                        Some(c) => format!(
+                            "{:?} {} fee {} {:?}",
+                            p.kind, c.lane, c.fee_count, c.classes
+                        ),
+                        None => format!("{:?} (no counts)", p.kind),
+                    })
+                    .collect();
+                break (seconds, written);
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         assert_eq!(
             billed,
             Some(6),
-            "six seconds of µ-law the provider read are six billed seconds"
+            "six seconds of µ-law the provider read are six billed seconds; the book holds {written:?}"
         );
     }
 }
