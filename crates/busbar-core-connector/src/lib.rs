@@ -1192,7 +1192,8 @@ impl Connector {
 
     /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
     /// the need was declared over, secured by `tls` where set (the protocols agreed off the offer
-    /// the entry states for an ACCEPTING listener, [`framer::accept_offer`]), bounded by `limits`.
+    /// the entry states for an ACCEPTING listener, [`framer::accept_offer`], else off the
+    /// transport's registered list), bounded by `limits`.
     /// Answers the address bound. Called on a worker.
     ///
     /// # Errors
@@ -1209,16 +1210,33 @@ impl Connector {
     ) -> Result<SocketAddr, ConnError> {
         self.slab.check_need(owner, need)?;
         // A need declared without a transport binds nothing.
-        let door = self
+        let (door, registered) = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .map(|d| Arc::clone(&d.door))
+            .map(|d| (Arc::clone(&d.door), d.alpn.clone()))
             .ok_or(ConnError::Refused)?;
         // The listener's offer is the entry's own for its ACCEPTING side, never its dial offer;
-        // an entry that states none (it refuses the question) makes no offer.
-        let alpn = framer::accept_offer(door.as_ref()).unwrap_or_default();
+        // the transport's registered list stands only for an entry that states none (it answers
+        // no offer, or refuses the question), as it stands for a dial whose `locate` answers none
+        // (`compose`). A TLS listener never goes out with no protocol to agree where its
+        // transport registered one. An entry that refuses the question is logged: its listener
+        // binds without an offer of its own.
+        let alpn = match framer::accept_offer(door.as_ref()) {
+            Ok(offer) if !offer.is_empty() => offer,
+            Ok(_) => registered,
+            Err(refused) => {
+                tracing::warn!(
+                    owner = owner.0,
+                    need = need.0,
+                    error = %refused,
+                    "inbound listener: the entry's locate refused the accepting-side protocol \
+                     offer; the listener binds with the transport's registered protocol list"
+                );
+                registered
+            }
+        };
         let mut listeners = self.listeners.lock().expect("listeners");
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);

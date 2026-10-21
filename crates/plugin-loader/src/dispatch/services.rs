@@ -7,7 +7,8 @@
 //! * **Stored once, redeemed on the handle.** A ticketed call runs its service once under its
 //!   [`CompletionHandle`] and stores the result. A re-issued handle (a resume, or the re-call a short
 //!   answer earns) reads the stored result; nothing runs twice. The store forgets a ticket's results
-//!   when the ticket is recycled, a driver ticket's when its next tick starts, and any other
+//!   when the ticket is recycled, a driver ticket's when its next tick starts with nothing held
+//!   on it (a held exchange keeps its results, `dispatch::worker`), and any other
 //!   ticket's when a new op (not a short answer's re-call) starts on it. Each op's results live
 //!   under an epoch of their own, so a pended service of an op that is over completes into
 //!   nothing: never the next op's same-numbered handle, never a wake for it.
@@ -114,6 +115,8 @@ pub struct ServiceStore {
     inner: Mutex<HashMap<Ticket, Held>>,
     /// The last epoch minted.
     epochs: AtomicU64,
+    /// The driver tickets' held exchanges, by handle (`super::held`).
+    pub(crate) held: super::held::Held,
 }
 
 impl ServiceStore {
@@ -304,6 +307,28 @@ pub(crate) unsafe fn serve(
         };
     }
     let h = head.handle;
+    // A driver ticket's tick may not reuse a handle another exchange issued in a kept cycle
+    // (`super::held`): it would read that exchange's kept answer.
+    if !store.held.call(h) {
+        return Answered::fault();
+    }
+    // SAFETY: the caller's contract.
+    let a = unsafe { serve_kept(store, route, h, into, body) };
+    store.held.answered(h, a.outcome == Outcome::Pending);
+    a
+}
+
+/// [`serve`] under the ticketed handle `h`: run once, stored, redeemed on the handle.
+///
+/// # Safety
+/// As [`deliver`].
+unsafe fn serve_kept(
+    store: &Arc<ServiceStore>,
+    route: &Waking,
+    h: CompletionHandle,
+    into: Option<&ServiceBufs>,
+    body: impl FnOnce(Option<Completer>) -> Ran,
+) -> Answered {
     // The epoch of the op on the ticket: the one its first result minted, or a fresh one.
     let (epoch, fresh) = {
         let mut map = store.lock();

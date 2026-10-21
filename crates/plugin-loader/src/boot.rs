@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
+    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
@@ -123,6 +123,21 @@ impl Uses {
             schemes(v, &mut uses.schemes);
         }
         uses
+    }
+}
+
+impl Uses {
+    /// These uses and the URL schemes of `urls`: configured URLs the document's own keys do not
+    /// spell, such as a `providers:` entry's `base_url` its catalog definition carries.
+    #[must_use]
+    pub fn reaching<'u>(mut self, urls: impl IntoIterator<Item = &'u str>) -> Self {
+        for url in urls {
+            schemes(
+                &serde_json::Value::String(url.to_string()),
+                &mut self.schemes,
+            );
+        }
+        self
     }
 }
 
@@ -318,6 +333,28 @@ impl Candidate {
     fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
     }
+
+    /// LAW 7 FOR A TRANSPORT, off its Statement alone (nothing is opened): a URL scheme the
+    /// configuration uses is one it claims, or names it (its name or an alias).
+    #[must_use]
+    pub fn serves(&self, uses: &Uses) -> bool {
+        uses.schemes
+            .iter()
+            .any(|s| self.schemes.contains(s) || self.answers(s))
+    }
+
+    /// LAW 7 FOR A PLANE: the configuration writes a section it owns (a root key) — its declaring
+    /// section, or another its Statement owns (neither declaring nor consumed), the rule the root
+    /// opens a bound plane by. A consumed section alone selects nothing.
+    #[must_use]
+    pub fn sectioned(&self, uses: &Uses) -> bool {
+        self.verbs.iter().any(|v| uses.roots.contains(v))
+            || read(&self.stated).is_ok_and(|r| {
+                r.sections.iter().any(|(name, flags)| {
+                    flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0 && uses.roots.contains(name)
+                })
+            })
+    }
 }
 
 /// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT
@@ -430,7 +467,7 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
                 }
             }
             KindCode::Transport => {
-                if c.schemes.iter().any(|s| uses.schemes.contains(s)) {
+                if c.serves(uses) {
                     take(&mut out, i, c.kind, c.name.clone());
                 }
             }
@@ -537,6 +574,18 @@ pub fn registry(
 pub struct PlaneSet {
     /// Each plane with a door: linked rows first, then the dropped-in ones in scan order.
     pub doors: Vec<Candidate>,
+}
+
+/// THE PLANES THE CONFIGURATION USES, of the discovered `doors` (Law 7; [`select`]'s plane rule): each
+/// door whose declaring section the document writes, in discovery order. A plane no section names is
+/// never bound, linked or dropped in alike.
+#[must_use]
+pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
+    doors
+        .iter()
+        .filter(|c| c.sectioned(uses))
+        .cloned()
+        .collect()
 }
 
 /// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound

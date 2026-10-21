@@ -27,10 +27,11 @@ use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use serde_json::{json, Value};
 
-use crate::codec_legs::{caller_norms, far_norms, fingerprint, frame, usage_tokens, Dialect, Norm};
+use crate::codec_legs::{caller_norms, far_norms, frame, usage_tokens, Dialect, Norm};
 use crate::door::{
-    arrive, attempt, drive, judge, open, piece, refusal, request, result, session, Answer, Arrived,
-    Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL, PUBLIC, SESSION,
+    arrive, attempt, drive, judge, judge_planted, open, piece, refusal, request, result, session,
+    Answer, Arrived, Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL,
+    PUBLIC, SESSION,
 };
 
 // ── the frames the legs push ────────────────────────────────────────────────────────────────────
@@ -1257,7 +1258,21 @@ fn phase(log: &Log, from: usize, to: usize) -> Log {
     }
 }
 
-fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
+/// The frames of `log` bound for one side, as bytes.
+fn frames(log: &Log, to_far: bool) -> Vec<Vec<u8>> {
+    log.emissions
+        .iter()
+        .filter(|e| e.to_far == to_far)
+        .map(|e| e.frame.clone())
+        .collect()
+}
+
+/// The tool-reply leg, judged to Law 11 (`BUSBAR-1.6.0.md` l.2127-2136: a model's tool call "goes
+/// back to the caller unchanged except for dialect translation"; busbar "answers nothing on the
+/// caller's behalf") and Law 5 (l.1903: a relay "sends the client's bytes"). The far end's
+/// response, its usage report included, reaches the caller frame for frame and byte for byte, and
+/// its units are reported; the caller's own result reaches the far end unchanged and alone.
+fn tool_check(dialect: Dialect, o: &ToolObs, w: &ToolWire) -> Result<String, String> {
     let name = dialect.name();
     if !o.log.anomalies.is_empty() {
         return Err(format!(
@@ -1273,20 +1288,32 @@ fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
             announce.emissions
         ));
     }
-    let call = vec![
-        Norm::ToolOpen("call_x".to_string(), "lookup".to_string()),
-        Norm::ToolArgs("call_x".to_string(), json!({"q": 1})),
-        Norm::ToolClose("call_x".to_string()),
-    ];
-    let relayed = caller_norms(dialect, &announce);
-    if fingerprint(&relayed) != fingerprint(&call) {
+    if frames(&announce, false) != w.announce {
         return Err(format!(
-            "{name}: the call reached the caller as {relayed:?}"
+            "{name}: the call reached the caller as {:?}, not as the far end made it",
+            caller_norms(dialect, &announce)
         ));
     }
-    if o.usage_at != o.announced {
+    let usage = phase(&o.log, o.announced, o.usage_at);
+    let relayed = matches!(frames(&usage, false).as_slice(), [only] if only.as_slice() == w.usage);
+    if usage.emissions.len() != 1 || !relayed {
         return Err(format!(
-            "{name}: the turn's usage was relayed instead of reported"
+            "{name}: the far end's usage report did not reach the caller as it was sent (a relay \
+             withholds no frame of the model's response): {} frame(s) {:?}",
+            usage.emissions.len(),
+            caller_norms(dialect, &usage)
+        ));
+    }
+    let tokens: Vec<(u32, u64)> = o
+        .units
+        .iter()
+        .filter(|u| u.0 < 4)
+        .map(|u| (u.0, u.2))
+        .collect();
+    if tokens != usage_tokens(dialect, w.usage) {
+        return Err(format!(
+            "{name}: the turn's usage was not reported as units: {:?}",
+            o.units
         ));
     }
     if !o.units.contains(&(5, 1, 1)) {
@@ -1296,48 +1323,80 @@ fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
         ));
     }
     let reply = phase(&o.log, o.usage_at, o.log.emissions.len());
-    let carried = far_norms(dialect, &reply);
     let ok = reply.emissions.len() == 1
-        && reply.emissions[0].to_far
-        && matches!(carried.as_slice(), [Norm::ToolResult(id, out)] if id == "call_x" && *out == json!({"ok": true}));
+        && matches!(frames(&reply, true).as_slice(), [only] if *only == w.reply);
     if !ok {
         return Err(format!(
-            "{name}: the caller's own result reached the far end as {carried:?} ({} frame(s))",
+            "{name}: the caller's own result reached the far end as {:?} ({} frame(s))",
+            far_norms(dialect, &reply),
             reply.emissions.len()
         ));
     }
     Ok(format!(
-        "{name}: the far end's call reached the caller as it was made and the door sent the far \
-         end nothing for it; the call counted once; the caller's own result reached the far end \
-         alone (no door-authored response)"
+        "{name}: the far end's call reached the caller byte for byte and the door sent the far \
+         end nothing for it; the far end's usage report reached the caller byte for byte and was \
+         reported as units; the call counted once; the caller's own result reached the far end \
+         unchanged and alone (no door-authored response)"
     ))
+}
+
+/// THE PLANTED WRONG DOOR that answers the call upstream: the caller's result reaches the far end
+/// before the caller sent it (busbar authored it).
+fn plant_answered(o: &ToolObs, w: &ToolWire) -> ToolObs {
+    let mut planted = o.clone();
+    planted.log.emissions.insert(
+        0,
+        Emission {
+            to_far: true,
+            frame: w.reply.clone(),
+            need: w.dialect.ride(),
+            verb: "GET".to_string(),
+            target: w.dialect.socket().to_string(),
+        },
+    );
+    planted.announced += 1;
+    planted.usage_at += 1;
+    planted
+}
+
+/// THE PLANTED WRONG DOOR that withholds the far end's usage report from the caller (the model's
+/// response is the caller's, every frame of it: Law 5, `BUSBAR-1.6.0.md` l.1903; Law 11, l.2129).
+fn plant_withheld(o: &ToolObs) -> ToolObs {
+    let mut planted = o.clone();
+    if planted.usage_at > planted.announced {
+        planted.log.emissions.remove(planted.announced);
+        planted.usage_at -= 1;
+    } else {
+        planted.log.emissions.insert(
+            planted.announced,
+            Emission {
+                to_far: false,
+                frame: b"{}".to_vec(),
+                need: 0,
+                verb: String::new(),
+                target: String::new(),
+            },
+        );
+        planted.usage_at += 1;
+    }
+    planted
 }
 
 fn tool_reply(rig: &Rig, slice: &str) -> bool {
     let mut pass = true;
     for dialect in [Dialect::OpenAi, Dialect::Gemini] {
         let w = tool_wire(dialect);
-        pass &= judge(
+        let answered: &dyn Fn(&ToolObs) -> ToolObs = &|o: &ToolObs| plant_answered(o, &w);
+        let withheld: &dyn Fn(&ToolObs) -> ToolObs = &plant_withheld;
+        pass &= judge_planted(
             slice,
             &format!("{} tool call relayed, never answered", dialect.name()),
             &rig.both(|p| tool_script(p, &w)),
-            &|o: &ToolObs| tool_check(dialect, o),
-            &|o: &ToolObs| {
-                let mut planted = o.clone();
-                planted.log.emissions.insert(
-                    0,
-                    Emission {
-                        to_far: true,
-                        frame: w.reply.clone(),
-                        need: dialect.ride(),
-                        verb: "GET".to_string(),
-                        target: dialect.socket().to_string(),
-                    },
-                );
-                planted.announced += 1;
-                planted.usage_at += 1;
-                planted
-            },
+            &|o: &ToolObs| tool_check(dialect, o, &w),
+            &[
+                ("the call answered upstream", answered),
+                ("the usage report withheld from the caller", withheld),
+            ],
         );
     }
     pass

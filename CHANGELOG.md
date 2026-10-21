@@ -255,14 +255,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `--providers <path>` names the provider catalog (flag > `providers_file:` > `providers.yaml`
   beside the config); both are additive. `--version` adds a `build: profile=… target=…`
   provenance line under the version.
-- **Bedrock `usage.totalTokens` counts the cache tokens AWS counts.** Converse reports
-  `inputTokens` as the non-cached input only and states the full input as
-  `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`; 1.5.5 derived
-  `totalTokens = inputTokens + outputTokens` while emitting the two cache counts beside it, so on a
-  cache-bearing response the published parts summed past the published total and a consumer reading
-  `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
-  frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
-  activity. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
