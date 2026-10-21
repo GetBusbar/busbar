@@ -1277,7 +1277,16 @@ fn call_hosted_in_opens_over_the_fake_hosts_tables_as_call_hosted_does() {
     let instance = by_view
         .take_instance()
         .expect("open answered READY with an instance");
-    // The instance goes before the host, as #1471 holds it to.
-    drop(instance);
+    // The instance is closed before the host goes, as #1471 holds it to.
+    let close = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .unwrap();
+    let closed = super::reply::close_in(
+        close,
+        instance,
+        &super::test_in::TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
+        out_head::<OutHead>(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
     drop(host);
 }
