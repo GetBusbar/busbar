@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 425
+   "test": 426
   }
  },
  "dropped_since_last_write": [],
@@ -4655,6 +4655,13 @@
    "status": "mapped",
    "checks": [
     {
+     "kind": "test",
+     "ref": "the_linked_sigv4_style_signs_the_walked_requests_method_and_query",
+     "proves": "at the busbar boundary, the linked sigv4 auth style signs the walked request in place: the scope names the request's day, region and service, and the Signature recomputes over the walked method, double-encoded path, sorted query and signed headers (the outbound half; the inbound verify rides the sigv4 plugin's own both-ways suite)",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
      "kind": "oracle-cell",
      "ref": "llm|bedrock|bedrock|request|unauthenticated",
      "proves": "the bedrock ingress refusal diffed against 1.5.5",
@@ -4705,7 +4712,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
+   "verdict_detail": "test:the_linked_sigv4_style_signs_the_walked_requests_method_and_query, oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
   },
   {
    "id": "PB-102",
