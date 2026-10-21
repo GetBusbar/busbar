@@ -16,7 +16,9 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
-use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
+};
 use crate::abi::plane::*;
 use crate::caps::ReasonCode;
 
@@ -1415,6 +1417,27 @@ fn exactly_one_section_is_the_declaring_one() {
     let mut unnamed = section(SECTION_DECLARING);
     unnamed.name = z();
     assert_eq!(check_sections(&[unnamed]), f(Rule::Missing, "section.name"));
+}
+
+/// A plane's section may select it without being its verb (`SECTION_SELECTS`, Law 7), never as
+/// well as being its verb. RED: before the bit was known, the selecting section was an unknown code.
+#[test]
+fn a_selecting_section_is_not_the_declaring_one() {
+    assert_eq!(
+        check_sections(&[
+            section(SECTION_DECLARING),
+            section(SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_DECLARING | SECTION_SELECTS)]),
+        f(Rule::Contradiction, "section.flags")
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_SELECTS)]),
+        f(Rule::NotExactlyOne, "section.declaring")
+    );
 }
 
 #[test]

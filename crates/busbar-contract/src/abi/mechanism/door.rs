@@ -240,6 +240,12 @@ pub const SECTION_DECLARING: u32 = 1;
 pub const SECTION_REQUIRED: u32 = 1 << 1;
 /// [`Section::flags`]: the plugin reads the section but does not own its grammar.
 pub const SECTION_CONSUMED: u32 = 1 << 2;
+/// [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7).
+///
+/// Nothing else reads it: the section's grammar stays whoever owns it, and a plane may be selected
+/// by a section it only consumes. A plane's declaring section selects it already, so the two
+/// together are refused, as is the bit on any other kind.
+pub const SECTION_SELECTS: u32 = 1 << 4;
 
 /// One top-level config section the plugin owns or reads.
 #[repr(C)]
