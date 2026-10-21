@@ -63,7 +63,7 @@ ratchets:
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
   move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
-  manual: [oracle]
+  manual: [oracle, selftest-1, selftest-2]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -282,9 +282,10 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The nextest limits: every test is cut at five minutes, except the two whole-battery
-      # selftests, which get twelve and start first.
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(selftest_runs_every_registered_gates_red_proof) | test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
+      # The nextest limits: every test is cut at five minutes, except the whole-registry gate run
+      # and the kind-isolation battery, which get twelve and start first. Every registered gate's
+      # RED proof runs in the selftest-1 and selftest-2 checks, one process per gate.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree) | test(the_kind_isolation_gate_proves_red_in_its_selftest)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
     scope: affected
@@ -357,6 +358,54 @@ checks:
     baseline: target
     needs: [preflight]
     requires: [cc]
+  # EVERY REGISTERED GATE'S RED PROOF (row 191). xtask/src/gates/mod.rs names this the one place
+  # every gate's cases are driven: `cargo test -p xtask` pins the dispatcher with one gate's
+  # self-test, so since baea6a8541 nothing else runs most of them. One `cargo xtask selftest <gate>`
+  # process per gate, one after another, so no two batteries overlap while their work-unit budget
+  # is measured. Two shards on the registry's own `batch` column (`cargo xtask gate --list`):
+  # selftest-1 takes batch 1, selftest-2 every other batch, so a gate in a new batch still runs.
+  # A gate whose proof does not go RED, or that has none, fails its shard by name.
+  # Manual (on demand) until dev's proofs are green (`modernci call measure`); then
+  # both join on.move.
+  selftest-1:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      cargo build -q --locked -p xtask || exit 1
+      list=$(cargo xtask gate --list) || exit 1
+      gates=$(printf '%s\n' "$list" | awk '$2 == "batch" && $3 == 1 { print $1 }')
+      [ -n "$gates" ] || { echo "selftest-1: cargo xtask gate --list named no batch-1 gate"; exit 1; }
+      red=""
+      for g in $gates; do
+        t0=$(date +%s)
+        cargo xtask selftest "$g" || red="$red $g"
+        echo "selftest-1: $g took $(( $(date +%s) - t0 ))s"
+      done
+      [ -z "$red" ] || { echo "selftest-1: proofs that did not prove RED:$red"; exit 1; }
+      echo "selftest-1: every batch-1 gate's red proof went RED as declared"
+    baseline: target
+    # As the gates check: the ceilings and ledgers the batteries plant against read the merge-base.
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-2:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      cargo build -q --locked -p xtask || exit 1
+      list=$(cargo xtask gate --list) || exit 1
+      gates=$(printf '%s\n' "$list" | awk '$2 == "batch" && $3 != 1 { print $1 }')
+      [ -n "$gates" ] || { echo "selftest-2: cargo xtask gate --list named no gate outside batch 1"; exit 1; }
+      red=""
+      for g in $gates; do
+        t0=$(date +%s)
+        cargo xtask selftest "$g" || red="$red $g"
+        echo "selftest-2: $g took $(( $(date +%s) - t0 ))s"
+      done
+      [ -z "$red" ] || { echo "selftest-2: proofs that did not prove RED:$red"; exit 1; }
+      echo "selftest-2: every gate outside batch 1 proved its red as declared"
+    baseline: target
+    requires: [cc, git-history]
+    needs: [gates]
   # On every move (above): the same judge as the dev -> qa oracle (.ci/dev.yaml), here no worse than
   # dev, so a lane cannot land a customer-visible change the 1.5.5 golden does not forgive.
   oracle:
