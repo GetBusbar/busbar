@@ -2087,7 +2087,10 @@ impl LedgerView for SeededLedger {
         .collect())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
         use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
         let mut totals = std::collections::BTreeMap::new();
@@ -2106,17 +2109,20 @@ impl LedgerView for SeededLedger {
                 ..busbar_kernel_ledger::totals::Totals::zero()
             },
         );
-        vec![busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            4,
-            1,
-            1_700_000_000,
-            Vec::new(),
-            totals,
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail")]
+        each(
+            &busbar_kernel_ledger::checkpoint::Checkpoint::seal(
+                4,
+                1,
+                1_700_000_000,
+                Vec::new(),
+                totals,
+                0,
+                0,
+                None,
+            )
+            .expect("an unsigned seal cannot fail"),
+        );
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -2890,14 +2896,13 @@ fn verify_names_a_refused_balance_and_every_other_finding() {
 /// The other two views are this node's too: the seal it made and the marker it sealed.
 ///
 /// Both are on the same composition that answered empty above, so the change is the node's own
-/// act rather than a fixture swapped in behind the seam. The checkpoint is asserted through its
-/// sealed balances, which is the half the journal deliberately does not carry — a view rebuilt
-/// from the chain could not answer it at all.
+/// act rather than a fixture swapped in behind the seam. The checkpoint is the one the node's own
+/// sealer made, served as its chain re-derives it (ARCHITECT A1): the node keeps the seal's head,
+/// and the figures the read serves are the ones the body digest was taken over.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
     use busbar_kernel_ledger::migration::MigrationRecords as _;
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
@@ -2912,56 +2917,36 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
         rate_card_version: 4,
     };
 
-    {
+    let sealed = {
         let mut durability = units.durability.lock().expect("durability lock");
-        let mut totals = std::collections::BTreeMap::new();
-        totals.insert(
-            (
-                TotalsKey::new(
-                    BucketId::new(KEPT.0),
-                    CapDimension::NanoUnits,
-                    BucketScope::All,
-                ),
-                A_DAY,
-            ),
-            busbar_kernel_ledger::totals::Totals {
-                settled: 8_000,
-                ..busbar_kernel_ledger::totals::Totals::zero()
-            },
-        );
-        let checkpoint = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            7,
-            0,
-            1_700_000_100,
-            Vec::new(),
-            totals,
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail");
-        durability
-            .journal_checkpoint(&checkpoint, &token, busbar_contract::caps::StepName::Meter)
-            .expect("the memory-buffered journal takes it");
         durability
             .migration_records(&token, busbar_contract::caps::StepName::Meter)
             .write_marker(&marker)
             .expect("the marker goes on the chain");
-    }
+        durability
+            .seal_checkpoint(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("the node seals")
+    };
 
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let body = |path: &str| -> serde_json::Value {
         serde_json::from_slice(&node.answer(a_ledger_request(path)).body).expect("valid JSON")
     };
 
-    let sealed = body("/api/v1/admin/ledger/checkpoints");
-    let sealed = sealed["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 1, "the seal this node made is not served");
-    assert_eq!(sealed[0]["checkpoint_seq"], 7);
-    assert_eq!(sealed[0]["body_hash_verifies"], true);
+    let served = body("/api/v1/admin/ledger/checkpoints");
+    let served = served["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(served.len(), 1, "the seal this node made is not served");
+    assert_eq!(served[0]["checkpoint_seq"], sealed.checkpoint_seq);
+    assert_eq!(served[0]["wall"], 1_700_000_100);
+    assert_eq!(served[0]["body_hash_verifies"], true);
     assert_eq!(
-        sealed[0]["totals"][0]["settled"], "8000",
-        "the sealed balances the journal does not carry"
+        served[0]["totals"].as_array().map(Vec::len),
+        Some(sealed.totals.len()),
+        "the sealed balances, re-derived"
     );
 
     let served = body("/api/v1/admin/ledger/migration");
@@ -2976,69 +2961,111 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 }
 
 /// THE CHECKPOINTS READ RENDERS THE SEAL'S VERIFICATION (OWNER Q71(3): one keyset, #82): a
-/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and each
-/// refusal is served in its own words — an EDITED seal and an UNSIGNED one.
+/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and one a
+/// node with no signing key sealed is served with its refusal in its own words, UNSIGNED.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    let served = |signing: bool| -> serde_json::Value {
+        let units = crate::root::kernel::ProductionUnits::admin_only(
+            Arc::new(AnsweringDispatch),
+            open_door(),
+        );
+        let token =
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        {
+            let mut durability = units.durability.lock().expect("durability lock");
+            if signing {
+                durability.record = busbar_kernel_audit::AuditChain::new()
+                    .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
+            }
+            durability
+                .seal_checkpoint(
+                    &token,
+                    busbar_contract::caps::StepName::Meter,
+                    1_700_000_100,
+                )
+                .expect("the node seals");
+        }
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let served: serde_json::Value = serde_json::from_slice(
+            &node
+                .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
+                .body,
+        )
+        .expect("valid JSON");
+        served["checkpoints"][0].clone()
+    };
+
+    let signed = served(true);
+    assert_eq!(signed["signed"], true);
+    assert_eq!(signed["seal_verifies"], true);
+    assert_eq!(signed["seal_refusal"], serde_json::Value::Null);
+
+    let unsigned = served(false);
+    assert_eq!(unsigned["signed"], false);
+    assert_eq!(unsigned["seal_verifies"], false);
+    assert_eq!(
+        unsigned["seal_refusal"],
+        format!(
+            "checkpoint {} carries no signature — no key in the keyset can vouch for it",
+            unsigned["checkpoint_seq"]
+        )
+    );
+}
+
+/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE REFUSES THE CHECKPOINTS
+/// READ, and `GET /admin/verify` names it by its sequence number as a finding. Before the ruling
+/// the read served the held copy's figures, edited or not, as `body_hash_verifies: false`; now no
+/// figure is served for a checkpoint the chain cannot vouch for.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_and_named_by_verify() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
     let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    {
-        let mut durability = units.durability.lock().expect("durability lock");
-        durability.record = busbar_kernel_audit::AuditChain::new()
-            .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
-        let signed = durability
+    let stray = {
+        let mut durability = node_book.durability.lock().expect("unpoisoned");
+        let sealed = durability
             .seal_checkpoint(
                 &token,
                 busbar_contract::caps::StepName::Meter,
                 1_700_000_100,
             )
-            .expect("the node seals and signs");
-        // The same seal with a figure edited after it was made, and one nobody signed.
-        let mut edited = signed.clone();
-        edited.checkpoint_seq = 2;
-        let unsigned = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            3,
-            0,
-            1_700_000_200,
-            Vec::new(),
-            std::collections::BTreeMap::new(),
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail");
-        durability.checkpoints.push(edited);
-        durability.checkpoints.push(unsigned);
-    }
+            .expect("the node seals");
+        // The held head is edited after the seal: no record on the chain carries it.
+        let mut stray = sealed.head();
+        stray.checkpoint_seq = sealed.checkpoint_seq + 40;
+        durability.checkpoints = vec![stray.clone()];
+        stray
+    };
 
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let served: serde_json::Value = serde_json::from_slice(
-        &node
-            .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
-            .body,
-    )
-    .expect("valid JSON");
-    let sealed = served["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 3);
-
-    assert_eq!(sealed[0]["signed"], true);
-    assert_eq!(sealed[0]["seal_verifies"], true);
-    assert_eq!(sealed[0]["seal_refusal"], serde_json::Value::Null);
-
-    assert_eq!(sealed[1]["seal_verifies"], false);
-    assert_eq!(
-        sealed[1]["seal_refusal"],
-        "checkpoint 2 does not hash to its own figures — it was EDITED after it was sealed"
+    assert!(
+        matches!(
+            render_ledger_view(KernelVerb::GetLedgerCheckpoints, &view),
+            Err(busbar_core_admin::GovernanceError::Store)
+        ),
+        "no figure is served for a checkpoint the chain cannot vouch for"
     );
 
-    assert_eq!(sealed[2]["signed"], false);
-    assert_eq!(sealed[2]["seal_verifies"], false);
-    assert_eq!(
-        sealed[2]["seal_refusal"],
-        "checkpoint 3 carries no signature — no key in the keyset can vouch for it"
+    let answer = crate::root::units_admin::bound::verify_effect(&view).expect("verify answers");
+    let verified: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let named = format!(
+        "checkpoint {}: no record on the chain carries it",
+        stray.checkpoint_seq
     );
+    assert!(
+        verified["findings"]
+            .as_array()
+            .expect("findings")
+            .iter()
+            .any(|f| f.as_str() == Some(named.as_str())),
+        "the refusal is a finding naming the sequence number: {verified}"
+    );
+    assert_eq!(verified["book_verified"], false, "{verified}");
+    assert_eq!(verified["ok"], false, "{verified}");
 }
 
 /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
@@ -4916,8 +4943,11 @@ impl LedgerView for PricedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
-        Vec::new()
+    fn each_checkpoint(
+        &self,
+        _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -5244,8 +5274,11 @@ fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinn
                 Ok(LegacySnapshot::new())
             }
         }
-        fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
-            Vec::new()
+        fn each_checkpoint(
+            &self,
+            _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+        ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
+            Ok(())
         }
         fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
             None
