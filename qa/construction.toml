@@ -977,7 +977,7 @@ known_sites = [
   # the row moved with the route tables' inputs to the plane driver (status row 82, D2).
   "crates/busbar-kernel/src/plane_driver/route_input.rs :: model",
   "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
-  # `crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}` STRUCK (Q128 arch u38 #28,
+  # STRUCK: the store/vocab.rs site of the `agent:{agent}` literal (Q128 arch u38 #28,
   # GetBusbar/busbar#1259): the plane-named `tool_key`/`agent_key` builders are deleted; the kernel
   # builds no plane-qualified breaker key.
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
