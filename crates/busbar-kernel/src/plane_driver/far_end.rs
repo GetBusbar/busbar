@@ -434,6 +434,11 @@ struct Live {
     /// The plane took the answer as final before its last piece ([`FarEnd::taken`]): the attempt's
     /// budget unit stays spent when it settles mid-read.
     taken: bool,
+    /// A clean end KEPT the budget unit the success spent. The plane's reading of that answer may
+    /// still find it failed inside its own success (a body it cannot render in the caller's
+    /// dialect); an answer so failed that delivered nothing gives the unit back, as 1.5.5 refunded
+    /// every non-delivery (its `budget_guard`, v1.5.5 `engine/mod.rs:229-256`).
+    kept: bool,
     /// The unit's call (#74): the call of the route pass the attempt was claimed under. An answer
     /// the kernel records on its own pass (the plane never read it) is recorded on a pass bound to
     /// this call, never an unbound one (audit XG #5).
@@ -871,9 +876,18 @@ impl EgressFarEnd<'_> {
         }
         live.fault_reason = reason;
         self.record(live, token, classified, now);
+        // A FAULT READ INSIDE A SUCCESS (an in-band error after a success head, a body the plane
+        // could not render) is the breaker's compensating transient and nothing more: its head was
+        // already counted as the answer it was, so it counts no upstream failure, as a cut after
+        // the head counts none ([`Self::cut`]). 1.5.5 recorded the stream's terminal error on the
+        // breaker, with its trip, and emitted no `busbar_upstream_failures_total` for it (v1.5.5
+        // `crates/busbar/src/proxy/response_body.rs:451-479`; the oracle's in-band stream-error
+        // cells, `stream_upstream_error@fixture`).
+        let inside_success =
+            held.after_success && matches!(held.class, Some(WireStatusClass::Success));
         let hard = matches!(classified.disposition, Disposition::HardDown);
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
-        if !client_fault && !(hard && live.passthrough) {
+        if !inside_success && !client_fault && !(hard && live.passthrough) {
             let pool = Self::metric_pool(&live.pool, &live.member).to_string();
             e.telemetry.upstream_failure_stated(
                 &pool,
@@ -966,6 +980,7 @@ impl EgressFarEnd<'_> {
             stated: None,
             fault_reason: None,
             taken: false,
+            kept: false,
             call,
         });
         Pick::Member {
@@ -1635,6 +1650,7 @@ impl EgressFarEnd<'_> {
                 // #77(2)); a buffered answer delivered nothing (v1.5.5 `engine/mod.rs:329-353`).
                 self.egress.breaker.refund_budget(live.member.destination);
             }
+            live.kept = clean && live.spent;
             live.spent = false;
             live.ended = true;
             // A SUCCESS THAT ENDED CLEANLY waits for the plane's reading of its last piece: the
@@ -1912,6 +1928,13 @@ impl FarEnd for EgressFarEnd<'_> {
         };
         if fault != FAULT_NONE && live.unjudged.is_some() {
             live.fault_reason = reason.map(str::to_string);
+        }
+        // A clean end that the plane reads as failed delivered nothing (a buffered answer reaches
+        // the caller whole or not at all; a streamed one that delivered a byte is no refund, #62):
+        // the unit its success kept is given back, once.
+        if fault != FAULT_NONE && live.ended && live.kept && !live.delivered && !live.taken {
+            live.kept = false;
+            self.egress.breaker.refund_budget(live.member.destination);
         }
         // THE DEFERRAL (ARCHITECT row 68): a relayed non-success answer is recorded on the plane's
         // FIRST STATED reading of it. A piece the plane reads with no reading (`FAULT_NONE`) keeps

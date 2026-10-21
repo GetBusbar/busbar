@@ -719,6 +719,17 @@ impl<'s> DoorSteps<'s> {
         self.lock().downgraded.clone()
     }
 
+    /// Whether the unit's far end CUT its STREAMED answer after its head, as the driver told the
+    /// steps at the unit's audit ([`DriverSteps::answered`]): the caller asked for the answer
+    /// streamed (`ROUTE_STREAM`), and its connection failed, or its send's deadline passed, before
+    /// the answer completed. A whole (non-stream) answer cut by its far end is not one. Neither
+    /// changes the bill: the unit bills what its plane ledgered (owner ruling 2026-10-20).
+    #[must_use]
+    pub fn stream_cut(&self) -> bool {
+        let u = self.lock();
+        u.answered.1 && u.stream
+    }
+
     /// WHETHER A BUDGET DOWNGRADE MAY SEND THE UNIT TO `to` (1.5.5's `admit_check` guard, hop by
     /// hop): `to` is a pool of this section not yet visited, the visited set is smaller than the
     /// pool count, and the caller's grant reaches `to` and every pool its `on_exhausted` fallback
@@ -895,6 +906,13 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    fn pool_holds(&self, pool: &[u8], member: &str) -> bool {
+        std::str::from_utf8(pool)
+            .ok()
+            .and_then(|pool| self.pools.pools().get(pool))
+            .is_some_and(|members| members.iter().any(|m| m == member))
+    }
+
     fn decoded(&self, _ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
         let mut u = self.lock();
         u.op = Some(op);
@@ -919,6 +937,8 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn answered(&self, _ctx: &UnitCtx, streamed: bool, cut: bool) {
+        // A stream the far end cut bills what its plane ledgered, as any other: the cut is a fact
+        // of the unit's end, never a reason to drop its usage (owner ruling 2026-10-20).
         self.lock().answered = (streamed, cut);
     }
 
