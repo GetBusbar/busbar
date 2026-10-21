@@ -2845,7 +2845,10 @@ pub fn door_mounts(
                 _ => None,
             };
             // The fallback plane's dialect index is unread for a unit-less refusal: the plane
-            // renders the target by its own path rule.
+            // renders the target by its own path rule. A path under a mounted plane's claim is
+            // never the fallback's: with no line of that plane taking it, the kernel answers in the
+            // mounted plane's own wire format.
+            let fallback = fallback.filter(|_| !r.mounted);
             let (plane, dialect) = owner.or_else(|| fallback.map(|plane| (plane, 0)))?;
             let rendered = routes.served.planes[plane].driver.refuse_kernel(
                 r.reason,
