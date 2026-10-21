@@ -3821,7 +3821,12 @@ fn registration_anchors(
     let pin = busbar_kernel::trust::section::parse_entry(&at, registration, &served.trust_keys)?
         .pin
         .filter(|p| p.peer_key)
-        .and_then(|p| p.key);
+        .and_then(|p| p.key)
+        .map(|written| {
+            busbar_contract::transport::trust::canonical_key_pin(&written)
+                .map_err(|_| peer_key_pin_refusal(&at, &served.trust_keys))
+        })
+        .transpose()?;
     // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4f): sealed beside
     // its pin, honoured by the connector's one guard for this member's need alone.
     let private_reach =
@@ -3857,6 +3862,21 @@ fn registration_anchors(
         client_identity,
         private_reach,
     })
+}
+
+/// THE REFUSAL OF A PEER-KEY PIN THAT NAMES NO DIGEST, at the registration `at`
+/// (`` `<section>.<name>` ``): the field, and the form it takes. The value is not echoed: what was
+/// pasted there may not be a public key digest at all.
+fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl]) -> String {
+    let k = keys
+        .iter()
+        .find(|k| k.role == busbar_contract::plane::TrustRole::Pin)
+        .map_or("pin", |k| k.key);
+    format!(
+        "{at}: `{k}.key:` is not a key pin. Write `sha256/<base64>`: the standard, padded base64 \
+         of the 32-byte SHA-256 digest of the far end's certificate SubjectPublicKeyInfo (the \
+         plain `<base64>` of the same digest is also accepted)."
+    )
 }
 
 #[cfg(test)]

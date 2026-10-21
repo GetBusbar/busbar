@@ -221,7 +221,8 @@ pub struct Connection {
     upgraded: bool,
     /// The framer's own error, when it is what failed the open connection.
     framer_error: Option<String>,
-    /// The far end's key the handshake is held to (the dial's sealed anchors); `None` = no pin.
+    /// The far end's key the handshake is held to (the dial's sealed anchors), in its canonical
+    /// spelling; `None` = no pin.
     key_pin: Option<String>,
     /// Raised when the handshake presented busbar's client identity.
     presented: Arc<std::sync::atomic::AtomicBool>,
@@ -1697,6 +1698,8 @@ impl Connection {
             .and_then(|chain| chain.first())
             .and_then(|leaf| crate::tls::client::peer_key_pin(leaf.as_ref()));
         self.established.client_identity = self.presented.load(std::sync::atomic::Ordering::SeqCst);
+        // Both sides are the canonical spelling (`trust::key_pin`, `trust::canonical_key_pin`), so
+        // they compare as the digest they spell, and the facts report the canonical one.
         match &self.key_pin {
             Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
                 Err(Failure::Refused(PIN_REFUSED.into()))

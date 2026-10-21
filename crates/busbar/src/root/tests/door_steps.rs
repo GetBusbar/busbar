@@ -8548,3 +8548,70 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         "a membership probe on the request path allocates nothing"
     );
 }
+
+/// A plane's trust keys whose pin, under mechanism `peer`, pins the far end's key.
+const PEER_KEY_PIN: &[busbar_contract::plane::TrustKeyDecl] =
+    &[busbar_contract::plane::TrustKeyDecl {
+        key: "pin",
+        role: busbar_contract::plane::TrustRole::Pin,
+        fingerprint: false,
+        default: None,
+        mechanisms: &[busbar_contract::plane::PinMechanismDecl {
+            token: "peer",
+            root: true,
+            peer_key: true,
+        }],
+    }];
+
+/// The anchors the host reads off registration `fs` writing `pin: {mechanism: peer, key: <key>}`.
+fn peer_pinned(key: &str) -> Result<busbar_contract::transport::trust::Anchors, String> {
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        section: "upstreams",
+        trust_keys: PEER_KEY_PIN.to_vec(),
+        ..Default::default()
+    };
+    let registration: serde_yaml::Value = serde_yaml::from_str(&format!(
+        "url: 'https://far.example/x'\npin: {{mechanism: peer, key: '{key}'}}"
+    ))
+    .expect("yaml");
+    super::registration_anchors(
+        "fs",
+        &registration,
+        busbar_contract::conn::NeedId(0),
+        &served,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+}
+
+/// A REGISTRATION'S PEER-KEY PIN IS READ TO ITS CANONICAL SPELLING by the host: the documented
+/// `sha256/<base64>` and its plain base64 alias seal the same pin. RED: a pin that names no digest
+/// (a stand-in such as `sha256/BASE=`) refuses the load in these exact words, naming the
+/// registration and the field and stating the form; the value itself is not echoed. Before, it was
+/// sealed as written and every connection to the far end was refused.
+#[test]
+fn red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its_form() {
+    let canonical = busbar_contract::transport::trust::key_pin(b"a subject public key info");
+    let plain = canonical
+        .strip_prefix("sha256/")
+        .expect("tagged")
+        .to_owned();
+    for written in [&canonical, &plain] {
+        let anchors = peer_pinned(written).expect("a pin of one digest reads");
+        assert_eq!(
+            anchors.key_pin.as_deref(),
+            Some(canonical.as_str()),
+            "{written}"
+        );
+    }
+    for bad in ["sha256/BASE=", "sha1/AAAA", "not a pin"] {
+        let refused = peer_pinned(bad).expect_err("refused");
+        assert_eq!(
+            refused,
+            "`upstreams.fs`: `pin.key:` is not a key pin. Write `sha256/<base64>`: the standard, \
+             padded base64 of the 32-byte SHA-256 digest of the far end's certificate \
+             SubjectPublicKeyInfo (the plain `<base64>` of the same digest is also accepted).",
+            "{bad}"
+        );
+        assert!(!refused.contains(bad), "the value is not echoed: {refused}");
+    }
+}
