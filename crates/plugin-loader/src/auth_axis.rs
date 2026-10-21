@@ -227,6 +227,31 @@ impl AuthRows {
             .collect()
     }
 
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first credential reader, in
+    /// [`Self::credential_readers`]' order, whose Statement states an issued shape (its
+    /// `MARK_WORD_ISSUED_*` marks, checked at load), as its first credential kind and that shape.
+    /// Read from the Statements, opening no instance: the build's fact, whatever the chain names.
+    #[must_use]
+    pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
+            let alias = &row.manifest.alias;
+            let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
+                return None;
+            };
+            let facts = plugin.context::<AuthFacts>()?;
+            if facts.facts & FACT_READS_CREDENTIALS == 0 {
+                return None;
+            }
+            let kind = facts.credential_kinds.first()?.clone();
+            facts.issued.clone().map(|shape| (kind, shape))
+        })
+    }
+
     /// The carriers the auth row answering `module` states (its Statement's carrier word marks, in
     /// order); none when no row answers it, its door will not load, or it states none.
     #[must_use]
@@ -460,6 +485,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn credential_readers(&self) -> Vec<String> {
         AuthRows::credential_readers(self)
+    }
+
+    fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        AuthRows::issued_credential(self)
     }
 
     fn carriers(&self, module: &str) -> Vec<String> {
