@@ -43,8 +43,8 @@ fn selftest_proves_a_named_gates_red_proof() {
     // are pinned by a single gate: the named `selftest <gate>` arm and the `gate <name> --selftest`
     // spelling both reach that gate's red proof and exit 0. The all-gates `selftest` arm is the
     // same loop over the registry, and every gate's proof is judged by itself, gate by gate, in
-    // the `selftest-1` and `selftest-2` checks (.ci/default.yaml), which run `xtask selftest
-    // <gate>` for each registered gate. Running the whole registry from here as well cost about
+    // the `selftest-1` .. `selftest-4` checks (.ci/dev.yaml), which run `xtask selftest
+    // --shard=K/4`: one `xtask selftest <gate>` process for each registered gate. Running the whole registry from here as well cost about
     // five minutes of runner time per hop for verdicts those checks already hold, and it is the
     // only reason this case ever went red on a branch that reds some OTHER gate. An unknown gate
     // name is refused with 2 in

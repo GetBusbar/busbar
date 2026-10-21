@@ -63,7 +63,7 @@ ratchets:
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
   move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
-  manual: [oracle, selftest-1, selftest-2]
+  manual: [oracle, selftest-1, selftest-2, selftest-3, selftest-4]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -360,49 +360,42 @@ checks:
     requires: [cc]
   # EVERY REGISTERED GATE'S RED PROOF (row 191). xtask/src/gates/mod.rs names this the one place
   # every gate's cases are driven: `cargo test -p xtask` pins the dispatcher with one gate's
-  # self-test, so since baea6a8541 nothing else runs most of them. One `cargo xtask selftest <gate>`
-  # process per gate, one after another, so no two batteries overlap while their work-unit budget
-  # is measured. Two shards on the registry's own `batch` column (`cargo xtask gate --list`):
-  # selftest-1 takes batch 1, selftest-2 every other batch, so a gate in a new batch still runs.
-  # A gate whose proof does not go RED, or that has none, fails its shard by name.
-  # Manual (on demand) until dev's proofs are green (`modernci call measure`); then
-  # both join on.move.
+  # self-test, so since baea6a8541 nothing else runs most of them. `cargo xtask selftest
+  # --shard=K/4` takes the K-th of 4 slices of the registry (dealt round-robin, every registered
+  # gate in exactly one shard, a new gate included with no list to edit), one `xtask selftest
+  # <gate>` process per gate, one after another, so no two batteries overlap while their work-unit
+  # budget is measured. A gate whose proof does not go RED, or that has none, fails its shard by
+  # name. The ceilings and ledgers the batteries plant against read the merge-base, as the gates
+  # check does. Absolute on dev's head in .ci/dev.yaml (DEV-GREEN); here on demand.
   selftest-1:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo build -q --locked -p xtask || exit 1
-      list=$(cargo xtask gate --list) || exit 1
-      gates=$(printf '%s\n' "$list" | awk '$2 == "batch" && $3 == 1 { print $1 }')
-      [ -n "$gates" ] || { echo "selftest-1: cargo xtask gate --list named no batch-1 gate"; exit 1; }
-      red=""
-      for g in $gates; do
-        t0=$(date +%s)
-        cargo xtask selftest "$g" || red="$red $g"
-        echo "selftest-1: $g took $(( $(date +%s) - t0 ))s"
-      done
-      [ -z "$red" ] || { echo "selftest-1: proofs that did not prove RED:$red"; exit 1; }
-      echo "selftest-1: every batch-1 gate's red proof went RED as declared"
+      cargo xtask selftest --shard=1/4
     baseline: target
-    # As the gates check: the ceilings and ledgers the batteries plant against read the merge-base.
     requires: [cc, git-history]
     needs: [gates]
   selftest-2:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo build -q --locked -p xtask || exit 1
-      list=$(cargo xtask gate --list) || exit 1
-      gates=$(printf '%s\n' "$list" | awk '$2 == "batch" && $3 != 1 { print $1 }')
-      [ -n "$gates" ] || { echo "selftest-2: cargo xtask gate --list named no gate outside batch 1"; exit 1; }
-      red=""
-      for g in $gates; do
-        t0=$(date +%s)
-        cargo xtask selftest "$g" || red="$red $g"
-        echo "selftest-2: $g took $(( $(date +%s) - t0 ))s"
-      done
-      [ -z "$red" ] || { echo "selftest-2: proofs that did not prove RED:$red"; exit 1; }
-      echo "selftest-2: every gate outside batch 1 proved its red as declared"
+      cargo xtask selftest --shard=2/4
+    baseline: target
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-3:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      cargo xtask selftest --shard=3/4
+    baseline: target
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-4:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      cargo xtask selftest --shard=4/4
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
@@ -445,6 +438,6 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
-    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
-    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
-    outputs: [target/oracle/reports/]
+    # The candidate recording, handed to any check that `needs: [oracle]` (content-addressed, laid
+    # into the needing check's slot on any machine).
+    outputs: [target/oracle/recordings]

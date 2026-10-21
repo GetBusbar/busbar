@@ -708,13 +708,13 @@ impl Registration {
 ///
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
-/// The `selftest-1` and `selftest-2` checks (.ci/default.yaml) run `xtask selftest <gate>` for
-/// every registered gate, split on the registry's `batch` column (`cargo xtask gate --list` names
-/// the parts: batch 1, then every other batch), and that is the ONE place every gate's cases are
-/// driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's self-test, never all
-/// of them (verification runs once per input). Those checks are the only place
-/// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --
-/// and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
+/// The `selftest-1` .. `selftest-4` checks (.ci/dev.yaml on dev's head; on demand in
+/// .ci/default.yaml) run `xtask selftest --shard=K/4`, which takes `xtask selftest <gate>` for every
+/// registered gate in its slice (`cli::shard_of`: the registry dealt round-robin, every gate in
+/// exactly one shard), and that is the ONE place every gate's cases are driven: `cargo test -p
+/// xtask` pins the dispatcher's arms with one gate's self-test, never all of them (verification
+/// runs once per input). Those checks are the only place several of these gates are ever proven
+/// RED-able, so the shard cannot simply be made smaller -- and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
 /// on a runner whose ssh session dies at about fifty and whose gate job was cancelled at
 /// twenty-five. Nothing measured it. A rule that grew a
 /// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
@@ -758,8 +758,8 @@ impl Registration {
 ///   [`cpu::thread`]) on the thread that ran it, just before and just after the battery
 ///   ([`ruler_cpu`]).
 /// * BATTERIES NEVER OVERLAP IN ONE PROCESS while they are measured. `xtask selftest <gate>` takes
-///   one battery and `xtask selftest` takes them one after another; the `selftest-1` and
-///   `selftest-2` checks run `xtask selftest <gate>`, ONE PROCESS PER GATE. A window that opens
+///   one battery and `xtask selftest` takes them one after another; the `selftest-1` ..
+///   `selftest-4` checks run `xtask selftest --shard=K/4`, ONE PROCESS PER GATE. A window that opens
 ///   while another is open makes BOTH readings refused ([`BatteryReading::Refused`]) — an overlap
 ///   is never guessed around.
 /// * PER-CASE FIGURES (`XTASK_SELFTEST_TIMING`) are the worker thread's own wall clock and CPU, for
