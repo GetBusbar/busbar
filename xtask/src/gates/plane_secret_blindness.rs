@@ -227,24 +227,34 @@ impl Gate for PlaneSecretBlindnessGate {
 
         // RED: a counted exposure row only shrinks. One more `expose` line in a file the
         // ledger already counts is over its count, though the (rule, file, item) key is on record.
-        let counted = "crates/busbar-llm/src/engine/build_runtime.rs";
-        if let Ok(text) = cx.read(counted) {
-            let mut ov = Overlay::new();
-            ov.set(
-                counted,
-                format!(
-                    "{text}\npub fn planted_more(k: &busbar_contract::redacted::Secret<String>) -> usize {{\n    k.expose(&busbar_kernel::seal::lend()).len()\n}}\n"
-                ),
-            );
-            report.push(crate::gates::prove_rows_red(
-                cx,
-                self,
-                "one more expose line in a file the ledger counts is RED: a counted row never grows",
-                &[ROW_EXPOSES],
-                ov,
-                &[counted, "over its counted row"],
-            ));
-        }
+        // The ledger's last counted rows drained with the retired engine crate (DEV-GREEN row 83),
+        // so the counted row is planted with its file: one `expose` line counted, a second beside
+        // it is over the count though the (rule, file, item) key is on record.
+        let counted = "crates/busbar-plane-llm/src/zz_planted_counted.rs";
+        let one =
+            "pub fn planted_one(k: &busbar_contract::redacted::Secret<String>) -> usize {\n    \
+                   k.expose(&busbar_kernel::seal::lend()).len()\n}\n";
+        let more =
+            "pub fn planted_more(k: &busbar_contract::redacted::Secret<String>) -> usize {\n    \
+                    k.expose(&busbar_kernel::seal::lend()).len()\n}\n";
+        let ledger = cx.read(SPEC.ledger).unwrap_or_default();
+        let mut ov = Overlay::new();
+        ov.set(counted, format!("{one}{more}"));
+        ov.set(
+            SPEC.ledger,
+            format!(
+                "{ledger}\n[[finding]]\nrule = \"{ROW_EXPOSES}\"\nfile = \"{counted}\"\nitem = \
+                 \"expose\"\ncount = 1\n"
+            ),
+        );
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "one more expose line in a file the ledger counts is RED: a counted row never grows",
+            &[ROW_EXPOSES],
+            ov,
+            &[counted, "over its counted row"],
+        ));
 
         // RED: the forbidden-name census. Rename the accessor at its home and the list would name
         // an API the tree no longer has; the old gate never asked, so a rename emptied it silently.

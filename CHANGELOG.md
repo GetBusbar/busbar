@@ -536,6 +536,7 @@ minted secret carries over.
   1.6.0 migration guide](docs/migration-1.6.md).
 
 - 1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.
+- 1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
 - 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
   A request that arrives just before a window boundary can be charged on a group bucket another
   request has already rolled into the next window. 1.5.5 refunded such a request only against a
@@ -765,11 +766,6 @@ each dialect translates, field by field, is listed in the generated
   `403 forbidden` a missing scope gets. `admin_scope: read-only | full` stay the 1.5.5 shorthands
   and a binding without `verbs:` behaves exactly as before. A name the table does not declare fails
   `--validate`/boot. See [the configuration reference](docs/configuration.md).
-- **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
-  operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
-  counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
-  `# HELP` and `# TYPE` lines, summed over every plugin, and is 0 on a healthy node. Nothing that
-  1.5.5 exposed changed. See [the observability guide](docs/observability.md).
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
