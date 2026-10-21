@@ -27,7 +27,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{MessageView, RequestView};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
@@ -900,7 +900,9 @@ impl PlaneCalls for Double {
     /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project, and
     /// `/refuses-rewrite` refuses to project with a rewrite (one naming a model other than the
     /// routed one, say) while it projects the caller's own request; `/faults-rewrite` answers FAULT
-    /// to a project with a rewrite (a redaction the plane cannot apply). The
+    /// to a project with a rewrite (a redaction the plane cannot apply), and `/unparseable` to every
+    /// project (a body whose document does not parse); `/broken-answer` is a FAULT the host minted
+    /// over an answer that broke the kind's rule. The
     /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
     /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
     /// gate for it.
@@ -918,6 +920,14 @@ impl PlaneCalls for Double {
             .unwrap()
             .push((body.clone(), rewrite.clone()));
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
+            // The plane's own FAULT: its door mirrors the outcome into the `out` head.
+            out.head.outcome = RawOutcome::of(Outcome::Fault);
+            return Outcome::Fault;
+        }
+        if target == b"/broken-answer" {
+            // A FAULT the HOST minted: the plane answered READY, and the loader's check of that
+            // answer against its kind's rule refused it (`a plugin answer broke its kind's rule`).
+            out.head.outcome = RawOutcome::of(Outcome::Ready);
             return Outcome::Fault;
         }
         if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {

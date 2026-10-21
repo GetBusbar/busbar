@@ -2628,14 +2628,32 @@ pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
 ///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
 ///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
 ///
-/// A FAULT answered to a `project` where no rewrite hook is configured and no rewrite was carried
-/// (`faultable` false) is no 500: the kernel's hooks judge the request as 1.5.5's judged a body it
-/// could not parse, a Null body, and the request proceeds (v1.5.5 `proxy/engine/mod.rs:957-961`).
+/// A FAULT the PLANE answered ([`project_fault_answered`]) to a `project` where no rewrite hook is
+/// configured and no rewrite was carried (`faultable` false) is no 500: the kernel's hooks judge the
+/// request as 1.5.5's judged a body it could not parse, a Null body, and the request proceeds
+/// (v1.5.5 `proxy/engine/mod.rs:957-961`). A FAULT the HOST minted (an answer that broke its kind's
+/// rule, a frame refused before the crossing, a quarantined instance) is a broken plane: the unit
+/// fails closed, unreadable, as any refused `project` does.
 ///
 /// This is the one home of the mapping; the kernel holds no status or words of its own for it.
 #[must_use]
 pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable: bool) -> bool {
     faultable && matches!(outcome, super::mechanism::call::Outcome::Fault)
+}
+
+/// WHETHER A FAULT `project` IS THE PLANE'S OWN ANSWER, read off what the call left in `out`: the
+/// plane's door mirrors the outcome it returns into its `out` head (`OutHead::outcome`, which the
+/// loader requires to equal the return value), so a FAULT the plane answered reads FAULT there too.
+/// A FAULT the host minted leaves the head as the plane wrote it for the answer that broke its
+/// kind's rule (READY, say), or as the host lent it (zero) where no crossing was made. No layout
+/// changes: the marker is the head the call contract already carries.
+#[must_use]
+pub const fn project_fault_answered(
+    outcome: super::mechanism::call::Outcome,
+    out: &ProjectOut,
+) -> bool {
+    use super::mechanism::call::{Outcome, RawOutcome};
+    matches!(outcome, Outcome::Fault) && out.head.outcome.0 == RawOutcome::of(Outcome::Fault).0
 }
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
