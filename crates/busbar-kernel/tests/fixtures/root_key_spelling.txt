@@ -7,7 +7,7 @@
 # has no slack for the line the re-point costs. A row only ever goes DOWN, to the measure.
 crates/busbar-kernel/src/config/migrate.rs 10
 crates/busbar-kernel/src/config/mod.rs 1
-crates/busbar-kernel/src/plane/registry.rs 1
+crates/busbar-kernel/src/plane_driver/doors.rs 1
 crates/busbar-kernel/src/plugin_routes.rs 1
 crates/busbar-kernel/src/preflight.rs 1
 crates/busbar/src/linked_gen.rs 1
