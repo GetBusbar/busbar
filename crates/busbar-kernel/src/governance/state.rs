@@ -148,6 +148,9 @@ impl GovState {
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
             self_mint_lock: std::sync::Mutex::new(()),
+            self_mint_holds: std::sync::atomic::AtomicBool::new(
+                SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
+            ),
             store_calls: std::sync::OnceLock::new(),
         })
     }
