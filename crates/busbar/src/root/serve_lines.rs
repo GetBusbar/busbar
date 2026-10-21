@@ -99,7 +99,10 @@ pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
             .snapshot
             .claims
             .iter()
-            .position(|c| c.carrier == carrier)
+            // A raw affix (`CLAIM_RAW_AFFIX`) mounts no route on any carrier.
+            .position(|c| {
+                c.carrier == carrier && c.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
+            })
             .and_then(|i| u32::try_from(i).ok())
             .map(|claim| (p, claim))
     })

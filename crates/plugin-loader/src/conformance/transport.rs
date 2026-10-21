@@ -46,8 +46,9 @@
 //!                            "refused" too (and no "handoff" object) */ | {
 //!                 "bytes": "<a refusal>", "wire": "<the wire bytes it becomes>",
 //!                 "begin":   "<what begin on the accept side writes>",       /* optional (h2) */
-//!                 "refused": true, /* optional: the refuse op answers REFUSED (grpc refuses a
-//!                                     call, never a connection); "wire" is then "" */
+//!                 "refused": true, /* optional: the refuse op answers REFUSED (a call-per-path
+//!                                     wire refuses a call, never a connection); "wire" is
+//!                                     then "" */
 //!                 "ends": true,                                       /* optional: it closes */
 //!                 "opening": "<far bytes the accepted framing reads first>",  /* optional */
 //!                 "answer":  "<what reading them writes>" },                 /* optional */
@@ -707,9 +708,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let target = opt_text(&dial["target"], "dial.target");
     let opening = opt_text(&dial["opening"], "dial.opening");
     let mut tight = Sink::tight();
-    // A wire whose dialled framing holds a deadline (http: the attempt's one clock; grpc: the
-    // call's) states which answers carry YIELD_HAS_DEADLINE: `"deadline": ["begin", "emit",
-    // "ingest"]` (any of them), or `true` for the emit's alone.
+    // A wire whose dialled framing holds a deadline (a request-response wire: the attempt's one
+    // clock; a call-per-path wire: the call's) states which answers carry YIELD_HAS_DEADLINE:
+    // `"deadline": ["begin", "emit", "ingest"]` (any of them), or `true` for the emit's alone.
     let armed = |step: &str| -> u32 {
         let on = match &dial["deadline"] {
             serde_json::Value::Bool(b) => *b && step == "emit",
@@ -869,8 +870,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 Want::Is(yielded_line(&answer, &[], &[], 0, false)),
             ));
         }
-        // A wire that refuses a call but never a connection (grpc) states `"refused": true`: the
-        // refuse op answers REFUSED and writes nothing.
+        // A wire that refuses a call but never a connection (a call-per-path wire) states
+        // `"refused": true`: the refuse op answers REFUSED and writes nothing.
         let refuses_none = refuse["refused"].as_bool().unwrap_or(false);
         r.line("refuse", sinkfuls(wire.len(), TIGHT_WIRE), || {
             pump(&p, token, Op::Refuse(&bytes), &mut tight).line()

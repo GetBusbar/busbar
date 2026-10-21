@@ -116,6 +116,7 @@
 //!   instead. (H6 fed it on 2026-10-07; the limit stands for the next such shape.)
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::ship_ready::{self, Posture};
@@ -214,13 +215,14 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // Q71(1)) are deleted; four 2026-09-26 (owner answer Q71(2): verify, plane_facts,
     // plane_record_write, commit_upgrade) are bound and served.
     //
-    // THE KERNEL-LEDGER SURVIVORS, 2026-10-07 (Q128, kernel-ledger audit finding 3; finding 1 for
-    // the retirement row): kept, not wired, each row's `switch` says what retires it. The rest of
-    // that sweep is deleted, not registered (see qa/unconstructed.toml).
+    // THE KERNEL-LEDGER SURVIVORS, 2026-10-07 (Q128, kernel-ledger audit finding 3): kept, not
+    // wired, each row's `switch` says what retires it. The rest of that sweep is deleted, not
+    // registered (see qa/unconstructed.toml). `ledger-book-retirement` STRUCK (row 159): the
+    // checkpoint sealer retires every window past 1.5.5's 31-day horizon through
+    // `Ledger::retire_windows`; the row stays declared as a constructed guard.
     "ledger-recording-rows",
     "ledger-history-opening",
     "ledger-is-dual-writing",
-    "ledger-book-retirement",
 ];
 
 /// The words a release posture's refusal of a declared-unshipped row carries.
@@ -379,9 +381,78 @@ fn declaration_faults(caps: &[Capability]) -> Vec<String> {
 /// One file, read once, carrying the two facts every rule below needs.
 struct Scanned {
     rel: String,
-    lines: Vec<ScopeLine>,
+    /// The `(path, bytes)` key [`scope_lines`] memoised `lines` under; [`needle_hits`] keys on it.
+    key: FileKey,
+    lines: Arc<Vec<ScopeLine>>,
     /// A path that is test code whatever its contents say.
     test_path: bool,
+}
+
+/// THE PER-FILE READING, MEMOISED ON THE FILE'S PATH AND BYTES.
+///
+/// Every capability scopes `crates`, so every run of this gate split all of `crates/**/*.rs` (some
+/// 40 MB) into [`test_scope`] lines and then put each capability's construct needles to every one
+/// of those lines. A self-test case is a run over a tree one planted file away from the last, so
+/// the battery paid the whole tree's reading once per case, and went over its work-unit budget
+/// (11 612 of 11 269 on ModernCI, 2026-10-18) doing it. Both readings are pure functions — of
+/// `(path, bytes)`, and of `(path, bytes, needles)` — so every case after the first reads only what
+/// it planted. The verdict over the mentions (which counts, which is rejected and why) is still
+/// taken fresh on every run.
+type Cell<T> = Arc<OnceLock<Arc<T>>>;
+/// `(path, bytes)` key -> the file's [`test_scope`] lines.
+static SCOPE_MEMO: OnceLock<Mutex<BTreeMap<FileKey, Cell<Vec<ScopeLine>>>>> = OnceLock::new();
+type HitsMemo = Mutex<BTreeMap<(FileKey, Vec<String>), Cell<Vec<usize>>>>;
+/// `((path, bytes) key, needles)` -> the indices of the lines whose `counted` copy carries one.
+static HITS_MEMO: OnceLock<HitsMemo> = OnceLock::new();
+
+/// The memo key of one file: its length and two independent hashes of its path and bytes.
+type FileKey = (usize, u64, u64);
+
+fn file_key(rel: &str, text: &str) -> FileKey {
+    use std::hash::{Hash, Hasher};
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    (rel, text).hash(&mut a);
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    (text.len(), rel, text).hash(&mut b);
+    0xc0de_u32.hash(&mut b);
+    (text.len(), a.finish(), b.finish())
+}
+
+/// The memo's cell for `key`, handed out under the lock and FILLED OUTSIDE it by the caller, so
+/// concurrent cases that need the same reading take one between them instead of one each.
+fn cell<K: Ord, T>(memo: &'static OnceLock<Mutex<BTreeMap<K, Cell<T>>>>, key: K) -> Cell<T> {
+    memo.get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone()
+}
+
+/// [`test_scope`] over `text`, memoised under [`file_key`]`(rel, text)`.
+fn scope_lines(rel: &str, text: &str) -> (FileKey, Arc<Vec<ScopeLine>>) {
+    let key = file_key(rel, text);
+    let lines = cell(&SCOPE_MEMO, key)
+        .get_or_init(|| Arc::new(test_scope(text)))
+        .clone();
+    (key, lines)
+}
+
+/// The indices, in line order, of `f`'s lines whose `counted` copy carries ANY of `needles` —
+/// memoised on the file's key and the needles, which is everything the answer reads.
+fn needle_hits(f: &Scanned, needles: &[String]) -> Arc<Vec<usize>> {
+    cell(&HITS_MEMO, (f.key, needles.to_vec()))
+        .get_or_init(|| {
+            Arc::new(
+                f.lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| needles.iter().any(|n| line.counted.contains(n)))
+                    .map(|(i, _)| i)
+                    .collect(),
+            )
+        })
+        .clone()
 }
 
 /// A file under a `tests/` directory, or named `tests.rs` / `*_tests.rs`, is test code. This is the
@@ -407,8 +478,10 @@ fn scan_root(cx: &Ctx, root: &str) -> Result<Vec<Scanned>, String> {
         .into_iter()
         .map(|f| {
             let rel = f.rel_str();
+            let (key, lines) = scope_lines(&rel, &f.text);
             Scanned {
-                lines: test_scope(&f.text),
+                key,
+                lines,
                 test_path: path_is_test(&rel),
                 rel,
             }
@@ -534,14 +607,11 @@ fn is_word_char(c: char) -> bool {
 fn mentions(files: &[&Scanned], cap: &Capability) -> Vec<Mention> {
     let mut out = Vec::new();
     for f in files {
-        for line in &f.lines {
-            // THE SEARCH IS OVER `counted`, NEVER `code`: a needle inside a string literal or a
-            // doc comment is blanked there and cannot match. This is the first and strongest of
-            // the anti-decoration filters, and it is applied before any shape rule.
-            let hit = cap.construct.iter().any(|n| line.counted.contains(n));
-            if !hit {
-                continue;
-            }
+        // THE SEARCH IS OVER `counted`, NEVER `code`: a needle inside a string literal or a doc
+        // comment is blanked there and cannot match. This is the first and strongest of the
+        // anti-decoration filters, and it is applied before any shape rule ([`needle_hits`]).
+        for &i in needle_hits(f, &cap.construct).iter() {
+            let line = &f.lines[i];
             out.push(Mention {
                 rel: f.rel.clone(),
                 no: line.no,
@@ -1595,6 +1665,99 @@ mod tests {
         ));
         // Neither is a comment.
         assert!(!defines("// fn set_error_map() {}", "set_error_map"));
+    }
+
+    /// THE REFERENCE: [`mentions`] as it was before the memo — every file split into scope lines
+    /// afresh and every line put to every needle — over the same walk [`scan_root`] takes.
+    fn mentions_full(cx: &Ctx, cap: &Capability) -> Vec<String> {
+        let mut out = Vec::new();
+        for root in &cap.scope {
+            let spec = WalkSpec::new([root.to_string()])
+                .ext("rs")
+                .exclude([".claude/".to_string(), "/target/".to_string()])
+                .min_files(1);
+            for f in cx.walk(&spec).expect("the scope walks") {
+                let rel = f.rel_str();
+                for line in test_scope(&f.text) {
+                    if !cap.construct.iter().any(|n| line.counted.contains(n)) {
+                        continue;
+                    }
+                    let m = Mention {
+                        rel: rel.clone(),
+                        no: line.no,
+                        text: line.code.trim().to_string(),
+                        rejected: classify(&line, &rel, path_is_test(&rel), &cap.symbol),
+                    };
+                    out.push(m.cite());
+                }
+            }
+        }
+        out
+    }
+
+    /// The memoised reading's mentions, through [`scan_root`] and [`mentions`] as `run` takes them.
+    fn mentions_memoised(cx: &Ctx, cap: &Capability) -> Vec<String> {
+        let scanned: Vec<Vec<Scanned>> = cap
+            .scope
+            .iter()
+            .map(|r| scan_root(cx, r).expect("the scope walks"))
+            .collect();
+        let files: Vec<&Scanned> = scanned.iter().flatten().collect();
+        mentions(&files, cap).iter().map(Mention::cite).collect()
+    }
+
+    /// THE MEMOISED MENTIONS ARE THE FULL SCAN'S, on the real tree and on planted ones: every
+    /// declared capability's mentions, cited, equal the per-run re-read's — cold, then warm, and
+    /// for the plants after the real tree has filled both memos. The plants are the self-test's own
+    /// shapes over the real construction site: the call removed, and the call disguised as a
+    /// comment, a doc comment and a string literal, in the same path.
+    #[test]
+    fn the_memoised_mentions_are_the_full_scan_on_planted_trees() {
+        const DURABILITY: &str = "crates/busbar/src/root/durability/mod.rs";
+        let base = Ctx::workspace().expect("workspace context");
+        let caps = declarations(&base).expect("declarations");
+        let real = base.read(DURABILITY).expect("the durability root reads");
+        let gone = real.replace("Ledger::dual_writing(legacy_rows)", "Ledger::new()");
+        let disguised = format!(
+            "{gone}\n// Ledger::dual_writing(legacy_rows)\nconst N: &str = \"Ledger::dual_writing(x)\";\n"
+        );
+        let plants = [
+            Overlay::new(),
+            {
+                let mut ov = Overlay::new();
+                ov.set(DURABILITY, gone);
+                ov
+            },
+            {
+                let mut ov = Overlay::new();
+                ov.set(DURABILITY, disguised);
+                ov
+            },
+        ];
+        let mut compared = 0usize;
+        for (i, ov) in plants.into_iter().enumerate() {
+            let cx = base.with_overlay(ov);
+            for cap in &caps {
+                let full = mentions_full(&cx, cap);
+                compared += full.len();
+                assert_eq!(
+                    mentions_memoised(&cx, cap),
+                    full,
+                    "plant {i}: {} (cold)",
+                    cap.id
+                );
+                assert_eq!(
+                    mentions_memoised(&cx, cap),
+                    full,
+                    "plant {i}: {} (warm)",
+                    cap.id
+                );
+            }
+        }
+        assert!(
+            compared > 0,
+            "no capability is mentioned anywhere, so nothing was compared"
+        );
     }
 
     /// The register and the declaration file agree today: every id on the register is declared

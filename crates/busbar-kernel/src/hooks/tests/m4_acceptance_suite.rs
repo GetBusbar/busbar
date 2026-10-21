@@ -47,7 +47,7 @@
 //!   **`kind: export`** (outbound webhook delivery), not `kind: hook` — it lived under `export/`
 //!   in v1.5.5 too. The code it tests still exists, unchanged in kind, at
 //!   `crates/busbar-kernel/src/export/{mod.rs,plugin.rs}`. The predev file at the inventory's
-//!   "renamed" path (`crates/busbar-llm/src/tests/webhook_tests.rs`) is NOT a port of those 5 tests
+//!   "renamed" path (the retired engine crate's `src/tests/webhook_tests.rs`) is NOT a port of those 5 tests
 //!   at all — it holds 11 unrelated tests (`a_tampered_body_is_refused_with_signature_mismatch`,
 //!   `an_unsigned_request_is_refused_for_missing_headers`, …) verifying an INBOUND signed-webhook
 //!   admission gate. Same file name, disjoint feature, disjoint kind. This is a misclassification
@@ -56,7 +56,7 @@
 //!   (the enumeration above: the attribute count read three comments as tests).
 //! - Of the 184: 89 already live natively in this crate (`tests.rs` 50→57, `scrape_tests.rs` 13→13,
 //!   `wire_tests.rs` 19→19 on predev — additions are predev-only, nothing v1.5.5 removed); 70 live
-//!   in `busbar-llm/src/engine/tests/{hook_seam_tests.rs,hook_opt_in_projection_tests.rs}` (plane
+//!   in `the retired engine crate/src/engine/tests/{hook_seam_tests.rs,hook_opt_in_projection_tests.rs}` (plane
 //!   projection/rewrite-gate coverage, verified all v1.5.5 names present there or renamed
 //!   1:1 — e.g. `block_text_responses_reasoning_rejects_malformed_encrypted_content` →
 //!   `responses_reasoning_reader_rejects_malformed_encrypted_content`); 16 live in
@@ -78,11 +78,11 @@
 //! |---|---|
 //! | `dlopen_policy_drives_every_op` | `dlopen_decide_order_and_abstain` + `dlopen_transform_rewrite_and_reject` + `dlopen_status_and_schema_reads` |
 //! | `dlopen_policy_abstains_and_drops_unknown_idx` | `dlopen_decide_order_and_abstain` |
-//! | `dlopen_configure_acks_exact_version` | same name, `tests.rs:1751` |
+//! | `dlopen_configure_acks_exact_version` | same name, in `tests.rs` |
 //! | `dlopen_notify_never_errors` | `dlopen_notify_is_fire_and_forget` |
 //! | `dlopen_configure_nack_is_err` | `dlopen_configure_nack_does_not_commit` |
 //! | `dlopen_empty_management_reads_are_none` | `dlopen_empty_management_reads_are_fail_open_none` |
-//! | `dlopen_slow_gate_hits_the_deadline` (ARCHITECT-named) | `dlopen_decide_deadline_cuts_off_a_slow_gate`, `tests.rs:2134` — **unignored, passing**: confirms the owner ruling (off-worker `spawn_blocking` + hard `timeout_ms`) holds on today's dispatch path |
+//! | `dlopen_slow_gate_hits_the_deadline` (ARCHITECT-named) | `dlopen_decide_deadline_cuts_off_a_slow_gate`, in `tests.rs` — **unignored, passing**: confirms the owner ruling (THE DESIGN §11.11 R1, l.298-301: every hook call runs on an off-worker lane and a crossing watchdog trips at the deadline) holds on today's dispatch path |
 //! | `dlopen_decide_reject_over_the_seam` | `dlopen_decide_reject_status_is_clamped` + `dlopen_decide_reject_from_opt_in_prompt` |
 //! | `dlopen_transform_rewrites_over_the_seam` | `dlopen_transform_rewrite_and_reject` |
 //! | `dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain` | `dlopen_decide_raw_reply_is_fail_closed` |
@@ -94,8 +94,8 @@
 //! `load_refuses_malformed_config`, `dlopen_plugin_panic_is_fail_closed_err`,
 //! `a_plugin_log_reaches_the_host`, `the_log_ctx_is_interned_not_allocated_per_load`.
 //!
-//! The `busbar-llm`-origin 70 and ranking-hook-origin 16 are similarly left at their existing,
-//! passing predev locations: both exercise crate-private test scaffolding (`busbar_llm`'s
+//! The the retired engine crate-origin 70 and ranking-hook-origin 16 are similarly left at their existing,
+//! passing predev locations: both exercise crate-private test scaffolding (the retired engine crate's
 //! `WeightedLane`/prompt-projection fixtures; the ranking hook's native-policy signal tables) that
 //! is not exported for cross-crate reuse, so relocating them here would mean rewriting rather than
 //! porting them — out of scope for a byte-for-byte behaviour port.

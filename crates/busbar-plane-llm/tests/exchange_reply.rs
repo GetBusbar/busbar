@@ -585,21 +585,15 @@ fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_iden
     }
 }
 
-/// One instant for the whole process: a relay timed on it reports a stream's latency as 0 however
-/// long the relay took.
-fn stopped_clock() -> std::time::Instant {
-    static AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    *AT.get_or_init(std::time::Instant::now)
-}
-
 /// A stream from a far end of every dialect reaches a caller of every dialect whole, whatever the
 /// piece boundaries, and its usage is read at the end.
 ///
 /// ONE CLOCK FOR BOTH RELAYS. A Bedrock caller's `metadata` frame reports the stream's real elapsed
-/// `metrics.latencyMs` (1.5.5 bytes), so two relays of one stream on the wall clock answer
-/// different bytes whenever they straddle a millisecond (bedrock<-responses, latencyMs 1 vs 0, on a
-/// loaded runner: merge-queue run 37136423381). The byte equality below is the piece-boundary claim,
-/// not a race against the clock, so both relays are timed on [`stopped_clock`].
+/// `metrics.latencyMs` (1.5.5 bytes), read off the HOST's monotonic clock, so two relays of one
+/// stream on a running clock answer different bytes whenever they straddle a millisecond
+/// (bedrock<-responses, latencyMs 1 vs 0, on a loaded runner: merge-queue run 37136423381). The
+/// byte equality below is the piece-boundary claim, not a race against the clock, so both relays
+/// are fed by [`HOST`], which holds no monotonic clock.
 #[test]
 fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
     let mut checked = 0;
@@ -608,11 +602,11 @@ fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
         assert!(!far.is_empty(), "{egress}");
         for ingress in SIX {
             let whole = relay_all(
-                &mut Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock),
+                &mut Relay::new(relay_ctx(ingress, egress, true)),
                 &far,
                 usize::MAX,
             );
-            let mut r = Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock);
+            let mut r = Relay::new(relay_ctx(ingress, egress, true));
             let pieces = relay_all(&mut r, &far, 7);
             assert!(!whole.is_empty(), "{ingress}<-{egress}");
             if ingress != "responses" && ingress != "anthropic" && ingress != "cohere" {
@@ -3153,8 +3147,11 @@ fn a_stream_cut_after_its_first_byte_ends_in_1_5_5s_bytes_for_every_caller_diale
 /// A RESPONSES STREAM THE FAR END ENDS AS FAILED BILLS NO TOKENS (row-159 audit plane-llm L3#4;
 /// ARCHITECT 2026-10-13: 1.5.5 billed nothing for a stream with a terminal error, v1.5.5
 /// proxy/response_body.rs:550-575), `$`: its `response.failed` event carries usage, and the answer
-/// still reports 0 in and 0 out, as the buffered `status: "failed"` answer does. RED: the stream's
-/// failed usage (5 in, 2 out) reported as billable.
+/// still reports 0 in and 0 out, as the buffered `status: "failed"` answer does. Not #62: a failure
+/// the far end reports itself is not a cut busbar or the caller made (ARCHITECT ruling 2026-10-17),
+/// unlike a translation that aborts after the first byte, which bills what streamed
+/// (`rehomed_streaming_translate_abort_trips_breaker_and_skips_billing`). RED: the stream's failed
+/// usage (5 in, 2 out) reported as billable.
 #[test]
 fn a_responses_stream_that_fails_bills_no_tokens_and_agrees_with_its_buffered_twin() {
     let mut arrived = arrival("responses", true);
@@ -3898,6 +3895,34 @@ mod rehomed_metering {
         assert_eq!(read.tokens(), (600, 400));
     }
 
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse`.
+    /// 1.5.5: the plain-SSE sibling of the JSON-array cell above. A chat-dialect stream whose
+    /// usage (600 / 400) arrives in its own trailing chunk, to an anthropic caller, reports the
+    /// real `output_tokens` (400) on its terminal `message_delta`, and 600 / 400 bill.
+    /// RED: the trailing usage dropped from the terminal `message_delta` (0 or absent).
+    #[test]
+    fn a_chat_streams_trailing_usage_reaches_an_anthropic_callers_terminal_message_delta() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let far = [
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n",
+            "data: [DONE]\n\n",
+        ];
+        let pieces: Vec<&[u8]> = far.iter().map(|frame| frame.as_bytes()).collect();
+        let read = answer(&ctx, 200, SSE_HEAD, &pieces, false);
+        let text = read.text();
+        let output_tokens = text.split("\n\n").find_map(|frame| {
+            let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+            let v: Value = serde_json::from_str(data).ok()?;
+            (v["type"] == "message_delta").then(|| v["usage"]["output_tokens"].as_i64())?
+        });
+        assert_eq!(output_tokens, Some(400), "{text}");
+        assert_eq!(read.tokens(), (600, 400));
+    }
+
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_mid_stream_transport_error_does_not_bill_partial_usage`
     /// (map row 341). 1.5.5 (#62): an anthropic stream to a chat caller, cut after it reported 100
     /// input (`message_start`) and 50 output (`message_delta`), bills exactly those 150 tokens.
@@ -4018,14 +4043,13 @@ mod rehomed_metering {
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_translate_abort_trips_breaker_and_skips_billing`
-    /// (map row 367), HELD TO 1.5.5 (coordinator ruling 2026-10-15). v1.5.5's own
-    /// `test_streaming_translate_abort_trips_breaker_and_skips_billing`
-    /// (`crates/busbar/src/proxy/tests/ingress_indistinguishability_tests.rs:3091`, over
-    /// `crates/busbar/src/proxy/response_body.rs`'s `billing_failed` gate): a translated stream
-    /// whose reframing gives up after its first byte records a transient on the far end (the
-    /// optimistic success reversed, the breaker cell trips Open) and is NOT token-billed, though
-    /// 600 / 400 had been captured before the abort.
-    /// RED: an abort that records no fault, or one that bills what it captured.
+    /// (map row 367). #62 governs (OWNER-LOCKED 2026-09-20: a mid-stream cut is not a refund; the
+    /// caller pays for what streamed), ruled for this row on 2026-10-17 over the 2026-10-15 ruling
+    /// that held it to 1.5.5's zero; logged in the accepted-differences register under #62. A
+    /// translated stream whose reframing gives up after its first byte records a transient on the
+    /// far end (the optimistic success reversed, the breaker cell trips Open) and bills the 600 /
+    /// 400 the far end reported before the abort, as its two drop siblings below bill them.
+    /// RED: an abort that records no fault, or one that bills less than the far end reported.
     #[test]
     fn rehomed_streaming_translate_abort_trips_breaker_and_skips_billing() {
         let (arrived, lane) = ask("anthropic", "openai", true);
@@ -4043,10 +4067,10 @@ mod rehomed_metering {
         );
         assert_eq!(
             read.tokens(),
-            (0, 0),
-            "an aborted stream is not token-billed"
+            (600, 400),
+            "an aborted stream bills what the far end reported before the abort (#62)"
         );
-        assert_eq!(end.units, Units::default(), "nothing billed");
+        assert_eq!(end.units.tokens_in + end.units.tokens_out, 1000);
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cancel_drop_bills_partial_tokens`
@@ -4674,4 +4698,65 @@ mod rehomed_metering {
             "v1.5.5's figure: the readable count, nothing else"
         );
     }
+}
+
+/// Q128 arch u59: A TRANSLATED STREAM IS TIMED ON THE HOST'S ONE CLOCK. A Bedrock caller's
+/// `metadata` frame reports `metrics.latencyMs` as the host's monotonic time between the stream's
+/// first byte and that frame, so a host whose clock moved 250 ms reports 250 whatever the process
+/// clock did. RED: the relay read `std::time::Instant::now`, the plane's own clock, and reported the
+/// process time the test took (0).
+#[test]
+fn a_translated_stream_is_timed_on_the_hosts_clock() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Clocked(AtomicU64);
+    impl busbar_contract::codec::CodecHost for Clocked {
+        fn fill_entropy(&self, out: &mut [u8]) -> bool {
+            out.fill(7);
+            true
+        }
+        fn wall_clock_now(&self) -> Option<u64> {
+            Some(1_700_000_000)
+        }
+        fn monotonic_ns(&self) -> Option<u64> {
+            Some(self.0.load(Ordering::Relaxed))
+        }
+    }
+    let host = Clocked(AtomicU64::new(5_000_000_000));
+    let far = native_stream("anthropic");
+    let (first, rest) = far.split_at(far.len() / 2);
+    let mut r = Relay::new(relay_ctx("bedrock", "anthropic", true));
+    let mut out = Vec::new();
+    if let (Fed::Bytes(b), _) = r.feed(&host, first) {
+        out.extend_from_slice(&b);
+    }
+    host.0.fetch_add(250_000_000, Ordering::Relaxed);
+    if let (Fed::Bytes(b), _) = r.feed(&host, rest) {
+        out.extend_from_slice(&b);
+    }
+    out.extend(r.end(&host).bytes);
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("\"latencyMs\":250"),
+        "the metadata frame reports the host's 250 ms: {text}"
+    );
+}
+
+/// AN OPENAI FAR END'S WHOLE ANSWER READS AS AN ANTHROPIC MESSAGE: an anthropic caller served by an
+/// openai member gets `type: message`, a `text` content block carrying the answer, `end_turn` for
+/// `stop`, and the serving model the far end named; never the raw openai body. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_cross_protocol_nonstream_openai_lane_to_anthropic_client
+/// and ::test_cross_protocol_nonstream_preserves_model.
+#[test]
+fn an_openai_whole_answer_reads_as_an_anthropic_message_naming_the_serving_model() {
+    let far = br#"{"object":"chat.completion","model":"glm-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}"#;
+    let w = whole::translate(HOST, &ctx("anthropic", "openai", false, false), 200, far);
+    assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
+    assert_eq!(w.answer.status, 200);
+    let got: Value = serde_json::from_slice(&w.answer.body).expect("anthropic JSON");
+    assert_eq!(got["type"], "message", "{got}");
+    assert_eq!(got["content"][0]["type"], "text", "{got}");
+    assert_eq!(got["content"][0]["text"], "hi", "{got}");
+    assert_eq!(got["stop_reason"], "end_turn", "{got}");
+    assert_eq!(got["model"], "glm-4.5", "the serving model survives: {got}");
+    assert!(got.get("choices").is_none(), "no raw openai body: {got}");
 }
