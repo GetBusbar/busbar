@@ -3944,3 +3944,90 @@ fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_by_its_seq() {
         Err(CheckpointUnreadable::NotOnChain { checkpoint_seq: 99 })
     );
 }
+
+/// RED (Q128 kernel-ledger HIGH 1, the held-checkpoint walk): ON A NODE RESUMED FROM THE STORE WHOSE
+/// CHAIN OUTGREW ONE MEMORY SEGMENT, EVERY HELD CHECKPOINT STILL RE-DERIVES. The memory log keeps only
+/// its newest segment resident (`Wal::memory_seeded`); the rest of the chain is the store's. A walk
+/// of the journal's own replay starts mid-chain, misses the settlement sealed before the roll, and
+/// reads every held checkpoint as diverged; the walk has to read the whole chain, store copy plus
+/// the resident segment, as `/verify`'s chain reader does ([`Durability::chain`]).
+///
+/// The segment is the shipped [`busbar_kernel_wal::SEGMENT_BYTES`]: the log has no smaller one to
+/// ask for, so the first boot pads the chain past it, as the amendment journal's `store` phase does.
+#[test]
+fn a_store_resumed_chain_past_one_segment_re_derives_every_held_checkpoint() {
+    /// One padding record's body: a few hundred roll the log past a segment, and 256 of them (one
+    /// block of the store's scan) stay inside one scan.
+    const PAD_BODY: usize = 100_000;
+    const NODE: u64 = 41;
+
+    let token = token();
+    let slots = crate::root::store_double::RecordSlots::new();
+    let early = totals_key("vk_before_the_roll");
+    let late = totals_key("vk_after_the_roll");
+    {
+        let mut durability = store_book(&slots, NODE);
+        settle_one(&mut durability, &early, 1_000, 300, 1);
+        let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
+        for _ in 0..pads {
+            durability
+                .journal
+                .append(
+                    &token,
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Load, vec![0x5a; PAD_BODY]).at(1_700_000_000, 0)],
+                )
+                .expect("the padding goes on the chain");
+        }
+        assert!(
+            durability
+                .lane()
+                .expect("a book over the store")
+                .drain(std::time::Duration::from_secs(120)),
+            "the store takes the journal's records"
+        );
+    }
+
+    let mut restarted = store_book(&slots, NODE);
+    assert!(restarted.keeps_chain(), "the chain was resumed from the store");
+    assert!(
+        restarted.journal.log().segments_used() >= 2,
+        "the resumed memory journal rolled past one segment"
+    );
+    assert_eq!(
+        restarted.ledger.book().get(&early, 86_400).settled,
+        300,
+        "the boot read the whole chain"
+    );
+    let mut sealed = Vec::new();
+    for n in 1..=2u64 {
+        settle_one(&mut restarted, &late, 1_000, 100 * n, 10 + n);
+        sealed.push(
+            restarted
+                .seal_checkpoint(&token, StepName::Meter, 1_700_000_100 + n)
+                .expect("the seal goes down"),
+        );
+    }
+
+    let mut served = Vec::new();
+    restarted
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives from the whole chain");
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        restarted.checkpoints,
+        "the set the ring holds, in order"
+    );
+    for seal in &sealed {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+        assert_eq!(
+            seal.totals_for(&early, 86_400).settled,
+            300,
+            "the seal holds the settlement made before the roll"
+        );
+    }
+}
