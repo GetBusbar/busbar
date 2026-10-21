@@ -1579,9 +1579,7 @@ pub(crate) fn compose_planes_over(
             // Every other plane runs the routed order (U22): the deployment's global and per-pool
             // hooks, bound per unit off the live generation, reach its request stage and its
             // in-session stage (`hook.call`, `content.scan`).
-            Some(stage) => {
-                driver.with_hooks(stage.routed(plugin.name(), &served_facts.dialects))
-            }
+            Some(stage) => driver.with_hooks(stage.routed(plugin.name(), &served_facts.dialects)),
             None => driver,
         };
         // A plane whose tail takes a refusal as a piece first is handed it on the unit's own
