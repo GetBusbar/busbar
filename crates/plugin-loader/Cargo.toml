@@ -4,6 +4,10 @@ version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
+# THE DOOR-ROOT TABLE'S CHANNEL TO THE ROOT (status row 195): `build.rs` hands the root's build script
+# the `[package.metadata.busbar.door-root]` rows as cargo metadata (`DEP_BUSBAR_PLUGIN_LOADER_DOOR_ROOTS`),
+# so no build script reads another crate's files. No native library is linked under this name.
+links = "busbar_plugin_loader"
 description = "The busbar plugin subsystem: signed-tarball discovery, in-memory unpack + verification, the three-phase (structural/trust/conflict) load validation, the name/alias registry, and the memfd/private-temp dynamic loader over the plugin C ABI. All FFI unsafe is isolated here so the engine crate keeps its forbid(unsafe_code) invariant."
 license = "Apache-2.0"
 
@@ -38,8 +42,6 @@ test-support = ["dep:ring", "dep:base64"]
 # conformance step). OWNER 2026-10-03: plugins test themselves against busbar; busbar tests no
 # plugin. No new dependency: the suite is the loader's own code.
 conformance = []
-# THE DOOR-ROOT CRATES (status row 195), one feature per `[package.metadata.busbar.door-root]` row.
-linked-busbar-transport-grpc = ["dep:busbar-transport-grpc"]
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -174,8 +176,8 @@ tracing = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 # THE DOOR-ROOT CRATES' EDGES (status row 195; coordinator ruling (a), BUSBAR-1.6.0.md l.272-274):
-# each crate `[package.metadata.busbar.door-root]` names, optional behind `linked-<crate>`, which the
-# composition root forwards. This crate admits its door (`dispatch::load::open_linked`, beside the
+# each crate `[package.metadata.busbar.door-root]` names, optional, behind its implicit feature (the crate's own name),
+# which the composition root forwards. This crate admits its door (`dispatch::load::open_linked`, beside the
 # `dlopen` path) and hands the root only the admitted door (`linked`), so the root stays
 # `forbid(unsafe_code)` and names no door-root crate.
 busbar-transport-grpc = { workspace = true, optional = true }
@@ -288,7 +290,7 @@ libc = { workspace = true }
 
 # THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
 # has `fn door()` as its only public item): `<plugin crate> = "<its door>"`. Each is an optional
-# dependency above behind `linked-<crate>`; `build.rs` (src/linked_gen.rs) admits each linked one's
+# dependency above (its implicit feature, the crate's name); `build.rs` (src/linked_gen.rs) admits each linked one's
 # door through `dispatch::load::open_linked`, and the composition root reads its rows' facts off the
 # admitted door's Statement (`crates/busbar/src/root/door_root.rs`). The root's generator reads this
 # table too (`crates/busbar/build.rs`). A crate not named here is TRANSITIONAL: the root links it and

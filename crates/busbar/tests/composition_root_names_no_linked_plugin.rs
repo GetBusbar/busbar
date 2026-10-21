@@ -372,7 +372,7 @@ host = "unit"
 /// DOOR-ROOT ROWS OF EVERY KIND (status row 195; BUSBAR-1.6.0.md l.3560-3561; coordinator ruling
 /// (a), l.272-274): a crate the door-root table names (the loader's table, which `build.rs` appends
 /// to the manifest it hands the generator) is the LOADER's edge, linked where the root's loader edge
-/// turns on its `linked-<crate>` feature. The root names nothing of it: no `extern crate`, no item
+/// turns on its implicit feature (the crate's own name). The root names nothing of it: no `extern crate`, no item
 /// path. Each of its rows, on every axis a door can carry (transport, plane door, secret, auth,
 /// export, store, hook), holds a generated forwarder of the door the loader admitted
 /// (`busbar_plugin_loader::linked::door`), reads its facts off that door's Statement at boot
@@ -384,7 +384,7 @@ host = "unit"
 fn the_generator_links_a_door_root_row_of_every_kind_by_its_door_alone() {
     let manifest = r#"
 [dependencies]
-busbar-plugin-loader = { path = "../plugin-loader", features = ["linked-busbar-wire", "linked-busbar-plane-x", "linked-busbar-secret-x", "linked-busbar-auth-x", "linked-busbar-export-x", "linked-busbar-store-x", "linked-busbar-hook-x"] }
+busbar-plugin-loader = { path = "../plugin-loader", features = ["busbar-wire", "busbar-plane-x", "busbar-secret-x", "busbar-auth-x", "busbar-export-x", "busbar-store-x", "busbar-hook-x"] }
 busbar-store-old = { path = "../busbar-store-old" }
 busbar-export-old = { path = "../busbar-export-old" }
 
@@ -539,7 +539,7 @@ busbar-hook-x = "busbar_hook_x::door"
         // RED: a door-root crate whose loader feature the root never turns on, under no feature
         // of its own: a row no build links.
         (
-            manifest.replace(", \"linked-busbar-hook-x\"", ""),
+            manifest.replace(", \"busbar-hook-x\"", ""),
             "linked feature `hook-x` is not declared under [features]",
         ),
         // RED: a door-root table naming anything but the crate's root `door`.

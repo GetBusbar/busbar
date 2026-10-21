@@ -4,8 +4,9 @@
 //! THE LINKED DOOR-ROOT TABLE (status row 195): its generator writes a row for each crate the
 //! door-root table names and no other, each admitted through `open_linked`; and the table this
 //! build generated names exactly the crates this crate's manifest names. RED: a row with no
-//! `linked-<crate>` feature, a row whose crate is not an optional edge, a door outside its crate, and
-//! a `linked-*` feature the table does not name are each refused.
+//! declared feature or `dep:` spelling for its crate (which would name the instance in `[features]`
+//! or drop its implicit feature), a row whose crate is not an optional edge, and a door other than
+//! its crate's root `door` are each refused.
 
 /// The generator `build.rs` runs, verbatim.
 #[allow(dead_code)]
@@ -21,8 +22,6 @@ busbar-wire-b = { workspace = true, optional = true }
 
 [features]
 pack = ["dep:jsonschema"]
-linked-busbar-wire-a = ["dep:busbar-wire-a"]
-linked-busbar-wire-b = ["dep:busbar-wire-b"]
 
 [package.metadata.busbar.door-root]
 busbar-wire-a = "busbar_wire_a::door"
@@ -57,7 +56,7 @@ fn the_generated_table_names_only_the_door_root_crates() {
     );
     for krate in ["busbar-wire-a", "busbar-wire-b"] {
         assert!(
-            src.contains(&format!("#[cfg(feature = \"linked-{krate}\")]")),
+            src.contains(&format!("#[cfg(feature = \"{krate}\")]")),
             "`{krate}` is admitted only where its feature links it:\n{src}"
         );
     }
@@ -67,15 +66,18 @@ fn the_generated_table_names_only_the_door_root_crates() {
         "every row is admitted through the one entry:\n{src}"
     );
     for broken in [
-        MANIFEST.replace("linked-busbar-wire-b = [\"dep:busbar-wire-b\"]\n", ""),
+        MANIFEST.replace(
+            "pack = [\"dep:jsonschema\"]\n",
+            "pack = [\"dep:jsonschema\"]\nbusbar-wire-b = [\"dep:busbar-wire-b\"]\n",
+        ),
         MANIFEST.replace(
             "busbar-wire-b = { workspace = true, optional = true }",
             "busbar-wire-b = { workspace = true }",
         ),
         MANIFEST.replace("busbar_wire_b::door", "busbar_wire_a::door"),
         MANIFEST.replace(
-            "linked-busbar-wire-b = [\"dep:busbar-wire-b\"]\n",
-            "linked-busbar-wire-b = [\"dep:busbar-wire-b\"]\nlinked-busbar-other = []\n",
+            "pack = [\"dep:jsonschema\"]\n",
+            "pack = [\"dep:jsonschema\"]\nwire = [\"dep:busbar-wire-a\"]\n",
         ),
     ] {
         let refused = std::panic::catch_unwind(|| generator::linked_doors_source(&broken));

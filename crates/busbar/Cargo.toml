@@ -58,9 +58,10 @@ busbar-plane-mcp = { workspace = true, optional = true }
 busbar-plane-a2a = { workspace = true, optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 # The loader, and through it every DOOR-ROOT crate (its `[package.metadata.busbar.door-root]`, status
-# row 195): their edges are the loader's, each behind `linked-<crate>`, forwarded here; the root
+# row 195): their edges are the loader's, each behind its implicit feature (the crate's name),
+# forwarded here; the root
 # reaches their doors only as the loader admits them, and names none of them.
-busbar-plugin-loader = { path = "../plugin-loader", features = ["linked-busbar-transport-grpc"] }
+busbar-plugin-loader = { path = "../plugin-loader", features = ["busbar-transport-grpc"] }
 
 # ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────
 # The binary is the one place entitled to name the kernel, the units, the planes and the transports
@@ -156,7 +157,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
-# transport-door axis. A DOOR-ROOT crate: its edge is the loader's (`linked-busbar-transport-grpc`,
+# transport-door axis. A DOOR-ROOT crate: its edge is the loader's (`busbar-plugin-loader/busbar-transport-grpc`,
 # forwarded on the loader edge above), not the root's.
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still

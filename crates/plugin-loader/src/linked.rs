@@ -4,7 +4,7 @@
 //! THE LINKED DOOR-ROOT DOORS, safely (status row 195; coordinator ruling (a), `BUSBAR-1.6.0.md`
 //! l.272-274: the composition root is `forbid(unsafe_code)`). A compiled-in crate the door-root
 //! table names (this crate's `[package.metadata.busbar.door-root]`, its edge behind
-//! `linked-<crate>`) is admitted ONCE, by `dispatch::load::open_linked` (the one `unsafe` entry,
+//! its implicit feature) is admitted ONCE, by `dispatch::load::open_linked` (the one `unsafe` entry,
 //! sharing the `dlopen` path's checks), on the first read of this table; the root reaches its door
 //! only here, as the [`LoadedDoor`] the loader admitted, or as the loader's refusal: the same
 //! [`LoadError`] the same door earns dropped in.

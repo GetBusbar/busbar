@@ -101,11 +101,19 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src/linked_gen.rs");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    // THE DOOR-ROOT TABLE lives with the crates' edges, in the loader's manifest (status row 195):
-    // appended here, so every table below reads one manifest.
-    println!("cargo:rerun-if-changed=../plugin-loader/Cargo.toml");
-    let loader = std::fs::read_to_string("../plugin-loader/Cargo.toml")
-        .expect("read the loader's Cargo.toml");
+    // THE DOOR-ROOT TABLE lives with the crates' edges, in the loader's manifest (status row 195);
+    // the loader's build script hands it here through cargo (`links`), and it is appended so every
+    // table below reads one manifest. No file outside this crate is read.
+    println!("cargo:rerun-if-env-changed=DEP_BUSBAR_PLUGIN_LOADER_DOOR_ROOTS");
+    let rows = env::var("DEP_BUSBAR_PLUGIN_LOADER_DOOR_ROOTS")
+        .expect("the loader hands its door-root table (`links = \"busbar_plugin_loader\"`)");
+    let mut loader = format!("[{DOOR_ROOT}]\n");
+    for row in rows.split(';').filter(|r| !r.is_empty()) {
+        let (krate, door) = row
+            .split_once('=')
+            .unwrap_or_else(|| panic!("the loader's door-root row `{row}` is `crate=door`"));
+        loader.push_str(&format!("{krate:?} = {door:?}\n"));
+    }
     let manifest = with_door_root_table(&manifest, &loader);
     let on = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));

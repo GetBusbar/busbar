@@ -161,7 +161,8 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 /// THE DOOR-ROOT TABLE (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic
 /// crate has `fn door()` as its only public item): `<plugin crate> = "<its door>"`, in the LOADER's
 /// manifest (`crates/plugin-loader/Cargo.toml`, which holds the crates' edges behind
-/// `linked-<crate>`; `build.rs` appends the table to the manifest it hands this generator). A crate
+/// the crate's implicit feature; `build.rs` appends the table, handed over by the loader's build
+/// script as cargo metadata, to the manifest it hands this generator). A crate
 /// named there is DOOR-ROOT: the root names nothing of it, and each of its rows reads the door the
 /// loader admitted (`busbar_plugin_loader::linked::door`, through a generated forwarder, see
 /// [`door_root_forwarder`]) and every fact its axis needs off that door's Statement
@@ -172,13 +173,14 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 /// `forbid(unsafe_code)`; the loader holds the one `unsafe` entry.
 pub(crate) const DOOR_ROOT: &str = "package.metadata.busbar.door-root";
 
-/// The loader's feature a door-root crate links under (`busbar-plugin-loader/linked-<crate>`).
+/// The loader's feature a door-root crate links under: the loader's optional dependency's implicit
+/// feature, the crate's own name (`busbar-plugin-loader/<crate>`).
 pub(crate) fn loader_feature(krate: &str) -> String {
-    format!("linked-{krate}")
+    krate.to_string()
 }
 
 /// The features the manifest's `[dependencies]` edge on `busbar-plugin-loader` turns on: a
-/// door-root crate whose `linked-<crate>` is among them is linked in every build.
+/// door-root crate whose implicit feature is among them is linked in every build.
 pub(crate) fn loader_features(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     for line in manifest.lines() {
@@ -469,7 +471,7 @@ pub(crate) fn linked_source(
     // A row is linked when its feature is on — or always, when its crate is an edge no feature can
     // drop. Anything else would be a row no build ever links, dropped silently.
     // A door-root crate's edge is the loader's: it is linked in every build when the root's loader
-    // edge turns its `linked-<crate>` feature on.
+    // edge turns its implicit feature on.
     let door_root_rows = metadata_rows(manifest, DOOR_ROOT);
     let loader_on = loader_features(manifest);
     let always = |key: &str, krate: &str| {
