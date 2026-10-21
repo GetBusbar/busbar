@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MEMORY A STORE CALL LENDS LIVES UNTIL ITS CROSSING RETURNS (`BUSBAR-1.6.0.md` 
+//! THE MEMORY A STORE CALL LENDS LIVES UNTIL ITS CROSSING RETURNS (`BUSBAR-1.6.0.md`
 //! "The memory a call lends a plugin lives until that call completes, abandoned or not, for every
 //! kind (a submit that the watchdog can abandon uses the lending submit)").
 //!

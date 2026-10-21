@@ -137,7 +137,10 @@ pub fn image_record(repo: &str, tag: &str, arch: &str, layers: &[u64]) -> Json {
         "compressed_mib",
         Json::Float(round_to_2dp(total as f64 / 1048576.0)),
     );
-    o.insert("compressed_mb", Json::Float(round_to_2dp(total as f64 / 1e6)));
+    o.insert(
+        "compressed_mb",
+        Json::Float(round_to_2dp(total as f64 / 1e6)),
+    );
     o.insert("layers", Json::Int(layers.len() as i64));
     Json::Object(o)
 }

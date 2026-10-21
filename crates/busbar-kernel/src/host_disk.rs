@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S BOUNDED DISK LANE (`BUSBAR-1.6.0.md` 
+//! THE HOST'S BOUNDED DISK LANE (`BUSBAR-1.6.0.md`
 //! `disk.append`): the ONE exception to "no blocking", scoped to the file export sink and the SQLite
 //! store. A plugin never blocks on a file and never opens a path: it names a destination key, the
 //! loader maps it to the file the operator configured, and the append runs HERE, on one lane

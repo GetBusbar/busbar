@@ -126,7 +126,7 @@ impl ChainPosition {
 }
 
 /// The retention knobs the sweep enforces — a plane supplies its own values. Both bound only
-/// SETTLED (terminal) handles: retention never reaches live work (`BUSBAR-1.6.0.md` 
+/// SETTLED (terminal) handles: retention never reaches live work (`BUSBAR-1.6.0.md`
 /// "Admission bounds live work; nothing evicts it"). An ACTIVE handle stays, however long it idles,
 /// until the plane settles it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -143,9 +143,9 @@ fn the_lane_runs_appends_in_order_and_answers_through_later() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A JOB runs ON THE LANE THREAD, in order with the appends (as the 
-/// amended it: a disk-declared secret source's config-time resolve runs here), and a job that
-/// panics is its own failure: the appends behind it still land.
+/// A JOB runs ON THE LANE THREAD, in order with the appends (a disk-declared secret source's
+/// config-time resolve runs here), and a job that panics is its own failure: the appends behind
+/// it still land.
 #[test]
 fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
     let d = dir("job");

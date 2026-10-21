@@ -106,7 +106,7 @@ pub struct MemoryStore {
     /// have to sort on every scan, and "the order a scan answers in" is a promise a caller reads a
     /// chain by.
     ///
-    /// NEVER AGED OUT. An active work handle is never evicted (`BUSBAR-1.6.0.md` 
+    /// NEVER AGED OUT. An active work handle is never evicted (`BUSBAR-1.6.0.md`
     /// "Admission bounds live work; nothing evicts it"): a real bound on live work is a refusal at
     /// admission, and retention bounds only SETTLED handles. Settledness is a sidecar the store is
     /// handed, never a body it decodes — the published path's [`PlaneDisposition`], which
