@@ -384,7 +384,7 @@ fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
     .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section);
+    let p = DoorPools::of(&section).expect("the pools");
     assert_eq!(
         p.breaker("tuned"),
         Some(&block),
