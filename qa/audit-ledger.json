@@ -1379,7 +1379,7 @@
    "paths": [
     "crates/busbar-kernel-breaker/src"
    ],
-   "tree_hash": "58c7c0704484ec7b4a0137cb3029f0c0213907da7041470c95fbb55525319969",
+   "tree_hash": "240dca41bc6efc855d7b3042837ab621f522edca957e7d6960c76b5b91635bf5",
    "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
    "round": 4,
    "result": "findings",
@@ -1391,7 +1391,7 @@
    },
    "report": "The breaker's own classifier reads only the transport's fault reading, the kernel's fact that no answer came and a stated wait, and an answer with no reading records nothing. The crate still ships a second normalizer that bands HTTP status numbers, parses the Retry-After header including its date form, and special-cases one provider's overload status and one dialect's context-length code; nothing in production calls it. The probe journal, the exhaustion wait helper and a class-parsing re-export never run in production, the readiness read creates cells while documented as side-effect-free, and the module prose claims byte-identical moves from source paths that did not exist in 1.5.5. A failure that states no wait, or a shorter one, overwrites an armed cooldown on both the single-member and the multi-member branches; that is 1.5.5 parity, not a defect: 1.5.5's cell_record_failure (crates/busbar/src/store/in_memory/breaker.rs at v1.5.5, lines 714-724) stores the cooldown unconditionally, and customer behaviour stays identical to 1.5.5 unless the owner signs a change. Read in 4 parts, fully.",
    "auditor": "opus-r159d-kernel-breaker",
-   "fixed_at": null,
+   "fixed_at": "568069c295028fdb36df115be75697746e742bea",
    "exclude": [
     "crates/busbar-kernel-breaker/src/tests"
    ],
