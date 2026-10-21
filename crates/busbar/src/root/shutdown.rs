@@ -51,22 +51,25 @@ pub async fn tail(
         tracing::warn!("plane record writes were still queued at shutdown");
     }
     // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline.
-    if let Some(lane) = journal.and_then(|book| {
+    let Some(lane) = journal.and_then(|book| {
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
             .lane()
             .cloned()
-    }) {
-        let drained = tokio::task::spawn_blocking(move || lane.drain(RECORD_DRAIN))
-            .await
-            .unwrap_or(false);
-        if !drained {
-            tracing::warn!("journal records were still queued for the store at shutdown");
-        }
+    }) else {
+        return;
+    };
+    let draining = lane.clone();
+    let drained = tokio::task::spawn_blocking(move || draining.drain(RECORD_DRAIN))
+        .await
+        .unwrap_or(false);
+    if !drained {
+        tracing::warn!("journal records were still queued for the store at shutdown");
     }
-    // THE NODE'S LEASE ON ITS HOST NAME, released once its chain reached the store, so the next
-    // boot of this host resumes it at once (Q128). Off the runtime: it waits on the store.
-    let _released = tokio::task::spawn_blocking(crate::root::durability::release_held_lease).await;
+    // THE NODE'S LEASE ON ITS HOST NAME, held on that lane, released once its chain reached the
+    // store, so the next boot of this host resumes it at once (Q128). Off the runtime: it waits on
+    // the store.
+    let _released = tokio::task::spawn_blocking(move || lane.release_held_lease()).await;
 }
 
 #[cfg(test)]

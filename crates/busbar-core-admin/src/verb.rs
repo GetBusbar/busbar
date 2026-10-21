@@ -351,7 +351,7 @@ pub enum KernelVerb {
     GetStats,
     /// `GET /healthz` (unconditional auth bypass on both listeners).
     GetHealthz,
-    /// `GET /metrics` (present only when `export.prometheus` is configured).
+    /// `GET /metrics` (present only when a metrics-scrape sink is configured).
     GetMetrics,
     /// `GET /metrics/hooks` (present only when `metrics::enabled()`).
     GetMetricsHooks,

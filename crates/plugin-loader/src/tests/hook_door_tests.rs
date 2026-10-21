@@ -327,7 +327,7 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     );
 }
 
-/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
+/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, the project-pool fold ruling's session
 /// half): the request view's opaque session crosses the hook kind's `decide` through the one
 /// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
 /// abstains on any other, and on a request that names none.
@@ -758,4 +758,47 @@ fn an_instance_debug_never_shows_its_settings() {
     for leak in ["reject_over_messages", "3}"] {
         assert!(!shown.contains(leak), "`{leak}` printed: {shown}");
     }
+}
+
+/// RED (ARCHITECT ruling, status row 194): a hook that declared `hook.orders: false` is refused
+/// when its `decide` answers an order, where the host reads the answer: BROKEN naming the
+/// declaration, never the verdict. Its twin, the same door with `orders` unstated (true), is
+/// answered READY with its order, and a declaring hook that abstains is still answered READY.
+#[tokio::test]
+async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
+    let open = |door: DoorFn, orders: bool| {
+        let mut axis = rows(door, "hook_door", Way::Linked);
+        for c in &mut axis.candidates {
+            c.orders = orders;
+        }
+        let name = axis.candidates[0].name.clone();
+        axis.open(
+            &name,
+            "hooks.gate",
+            &json!({"reject_over_messages": 3}),
+            BUDGET,
+        )
+        .expect("the hook opens")
+    };
+    let ordering = hook_door_plugin::ordering::door;
+    let undeclared = decided(2, &open(ordering, true).decide(frame(2), BUDGET).await);
+    assert!(
+        undeclared.contains("Ready") && undeclared.contains("verbs=0x1 "),
+        "a hook that never declared `orders: false` may order: {undeclared}"
+    );
+    let declared = decided(2, &open(ordering, false).decide(frame(2), BUDGET).await);
+    assert!(
+        declared.contains("broken") && declared.contains("`hook.orders: false`"),
+        "a hook that declared `orders: false` and ordered was not refused: {declared}"
+    );
+    let abstains = decided(
+        2,
+        &open(hook_door_plugin::conforming::door, false)
+            .decide(frame(2), BUDGET)
+            .await,
+    );
+    assert!(
+        abstains.contains("Ready") && abstains.contains("verbs=0x2 "),
+        "a hook that declared `orders: false` and abstains is served: {abstains}"
+    );
 }

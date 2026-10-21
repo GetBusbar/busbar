@@ -58,6 +58,7 @@ use crate::proxy::egress_unit::{
     Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
+use busbar_contract::abi::plane::RefusalCode;
 use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
@@ -337,6 +338,8 @@ impl Egress {
                 live: None,
                 probe: None,
                 refused: None,
+                unsent: None,
+                sent: false,
                 failed: None,
             }),
             probe_of: None,
@@ -373,6 +376,8 @@ impl Egress {
                 live: None,
                 probe: Some(member),
                 refused: None,
+                unsent: None,
+                sent: false,
                 failed: None,
             }),
             probe_of: Some(destination),
@@ -483,6 +488,12 @@ struct State {
     /// The unit is refused for this before its next member: an attempt's re-resolved credential
     /// was unavailable.
     refused: Option<ReasonCode>,
+    /// Why the walk's last attempt left nothing on the wire (an `Unsent*` code): the reason the
+    /// walk's exhausted refused piece names in place of `BreakerOpen` while no attempt was sent.
+    unsent: Option<RefusalCode>,
+    /// An attempt of this walk was sent (its connection opened): the walk's exhaustion then names
+    /// `BreakerOpen`, whatever an attempt after it left unsent.
+    sent: bool,
     /// Why the last attempt failed over, in the walk's failover vocabulary (the `routing` stage
     /// tap's `previous_failure`).
     failed: Option<&'static str>,
@@ -876,9 +887,18 @@ impl EgressFarEnd<'_> {
         }
         live.fault_reason = reason;
         self.record(live, token, classified, now);
+        // A FAULT READ INSIDE A SUCCESS (an in-band error after a success head, a body the plane
+        // could not render) is the breaker's compensating transient and nothing more: its head was
+        // already counted as the answer it was, so it counts no upstream failure, as a cut after
+        // the head counts none ([`Self::cut`]). 1.5.5 recorded the stream's terminal error on the
+        // breaker, with its trip, and emitted no `busbar_upstream_failures_total` for it (v1.5.5
+        // `crates/busbar/src/proxy/response_body.rs:451-479`; the oracle's in-band stream-error
+        // cells, `stream_upstream_error@fixture`).
+        let inside_success =
+            held.after_success && matches!(held.class, Some(WireStatusClass::Success));
         let hard = matches!(classified.disposition, Disposition::HardDown);
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
-        if !client_fault && !(hard && live.passthrough) {
+        if !inside_success && !client_fault && !(hard && live.passthrough) {
             let pool = Self::metric_pool(&live.pool, &live.member).to_string();
             e.telemetry.upstream_failure_stated(
                 &pool,
@@ -1196,14 +1216,21 @@ impl EgressFarEnd<'_> {
             }
         });
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
-        let (destination, record) = {
+        // EVERY ATTEMPT THAT LEAVES NOTHING ON THE WIRE says why (`State::unsent`): the walk's
+        // exhausted refused piece names it, so the plane can tell a hop that never left from one
+        // that left and failed over. The attempt still fails over as before.
+        let live = {
             let w = self.lock();
-            let Some(live) = w.live.as_ref() else {
-                return false;
-            };
-            (live.member.destination, live.record.clone())
+            w.live
+                .as_ref()
+                .map(|live| (live.member.destination, live.record.clone()))
+        };
+        let Some((destination, record)) = live else {
+            self.lock().unsent = Some(RefusalCode::UnsentNoAttempt);
+            return false;
         };
         let Some(route) = e.routes.get(&destination).cloned() else {
+            self.lock().unsent = Some(RefusalCode::UnsentNoRoute);
             return false;
         };
         // THE NEED IT RIDES: the one the far request names, bound for the member; a need the member
@@ -1214,6 +1241,7 @@ impl EgressFarEnd<'_> {
         else {
             let mut w = self.lock();
             self.settle(&mut w);
+            w.unsent = Some(RefusalCode::UnsentNeedUnbound);
             return false;
         };
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
@@ -1239,6 +1267,13 @@ impl EgressFarEnd<'_> {
                 live.answered = true;
             }
             self.settle(&mut w);
+            w.unsent = Some(if !path {
+                RefusalCode::UnsentTargetNotPath
+            } else if !named {
+                RefusalCode::UnsentFieldName
+            } else {
+                RefusalCode::UnsentUnrecorded
+            });
             if unrecorded {
                 // A dispatch this node cannot prove it recorded must not happen, on this member
                 // or any other: the unit is refused at once with the internal error, as 1.5.5
@@ -1276,6 +1311,7 @@ impl EgressFarEnd<'_> {
                     // Not the destination's fault: nothing recorded against it; the next member.
                     let mut w = self.lock();
                     self.settle(&mut w);
+                    w.unsent = Some(RefusalCode::UnsentAuthFailed);
                     return false;
                 }
             }
@@ -1353,6 +1389,7 @@ impl EgressFarEnd<'_> {
             Ok(conn) => {
                 {
                     let mut w = self.lock();
+                    w.sent = true;
                     if let Some(live) = w.live.as_mut() {
                         live.keep = keep;
                         live.conn = Some(conn);
@@ -1367,6 +1404,7 @@ impl EgressFarEnd<'_> {
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
+                self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
                 false
             }
         }
@@ -2029,6 +2067,11 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn failure(&self, _token: &Pass<Route>) -> Option<&'static str> {
         self.lock().failed
+    }
+
+    fn unsent(&self, _token: &Pass<Route>) -> Option<RefusalCode> {
+        let w = self.lock();
+        w.unsent.filter(|_| !w.sent)
     }
 
     fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {
