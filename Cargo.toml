@@ -140,7 +140,7 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "a7b55e78471bde0fed53487f7c5805c9066ba9f9" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "03cb3eb5d9c98b010c57fac4f75eabf874361d60" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
