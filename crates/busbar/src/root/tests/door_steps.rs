@@ -4162,6 +4162,27 @@ pub(crate) mod tool_door {
         .await;
     }
 
+    /// RED (HIGH, the SSRF guard bypass): the spellings without `//` a WHATWG reader still reads a
+    /// host from (`http:h`, `http:/\h`) are refused exactly as the plain ASCII host spelt the same
+    /// way, and `http:0x/` (`url` dials it as `0.0.0.0`) is refused, by the argument guard's
+    /// WHATWG host reader (mcp 28d655c225 onward, which judges a value naming a web scheme with no
+    /// `//` too).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_odd_spelling_argument_is_refused_as_its_ascii_host() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-odd-spellings";
+        let _published = Published(instance);
+        odd_hosts_refused_as_their_ascii_hosts(
+            instance,
+            &[
+                |h| format!("http:{h}/latest/meta-data/"),
+                |h| format!("http:/\\{h}/latest/meta-data/"),
+            ],
+            &["http:0x/latest/meta-data/"],
+        )
+        .await;
+    }
+
     /// A UNIT THE PLANE ANSWERS ITSELF (ARCHITECT Q-L3B-LOCAL): a keyed `tools/list` names no entry,
     /// is admitted with no route walk and answered 200 by the plane from its catalogue — nothing
     /// charged (only far-end-reported units bill), nothing dialled, every unit ended.
