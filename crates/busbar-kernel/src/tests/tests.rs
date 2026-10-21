@@ -1674,8 +1674,8 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
@@ -1728,8 +1728,8 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
@@ -1761,8 +1761,8 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     let (dir, reg) = secret_registry("secretref-vault-ok");
     // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
     for module in ["vault", "acme-secret-vault"] {
@@ -1788,8 +1788,8 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     let (dir, reg) = secret_registry("secretref-typo");
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
@@ -1874,8 +1874,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -2234,7 +2234,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     );
 
     let err = match result {
@@ -2262,7 +2262,6 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 /// fails typed parsing for some other reason.
 #[test]
 fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
-    crate::test_support::register_neutral_test_plane();
     let (dir, legacy_config_path, providers_path) =
         boot_config_dir("migrate", BOOT_LEGACY_14X_CONFIG);
 
@@ -2279,7 +2278,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .unwrap_or_else(|e| {
         panic!("the migrated config must boot cleanly through the real boot path: {e}")
@@ -2394,7 +2393,7 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
         None,
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
@@ -2418,7 +2417,7 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
         None,
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     ) else {
         panic!("mutable + overlay disabled must refuse to boot");
     };
@@ -2444,7 +2443,7 @@ fn boot_locked_config_has_no_overlay() {
         None,
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .expect("a locked config boots");
     assert!(loaded.config_locked);
@@ -2481,7 +2480,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
         None,
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .expect("providers_file pointer resolves");
     assert_eq!(
@@ -2497,7 +2496,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
         Some(&other),
         false,
         crate::config::EnvSubst::Strict,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .expect("override resolves");
     assert_eq!(
@@ -2564,8 +2563,8 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// went live through an apply.
 #[test]
 fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     const REFUSED: &str = "https://refused.root-rules.test";
     struct Refusing;
     impl crate::appbuild::RootRules for Refusing {
@@ -2640,7 +2639,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             }
         }
     }
-    let _registry = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[
+    let doors = crate::plane_driver::doors::Doors::for_test(&[
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);
@@ -2649,6 +2648,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
         let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PENDING_PLANE",
         ));
+        cfg.doors = doors;
         if writes {
             cfg.plane_sections.insert(SECTION);
         }
@@ -2714,8 +2714,8 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -3211,6 +3211,7 @@ async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
         })
     };
     let planes = crate::plane_driver::claims::PlaneDispatch::default().mount(
+        crate::test_support::neutral_test_doors(),
         "refusal-under-a-mount",
         "/front-door",
         crate::plane_driver::claims::WIRE_JSONRPC,

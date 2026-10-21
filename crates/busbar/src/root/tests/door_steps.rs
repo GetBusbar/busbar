@@ -4559,21 +4559,22 @@ pub(crate) mod door_boundary {
         .expect("the door folds")
     }
 
-    /// The door's row in the process's plane registry, as the composition root installs it beside
-    /// the linked rows (a registration, not an isolation: the served request reads the registry on
-    /// another worker while the test awaits it).
-    pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane_driver::doors::register_test_plane(row);
+    /// The door table holding the door's row, as the composition root folds and lends its own: the
+    /// table the generation the door is served from is lent (the served request reads it off that
+    /// generation, on another worker while the test awaits it).
+    pub(crate) fn table(row: &'static PlaneDecl) -> busbar_kernel::plane_driver::doors::Doors {
+        busbar_kernel::plane_driver::doors::Doors::for_test(&[row])
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
-    /// row: its slot built over `section` and the public base URL, every path it claims mounted,
-    /// the admission it declares bound.
+    /// row: the generation lent the door's table ([`table`]), its slot built over `section` and the
+    /// public base URL, every path it claims mounted, the admission it declares bound.
     pub(crate) fn dispatched(
-        mut app: TestApp,
+        app: TestApp,
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
     ) -> TestApp {
+        let mut app = app.doors(table(row));
         for (path, wire) in (row.claims)(&**slot) {
             app.mount_plane(row.key, &path, wire);
         }
@@ -4615,7 +4616,6 @@ pub(crate) mod door_boundary {
         let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let row = row();
-        registry(row);
         let slot = slot(row, port);
         let rig = rig_with(instance, port, None, &|app| dispatched(app, row, &slot));
         let held = rig
@@ -4786,7 +4786,6 @@ pub(crate) mod door_boundary {
         let (port, _heard) = tool_server().await;
         let upstream = MockServer::new(Arc::new(MockServerState::new())).await;
         let row = row();
-        registry(row);
         let slot = slot(row, port);
         let (audience, metadata) = (row.admission)(&*slot)
             .map(|a| (a.audience, a.resource_metadata))
@@ -5073,7 +5072,6 @@ pub(crate) mod door_boundary {
         ))
         .expect("a section");
         let row = row();
-        registry(row);
         let slot = slot_over(row, tools.clone());
         // The operator credential's row on the auth axis, as boot links it: the admin chain the
         // admin router authenticates `x-admin-token` with.
@@ -5214,7 +5212,6 @@ pub(crate) mod door_boundary {
         busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
-        registry(row);
 
         // ── TOKEN EXCHANGE ────────────────────────────────────────────────────────────────────────
         {
@@ -6517,9 +6514,9 @@ pub(crate) mod hook_parity {
         hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
     ) -> Rig {
         let env = hook_env();
-        // The door's folded row in the process's plane registry, as the composition root installs
-        // it: the deployment's per-entry hooks are resolved under the plane it names.
-        super::door_boundary::registry(super::door_boundary::row());
+        // The door's folded row in the table the generation is lent, as the composition root lends
+        // its own: the deployment's per-entry hooks are resolved under the plane it names.
+        let doors = super::door_boundary::table(super::door_boundary::row());
         Rig::with(
             instance,
             port,
@@ -6527,7 +6524,8 @@ pub(crate) mod hook_parity {
             None,
             None,
             Footing::own(),
-            &move |mut app| {
+            &move |app| {
+                let mut app = app.doors(doors);
                 if hooks.is_empty() {
                     return app;
                 }
@@ -7139,9 +7137,10 @@ done
 #[test]
 fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
+        // No plane: the deployment is lent the table of a build that opened none.
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             yaml,
-            busbar_kernel::plane_driver::doors::process_doors(),
+            busbar_kernel::plane_driver::doors::Doors::NONE,
         )
         .expect("a deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
@@ -8465,7 +8464,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
@@ -8546,7 +8545,7 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     use busbar_kernel::appbuild::RootRules as _;
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
@@ -8590,7 +8589,7 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane_driver::doors::TestRegistryIsolation;
+    use busbar_kernel::plane_driver::doors::Doors;
     use busbar_kernel::plane_driver::row::PlaneDecl;
     use busbar_kernel::plane_driver::row::PlaneDeclaration;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
@@ -8602,10 +8601,10 @@ fn a_required_section_written_empty_hands_the_plane_its_sections() {
         },
         ..NEUTRAL_FALLBACK
     };
-    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
+    // The table the deployment is lent: the requiring plane alone.
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\n",
-        busbar_kernel::plane_driver::doors::process_doors(),
+        Doors::for_test(&[&REQUIRES]),
     )
     .expect("a deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");

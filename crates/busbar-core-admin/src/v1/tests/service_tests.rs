@@ -3843,7 +3843,7 @@ mod plane_fees_on_admin_usage {
     use busbar_contract::records::RecordStore as _;
     use busbar_kernel::cost::PlaneFees;
     use busbar_kernel::governance::PLANE_LANE_SEP;
-    use busbar_kernel::plane_driver::doors::TestRegistryIsolation;
+    use busbar_kernel::plane_driver::doors::Doors;
     use busbar_kernel::plane_driver::row::PlaneDecl;
     use busbar_kernel::plane_driver::row::PlaneDeclaration;
 
@@ -3915,6 +3915,13 @@ mod plane_fees_on_admin_usage {
     static FEE: PlaneDecl = decl!(FEE_PLANE, false, "tools");
     static FREE: PlaneDecl = decl!(FREE_PLANE, false, "streams");
 
+    /// The door table these cases are lent: the pools plane, the fee plane and the fee-less plane,
+    /// folded once. The `App` the usage is served from is lent it, and every direct read takes it.
+    fn doors() -> Doors {
+        static TABLE: std::sync::OnceLock<Doors> = std::sync::OnceLock::new();
+        *TABLE.get_or_init(|| Doors::for_test(&[&POOLS, &FEE, &FREE]))
+    }
+
     /// Flat fee 5 (the pools plane's), `tools.fees.per_request: 3`, no card (billing off for
     /// tokens) — the P2-fees before→after fixture.
     fn cost() -> busbar_kernel::cost::CostModel {
@@ -3951,16 +3958,15 @@ mod plane_fees_on_admin_usage {
     /// the metering row (the plane's subject in `model`, its key in `provider`). Returns the budget
     /// book's spend (minor units) and `/admin/usage`'s total spend (micro-units).
     ///
-    /// The app is built BEFORE the plane registry is seeded: building it registers the neutral test
-    /// plane, which would re-lock the registry an isolation already holds on this thread.
+    /// The app is lent this module's door table ([`doors`]), the planes the usage is priced over.
     async fn serve(pool_calls: usize, plane: &str, calls: usize) -> (i64, i64) {
         let gov = gov();
         let cost = cost();
         let app = crate::new_test_app()
+            .doors(doors())
             .governance(Arc::clone(&gov))
             .cost(self::cost())
             .build();
-        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
         let now = busbar_kernel::store::now();
         let key = key();
         for _ in 0..pool_calls {
@@ -4059,30 +4065,17 @@ mod plane_fees_on_admin_usage {
     async fn a_pools_row_keeps_the_flat_fee() {
         let (book, admin) = serve(2, POOLS_PLANE, 0).await;
         assert_eq!((book, admin), (10, 10 * MICROS_PER_MINOR));
-        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
         assert_eq!(
-            crate::v1::service::row_lane(
-                busbar_kernel::plane_driver::doors::process_doors(),
-                POOLS_MODEL,
-                POOLS_PLANE
-            ),
+            crate::v1::service::row_lane(doors(), POOLS_MODEL, POOLS_PLANE),
             POOLS_MODEL,
             "the fallback plane's key is a pools row"
         );
         assert_eq!(
-            crate::v1::service::row_lane(
-                busbar_kernel::plane_driver::doors::process_doors(),
-                POOLS_MODEL,
-                POOLS_PROVIDER
-            ),
+            crate::v1::service::row_lane(doors(), POOLS_MODEL, POOLS_PROVIDER),
             POOLS_MODEL
         );
         assert_eq!(
-            crate::v1::service::row_lane(
-                busbar_kernel::plane_driver::doors::process_doors(),
-                "srv.read",
-                FEE_PLANE
-            ),
+            crate::v1::service::row_lane(doors(), "srv.read", FEE_PLANE),
             format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read")
         );
     }
@@ -4167,11 +4160,11 @@ mod plane_fees_on_admin_usage {
         use busbar_kernel::cost::{plane_fee_lane, PER_SESSION};
         let gov = gov();
         let app = crate::new_test_app()
+            .doors(doors())
             .governance(Arc::clone(&gov))
             .cost(cost())
             .build();
         let cost = cost();
-        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
         let now = busbar_kernel::store::now();
         let key = key();
         let units = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {

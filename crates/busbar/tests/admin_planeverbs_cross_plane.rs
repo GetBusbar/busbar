@@ -54,7 +54,7 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
     ];
 
     let mut actual: Vec<(String, String, String)> = Vec::new();
-    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
+    for decl in linked::planes() {
         let Some(admin_routes) = decl.admin_routes else {
             continue;
         };
@@ -101,10 +101,10 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
     );
 }
 
-/// Every linked plane that mounts admin trust verbs, read back from the registry.
+/// Every linked plane that mounts admin trust verbs, read back from the binary's door table.
 fn verb_planes() -> Vec<&'static busbar_kernel::plane_driver::row::PlaneDecl> {
     register_planes();
-    let planes: Vec<_> = busbar_kernel::plane_driver::doors::plane_decls()
+    let planes: Vec<_> = linked::planes()
         .iter()
         .copied()
         .filter(|d| d.admin_routes.is_some())
@@ -129,7 +129,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
         let refused = busbar_core_admin::planeverbs::registered(|| None::<()>)
             .expect_err("a lookup that resolved nothing must refuse");
         let rendered = busbar_core_admin::planeverbs::to_admin_error(
-            busbar_kernel::plane_driver::doors::process_doors(),
+            linked::table(),
             decl.key,
             "billing",
             refused,
@@ -154,15 +154,15 @@ fn the_audit_naming_is_derived_from_the_plane() {
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(
-            busbar_kernel::plane_driver::doors::plane_decl(decl.key).audit_kind,
+            linked::table().plane_decl(decl.key).audit_kind,
             decl.audit_kind,
-            "the registry resolves `{}` to its own declaration",
+            "the lent table resolves `{}` to its own declaration",
             decl.key
         );
         for verb in ["connect", "approve"] {
             let name = format!("k3-audit-{}-{verb}", decl.key);
             busbar_core_admin::planeverbs::audit(
-                busbar_kernel::plane_driver::doors::process_doors(),
+                linked::table(),
                 decl.key,
                 verb,
                 &name,

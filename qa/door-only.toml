@@ -10,12 +10,6 @@ file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
 count = 1
 
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/config/plane_sections.rs"
-item = "PLANE_SECTIONS"
-count = 1
-
 # judge_answer: interim for the 8 pooled-client builders; struck when D1-D6 move onto conns (Phase B).
 # (ARCHITECT ruling (C), DEST-GUARD 2026-10-02: the engine's pooled resolver asks the connector's
 # destination guard through this seam; no new static.)

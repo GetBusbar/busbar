@@ -91,9 +91,13 @@ pub trait EngineTestKitPlus: EngineTestKit {
     /// The metric family the engine counts every plane's front-door requests under (label keys:
     /// `plane`, `ingress_protocol`, `pool`, `outcome`).
     fn plane_request_family(&self) -> &'static str;
-    /// The named-map chassis facts for the plane section keyed `section`, or `None` when the chassis
-    /// does not enumerate that section at all.
-    fn named_map_section_facts(&self, section: &'static str) -> Option<NamedMapSectionFacts>;
+    /// The named-map chassis facts for the plane section keyed `section` over the door table `doors`,
+    /// or `None` when the chassis does not enumerate that section at all.
+    fn named_map_section_facts(
+        &self,
+        doors: crate::plane_driver::doors::Doors,
+        section: &'static str,
+    ) -> Option<NamedMapSectionFacts>;
 }
 
 /// Sum every sample of the metric `name` in `exposition` whose label set carries ALL of `labels` —

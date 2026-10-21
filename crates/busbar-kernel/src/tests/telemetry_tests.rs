@@ -15,17 +15,15 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// The plane every emission in this module drives: the FALLBACK (model) plane, whose
 /// `busbar_requests_total` / `busbar_request_duration_seconds` families carry NO `plane` label
 /// (v1.5.4-identical) and are the only ones the bank's fast path serves — `request_finished`
-/// branches on `crate::plane_driver::doors::is_fallback(plane)`, so the key handed in must be WHATEVER key is
-/// currently registered fallback, never a hard-coded literal. Registers
-/// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
-/// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
-/// anything about the real LLM dialect, so it needs a plane to exist as fallback, never the real
-/// the retired engine crate plane (which this crate's own `#[cfg(test)]` binary cannot reach; see that fn's doc).
-/// Mounted planes emit the separate `busbar_plane_*` families and are exercised in
-/// `plane::metrics_tests` / `a2a::relay_tests`.
+/// branches on the lent table's `Doors::is_fallback(plane)`, so the key handed in must be WHATEVER
+/// key that table names fallback, never a hard-coded literal. Read off the neutral test table
+/// ([`crate::test_support::neutral_test_doors`]), the table every `TestApp` here is lent — this
+/// module asserts core's OWN bank/macro-fallback routing, not anything about the real LLM dialect,
+/// so it needs a plane to exist as fallback, never the real LLM plane (which this crate's own
+/// `#[cfg(test)]` binary cannot reach). Mounted planes emit the separate `busbar_plane_*` families
+/// and are exercised in `plane::metrics_tests` / `a2a::relay_tests`.
 fn model_plane_key() -> &'static str {
-    crate::test_support::register_neutral_test_plane();
-    crate::plane_driver::doors::fallback_key()
+    crate::test_support::neutral_test_doors().fallback_key()
 }
 
 /// Two DISTINCT provider dialects the neutral fallback plane declares
@@ -734,7 +732,6 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
     crate::snapshot::init();
-    model_plane_key();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "tel-f25-503-model",

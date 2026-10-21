@@ -104,8 +104,7 @@ static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
 /// plane agree with each other there.
 ///
 /// # Panics
-/// If called more than once — one composition root, one registration, the same discipline
-/// `install_doors` documents for the identical reason.
+/// If called more than once — one composition root, one registration.
 pub fn install_as_plane_seam(seam: AsPlaneSeam) {
     assert!(
         SEAM.set(seam).is_ok(),

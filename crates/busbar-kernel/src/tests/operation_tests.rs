@@ -120,12 +120,11 @@ fn no_operation_is_still_called_tool_call() {
 /// would fail the deletion test on line one.
 #[test]
 fn no_verb_name_carries_a_protocol_identity() {
-    // The identities are READ OFF THE REGISTERED PLANES, not listed here: every provider dialect a
-    // registered plane declares, so a dialect a plane adds is checked the day it lands. The plane
-    // keys of the real roster are checked against the same verbs in
-    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
-    crate::test_support::register_neutral_test_plane();
-    let identities: Vec<&str> = crate::plane_driver::doors::provider_dialects();
+    // The identities are READ OFF THE LENT TABLE'S PLANES, not listed here: every provider dialect
+    // a plane of the neutral test table declares, so a dialect a plane adds is checked the day it
+    // lands. The plane keys of the real roster are checked against the same verbs in
+    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is linked.
+    let identities: Vec<&str> = crate::test_support::neutral_test_doors().provider_dialects();
     assert!(
         !identities.is_empty(),
         "the neutral plane declares provider dialects; an empty list would pass vacuously"

@@ -78,10 +78,10 @@ const CROSS_PLANE_REFUSAL: &str = "`bays.dock`: `hooks:` may only name hooks fro
      `hooks:` map, by bare name. `export.siem` reaches onto the `export:` plane, and no entry on one \
      plane may reference an entry on another. Did you mean the hook `siem`?";
 
-fn boot(section: &str) -> Result<(), String> {
+fn boot(doors: crate::plane_driver::doors::Doors, section: &str) -> Result<(), String> {
     crate::config::deploy_from_yaml_str(
         &format!("providers: {{}}\nmodels: {{}}\nbays:\n{section}"),
-        crate::plane_driver::doors::process_doors(),
+        doors,
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -97,30 +97,36 @@ fn assert_refused(got: Result<(), String>, sentence: &str) {
 
 #[test]
 fn boot_refuses_a_cross_plane_reference_in_a_planes_section() {
-    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    hooks: [siem]\n").expect("a bare hook name is the legal form");
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE]);
+    boot(doors, "  dock:\n    hooks: [siem]\n").expect("a bare hook name is the legal form");
     assert_refused(
-        boot("  dock:\n    hooks: [export.siem]\n"),
+        boot(doors, "  dock:\n    hooks: [export.siem]\n"),
         CROSS_PLANE_REFUSAL,
     );
 }
 
 #[test]
 fn boot_refuses_a_bad_pin_in_a_planes_section() {
-    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    anchor: { mechanism: sealed_key, key: K }\n")
-        .expect("a rooted pin with material is legal");
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE]);
+    boot(
+        doors,
+        "  dock:\n    anchor: { mechanism: sealed_key, key: K }\n",
+    )
+    .expect("a rooted pin with material is legal");
     assert_refused(
-        boot("  dock:\n    anchor: { mechanism: sealed_key }\n"),
+        boot(doors, "  dock:\n    anchor: { mechanism: sealed_key }\n"),
         PIN_REFUSAL,
     );
 }
 
 #[test]
 fn boot_refuses_a_bad_cadence_in_a_planes_section() {
-    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    recheck_after: 30s\n").expect("a duration is legal");
-    assert_refused(boot("  dock:\n    recheck_after: soon\n"), CADENCE_REFUSAL);
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE]);
+    boot(doors, "  dock:\n    recheck_after: 30s\n").expect("a duration is legal");
+    assert_refused(
+        boot(doors, "  dock:\n    recheck_after: soon\n"),
+        CADENCE_REFUSAL,
+    );
 }
 
 /// RED (ARCHITECT timeout ruling): an entry's `timeout:` is a reserved key the KERNEL judges, for a
@@ -128,19 +134,19 @@ fn boot_refuses_a_bad_cadence_in_a_planes_section() {
 /// the kernel's sentence, on the boot path and on the admin write path alike.
 #[test]
 fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
-    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    timeout: 10s\n").expect("a duration is legal");
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE]);
+    boot(doors, "  dock:\n    timeout: 10s\n").expect("a duration is legal");
     assert_refused(
-        boot("  dock:\n    timeout: soon\n"),
+        boot(doors, "  dock:\n    timeout: soon\n"),
         "`bays.dock`: `timeout:` invalid duration 'soon': expected <number><s|m|h|d>",
     );
     assert_refused(
-        boot("  dock:\n    timeout: 0s\n"),
+        boot(doors, "  dock:\n    timeout: 0s\n"),
         "`bays.dock`: `timeout: 0s` is zero, which would refuse every call to this entry before \
          it was sent.",
     );
     assert_refused(
-        boot("  dock:\n    timeout: 10\n"),
+        boot(doors, "  dock:\n    timeout: 10\n"),
         "`bays.dock`: `timeout:` must be a duration `<n><s|m|h|d>`, e.g. `30s`",
     );
     let entry: serde_yaml::Value = serde_yaml::from_str("timeout: 0m").expect("yaml");
@@ -165,7 +171,7 @@ fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
 /// kernel's one sentence.
 #[test]
 fn the_admin_write_path_refuses_what_boot_refuses() {
-    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE]);
     let section = NamedMapSection::Plane("bays");
     for (def, sentence) in [
         (
@@ -186,14 +192,14 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         ),
     ] {
         let err = section
-            .parse_def(crate::plane_driver::doors::process_doors(), "dock", &def)
+            .parse_def(doors, "dock", &def)
             .err()
             .expect("the write path must refuse it");
         assert_eq!(err, sentence);
     }
     section
         .parse_def(
-            crate::plane_driver::doors::process_doors(),
+            doors,
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "open" }, "hooks": ["siem"] }),
         )
@@ -205,11 +211,11 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
 /// reading does, instead of persisting a keyless root pin.
 #[test]
 fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
-    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE]);
     let section = NamedMapSection::Plane("bays");
     let err = section
         .parse_def(
-            crate::plane_driver::doors::process_doors(),
+            doors,
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
         )
@@ -263,18 +269,17 @@ static MOORINGS_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver
 
 #[test]
 fn boot_refuses_a_forwarded_caller_credential_in_the_planes_own_words() {
-    let _isolation =
-        crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&BAYS_PLANE, &MOORINGS_PLANE]);
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&BAYS_PLANE, &MOORINGS_PLANE]);
     let moorings = |default: &str| {
         crate::config::deploy_from_yaml_str(&format!(
             "providers: {{}}\nmodels: {{}}\nmoorings:\n  upstream_credentials: {default}\n  berth: {{}}\n"
-        ), crate::plane_driver::doors::process_doors())
+        ), doors)
         .map(|_| ())
         .map_err(|e| e.to_string())
     };
     assert_refused(moorings("passthrough"), FORWARD_REFUSAL);
     moorings("own").expect("the plane's own credential is not refused");
-    boot("  upstream_credentials: passthrough\n  dock: {}\n")
+    boot(doors, "  upstream_credentials: passthrough\n  dock: {}\n")
         .expect("a plane that states no refusal accepts a forwarded caller credential");
 }
 

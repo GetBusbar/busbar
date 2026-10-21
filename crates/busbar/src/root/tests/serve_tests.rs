@@ -3201,8 +3201,8 @@ mod tools_door {
     }
 
     /// METRICS: the door's traffic is on the real `/metrics` exposition, under the plane's own label.
-    /// The door mounted as the composition root dispatches it (its folded row in the plane registry,
-    /// its claims on the mount table): a served call counts one request of the plane on the
+    /// The door mounted as the composition root dispatches it (its folded row in the door table its
+    /// generation is lent, its claims on the mount table): a served call counts one request of the plane on the
     /// plane-labelled request family the front door is observed by (`mcp-server`), and one upstream
     /// attempt under the member's lane, the plane's key and its registration (`mcp-client`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3214,7 +3214,6 @@ mod tools_door {
         let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let row = door_boundary::row();
-        door_boundary::registry(row);
         let tools = registration("observed", port, "");
         let slot = door_boundary::slot_over(row, tools.clone());
         let rig = rig_tools(instance, port, tools, &|app| {

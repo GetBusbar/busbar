@@ -113,7 +113,7 @@ fn only_the_first_denial_in_a_window_is_audited() {
 fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
     use crate::admin::gate::PATH_PLUGINS_INSPECT;
     let class = classify_mutation(
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
         PATH_PLUGINS_INSPECT,
     );
     assert!(matches!(class, MutationClass::PluginInspect));
@@ -148,14 +148,14 @@ fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
     use crate::admin::gate::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
     assert!(matches!(
         classify_mutation(
-            crate::plane_driver::doors::process_doors(),
+            crate::test_support::neutral_test_doors(),
             PATH_CONFIG_VALIDATE
         ),
         MutationClass::Crud
     ));
     assert!(matches!(
         classify_mutation(
-            crate::plane_driver::doors::process_doors(),
+            crate::test_support::neutral_test_doors(),
             PATH_PLUGINS_INSPECT
         ),
         MutationClass::PluginInspect
@@ -182,7 +182,7 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
     assert!(table_alone(PATH_CONFIG_VALIDATE));
     assert!(matches!(
         classify_mutation(
-            crate::plane_driver::doors::process_doors(),
+            crate::test_support::neutral_test_doors(),
             PATH_CONFIG_VALIDATE
         ),
         MutationClass::Crud
@@ -191,20 +191,20 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
     assert!(!table_alone(PATH_PLUGINS_INSPECT));
     assert!(matches!(
         classify_mutation(
-            crate::plane_driver::doors::process_doors(),
+            crate::test_support::neutral_test_doors(),
             PATH_PLUGINS_INSPECT
         ),
         MutationClass::PluginInspect
     ));
     // The registry-derived named-map roots: absent from the table, CONFIG.
     for section in crate::config::named_map::NamedMapSection::sections(
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     ) {
         let rel = format!("{}/some-name", section.path_root());
         assert!(!table_alone(&rel), "{rel} is not a table row");
         assert!(
             matches!(
-                classify_mutation(crate::plane_driver::doors::process_doors(), &rel),
+                classify_mutation(crate::test_support::neutral_test_doors(), &rel),
                 MutationClass::Config
             ),
             "{rel} is CONFIG by the named-map scan"
@@ -236,7 +236,7 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
 #[test]
 fn a_named_map_root_matches_on_a_segment_boundary_only() {
     for section in crate::config::named_map::NamedMapSection::sections(
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     ) {
         let root = section.path_root();
         for inside in [
@@ -246,7 +246,7 @@ fn a_named_map_root_matches_on_a_segment_boundary_only() {
         ] {
             assert!(
                 matches!(
-                    classify_mutation(crate::plane_driver::doors::process_doors(), &inside),
+                    classify_mutation(crate::test_support::neutral_test_doors(), &inside),
                     MutationClass::Config
                 ),
                 "{inside} is the section's own path"
@@ -255,7 +255,7 @@ fn a_named_map_root_matches_on_a_segment_boundary_only() {
         let neighbour = format!("{root}-keyset");
         assert!(
             matches!(
-                classify_mutation(crate::plane_driver::doors::process_doors(), &neighbour),
+                classify_mutation(crate::test_support::neutral_test_doors(), &neighbour),
                 MutationClass::Crud
             ),
             "{neighbour} only shares the root's leading characters"

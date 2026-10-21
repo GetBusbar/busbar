@@ -720,7 +720,7 @@ async fn node_boot_hooks_arm() {
     let cfg = || {
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\n",
-            busbar_kernel::plane_driver::doors::process_doors(),
+            busbar_kernel::plane_driver::doors::Doors::NONE,
         )
         .expect("a minimal deployment");
         let mut cfg =

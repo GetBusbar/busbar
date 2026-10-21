@@ -63,11 +63,8 @@ fn resolved(sections: &str) -> RootCfg {
          providers:\n  acme: {{ api_key: none }}\n\
          models:\n  m: {{ provider: acme }}\n{sections}"
     );
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        &yaml,
-        busbar_kernel::plane_driver::doors::process_doors(),
-    )
-    .expect("the document parses");
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml, linked::table())
+        .expect("the document parses");
     let mut defs = std::collections::HashMap::new();
     defs.insert(
         "acme".to_string(),
@@ -188,7 +185,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     busbar_kernel::snapshot::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
-    let app = configured(TestApp::new(), &sections, None).build();
+    let app = configured(TestApp::new().doors(linked::table()), &sections, None).build();
 
     let v = oversized_413_body(app, &mount).await;
 
@@ -216,7 +213,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     busbar_kernel::snapshot::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
-    let app = configured(TestApp::new(), &sections, None).build();
+    let app = configured(TestApp::new().doors(linked::table()), &sections, None).build();
 
     // UNDER the mount, at a segment boundary: claimed.
     let under = oversized_413_body(app.clone(), &format!("{mount}/anything")).await;
@@ -420,7 +417,9 @@ mod metrics_scrape {
         let door_mount = jsonrpc_mount(door_plane(), &sections);
         let agents_mount = jsonrpc_mount(agents_plane(), &sections);
         let app = configured(
-            TestApp::new().public_url("https://busbar.example"),
+            TestApp::new()
+                .doors(linked::table())
+                .public_url("https://busbar.example"),
             &sections,
             Some("https://busbar.example"),
         )
@@ -638,6 +637,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
 
     let app = configured(
         TestApp::new()
+            .doors(linked::table())
             .lane(
                 LaneSpec::new(
                     "test-model",

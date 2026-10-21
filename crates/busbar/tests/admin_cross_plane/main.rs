@@ -35,7 +35,7 @@ use openapi::openapi_doc_seamed;
 use busbar_core_admin::{admin_codec, restart, v1, verb, witness};
 
 /// Install the process-wide test environment exactly once: the root's linked hook names, then the
-/// operator credential's registry row, every test-linked plane (`linked::install`) and the admin
+/// operator credential's registry row, every test-linked plane's seams (`linked::install`) and the admin
 /// mount seam — the order busbar-core-admin's own test environment installs those three in.
 pub(crate) fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
@@ -62,11 +62,12 @@ pub(crate) fn ensure_seam() {
     });
 }
 
-/// A `TestApp` after [`ensure_seam`], so the planes and the admin mount seam are in place before
+/// A `TestApp` after [`ensure_seam`], lent this binary's door table (`linked::table`) as the
+/// composition root lends its own, so the planes and the admin mount seam are in place before
 /// `.build()` resolves them.
 pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     ensure_seam();
-    busbar_kernel::test_support::TestApp::new()
+    busbar_kernel::test_support::TestApp::new().doors(linked::table())
 }
 
 /// The admin service's router over `app`, after [`ensure_seam`].

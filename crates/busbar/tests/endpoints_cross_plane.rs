@@ -67,6 +67,7 @@ fn topology_app() -> Arc<App> {
 fn topology() -> TestApp {
     register_planes();
     TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-a0",
             linked::residual_default_dialect(),
@@ -164,6 +165,7 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     register_planes();
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
             LaneSpec::new("bounded", linked::residual_default_dialect(), "http://b")
                 .max(1)
@@ -245,6 +247,7 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
 async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
     register_planes();
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new("bounded", linked::residual_default_dialect(), "http://b").max(3))
         .lane(
             LaneSpec::new("unbounded", linked::residual_default_dialect(), "http://u")
@@ -289,6 +292,7 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
     register_planes();
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
             LaneSpec::new("wedged", linked::residual_default_dialect(), "http://w")
                 .max(1)
@@ -553,8 +557,8 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     register_planes();
     let fallback = linked::fallback();
     let door = opening_door();
-    let _isolated =
-        busbar_kernel::plane_driver::doors::TestRegistryIsolation::seeded(&[fallback, door]);
+    // The table this generation is lent: the linked fallback plane and the opening door, alone.
+    let doors = busbar_kernel::plane_driver::doors::Doors::for_test(&[fallback, door]);
     let section = busbar_kernel::plane_driver::door::DoorSection::new(
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
@@ -573,6 +577,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
         "the door opened"
     );
     let mut fixture = TestApp::new()
+        .doors(doors)
         .lane(LaneSpec::new(
             "model-h",
             linked::residual_default_dialect(),

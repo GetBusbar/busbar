@@ -53,10 +53,14 @@ impl EngineTestKitPlus for CoreEngineKit {
         crate::snapshot::PLANE_REQUESTS_TOTAL
     }
 
-    fn named_map_section_facts(&self, section: &'static str) -> Option<NamedMapSectionFacts> {
+    fn named_map_section_facts(
+        &self,
+        doors: crate::plane_driver::doors::Doors,
+        section: &'static str,
+    ) -> Option<NamedMapSectionFacts> {
         use crate::config::named_map::NamedMapSection;
         let this = NamedMapSection::Plane(section);
-        NamedMapSection::sections(crate::plane_driver::doors::process_doors())
+        NamedMapSection::sections(doors)
             .contains(&this)
             .then(|| NamedMapSectionFacts {
                 key: this.key(),

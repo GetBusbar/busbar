@@ -14,20 +14,21 @@ mod linked;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg};
 use std::collections::HashMap;
 
-/// Register every test-linked plane in the process registry, idempotent (first-wins) — needed
-/// because the kernel lifts a `tools:`/`agents:` section only when a registered plane declares it.
+/// Install every test-linked plane's seams, idempotent (first-wins). Each parse below is lent the
+/// binary's door table (`linked::table`), because the kernel lifts a `tools:`/`agents:` section
+/// only when a plane in the table it was lent declares it.
 fn register_planes() {
     linked::install();
 }
 
 /// A DeployCfg parsed from `sections` through the kernel's own config entry point
-/// (`deploy_from_yaml_str`, the boot path's lift), after the linked planes are installed — so a
-/// section is lifted exactly when a registered plane declares it, as in a shipped binary. Empty
+/// (`deploy_from_yaml_str`, the boot path's lift), lent the binary's door table — so a section is
+/// lifted exactly when a plane in that table declares it, as in a shipped binary. Empty
 /// `providers:`/`models:` stand in for the required keys this file's refusals do not concern.
 fn deploy_yaml(sections: &str) -> DeployCfg {
     register_planes();
     let text = format!("providers: {{}}\nmodels: {{}}\n{sections}");
-    deploy_from_yaml_str(&text, busbar_kernel::plane_driver::doors::process_doors())
+    deploy_from_yaml_str(&text, linked::table())
         .unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
@@ -57,7 +58,7 @@ tools:
 "#;
     let refused = deploy_from_yaml_str(
         &format!("providers: {{}}\nmodels: {{}}\n{colliding}"),
-        busbar_kernel::plane_driver::doors::process_doors(),
+        linked::table(),
     )
     .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
     .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))

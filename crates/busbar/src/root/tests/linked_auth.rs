@@ -27,8 +27,10 @@ fn link() {
         crate::root::auth_bindings::operator_words(),
     );
     busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table a build is lent
+    // (ruling 2026-10-16 D): every build here is lent the neutral test table
+    // (`test_support::neutral_test_doors`, the `TestApp` and fixture-config default), whose plane
+    // declares them.
 }
 
 /// The operator credential's provider key, read AFTER the root's words are handed in. Before the

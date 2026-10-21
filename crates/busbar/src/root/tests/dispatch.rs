@@ -47,7 +47,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\n",
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("a minimal deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");

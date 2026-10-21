@@ -195,7 +195,7 @@ fn snapshot_for(config_path: &Path) -> String {
         .unwrap_or_else(|e| panic!("read corpus config {}: {e}", config_path.display()));
     let deploy: DeployCfg = crate::config::prepass::frozen_from_yaml_str(
         &yaml,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);

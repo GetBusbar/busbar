@@ -73,8 +73,8 @@ fn the_metric_label_surface_is_exactly_these_thirteen() {
 #[test]
 fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
     register_planes();
-    // The keys come from the roster just registered, never from literals here.
-    let plane_keys: Vec<&'static str> = busbar_kernel::plane_driver::doors::plane_keys().collect();
+    // The keys come from the binary's door table over the roster, never from literals here.
+    let plane_keys: Vec<&'static str> = linked::table().plane_keys().collect();
     assert!(
         plane_keys.len() >= 3,
         "the registered roster declares at least three plane keys: {plane_keys:?}"

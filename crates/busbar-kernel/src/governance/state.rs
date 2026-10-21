@@ -124,7 +124,7 @@ impl GovState {
             busbar_kernel::store::now(),
         );
         Ok(Self {
-            doors: crate::plane_driver::doors::process_doors(),
+            doors: crate::plane_driver::doors::Doors::NONE,
             store,
             caches: RwLock::new(GovCaches {
                 by_id,

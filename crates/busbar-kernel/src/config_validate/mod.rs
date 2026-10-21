@@ -313,7 +313,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // set. See `validate_providers_with` for why the empty set is the load-bearing case.
     //
     // The known set is the registered planes' DECLARED provider dialects
-    // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3): each plane states which
+    // (`Doors::provider_dialects` over the lent table, ARCHITECT ruling 2026-10-16 item 3): each plane states which
     // of its dialects a provider's `protocol` may name, as data, and the kernel names none.
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
@@ -2146,7 +2146,7 @@ fn validate_providers_with(
         // escape this multi-error collection entirely and surface as a lone `die()` deep in
         // `main.rs` (lane build) — so an operator with several config mistakes saw only the first
         // one. Validate it HERE against the single source of truth (the provider dialects the
-        // registered planes declare, `plane::provider_dialects`) so a bad protocol is collected
+        // lent table's planes declare, `Doors::provider_dialects`) so a bad protocol is collected
         // alongside every other error.
         // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
         //

@@ -40,7 +40,8 @@ fn build(
     Option<busbar_kernel::GovCredentialRotation>,
     busbar_kernel::InstalledLimits,
 ) {
-    let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+    let mut cfg = linked::cfg_lent(
+        linked::table(),
         busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_COMMIT"),
     );
     cfg.per_request_fee = per_request_fee;

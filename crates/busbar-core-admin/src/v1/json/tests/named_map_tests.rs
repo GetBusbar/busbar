@@ -8,7 +8,7 @@ use busbar_kernel::config::named_map::NamedMapSection;
 
 fn refusal(section: NamedMapSection) -> String {
     match validate_definition(
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
         section,
         "x",
         &serde_json::json!("not an object"),
@@ -29,14 +29,14 @@ fn a_non_object_definition_is_refused_in_1_5_5_words() {
         format!(
             "a {} definition must be an object (`{{\"module\": …}}`)",
             NamedMapSection::IdentityProviders
-                .singular(busbar_kernel::plane_driver::doors::process_doors())
+                .singular(busbar_kernel::plane_driver::doors::Doors::NONE)
         )
     );
     assert_eq!(
         refusal(NamedMapSection::Export),
         format!(
             "a {} definition must be an object (`{{\"module\": …}}`)",
-            NamedMapSection::Export.singular(busbar_kernel::plane_driver::doors::process_doors())
+            NamedMapSection::Export.singular(busbar_kernel::plane_driver::doors::Doors::NONE)
         )
     );
 }

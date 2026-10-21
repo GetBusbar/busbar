@@ -14,7 +14,7 @@
 
 mod linked;
 
-use busbar_kernel::plane_driver::doors::TestRegistryIsolation;
+use busbar_kernel::plane_driver::doors::Doors;
 use busbar_kernel::plane_driver::row::PlaneDecl;
 use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -86,12 +86,14 @@ static PROBE: PlaneDecl = PlaneDecl {
 /// Run hydrate + start over an App whose configured plane sections are exactly `sections`, and
 /// return how many times the probe's two boot hooks ran.
 fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
-    let _iso = TestRegistryIsolation::seeded(&[&PROBE]);
+    // The table this App is lent: the probe plane alone.
+    let doors = Doors::for_test(&[&PROBE]);
     let (h0, s0) = (
         HYDRATED.load(Ordering::SeqCst),
         STARTED.load(Ordering::SeqCst),
     );
     let app = busbar_kernel::test_support::TestApp::new()
+        .doors(doors)
         .plane_sections(sections)
         .build();
     busbar_kernel::boot::hydrate_all(&app).expect("hydrate");
@@ -128,13 +130,12 @@ fn a_configured_plane_still_hydrates_and_starts() {
 /// never gated.
 #[test]
 fn only_a_configured_plane_builds_its_slot() {
-    // The test-linked fallback plane, read back from the registry BEFORE the isolation seeds it.
+    // The test-linked fallback plane, read back from the binary's table, and the table this
+    // build is lent: that fallback and the probe plane.
     let fallback = linked::fallback();
-    let _iso = TestRegistryIsolation::seeded(&[fallback, &PROBE]);
+    let doors = Doors::for_test(&[fallback, &PROBE]);
     let build = |sections: &[&'static str]| {
-        let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::none(),
-        );
+        let mut cfg = linked::cfg_lent(doors, busbar_kernel::config::SecretRef::none());
         cfg.plane_sections = sections.iter().copied().collect();
         let b0 = BUILT.load(Ordering::SeqCst);
         let app = busbar_kernel::test_support::build_once(cfg, None).expect("build");
@@ -172,11 +173,8 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
         let yaml = format!(
             "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(
-            &yaml,
-            busbar_kernel::plane_driver::doors::process_doors(),
-        )
-        .expect("parse");
+        let deploy =
+            busbar_kernel::config::deploy_from_yaml_str(&yaml, linked::table()).expect("parse");
         let mut defs = std::collections::HashMap::new();
         defs.insert(
             "acme".to_string(),

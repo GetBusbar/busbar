@@ -53,8 +53,7 @@ pub use busbar_contract::diagnostic::{Banner, Class, Diagnostic, Severity};
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE PLANE-CONTRIBUTED CATALOG SEAM. The neutral [`REGISTRY`] carries only the plane-AGNOSTIC
 // built-in diagnostics; each extracted plane crate OWNS its own `Diagnostic` consts and hands them
-// to [`install_diagnostics`] at the composition root, exactly as a plane hands its `&PlaneDecl` to
-// `install_doors`. The runtime catalog an operator sees is [`all`] — `REGISTRY ∪ installed` — so a
+// to [`install_diagnostics`] at the composition root. The runtime catalog an operator sees is [`all`] — `REGISTRY ∪ installed` — so a
 // plane's codes resolve through [`by_code`] once registered, and a build with a plane compiled out
 // never sees (or renders) that plane's diagnostics. Everything crosses the ABI: the host names no
 // plane const; a plane never edits this file. Numbering/identity is preserved on the move — a plane
@@ -66,8 +65,7 @@ pub use busbar_contract::diagnostic::{Banner, Class, Diagnostic, Severity};
 static INSTALLED: std::sync::OnceLock<&'static [&'static Diagnostic]> = std::sync::OnceLock::new();
 
 /// INSTALL PLANE-CONTRIBUTED DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis, and the seam an extracted plane crate registers its owned consts through. Exactly
-/// `install_doors`' shape and contract on the diagnostics axis. `pub`, not `pub(crate)`: the
+/// axis, and the seam an extracted plane crate registers its owned consts through. `pub`, not `pub(crate)`: the
 /// `busbar` binary is the composition root and calls this from `main` (`register_diagnostics`),
 /// folding each linked plane's `DIAGNOSTICS` slice in before anything reads the catalog.
 ///

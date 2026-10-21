@@ -80,6 +80,7 @@ fn test_scrape_gauges_lane_state_no_governance() {
     init();
 
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-x",
             linked::residual_default_dialect(),
@@ -113,6 +114,7 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
 
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
             LaneSpec::new("cap-model", linked::residual_default_dialect(), "http://c")
                 .max(1)
@@ -191,6 +193,7 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
 
     // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
             LaneSpec::new("unb-model", linked::residual_default_dialect(), "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
@@ -224,6 +227,7 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
     init();
 
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "brk-model",
             linked::residual_default_dialect(),
@@ -264,6 +268,7 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     register_planes();
     init();
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "q-model",
             linked::residual_default_dialect(),
@@ -350,6 +355,7 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
     let gov = Arc::new(GovState::new(store, None).unwrap());
 
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-broken",
             linked::residual_default_dialect(),
@@ -388,6 +394,7 @@ fn test_lane_state_healthy_is_zero() {
     init();
 
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-h",
             linked::residual_default_dialect(),
@@ -431,6 +438,7 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     init();
 
     let (app, store) = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-ho",
             linked::residual_default_dialect(),
@@ -476,6 +484,7 @@ fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_
     init();
 
     let (app, store) = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-by",
             linked::residual_default_dialect(),
@@ -513,6 +522,7 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     init();
 
     let (app, store) = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-probe",
             linked::residual_default_dialect(),
@@ -568,6 +578,7 @@ fn test_lane_state_emitted_for_plane_neutral_breaker_cells() {
     init();
 
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-pn",
             linked::residual_default_dialect(),
@@ -621,6 +632,7 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     init();
 
     let (app, store) = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-zero",
             linked::residual_default_dialect(),
@@ -680,6 +692,7 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     // The linked plane's own default dialect, read off its declarations (this cell names none).
     let dialect = linked::residual_default_dialect();
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new("q-live-model", dialect, "http://q"))
         .pool(pool, &[(0, 1)])
         .build();

@@ -926,7 +926,7 @@ pub fn build_app_from_config(
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
         // The "supported:" roster is the planes' DECLARED provider dialects
-        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // (`Doors::provider_dialects` over the lent table, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
         // literal and not a codec list: a build with the plane that declares them compiled out names
         // only what it actually serves, and a build with a new dialect names it. Empty roster is a
         // real answer.

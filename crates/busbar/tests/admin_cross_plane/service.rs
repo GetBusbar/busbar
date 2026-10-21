@@ -46,7 +46,8 @@ fn build_with_hook_makes_a_plane_attach_live() {
     // this in-crate unit test names no plane, no plane crate and no plane config type (the full
     // end-to-end builder path is covered by the plane crate's own integration tests).
     let mut builder = crate::new_test_app().hook_env(env);
-    let tools = busbar_kernel::plane_driver::doors::plane_decl_for_config_section("tools")
+    let tools = crate::linked::table()
+        .plane_decl_for_config_section("tools")
         .expect("a plane is registered to own the `tools:` section");
     builder.set_container_hooks(
         tools.key,

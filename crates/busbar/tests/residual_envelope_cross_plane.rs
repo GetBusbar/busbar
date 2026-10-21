@@ -39,7 +39,7 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
     for decl in mounting {
         let path = format!("/{}", decl.key);
         // No section of this plane is configured: `TestApp::new()` carries none.
-        let app = TestApp::new().build();
+        let app = TestApp::new().doors(linked::table()).build();
 
         let v = oversized_413_body(app, &path).await;
 
@@ -71,7 +71,7 @@ async fn a_path_no_plane_serves_is_answered_in_the_kernels_own_envelope() {
     busbar_kernel::snapshot::init();
     linked::install();
     // No section of any plane is configured: `TestApp::new()` carries none.
-    let app = TestApp::new().build();
+    let app = TestApp::new().doors(linked::table()).build();
 
     let v = oversized_413_body(app, "/v1/chat/completions").await;
 

@@ -277,7 +277,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
             "models": {},
             "oauth_as": { "issuer": ISSUER },
         }),
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("a deploy config carrying `oauth_as:` parses");
     let resolved = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())

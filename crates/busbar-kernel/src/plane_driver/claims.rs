@@ -13,7 +13,7 @@
 // posture, `plane/mod.rs`).
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::plane_driver::doors::{is_fallback, sole_wire_format};
+use crate::plane_driver::doors::Doors;
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
 ///
@@ -113,10 +113,10 @@ impl PlaneDispatch {
     /// busbar key carries no audience at all, and the verifier rejects any token that does
     /// (`governance::signing`, the 1.6.0 plane boundary). Handing the fallback an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
-    pub fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
+    pub fn admit(self, doors: Doors, key: &'static str, admission: PlaneAdmission) -> Self {
         // The fallback takes none — see the doc: an audience on an unmounted plane is inert, and one
         // on the fallback plane would quietly make every unclaimed path an OAuth resource server.
-        if is_fallback(key) {
+        if doors.is_fallback(key) {
             return self;
         }
         self.admit_key(key, admission)
@@ -143,7 +143,8 @@ impl PlaneDispatch {
         // path and never reaches the admission map — then read that plane's bound audience by key.
         self.admissions.get(self.mounted_plane_of(path)?)
     }
-    /// Mount `plane` at `path`. Mounting the fallback plane ([`crate::plane_driver::doors::fallback_key`]) is a no-op.
+    /// Mount `plane` at `path`. Mounting the fallback plane of `doors`
+    /// ([`Doors::fallback_key`]) is a no-op.
     ///
     /// The path is NORMALISED to a leading slash with no trailing slash, so equivalent path
     /// spellings all dispatch identically. The alternative is a deployment whose plane silently
@@ -155,10 +156,10 @@ impl PlaneDispatch {
     /// canonical, so the order of these calls decides which path the plane calls its own. A repeated
     /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
     /// sequence cannot grow the table.
-    pub fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
+    pub fn mount(self, doors: Doors, key: &'static str, path: &str, wire: &'static str) -> Self {
         // Mounting the fallback is a no-op: it IS the catch-all, so a second door to it is a
         // precedence question with no good answer.
-        if is_fallback(key) {
+        if doors.is_fallback(key) {
             return self;
         }
         self.mount_key(key, path, wire)
@@ -296,7 +297,7 @@ impl PlaneDispatch {
     /// Whether ANY plane has mounted a path. A key is present in [`Self::claims`] only once its
     /// plane has mounted at least one path (see the field doc), so this is exactly "is there a
     /// plane [`observe`] could ever label". Planes register ONCE at boot
-    /// ([`crate::plane_driver::doors::install_doors`], before the first request) and the mount set is fixed for the
+    /// (the door table the generation was lent, before the first request) and the mount set is fixed for the
     /// process lifetime, so `false` here is `false` forever — which is what lets the router omit
     /// the plane-ingress layer STRUCTURALLY for a deployment with no mounted plane, rather than
     /// pay a per-request snapshot load and mount walk to pass every request straight through.
@@ -329,11 +330,11 @@ impl Ingress {
     ///
     /// This is the `ingress_protocol` metric-label vocabulary (see [`crate::plane_driver::doors::Doors::wire_format_names`]),
     /// so a mounted plane labels as its own dialect.
-    pub fn wire_format(self) -> Option<&'static str> {
+    pub fn wire_format(self, doors: Doors) -> Option<&'static str> {
         match self {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
-            Ingress::Mounted(key) => sole_wire_format(key),
+            Ingress::Mounted(key) => doors.sole_wire_format(key),
             Ingress::Fallback => None,
         }
     }
@@ -359,10 +360,7 @@ impl Ingress {
     /// interface list is an ORDERED list whose first entry is the preferred binding, busbar's own
     /// card publishes these in this order, and a refusal that cannot know which binding the caller
     /// intended is owed the one the card names first.
-    pub fn shaping_wire_format(
-        self,
-        doors: crate::plane_driver::doors::Doors,
-    ) -> Option<&'static str> {
+    pub fn shaping_wire_format(self, doors: Doors) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => doors.wire_format_names(key).first().copied(),
             Ingress::Fallback => None,

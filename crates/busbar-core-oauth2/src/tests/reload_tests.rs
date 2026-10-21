@@ -29,7 +29,7 @@ fn cfg() -> busbar_kernel::config::RootCfg {
             "store": { "module": busbar_kernel::config::MIGRATED_STORE_MODULE },
             "oauth_as": { "issuer": "https://as.example.com" },
         }),
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("a deploy config carrying `oauth_as:` parses");
     busbar_kernel::config::resolve(&deploy, &HashMap::new()).expect("the config resolves")

@@ -92,19 +92,19 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
-/// THE REGISTRY ROW THE DEPLOYMENT WRITES INTO, as the composition root installs it: the row the
-/// door serving the `pools` map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
-/// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
-pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::row::PlaneDecl> =
+/// THE DOOR TABLE THE DEPLOYMENT IS LENT, as the composition root folds and lends its own: the one
+/// row the door serving the `pools` map folds to, which owns the `pools:`/`models:` sections. The
+/// door is the plane's one registration (DEV-GREEN row 83), so its Statement is the row. Folded once.
+pub(super) fn door_table() -> busbar_kernel::plane_driver::doors::Doors {
+    static TABLE: std::sync::OnceLock<busbar_kernel::plane_driver::doors::Doors> =
         std::sync::OnceLock::new();
-    let row = ROW.get_or_init(|| {
+    *TABLE.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg = registration(linked_probe(pools_door(), "pools-door-row"))
             .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
-    });
-    busbar_kernel::plane_driver::doors::register_test_plane(row);
+        let row = busbar_kernel::plane_driver::door::fold(reg).expect("the door folds");
+        busbar_kernel::plane_driver::doors::Doors::for_test(&[row])
+    })
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -824,8 +824,9 @@ pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 /// [`rig`], the composition's refusal answered rather than panicked on: what the root's boot dies
 /// on.
 pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
-    // The registry rows that own the `pools:`/`models:` sections the deployment writes.
-    install_door_seams();
+    // The table whose row owns the `pools:`/`models:` sections the deployment writes: the parse
+    // and the generation below are both lent it.
+    let doors = door_table();
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: opts.refuse_private,
@@ -924,11 +925,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if let Some(cap) = opts.request_body_max_bytes {
         yaml.push_str(&format!("limits:\n  request_body_max_bytes: {cap}\n"));
     }
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        &yaml,
-        busbar_kernel::plane_driver::doors::process_doors(),
-    )
-    .map_err(|e| e.to_string())?;
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&yaml, doors).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
         defs_yaml.push_str(&format!(
@@ -1048,7 +1046,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     };
 
     // THE GENERATION: the lanes, the pool, the fee, and the four seats.
-    let mut builder = busbar_kernel::test_support::TestApp::new();
+    let mut builder = busbar_kernel::test_support::TestApp::new().doors(doors);
     if !opts.open_door {
         builder = builder.keys_chain();
     }

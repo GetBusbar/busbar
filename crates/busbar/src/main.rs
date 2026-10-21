@@ -266,8 +266,8 @@ fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }
 
-/// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane_driver::doors::install_doors`), over the plane tables of [`LINKED`] (each
+/// REGISTER THE PLANES — the composition root's one fold of the plane axis into the door table it
+/// owns (`root::linked::register_planes`), over the plane tables of [`LINKED`] (each
 /// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
 /// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
@@ -308,8 +308,8 @@ fn register_planes() -> busbar_kernel::plane_driver::doors::Doors {
     }
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
-    // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
-    // `install_doors` immediately above for the same reason: one composition root, one
+    // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors the
+    // door table folded immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built. Its document fetch rides the one connector,
     // read when a fetch needs it (`root::connector::AuthServerConns`).
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
@@ -368,8 +368,9 @@ fn main() {
     // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
     register_protocols();
     // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
-    // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
-    // any reader — including the CLI flags — can run.
+    // list off the door table folded here (`config::plane_sections::config_sections_from` over the
+    // table's rows), so the table must be folded before any reader — including the CLI flags — is
+    // lent it.
     let doors = register_planes();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
@@ -382,12 +383,6 @@ fn main() {
     // is built from has been read. It runs in `run()`, off the resolved limits, still before any
     // listener is bound. Every axis above is installed by then, which is the ordering the seal
     // needed from this slot in the first place.
-    // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
-    // only when some entry drives it: the parse-time section list a cross-plane hook refusal reads
-    // (after the plane axis, before the CLI flags read `--validate`), and the envelope a
-    // self-enveloping admin verb builds its own reply through. A build whose entries drive none of
-    // them binds none.
-    root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = root::cli::handle_cli_flags(doors) {

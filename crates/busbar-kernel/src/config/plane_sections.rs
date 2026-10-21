@@ -20,7 +20,8 @@
 //! literal is not a loud failure — it is a dotted reference into some section being accepted as a
 //! bare hook name, resolving to nothing, and an operator believing a hook is attached that is not.
 //!
-//! So the list is DERIVED ([`config_sections`]) and passed in as a PARAMETER rather than written.
+//! So the list is DERIVED ([`config_sections_from`], over the lent door table) and passed in as a
+//! PARAMETER rather than written.
 //! The judgement takes the sections it is judging against, which is also what lets a plane busbar
 //! does not have be validated by this code with nothing written for it (see
 //! `plane/tests/config_tests.rs`).
@@ -343,7 +344,7 @@ impl<'de> serde::Deserialize<'de> for EndpointSection {
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.
 ///
-/// [`crate::plane_driver::row::PlaneDeclaration::config_section`] over [`crate::plane_driver::doors::plane_decls`] gives the
+/// [`crate::plane_driver::row::PlaneDeclaration::config_section`] over the lent table's rows gives the
 /// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
 /// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
 /// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
@@ -353,16 +354,12 @@ impl<'de> serde::Deserialize<'de> for EndpointSection {
 /// Order is deterministic (plane tables first, in layering order) so a refusal naming a section
 /// names the same one on every run. A nondeterministic diagnostic makes a boot failure
 /// unreproducible.
-pub fn config_sections() -> Vec<&'static str> {
-    config_sections_from(crate::plane_driver::doors::plane_decls())
-}
-
-/// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
-/// pass a plane busbar does not have and watch its section reach this grammar with nothing written
-/// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
-/// [`crate::plane_driver::doors::plane_decls`]; the plane sections come off each decl's
+///
+/// Folded over the rows of the door table the caller was lent ([`crate::plane_driver::doors::Doors::decls`]);
+/// the plane sections come off each decl's
 /// [`crate::plane_driver::row::PlaneDeclaration::config_section`] rather than an enum `match`, which is what lets a
-/// registered plane's section into the hook-reference grammar.
+/// registered plane's section into the hook-reference grammar, and a test can pass a plane busbar does
+/// not have and watch its section reach this grammar with nothing written for it in core.
 pub fn config_sections_from(
     decls: &[&'static crate::plane_driver::row::PlaneDecl],
 ) -> Vec<&'static str> {
@@ -386,7 +383,7 @@ pub fn config_sections_from(
 ///
 /// `trust_keys` is the plane's declaration of its kernel-owned trust keys; `caller_credential_refusal`
 /// is its sentence refusing a forwarded caller credential ([`refuse_forwarded_caller_credential`]);
-/// `sections` is every section the config grammar declares ([`config_sections`]).
+/// `sections` is every section the config grammar declares ([`config_sections_from`]).
 ///
 /// # Errors
 ///
@@ -532,10 +529,10 @@ pub fn validate_section_hooks(
 /// An extracted plane crate skips this wrapper and calls `busbar_contract::section::split_section` with its OWN
 /// `PLANE_DECLARATION.config_section` / `subject_noun` consts — it holds no plane registry to look up.
 ///
-/// `plane_key` is normally [`crate::plane_driver::doors::fallback_key`]'s answer for the `pools:` section's one caller —
+/// `plane_key` is normally [`Doors::fallback_key`]'s answer for the `pools:` section's one caller —
 /// which is the EMPTY STRING on a build with no plane registered at all (an honest "there is no
-/// fallback" answer, not a bug; see that fn's doc). Looked up through [`crate::plane_driver::doors::plane_decl_for`]
-/// (never the panicking [`super::plane_decl`]) for exactly that reason: an unregistered/empty key
+/// fallback" answer, not a bug; see that fn's doc). Looked up through [`Doors::plane_decl_for`]
+/// (never the panicking [`Doors::plane_decl`]) for exactly that reason: an unregistered/empty key
 /// must REFUSE the parse with a named diagnostic (DECISIONS #42 — an unknown is refused, never
 /// defaulted or silently dropped), not panic the process mid-deserialize. A build that DOES have its
 /// plane registered resolves and behaves byte-identically to before.
@@ -769,7 +766,7 @@ impl From<Refusal<'_>> for String {
 /// `hooks:` map, judged against `sections`?
 ///
 /// `sections` is a PARAMETER rather than a literal so the set of sections this rule knows about is
-/// the set the config grammar declares — see `busbar_kernel::config::plane_sections::config_sections`.
+/// the set the config grammar declares — see `busbar_kernel::config::plane_sections::config_sections_from`.
 /// Production passes that; a test passes a plane busbar does not have and gets the same judgement
 /// with nothing written for it.
 ///
@@ -816,35 +813,6 @@ pub fn refuse_cross_plane_reference(
     judge_hook_ref(hook, sections).map_err(|err| Refusal { at, err }.into())
 }
 
-/// THE SECTION-LIST PROVIDER SEAM — the neutral read side of core's registry-coupled
-/// [`config_sections`] singleton (which stays in `busbar_kernel::config::plane_sections`, since it folds the
-/// process plane registry this crate must not name).
-///
-/// A plane crate that refuses a cross-plane hook reference at parse time needs the WHOLE section
-/// list — its own section plus every other plane's — to judge against, but must not reach into core
-/// to fold it. So the composition root binds core's `config_sections` fn here once (before the CLI
-/// flags read `--validate`), and a plane reads the same list back through [`plane_sections`] without
-/// naming the registry. Before any bind, [`plane_sections`] yields the empty list — a section-less
-/// judgement that still refuses malformed (dotted) references, only not the cross-plane ones, which
-/// is why the bind is on the boot path ahead of config validation rather than lazy.
-static PLANE_SECTIONS: std::sync::OnceLock<fn() -> Vec<&'static str>> = std::sync::OnceLock::new();
-
-/// BIND the process section-list provider. Idempotent (first bind wins); the composition root calls
-/// this once at startup with `busbar_kernel::config::plane_sections::config_sections`.
-pub fn install_plane_sections(provider: fn() -> Vec<&'static str>) {
-    let _ = PLANE_SECTIONS.set(provider);
-}
-
-/// THE PROCESS SECTION LIST, read through the bound provider — or the empty list if none is bound
-/// (the pre-bind / no-planes build), which still lets [`refuse_cross_plane_reference`] refuse a
-/// dotted reference, just not attribute it to a plane.
-pub fn plane_sections() -> Vec<&'static str> {
-    PLANE_SECTIONS
-        .get()
-        .map(|provider| provider())
-        .unwrap_or_default()
-}
-
 /// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
 /// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
 /// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's
@@ -857,29 +825,6 @@ pub fn plane_sections() -> Vec<&'static str> {
 /// neutral-purity lint's token rules do not fire on them.
 pub const NAMED_MAP_SECTIONS: [&str; 4] =
     [Kind::Auth.root(), Kind::Export.root(), "tools", "agents"];
-
-/// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
-/// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
-/// into `busbar_kernel::config::plane_sections::config_sections`. Byte-for-byte the same fold that singleton runs:
-/// every registered plane's own `config_section` (from [`crate::plane_driver::doors::test_registered_planes`],
-/// in registration order) followed by the frozen 1.5.3 named-definition-map sections, deduped in that
-/// order. `tools:`/`agents:` appear in BOTH halves — a plane declares them and they are also 1.5.3
-/// named-map sections — so the trailing pair guarantees they are known even when their owning plane is
-/// not registered in a given test binary, exactly as core's `NamedMapSection::sections()` tail does.
-#[cfg(any(test, feature = "test-support"))]
-pub fn default_plane_sections() -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for section in crate::plane_driver::doors::test_registered_planes()
-        .iter()
-        .map(|d| d.config_section)
-        .chain(NAMED_MAP_SECTIONS)
-    {
-        if !out.contains(&section) {
-            out.push(section);
-        }
-    }
-    out
-}
 
 /// THE ADDITIVE-LIST COMBINE RULE, stated once for every plane that has one.
 ///

@@ -327,7 +327,7 @@ fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::Root
             "models": {},
             "oauth_as": block,
         }),
-        busbar_kernel::plane_driver::doors::process_doors(),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("the document parses: the block is opaque to the kernel's own parse");
     busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())

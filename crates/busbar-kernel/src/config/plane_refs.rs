@@ -3,14 +3,14 @@
 
 //! THE PLANE SECTIONS' NAMED ENTRIES, keyed by the door that owns each section, and the one rule a
 //! reference between them follows: a section names only its own entries ([`PlaneSections::resolve`],
-//! [`RefError`]). The owning doors and their sections are the installed door set's
-//! ([`crate::plane_driver::doors`]).
+//! [`RefError`]). The owning doors and their sections are the lent door table's
+//! ([`crate::plane_driver::doors::Doors`]).
 
 // Members some build surfaces read only from tests (the module this came from held the same
 // posture, `plane/mod.rs`).
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::plane_driver::doors::{plane_decl, plane_keys};
+use crate::plane_driver::doors::Doors;
 
 /// THE SHARED CONTAINER for a plane's sibling config sections: several independent, per-plane
 /// namespaces are ONE code object with N namespaces, not N types that happen to look alike.
@@ -43,9 +43,11 @@ pub struct PlaneSections<T> {
     /// One section per plane, keyed by plane registry key. An absent key is an EMPTY section, read
     /// as such by every accessor — the same answer the old three hard fields gave for a plane that
     /// happened to hold nothing. Iteration order is never taken from this map's own key order:
-    /// every walk drives from [`plane_keys`] (LAYERING order) so the validator's diagnostics stay
-    /// deterministic and in the order the module header describes.
+    /// every walk drives from the table's [`Doors::plane_keys`] (LAYERING order) so the
+    /// validator's diagnostics stay deterministic and in the order the module header describes.
     sections: std::collections::BTreeMap<&'static str, std::collections::BTreeMap<String, T>>,
+    /// The door table the sections belong to: its keys are the walk order.
+    doors: Doors,
 }
 
 /// Why a name did not resolve. The two arms are kept distinct because only one of them is
@@ -62,26 +64,27 @@ pub enum RefError {
     Unknown { name: String, plane: &'static str },
 }
 
-impl std::fmt::Display for RefError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl RefError {
+    /// The operator's sentence for this refusal, naming each plane by the config section it owns in
+    /// `doors`, the table the sections were resolved against.
+    #[must_use]
+    pub fn message(&self, doors: Doors) -> String {
         match self {
             RefError::CrossPlane {
                 name,
                 referenced_from,
                 defined_in,
-            } => write!(
-                f,
+            } => format!(
                 "`{}` references `{name}`, which is defined in `{}`. The plane sections are \
                  siblings and never reference each other: define `{name}` in `{}`, or move the \
                  reference.",
-                plane_decl(referenced_from).config_section,
-                plane_decl(defined_in).config_section,
-                plane_decl(referenced_from).config_section
+                doors.plane_decl(referenced_from).config_section,
+                doors.plane_decl(defined_in).config_section,
+                doors.plane_decl(referenced_from).config_section
             ),
-            RefError::Unknown { name, plane } => write!(
-                f,
+            RefError::Unknown { name, plane } => format!(
                 "`{}` references `{name}`, which is not defined.",
-                plane_decl(plane).config_section
+                doors.plane_decl(plane).config_section
             ),
         }
     }
@@ -92,13 +95,20 @@ impl std::fmt::Display for RefError {
 // entry type a plane ever holds to invent a meaningless empty value just to be storable here.
 impl<T> Default for PlaneSections<T> {
     fn default() -> Self {
-        Self {
-            sections: std::collections::BTreeMap::new(),
-        }
+        Self::new(Doors::NONE)
     }
 }
 
 impl<T> PlaneSections<T> {
+    /// An empty container over the sections of `doors`, the lent door table.
+    #[must_use]
+    pub fn new(doors: Doors) -> Self {
+        Self {
+            sections: std::collections::BTreeMap::new(),
+            doors,
+        }
+    }
+
     /// This plane's section, or `None` when the plane holds nothing — read as an EMPTY section.
     fn map(&self, plane: &str) -> Option<&std::collections::BTreeMap<String, T>> {
         self.sections.get(plane)
@@ -128,14 +138,14 @@ impl<T> PlaneSections<T> {
     /// THE VALIDATOR ENTRY POINT: resolve `name` as referenced FROM `plane`, refusing a cross-plane
     /// reference with a diagnosis.
     ///
-    /// The sibling scan runs in [`plane_keys`] (LAYERING) order so a name defined on several other
+    /// The sibling scan runs in the table's [`Doors::plane_keys`] (LAYERING) order so a name defined on several other
     /// planes always diagnoses the same one. A nondeterministic diagnostic is worse than none: it
     /// makes a boot failure unreproducible.
     pub fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
         if let Some(entry) = self.sections.get(plane).and_then(|m| m.get(name)) {
             return Ok(entry);
         }
-        for other in plane_keys().filter(|k| *k != plane) {
+        for other in self.doors.plane_keys().filter(|k| *k != plane) {
             if self
                 .sections
                 .get(other)
@@ -156,9 +166,10 @@ impl<T> PlaneSections<T> {
 
     /// Every entry across every plane, attributed to the plane it belongs to. Walked by the config
     /// validator, so a plane absent here is a plane that is never validated. Driven from
-    /// [`plane_keys`] so the walk is in LAYERING order regardless of the map's own key order.
+    /// the table's [`Doors::plane_keys`] so the walk is in LAYERING order regardless of the map's
+    /// own key order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&'static str, &str, &T)> {
-        plane_keys().flat_map(move |k| {
+        self.doors.plane_keys().flat_map(move |k| {
             self.sections
                 .get(k)
                 .into_iter()

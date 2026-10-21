@@ -488,21 +488,17 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 }
 
 /// THE PLANE AXIS: every entry's registry row and every plane door's — linked or dropped in —
-/// folded into the process's ONE door set and installed once (status row 82, D2: plane registration
-/// is the loader's and the root's; the kernel holds the set only through its [`DoorSet`] handle). A
-/// plane whose declaration the loader will not admit refuses the boot (exit 2) whichever door it
-/// came in by, before any listener binds.
+/// folded into the process's ONE door table (status row 82, D2: plane registration is the loader's
+/// and the root's). A plane whose declaration the loader will not admit refuses the boot (exit 2)
+/// whichever door it came in by, before any listener binds.
 ///
 /// The folded table is returned: the composition root holds it and lends it, by value, to every
 /// reader (the config loads, the generations it builds, the root's own walks), exactly as it hands
-/// the root rules.
-///
-/// [`DoorSet`]: busbar_kernel::plane_driver::doors::DoorSet
+/// the root rules. The kernel keeps no copy of it.
 pub fn register_planes(linked: &Linked) -> busbar_kernel::plane_driver::doors::Doors {
     match plane_rows(linked) {
         Ok(rows) => {
             let set: &'static RootDoors = Box::leak(Box::new(RootDoors::fold(&rows)));
-            busbar_kernel::plane_driver::doors::install_doors(set);
             busbar_kernel::plane_driver::doors::Doors::lent(&set.rows)
         }
         Err(refusal) => {
@@ -512,10 +508,9 @@ pub fn register_planes(linked: &Linked) -> busbar_kernel::plane_driver::doors::D
     }
 }
 
-/// THE ROOT'S DOOR SET: the rows [`register_planes`] built, folded once by the kernel's boot fold
-/// (`merged_boot_plane_decls`: ordered, one per key, every owned-config claim checked) and handed to
-/// the kernel through its [`busbar_kernel::plane_driver::doors::DoorSet`] seam. The root owns it; the
-/// kernel reads its rows.
+/// THE ROOT'S DOOR TABLE: the rows [`register_planes`] built, folded once by the kernel's boot fold
+/// (`merged_boot_plane_decls`: ordered, one per key, every owned-config claim checked). The root
+/// owns it and lends its rows ([`busbar_kernel::plane_driver::doors::Doors`]) to every reader.
 pub struct RootDoors {
     /// The folded rows, in layering order.
     rows: Vec<&'static PlaneDecl>,
@@ -532,12 +527,6 @@ impl RootDoors {
         Self {
             rows: busbar_kernel::plane_driver::doors::merged_boot_plane_decls(rows, &[]),
         }
-    }
-}
-
-impl busbar_kernel::plane_driver::doors::DoorSet for RootDoors {
-    fn rows(&self) -> &[&'static PlaneDecl] {
-        &self.rows
     }
 }
 
@@ -973,18 +962,6 @@ fn catalogue_entries(
         }
     }
     Ok(declared)
-}
-
-/// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
-/// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
-/// a plane dials through the one connector. The egress-trust host is installed by `run` once the
-/// configuration loads, over the destination guard.
-pub fn register_seams() {
-    #[cfg(linked_plane_sections)]
-    busbar_kernel::config::plane_sections::install_plane_sections(
-        busbar_kernel::config::plane_sections::config_sections,
-    );
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a

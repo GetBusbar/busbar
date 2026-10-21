@@ -467,7 +467,6 @@ fn projection_keys_are_instance_level_not_settings() {
 /// Without this test the whole grammar could be validated in a function nothing fatal ever calls.
 #[test]
 fn a_producerless_stream_fails_the_boot_validate_pipeline() {
-    crate::test_support::register_neutral_test_plane();
     // A config that is valid in every other respect: the one pool is memberless and no provider is
     // declared, so nothing but the `export:` block can be what fails it.
     let base = r#"
@@ -498,7 +497,7 @@ store:
     // export stream's, not some other defect in the fixture.
     let control: crate::config::DeployCfg = crate::config::prepass::frozen_from_yaml_str(
         base,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .expect("fixture parses");
     if let Err(errors) = crate::config::resolve(&control, &defs) {
@@ -510,7 +509,7 @@ store:
     );
     let deploy: crate::config::DeployCfg = crate::config::prepass::frozen_from_yaml_str(
         &yaml,
-        crate::plane_driver::doors::process_doors(),
+        crate::test_support::neutral_test_doors(),
     )
     .expect("fixture parses");
     let errors = crate::config::resolve(&deploy, &defs)

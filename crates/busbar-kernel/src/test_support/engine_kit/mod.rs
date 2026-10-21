@@ -420,9 +420,11 @@ pub trait EngineTestKit: Send + Sync {
     /// The scope bar the admin contract table assigns `(method, path)`.
     fn admin_required_scope(&self, method: &axum::http::Method, path: &str) -> AdminScope;
     /// Run the admin write path's typed parse of one named-map definition under `section` (the
-    /// plane's declared config-section key) — the same grammar the file path enforces.
+    /// plane's declared config-section key), against the door table `doors` the plane under test is
+    /// lent in — the same grammar the file path enforces.
     fn validate_named_def(
         &self,
+        doors: crate::plane_driver::doors::Doors,
         section: &'static str,
         name: &str,
         def: &serde_json::Value,

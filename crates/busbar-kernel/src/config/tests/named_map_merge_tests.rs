@@ -13,8 +13,10 @@ use crate::config::overlay::{apply_named_maps_to_deploy, OverlayDoc};
 use crate::config::DeployCfg;
 use std::collections::BTreeMap;
 
+/// The base document, parsed through the document entry point against the neutral test table
+/// ([`crate::test_support::neutral_test_doors`]), whose fallback plane owns `pools:`.
 fn deploy_with_a_base_provider() -> DeployCfg {
-    serde_yaml::from_str(
+    crate::config::deploy_from_yaml_str(
         r#"
 providers: {}
 models: {}
@@ -27,6 +29,7 @@ identity-providers:
       issuer: "https://idp.example.com"
       client_id: "abc"
 "#,
+        crate::test_support::neutral_test_doors(),
     )
     .expect("base config parses")
 }
@@ -48,7 +51,6 @@ fn overlay_with(section: &str, name: &str, def: serde_json::Value) -> OverlayDoc
 /// dropped at boot with a log line and the operator's API call had silently done nothing.
 #[test]
 fn an_overlay_patch_merges_onto_the_base_entry_it_names() {
-    crate::test_support::register_neutral_test_plane();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -78,7 +80,6 @@ fn an_overlay_patch_merges_onto_the_base_entry_it_names() {
 /// key is exactly the rewrite this exists to avoid.
 #[test]
 fn a_nested_patch_reaches_one_key_of_the_settings_bag() {
-    crate::test_support::register_neutral_test_plane();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -103,7 +104,6 @@ fn a_nested_patch_reaches_one_key_of_the_settings_bag() {
 /// document, so a value written in the file could never be cleared at runtime.
 #[test]
 fn a_null_patch_unsets_a_field_the_base_config_set() {
-    crate::test_support::register_neutral_test_plane();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -126,7 +126,6 @@ fn a_null_patch_unsets_a_field_the_base_config_set() {
 /// to write an entry that shadows a base one.
 #[test]
 fn a_full_document_for_an_unshadowed_name_lands_exactly_as_it_used_to() {
-    crate::test_support::register_neutral_test_plane();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -153,7 +152,6 @@ fn a_full_document_for_an_unshadowed_name_lands_exactly_as_it_used_to() {
 /// patch is judged by the same structs `config.yaml` is.
 #[test]
 fn a_patch_with_an_unknown_field_is_refused_and_the_base_entry_survives() {
-    crate::test_support::register_neutral_test_plane();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -177,7 +175,6 @@ fn a_patch_with_an_unknown_field_is_refused_and_the_base_entry_survives() {
 /// through the overlay either.
 #[test]
 fn a_patch_that_breaks_a_value_level_rule_is_refused() {
-    crate::test_support::register_neutral_test_plane();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -195,7 +192,6 @@ fn a_patch_that_breaks_a_value_level_rule_is_refused() {
 /// reloaded.
 #[test]
 fn replaying_a_patch_is_idempotent() {
-    crate::test_support::register_neutral_test_plane();
     let doc = overlay_with(
         "identity-providers",
         "corp",

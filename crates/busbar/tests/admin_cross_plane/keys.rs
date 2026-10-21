@@ -337,9 +337,10 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
-    // The plane the registry says owns the `tools:` section, so the test names no plane crate.
+    // The plane the lent table says owns the `tools:` section, so the test names no plane crate.
     let section = "tools";
-    let plane = busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section)
+    let plane = crate::linked::table()
+        .plane_decl_for_config_section(section)
         .expect("a plane is registered to own the `tools:` section");
     let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.key);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
@@ -2542,11 +2543,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     // sibling 409 on the same operation kept the check green.
     let mut over_claimed = Vec::new();
     for (rel, method) in documented_operations() {
-        let declared = declared_errors(
-            busbar_kernel::plane_driver::doors::process_doors(),
-            method,
-            &rel,
-        );
+        let declared = declared_errors(crate::linked::table(), method, &rel);
         for de in declared {
             let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
             let proven = if ambiguous {
@@ -2606,8 +2603,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     let stale: Vec<_> = COND_WITNESS_DEBT
         .iter()
         .filter(|(m, rel, k, c)| {
-            let declared =
-                declared_errors(busbar_kernel::plane_driver::doors::process_doors(), *m, rel);
+            let declared = declared_errors(crate::linked::table(), *m, rel);
             let ambiguous = declared.iter().filter(|o| o.kind == *k).count() > 1;
             !ambiguous || !declared.iter().any(|d| d.kind == *k && d.cond == *c)
         })
@@ -2737,10 +2733,8 @@ fn rate_limit_doc_table_matches_classifier() {
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
             ) && !answered_by_loop(rel, *method)
-                && busbar_kernel::ratelimit::classify_mutation(
-                    busbar_kernel::plane_driver::doors::process_doors(),
-                    rel,
-                ) == busbar_kernel::ratelimit::MutationClass::Config
+                && busbar_kernel::ratelimit::classify_mutation(crate::linked::table(), rel)
+                    == busbar_kernel::ratelimit::MutationClass::Config
         })
         .collect();
 
@@ -2760,15 +2754,15 @@ fn rate_limit_doc_table_matches_classifier() {
 /// functional gap did not exist. Prose that describes a gap as a closed set is worse than prose that
 /// says nothing, because it stops the reader from looking.
 ///
-/// So the row is parsed out of the committed file and required to equal `OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors())`
+/// So the row is parsed out of the committed file and required to equal `OverlaySection::all` over the binary's door table
 /// EXACTLY, in both directions: a section live in the code but missing from the doc fails, and a
 /// section the doc claims but the parser rejects fails too.
 #[test]
 fn overlay_reset_doc_row_matches_the_section_set() {
     use busbar_kernel::config::overlay::OverlaySection;
-    // Register the plane config sections (`tools`/`agents`) so `OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors())`/`parse` see
-    // them — busbar-core's own `cfg(test)` binary has them as builtins; here the plane testkits must
-    // be installed first (this test builds no `App`, so nothing else triggers the install).
+    // Read against this binary's door table (`linked::table`), which holds the plane config
+    // sections (`tools`/`agents`), so `OverlaySection::all`/`parse` see them; the seams are installed
+    // first, as every other test here installs them.
     crate::ensure_seam();
 
     let doc = include_str!("../../../../docs/admin-api.md");
@@ -2797,19 +2791,19 @@ fn overlay_reset_doc_row_matches_the_section_set() {
         doc_sections.len()
     );
 
-    let all = OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors());
+    let all = OverlaySection::all(crate::linked::table());
     let code_sections: std::collections::BTreeSet<&str> = all.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         code_sections.len(),
         all.len(),
-        "OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors()) yields a duplicate wire name"
+        "OverlaySection::all(doors) yields a duplicate wire name"
     );
     let missing_from_doc: Vec<_> = code_sections.difference(&doc_sections).collect();
     let missing_from_code: Vec<_> = doc_sections.difference(&code_sections).collect();
     assert!(
         missing_from_doc.is_empty() && missing_from_code.is_empty(),
         "docs/admin-api.md's `DELETE /overlay/{{section}}` row has drifted from \
-         OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors()).\nLive in the code but absent from the doc (an operator is told the \
+         OverlaySection::all(doors).\nLive in the code but absent from the doc (an operator is told the \
          section does not exist): {missing_from_doc:?}\nClaimed by the doc but rejected by \
          `OverlaySection::parse` (an operator is told to call something that 400s): \
          {missing_from_code:?}"
@@ -2818,8 +2812,7 @@ fn overlay_reset_doc_row_matches_the_section_set() {
     // Every name the doc lists really is accepted by the parser, not merely present in the enum.
     for name in &doc_sections {
         assert!(
-            OverlaySection::parse(busbar_kernel::plane_driver::doors::process_doors(), name)
-                .is_some(),
+            OverlaySection::parse(crate::linked::table(), name).is_some(),
             "the doc lists section `{name}` but `OverlaySection::parse` rejects it"
         );
     }
@@ -3003,11 +2996,12 @@ async fn named_map_app_opts(
     // The plane sections' base entries, seeded FROM config.yaml itself (a `TestApp` does not parse
     // config.yaml, so without this the read surface and disk truth would disagree and the
     // base-protection guard would be measuring the disagreement rather than the guard). Each section
-    // reaches its plane through the NEUTRAL registry — the decl that owns the config section parses
+    // reaches its plane through the binary's lent door table — the decl that owns the config section parses
     // it and builds the runtime, exactly as `appbuild` does at boot — so this helper names no plane,
     // no plane crate and no plane type.
     let owner = |section: &str| {
-        busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section)
+        crate::linked::table()
+            .plane_decl_for_config_section(section)
             .unwrap_or_else(|| panic!("no plane is registered to own the `{section}:` section"))
     };
     let parse = |section: &str| {
@@ -3795,7 +3789,8 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     crate::ensure_seam();
-    let owner = busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section)
+    let owner = crate::linked::table()
+        .plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let (instance, plane) = crate::test_seams::linked_doors()
