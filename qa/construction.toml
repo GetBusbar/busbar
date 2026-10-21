@@ -1470,21 +1470,28 @@ by-name `decl_for`) would pass `no-uninstalled-seam`, because the root installs 
 NAMES: those spellings, and every alias of them declared anywhere in the workspace (`type X = \
 …ProtocolDecl…`, `use …::ProtocolDecl as X`, a `const`/`static` bound to the fn), are refused in \
 the kernel's production code; comments are not read. INSTALLED-STORE: the same registry with no \
-name to find, behind a type-erased store, is refused by its shape: a kernel static whose type is \
-a once/lock cell holding a collection, a slice, an array or a trait object (`dyn`, `Any`), \
-reached by a `pub fn` that takes a value. The stores keyed by plane or protocol identity the kernel still holds are \
-counted DEBT (`debt_stores`, `max_debt`); every other store it holds today is named with why it is \
-not one. A new store is a finding, and a named one that no longer matches is stale."""
+name to find, behind a type-erased store, is refused by its shape: a kernel static of any name \
+(plain, `mut`, `thread_local!`, `lazy_static!`) whose type, read through every alias and into \
+every field, is a cell holding a collection, a slice, an array or a trait object (`dyn`, `Any`, \
+`AnyMap`), and that code outside the kernel reaches: a `pub static`, a `pub fn` that takes a \
+value, an accessor returning the cell, or a setter one call away. The stores a root fills keyed by \
+plane, protocol or plugin identity that the kernel still holds are counted DEBT (`debt_stores`, \
+`max_debt`), each with its drain; every other store it holds today is named with why it is not \
+one. A new store is a finding, and a named one that no longer matches is stale."""
 scope_globs = ["crates/busbar-kernel/src/*"]
 # Banned as a word, with every alias the workspace declares.
 names = ["ProtocolDecl", "install_protocols"]
 # Banned as a definition (`fn decl_for`); an alias of it is banned as a word.
 fn_names = ["decl_for"]
 max_hits = 0
-# The installed-store shape. A store is a static whose type names one of `store_cells` and matches
-# one of `store_holds`; it is installed when a `pub fn` with a parameter names it.
-store_cells = ["OnceLock", "LazyLock", "OnceCell", "Lazy", "Mutex", "RwLock"]
-store_holds = ['\b(Vec|VecDeque|BTreeMap|HashMap|BTreeSet|HashSet|IndexMap)\b', '\[', '\bdyn\b', '\bAny\b']
+# The installed-store shape. A store is a static of any name (plain, `mut`, in a `thread_local!` or a
+# `lazy_static!`) whose type, read through every alias and into every field, names one of
+# `store_cells` (a `static mut` and a `static ref` are their own cell) and matches one of
+# `store_holds`. It is installed when code outside the kernel reaches it: the static is `pub`, a
+# `pub fn` with a parameter names it, a `pub fn` names it and returns a cell, or a `pub fn` with a
+# parameter calls a setter of its file that names it (one call away).
+store_cells = ["OnceLock", "LazyLock", "OnceCell", "Lazy", "Mutex", "RwLock", "RefCell", "ArcSwap", "ArcSwapOption", "AtomicPtr", "DashMap"]
+store_holds = ['\b(Vec|VecDeque|BTreeMap|HashMap|BTreeSet|HashSet|IndexMap|DashMap|FxHashMap|AnyMap)\b', '\[', '\bdyn\b', '\bAny(Map)?\b']
 # The kernel's test kit: compiled only under `test` / `test-support`, never production.
 store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # THE DEBT: installed stores keyed by plane or protocol identity, which the kernel still holds (status
@@ -1492,26 +1499,56 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # not grow, and a drained entry is struck and `max_debt` lowered in the same commit (Law 9).
 # DRAINED 3 -> 0 (status row 82, D2): the body-arrival table and the two kernel-loop runner tables
 # are deleted with their seams; no linked row ever filled them.
-debt_stores = []
-max_debt = 0
-# Every other installed store the kernel holds today, `path::STATIC -- why`: none is keyed by plane,
-# dialect or protocol identity. It only shrinks.
+# MEASURED 0 -> 4 (status row 82, D2; ARCHITECT ruling on a6's review of #1406): the row reads
+# through aliases, fields, every static spelling and every installer shape now, and the stores it
+# sees that a composition root fills with rows keyed by plugin identity are DEBT, not end state.
+# Each drain is the same: the compose owns the table and lends it to what reads it (the #1425/#1426
+# holder plus hand-in pattern), so the kernel holds no root-installed static.
+debt_stores = [
+  "crates/busbar-kernel/src/config/legacy.rs::ROWS -- the root legacy table, looked up by plugin identity (`former.<alias>`, `retired.<kind>.<word>`); drain: the compose owns the rows and lends them to the config parse, migrate and registry-link paths",
+  "crates/busbar-kernel/src/plane_driver/door.rs::DOORS -- the root-folded door registrations, found by plane key (`fold`, `is_door`, `provider_keys`); drain: `fold` answers the folded row to the compose, which owns the set and lends it with the door set",
+  "crates/busbar-kernel/src/plane_driver/doors.rs::INSTALLED -- the root-installed PlaneDecl table, looked up by plane key (`plane_decl_for`); drain: the compose owns the decl table and lends it to every reader (D2, the next PR of this stack)",
+  "crates/busbar-kernel/src/preflight.rs::ROOT_ROWS -- the root's linked store rows (by store key and canonical name) and hook names; drain: the compose owns its RootInstall and lends it to the build and the registry link",
+]
+max_debt = 4
+# Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
+# fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
+# re-measure added are stores the narrower row did not see, not new ones.
 exempt_stores = [
+  "crates/busbar-kernel/src/admin/seam.rs::SEAM -- the admin crate's mount seam: two fn pointers (a port) its `install` binds once; holds no table and no identity key (admin is a crate, not a plugin)",
+  "crates/busbar-kernel/src/admin/seam.rs::VERB_TABLE -- two fn pointers into the admin crate's closed verb table (a port); keyed by admin operation name, never by plugin identity",
+  "crates/busbar-kernel/src/appbuild.rs::CONFIG_PROJECTION -- one fn pointer the root binds (the config projection); holds no table",
+  "crates/busbar-kernel/src/audit/auditlog.rs::AUDIT_LOG -- the process-wide admin audit read model: records appended per action, no installer, no lookup by identity",
+  "crates/busbar-kernel/src/audit_ring.rs::AUDIT -- the const-built admin audit ring: records, no lookup by identity",
+  "crates/busbar-kernel/src/config/filled.rs::LEDGER -- the env-fill ledger, keyed by config document path, filled by the config walk; no plugin identity",
+  "crates/busbar-kernel/src/config/limits.rs::INSTALLED -- the resolved limit values, re-installed per config apply; values, not a table keyed by any identity",
   "crates/busbar-kernel/src/config/plane_sections.rs::PLANE_SECTIONS -- one fn pointer the root binds (the section-list provider); not keyed by any identity",
+  "crates/busbar-kernel/src/diagnostics/emit.rs::SITES -- tracing callsites made once per (diagnostic code, level, names); diagnostic codes, not plane, dialect, protocol or plugin identity",
   "crates/busbar-kernel/src/diagnostics/mod.rs::INSTALLED -- the diagnostics catalogue the root installs; keyed by diagnostic code, not by plane, dialect or protocol",
+  "crates/busbar-kernel/src/egress/fixtures.rs::SCOPED_DIAL -- compiled only under test / test-support (`egress::fixtures`): a test thread's scoped dial posture",
+  "crates/busbar-kernel/src/egress/engine/mod.rs::INSTALLED -- the one boot proxy choice the connector hands over; one value, no table",
   "crates/busbar-kernel/src/egress/trust/mod.rs::EGRESS_TRUST -- one egress-trust capability object (a port); holds no table",
   "crates/busbar-kernel/src/export/plugin.rs::SINKS -- the export sinks opened once from config by `open`; keyed by export instance, not by plane, dialect or protocol",
   "crates/busbar-kernel/src/handlers/mod.rs::SEEN -- a warn-once set of (name, reason) faults, filled per fault by its own fn; no installer, no lookup",
-  "crates/busbar-kernel/src/plane_driver/door.rs::DOORS -- the plane driver's folded doors by hook-table index (D2: plane registration is the root's, the kernel holds the rows it was given); no dialect or protocol key",
-  "crates/busbar-kernel/src/plane_driver/doors.rs::INSTALLED -- the opened door set the root installs once (D2, #1379): plane rows, read through DoorSet; no dialect or protocol key",
+  "crates/busbar-kernel/src/host_disk.rs::WORDS -- an interner of OS error words, filled by its own fn per error; words, no identity",
+  "crates/busbar-kernel/src/oauth_as/seam.rs::CLOCK_WORK -- weak handles to the authorization server's sweep work on the one clock; no key, no lookup",
+  "crates/busbar-kernel/src/oauth_as/seam.rs::SEAM -- the authorization-server crate's seam: fn pointers (a port) the root binds once; holds no table (oauth2 is a crate, not a plugin)",
+  "crates/busbar-kernel/src/plane_driver/door.rs::HOOK_TABLE -- immutable: a const-built array of per-index hook trampolines, never written; read by `fold` for the index it claims",
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_MEMO -- compiled only under test / test-support: the fold memo of test registrations",
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_REGISTERED -- compiled only under test / test-support: the test plane registrations",
   "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
   "crates/busbar-kernel/src/plane_driver/serve.rs::TABLES -- the published serve tables per config snapshot; routes, not plane, dialect or protocol identities",
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
+  "crates/busbar-kernel/src/preflight.rs::AUTH_AXIS -- one opener fn pointer the root binds (the auth axis over a registry); holds no table",
+  "crates/busbar-kernel/src/preflight.rs::TEST_ROOT_HOOK_NAMES -- compiled only under test / test-support: the hook names a root test binary hands in",
   "crates/busbar-kernel/src/rate_apply.rs::APPLY -- one rate-holder object (a port) the root installs; holds no table",
   "crates/busbar-kernel/src/rate_apply.rs::EPOCH -- one rate-epoch object (a port) the root installs; holds no table",
-  "crates/busbar-kernel/src/telemetry.rs::SLOTS -- the translation counter slots, built once from the declared dialects by `translation`; counters, no lookup of a dialect's behaviour",
+  "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
+  "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
+  "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
+  "crates/busbar-kernel/src/telemetry.rs::BANK -- a thread-local counter bank, created on first emission; counters, no lookup by identity",
+  "crates/busbar-kernel/src/telemetry.rs::SLOTS -- not installed: nothing outside the kernel writes it; built once by `translation` from the door set's declared dialects and immutable after, a cache of the 1.5.5 `busbar_translations_total{from,to}` counter handles (from, to are metric labels); no lookup of a dialect's behaviour. Its source is the INSTALLED debt row, so its drain lends it that table",
+  "crates/busbar-kernel/src/timing/mod.rs::LOCAL -- a thread-local timing accumulator; samples, no identity",
   "crates/busbar-kernel/src/vocabulary.rs::VOCABULARY -- the open-vocabulary interner (bounded, freezes at boot); words, not declarations",
 ]
 

@@ -11,7 +11,8 @@ use crate::ctx::Ctx;
 use crate::gates::construction::model::{need_int, need_str, plain, py_list, CRow, Cfg, VACUOUS};
 use crate::gates::construction::rules::call_sites;
 use crate::gates::construction::tree::{
-    crate_name_of_dir, dirs_for_globs, fnmatch, memo_file_scan, read_cargo_deps_text, Tree,
+    crate_name_of_dir, dirs_for_globs, fnmatch, memo_file_scan, read_cargo_deps_text, Fnc, Line,
+    Tree,
 };
 use crate::rx::{self, Regex};
 use crate::toml_doc::Table;
@@ -1372,105 +1373,417 @@ fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
     Ok(known)
 }
 
-/// The installed stores of `rel`: each static whose type names a cell of `cells` and matches one of
-/// `holds`, with the `pub fn`s that take a value and name it. Returns `(line, static, installers)`.
-fn installed_stores_in(
+/// Every type the tree defines, by name, with the text a value of it holds: a `type X<…> = …;`
+/// alias's right-hand side, and the field list of a `struct` (named or tuple) or the variant list of
+/// an `enum`. Each is kept with the crate directory it is declared in, so a name two crates define
+/// is read as the static's own crate's first. Test code defines nothing here.
+type TypeDefs = BTreeMap<String, Vec<(String, String)>>;
+
+fn crate_dir_of(rel: &str) -> &str {
+    let mut parts = rel.splitn(3, '/');
+    match (parts.next(), parts.next()) {
+        (Some("crates"), Some(name)) => &rel[..7 + name.len()],
+        _ => "",
+    }
+}
+
+fn type_defs(tree: &Tree) -> Result<TypeDefs, String> {
+    let alias = Regex::new(r"(?:^|[^A-Za-z0-9_])type\s+([A-Za-z_][A-Za-z0-9_]*)[^=;{}]*=([^;]*);")?;
+    let item = Regex::new(r"(?:^|[^A-Za-z0-9_])(?:struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)")?;
+    let mut defs: TypeDefs = BTreeMap::new();
+    for (rel, lines) in &tree.files {
+        let krate = crate_dir_of(rel).to_string();
+        // Memoised on the file's scan: a plant re-reads only the files it touches.
+        let found = memo_file_scan(
+            "kernel-no-protocol-registry:type-defs".to_string(),
+            lines,
+            |lines| defs_in(lines, &alias, &item),
+        );
+        for entry in found.iter() {
+            if let Some((name, body)) = entry.split_once('\u{1}') {
+                defs.entry(name.to_string())
+                    .or_default()
+                    .push((krate.clone(), body.to_string()));
+            }
+        }
+    }
+    Ok(defs)
+}
+
+/// The definitions one file holds, each `name\u{1}body` (see [`type_defs`]).
+fn defs_in(lines: &[Line], alias: &Regex, item: &Regex) -> Vec<String> {
+    let text: String = lines
+        .iter()
+        .map(|l| if l.intest { "" } else { l.blank.as_str() })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for m in alias.find_iter(bytes) {
+        if let (Some(name), Some(rhs)) = (m.str_of(bytes, 1), m.str_of(bytes, 2)) {
+            out.push(format!("{name}\u{1}{rhs}"));
+        }
+    }
+    for m in item.find_iter(bytes) {
+        let Some(name) = m.str_of(bytes, 1) else {
+            continue;
+        };
+        // Past the generics (an `->` inside them is not a closing `>`), to the body's opener.
+        let mut i = m.end;
+        let mut angle = 0i64;
+        let mut open = None;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'<' => angle += 1,
+                b'>' if bytes[i - 1] == b'-' => {}
+                b'>' => angle -= 1,
+                b'{' | b'(' if angle <= 0 => {
+                    open = Some(i);
+                    break;
+                }
+                b';' if angle <= 0 => break,
+                _ => {}
+            }
+            i += 1;
+        }
+        let Some(open) = open else {
+            continue;
+        };
+        let (o, c) = if bytes[open] == b'{' {
+            (b'{', b'}')
+        } else {
+            (b'(', b')')
+        };
+        let mut depth = 0i64;
+        let mut close = bytes.len();
+        for (k, &ch) in bytes[open..].iter().enumerate() {
+            if ch == o {
+                depth += 1;
+            } else if ch == c {
+                depth -= 1;
+                if depth == 0 {
+                    close = open + k;
+                    break;
+                }
+            }
+        }
+        let body = String::from_utf8_lossy(&bytes[open + 1..close]).into_owned();
+        out.push(format!("{name}\u{1}{body}"));
+    }
+    out
+}
+
+/// `ty` with every type it names opened, to a fixed point: an alias is read as what it aliases and
+/// a struct or enum as what its fields hold, so `OnceLock<Erased>` with `type Erased =
+/// Arc<RwLock<HashMap<…>>>` reads as the map it is, and so does a struct wrapping one. A name is
+/// read as its definition in the crate the text sits in; failing that, as its definition in a crate
+/// that text (`context`, the store's whole file for the static's own type) reaches by path
+/// (`busbar_contract::…`). A name spelled through `std::`, `core::` or `alloc::` is the standard
+/// library's, never a workspace type of the same name.
+fn expand_type(ty: &str, rel: &str, context: &str, defs: &TypeDefs) -> Result<String, String> {
+    let ident = Regex::new(
+        r"(?:\b(?:std|core|alloc)::(?:[A-Za-z_][A-Za-z0-9_]*::)*)?[A-Za-z_][A-Za-z0-9_]*",
+    )?;
+    let reaches = |text: &str, krate: &str| {
+        krate
+            .strip_prefix("crates/")
+            .is_some_and(|name| text.contains(&format!("{}::", name.replace('-', "_"))))
+    };
+    let mut out = ty.to_string();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut frontier = vec![(
+        ty.to_string(),
+        crate_dir_of(rel).to_string(),
+        context.to_string(),
+    )];
+    while let Some((t, krate, ctx)) = frontier.pop() {
+        for m in ident.find_iter(t.as_bytes()) {
+            let Some(name) = m.str_of(t.as_bytes(), 0) else {
+                continue;
+            };
+            if name.contains("::") || seen.len() >= 512 || !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(all) = defs.get(&name) else {
+                continue;
+            };
+            let own: Vec<&(String, String)> = all.iter().filter(|(k, _)| *k == krate).collect();
+            let picked: Vec<&(String, String)> = if own.is_empty() {
+                all.iter().filter(|(k, _)| reaches(&ctx, k)).collect()
+            } else {
+                own
+            };
+            for (k, body) in picked {
+                out.push('\n');
+                out.push_str(body);
+                frontier.push((body.clone(), k.clone(), body.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Lines `from..=to` (1-based, as [`Line::no`] counts them) of a file's scan, by index: a scan's
+/// lines are numbered from 1 with no gaps.
+fn span(lines: &[Line], from: usize, to: usize) -> &[Line] {
+    let lo = from.saturating_sub(1).min(lines.len());
+    let hi = to.min(lines.len()).max(lo);
+    &lines[lo..hi]
+}
+
+/// The text of `f`'s header (from `fn` to the body's opening brace), its parameter list and its
+/// return type (empty when it returns `()`).
+fn header_parts(lines: &[Line], f: &Fnc) -> Result<(String, String, String), String> {
+    let header: String = span(lines, f.start, f.body_start)
+        .iter()
+        .map(|x| x.code.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Some(at) = Regex::new(&format!(r"(?<![A-Za-z0-9_])fn\s+{}\b", rx::escape(&f.name)))?
+        .search(header.as_bytes())
+    else {
+        return Ok((header, String::new(), String::new()));
+    };
+    let Some(open) = header[at.end..].find('(').map(|o| at.end + o) else {
+        return Ok((header, String::new(), String::new()));
+    };
+    let mut depth = 0i64;
+    let mut close = header.len();
+    for (i, ch) in header[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = open + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let params = header[open + 1..close.min(header.len())].to_string();
+    let rest = &header[close.min(header.len())..];
+    let ret = match rest.find("->") {
+        Some(a) => {
+            let r = &rest[a + 2..];
+            let end = [r.find('{'), r.find(" where ")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(r.len());
+            r[..end].to_string()
+        }
+        None => String::new(),
+    };
+    Ok((header, params, ret))
+}
+
+/// The module name a path call reaches `rel`'s fns through: the file stem, or the directory's name
+/// for a `mod.rs` or `lib.rs`.
+fn module_of(rel: &str) -> &str {
+    let mut parts = rel.rsplit('/');
+    let file = parts.next().unwrap_or_default();
+    let stem = file.strip_suffix(".rs").unwrap_or(file);
+    if stem == "mod" || stem == "lib" {
+        parts.next().unwrap_or(stem)
+    } else {
+        stem
+    }
+}
+
+/// One installed store: its file, line and name, and every way the code outside the kernel reaches
+/// it (`pub static`, `pub fn x`, `pub fn x (returns the cell)`, `pub fn x (through y)`).
+struct Store {
+    rel: String,
+    no: usize,
+    name: String,
+    installers: Vec<String>,
+}
+
+/// One fn of the scanned scope, read once: whether it is `pub`, whether it takes a value, and the
+/// type it returns.
+struct F<'a> {
+    rel: &'a str,
+    f: &'a Fnc,
+    public: bool,
+    valued: bool,
+    ret: String,
+}
+
+/// The installed stores of `files`. A STORE is a static of any name, plain, `mut`, inside a
+/// `thread_local!` or a `lazy_static!` (`static ref`), whose type, read through every alias and
+/// into every field ([`expand_type`]), names a cell of `cells` and matches one of `holds`. It is
+/// INSTALLED when code outside the kernel can reach it: the static is `pub`; a `pub fn` that takes
+/// a value names it; a `pub fn` names it and returns a cell; or a `pub fn` that takes a value calls,
+/// anywhere in `files`, a fn of the store's file that takes a value and names it (a setter one call
+/// away).
+fn installed_stores(
     tree: &Tree,
-    rel: &str,
+    files: &[&String],
     cells: &Regex,
     holds: &[Regex],
-) -> Result<Vec<(usize, String, Vec<String>)>, String> {
-    let decl = Regex::new(r"(?:^|[^A-Za-z0-9_])static\s+(?:mut\s+)?([A-Z_][A-Z0-9_]*)\s*:")?;
+) -> Result<Vec<Store>, String> {
+    let decl =
+        Regex::new(r"(?:^|[^A-Za-z0-9_'])static\s+(?:(mut|ref)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:")?;
+    let pub_static = Regex::new(r"(?:^|[^A-Za-z0-9_'(])pub\s+static\b")?;
     let pub_fn = Regex::new(
         r#"(?:^|[^A-Za-z0-9_(])pub\s+(?:(?:const|async|unsafe)\s+|extern\s+"[^"]*"\s+)*fn\s"#,
     )?;
     let self_param = Regex::new(r"^\s*&?\s*(?:'[A-Za-z_]+\s+)?(?:mut\s+)?self\b")?;
-    let Some(lines) = tree.files.get(rel) else {
-        return Ok(Vec::new());
+    let defs = type_defs(tree)?;
+    let takes_a_value = |params: &str| {
+        params
+            .split(',')
+            .any(|p| !p.trim().is_empty() && !self_param.is_match_str(p))
     };
-    let fns = tree.fns.get(rel).map(|v| v.as_slice()).unwrap_or(&[]);
-    let mut out = Vec::new();
-    for (idx, l) in lines.iter().enumerate() {
-        if l.intest {
-            continue;
-        }
-        let Some(m) = decl.search(l.code_bytes()) else {
+    // Every non-test fn of the scope, with its header parts, once.
+    let mut all_fns: Vec<F> = Vec::new();
+    for rel in files {
+        let (Some(lines), Some(fns)) = (tree.files.get(rel.as_str()), tree.fns.get(rel.as_str()))
+        else {
             continue;
         };
-        let Some(name) = m.str_of(l.code_bytes(), 1) else {
-            continue;
-        };
-        // The type: from the `:` to the first `=` that is not a `=>`, across lines.
-        let mut ty = l.code[m.end..].to_string();
-        let mut j = idx;
-        while !ty.replace("=>", "").contains('=') && j + 1 < lines.len() {
-            j += 1;
-            ty.push('\n');
-            ty.push_str(&lines[j].code);
-        }
-        let ty = ty
-            .char_indices()
-            .find(|&(i, ch)| ch == '=' && !ty[i + 1..].starts_with('>'))
-            .map_or(ty.as_str(), |(i, _)| &ty[..i])
-            .to_string();
-        if !cells.is_match_str(&ty) || !holds.iter().any(|h| h.is_match_str(&ty)) {
-            continue;
-        }
-        let named = Regex::new(&format!(
-            r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])",
-            rx::escape(&name)
-        ))?;
-        let mut installers = Vec::new();
         for f in fns.iter().filter(|f| !f.intest) {
-            let header: String = lines
+            let (header, params, ret) = header_parts(lines, f)?;
+            all_fns.push(F {
+                rel: rel.as_str(),
+                f,
+                public: pub_fn.is_match_str(&header),
+                valued: takes_a_value(&params),
+                ret,
+            });
+        }
+    }
+    let body_names = |rel: &str, f: &Fnc, rx_: &Regex, skip_line: usize| -> bool {
+        tree.files.get(rel).is_some_and(|lines| {
+            span(lines, f.start, f.end)
                 .iter()
-                .filter(|x| x.no >= f.start && x.no <= f.body_start)
+                .filter(|x| x.no != skip_line)
+                .any(|x| rx_.is_match(x.code_bytes()))
+        })
+    };
+    // Each scanned file's code, joined once.
+    let texts: BTreeMap<&str, String> = files
+        .iter()
+        .filter_map(|rel| {
+            let lines = tree.files.get(rel.as_str())?;
+            let text = lines
+                .iter()
                 .map(|x| x.code.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            if !pub_fn.is_match_str(&header) {
+            Some((rel.as_str(), text))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for rel in files {
+        let Some(lines) = tree.files.get(rel.as_str()) else {
+            continue;
+        };
+        let context = texts.get(rel.as_str()).map_or("", String::as_str);
+        for (idx, l) in lines.iter().enumerate() {
+            if l.intest {
                 continue;
             }
-            let Some(at) =
-                Regex::new(&format!(r"(?<![A-Za-z0-9_])fn\s+{}\b", rx::escape(&f.name)))?
-                    .search(header.as_bytes())
-            else {
+            let Some(m) = decl.search(l.code_bytes()) else {
                 continue;
             };
-            let Some(open) = header[at.end..].find('(').map(|o| at.end + o) else {
+            let Some(name) = m.str_of(l.code_bytes(), 2) else {
                 continue;
             };
-            let mut depth = 0i64;
-            let mut close = header.len();
-            for (i, ch) in header[open..].char_indices() {
-                match ch {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = open + i;
-                            break;
-                        }
-                    }
-                    _ => {}
+            // A `static mut` is its own cell, and a `lazy_static!` `static ref` is a lazy one.
+            let own_cell = m.group(1).is_some();
+            // The type: from the `:` to the first `=` that is not a `=>`, or the first `;` (a
+            // `task_local!` static has no initialiser), across lines.
+            let mut ty = l.code[m.end..].to_string();
+            let mut j = idx;
+            while !ty.replace("=>", "").contains(|c| c == '=' || c == ';') && j + 1 < lines.len() {
+                j += 1;
+                ty.push('\n');
+                ty.push_str(&lines[j].code);
+            }
+            let ty = ty
+                .char_indices()
+                .find(|&(i, ch)| ch == ';' || (ch == '=' && !ty[i + 1..].starts_with('>')))
+                .map_or(ty.as_str(), |(i, _)| &ty[..i])
+                .to_string();
+            let ty = expand_type(&ty, rel, context, &defs)?;
+            if !(own_cell || cells.is_match_str(&ty)) || !holds.iter().any(|h| h.is_match_str(&ty))
+            {
+                continue;
+            }
+            let named = Regex::new(&format!(
+                r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])",
+                rx::escape(&name)
+            ))?;
+            let mut installers = Vec::new();
+            if pub_static.is_match(&l.code_bytes()[..m.end.min(l.code.len())]) {
+                installers.push("pub static".to_string());
+            }
+            let own: Vec<&F> = all_fns
+                .iter()
+                .filter(|x| x.rel == rel.as_str() && body_names(x.rel, x.f, &named, l.no))
+                .collect();
+            for x in &own {
+                if x.public && x.valued {
+                    installers.push(format!("pub fn {}", x.f.name));
+                } else if x.public && cells.is_match_str(&expand_type(&x.ret, rel, context, &defs)?)
+                {
+                    installers.push(format!("pub fn {} (returns the cell)", x.f.name));
                 }
             }
-            let takes_a_value = header[open + 1..close]
-                .split(',')
-                .any(|p| !p.trim().is_empty() && !self_param.is_match_str(p));
-            if !takes_a_value {
-                continue;
+            // A setter one call away: a fn of this file that takes a value and names the store,
+            // called by a `pub fn` that takes a value: from this file by a bare, path or `self.`
+            // call (not another receiver's method), and from any other file by a call through the
+            // store's module (`door::setter(`), so a same-named fn elsewhere is not read as this one.
+            for setter in own.iter().filter(|x| x.valued) {
+                let near = Regex::new(&format!(
+                    r"(?:(?<![.A-Za-z0-9_])|\bself\.){}\s*\(",
+                    rx::escape(&setter.f.name)
+                ))?;
+                let far = Regex::new(&format!(
+                    r"\b{}::{}\s*\(",
+                    rx::escape(module_of(rel)),
+                    rx::escape(&setter.f.name)
+                ))?;
+                // A file that never spells the path holds no far call: skipped unread.
+                let path = format!("{}::{}", module_of(rel), setter.f.name);
+                for caller in all_fns.iter().filter(|x| {
+                    x.public
+                        && x.valued
+                        && !(x.rel == setter.rel && x.f.start == setter.f.start)
+                        && (x.rel == setter.rel
+                            || texts.get(x.rel).is_some_and(|t| t.contains(&path)))
+                }) {
+                    let label = format!("pub fn {} (through {})", caller.f.name, setter.f.name);
+                    let direct = format!("pub fn {}", caller.f.name);
+                    if installers.contains(&label) || installers.contains(&direct) {
+                        continue;
+                    }
+                    let call = if caller.rel == setter.rel {
+                        &near
+                    } else {
+                        &far
+                    };
+                    let calls = tree.files.get(caller.rel).is_some_and(|ls| {
+                        span(ls, caller.f.start + 1, caller.f.end)
+                            .iter()
+                            .any(|y| call.is_match(y.code_bytes()))
+                    });
+                    if calls {
+                        installers.push(label);
+                    }
+                }
             }
-            let names_it = lines
-                .iter()
-                .filter(|x| x.no >= f.start && x.no <= f.end && x.no != l.no)
-                .any(|x| named.is_match(x.code_bytes()));
-            if names_it {
-                installers.push(f.name.clone());
+            if !installers.is_empty() {
+                out.push(Store {
+                    rel: rel.to_string(),
+                    no: l.no,
+                    name,
+                    installers,
+                });
             }
-        }
-        if !installers.is_empty() {
-            out.push((l.no, name, installers));
         }
     }
     Ok(out)
@@ -1484,10 +1797,12 @@ fn installed_stores_in(
 ///
 /// Two rows. The NAMES row refuses those spellings in the kernel's production code, and every alias
 /// of them the workspace declares, so a `pub type Dialect = ProtocolDecl;` in the contract hides
-/// nothing. The INSTALLED-STORE row refuses the same registry with no name to find, by its shape: a
-/// kernel static whose type is a once/lock cell holding a collection, a slice, an array or a trait
-/// object, reached by a `pub fn` that takes a value. The DEBT row counts the stores keyed by plane or
-/// protocol identity the kernel still holds (`debt_stores`, ceiling `max_debt`, which only falls);
+/// nothing. The INSTALLED-STORE row refuses the same registry with no name to find, by its shape
+/// ([`installed_stores`]): a kernel static of any name and spelling whose type, read through its
+/// aliases and fields, is a cell holding a collection, a slice, an array or a trait object, and
+/// that code outside the kernel reaches (a `pub static`, a `pub fn` taking a value, an accessor
+/// returning the cell, a setter one call away). The DEBT row counts the root-installed stores keyed
+/// by plane, protocol or plugin identity the kernel still holds (`debt_stores`, ceiling `max_debt`, which only falls);
 /// every other store it holds today is named in `exempt_stores` with why. A new store is a finding,
 /// and a named one that no longer matches is stale. Each row's floor is its scope: a kernel with no
 /// production source in the tree is refused.
@@ -1580,22 +1895,31 @@ pub fn kernel_no_protocol_registry(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, 
     let mut stores = Vec::new();
     let mut seen = Vec::new();
     let mut debt_seen = Vec::new();
-    for rel in files
+    let store_files: Vec<&String> = files
         .iter()
         .filter(|r| !skip.iter().any(|s| r.contains(s.as_str())))
+        .collect();
+    for Store {
+        rel,
+        no,
+        name,
+        installers,
+    } in installed_stores(tree, &store_files, &cells, &holds)?
     {
-        for (no, name, installers) in installed_stores_in(tree, rel, &cells, &holds)? {
-            let key = format!("{rel}::{name}");
-            if debt.contains(&key) {
+        let key = format!("{rel}::{name}");
+        if debt.contains(&key) {
+            if !debt_seen.contains(&key) {
                 debt_seen.push(key);
-            } else if exempt.contains(&key) {
-                seen.push(key);
-            } else {
-                stores.push(format!(
-                    "static {name} at {rel}:{no}, installed through pub fn {}",
-                    installers.join(", ")
-                ));
             }
+        } else if exempt.contains(&key) {
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+        } else {
+            stores.push(format!(
+                "static {name} at {rel}:{no}, installed through {}",
+                installers.join(", ")
+            ));
         }
     }
     let stale: Vec<String> = exempt
