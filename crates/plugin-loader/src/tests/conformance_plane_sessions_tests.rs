@@ -661,3 +661,57 @@ fn the_attempt_and_every_arrived_units_body_are_judged() {
     let text = panics(|| super::attempts_and_bodies(&f, &taken));
     assert!(text.contains("short arrive"), "{text}");
 }
+
+/// The plane inputs every `plane.request_unit` case shares, with `extra` merged in.
+fn request_unit_inputs(extra: Value) -> Value {
+    let mut k = serde_json::json!({
+        "bad_settings": [{ "nonsense": 1 }],
+        "refresh_settings": {},
+        "member": "m",
+        "claimed": { "unit": 7, "method": "POST", "target": "/v1/x" },
+        "unclaimed": { "unit": 8, "method": "GET", "target": "/v1/y", "status": 404 },
+        "refusal": { "status": 403, "text": "denied" }
+    });
+    if let (Some(k), Some(extra)) = (k.as_object_mut(), extra.as_object()) {
+        k.extend(extra.clone());
+    }
+    k
+}
+
+/// THE ONE-REQUEST UNIT IS OPTIONAL (row 132: a plane whose claims each open a session or are
+/// answered locally, as the streaming plane's mint answers a ticket busbar mints, serves none):
+/// `plane.request_unit: false` reads no request, far end, narrow, short or empty fixture, and a
+/// plane that states none keeps the one-request legs (the default). RED: `request_unit: false`
+/// beside a far end it would never drive is refused, never silently skipped.
+#[test]
+fn a_plane_with_no_request_unit_states_none_and_a_stray_fixture_is_refused() {
+    let none = super::Inputs::of(&request_unit_inputs(serde_json::json!({
+        "request_unit": false
+    })));
+    assert!(!none.request_unit);
+    assert!(none.request.is_empty() && none.answer.is_empty());
+
+    let default = super::Inputs::of(&request_unit_inputs(serde_json::json!({
+        "request": "q",
+        "request_out": "q",
+        "far_end": { "status": 200, "fields": [], "answer": "a", "answer_out": "a", "units": [] },
+        "narrow": { "unit": 9, "reply_cap": 4, "more": 1 },
+        "short": { "unit": 11 }
+    })));
+    assert!(
+        default.request_unit,
+        "a plane that states nothing serves a request unit"
+    );
+    assert_eq!(default.answer, b"a");
+
+    let stray = catch_unwind(AssertUnwindSafe(|| {
+        super::Inputs::of(&request_unit_inputs(serde_json::json!({
+            "request_unit": false,
+            "far_end": { "status": 200, "fields": [], "answer": "a" }
+        })))
+    }));
+    assert!(
+        stray.is_err(),
+        "a far end beside request_unit: false would be read by no leg"
+    );
+}
