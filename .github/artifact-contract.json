@@ -20,8 +20,10 @@
     "without a key. scripts/verify-artifact.py asserts SET EQUALITY between the ids declared here",
     "and the checks it implements, so a row added here with no implementation is a hard failure",
     "rather than a silently-skipped property, and an implementation with no row here is too.",
-    "scripts/tests/test_verify_artifact.py additionally requires every row to own BOTH a RED",
-    "fixture it flags and a GREEN twin it passes: a row nobody has watched fail is not a row.",
+    "`scripts/verify-artifact.py --selftest` proves each guard on this file both ways (a RED case",
+    "it refuses and a GREEN twin it passes): the set equality, the row floor, the applies_when type",
+    "guard, the pgo_floor in release-targets.json and the row-coverage gate. The row checks need a",
+    "real artifact; their proof is a run against released bytes (see the self-test's docstring).",
     "",
     "`applies_when` is the ONLY way a row may be conditional, it is matched against the target's",
     "own declaration in .github/release-targets.json, and a row that applies to a target CANNOT be",
@@ -186,8 +188,9 @@
         "to the shipped archive's digest by `build_evidence`, so it certifies these bytes and not",
         "some other build's.",
         "`applies_when` is checked against .github/release-targets.json, and that file carries a",
-        "`pgo_floor` scripts/tests/test_release_contract.py enforces, so a target cannot quietly flip `pgo` to false to",
-        "make this row stop applying to it."
+        "`pgo_floor` scripts/verify-artifact.py holds on every run (`_assert_pgo_floor`: the published",
+        "binary targets that train a profile may not fall below it), so a target cannot quietly flip",
+        "`pgo` to false to make this row stop applying to it."
       ]
     },
     {

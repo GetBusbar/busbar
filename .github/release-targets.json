@@ -100,7 +100,7 @@
       "rebuild the plugin against the 1.6.0 SDK"
     ]
   },
-  "pgo_floor": 4,
+  "pgo_floor": 5,
   "targets": [
     {
       "target": "x86_64-unknown-linux-gnu",
