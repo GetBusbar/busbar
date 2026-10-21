@@ -2541,6 +2541,7 @@ mod tools_door {
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+                breaker: None,
             },
         )]
         .into();

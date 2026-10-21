@@ -101,6 +101,13 @@ pub struct App {
     /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the fallback plane's own
     /// store.
     pub plane_breakers: Arc<crate::store::PlaneBreakers>,
+    /// THE OPERATIONAL LIMITS THIS GENERATION GOES LIVE WITH (`limits:` resolved). Published
+    /// process-wide by [`AppHandle::swap`] at the moment the generation is installed — never while it
+    /// is being built or judged, so a refused apply's limits are never in force (BUSBAR-1.6.0.md THE
+    /// DESIGN §6 item 8) — and carried onto [`Self::plane_breakers`], the process-lifetime store every
+    /// plane's cells share (THE DESIGN §1: any plugin gets all functionality). `None` for a hand-built
+    /// test generation, which publishes nothing.
+    pub limits: Option<crate::config::LimitsResolved>,
     /// THE NEUTRAL PER-SESSION SUBSTRATE ([`crate::session::SessionStore`]) — PROCESS-LIFETIME, reused
     /// across `build_app_from_config` applies exactly like `plane_breakers`, because a session's state
     /// (today the gate's cleared-scan set; tomorrow any tenant) must survive a config swap or every
@@ -670,6 +677,20 @@ impl App {
             .unwrap_or(&[])
     }
 
+    /// Put this generation's operational limits in force: the process-wide slot every deep reader
+    /// consults, and the hard-down cooldown / honoured-wait ceiling of the plane breaker store (whose
+    /// cells are process-lifetime, so a new generation's limits reach them here rather than by a
+    /// rebuild). A no-op for a generation that carries none. Called by [`AppHandle::swap`].
+    pub(crate) fn publish_limits(&self) {
+        if let Some(limits) = &self.limits {
+            busbar_kernel::config::limits::publish(limits);
+            self.plane_breakers.set_limits(
+                limits.hard_down_cooldown_secs,
+                limits.max_honored_retry_after_secs,
+            );
+        }
+    }
+
     /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
     /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
     /// map read, reached through the key instead of a plane-named field.
@@ -934,6 +955,10 @@ impl AppHandle {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; that plane's
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
+        // THE GENERATION'S LIMITS GO LIVE WITH IT: published before `next` is stored, so its first
+        // reader (and every applier below) already reads them, and onto the process-lifetime plane
+        // breaker store, whose cells outlive the generation that set their limits.
+        next.publish_limits();
         for decl in crate::plane::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
