@@ -451,6 +451,22 @@ pub fn base_data_core_lines(
     .collect()
 }
 
+/// THE PLUGIN ROUTES THE DATA ROUTER MOUNTS for `app`, as (path, method): the `none`/`key` routes an
+/// export or hook plugin declared, each method of each path ([`plugin_routes::mount_plugin_routes`]
+/// with `admin == false`, the same table read). The composition root writes them on the data
+/// listener's guest list beside the kernel's own data routes (THE DESIGN §6, l.902-904), so a
+/// plane's subtree claim never shadows one.
+#[must_use]
+pub fn base_data_plugin_lines(
+    app: &state::App,
+) -> Vec<(String, busbar_contract::abi::mechanism::route::RouteMethod)> {
+    app.plugin_routes
+        .mounts_for_plane(false)
+        .into_iter()
+        .flat_map(|(path, methods)| methods.into_iter().map(move |m| (path.clone(), m)))
+        .collect()
+}
+
 /// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
 /// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
 /// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,

@@ -267,7 +267,9 @@ pub fn install_listeners(
             .iter()
             .filter_map(|l| match &l.auth {
                 busbar_kernel::guest::LineAuth::Chain(names, _) => Some(names),
-                busbar_kernel::guest::LineAuth::None => None,
+                busbar_kernel::guest::LineAuth::None | busbar_kernel::guest::LineAuth::Claimant => {
+                    None
+                }
             })
             .flatten()
             .filter_map(|n| Some((n.clone(), app.auth.position_calls(n)?)))

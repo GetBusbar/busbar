@@ -159,7 +159,7 @@ impl PluginRouteTable {
     /// routes go to the admin listener; `none`/`key` routes to the data listener). Sorted for a stable
     /// mount order. Grouping by path is required because axum forbids two `.route(path, _)` calls for
     /// the same path — the methods on one path are combined into one `MethodRouter`.
-    fn mounts_for_plane(&self, admin: bool) -> Vec<(String, Vec<RouteMethod>)> {
+    pub(crate) fn mounts_for_plane(&self, admin: bool) -> Vec<(String, Vec<RouteMethod>)> {
         let mut by_path: std::collections::BTreeMap<String, Vec<RouteMethod>> =
             std::collections::BTreeMap::new();
         for (path, entries) in &self.by_path {

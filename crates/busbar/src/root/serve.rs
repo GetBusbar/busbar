@@ -2225,6 +2225,7 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteMethod,
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
+    residual: &[(String, busbar_contract::abi::mechanism::route::RouteMethod)],
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
@@ -2236,6 +2237,7 @@ pub fn data_mounts(
         || crate::root::kernel::ROOT_CARD.pin(),
         data_chain,
         core,
+        residual,
         upgrades,
         offers,
     )
@@ -2447,7 +2449,7 @@ fn claim_line(
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<(busbar_kernel::guest::Line, RouteMethod), String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
     let method = METHODS
         .into_iter()
         .find(|m| m.as_str() == claim.verb)
@@ -2461,7 +2463,7 @@ fn claim_line(
     let pattern = claim.flags & CLAIM_PATTERN != 0;
     let line = busbar_kernel::guest::Line {
         route: busbar_kernel::guest::Route {
-            methods: method_bit(&claim.verb),
+            methods: line_methods(method),
             // An exact claim is its target; a pattern claim is its target, each `{name}` one
             // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
             // guest list's tail pattern, which matches what remains, including nothing).
@@ -2541,6 +2543,143 @@ fn mount_paths(path: &str) -> Option<Vec<String>> {
 /// One claim's route: the plane it is of and the claim's index in its snapshot.
 type DoorClaim = (usize, u32);
 
+/// THE DATA LISTENER'S GUEST LIST, projected (THE DESIGN §6 step 3; row 192 D1): what the
+/// listener's transport matches each request against, and the door claims the data router mounts.
+struct DataLines {
+    /// The sealed list.
+    guests: busbar_kernel::guest::GuestList,
+    /// Each door claim's line, the method the data router mounts it under, and the claim.
+    doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)>,
+    /// The claims on an upgrade line.
+    upgraded: std::collections::HashSet<DoorClaim>,
+}
+
+/// The `METHOD_*` set a line mounted under `method` admits: `HEAD` rides `GET`, as the data router
+/// serves a `HEAD` from the `GET` handler (1.5.5's `get()`).
+fn line_methods(method: RouteMethod) -> u32 {
+    use busbar_contract::abi::transport::route::{method_bit, METHOD_GET, METHOD_HEAD};
+    // RED: HEAD does not ride GET.
+    let _ = (METHOD_GET, METHOD_HEAD);
+    method_bit(method.as_str())
+}
+
+/// A route of the kernel's own router as a line's path form: a path with a `{…}` segment is a
+/// pattern, any other exact.
+fn router_path_form(path: &str) -> u32 {
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
+    if path.contains('{') {
+        PATH_PATTERN
+    } else {
+        PATH_EXACT
+    }
+}
+
+/// A line of the core's claimant: a route the kernel's own router serves.
+fn core_line(
+    methods: u32,
+    path_form: u32,
+    path: String,
+    rung: u32,
+    auth: busbar_kernel::guest::LineAuth,
+) -> busbar_kernel::guest::Line {
+    busbar_kernel::guest::Line {
+        route: busbar_kernel::guest::Route {
+            methods,
+            path_form,
+            path,
+            fields: Vec::new(),
+            rung,
+        },
+        claimant: busbar_kernel::guest::Claimant::Clean(CORE_CLAIMANT.to_string()),
+        dialect: 0,
+        auth,
+        upgrade: None,
+        // The kernel's own routes run their auth on the data listener's own framer.
+        offered: crate::root::doors::offers_unstated(),
+    }
+}
+
+/// THE DATA LISTENER'S LINES (THE DESIGN §6 step 3, l.902-904), in the order 1.5.5's router
+/// answered them:
+///
+/// * every routed claim of every plane in `planes` (`(instance, snapshot)`, in bind order), at its
+///   line's auth ([`claim_line`]);
+/// * the kernel's own data routes (`core`), at their bar;
+/// * the routes the kernel's router serves beside them with no line of their own: each plane's
+///   public routes (`ROUTE_PUBLIC`) and the plugin routes (`residual`, `/metrics` among them),
+///   each a line whose claimant runs the chain itself ([`LineAuth::Claimant`]), so a plane's
+///   subtree claim never shadows a route the router mounts more specifically;
+/// * LAST, THE RESIDUAL LINE: every method on every path (`PATH_CONTAINS` `/`, the least specific
+///   form there is), the core's claimant running the chain itself: the kernel's router, its auth
+///   around every route and its `protocol_dispatch` fallback, as 1.5.5 ran auth around the router
+///   (v1.5.5 `main.rs:3864-3874`). A method no line on a path admits, a path no line names, and
+///   the `/api` prefix on a data listener reach it, and its 401, 404, 405 and 400 bytes are the
+///   router's own.
+///
+/// `HEAD` rides `GET` on every line ([`line_methods`]).
+///
+/// [`LineAuth::Claimant`]: busbar_kernel::guest::LineAuth::Claimant
+///
+/// # Errors
+///
+/// A claim the data listener cannot mount, or a list the seal refuses, named.
+fn data_lines(
+    planes: &[(&str, &OwnedSnapshot)],
+    data_chain: &[ChainAuth],
+    core: &[(String, RouteMethod, RouteAuth)],
+    residual: &[(String, RouteMethod)],
+    upgrades: &[&str],
+    offers: &[TransportOffer],
+) -> Result<DataLines, String> {
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
+    use busbar_kernel::guest::{GuestList, LineAuth};
+    let mut upgraded = std::collections::HashSet::new();
+    let mut lines = Vec::new();
+    let mut doors = Vec::new();
+    for (p, (instance, snapshot)) in planes.iter().enumerate() {
+        for (i, claim) in snapshot.claims.iter().enumerate() {
+            // A claim over the line carrier is served on the process's own stdin/stdout
+            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
+                continue;
+            }
+            let rung = u32::try_from(i).map_err(|_| format!("{instance}: too many claims"))?;
+            let (line, method) = claim_line(instance, rung, claim, data_chain, upgrades, offers)?;
+            if line.upgrade.is_some() {
+                upgraded.insert((p, rung));
+            }
+            lines.push(line.clone());
+            doors.push((line, method, (p, rung)));
+        }
+    }
+    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
+    // THE DESIGN §6).
+    let mut rung = 0u32;
+    for (path, method, auth) in core {
+        let auth = match auth {
+            RouteAuth::None => LineAuth::None,
+            _ => chain_auth(data_chain),
+        };
+        lines.push(core_line(
+            line_methods(*method),
+            router_path_form(path),
+            path.clone(),
+            rung,
+            auth,
+        ));
+        rung += 1;
+    }
+    // RED: no line for the router's other routes, and no residual line.
+    let _ = (residual, rung, METHOD_ANY, PATH_CONTAINS, LineAuth::Claimant);
+    let guests =
+        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
+    Ok(DataLines {
+        guests,
+        doors,
+        upgraded,
+    })
+}
+
 /// THE DOOR PLANES' DATA ROUTES (ARCHITECT Q-SW1, 2026-10-02): every claim of every served plane is
 /// a line on the data listener's guest list (sealed: two claims that could meet at an equal
 /// precedence refuse the boot), mounted at its line's path and auth, its handler the plane's unit
@@ -2559,7 +2698,7 @@ pub fn door_routes(
     data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<Vec<PlaneRouteSpec>, String> {
-    door_mounts(served, pin, data_chain, core, &[], &[]).map(|m| m.routes)
+    door_mounts(served, pin, data_chain, core, &[], &[], &[]).map(|m| m.routes)
 }
 
 /// WHAT THE DATA ROUTER MOUNTS FOR THE DOOR PLANES at its construction: their request routes, and
@@ -2597,11 +2736,12 @@ pub fn door_mounts(
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
+    residual: &[(String, RouteMethod)],
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DoorMounts, String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
-    use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
+    use busbar_contract::abi::transport::route::PATH_EXACT;
+    use busbar_kernel::guest::{Claimant, LineAuth, Matched};
     use std::collections::HashMap;
     // THE PUBLIC ROUTES the served planes state (SEAM-4o): each at its own target on the data
     // listener, open to a caller that presents no busbar credential, served by the plane's `serve`.
@@ -2614,55 +2754,16 @@ pub fn door_mounts(
             refuse_by_path: None,
         });
     }
-    let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
-    let mut lines = Vec::new();
-    let mut doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)> = Vec::new();
-    for (p, plane) in served.planes.iter().enumerate() {
-        for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            // A claim over the line carrier is served on the process's own stdin/stdout
-            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
-            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
-                continue;
-            }
-            let rung =
-                u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, method) =
-                claim_line(&plane.instance, rung, claim, data_chain, upgrades, offers)?;
-            if line.upgrade.is_some() {
-                upgraded.insert((p, rung));
-            }
-            lines.push(line.clone());
-            doors.push((line, method, (p, rung)));
-        }
-    }
-    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
-    // THE DESIGN §6).
-    for (rung, (path, method, auth)) in (0u32..).zip(core) {
-        lines.push(busbar_kernel::guest::Line {
-            route: busbar_kernel::guest::Route {
-                methods: method_bit(method.as_str()),
-                path_form: if path.contains('{') {
-                    PATH_PATTERN
-                } else {
-                    PATH_EXACT
-                },
-                path: path.clone(),
-                fields: Vec::new(),
-                rung,
-            },
-            claimant: Claimant::Clean(CORE_CLAIMANT.to_string()),
-            dialect: 0,
-            auth: match auth {
-                RouteAuth::None => LineAuth::None,
-                _ => chain_auth(data_chain),
-            },
-            upgrade: None,
-            // The kernel's own routes run their auth on the data listener's own framer.
-            offered: crate::root::doors::offers_unstated(),
-        });
-    }
-    let guests =
-        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
+    let snapshots: Vec<(&str, &OwnedSnapshot)> = served
+        .planes
+        .iter()
+        .map(|p| (p.instance.as_str(), &p.snapshot))
+        .collect();
+    let DataLines {
+        guests,
+        doors,
+        upgraded,
+    } = data_lines(&snapshots, data_chain, core, residual, upgrades, offers)?;
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -2676,7 +2777,7 @@ pub fn door_mounts(
     for (line, method, door) in doors {
         let auth = match line.auth {
             LineAuth::None => RouteAuth::None,
-            LineAuth::Chain(..) => RouteAuth::Key,
+            LineAuth::Chain(..) | LineAuth::Claimant => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
         let paths = if let Some(paths) = mount_paths(&line.route.path) {

@@ -1054,6 +1054,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
+        &busbar_kernel::base_data_plugin_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
         &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
