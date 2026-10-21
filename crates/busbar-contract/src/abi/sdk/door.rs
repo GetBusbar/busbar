@@ -622,11 +622,11 @@ pub const fn door<T: KindOps>(
 /// private and its one constructor is `unsafe`, called only in the macro's expansion, so safe code
 /// holds one only for a door the contract laid out, never for an arbitrary `fn() -> *const Door`.
 ///
-/// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
-/// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
-/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by status row 194 (#1471, branch `lane-row194-abi-private-fields`: the ABI's ptr/len
-/// fields private behind `const` constructors from `'static` slices and strs).
+/// THE STATEMENT'S CONTENT (status row 194): its lists and their counts, every `AbiStr`, `Blob`
+/// and the kind tail are private to the contract and set only through `const` constructors over
+/// `'static` slices and strs (`AbiStr::of`, `Blob::of`, `Statement::with_families` and the other
+/// list setters, `with_kind_tail`), so a count always agrees with its storage and every byte lives
+/// for the program. Only `unsafe` code (a host's own test, through `with_raw_*`) states otherwise.
 ///
 /// THE SAFE SURFACE OF THE TEST SUPPORT, PROVED IN PAIRS. Each `compile_fail` below has a twin
 /// that differs from it in the one forbidden spelling and MUST compile, so the failure is the
@@ -1063,9 +1063,9 @@ impl MacroDoor {
     ///
     /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
     /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
-    /// stated counts of live `'static` entries. That last part is the content of the Statement the
-    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and status row
-    /// 194 (#1471, branch `lane-row194-abi-private-fields`) closes it.
+    /// stated counts of live `'static` entries. That last part holds by construction (status row
+    /// 194): the Statement's lists, strings and tail are set only through the contract's `const`
+    /// constructors over `'static` data.
     #[doc(hidden)]
     #[must_use]
     pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
@@ -1083,10 +1083,9 @@ impl MacroDoor {
 /// promise one address per `const`, so a host compares a door's contents, never its address.
 ///
 /// Beside `door` it expands `MACRO_DOOR`, the [`MacroDoor`] the contract's test support reads the
-/// door through. The `statement` it is given is the caller's own `const` data: its lists, strings,
-/// blobs and kind tail are stated through the ABI's public pointer/length fields, which status
-/// row 194 (#1471, branch `lane-row194-abi-private-fields`) puts behind `const` constructors from
-/// `'static` slices and strs.
+/// door through. The `statement` it is given is the caller's own `const` data, built through the
+/// contract's `const` constructors (status row 194): `statement(..)` and the Statement's list
+/// setters over `'static` slices and strs, its pointer and length fields private.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
 /// `pub unsafe extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
 /// The door is a [`DoorFn`](crate::abi::mechanism::door::DoorFn), so it is `unsafe` (status row
@@ -1284,9 +1283,9 @@ macro_rules! plugin_door {
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
             // SAFETY: `door` is the function this macro expanded just above: it answers the
             // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's
-            // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
-            // that its counts match its storage is closed by status row 194 (#1471, branch
-            // `lane-row194-abi-private-fields`).
+            // content (its lists, strings, blobs and kind tail) is built only through the
+            // contract's `const` constructors over `'static` data (status row 194), so every count
+            // matches its storage.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
     };
 }

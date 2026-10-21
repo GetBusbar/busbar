@@ -331,11 +331,11 @@ pub struct ClaimRow {
 /// count, alignment, the kind of a tail or table) before every read, panicking with the field it
 /// refused.
 ///
-/// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
-/// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
-/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by status row 194 (#1471, branch `lane-row194-abi-private-fields`: the ABI's ptr/len
-/// fields private behind `const` constructors from `'static` slices and strs).
+/// THE STATEMENT'S CONTENT (status row 194): its lists and their counts, every `AbiStr`, `Blob`
+/// and the kind tail are private to the contract and set only through `const` constructors over
+/// `'static` slices and strs (`AbiStr::of`, `Blob::of`, `Statement::with_families` and the other
+/// list setters, `with_kind_tail`), so a count always agrees with its storage and every byte lives
+/// for the program. Only `unsafe` code (a host's own test, through `with_raw_*`) states otherwise.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorView {
     door: &'static Door,
