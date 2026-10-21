@@ -395,10 +395,8 @@ fn debug_never_shows_the_secret() {
 ///
 /// A hex decoder from a general library names the offending character and its index. For a signing
 /// seed that is a byte of the secret, printed into whatever caught the error — a log line, a
-/// terminal, a support ticket. (The packaging CLI's own `$BUSBAR_SIGN_KEY` reader does exactly
-/// that today and is a separate known defect, tracked outside this crate.) So every rejection here
-/// is a
-/// whole-input judgement, and this checks that no fragment of a bad key survives into the message.
+/// terminal, a support ticket. So every rejection here is a whole-input judgement, and this checks
+/// that no fragment of a bad key survives into the message.
 #[test]
 fn a_rejected_key_is_never_quoted_back() {
     let nearly = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7fZZ";

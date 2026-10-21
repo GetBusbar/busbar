@@ -277,12 +277,17 @@ pub fn bind_amendments(book: &Arc<Mutex<Durability>>, journal: &NodeAmendments) 
     else {
         return;
     };
-    let token = busbar_kernel::teller::Kernel::new().durability_token();
-    let sink = BookAmendments {
+    // ONE durable-write grant, minted once: the sink journals under it, and the binding is made
+    // under it.
+    let sink = Arc::new(BookAmendments {
         book: Arc::downgrade(book),
         token: busbar_kernel::teller::Kernel::new().durability_token(),
-    };
-    journal.bind(Some(Arc::new(sink)), through, &token);
+    });
+    journal.bind(
+        Some(Arc::clone(&sink) as Arc<dyn AmendSink>),
+        through,
+        &sink.token,
+    );
 }
 
 #[cfg(test)]

@@ -6,7 +6,8 @@
 //! A restart is proven with two real processes over one data directory, as a node restarts: the
 //! parent test runs this same test binary twice, filtered to [`restart_phase`] — first to seal a
 //! correction and an access on the booted node's journal, then, in a fresh process whose node
-//! journal starts empty, to read them back off the one its boot rebuilt.
+//! journal starts empty, to read them back off the one its boot rebuilt. Each phase boots through
+//! [`crate::root::boot::book`] itself, over an `App` built off the real construction path.
 
 use super::*;
 use busbar_kernel::audit::amend::{correct_counts, CountCorrection, NodeAmendments, Reader};
@@ -50,26 +51,30 @@ fn priced(c: &ClassCounts) -> u128 {
     nanos_of_exact(tally.exact().expect("in range")).expect("in range")
 }
 
-/// The node's boot, as `root::boot::book` runs it: build over the data directory, rebuild the node
-/// amendment journal (the one its `App` carries) from the chain, share the book, bind it.
-fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<NodeAmendments>) {
-    let mut durability = build_for_node(
-        &DurabilityConfig {
-            data_dir: Some(dir.to_path_buf()),
-        },
-        4,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+/// THE NODE'S BOOT, BY THE BOOT'S OWN FUNCTION: the boot `App` built off the real construction path
+/// (`build_app_from_config`), then [`crate::root::boot::book`] over it — which rebuilds the App's
+/// own amendment journal from the chain and binds it to the book. The data directory is
+/// `BUSBAR_DATA_DIR`, which [`run_phase`] sets for the child process to `dir`. Answers the book and
+/// the booted App, whose `amendments` is the journal every phase seals on and reads back.
+fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::state::App>) {
+    assert_eq!(
+        busbar_kernel::preflight::fleet_data_dir().as_deref(),
+        Some(dir),
+        "the child process boots over the directory its phase names"
+    );
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
+    busbar_kernel::snapshot::init();
+    let app = busbar_kernel::test_support::build_once(
+        busbar_kernel::test_support::cfg_with_provider_api_key(
+            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_AMEND_RESTART"),
+        ),
+        None,
     )
-    .expect("the directory is writable");
-    let journal = Arc::new(NodeAmendments::new());
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    durability
-        .restore_amendments(&journal, &token)
-        .expect("the chain reads back");
-    let book = Arc::new(Mutex::new(durability));
-    bind_amendments(&book, &journal);
-    (book, journal)
+    .expect("the boot app builds over the stand-in store");
+    let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
+    (book.durability, Arc::new(app))
 }
 
 /// ONE HALF OF THE RESTART, run only in a child process the restart tests below start
@@ -85,7 +90,9 @@ fn restart_phase() {
         store_phase();
         return;
     }
-    let (book, journal) = boot(std::path::Path::new(&dir));
+    let (book, app) = boot(std::path::Path::new(&dir));
+    // The journal the boot rebuilt and bound: the one the booted App carries.
+    let journal = Arc::clone(&app.amendments);
     let recorded = counts(1_000);
     match phase.as_str() {
         "seal" => {
@@ -121,9 +128,7 @@ fn restart_phase() {
                 },
             )
             .expect("a pooled root correction lands");
-            // The node's host records on the journal its `App` carries: this node's.
-            let mut app = busbar_kernel::test_support::TestApp::new().build();
-            Arc::get_mut(&mut app).expect("sole owner").amendments = Arc::clone(&journal);
+            // The node's host records on the journal its `App` carries: the booted one.
             busbar_kernel::plane_host::engine_host(&app).hook_read(
                 HOOK,
                 Some("pseudonym-1"),
@@ -389,6 +394,7 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
         .args(["--ignored", "--test-threads", "1", "--nocapture"])
         .env(PHASE, phase)
         .env(DIR, dir)
+        .env("BUSBAR_DATA_DIR", dir)
         .output()
         .expect("the test binary runs");
     let text =
