@@ -618,6 +618,18 @@ pub struct MetricFamily {
     pub samples: Vec<MetricSample>,
 }
 
+impl MetricFamily {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `MetricFamily { …, ..MetricFamily::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        name: String::new(),
+        kind: String::new(),
+        help: None,
+        samples: Vec::new(),
+    };
+}
+
 /// One SAMPLE line of a [`MetricFamily`] (K9a S6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricSample {
@@ -629,6 +641,17 @@ pub struct MetricSample {
     pub labels: Vec<(String, String)>,
     /// The value, in the recorder's own spelling.
     pub value: String,
+}
+
+impl MetricSample {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `MetricSample { …, ..MetricSample::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        name: String::new(),
+        labels: Vec::new(),
+        value: String::new(),
+    };
 }
 
 /// The point of the configuration's VALIDATION a sink's `check` is asked at — so a
@@ -897,6 +920,19 @@ pub struct Tail {
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
+}
+
+impl Tail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Tail { …, ..Tail::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        streams: std::ptr::null(),
+        streams_len: 0,
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
 }
 
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

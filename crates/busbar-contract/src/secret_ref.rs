@@ -502,6 +502,177 @@ pub fn oneof_schema() -> serde_json::Value {
     })
 }
 
+// ── THE DECLARED SUGARS ────────────────────────────────────────────────────────────────────────
+
+/// The reference keys that are core secret-reference grammar, which no plugin may declare as its
+/// sugar: the canonical form's two keys, the keyless declaration and the settings escape hatch.
+const CORE_WORDS: [&str; 4] = ["module", "settings", SECRET_MODULE_NONE, "literal"];
+
+/// ONE DECLARED SUGAR, as a secret plugin's Statement states it (its `REWRITE_SUGAR*` rewrites):
+/// the shorthand `{ word: X }` the plugin answers to (audit contract-admin #10, Law 1: the plugin
+/// declares it, the host names none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sugar {
+    /// The reference key: the `k` in `{ k: X }`.
+    pub word: String,
+    /// The plugin whose Statement declares it.
+    pub plugin: String,
+    /// The settings key the value lands under (`REWRITE_SUGAR`'s `to`).
+    pub setting: String,
+    /// The placeholder its refusals show for the value (`REWRITE_SUGAR_SHOWN`; the settings key
+    /// when unstated).
+    pub shown: String,
+    /// What the value names, in the refusal of a reference that does not set it
+    /// (`REWRITE_SUGAR_NAMES`; `the <key>` when unstated).
+    pub names: String,
+}
+
+/// THE SUGARS THE LOADED STATEMENTS DECLARE, in word order: what the host reads secret references
+/// against. Built only from Statements ([`Sugars::declare`]); empty, no shorthand is declared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sugars {
+    sugars: Vec<Sugar>,
+    /// `(role, word)`: each role at most once.
+    roles: Vec<(String, String)>,
+}
+
+impl Sugars {
+    /// Declare every sugar `plugin`'s Statement rewrites state (`(class, from, to)`, as a Statement
+    /// rendering reads back): each `REWRITE_SUGAR` a sugar, each `REWRITE_SUGAR_SHOWN`,
+    /// `REWRITE_SUGAR_NAMES` and `REWRITE_SUGAR_ROLE` a fact about one of them. Every other class is
+    /// not a sugar's and is passed over.
+    ///
+    /// # Errors
+    ///
+    /// A word another plugin already declares, a word that is core grammar, a sugar with no
+    /// settings key, a fact about a word this Statement does not declare, an unknown role, or a role
+    /// another plugin already claims. Each refusal names the word and both plugins.
+    pub fn declare(
+        &mut self,
+        plugin: &str,
+        rewrites: &[(u32, String, String)],
+    ) -> Result<(), String> {
+        use crate::abi::mechanism::door::{
+            REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
+            SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+        };
+        let mut mine: Vec<Sugar> = Vec::new();
+        for (class, from, to) in rewrites {
+            if *class != REWRITE_SUGAR {
+                continue;
+            }
+            if CORE_WORDS.contains(&from.as_str()) {
+                return Err(format!(
+                    "plugin '{plugin}' declares the sugar `{from}:`, but `{from}` is core \
+                     secret-reference grammar and no plugin may claim it"
+                ));
+            }
+            if to.trim().is_empty() {
+                return Err(format!(
+                    "plugin '{plugin}' declares the sugar `{from}:` with no settings key \
+                     for its value"
+                ));
+            }
+            if let Some(other) = self
+                .sugars
+                .iter()
+                .chain(mine.iter())
+                .find(|s| s.word == *from)
+            {
+                return Err(format!(
+                    "plugin claim conflict: the sugar `{from}:` is declared by both '{}' and \
+                     '{plugin}' - a reference key must name one plugin; remove one",
+                    other.plugin
+                ));
+            }
+            mine.push(Sugar {
+                word: from.clone(),
+                plugin: plugin.to_string(),
+                setting: to.clone(),
+                shown: to.clone(),
+                names: format!("the {to}"),
+            });
+        }
+        let mut roles: Vec<(String, String)> = Vec::new();
+        for (class, from, to) in rewrites {
+            if ![REWRITE_SUGAR_SHOWN, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE].contains(class) {
+                continue;
+            }
+            let Some(sugar) = mine.iter_mut().find(|s| s.word == *from) else {
+                return Err(format!(
+                    "plugin '{plugin}' states a fact about the sugar `{from}:`, which its \
+                     Statement does not declare"
+                ));
+            };
+            match *class {
+                REWRITE_SUGAR_SHOWN => sugar.shown = to.clone(),
+                REWRITE_SUGAR_NAMES => sugar.names = to.clone(),
+                _ => {
+                    if ![SUGAR_ROLE_FILL, SUGAR_ROLE_PATH].contains(&to.as_str()) {
+                        return Err(format!(
+                            "plugin '{plugin}' gives the sugar `{from}:` the role '{to}', \
+                             which the core grammar does not name"
+                        ));
+                    }
+                    if let Some((_, word)) = self
+                        .roles
+                        .iter()
+                        .chain(roles.iter())
+                        .find(|(role, _)| role == to)
+                    {
+                        let other = self
+                            .sugars
+                            .iter()
+                            .chain(mine.iter())
+                            .find(|s| s.word == *word)
+                            .map_or(plugin, |s| s.plugin.as_str());
+                        return Err(format!(
+                            "plugin claim conflict: the sugar role '{to}' is claimed by \
+                             both '{other}' (`{word}:`) and '{plugin}' (`{from}:`) - a role names \
+                             one sugar; remove one"
+                        ));
+                    }
+                    roles.push((to.clone(), from.clone()));
+                }
+            }
+        }
+        self.sugars.extend(mine);
+        self.sugars.sort_by(|a, b| a.word.cmp(&b.word));
+        self.roles.extend(roles);
+        Ok(())
+    }
+
+    /// Whether no sugar is declared.
+    pub fn is_empty(&self) -> bool {
+        self.sugars.is_empty()
+    }
+
+    /// The declared sugars, in word order.
+    pub fn iter(&self) -> impl Iterator<Item = &Sugar> {
+        self.sugars.iter()
+    }
+
+    /// The sugar `word` declares.
+    pub fn get(&self, word: &str) -> Option<&Sugar> {
+        self.sugars.iter().find(|s| s.word == word)
+    }
+
+    /// The sugar the core grammar's `role` names ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]).
+    ///
+    /// [`SUGAR_ROLE_FILL`]: crate::abi::mechanism::door::SUGAR_ROLE_FILL
+    /// [`SUGAR_ROLE_PATH`]: crate::abi::mechanism::door::SUGAR_ROLE_PATH
+    pub fn with_role(&self, role: &str) -> Option<&Sugar> {
+        self.roles
+            .iter()
+            .find(|(r, _)| r == role)
+            .and_then(|(_, word)| self.get(word))
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/secret_ref_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/sugars_tests.rs"]
+mod sugars_tests;

@@ -97,7 +97,7 @@ pub use far_end::{
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
     HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
-    UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
+    UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
@@ -670,6 +670,15 @@ pub trait DriverSteps: Units {
     /// under that entry; asked once, at the unit's route leg. `None` = none resolved.
     fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Whether `member` is one of the members the generation's section states for the pool
+    /// `pool` (the pool a `ROUTE_POOL` unit's `arrive` named, as the kernel recorded it). A
+    /// gate-first unit routed over a pool binds the member its projection names only when this
+    /// holds (ARCHITECT 2026-10-07: the plane's later word never trades the gates attached to the
+    /// routed entry for another's). Fail-closed: steps that state no pools hold no member.
+    fn pool_holds(&self, _pool: &[u8], _member: &str) -> bool {
+        false
     }
 
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
@@ -1509,7 +1518,15 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    /// key; the principal itself never enters a plane input.
+    ///
+    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
+    /// unit, so a driver whose book lends references never lends an empty one to a governed
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
     fn verify(
         &self,
         token: &Pass<Verify>,
@@ -1517,14 +1534,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> StepAnswer<Verify> {
-        let key = self
-            .driver
-            .config
-            .caller_refs
-            .as_ref()
-            .and_then(|slot| slot.read().unwrap_or_else(|e| e.into_inner()).clone());
-        if let Some(key) = key {
-            self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+        if let Some(slot) = &self.driver.config.caller_refs {
+            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if *principal != PrincipalId::anonymous() {
+                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
+                    return StepAnswer::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
+                };
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            } else if let Some(key) = key {
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            }
         }
         // The verified principal: the hooks the unit binds read it, and the unit's audit row is
         // written under it (never a plane input).
