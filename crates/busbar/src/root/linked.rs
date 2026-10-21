@@ -31,7 +31,7 @@ use std::sync::Arc;
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::PlaneDeclaration;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -100,10 +100,6 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
-    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
-    pub gauntlet_one_shot: &'static [&'static str],
-    pub gauntlet_session: &'static [&'static str],
     /// The transport axis (#3, #30): each linked wire's key, declared layers and build, each read off
     /// its door's Statement (`linked_transport!`), in manifest order — the boot seal folds them
     /// bottom-up (see `crate::root::registry`).
@@ -128,7 +124,7 @@ pub mod node {
     use std::sync::Arc;
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
+    use busbar_kernel::plane_driver::PlaneAnswer;
     use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where

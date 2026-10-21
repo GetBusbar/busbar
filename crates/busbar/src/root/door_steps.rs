@@ -69,6 +69,10 @@ pub struct DoorPools {
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
+    /// Each pool's `breaker:` block, where its `pools:` entry states one ([`POOL_BREAKER_KEY`]):
+    /// the same block, read the same way, as a top-level pool's (BUSBAR-1.6.0.md THE DESIGN
+    /// §1: "Any plugin gets all functionality").
+    breakers: BTreeMap<String, busbar_kernel::config::BreakerCfg>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -151,6 +155,21 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        // THE POOL'S `breaker:` BLOCK, carried here by `serve::pools_into` from the pool's
+        // `<verb>.pools` entry (already held to `config_validate`'s Rule 6), never handed to the plane.
+        let breakers = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        let block = pool.get(POOL_BREAKER_KEY)?.clone();
+                        Some((key(name)?, serde_yaml::from_value(block).ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
         let timeouts = entries
@@ -172,7 +191,14 @@ impl DoorPools {
             member_granted,
             timeouts,
             tiers,
+            breakers,
         })
+    }
+
+    /// The `breaker:` block `pool` states, where it states one; `None` = the defaults.
+    #[must_use]
+    pub fn breaker(&self, pool: &str) -> Option<&busbar_kernel::config::BreakerCfg> {
+        self.breakers.get(pool)
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
@@ -248,6 +274,11 @@ impl DoorPools {
 /// grammar's own words, `busbar_kernel::config::pools::OnExhaustedCfg`).
 const ON_EXHAUSTED_KEY: &str = "on_exhausted";
 const FALLBACK_POOL_KEY: &str = "fallback_pool";
+
+/// A pool's `breaker:` key, in the pools grammar's own word (`busbar_kernel::config::PoolCfg`'s
+/// `breaker`): the core-owned block `serve::pools_into` carries onto a door section's pool and
+/// `serve::plane_settings` strikes before the plane is handed its section.
+pub(crate) const POOL_BREAKER_KEY: &str = "breaker";
 
 impl DoorPools {
     /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
@@ -1493,23 +1524,45 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
-    // Every cell of this plane's members under the default ladder, with the plane's declared
-    // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
-    let cell = || {
-        let mut cfg = busbar_kernel::store::pool_breaker_cfg(None);
+    // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
+    // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
+    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
+    // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
+    // reads exactly the ladder it always did.
+    let cell = |pool: Option<&str>| {
+        let mut cfg = busbar_kernel::store::pool_breaker_cfg(pool.and_then(|p| pools.breaker(p)));
         if let Some(bench) = facts.bench_below_trip_threshold {
             cfg.bench_below_trip_threshold = bench;
         }
         cfg
     };
     let policy = built.keys().fold(
-        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
-        |policy, pool| policy.with_pool(pool.as_str(), cell()),
+        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell(None)),
+        |policy, pool| policy.with_pool(pool.as_str(), cell(Some(pool.as_str()))),
     );
+    // The process-wide `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`,
+    // as published for the generation this egress is sealed for (boot's commit, or the swap that
+    // refreshes the door planes onto a new generation): the same two limits the lane store's
+    // cells run under (THE DESIGN §1). Unpublished (a test process), the defaults — the values
+    // every default deployment runs under.
+    let (hard_down_cooldown_secs, max_honored_retry_after_secs) =
+        busbar_kernel::config::limits::installed().map_or(
+            (
+                busbar_kernel::config::limits::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
+                busbar_kernel::config::limits::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+            ),
+            |l| (l.hard_down_cooldown_secs, l.max_honored_retry_after_secs),
+        );
+    let unit = busbar_kernel_breaker::BreakerUnit::new()
+        .with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::with_policy(policy)),
+        breaker: Arc::new(crate::root::adapters::BreakerAdapter::new(
+            Arc::new(unit),
+            policy,
+        )),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         journal,
