@@ -28,9 +28,9 @@
 use core::mem::size_of;
 
 use crate::abi::mechanism::call::AbiStr;
-use crate::abi::mechanism::door::{Door, DoorFn, Statement};
+use crate::abi::mechanism::door::{Door, Statement};
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC};
-use crate::abi::sdk::door::{AbiIn, AbiOut, KindOps};
+use crate::abi::sdk::door::{AbiIn, AbiOut, KindOps, MacroDoor};
 
 mod sealed {
     /// Only this module implements it: the reviewed all-zero structs.
@@ -316,14 +316,23 @@ pub struct ClaimRow {
     pub status_at: u8,
 }
 
-/// A plugin's door, read as the host reads it, through the plugin's own door function
-/// (`plugin_door!`'s `door`, or the function `export_door!` forwards to).
+/// A plugin's door, read as the host reads it, through the [`MacroDoor`] the contract's own door
+/// macro expanded beside it (`plugin_door!`'s `MACRO_DOOR`). An arbitrary door function is never
+/// read: a safe caller cannot hand one in.
 ///
-/// TRUST: a [`DoorFn`] answers a `'static` door whose Statement lists point at their stated counts
-/// of live `'static` entries. That is the one-door contract every plugin states and the host's
-/// loader reads under; this reader relies on exactly it, and checks what can be checked (the magic,
-/// NULL lists with a count, alignment, the kind of a tail or table) before every read, panicking
-/// with the field it refused.
+/// ```compile_fail,E0308
+/// use busbar_contract::abi::sdk::test_support::DoorView;
+/// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+///     core::ptr::null()
+/// }
+/// let _ = DoorView::of(forged);
+/// ```
+///
+/// TRUST: a door the macro built answers a `'static` door whose Statement lists point at their
+/// stated counts of live `'static` entries (the one-door contract the host's loader reads under).
+/// This reader relies on exactly that, and checks what can be checked (the magic, NULL lists with a
+/// count, alignment, the kind of a tail or table) before every read, panicking with the field it
+/// refused.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorView {
     door: &'static Door,
@@ -331,21 +340,22 @@ pub struct DoorView {
 }
 
 impl DoorView {
-    /// The door `door` answers.
+    /// The door the macro built.
     ///
     /// # Panics
     ///
     /// The function answers NULL or a misaligned pointer, a door without [`DOOR_MAGIC`], or a door
     /// with no Statement.
     #[must_use]
-    pub fn of(door: DoorFn) -> Self {
-        let d = door();
+    pub fn of(door: MacroDoor) -> Self {
+        let d = (door.door_fn())();
         assert!(!d.is_null(), "the door function answered NULL");
         assert!(
             d.is_aligned(),
             "the door function answered a misaligned door"
         );
-        // SAFETY: a non-NULL, aligned door a `DoorFn` answered: `'static` by the door contract.
+        // SAFETY: a non-NULL, aligned door the door macro's `door` answered: `'static`, a `const`
+        // item the macro laid out.
         let door: &'static Door = unsafe { &*d };
         assert_eq!(
             door.magic, DOOR_MAGIC,

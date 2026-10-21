@@ -128,7 +128,7 @@ mod plugin {
 }
 
 fn view() -> DoorView {
-    DoorView::of(plugin::door)
+    DoorView::of(plugin::MACRO_DOOR)
 }
 
 /// A head for slot `op` over a `T` `in`, every other byte zero.
@@ -181,26 +181,17 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
 
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    let mut out: OpenOut = zeroed();
-    out.head = out_head::<OpenOut>();
-    let answered = open(
-        ptr::null_mut(),
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    )
-    .outcome();
-    assert_eq!(answered, Outcome::Ready);
-    assert!(!out.instance.is_null(), "open answered an instance");
+    let opened = call(open, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    assert_eq!(opened.outcome, Outcome::Ready);
+    assert!(!opened.out.instance.is_null(), "open answered an instance");
 
-    let input = in_head::<InHead>(slot::CLOSE);
-    let mut done = out_head::<OutHead>();
-    let answered = close(
-        out.instance,
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut done).cast(),
-    )
-    .outcome();
-    assert_eq!(answered, Outcome::Ready);
+    let closed = call(
+        close,
+        opened.out.instance,
+        &in_head::<InHead>(slot::CLOSE),
+        out_head::<OutHead>(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
 }
 
 #[test]
@@ -325,7 +316,11 @@ extern "C" fn plane_door() -> *const crate::abi::mechanism::door::Door {
 
 #[test]
 fn a_plane_tails_texts_words_and_rows_read_back() {
-    let v = DoorView::of(plane_door);
+    // The contract states no plane door macro, so this door is laid out as `plugin_door!` lays one
+    // and handed in through the macro's own plumbing: only this crate's test names it.
+    let v = DoorView::of(crate::abi::sdk::door::MacroDoor::__from_door_macro(
+        plane_door,
+    ));
     assert_eq!(v.kind(), Some(KindCode::Plane));
     assert_eq!(v.plane_text(PlaneText::Scope), "probe-scope");
     assert_eq!(v.plane_text(PlaneText::AuditKind), "probe_audit");
@@ -378,21 +373,15 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
     };
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
-    let mut out: OpenOut = zeroed();
-    out.head = out_head::<OpenOut>();
-    let answered = open(
-        ptr::null_mut(),
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    )
-    .outcome();
-    assert_eq!(answered, Outcome::Failed);
+    let got = call(open, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    assert_eq!(got.outcome, Outcome::Failed);
+    assert_eq!(got.error.as_deref(), Some("probe open failed: x"));
     assert_eq!(
-        written_text(&reason, out.err_len, "open.err_len"),
+        written_text(&reason, got.out.err_len, "open.err_len"),
         "probe open failed: x"
     );
     assert_eq!(
-        written(&reason, out.err_len, "open.err_len"),
+        written(&reason, got.out.err_len, "open.err_len"),
         b"probe open failed: x"
     );
 }
@@ -459,7 +448,8 @@ impl FakeService for Records {
             },
         };
         if !call.fill(|i| &i.into, record, &[span]) {
-            return Outcome::Ready;
+            // Short: the full size is stated, and a short answer is FAILED.
+            return Outcome::Failed;
         }
         call.set_value(svc::FOUND);
         Outcome::Ready
@@ -488,80 +478,53 @@ fn service_head<T>(op: u32) -> ServiceHead {
     }
 }
 
-fn get(
-    host: &FakeHost,
-    key: &[u8],
-    buf: &mut [u8],
-    spans: &mut [ItemSpan],
-) -> (RecordsGetIn, ServiceOut) {
-    let input = RecordsGetIn {
-        head: service_head::<RecordsGetIn>(svc::op::RECORDS_GET),
-        kind: abi_str("kind"),
-        key: AbiStr {
-            ptr: key.as_ptr(),
-            len: key.len(),
-        },
-        into: ServiceBufs {
-            buf: buf.as_mut_ptr(),
-            cap: buf.len(),
-            spans: spans.as_mut_ptr(),
-            spans_cap: spans.len(),
-        },
-    };
-    let mut out: ServiceOut = zeroed();
-    let f = host.services().records_get.expect("records.get is served");
-    let raw = f(
-        HostCtx::NONE,
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    );
-    assert_eq!(raw, out.outcome, "the return value is mirrored");
-    (input, out)
-}
-
 #[test]
-fn a_fake_service_answers_as_the_host_does() {
+fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
+    use crate::abi::sdk::services::{ServiceError, Services};
+    use core::task::Poll;
     let host = FakeHost::new()
         .serve(fake::host::CLOCK_NOW, Clock)
         .serve(fake::host::RECORDS_GET, Records);
-    assert!(
-        host.services().records_list.is_none(),
-        "an unserved slot is absent"
-    );
-    assert!(!host.tables().is_null());
-
-    // clock.now writes the reading the plugin lent, as the host's own check admits.
-    let mut reading: ClockReading = zeroed();
-    let input = ClockNowIn {
-        head: service_head::<ClockNowIn>(svc::op::CLOCK_NOW),
-        reading: ptr::from_mut(&mut reading),
+    // The SDK's own wrapper, over the tables an `open` would be lent: it stamps every head and
+    // judges every answer by the host's checks.
+    let services = Services::of(host.tables_for_tests()).expect("the host offers services");
+    let handle = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
     };
-    let mut out: ServiceOut = zeroed();
-    let clock = host.services().clock_now.expect("clock.now is served");
-    let raw = clock(
-        HostCtx::NONE,
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    );
-    assert_eq!(raw.outcome(), Outcome::Ready);
-    assert!(svc::check_clock_now(&input, raw, &out).is_ok());
+
+    // clock.now writes the reading the plugin lent.
+    let reading = services.clock_now(handle).expect("clock.now answers");
     assert_eq!((reading.wall_ns, reading.mono_ns), (7, 9));
 
     // records.get reads the key the plugin lent and fills the buffers it lent.
     let mut buf = [0_u8; 32];
-    let mut spans: [ItemSpan; 2] = zeroed();
-    let (input, out) = get(&host, b"probe", &mut buf, &mut spans);
-    assert_eq!(out.outcome.outcome(), Outcome::Ready);
-    assert_eq!((out.value, out.len, out.items), (svc::FOUND, 14, 1));
-    assert!(svc::check_records_get(&input, out.outcome, &out).is_ok());
-    assert_eq!(&buf[..14], b"value-of-probe");
-    assert_eq!(spans[0].value.len, 14);
+    match services.records_get(handle, "kind", b"probe", &mut buf) {
+        Poll::Ready(Ok(Some(v))) => assert_eq!(v, b"value-of-probe"),
+        other => panic!("records.get answered {other:?}"),
+    }
+    match services.records_get(handle, "kind", b"absent", &mut buf) {
+        Poll::Ready(Ok(None)) => {}
+        other => panic!("records.get of an absent key answered {other:?}"),
+    }
 
     // A result the lent capacity does not hold writes nothing and states its size.
     let mut small = [0_u8; 4];
-    let (_, out) = get(&host, b"probe", &mut small, &mut spans);
-    assert_eq!((out.len, out.needed_bytes, out.needed_items), (0, 14, 1));
+    match services.records_get(handle, "kind", b"probe", &mut small) {
+        Poll::Ready(Err(ServiceError::Short { bytes, items })) => {
+            assert_eq!((bytes, items), (14, 1));
+        }
+        other => panic!("a short records.get answered {other:?}"),
+    }
     assert_eq!(small, [0; 4]);
+
+    // An unserved slot is absent.
+    let mut spans: [ItemSpan; 1] = zeroed();
+    assert!(matches!(
+        services.records_list(handle, "kind", b"", None, 0, (&mut buf, &mut spans)),
+        Poll::Ready(Err(ServiceError::Unserved))
+    ));
 }
 
 #[test]
@@ -582,7 +545,7 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     };
     let call = |host: &FakeHost, input: &RecordsGetIn| {
         let mut out: ServiceOut = zeroed();
-        let f = host.services().records_get.expect("served");
+        let f = host.slots_for_tests().0.records_get.expect("served");
         f(
             HostCtx::NONE,
             ptr::from_ref(input).cast(),
@@ -674,7 +637,7 @@ fn a_secret_is_copied_into_wiped_memory_before_release() {
     let got = answered(&mut t);
     material.fill(0); // the plugin's release wipes what it leased
     assert_eq!(got.outcome, Outcome::Ready);
-    assert_eq!(got.owned.expose(), b"s3cret");
+    assert_eq!(got.owned.material(), b"s3cret");
     assert_eq!(got.out.head.lease, 7, "the scalars stay");
     assert!(
         got.out.secret.ptr.is_null(),
@@ -926,4 +889,162 @@ fn a_failure_text_past_the_declared_bound_is_refused() {
         len: HARD_MAX_BYTES as usize + 1,
     });
     let _ = answered(&mut t);
+}
+
+// ── the sizes a slot reads, and the regions a double may touch ──────────────────────────────────
+
+/// A stand-in slot that writes down the head sizes it was handed, and touches nothing past them.
+extern "C" fn heads_seen(
+    instance: *mut c_void,
+    input: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome {
+    // SAFETY: the test's own `[u32; 2]`, and `call`'s `in`/`out`, each leading with its head.
+    let (seen, i, o) = unsafe {
+        (
+            &mut *instance.cast::<[u32; 2]>(),
+            &*input.cast::<InHead>(),
+            &mut *out.cast::<OutHead>(),
+        )
+    };
+    *seen = [i.size, o.size];
+    o.outcome = RawOutcome::of(Outcome::Ready);
+    o.outcome
+}
+
+#[test]
+fn the_heads_a_slot_reads_state_the_structs_call_passed() {
+    let mut seen = [0_u32; 2];
+    // Heads that claim the larger `open` structs, over a bare `InHead` and `OutHead`.
+    let lying_in = in_head::<OpenIn>(slot::OPEN);
+    let lying_out = out_head::<OpenOut>();
+    let got = call(
+        heads_seen,
+        ptr::from_mut(&mut seen).cast(),
+        &lying_in,
+        lying_out,
+    );
+    assert_eq!(got.outcome, Outcome::Ready);
+    assert_eq!(
+        seen,
+        [size_of::<InHead>() as u32, size_of::<OutHead>() as u32],
+        "a slot is never told it may read or write past what was passed"
+    );
+}
+
+#[test]
+#[should_panic(expected = "the door is not of the kind whose tail was asked for")]
+fn plane_rows_of_a_transport_door_are_refused() {
+    let _ = view().plane_rows::<crate::abi::plane::BillableClass>();
+}
+
+use crate::abi::host::conn::connector::{self as conn_abi, IoIn};
+use crate::abi::host::io::{self as io_abi, ReadIn as IoReadIn};
+
+/// A connector double that answers bytes into the `IoIn` buffer, on whichever op it serves.
+struct Answers;
+impl FakeService for Answers {
+    type In = IoIn;
+    fn serve(call: &mut ServiceCall<IoIn>) -> Outcome {
+        if call.fill_lent(|i| &i.buf, b"pong") {
+            Outcome::Ready
+        } else {
+            Outcome::Failed
+        }
+    }
+}
+
+/// An I/O double that reads back the buffer `io.read` lends for the host to WRITE.
+struct ReadsItsOwnOutput;
+impl FakeService for ReadsItsOwnOutput {
+    type In = IoReadIn;
+    fn serve(call: &mut ServiceCall<IoReadIn>) -> Outcome {
+        let _ = call.lent(|i| &i.buf);
+        Outcome::Ready
+    }
+}
+
+/// A records double that writes one byte through a pointer nested in a `ServiceBufs`.
+struct PutsIntoBufs;
+impl FakeService for PutsIntoBufs {
+    type In = RecordsGetIn;
+    fn serve(call: &mut ServiceCall<RecordsGetIn>) -> Outcome {
+        call.put(|i| &i.into.buf, 0_u8);
+        Outcome::Ready
+    }
+}
+
+fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
+    IoIn {
+        head: service_head::<IoIn>(op),
+        stream: 1,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    }
+}
+
+fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
+    let mut out: ServiceOut = zeroed();
+    f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()).outcome()
+}
+
+#[test]
+fn a_double_writes_only_the_regions_its_op_lends_for_writing() {
+    let host = FakeHost::new()
+        .serve(fake::conn::READ, Answers)
+        .serve(fake::conn::WRITE, Answers);
+    // `read` lends its buffer for the host to write: the double fills it.
+    let mut buf = [0_u8; 8];
+    let input = io_in(conn_abi::service::READ, &mut buf);
+    let read = host.slots_for_tests().2.read.expect("served");
+    assert_eq!(
+        served_by(read, ptr::from_ref(&input).cast()),
+        Outcome::Ready
+    );
+    assert_eq!(&buf[..4], b"pong");
+    // `write` lends the same field for the host to READ: writing it is refused, nothing written.
+    let mut sent = [7_u8; 8];
+    let input = io_in(conn_abi::service::WRITE, &mut sent);
+    let write = host.slots_for_tests().2.write.expect("served");
+    assert_eq!(
+        served_by(write, ptr::from_ref(&input).cast()),
+        Outcome::Fault
+    );
+    assert_eq!(sent, [7; 8]);
+}
+
+#[test]
+fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() {
+    let host = FakeHost::new()
+        .serve(fake::io::READ, ReadsItsOwnOutput)
+        .serve(fake::host::RECORDS_GET, PutsIntoBufs);
+    let mut buf = [0_u8; 8];
+    let input = IoReadIn {
+        head: service_head::<IoReadIn>(io_abi::op::READ),
+        handle: 1,
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+    };
+    let read = host.slots_for_tests().1.read.expect("served");
+    assert_eq!(
+        served_by(read, ptr::from_ref(&input).cast()),
+        Outcome::Fault
+    );
+
+    let mut bytes = [9_u8; 4];
+    let mut spans: [ItemSpan; 1] = zeroed();
+    let input = RecordsGetIn {
+        head: service_head::<RecordsGetIn>(svc::op::RECORDS_GET),
+        kind: abi_str("kind"),
+        key: abi_str("probe"),
+        into: ServiceBufs {
+            buf: bytes.as_mut_ptr(),
+            cap: bytes.len(),
+            spans: spans.as_mut_ptr(),
+            spans_cap: spans.len(),
+        },
+    };
+    let get = host.slots_for_tests().0.records_get.expect("served");
+    assert_eq!(served_by(get, ptr::from_ref(&input).cast()), Outcome::Fault);
+    assert_eq!(bytes, [9; 4], "nothing was written");
 }

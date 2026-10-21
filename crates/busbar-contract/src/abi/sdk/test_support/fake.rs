@@ -22,7 +22,7 @@
 //!     }
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-//! open_in.host = host.tables();
+//! host.lend_to(&mut open_in); // the one consumer of the tables
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable
@@ -79,6 +79,19 @@ mod sealed {
         const REGIONS: &'static [Region];
     }
 
+    /// Only [`super::FakeHost::lend_to`] makes one.
+    #[derive(Debug)]
+    pub struct HostToken(pub(super) ());
+
+    /// Only this module implements it: the `open` ins that carry the host's tables.
+    pub trait Host {
+        /// The `host` field.
+        fn host_field(
+            &mut self,
+            token: HostToken,
+        ) -> &mut *const crate::abi::mechanism::ticket::HostTables;
+    }
+
     /// Only this module implements it: `*const T` and `*mut T`.
     pub trait Ptr<T> {
         /// The pointer, read.
@@ -110,6 +123,22 @@ impl<T> sealed::Ptr<T> for *mut T {
     }
 }
 impl<T> RawPtr<T> for *mut T {}
+
+/// An `open` `in` that carries the host's tables (`host`), for [`FakeHost::lend_to`]. Sealed:
+/// the lifecycle `OpenIn` and the plane's `PlaneOpenIn`.
+pub trait TakesHost: sealed::Host {}
+impl sealed::Host for crate::abi::mechanism::lifecycle::OpenIn {
+    fn host_field(&mut self, _: sealed::HostToken) -> &mut *const HostTables {
+        &mut self.host
+    }
+}
+impl TakesHost for crate::abi::mechanism::lifecycle::OpenIn {}
+impl sealed::Host for crate::abi::plane::PlaneOpenIn {
+    fn host_field(&mut self, _: sealed::HostToken) -> &mut *const HostTables {
+        &mut self.open.host
+    }
+}
+impl TakesHost for crate::abi::plane::PlaneOpenIn {}
 
 /// A test double for one host service.
 pub trait FakeService: 'static {
@@ -706,11 +735,11 @@ extern "C" fn trampoline<S: FakeService, const OP: u32>(
     out: *mut ServiceOut,
 ) -> RawOutcome {
     let ran = crate::abi::sdk::boundary::caught(|| {
-        assert!(!input.is_null(), "service {}: the in is NULL", OP);
+        assert!(!input.is_null(), "service {OP}: the in is NULL");
         // SAFETY: a non-NULL `in` a plugin passed a host service leads with its `ServiceHead`.
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
         if let Err(f) = check_head(&head, OP, size_of::<S::In>()) {
-            panic!("service {}: {f:?}", OP);
+            panic!("service {OP}: {f:?}");
         }
         // SAFETY: the head states this slot's op and at least `size_of::<S::In>()` bytes.
         let input = unsafe { input.cast::<S::In>().read_unaligned() };
@@ -740,7 +769,19 @@ extern "C" fn trampoline<S: FakeService, const OP: u32>(
 }
 
 /// A fake host: its three tables, every slot absent until a double is served in it, and the
-/// `HostTables` an `OpenIn::host` names. Keep it alive while the instance opened over it lives.
+/// `HostTables` an `OpenIn::host` names. It owns every table it lends; keep it alive while the
+/// instance opened over it lives. The tables reach the door through [`FakeHost::lend_to`] alone:
+/// safe code holds no table and no `ServiceFn` of it.
+///
+/// ```compile_fail,E0599
+/// let host = busbar_contract::abi::sdk::test_support::fake::FakeHost::new();
+/// let _ = host.services();
+/// ```
+///
+/// ```compile_fail,E0599
+/// let host = busbar_contract::abi::sdk::test_support::fake::FakeHost::new();
+/// let _ = host.slots_for_tests();
+/// ```
 #[derive(Debug)]
 pub struct FakeHost {
     tables: Box<HostTables>,
@@ -816,34 +857,24 @@ impl FakeHost {
         self
     }
 
-    /// The tables, for `OpenIn::host` (live while `self` is).
-    #[must_use]
-    pub fn tables(&self) -> *const HostTables {
-        ptr::from_ref(&*self.tables)
+    /// Lend this host's tables to an `open`'s `in` (its `host`), for as long as `self` lives: the
+    /// one consumer of them. No table, and no `ServiceFn`, is handed to the test itself.
+    pub fn lend_to<I: TakesHost>(&self, input: &mut I) {
+        *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
     }
 
-    /// The host services table, as served.
-    #[must_use]
-    pub fn services(&self) -> &HostSlots {
-        &self.services
+    /// The tables, for this crate's own tests of the trampoline (a malformed `in` no SDK path
+    /// sends, and the SDK's `Services` over the fake).
+    #[cfg(test)]
+    pub(crate) fn tables_for_tests(&self) -> &HostTables {
+        &self.tables
     }
 
-    /// The I/O table, as served.
-    #[must_use]
-    pub fn io(&self) -> &IoSlots {
-        &self.io
-    }
-
-    /// The connector table, as served.
-    #[must_use]
-    pub fn conns(&self) -> &ConnectorSlots {
-        &self.conns
-    }
-
-    /// The tables, lent to `f` for as long as it runs: the borrow ends with the call, and the host
-    /// (which owns every table it lends) outlives it.
-    pub fn lend<R>(&self, f: impl FnOnce(&HostTables) -> R) -> R {
-        f(&self.tables)
+    /// The three tables as served, for this crate's own tests that hand the trampoline a malformed
+    /// `in` (no SDK path sends one).
+    #[cfg(test)]
+    pub(crate) fn slots_for_tests(&self) -> (&HostSlots, &IoSlots, &ConnectorSlots) {
+        (&self.services, &self.io, &self.conns)
     }
 
     /// Point the `HostTables` at the three tables again, after any change to them.

@@ -11,7 +11,7 @@
 //! use busbar_contract::abi::sdk::test_support::reply::call;
 //!
 //! let resolved = call(table.resolve.unwrap(), instance, &input, out);
-//! assert_eq!(resolved.owned.expose(), b"s3cret");
+//! assert_eq!(resolved.owned.material(), b"s3cret");
 //! release(instance, resolved.out.head.lease); // the copy is already taken
 //! ```
 //!
@@ -27,11 +27,12 @@
 
 use core::ffi::c_void;
 use core::fmt;
+use core::mem::size_of;
 use core::ptr;
 
 use zeroize::Zeroizing;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, Op, OutHead, Outcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
 use crate::abi::mechanism::check::{Fault, HARD_MAX_BYTES, STATEMENT_LIST_MAX};
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 
@@ -78,7 +79,9 @@ pub struct Called<O: Reply> {
     pub owned: O::Owned,
 }
 
-/// Run `op` on `instance` over `input` and `out`, and copy the reply before returning.
+/// Run `op` on `instance` over `input` and `out`, and copy the reply before returning. The heads
+/// the op reads state the sizes of exactly the `I` and `O` passed (`in.head.size`,
+/// `out.head.size`), whatever the caller wrote there: a slot reads and writes no byte past them.
 ///
 /// # Panics
 ///
@@ -86,9 +89,14 @@ pub struct Called<O: Reply> {
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field.
 pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, mut out: O) -> Called<O> {
     out.clear(Token(()));
+    out.head().size = size_of::<O>() as u32;
+    let mut input = *input;
+    // SAFETY: `I: AbiIn` is `#[repr(C)]` and leads with an `InHead` (its unsafe contract), so the
+    // first bytes of this private copy are an `InHead`.
+    unsafe { (*ptr::addr_of_mut!(input).cast::<InHead>()).size = size_of::<I>() as u32 };
     let raw = op(
         instance,
-        ptr::from_ref(input).cast(),
+        ptr::from_ref(&input).cast(),
         ptr::from_mut(&mut out).cast(),
     );
     let outcome = raw.outcome();
@@ -106,19 +114,19 @@ pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, mut ou
 // ── the reviewed copies ──────────────────────────────────────────────────────────────────────────
 
 /// Secret material, copied into memory wiped on drop; never printed.
-pub struct Secret(Zeroizing<Vec<u8>>);
+pub struct SecretCopy(Zeroizing<Vec<u8>>);
 
-impl Secret {
+impl SecretCopy {
     /// The material.
     #[must_use]
-    pub fn expose(&self) -> &[u8] {
+    pub fn material(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl fmt::Debug for Secret {
+impl fmt::Debug for SecretCopy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Secret(<{} bytes>)", self.0.len())
+        write!(f, "SecretCopy(<{} bytes>)", self.0.len())
     }
 }
 
@@ -268,15 +276,15 @@ impl sealed::Take for crate::abi::secret::ResolveOut {
             ..self.secret
         };
     }
-    fn take(&self, _: Outcome, _: Token) -> Secret {
+    fn take(&self, _: Outcome, _: Token) -> SecretCopy {
         judged(crate::abi::secret::validate::check_resolve(self));
         let mut copy = Zeroizing::new(Vec::new());
         copy.extend_from_slice(lent(self.secret.ptr, self.secret.len, "resolve.secret"));
-        Secret(copy)
+        SecretCopy(copy)
     }
 }
 impl Reply for crate::abi::secret::ResolveOut {
-    type Owned = Secret;
+    type Owned = SecretCopy;
 }
 
 impl sealed::Take for crate::abi::export::ServeOut {

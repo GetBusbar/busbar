@@ -53,7 +53,7 @@ use std::ptr;
 use crate::abi::host::conn::connector::Need;
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{
-    Door, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
+    Door, DoorFn, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
 };
 use crate::abi::mechanism::lifecycle::{
     self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn,
@@ -628,6 +628,37 @@ pub const fn door<T: KindOps>(
     }
 }
 
+/// A door the contract's own door macro built ([`plugin_door!`](crate::plugin_door), and every
+/// kind macro over it), as the `MACRO_DOOR` it expands beside `door` states it. Its one field is
+/// private and its constructor is the macro's plumbing, so safe code holds one only for a door the
+/// contract laid out, never for an arbitrary `fn() -> *const Door`:
+///
+/// ```compile_fail,E0451
+/// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+///     core::ptr::null()
+/// }
+/// let _ = busbar_contract::abi::sdk::door::MacroDoor { door: forged };
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct MacroDoor {
+    door: DoorFn,
+}
+
+impl MacroDoor {
+    /// The door macro's plumbing: the one constructor, named only in its expansion.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn __from_door_macro(door: DoorFn) -> Self {
+        Self { door }
+    }
+
+    /// The door function.
+    #[must_use]
+    pub fn door_fn(self) -> DoorFn {
+        self.door
+    }
+}
+
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
@@ -813,6 +844,12 @@ macro_rules! plugin_door {
             );
             __DOOR
         }
+
+        /// This plugin's door as the door macro built it: the one value the contract's test
+        /// support (`abi::sdk::test_support::DoorView`) reads a door through.
+        #[allow(dead_code)]
+        pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
+            $crate::abi::sdk::door::MacroDoor::__from_door_macro(door);
     };
 }
 
