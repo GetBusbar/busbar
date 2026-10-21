@@ -2174,19 +2174,20 @@ fn read_refusal(r: &Refusal) -> Read {
 }
 
 /// The OLD PATH's answer (the router, its auth middleware around it) to a POST on `path` carrying
-/// no credential, over `app`.
-async fn old_path(app: Arc<App>, path: &str) -> Read {
+/// `headers`, over `app`.
+async fn old_path(app: Arc<App>, path: &str, headers: &[(&str, String)]) -> Read {
     crate::snapshot::init();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let resp = reqwest::Client::new()
+    let mut req = reqwest::Client::new()
         .post(format!("http://{addr}{path}"))
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
+        .body("{}");
+    for (n, v) in headers {
+        req = req.header(*n, v);
+    }
+    let resp = req.send().await.unwrap();
     let field = |n: &str| resp.headers().get(n).map(|v| v.as_bytes().to_vec());
     let (status, challenge, content_type) = (
         resp.status().as_u16(),
@@ -2227,7 +2228,7 @@ async fn red_an_audience_bound_planes_refusals_are_the_old_paths_challenges() {
             app.planes.admission_for(MESSAGES).is_some(),
             "audience-bound"
         );
-        let want = old_path(Arc::clone(&app), MESSAGES).await;
+        let want = old_path(Arc::clone(&app), MESSAGES, &[]).await;
         let k = kit_with(
             app,
             vec!["a".to_string()],
@@ -2311,4 +2312,197 @@ fn red_an_over_gate_refusal_renders_through_the_doors_own_hook() {
         .unwrap();
     let with_unit = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), ans.unit, MESSAGES);
     assert_eq!(with_unit, want);
+}
+
+// ── the old path's judging before the chain, and the `keys` arm's audience ──────────────────
+
+/// The audience the test plane mounted at `MESSAGES` is bound to.
+const AUDIENCE: &str = "https://gw.example/v1/messages";
+
+/// Mount a plane at `MESSAGES` and bind it to [`AUDIENCE`]: the path becomes an OAuth 2.1
+/// protected resource.
+fn bind_audience(t: &mut crate::test_support::TestApp) {
+    t.mount_plane("bound-plane", MESSAGES, "bound-wire");
+    t.admit_plane(
+        "bound-plane",
+        crate::plane::PlaneAdmission {
+            audience: AUDIENCE.to_string(),
+            resource_metadata: "https://gw.example/.well-known/oauth-protected-resource"
+                .to_string(),
+        },
+    );
+}
+
+/// A JWS-shaped token over `claims`, never signature-checked by what reads it here.
+fn jwt(claims: &serde_json::Value) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!(
+        "{}.{}.c2ln",
+        b64.encode(r#"{"alg":"ES256","typ":"at+jwt"}"#),
+        b64.encode(claims.to_string())
+    )
+}
+
+/// The app whose chain is the scripted `a` (its role bound) over `t`.
+fn scripted(t: crate::test_support::TestApp, a: &Arc<Script>) -> crate::test_support::TestApp {
+    t.auth(Arc::new(crate::auth::AuthMiddleware::from_doors_for_test(
+        vec![("a".to_string(), Arc::clone(a) as Arc<dyn AuthCalls>)],
+    )))
+    .role_bindings(bound(&["a".to_string()]))
+}
+
+/// The inbound answer to a POST on `MESSAGES` carrying `fields`, on a kit over `app` whose line
+/// chain is `names` (the opened `auths` among them): its first call, then (on a continue) its
+/// hand-in, then the refusal of a stop, as a client reads it. `None` when it was handed on.
+fn inbound_answer(
+    app: Arc<App>,
+    names: Vec<String>,
+    auths: &[(&str, Arc<Script>)],
+    fields: &[(&str, &str)],
+) -> Option<Read> {
+    let k = kit_with(
+        app,
+        names,
+        AuthPoints::HEAD,
+        auths,
+        kin_unsigned(),
+        None,
+        None,
+    );
+    let ans = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, fields, None),
+        )
+        .unwrap();
+    let (flow, unit) = if ans.flow == FLOW_CONTINUE {
+        // Handed in as the transport hands it: the named lines struck.
+        let kept: Vec<(&str, &str)> = fields
+            .iter()
+            .copied()
+            .filter(|(n, _)| {
+                !ans.strips
+                    .iter()
+                    .any(|s| s.place == StripPlace::Field && s.name.eq_ignore_ascii_case(n))
+            })
+            .collect();
+        k.hand_in(MESSAGES, MESSAGES, ans.unit, post(MESSAGES, &kept, None))
+    } else {
+        (ans.flow, ans.unit)
+    };
+    (flow == FLOW_STOP)
+        .then(|| read_refusal(&k.refuse(REFUSE_STOPPED, k.line(MESSAGES), unit, MESSAGES)))
+}
+
+/// RED (/status row 192 C; RFC 9449, the old middleware's sender constraint): where this
+/// deployment runs its own authorization server, a DPoP-bound token presented as a bearer is
+/// refused BEFORE the chain, with the old path's bytes: the bare 401 on a residual path, the
+/// `invalid_token` challenge on an audience-bound one. No auth is called for it.
+#[tokio::test]
+async fn red_a_dpop_bound_bearer_is_refused_with_the_old_paths_bytes() {
+    let token = jwt(&serde_json::json!({ "sub": "a", "aud": AUDIENCE, "cnf": { "jkt": "abc" } }));
+    let bearer = format!("Bearer {token}");
+    for audience in [false, true] {
+        let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+        let mut t = scripted(crate::test_support::TestApp::new(), &a).oauth_as_plane(Arc::new(()));
+        if audience {
+            bind_audience(&mut t);
+        }
+        let app = t.build();
+        let want = old_path(
+            Arc::clone(&app),
+            MESSAGES,
+            &[("authorization", bearer.clone())],
+        )
+        .await;
+        let calls = a.calls();
+        let got = inbound_answer(
+            app,
+            vec!["a".to_string()],
+            &[("a", Arc::clone(&a))],
+            &[("authorization", bearer.as_str())],
+        );
+        assert_eq!(got, Some(want), "audience-bound: {audience}");
+        assert_eq!(a.calls(), calls, "an auth was called for a refused sender");
+    }
+}
+
+/// RED (/status row 192 C; RFC 8707, the old middleware's audience pre-filter): on an
+/// audience-bound plane a bearer busbar did not mint that is opaque, or a JWT minted for another
+/// audience, is refused BEFORE the chain with the old path's `invalid_token` challenge; one bound
+/// to this resource goes on to the chain, as it did there.
+#[tokio::test]
+async fn red_the_audience_pre_filter_refuses_with_the_old_paths_bytes() {
+    let other = jwt(&serde_json::json!({ "sub": "a", "aud": "https://elsewhere.example" }));
+    let ours = jwt(&serde_json::json!({ "sub": "a", "aud": AUDIENCE }));
+    for (token, refused) in [
+        ("opaque-token".to_string(), true),
+        (other, true),
+        (ours, false),
+    ] {
+        let bearer = format!("Bearer {token}");
+        let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+        let mut t = scripted(crate::test_support::TestApp::new(), &a);
+        bind_audience(&mut t);
+        let app = t.build();
+        let want = old_path(
+            Arc::clone(&app),
+            MESSAGES,
+            &[("authorization", bearer.clone())],
+        )
+        .await;
+        let calls = a.calls();
+        let got = inbound_answer(
+            app,
+            vec!["a".to_string()],
+            &[("a", Arc::clone(&a))],
+            &[("authorization", bearer.as_str())],
+        );
+        if refused {
+            assert!(
+                want.1.is_some(),
+                "the old path challenged {token}: {want:?}"
+            );
+            assert_eq!(got, Some(want), "{token}");
+            assert_eq!(a.calls(), calls, "an auth was called for {token}");
+        } else {
+            assert_eq!(got, None, "a bound bearer was refused before the chain");
+        }
+    }
+}
+
+/// RED (/status row 192 C; the 1.6.0 plane boundary): on an audience-bound plane the `keys` arm
+/// verifies against the plane's audience, as the old path's chain did: a busbar key minted with no
+/// audience is refused there with the old path's `invalid_token` challenge, byte for byte.
+#[tokio::test]
+async fn red_the_keys_arm_verifies_against_the_planes_audience() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (_, token) = minted(&gov, now + 3_600, now);
+    let bearer = format!("Bearer {token}");
+    let mut t = crate::test_support::TestApp::new()
+        .keys_chain()
+        .governance(Arc::clone(&gov));
+    bind_audience(&mut t);
+    let app = t.build();
+    let want = old_path(
+        Arc::clone(&app),
+        MESSAGES,
+        &[("authorization", bearer.clone())],
+    )
+    .await;
+    assert_eq!(
+        want.0, 401,
+        "the old path refused an audience-less key: {want:?}"
+    );
+    let got = inbound_answer(
+        app,
+        vec![crate::config::KEYS_MODULE.to_string()],
+        &[],
+        &[("authorization", bearer.as_str())],
+    );
+    assert_eq!(got, Some(want));
 }
