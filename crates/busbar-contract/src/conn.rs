@@ -901,6 +901,28 @@ impl<T> ConnSlab<T> {
         }
     }
 
+    /// Forget `owner`: every need it declared is dropped (an insert or a need check for it is
+    /// refused as undeclared), and the ids of every connection it still holds are answered, live,
+    /// for the host to close through [`ConnSlab::remove`].
+    pub fn forget(&self, owner: InstanceId) -> Vec<ConnId> {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(o, _)| *o != owner);
+        self.lock()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                Entry::Live {
+                    generation,
+                    owner: o,
+                    ..
+                } if *o == owner => Some(ConnId((u64::from(*generation) << 32) | (i as u64 + 1))),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry<T>>> {
         self.entries
             .lock()
