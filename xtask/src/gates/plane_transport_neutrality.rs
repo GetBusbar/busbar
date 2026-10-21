@@ -88,11 +88,21 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-/// Lowered 1220 -> 1218 by row 159 (kernel-egress, GetBusbar/busbar#1414): the uncalled
+/// Raised 1220 -> 1234, the count on the D2 lane's head (status row 82, #1374 and #1377) over dev
+/// 5ec1793a4f, whose tree holds 1244 scanned files. #1374 deletes 11 and adds none: 7
+/// `busbar-kernel/src` files (`plane_host/{breaker,govern,scope}.rs`,
+/// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`) and 4 `busbar/src/root`
+/// gauntlet files (`gauntlet_install.rs`, `gauntlet_kernel.rs`, `tests/gauntlet_kernel.rs`,
+/// `tests/percall_meter_shadow.rs`). #1377 deletes 6 (`plane_host/{build_input,mod}.rs`,
+/// `plane_host/tests/{build_input,mod,plane_answer,residual}_tests.rs`) and adds 7
+/// (`plane_driver/{answer,host,route_input}.rs`, `plane_driver/tests/{answer,host,route_input}_tests.rs`,
+/// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234.
+/// Lowered 1234 -> 1232 by row 159 (kernel-egress, GetBusbar/busbar#1414): the uncalled
 /// query-parameter auth helpers and the uncalled second address guard's suites are deleted
 /// (`busbar-kernel-egress/src/query_auth.rs` and its tests, `trust/tests/dial_table_tests.rs`,
-/// `busbar-kernel/src/tests/members/egress/trust_net_tests.rs`); the gate measured 1218.
-pub const MIN_FILES: usize = 1218;
+/// `busbar-kernel/src/tests/members/egress/trust_net_tests.rs`), two of them scanned files (the
+/// gate measured 1220 -> 1218 on the branch's own tree).
+pub const MIN_FILES: usize = 1232;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
