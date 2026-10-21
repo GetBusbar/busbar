@@ -277,7 +277,8 @@ sequence before a byte of the actual protocol runs (`crates/busbar-voice/src/mou
 2. **hooks-tap** — a `prompt: rw`-style rewrite over the same parameters, after the gate and before
    any credential is leased. A committed rewrite replaces the locked session parameters the mint or
    dial then carries.
-3. **the governed open** (`run_gauntlet_session`, verify-strictly-before-charge) — a denied
+3. **the governed open** (the kernel's one loop, `busbar_kernel::teller::run_unit_async`: verify,
+   then approve and admit, so verify is strictly before any charge) — a denied
    destination (an upstream model on the plane's own denial set) refuses with `403` before any
    lease or durable row exists: zero bytes, zero charge.
 4. **the serving leg** — past a clean open, the mint/broker/socket logic proper.

@@ -198,7 +198,11 @@ why       = "Every deployed node seals an audit chain and ledger checkpoints; wi
 
 # THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
 # `plugin-abi-keyed-units` STRUCK 2026-09-24 by owner ruling: the host decodes keyed units on the
-# real metering path (plane_host/govern.rs decode_usage_units), so the capability has a consumer.
+# real metering path, so the capability has a consumer. The HOT `Usage` tail and its decoder
+# (`decode_usage_units`) left with the HOT lane (status row 84), and `plane_host/govern.rs` with the
+# plane-side charge (status row 82); a plane's keyed units now arrive as its reported `UnitCount`s,
+# named by its tail's billable classes and ledgered by
+# `crates/busbar-kernel/src/plane_driver/money.rs` (`accrued`, then `GovState::record_usage`).
 
 # MONEY — `hold-late-accrual-parent-exit` STRUCK 2026-09-26 (UC-HOLD, owner ruling Q71(4)): the
 # loop's one terminal (`crates/busbar-kernel/src/teller.rs` → `at_parent_exit`) converts a child's
