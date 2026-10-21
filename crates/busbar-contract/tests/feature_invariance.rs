@@ -276,7 +276,7 @@ fn every_test_seal_item_is_present_behind_its_attribute() {
                 .iter()
                 .map(|item| (item, TEST_SEAL_TYPE_CFG)),
         );
-    for ((file, first), cfg) in gated {
+    for (&(file, first), cfg) in gated {
         let (_, text) = files
             .iter()
             .find(|(rel, _)| rel == file)
