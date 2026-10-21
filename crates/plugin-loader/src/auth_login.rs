@@ -127,7 +127,7 @@ fn text(s: AbiStr) -> Option<String> {
 }
 
 /// What a READY `begin_login` answered, copied out of the plugin memory its lease holds.
-fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
+pub(super) fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
     match out.shape {
         BEGIN_AUTHORIZE => text(out.authorize_url)
             .filter(|u| !u.is_empty())

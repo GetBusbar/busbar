@@ -69,11 +69,15 @@ pub fn bind() -> Bind {
 
 /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
 /// key), so two linked rows are two instances to the host services.
-pub fn row_bind(row: &str) -> Bind {
-    Bind {
+///
+/// # Errors
+///
+/// The row's plugin log file cannot be opened.
+pub fn row_bind(row: &str) -> Result<Bind, String> {
+    Ok(Bind {
         instance: Arc::from(row),
         ..bind()
-    }
+    })
 }
 
 /// One transport door, opened, as the connector reaches it.
@@ -321,8 +325,10 @@ pub fn build(
     riding: Riding,
 ) -> Arc<HostWire> {
     LinkedRow::of(door)
-        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
+        .and_then(|linked| {
+            load_linked::<TransportKind>(&linked, row_bind(row)?).map_err(|e| e.to_string())
+        })
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(Arc::new(door)))
         .map(|wire| Arc::new(ride(wire, riding)))

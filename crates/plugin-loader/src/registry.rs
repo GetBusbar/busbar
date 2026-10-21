@@ -668,8 +668,10 @@ impl PluginRegistry {
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
+        logs: &crate::dispatch::PluginLogConfig,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
+        let _ = logs;
         let mut entries = TransportEntries::default();
         for p in self
             .loadable()
