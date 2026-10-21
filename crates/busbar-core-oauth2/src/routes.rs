@@ -3,7 +3,7 @@
 
 //! THE MOUNT: which paths this plane serves, at what admission bar, and why each one is what it is.
 //!
-//! Every route here goes through [`crate::core_routes::CoreRouter`], which wires the handler and
+//! Every route here goes through `busbar_kernel::core_routes::CoreRouter`, which wires the handler and
 //! declares its admission bar in the same act. `oauth-as` also ships an `axum` feature that hands
 //! back a ready-made `Router`, and busbar does not use it: that router is a single `fallback`, so
 //! its paths would enter the tree with NO entry in `CoreRouteTable` — and a served path the table
@@ -568,6 +568,11 @@ fn host_of(redirect_uri: &str) -> String {
     let Ok(parts) = busbar_contract::net::parse_url(redirect_uri) else {
         return String::new();
     };
+    // A host read only as an opaque spelling that decodes to a forbidden code point (a socket
+    // path, `%25`) is no host the browser contacts: the screen names none, as it always has.
+    if busbar_contract::net::target_host(redirect_uri).is_none() {
+        return String::new();
+    }
     let host = if parts.host.contains(':') {
         format!("[{}]", parts.host)
     } else {
