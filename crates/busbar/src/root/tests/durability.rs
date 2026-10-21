@@ -4728,5 +4728,17 @@ fn a_window_posted_again_after_its_retirement_still_re_derives() {
     durability
         .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
         .expect("every held checkpoint re-derives, the reposted window included");
-    assert_eq!(served, vec![first, second, third], "each as it was sealed");
+    // The set the ring holds (the cadence may have sealed beside the explicit seals), in order,
+    // and every explicit seal among them with the very figures it sealed.
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        durability.checkpoints
+    );
+    for seal in [&first, &second, &third] {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+    }
 }
