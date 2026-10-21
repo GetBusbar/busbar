@@ -327,7 +327,7 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     );
 }
 
-/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
+/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, the project-pool fold ruling's session
 /// half): the request view's opaque session crosses the hook kind's `decide` through the one
 /// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
 /// abstains on any other, and on a request that names none.

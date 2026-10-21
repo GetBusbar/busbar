@@ -417,11 +417,11 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let release = key(1);
     let dir = tmpdir("secretkind");
     // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
-    let mut m = manifest("busbar-secret-vault", "vault", "busbar");
+    let mut m = manifest("busbar-secret-delta", "delta", "busbar");
     m.kind = "secret".into();
     m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
     let m = sign(&release, m, b"secret lib");
-    write_tarball(&dir, "vault.tar.gz", &m, b"secret lib");
+    write_tarball(&dir, "delta.tar.gz", &m, b"secret lib");
     // And a trusted store plugin beside it.
     let st = sign(
         &release,
@@ -435,14 +435,14 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
     // ...and a secret plugin cannot back the store.
-    let err = reg.store_door("vault").map(|_| ()).unwrap_err();
+    let err = reg.store_door("delta").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'secret'"), "got {err}");
     // An unknown secret module name is fail-closed with the loadable set named.
     let err = reg.secret_refusal("nope");
     assert!(err.contains("no plugin named or aliased"), "got {err}");
     // A secret plugin that states no door (a 1.5.5 JSON-contract plugin) is refused naming the
     // rebuild: no JSON secret lane remains.
-    let err = reg.secret_refusal("vault");
+    let err = reg.secret_refusal("delta");
     assert!(
         err.contains(crate::registry::JSON_SECRET_REFUSED),
         "got {err}"

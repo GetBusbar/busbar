@@ -273,7 +273,7 @@ fn secret_kind_is_known_and_signs_like_any_plugin() {
     assert!(KNOWN_KINDS.contains(&"secret"));
     let release = test_key(1);
     let artifact = b"\x7fELF secret plugin";
-    let mut m0 = manifest("busbar-secret-vault", "vault", FIRST_PARTY_PUBLISHER);
+    let mut m0 = manifest("busbar-secret-delta", "delta", FIRST_PARTY_PUBLISHER);
     m0.kind = "secret".to_string();
     let m = sign(&release, m0, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)
@@ -302,7 +302,7 @@ fn export_kind_is_known_and_signs_like_any_plugin() {
     assert!(KNOWN_KINDS.contains(&"export"));
     let release = test_key(1);
     let artifact = b"\x7fELF export plugin";
-    let mut m0 = manifest("busbar-export-otlp", "otlp", FIRST_PARTY_PUBLISHER);
+    let mut m0 = manifest("busbar-export-sink", "sink", FIRST_PARTY_PUBLISHER);
     m0.kind = "export".to_string();
     let m = sign(&release, m0, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)

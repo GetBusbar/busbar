@@ -71,7 +71,7 @@ pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
-/// TEST ONLY: a real door restated with one `tcp` need (the bind tests' subject; no plugin).
+/// TEST ONLY: a real door restated with one stream need (the bind tests' subject; no plugin).
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/needs_restated.rs"]
@@ -284,8 +284,7 @@ pub fn plugin_library_filename(crate_snake: &str) -> String {
 /// (`GET /admin/plugins`), which is the surface an operator uses to answer "did my install land".
 /// On unix the extension is part of the name and `.SO` is a DIFFERENT file from `.so`, so folding
 /// case there would make this claim a file is a library on the strength of a name the loader would
-/// not resolve. One question, each platform's own answer — the same shape as the absolute-path check
-/// in `mcp::config`.
+/// not resolve. One question, each platform's own answer.
 fn is_library_file(file: &str) -> bool {
     if cfg!(target_os = "windows") {
         // BYTES, not a `&str` slice: `file[file.len() - 4..]` panics when byte `len - 4` is not a

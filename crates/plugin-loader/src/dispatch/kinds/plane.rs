@@ -660,12 +660,12 @@ pub fn linked_declaring_section(
         .map(|s| kept(s.name)))
 }
 
-/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
-/// name, its declaring section and its tail's words, read off the facts kept at its bind, and its
-/// own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe instance
-/// of the door through the one load (a linked and a dropped door alike); one is bound here for the
-/// facts and the section judge, and one more per public base URL its facing is asked for (a plane
-/// states its audience and claims against the URL it was opened with).
+/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
+/// Statement name, its declaring section and its tail's words, read off the facts kept at its bind,
+/// and its own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe
+/// instance of the door through the one load (a linked and a dropped door alike); one is bound here
+/// for the facts and the section judge, and one more per public base URL its facing is asked for (a
+/// plane states its audience and claims against the URL it was opened with).
 ///
 /// # Errors
 ///

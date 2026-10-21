@@ -1762,12 +1762,12 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
     ..NEEDS[0]
 }];
 
-/// RED: a need whose `target_from` is the
-/// member-program path is declared with ONE program per registration that names a `command` —
+/// RED: a need whose `target_from` is the member-program path is declared with ONE program per
+/// registration that names a `command` —
 /// its `command`, `args` and `env`, every other key ignored, an `env` secret reference kept as the
 /// reference (the host resolves it at the spawn, never at the declare) — at `open` and again at
-/// every `refresh` (so the table can retire a changed or removed member); a
-/// registration naming no program is no member, and one whose program does not read is left out.
+/// every `refresh` (so the table can retire a changed or removed member); a registration naming no
+/// program is no member, and one whose program does not read is left out.
 #[test]
 fn a_member_program_need_is_declared_with_each_registrations_program() {
     use busbar_contract::conn::Program;
@@ -1776,11 +1776,11 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
     assert_eq!(
         open_with(
             &p,
-            br#"{"one":{"transport":"stdio","command":"/usr/bin/one","args":["--serve"],
+            br#"{"one":{"transport":"piped","command":"/usr/bin/one","args":["--serve"],
                  "env":{"PLAIN":"v","KEY":{"env":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
                  "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
                 "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
-                "bad":{"transport":"stdio","command":"relative"},
+                "bad":{"transport":"piped","command":"relative"},
                 "pools":{"p":{"members":["one"]}}}"#
         ),
         Outcome::Ready
