@@ -603,16 +603,16 @@ const MINOR: i128 = 10_000;
 #[test]
 fn a_planes_request_fee_charges_its_calls_and_the_flat_fee_charges_the_pools_plane() {
     use crate::cost::{plane_fee_lane, PER_REQUEST};
-    // 4 tool calls on the tools plane's fee lane: 4 × 3 — its OWN fee, not the flat 5.
-    let tools = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
-    assert_eq!(fee_row(tools), Ok(Money::from_micros(12 * MINOR)));
+    // 4 calls on plane t's fee lane: 4 × 3 — its OWN fee, not the flat 5.
+    let plane_calls = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
+    assert_eq!(fee_row(plane_calls), Ok(Money::from_micros(12 * MINOR)));
     // 2 flat-card requests (the flat fee count on an unqualified lane): 2 × 5, as 1.5.5 billed them.
     let flat = LedgerEntry::new(LANE, 0).with_fee_count(2);
     assert_eq!(fee_row(flat), Ok(Money::from_micros(10 * MINOR)));
     // A fee count on a QUALIFIED lane is its plane's: 2 × 3 on `t`.
     let q = format!("t{}srv_read", crate::cost::PLANE_LANE_SEP);
-    let tools_posting = LedgerEntry::new(q, 0).with_fee_count(2);
-    assert_eq!(fee_row(tools_posting), Ok(Money::from_micros(6 * MINOR)));
+    let qualified = LedgerEntry::new(q, 0).with_fee_count(2);
+    assert_eq!(fee_row(qualified), Ok(Money::from_micros(6 * MINOR)));
 }
 
 #[test]
