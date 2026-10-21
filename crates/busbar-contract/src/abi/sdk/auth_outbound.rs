@@ -59,7 +59,7 @@ use crate::abi::mechanism::call::{Blob, OutHead, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::KindTailHead;
 use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::auth_door::{verify_answer, VerifyPlugin};
+use crate::abi::sdk::auth_door::{verify_answer, verify_op, VerifyPlugin};
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::exchange::Op;
@@ -862,7 +862,8 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
     }
 }
 
-/// `verify` on a [`Both`] door: [`VerifyPlugin::verify`], written as the verify door writes it.
+/// `verify` on a [`Both`] door: [`VerifyPlugin::verify_ticketed`] on the call's ticket, written as
+/// the verify door writes it; PENDING while a service it made pends.
 #[derive(Debug)]
 pub struct VerifyBoth<T>(PhantomData<T>);
 impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
@@ -877,7 +878,12 @@ impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        verify_answer(h.life().plugin(), input, out)
+        verify_answer(
+            h.life().plugin(),
+            &verify_op(&instance, h.host()),
+            input,
+            out,
+        )
     }
 }
 
