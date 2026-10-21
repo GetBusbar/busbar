@@ -2011,20 +2011,28 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
-    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (mut router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
 
-    let client = reqwest::Client::new();
+    // The request is handed to the router IN PROCESS: no socket is bound, so there is no port for
+    // another process's listener to be mistaken for ours. The old shape bound `127.0.0.1:0` and
+    // dialled it, and on a CI host running the whole workspace's test binaries side by side a
+    // dial could land on a different process's listener (the integration tests reserve ports by
+    // pick-then-bind) and read ITS 404 here. Every layer under test is still the production
+    // stack: `DefaultBodyLimit`, the reshape, auth and the catch-all all run, and axum enforces
+    // the cap on the body stream exactly as it does off a connection.
     let oversized = "x".repeat(4096);
-    let r = client
-        .post(format!("http://{addr}/v1/chat/completions"))
+    let payload = serde_json::json!({"pad": oversized}).to_string();
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/v1/chat/completions")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"pad": oversized}).to_string())
-        .send()
+        .header("content-length", payload.len().to_string())
+        .body(axum::body::Body::from(payload))
+        .unwrap();
+    std::future::poll_fn(|cx| tower::Service::poll_ready(&mut router, cx))
         .await
         .unwrap();
+    let r = tower::Service::call(&mut router, req).await.unwrap();
     assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
     let ct = r
         .headers()
@@ -2032,7 +2040,11 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let body = r.text().await.unwrap();
+    let body = {
+        use http_body_util::BodyExt as _;
+        let bytes = r.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    };
     assert!(
         ct.starts_with("application/json"),
         "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
@@ -2044,8 +2056,6 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         v.get("error").is_some(),
         "the 413 must carry the error envelope; got {v}"
     );
-
-    server.abort();
 }
 
 // ── THE MOUNT-AWARE RESOLVER, read off the wire ──────────────────────────────────────────────────
