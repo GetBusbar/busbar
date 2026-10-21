@@ -703,6 +703,15 @@ async fn node_boot_hooks_arm() {
             .contains("&crate::root::plane_node::ROOT_UNIT,"),
         "this build's generated ROOT_UNITS does not carry the node's root unit"
     );
+    // THE INSTALL RECORD, as main.rs installs it (`register_planes`: `root::linked::register_stores`),
+    // before anything reads the record: the card repricer reaches the kernel as the record's holder
+    // and dater, not through a static of its own.
+    crate::root::linked::register_stores(&crate::LINKED);
+    let rows = busbar_kernel::preflight::root_rows();
+    assert!(
+        rows.rate_apply.is_some() && rows.rate_epoch.is_some(),
+        "the root's install record carries neither half (holder, dater) of the rate seam"
+    );
     // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
     // holder's opening entry.
     busbar_kernel::snapshot::init();
