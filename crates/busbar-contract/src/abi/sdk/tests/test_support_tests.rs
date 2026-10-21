@@ -1106,3 +1106,18 @@ fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
     // A crate-private accessor behind `#[cfg(test)]` is not safe code's to call.
     assert!(table_leaks("#[cfg(test)]\npub fn slots(&self) -> &HostSlots {").is_empty());
 }
+
+#[test]
+fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
+    let table = view().ops::<crate::abi::transport::Ops>();
+    let open = table.head.open.expect("the door states open");
+    let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    let lent = host.lend_to(input);
+    let opened = super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>());
+    assert_eq!(opened.outcome, Outcome::Ready);
+    assert!(!opened.out.instance.is_null());
+    drop(lent);
+    drop(host);
+}

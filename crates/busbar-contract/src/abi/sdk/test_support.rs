@@ -320,13 +320,8 @@ pub struct ClaimRow {
 /// macro expanded beside it (`plugin_door!`'s `MACRO_DOOR`). An arbitrary door function is never
 /// read: a safe caller cannot hand one in.
 ///
-/// ```compile_fail,E0308
-/// use busbar_contract::abi::sdk::test_support::DoorView;
-/// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-///     core::ptr::null()
-/// }
-/// let _ = DoorView::of(forged);
-/// ```
+/// The pair proving it (`DoorView::of(forged)` refused, `DoorView::of(MACRO_DOOR)` compiling) sits
+/// on the always-compiled [`MacroDoor`].
 ///
 /// TRUST: a door the macro built answers a `'static` door whose Statement lists point at their
 /// stated counts of live `'static` entries (the one-door contract the host's loader reads under).

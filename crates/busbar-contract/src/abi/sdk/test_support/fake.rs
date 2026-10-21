@@ -22,7 +22,8 @@
 //!     }
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-//! host.lend_to(&mut open_in); // the one consumer of the tables
+//! let lent = host.lend_to(open_in); // borrows the host: it cannot outlive it
+//! let opened = reply::call_hosted(open, std::ptr::null_mut(), &lent, open_out);
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable
@@ -139,6 +140,14 @@ impl sealed::Host for crate::abi::plane::PlaneOpenIn {
     }
 }
 impl TakesHost for crate::abi::plane::PlaneOpenIn {}
+
+/// An `open` `in` whose `host` names a [`FakeHost`]'s tables, borrowed from that host: it cannot
+/// outlive it, and safe code reads no copy of it (only [`super::reply::call_hosted`] does).
+#[derive(Debug)]
+pub struct LentIn<'h, I> {
+    pub(crate) input: I,
+    host: PhantomData<&'h FakeHost>,
+}
 
 /// A test double for one host service.
 pub trait FakeService: 'static {
@@ -771,17 +780,8 @@ extern "C" fn trampoline<S: FakeService, const OP: u32>(
 /// A fake host: its three tables, every slot absent until a double is served in it, and the
 /// `HostTables` an `OpenIn::host` names. It owns every table it lends; keep it alive while the
 /// instance opened over it lives. The tables reach the door through [`FakeHost::lend_to`] alone:
-/// safe code holds no table and no `ServiceFn` of it.
-///
-/// ```compile_fail,E0599
-/// let host = busbar_contract::abi::sdk::test_support::fake::FakeHost::new();
-/// let _ = host.services();
-/// ```
-///
-/// ```compile_fail,E0599
-/// let host = busbar_contract::abi::sdk::test_support::fake::FakeHost::new();
-/// let _ = host.slots_for_tests();
-/// ```
+/// safe code holds no table and no `ServiceFn` of it. The pairs proving both, and that what it
+/// lends cannot outlive it, sit on the always-compiled `abi::sdk::door::MacroDoor`.
 #[derive(Debug)]
 pub struct FakeHost {
     tables: Box<HostTables>,
@@ -857,10 +857,16 @@ impl FakeHost {
         self
     }
 
-    /// Lend this host's tables to an `open`'s `in` (its `host`), for as long as `self` lives: the
-    /// one consumer of them. No table, and no `ServiceFn`, is handed to the test itself.
-    pub fn lend_to<I: TakesHost>(&self, input: &mut I) {
+    /// Lend this host's tables to an `open`'s `in` (its `host`): the one consumer of them. The
+    /// `in` comes back as a [`LentIn`] that borrows the host, so it cannot outlive it; the test
+    /// hands it to [`super::reply::call_hosted`] and never holds the `in` itself again. No table,
+    /// and no `ServiceFn`, is handed to the test.
+    pub fn lend_to<I: TakesHost>(&self, mut input: I) -> LentIn<'_, I> {
         *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
+        LentIn {
+            input,
+            host: PhantomData,
+        }
     }
 
     /// The tables, for this crate's own tests of the trampoline (a malformed `in` no SDK path

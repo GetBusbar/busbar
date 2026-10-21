@@ -87,10 +87,29 @@ pub struct Called<O: Reply> {
 ///
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field.
-pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, mut out: O) -> Called<O> {
+pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, out: O) -> Called<O> {
+    run(op, instance, *input, out)
+}
+
+/// [`call`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to: the
+/// borrow of the host lasts the whole call, and the `in` is copied only inside it.
+///
+/// # Panics
+///
+/// As [`call`].
+pub fn call_hosted<I: AbiIn, O: Reply>(
+    op: Op,
+    instance: *mut c_void,
+    input: &super::fake::LentIn<'_, I>,
+    out: O,
+) -> Called<O> {
+    run(op, instance, input.input, out)
+}
+
+/// [`call`]'s body, over the caller's `in`, copied.
+fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, mut input: I, mut out: O) -> Called<O> {
     out.clear(Token(()));
     out.head().size = size_of::<O>() as u32;
-    let mut input = *input;
     // SAFETY: `I: AbiIn` is `#[repr(C)]` and leads with an `InHead` (its unsafe contract), so the
     // first bytes of this private copy are an `InHead`.
     unsafe { (*ptr::addr_of_mut!(input).cast::<InHead>()).size = size_of::<I>() as u32 };
