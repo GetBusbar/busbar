@@ -1072,6 +1072,11 @@ impl AuthMiddleware {
             strips.extend(judged.strips);
             match judged.verdict {
                 AuthVerdict::Identify(principal) => {
+                    // A position may not name a group or a minted key: the identification is
+                    // refused, and the walk stops as it does on a reject.
+                    if refused_as_reserved(&principal) {
+                        return Ok(ChainVerdict::Denied);
+                    }
                     // The replay claim travels with the verdict and is won here, before admitting.
                     if let Some(replay) = judged.replay.as_deref() {
                         if !replay_claimed(gov, &entry.provider, replay, now) {
@@ -1234,6 +1239,17 @@ impl AuthMiddleware {
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
     }
+}
+
+/// THE RESERVED-ID REFUSAL, on both walks that admit a module's identification (the data-plane
+/// chain's positions and the admin chain's modules): a module that identified a caller as an id in
+/// governance's reserved space (`group:`, `vk_`;
+/// [`busbar_kernel_identity::principal::id_is_reserved`]) is minting an identity the governance
+/// tables alone issue, so the identification is refused, never trusted. The engine arms that
+/// resolve a minted key (`keys`, the signed-ingress pre-step) are not modules and are not judged
+/// here: a minted key's own id is `vk_` by construction.
+fn refused_as_reserved(principal: &Principal) -> bool {
+    busbar_kernel_identity::principal::id_is_reserved(&principal.id)
 }
 
 /// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says; an
@@ -1611,6 +1627,10 @@ async fn run_admin_chain(
         carried.strips.extend(outcome.strips);
         match outcome.verdict {
             AuthVerdict::Identify(principal) => {
+                // A module may not name a group or a minted key here either.
+                if refused_as_reserved(&principal) {
+                    return (ChainVerdict::Denied, None);
+                }
                 // The replay claim travels with the verdict, out to the door that claims it.
                 carried.replay = outcome.replay.map(|r| (name.clone(), r));
                 // Carry the identifying MODULE out (role_bindings are nested by module) plus the

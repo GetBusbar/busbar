@@ -1092,9 +1092,7 @@ fn synthesize_key(
     // The SAME hazard applies to the `vk_` prefix: a real virtual key's id is `vk_<16 hex>` and is
     // its ledger/rate bucket id. An IdP subject shaped `vk_<...>` would alias a real virtual key's
     // ledger + rate bucket (charging/reading it, or riding its rate window). Reserve `vk_` too.
-    if principal.id.starts_with(crate::cost::GROUP_BUCKET_PREFIX)
-        || principal.id.starts_with(VK_ID_PREFIX)
-    {
+    if busbar_kernel_identity::principal::id_is_reserved(&principal.id) {
         diag_debug!(
             GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION,
             principal = %principal.id,

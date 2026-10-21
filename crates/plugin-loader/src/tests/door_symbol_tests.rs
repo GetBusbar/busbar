@@ -7,17 +7,18 @@
 //! until fat LTO merges the bitcode of two doors ("symbol multiply defined"), which is how the
 //! release leg of the both-ways suites failed to link.
 //!
-//! The loader holds a hot kind's `-plugin` crate as a dev-dependency ONLY so cargo builds its
-//! cdylib. That is safe exactly while nothing NAMES the crate (rustc does not link an unnamed
-//! `--extern`). This test is the guard: no source of this crate names a hot both-ways row's crate,
-//! and the table `build.rs` generates names none either. The real proof is the release profile
-//! with LTO on linking at all.
+//! The loader holds a both-ways row's `-plugin` crate as a dev-dependency ONLY so cargo builds its
+//! cdylib; the linked door comes from the row's logic crate. That is safe exactly while nothing
+//! NAMES a `-plugin` crate (rustc does not link an unnamed `--extern`). This test is the guard, for
+//! EVERY row of every kind: no source of this crate names a row's `-plugin` crate, and the table
+//! `build.rs` generates names none either. The real proof is the release profile with LTO on
+//! linking at all.
 
 use std::path::Path;
 
-const HOT_KINDS: &[&str] = &["plane", "transport"];
-
-fn hot_crates() -> Vec<String> {
+/// The `-plugin` crate of every both-ways row, read off the manifest independently of `build.rs`:
+/// the row's crate with its `-plugin` suffix, whether the row named the logic crate or the twin.
+fn twin_crates() -> Vec<String> {
     let manifest = include_str!("../../Cargo.toml");
     let mut in_table = false;
     let mut out = Vec::new();
@@ -27,10 +28,10 @@ fn hot_crates() -> Vec<String> {
             in_table = code == "[package.metadata.busbar.both-ways]";
             continue;
         }
-        if let (true, Some((kind, krate))) = (in_table, code.split_once('=')) {
-            if HOT_KINDS.contains(&kind.trim().trim_matches('"')) {
-                out.push(krate.trim().trim_matches('"').replace('-', "_"));
-            }
+        if let (true, Some((_, krate))) = (in_table, code.split_once('=')) {
+            let krate = krate.trim().trim_matches('"');
+            let logic = krate.strip_suffix("-plugin").unwrap_or(krate);
+            out.push(format!("{logic}_plugin").replace('-', "_"));
         }
     }
     out
@@ -53,9 +54,19 @@ fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 }
 
 #[test]
-fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
-    let hot = hot_crates();
-    assert!(!hot.is_empty(), "the table has a hot row to guard");
+fn nothing_names_a_fixtures_plugin_rlib_so_none_is_linked() {
+    let twins = twin_crates();
+    assert_eq!(
+        twins.len(),
+        crate::both_ways::BOTH_WAYS_ROWS.len(),
+        "every row of the table is guarded"
+    );
+    for (row, logic, _) in crate::both_ways::BOTH_WAYS_ROWS {
+        assert!(
+            !logic.ends_with("_plugin"),
+            "row `{row}` links {logic}, a `-plugin` crate"
+        );
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     sources(&root.join("src"), &mut files);
@@ -63,7 +74,7 @@ fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
     let generated = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/both_ways.rs"))
         .expect("the generated table");
     let this = file!();
-    for krate in &hot {
+    for krate in &twins {
         // `use ::<crate>` / `<crate>::path`: a name that links it. Comments may mention it.
         let uses = |text: &str| {
             text.lines()
@@ -88,7 +99,7 @@ fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
 /// THE RED ARM, KEPT: the matcher the guard uses refuses the line that would link the crate.
 #[test]
 fn the_guard_sees_a_line_that_names_the_crate() {
-    let krate = hot_crates().remove(0);
+    let krate = twin_crates().remove(0);
     assert!(names(
         &format!("pub(crate) use ::{krate} as alias;"),
         &krate

@@ -26,7 +26,8 @@ fn link() {
     busbar_kernel::preflight::install_linked_auth(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
-    );
+    )
+    .expect("the root's one table and words");
     busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);

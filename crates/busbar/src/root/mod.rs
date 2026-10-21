@@ -39,9 +39,9 @@
 //!   unit itself is the plane's; the module is the one the manifest's `root-units` table names.
 //! - [`gauntlet_install`] and [`gauntlet_kernel`] — the kernel-loop runner every plane's gauntlet
 //!   rides (DECISIONS #28), and its install under each linked plane's capability key.
-//! - [`auth_bindings`], [`ledger_identity`], [`migration`], [`otlp`] — the authenticate unit's three
-//!   handed-in seams, the reconciliation identity against the previous release's rows, the first
-//!   boot after an upgrade, and the span exporter.
+//! - [`auth_bindings`], [`ledger_identity`], [`migration`], [`otlp`] — the authenticate step's
+//!   revocation view and operator words, the reconciliation identity against the previous
+//!   release's rows, the first boot after an upgrade, and the span exporter.
 //!
 //! ## The order
 //!

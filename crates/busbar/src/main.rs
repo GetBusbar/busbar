@@ -285,10 +285,13 @@ fn register_planes() {
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
-    busbar_kernel::preflight::install_linked_auth(
+    // The operator credential's words have one writer, this one: a second install is a boot fault.
+    if let Err(e) = busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
         root::auth_bindings::operator_words(),
-    );
+    ) {
+        die(e);
+    }
     busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.

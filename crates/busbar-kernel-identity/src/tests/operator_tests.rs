@@ -213,3 +213,74 @@ fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
         }
     }
 }
+
+// ------------------------------------------------------------------------------------------------
+// No words, no operator; one writer of the words.
+// ------------------------------------------------------------------------------------------------
+
+/// NO WORDS IS NO OPERATOR. A shipped build no root handed words to reads its provider and principal
+/// id as the empty string; the operator credential built over that must answer for no provider and
+/// mint nobody, so an admin chain position named `""` that identified `""` is not the operator.
+#[test]
+fn no_words_make_no_operator() {
+    let none = crate::operator::Operator::new("");
+    assert!(!none.is(""), "an empty provider is not the operator credential");
+    assert!(
+        !none.mints(Some(""), "", ""),
+        "with no words handed in, nothing is minted as the operator"
+    );
+    let op = crate::operator::Operator::new("op");
+    assert!(op.is("op"));
+    assert!(op.mints(Some("op"), "root", "root"));
+    assert!(
+        !op.mints(Some("op"), "", ""),
+        "an empty principal id is minted by nobody, even by the operator credential"
+    );
+    let opened = crate::operator::Operator::open(
+        "",
+        [("", "")].into_iter(),
+        &|_: &str| true,
+        false,
+        None,
+        |_: &str| Err("not opened".to_string()),
+    )
+    .expect("an unanswered credential opens");
+    assert!(!opened.is(""), "an opened credential with no words answers for nothing");
+}
+
+/// ONE WRITER OF THE OPERATOR'S WORDS. The first install stands, the same install again changes
+/// nothing, and a second install that differs (other words, or another table) is refused, never
+/// silently dropped. The only test in this binary that installs: the table is process-wide.
+#[test]
+fn a_second_differing_install_of_the_operator_words_is_refused() {
+    use crate::operator::{install_linked, principal_id, provider, LinkedAuth, OperatorWords};
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    static ROWS: [LinkedAuth; 1] = [("op", "op-plugin", door)];
+    static OTHER_ROWS: [LinkedAuth; 1] = [("op", "op-plugin", door)];
+    const WORDS: OperatorWords = OperatorWords {
+        provider: "op",
+        principal_id: "root",
+    };
+    install_linked(&ROWS, WORDS).expect("the first install stands");
+    install_linked(&ROWS, WORDS).expect("the same install again changes nothing");
+    assert_eq!((provider(), principal_id()), ("op", "root"));
+    let other_words = OperatorWords {
+        provider: "squatter",
+        principal_id: "root",
+    };
+    assert!(
+        install_linked(&ROWS, other_words).is_err(),
+        "other words are refused"
+    );
+    assert!(
+        install_linked(&OTHER_ROWS, WORDS).is_err(),
+        "another table is refused"
+    );
+    assert_eq!(
+        (provider(), principal_id()),
+        ("op", "root"),
+        "a refused install changed nothing"
+    );
+}

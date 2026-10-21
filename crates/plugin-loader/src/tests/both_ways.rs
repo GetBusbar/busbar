@@ -11,8 +11,9 @@
 //! requires the two rows and the two transcripts to be byte-identical.
 //!
 //! Each kind's fixture comes from the tables `build.rs` generates out of `Cargo.toml`'s
-//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`hot_cdylib`]): the tests reach a
-//! fixture by its KIND, and no test source names a plugin instance.
+//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`kind_cdylib`]): the tests reach a
+//! fixture by its KIND, and no test source names a plugin instance. Every table's cdylib column is
+//! the dropped-in door's crate as built; a test uses it as it stands.
 //!
 //! What is compared is the plugin's STATEMENT (its manifest, every field but the two that describe
 //! a tarball — `sha256` and `signature`) and its BEHAVIOUR. What is not compared is provenance —
@@ -25,7 +26,8 @@ use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
 
-/// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
+/// The both-ways fixture of `row` whose linked door is its logic crate's `door::door`: its
+/// `cdylib`'s crate name and that linked door.
 pub(crate) fn door_fixture(
     row: &str,
 ) -> (&'static str, busbar_contract::abi::mechanism::door::DoorFn) {
@@ -38,12 +40,13 @@ pub(crate) fn door_fixture(
         })
 }
 
-/// The built `cdylib` of the HOT kind `kind`'s row, by the table's crate name.
-pub(crate) fn hot_cdylib(kind: &str) -> PathBuf {
-    let (_, krate) = HOT_FIXTURES
+/// The built `cdylib` of the `kind` row whose linked door is a module of its logic crate, by the
+/// table's cdylib crate name.
+pub(crate) fn kind_cdylib(kind: &str) -> PathBuf {
+    let (_, krate) = KIND_FIXTURES
         .iter()
         .find(|(k, _)| *k == kind)
-        .unwrap_or_else(|| panic!("no hot `{kind}` row in the both-ways table"));
+        .unwrap_or_else(|| panic!("no `{kind}` row in the both-ways table"));
     cdylib(krate)
 }
 

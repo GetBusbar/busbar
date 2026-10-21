@@ -2709,28 +2709,25 @@ pub(crate) fn open_door() -> AdminDoorFn {
     Arc::new(|_: &AdminRequest| busbar_kernel::auth::AdminDoor::Open)
 }
 
-/// A test's door over an identity chain, judged on the presented credential by the rule the
-/// kernel's scope resolution applies to a roleless principal: the operator's id holds the full
-/// tier, any other identity earns no grant (authenticated, not authorized).
+/// A test's CLOSED door that identifies exactly one credential: `credential` is the principal
+/// `principal_id`, judged by the rule the kernel's scope resolution applies to a roleless principal
+/// (the operator's id holds the full tier, any other identity earns no grant: authenticated, not
+/// authorized); anything else, a missing credential included, is denied. A stated posture like
+/// [`open_door`], not a walk: production's door is the kernel's admin chain.
 #[cfg(test)]
-pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDoorFn {
+pub(crate) fn door_identifying(credential: &'static str, principal_id: &'static str) -> AdminDoorFn {
     use busbar_kernel::auth::AdminDoor;
-    use busbar_kernel_identity::chain::ChainVerdict;
-    Arc::new(
-        move |request: &AdminRequest| match chain.run_chain(request.credential.as_deref()) {
-            ChainVerdict::Open => AdminDoor::Open,
-            ChainVerdict::Denied => AdminDoor::Denied,
-            ChainVerdict::Identified { principal, .. } => {
-                let grants = if principal.id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
-                    busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
-                } else {
-                    busbar_contract::authz::Grants::default()
-                };
-                let principal = busbar_contract::auth::Principal::from_id(principal.id);
-                AdminDoor::Identified(principal, grants)
-            }
-        },
-    )
+    Arc::new(move |request: &AdminRequest| {
+        if request.credential.as_deref() != Some(credential) {
+            return AdminDoor::Denied;
+        }
+        let grants = if principal_id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
+        } else {
+            busbar_contract::authz::Grants::default()
+        };
+        AdminDoor::Identified(busbar_contract::auth::Principal::from_id(principal_id), grants)
+    })
 }
 
 /// Everything the admin steps are composed over.
@@ -3003,14 +3000,14 @@ pub(crate) fn authenticate(
         ),
         busbar_kernel::auth::AdminDoor::Identified(principal, grants) => {
             let revoked = bindings.revocations().zip(request.credential.as_deref());
-            if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
+            if revoked.is_some_and(|(set, credential)| set.revoked(credential)) {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
             }
             (principal.id, grants, None)
         }
         busbar_kernel::auth::AdminDoor::Listed(principal, grants, list) => {
             let revoked = bindings.revocations().zip(request.credential.as_deref());
-            if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
+            if revoked.is_some_and(|(set, credential)| set.revoked(credential)) {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
             }
             (principal.id, grants, Some(list))

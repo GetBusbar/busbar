@@ -4853,7 +4853,8 @@ pub(crate) mod door_boundary {
         busbar_kernel::preflight::install_linked_auth(
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
-        );
+        )
+        .expect("the root's one table and words");
         busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = rig_tools(instance, port, tools, &|app| {
@@ -4983,7 +4984,8 @@ pub(crate) mod door_boundary {
         busbar_kernel::preflight::install_linked_auth(
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
-        );
+        )
+        .expect("the root's one table and words");
         busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();

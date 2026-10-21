@@ -94,10 +94,10 @@ fn dispatcher() -> Arc<Dispatcher> {
     }))
 }
 
-/// The fixture's `cdylib`: the `-plugin` crate of its row's logic crate.
+/// The fixture's `cdylib`, as the table names it.
 fn fixture_cdylib() -> Vec<u8> {
     let (krate, _) = door_fixture(PROOF);
-    let path = cdylib(&format!("{krate}_plugin"));
+    let path = cdylib(krate);
     std::fs::read(path).expect("read the cdylib")
 }
 

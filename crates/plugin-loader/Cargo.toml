@@ -238,8 +238,10 @@ busbar-auth-oidc-plugin = { workspace = true }
 # login-capable surface, but its token can only be REFUSED (the issuer's keys are unreachable
 # offline); this one runs the token cases to every verdict — the accepted token IDENTIFIES, a wrong
 # one is REJECTED, another scheme's token and no credential PASS — on both doors, on the auth kind's
-# memory ABI (ARCHITECT 2026-09-30, AUTH-DOOR Q1): its `rlib`'s `door::door` is the linked door, its
-# cdylib (built under `deps/`, hashed) the dropped-in one.
+# memory ABI (ARCHITECT 2026-09-30, AUTH-DOOR Q1): its LOGIC crate's `door::door` is the linked door;
+# its `-plugin` crate's cdylib (built under `deps/`, hashed, by the second edge; never linked here:
+# that crate's rlib exports `busbar_plugin_door`) the dropped-in one.
+busbar-auth-admin-tokens = { workspace = true }
 busbar-auth-admin-tokens-plugin = { workspace = true }
 # The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
 h2 = { workspace = true }
@@ -275,7 +277,7 @@ libc = { workspace = true }
 # dlopen restart is the real one (GetBusbar/busbar-store-sqlite), dlopened by `plugin_proof_tests` from
 # `BUSBAR_PLUGIN_PROOF_DIR` (the removed ci.yml `plugin-proofs`), with no edge from this crate.
 
-# THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
+# THE BOTH-WAYS FIXTURES: <kind>[-<proof>] = "<fixture crate>". `build.rs` turns these rows into the table
 # `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
 # test source names a plugin instance. A fixture here is also a dev-dependency above: the linked door
 # needs its `rlib`, the dropped-in door its `cdylib`.
@@ -283,12 +285,13 @@ libc = { workspace = true }
 store = "busbar-store-memory"
 auth = "busbar-auth-oidc"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
-# test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
+# test reaches the row by that whole key (`door_fixture`), never by the plugin's name. `build.rs`
+# links the row's LOGIC crate (the name without `-plugin`), never the `-plugin` twin's rlib.
 auth-verify = "busbar-auth-admin-tokens-plugin"
-# A DOOR kind's fixture (memory ABI): no cold entry; `build.rs` emits its crate alias and name only. The
-# row names the LOGIC crate (the linked door); its cdylib is the repo's `<row>-plugin`.
+# A row may name the LOGIC crate (the linked door) or its `-plugin` twin; either way `build.rs` links
+# the logic crate and records the cdylib as the repo's `<logic>-plugin`.
 secret = "busbar-secret-env"
-# A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
-# emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
-# crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.
+# The transport row names the twin: `build.rs` links its logic crate's `linked` module and records
+# the twin as its cdylib. It is also the one wire crate this crate may take a (dev) edge on —
+# kind-isolation's transport-registration rule reads this row.
 transport = "busbar-transport-tcp-plugin"

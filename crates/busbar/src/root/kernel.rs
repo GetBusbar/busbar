@@ -1643,8 +1643,8 @@ pub struct ProductionUnits {
     /// sets of cells: a trip recorded through one would be invisible to the other, and a lane the
     /// walk had benched would still read as ready at Verify.
     pub breaker: crate::root::adapters::BreakerAdapter,
-    /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
-    /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
+    /// What the admin authenticate step is handed beside the request: the revocation view — and NO
+    /// credential cache. The node's one flushable cache is the kernel's; a
     /// second one here would be a second answer to "has this credential been seen" that an
     /// operator's flush could not reach (item 249).
     pub auth_bindings: auth_bindings::AuthBindings,
@@ -1745,7 +1745,7 @@ impl ProductionUnits {
         let mut units = ProductionUnits {
             breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
             // The unbound posture, which is the one a node has until it is handed a directory:
-            // the cache is real, and the two authorities are absent rather than permissive. A
+            // the revocation view is absent rather than permissive. A
             // deployment whose keys are busbar's own binds them through
             // `ProductionUnits::with_auth_bindings` at boot, where the governance state exists.
             auth_bindings: auth_bindings::AuthBindings::without_directory(),

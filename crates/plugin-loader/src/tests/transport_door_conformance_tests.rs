@@ -28,7 +28,7 @@ use busbar_contract::abi::mechanism::KindCode;
 
 use super::door_both_ways as both;
 use crate::both_ways::transport_linked as shipped;
-use crate::both_ways::{hot_cdylib, HOT_FIXTURES};
+use crate::both_ways::{kind_cdylib, KIND_FIXTURES};
 use crate::conformance::{self, Subject};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::transport::Transport;
@@ -50,7 +50,7 @@ const INPUTS: &str = r#"{
 }"#;
 
 fn subject() -> Subject {
-    let (_, krate) = HOT_FIXTURES
+    let (_, krate) = KIND_FIXTURES
         .iter()
         .find(|(k, _)| *k == "transport")
         .expect("the both-ways table has a transport row");
@@ -60,7 +60,7 @@ fn subject() -> Subject {
 #[test]
 fn a_linked_and_a_dropped_in_carrier_carry_identically() {
     // The dropped-in leg's library is the row's: a missing one is a failure, never a skip.
-    let _ = hot_cdylib("transport");
+    let _ = kind_cdylib("transport");
     conformance::both_ways(&subject());
 }
 
@@ -83,7 +83,7 @@ fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
         Err(LoadError::WrongKind { door, want: asked }) => assert_eq!((door, asked), want),
         other => panic!("the linked door loaded as a hook: {:?}", other.err()),
     }
-    let path = hot_cdylib("transport");
+    let path = kind_cdylib("transport");
     match load_dropped::<Hook>(&path, &row.statement, both::bind(&linked.dispatcher)) {
         Err(LoadError::ManifestKind {
             stated,

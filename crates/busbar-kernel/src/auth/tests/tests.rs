@@ -3765,3 +3765,77 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     }
     handle.abort();
 }
+
+/// A module that identifies every caller as the one id it was built with, roleless.
+struct NamesTheId(&'static str);
+impl crate::auth::AuthModule for NamesTheId {
+    fn name(&self) -> &'static str {
+        "names-the-id"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthVerdict {
+        crate::auth::AuthVerdict::Identify(Principal::from_id(self.0))
+    }
+}
+
+/// The ids a module may and may not hand back, and whether each is reserved.
+const RESERVED_AND_NOT: [(&str, bool); 5] = [
+    ("vk_deadbeefdeadbeef", true),
+    ("vk_", true),
+    ("group:acme", true),
+    ("group:", true),
+    ("sso:alice", false),
+];
+
+/// THE RESERVED-ID REFUSAL ON THE DATA-PLANE WALK (the one walk every request runs): a chain
+/// position that identifies a caller as a minted key's id (`vk_`) or a governance group's (`group:`)
+/// is refused at the walk, never admitted with a principal that aliases a key or a group. An id
+/// outside reserved space is admitted as before.
+#[test]
+fn a_position_identifying_a_reserved_id_is_refused_by_the_data_plane_walk() {
+    for (id, reserved) in RESERVED_AND_NOT {
+        let mut mw = AuthMiddleware::new_builtin(&chain_cfg(&[]));
+        mw.chain.push(ChainEntry {
+            provider: "names-the-id".to_string(),
+            calls: std::sync::Arc::new(crate::auth::stand_in::InProcessAuth::new(Box::new(
+                NamesTheId(id),
+            ))),
+            name: "names-the-id".to_string(),
+        });
+        let verdict = mw.run_chain(Some("a-credential"));
+        if reserved {
+            assert_eq!(verdict, ChainVerdict::Denied, "{id}: a module may not name it");
+        } else {
+            assert!(
+                matches!(&verdict, ChainVerdict::Identified { principal, .. } if principal.id == id),
+                "{id}: an unreserved id is admitted, got {verdict:?}"
+            );
+        }
+    }
+}
+
+/// THE RESERVED-ID REFUSAL ON THE ADMIN WALK: an external admin module that identifies a caller as a
+/// reserved id is refused at the door; an unreserved roleless id is identified (with no grant).
+#[test]
+fn an_admin_module_identifying_a_reserved_id_is_refused_by_the_admin_walk() {
+    crate::snapshot::init();
+    for (id, reserved) in RESERVED_AND_NOT {
+        let app = crate::test_support::TestApp::new()
+            .admin_chain(vec!["names-the-id".to_string()])
+            .admin_module("names-the-id", Box::new(NamesTheId(id)))
+            .build();
+        let door = admin_door(
+            &app,
+            "GET",
+            "/api/v1/admin/keys",
+            &admin_headers(Some("a-credential"), None),
+        );
+        if reserved {
+            assert_eq!(door, AdminDoor::Denied, "{id}: a module may not name it");
+        } else {
+            assert!(
+                matches!(&door, AdminDoor::Identified(principal, _) if principal.id == id),
+                "{id}: an unreserved id is identified, got {door:?}"
+            );
+        }
+    }
+}

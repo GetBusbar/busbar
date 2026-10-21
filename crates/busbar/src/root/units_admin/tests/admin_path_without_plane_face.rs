@@ -46,18 +46,6 @@ struct ADirectoryThatMintedIt;
 
 #[cfg(feature = "root-admin")]
 impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt {
-    fn verify(
-        &self,
-        credential: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<crate::root::auth_bindings::KeyFacts> {
-        (credential == THE_OPERATORS_CREDENTIAL).then(|| crate::root::auth_bindings::KeyFacts {
-            id: "key-admin-1".to_string(),
-            name: "the operator credential these cells present".to_string(),
-        })
-    }
-
     fn revoked(&self, _credential: &str) -> bool {
         false
     }
@@ -68,36 +56,10 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt 
 /// Closed rather than open on purpose: the open front door grants `Full` to anybody, so a cell that
 /// ran behind it would prove the walk reaches the surface without proving the walk authenticated.
 #[cfg(feature = "root-admin")]
-struct IdentifiesTheOperator;
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_identity::module::AuthModule for IdentifiesTheOperator {
-    fn name(&self) -> &'static str {
-        "identifies-the-operator"
-    }
-
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some(THE_OPERATORS_CREDENTIAL) => {
-                busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id(
-                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
-                    ),
-                )
-            }
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
-
-#[cfg(feature = "root-admin")]
-fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
-    busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-the-operator".to_string(),
-            module: Box::new(IdentifiesTheOperator),
-        }],
-        false,
+fn a_door_that_identifies_the_operator() -> crate::root::units_admin::AdminDoorFn {
+    crate::root::units_admin::door_identifying(
+        THE_OPERATORS_CREDENTIAL,
+        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
     )
 }
 
@@ -198,7 +160,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                a_door_that_identifies_the_operator(),
                 held,
                 read,
                 None,
@@ -260,7 +222,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                a_door_that_identifies_the_operator(),
                 held,
                 read,
                 None,
@@ -594,7 +556,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                a_door_that_identifies_the_operator(),
                 held,
                 read,
                 None,
@@ -822,7 +784,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                a_door_that_identifies_the_operator(),
                 held,
                 read,
                 None,
@@ -986,31 +948,15 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
 
 /// A door that identifies ANOTHER principal than the operator: authenticated, and holding no grant.
 #[cfg(feature = "root-admin")]
-struct IdentifiesATenant;
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
-    fn name(&self) -> &'static str {
-        "identifies-a-tenant"
-    }
-
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some(THE_OPERATORS_CREDENTIAL) => {
-                busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id("a-tenant"),
-                )
-            }
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
+fn a_door_that_identifies_a_tenant() -> crate::root::units_admin::AdminDoorFn {
+    crate::root::units_admin::door_identifying(THE_OPERATORS_CREDENTIAL, "a-tenant")
 }
 
 /// The node the Q71(2) cells walk: a real surface, a memory-buffered journal, the given door, the
 /// one served plane, and a record sink that keeps what it was handed.
 #[cfg(feature = "root-admin")]
 fn a_q71_node(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
 ) -> (
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
@@ -1021,7 +967,7 @@ fn a_q71_node(
 /// [`a_q71_node`], its trust verbs bound to `trust`.
 #[cfg(feature = "root-admin")]
 fn a_q71_node_trusting(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
     trust: crate::root::units_admin::TrustDesk,
 ) -> (
     axum::Router,
@@ -1052,7 +998,7 @@ fn a_q71_node_trusting(
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                crate::root::units_admin::door_of_chain(door),
+                door,
                 held,
                 read,
                 None,
@@ -1559,14 +1505,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         );
     }
 
-    let tenant = busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-a-tenant".to_string(),
-            module: Box::new(IdentifiesATenant),
-        }],
-        false,
-    );
-    let (tenants_node, tenants_kept) = a_q71_node(tenant);
+    let (tenants_node, tenants_kept) = a_q71_node(a_door_that_identifies_a_tenant());
     for (method, path, body) in the_q71_verbs() {
         let needed = if method == "GET" { "read-only" } else { "full" };
         assert_eq!(
