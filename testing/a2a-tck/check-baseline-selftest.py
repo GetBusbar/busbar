@@ -32,13 +32,17 @@ wraps prints `grpc: 0/72 (72 skipped)` with a tick next to it. The refusals, and
     the runner and scenario-agent/serve.sh     runner_selftest_plants_every_refusal
 
 `runner_selftest_plants_every_refusal` runs `run-tck.sh selftest`, which plants EVERY refusal
-`run-tck.sh` and `scenario-agent/serve.sh` can make against the real functions with stand-ins (a
-suite that crashes while the previous run's good report sits where the runner writes its own, a
-report it cannot remove, a harness pin that disagrees or cannot be read, a control binary of
-another version, a checkout that is not the pin, a virtualenv whose imports fail, peers that never
-serve, a missing a2a-sdk pin file or line, a subject with no endpoint, an unknown verb). Each has
-a green twin except the checkout pin, whose green side needs the network and is run by every
-control leg the conformance recorder runs. It prints its own leg list.
+`run-tck.sh` and `scenario-agent/serve.sh` can make against the real functions with stand-ins:
+work directories that cannot be created, a crashed run beside the previous run's good report, a
+report it cannot remove or cannot copy, a harness pin file or line that is missing or disagrees, a
+`go install` that fails, a control binary of another `go version -m` version or one that does not
+run, a fetch that fails, a checkout that is not the pin or has no commit, a suite install that
+fails, imports that fail, a cryptography install that fails, peers that never serve, serve.sh with
+no port, no pin file or line, no work directory, a failed a2a-sdk install, an a2a-sdk of another
+version or of no readable version, a subject with no endpoint, and an unknown verb. Each has a
+green twin except two whose green side needs the network: the checkout pin (run by every control
+leg the conformance recorder runs) and the subject endpoint (run by `boot.sh --tck`). It prints
+its own leg list.
 
 The one that had to be found the expensive way has its own case: `NOT TESTED` is the TCK's status
 for a requirement nothing ran, and counting it as executed made a 73-requirement run look like a
@@ -280,7 +284,7 @@ def main():
     #     (see the docstring); the leg count is pinned so a deleted leg is not a quiet pass.
     p = subprocess.run(["bash", RUNNER, "selftest"], capture_output=True, text=True)
     judge("runner_selftest_plants_every_refusal", p.returncode, p.stdout + p.stderr, 0,
-          "runner selftest: 25 legs, all green")
+          "runner selftest: 38 legs, all green")
 
     for name in PASSES:
         print("  ok   %s" % name)

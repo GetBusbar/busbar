@@ -33,18 +33,27 @@ fi
 
 WORK="${A2A_SCENARIO_AGENT_WORK:-${TMPDIR:-/tmp}/a2a-scenario-agent}"
 VENV="$WORK/venv-$CONTROL_PY_VERSION"
-mkdir -p "$WORK"
+mkdir -p "$WORK" 2>/dev/null || {
+  echo "could not create the scenario agent's work directory $WORK -- refusing to serve" >&2
+  exit 2
+}
 
 if [ ! -x "$VENV/bin/python" ]; then
   echo "installing a2a-sdk ${CONTROL_PY_VERSION} into $VENV" >&2
-  python3 -m venv "$VENV"
-  "$VENV/bin/pip" -q install --upgrade pip
-  "$VENV/bin/pip" -q install "a2a-sdk[http-server]==${CONTROL_PY_VERSION}" uvicorn starlette
+  python3 -m venv "$VENV" \
+    && "$VENV/bin/pip" -q install --upgrade pip \
+    && "$VENV/bin/pip" -q install "a2a-sdk[http-server]==${CONTROL_PY_VERSION}" uvicorn starlette \
+    || {
+      echo "could not install a2a-sdk ${CONTROL_PY_VERSION} into $VENV -- refusing to serve" >&2
+      exit 2
+    }
 fi
 
 # A pin that is not verified after install is a wish -- a cached venv from a different pin would
-# otherwise be reused in silence and the number attributed to the wrong peer.
-got="$("$VENV/bin/python" -c 'import importlib.metadata as m; print(m.version("a2a-sdk"))')"
+# otherwise be reused in silence and the number attributed to the wrong peer. A venv whose version
+# cannot be read at all is refused the same way, with its own word for it.
+got="$("$VENV/bin/python" -c 'import importlib.metadata as m; print(m.version("a2a-sdk"))' 2>/dev/null)" \
+  || got="unreadable"
 [ "$got" = "$CONTROL_PY_VERSION" ] || {
   echo "a2a-sdk in $VENV is $got, pin is $CONTROL_PY_VERSION -- refusing to serve" >&2
   exit 2
