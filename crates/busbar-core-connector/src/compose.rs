@@ -2038,13 +2038,16 @@ impl Connection {
         }
         if y.agreed != 0 {
             // A position past the listener's offer (or any on a dial) is the framer's fault.
-            busbar_contract::abi::transport::check::check_agreed(y.agreed, self.offer.len() as u64)
-                .map_err(|f| {
-                    Failure::Failed(format!(
-                        "the framer's agreed protocol breaks {:?} at {}",
-                        f.rule, f.field
-                    ))
-                })?;
+            busbar_contract::abi::transport::check::check_agreed_position(
+                y.agreed,
+                self.offer.len() as u64,
+            )
+            .map_err(|f| {
+                Failure::Failed(format!(
+                    "the framer's agreed protocol breaks {:?} at {}",
+                    f.rule, f.field
+                ))
+            })?;
             self.agreed = y.agreed;
         }
         // A stream the framer says is writable again, or whose last piece arrived, is held no
