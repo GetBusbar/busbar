@@ -94,8 +94,9 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`) and 4 `busbar/src/root`
 /// gauntlet files (`gauntlet_install.rs`, `gauntlet_kernel.rs`, `tests/gauntlet_kernel.rs`,
 /// `tests/percall_meter_shadow.rs`). The floor is the count measured on that lane's head over dev
-/// 452a6e63d4, which had also deleted the kernel's `failover/` (#1299).
-pub const MIN_FILES: usize = 1211;
+/// 452a6e63d4, which had also deleted the kernel's `failover/` (#1299); then raised 1211 -> 1212
+/// by the one file dev landed there by 893d659a8d (`busbar/src/root/tests/durability_boot_reads.rs`).
+pub const MIN_FILES: usize = 1212;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
