@@ -138,7 +138,7 @@ fn a_node_without_signing_material_lends_no_caller_reference() {
     let mut b = bufs(0);
     b.caller_ref.clear();
     let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);
-    assert!(i.caller_ref.ptr().is_null() && i.caller_ref.len() == 0);
+    assert!(i.caller_ref.ptr().is_null() && i.caller_ref.is_empty());
 }
 
 // ── F25 rows 630-633: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs. The

@@ -1192,7 +1192,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // buffer. A string is read back as its offset into the arena, never through its pointer.
         let base = bufs.arena.as_ptr() as usize;
         let text = |s: AbiStr| -> String {
-            if s.ptr().is_null() || s.len() == 0 {
+            if s.ptr().is_null() || s.is_empty() {
                 return String::new();
             }
             let at = (s.ptr() as usize).wrapping_sub(base);

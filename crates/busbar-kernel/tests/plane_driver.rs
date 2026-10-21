@@ -264,7 +264,7 @@ fn ready(outcome: Outcome) -> Answered {
 }
 
 unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
-    if b.ptr().is_null() || b.len() == 0 {
+    if b.ptr().is_null() || b.is_empty() {
         &[]
     } else {
         std::slice::from_raw_parts(b.ptr(), b.len())
@@ -278,7 +278,7 @@ const NOT_FOR_THE_CALLER: &[u8] = b"not-for-the-caller";
 const REFUSAL_WORDS: &[u8] = b"the body is not a document";
 
 unsafe fn text<'a>(s: AbiStr) -> &'a [u8] {
-    if s.ptr().is_null() || s.len() == 0 {
+    if s.ptr().is_null() || s.is_empty() {
         &[]
     } else {
         std::slice::from_raw_parts(s.ptr(), s.len())
@@ -1164,7 +1164,7 @@ impl PlaneCalls for Double {
                     std::thread::sleep(WEDGE);
                     let i = input.0;
                     // SAFETY: the crossing still owns the buffers: `lent` is held until here.
-                    if i.bytes.len() != 0 {
+                    if !i.bytes.is_empty() {
                         unsafe {
                             let seen = std::slice::from_raw_parts(i.bytes.ptr(), i.bytes.len());
                             let n = seen.len().min(i.reply_cap);
