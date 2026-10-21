@@ -633,6 +633,56 @@ fn the_plane_declares_its_published_key_and_is_the_fallback() {
     assert_eq!(kinds, vec![b"pool".as_slice()]);
 }
 
+/// Q128 arch u59: EVERY WAY A UNIT ENDS LEAVES NOTHING OF IT IN THE DOOR'S BOOK. The `refusal` of a
+/// unit refused after an attempt (an exhausted walk, a veto, a failed attempt the kernel renders)
+/// used to take the unit but keep the ticket its attempt came on, forever (a ticket is never
+/// reused); the `cancel` of a unit and the end of its reply leave nothing either, and a unit whose
+/// pieces move to a new ticket keeps only that one.
+#[test]
+fn every_way_a_unit_ends_leaves_nothing_in_the_doors_book() {
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_plane_llm::plane_door::UnitBook;
+    let t = |slot| Ticket {
+        slot,
+        generation: 1,
+    };
+    let mut book = UnitBook::<&str>::default();
+
+    // Refused after an attempt: `arrive`, a piece on its ticket, then the kernel's `refusal`.
+    book.hold(7, "refused");
+    let unit = book.take(7).expect("arrived");
+    book.bind(t(1), 7);
+    book.hold(7, unit);
+    assert_eq!(book.held(), (1, 1));
+    let _rendered = book.take(7);
+    book.ends(7);
+    assert_eq!(book.held(), (0, 0), "a refused unit keeps no ticket");
+
+    // A reply that completes.
+    book.hold(8, "served");
+    let _unit = book.take(8);
+    book.bind(t(2), 8);
+    book.ends(8);
+    assert_eq!(book.held(), (0, 0), "a served unit keeps nothing");
+
+    // A cancel on the unit's ticket hands its state back and keeps nothing.
+    book.hold(9, "cancelled");
+    let unit = book.take(9).expect("arrived");
+    book.bind(t(3), 9);
+    book.hold(9, unit);
+    assert_eq!(book.cancel(t(3)), Some("cancelled"));
+    assert_eq!(book.held(), (0, 0), "a cancelled unit keeps nothing");
+
+    // A unit whose pieces move to another ticket is bound by that one alone.
+    book.hold(10, "moved");
+    book.bind(t(4), 10);
+    book.bind(t(5), 10);
+    assert_eq!(book.held(), (1, 1), "the old ticket is unbound");
+    assert_eq!(book.cancel(t(4)), None);
+    book.ends(10);
+    assert_eq!(book.held(), (0, 0));
+}
+
 /// THE SIGNED PATHS ARE THE PREVIOUS RELEASE'S (ARCHITECT rulings 2026-10-16, 3b A, and
 /// 2026-10-17): the raw-affix claims the door flags `CLAIM_SIGNED_INGRESS`, matched against the raw
 /// path, name exactly the paths 1.5.5 put through the signed-request pre-step (the signing dialect's

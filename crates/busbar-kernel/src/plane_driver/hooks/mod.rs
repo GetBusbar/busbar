@@ -414,7 +414,7 @@ impl HookBinder for BoundHooks {
 /// principal.
 pub struct HostHooks {
     /// The generation's engine host.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// What the hooks may know of a verified caller.
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.

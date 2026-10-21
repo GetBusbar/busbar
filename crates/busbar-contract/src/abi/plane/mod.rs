@@ -341,7 +341,9 @@ pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// [`crate::caps::ReasonCode::CredentialUnavailable`] (the member's credential, re-resolved for the
 /// attempt, no longer resolves, and nothing was dialled), or ends it with no member left, whether or
 /// not an attempt's request went out (the walk's exhaustion terminal, refused
-/// [`crate::caps::ReasonCode::BreakerOpen`]), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
+/// [`crate::caps::ReasonCode::BreakerOpen`]; when no attempt of the walk sent its request, the piece
+/// names why the last did not in its place, an `Unsent*` [`RefusalCode`], and [`nothing_sent`]
+/// reads that and the credential's refusal alike as a hop that never left), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
 /// flagged [`PIECE_REFUSED`] and [`PIECE_LAST`], carrying that reason in [`OnPieceIn::reason`], on
 /// the unit's own ticket: the plane's record writes on that answer are written, as any piece's are,
 /// and nothing it emits reaches the caller. Then the unit is refused as it is without the bit:
@@ -852,6 +854,28 @@ pub enum RefusalCode {
     MethodNotAllowed = 44,
     /// `Internal`.
     Internal = 45,
+    /// THE WALK'S EXHAUSTION, NOTHING SENT: the attempt had no member in hand when its request
+    /// was to go out. This and every `Unsent*` code below is a kernel-to-plane reason alone: it
+    /// rides the walk's exhausted refused piece ([`TAIL_REFUSED_PIECE`]) in place of
+    /// [`RefusalCode::BreakerOpen`] when no attempt of the walk sent a request, naming why the
+    /// last one did not, so a plane can tell a hop that never left from one that left and failed
+    /// over. It is no reason the kernel's vocabulary holds: [`reason_of`] decodes it to nothing,
+    /// and a plane never states it.
+    UnsentNoAttempt = 46,
+    /// Nothing sent: the member has no route on this node.
+    UnsentNoRoute = 47,
+    /// Nothing sent: the far request named a need its member has no binding for.
+    UnsentNeedUnbound = 48,
+    /// Nothing sent: the far request's target is not a path.
+    UnsentTargetNotPath = 49,
+    /// Nothing sent: a field of the far request is named by no RFC 9110 token.
+    UnsentFieldName = 50,
+    /// Nothing sent: the dispatch could not be recorded before the dial.
+    UnsentUnrecorded = 51,
+    /// Nothing sent: the member's auth call answered no fields.
+    UnsentAuthFailed = 52,
+    /// Nothing sent: the connection table refused to open the attempt.
+    UnsentOpenRefused = 53,
 }
 
 impl RefusalCode {
@@ -903,7 +927,32 @@ impl RefusalCode {
         RefusalCode::CredentialUnavailable,
         RefusalCode::MethodNotAllowed,
         RefusalCode::Internal,
+        RefusalCode::UnsentNoAttempt,
+        RefusalCode::UnsentNoRoute,
+        RefusalCode::UnsentNeedUnbound,
+        RefusalCode::UnsentTargetNotPath,
+        RefusalCode::UnsentFieldName,
+        RefusalCode::UnsentUnrecorded,
+        RefusalCode::UnsentAuthFailed,
+        RefusalCode::UnsentOpenRefused,
     ];
+
+    /// Whether the code is one of the `Unsent*` codes: the walk's exhaustion with no attempt's
+    /// request sent ([`RefusalCode::UnsentNoAttempt`]).
+    #[must_use]
+    pub const fn unsent(self) -> bool {
+        matches!(
+            self,
+            RefusalCode::UnsentNoAttempt
+                | RefusalCode::UnsentNoRoute
+                | RefusalCode::UnsentNeedUnbound
+                | RefusalCode::UnsentTargetNotPath
+                | RefusalCode::UnsentFieldName
+                | RefusalCode::UnsentUnrecorded
+                | RefusalCode::UnsentAuthFailed
+                | RefusalCode::UnsentOpenRefused
+        )
+    }
 
     /// The number on the wire.
     #[must_use]
@@ -1040,7 +1089,30 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::CredentialUnavailable => ReasonCode::CredentialUnavailable,
         RefusalCode::MethodNotAllowed => ReasonCode::MethodNotAllowed,
         RefusalCode::Internal => ReasonCode::Internal,
+        // THE WALK'S EXHAUSTION WITH NOTHING SENT: a kernel-to-plane piece reason, never a
+        // reason a plane states, so it decodes to nothing (a malformed plane answer).
+        RefusalCode::UnsentNoAttempt
+        | RefusalCode::UnsentNoRoute
+        | RefusalCode::UnsentNeedUnbound
+        | RefusalCode::UnsentTargetNotPath
+        | RefusalCode::UnsentFieldName
+        | RefusalCode::UnsentUnrecorded
+        | RefusalCode::UnsentAuthFailed
+        | RefusalCode::UnsentOpenRefused => return None,
     })
+}
+
+/// WHETHER THE REFUSED PIECE'S REASON (`OnPieceIn::reason`) SAYS NOTHING LEFT for the unit: the
+/// member's credential was unavailable before the dial ([`RefusalCode::CredentialUnavailable`]),
+/// or the walk exhausted with no attempt's request sent (an `Unsent*` code). `false` for every
+/// other reason, [`RefusalCode::BreakerOpen`] included: that exhaustion sent a request.
+#[must_use]
+pub const fn nothing_sent(reason: u32) -> bool {
+    match RefusalCode::of(reason) {
+        Some(RefusalCode::CredentialUnavailable) => true,
+        Some(code) => code.unsent(),
+        None => false,
+    }
 }
 
 // ── the one refusal classification ───────────────────────────────────────────────────────────────
@@ -1159,7 +1231,15 @@ impl RefusalCode {
             RefusalCode::DestinationUnreachable
             | RefusalCode::BreakerOpen
             | RefusalCode::DestinationBudgetExhausted
-            | RefusalCode::CredentialUnavailable => C::Unreachable,
+            | RefusalCode::CredentialUnavailable
+            | RefusalCode::UnsentNoAttempt
+            | RefusalCode::UnsentNoRoute
+            | RefusalCode::UnsentNeedUnbound
+            | RefusalCode::UnsentTargetNotPath
+            | RefusalCode::UnsentFieldName
+            | RefusalCode::UnsentUnrecorded
+            | RefusalCode::UnsentAuthFailed
+            | RefusalCode::UnsentOpenRefused => C::Unreachable,
             RefusalCode::SessionBudget
             | RefusalCode::SpillBudget
             | RefusalCode::ScratchExhausted
@@ -1229,6 +1309,18 @@ pub struct DialectAuth {
     pub params: Blob,
 }
 
+impl DialectAuth {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `DialectAuth { …, ..DialectAuth::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        dialect: 0,
+        flags: 0,
+        style: AbiStr::ZERO,
+        params: Blob::ZERO,
+    };
+}
+
 /// One operation class the plane serves one level down, and the display name a refusal naming the
 /// plane reads.
 #[repr(C)]
@@ -1240,6 +1332,16 @@ pub struct OpClass {
     pub name: AbiStr,
 }
 
+impl OpClass {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `OpClass { …, ..OpClass::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        op: AbiStr::ZERO,
+        name: AbiStr::ZERO,
+    };
+}
+
 /// One billable class and the unit family it counts in. Classes are disjoint.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1248,6 +1350,16 @@ pub struct BillableClass {
     pub class: AbiStr,
     /// Its unit family.
     pub family: AbiStr,
+}
+
+impl BillableClass {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `BillableClass { …, ..BillableClass::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        class: AbiStr::ZERO,
+        family: AbiStr::ZERO,
+    };
 }
 
 /// One term of the plane's route cost: `cheapest` = Σ price(class) × weight.
@@ -1293,6 +1405,18 @@ pub struct RecordChain {
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+impl RecordChain {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordChain { …, ..RecordChain::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        kind: 0,
+        framing: 0,
+        flags: 0,
+        _reserved: 0,
+    };
 }
 
 /// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
@@ -1346,6 +1470,17 @@ pub struct PinMechanism {
     pub _reserved: u32,
 }
 
+impl PinMechanism {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `PinMechanism { …, ..PinMechanism::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        token: AbiStr::ZERO,
+        flags: 0,
+        _reserved: 0,
+    };
+}
+
 /// The status one refusal reason wears in one dialect (or in every dialect, with
 /// [`REFUSAL_ANY_DIALECT`]). The kernel chooses a refusal's status from the plane's rows: the row
 /// for the unit's dialect, else the [`REFUSAL_ANY_DIALECT`] row, else its own default. A protocol
@@ -1383,6 +1518,20 @@ pub struct TrustKey {
     pub mechanisms: *const PinMechanism,
     /// How many.
     pub mechanisms_len: usize,
+}
+
+impl TrustKey {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `TrustKey { …, ..TrustKey::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        key: AbiStr::ZERO,
+        role: 0,
+        flags: 0,
+        default: AbiStr::ZERO,
+        mechanisms: std::ptr::null(),
+        mechanisms_len: 0,
+    };
 }
 
 /// THE GRAMMAR OF [`PlaneTail::cli_help`]: the plane's rows of the host's command-line help, each
@@ -1529,6 +1678,58 @@ pub struct PlaneTail {
     pub metric_lanes_len: usize,
 }
 
+impl PlaneTail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `PlaneTail { …, ..PlaneTail::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        flags: 0,
+        ingress: 0,
+        dispatch_shape: 0,
+        answer_layout: 0,
+        scope: AbiStr::ZERO,
+        label: AbiStr::ZERO,
+        subject_noun: AbiStr::ZERO,
+        admin_noun: AbiStr::ZERO,
+        audit_kind: AbiStr::ZERO,
+        signing_domain: AbiStr::ZERO,
+        signing_kid_prefix: AbiStr::ZERO,
+        cli_help: AbiStr::ZERO,
+        dialects: std::ptr::null(),
+        dialects_len: 0,
+        dialect_auth: std::ptr::null(),
+        dialect_auth_len: 0,
+        scope_kinds: std::ptr::null(),
+        scope_kinds_len: 0,
+        op_classes: std::ptr::null(),
+        op_classes_len: 0,
+        billable_classes: std::ptr::null(),
+        billable_classes_len: 0,
+        route_cost: std::ptr::null(),
+        route_cost_len: 0,
+        fee_units: std::ptr::null(),
+        fee_units_len: 0,
+        record_kinds: std::ptr::null(),
+        record_kinds_len: 0,
+        egress_targets: std::ptr::null(),
+        egress_targets_len: 0,
+        record_chains: std::ptr::null(),
+        record_chains_len: 0,
+        trust_keys: std::ptr::null(),
+        trust_keys_len: 0,
+        refusal_statuses: std::ptr::null(),
+        refusal_statuses_len: 0,
+        caller_credential_refusal: AbiStr::ZERO,
+        admin_routes: std::ptr::null(),
+        admin_routes_len: 0,
+        admin_openapi: Blob::ZERO,
+        stream_ceiling_secs: 0,
+        metric_lanes: std::ptr::null(),
+        metric_lanes_len: 0,
+    };
+}
+
 /// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
 pub const MAX_METRIC_LANES: usize = 16;
 
@@ -1562,6 +1763,20 @@ pub struct Claim {
     pub refusal_dialect: u16,
     /// Alignment padding.
     pub _pad: u16,
+}
+
+impl Claim {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Claim { …, ..Claim::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        verb: AbiStr::ZERO,
+        target: AbiStr::ZERO,
+        carrier: AbiStr::ZERO,
+        flags: 0,
+        refusal_dialect: 0,
+        _pad: 0,
+    };
 }
 
 /// One admin route the built plane serves through [`slot::SERVE`].
@@ -1764,6 +1979,16 @@ pub struct OutField {
     pub value: Span,
 }
 
+impl OutField {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `OutField { …, ..OutField::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        name: Span::ZERO,
+        value: Span::ZERO,
+    };
+}
+
 /// One cumulative unit count, in a HOST buffer.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1774,6 +1999,17 @@ pub struct UnitCount {
     pub source: u32,
     /// The cumulative count.
     pub amount: u64,
+}
+
+impl UnitCount {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `UnitCount { …, ..UnitCount::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        class: 0,
+        source: 0,
+        amount: 0,
+    };
 }
 
 /// One record write, a destination fact the kernel applies on the record seam; its key and value
@@ -1794,6 +2030,18 @@ pub struct RecordWrite {
     pub key: Span,
     /// The value.
     pub value: Span,
+}
+
+impl RecordWrite {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordWrite { …, ..RecordWrite::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        kind: 0,
+        op: 0,
+        key: Span::ZERO,
+        value: Span::ZERO,
+    };
 }
 
 /// `arrive`'s `in`.
