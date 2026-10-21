@@ -161,23 +161,12 @@ impl WireStatus {
     /// The number, when this status is in the numbering asked for. `None` otherwise — never a
     /// coerced number, because there is no HTTP status a gRPC code "is".
     ///
-    /// The one accessor every namespace-specific question below is asked through: adding a family
-    /// adds no arm here and no arm anywhere else.
+    /// The one accessor every namespace-specific question is asked through, in the namespace the
+    /// reader's transport declares: adding a family adds no arm here and no arm anywhere else, and
+    /// no accessor here is named for a protocol.
     #[must_use]
     pub fn in_namespace(self, namespace: &str) -> Option<u32> {
         (self.namespace == namespace).then_some(self.code)
-    }
-
-    /// The HTTP status, when this IS one.
-    #[must_use]
-    pub fn http(self) -> Option<u32> {
-        self.in_namespace(super::registry::status_ns::HTTP)
-    }
-
-    /// The `grpc-status` code, when this IS one.
-    #[must_use]
-    pub fn grpc(self) -> Option<u32> {
-        self.in_namespace(super::registry::status_ns::GRPC)
     }
 }
 
