@@ -186,6 +186,14 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
     }
 }
 
+/// THE CONNECTOR'S SECRET RESOLVER, the one the boot hands `process::build`: a member program's
+/// `env` secret references resolve through the linked secret plugins at config time and are held
+/// for the spawns. A door's root cells build their connector with this same resolver.
+#[must_use]
+pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
+    busbar_kernel::config::secret::resolve_linked_string_at_config
+}
+
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, each opened
 /// with the deployment's `settings`, its dials judged by `dest` (the deployment's one guard) with
 /// the node's own ports read off its `listens`, its dialled connections pooled per worker under
@@ -228,7 +236,7 @@ pub fn boot(
         // a plane's load or a config apply, and the connector's refresher — and are held for the
         // spawns, which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a
         // request).
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        spawn_secret_resolver(),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");
