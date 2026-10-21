@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2591,
+    "total": 2604,
     "by_plane": {
       "a2a": 468,
-      "core": 1008,
+      "core": 1021,
       "llm": 203,
       "mcp": 912
     },
@@ -85,7 +85,7 @@
       "export": 3,
       "hazard": 2,
       "hooks": 11,
-      "http.crosscut": 23,
+      "http.crosscut": 36,
       "ledger": 5,
       "llm.wire": 196,
       "mcp": 913,
@@ -23072,6 +23072,104 @@
       ]
     },
     {
+      "id": "http.crosscut|unknown-op|anthropic",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages/unknown-op",
+        "headers": {
+          "anthropic-version": "2023-06-01"
+        },
+        "body": "{\"model\":\"p\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the messages dialect does not serve, under its path"
+    },
+    {
+      "id": "http.crosscut|unknown-op|bedrock",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/model/p/unknown-op",
+        "headers": {},
+        "body": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation segment the converse dialect does not serve"
+    },
+    {
+      "id": "http.crosscut|unknown-op|cohere",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v2/unknown-op",
+        "headers": {},
+        "body": "{\"model\":\"p\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the v2 chat dialect does not serve, under its versioned prefix"
+    },
+    {
+      "id": "http.crosscut|unknown-op|gemini",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/p:unknownVerb",
+        "headers": {},
+        "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a colon verb the generate dialect does not serve"
+    },
+    {
+      "id": "http.crosscut|unknown-op|openai",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/unknown-op",
+        "headers": {},
+        "body": "{\"model\":\"p\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the chat-completions dialect does not serve, under its versioned prefix"
+    },
+    {
+      "id": "http.crosscut|unknown-op|responses",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/responses/unknown-op",
+        "headers": {},
+        "body": "{\"model\":\"p\",\"input\":\"hi\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an operation the responses dialect does not serve, under its path"
+    },
+    {
       "id": "http.crosscut|unknown-path|anthropic-beta",
       "plane": "core",
       "family": "http.crosscut",
@@ -23146,6 +23244,86 @@
       "why": "detects openai; unknown model"
     },
     {
+      "id": "http.crosscut|unserved-action|gemini-countTokens",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/p:countTokens",
+        "headers": {},
+        "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "the generate dialect's token-count action, which is not served"
+    },
+    {
+      "id": "http.crosscut|url-model-missing|bedrock",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/model//converse",
+        "headers": {},
+        "body": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a converse URL naming no model"
+    },
+    {
+      "id": "http.crosscut|url-model-missing|gemini",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/:generateContent",
+        "headers": {},
+        "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a generate URL naming no model"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-chat-completions",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the chat-completions path"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-converse",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/model/p/converse",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the converse path"
+    },
+    {
       "id": "http.crosscut|wrong-method|GET-messages",
       "plane": "core",
       "family": "http.crosscut",
@@ -23163,6 +23341,38 @@
       "inventory": [
         "RT-014"
       ]
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-responses",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/responses",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the responses path"
+    },
+    {
+      "id": "http.crosscut|wrong-method|GET-v2-chat",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v2/chat",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "405 protocol-native on the v2 chat path"
     },
     {
       "id": "http.crosscut|x-api-key-only|bad",
