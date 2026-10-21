@@ -216,7 +216,7 @@ impl LoginMethods {
         registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
-        Self::build_on(cfg, registry, secret_resolver, || {
+        Self::build_on(cfg, registry.as_ref(), secret_resolver, || {
             crate::preflight::auth_axis(registry.clone())
         })
     }

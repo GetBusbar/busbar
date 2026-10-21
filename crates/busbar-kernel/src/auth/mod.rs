@@ -729,7 +729,7 @@ impl AdminAuthChain {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
@@ -850,7 +850,7 @@ impl AuthMiddleware {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     let calls = axis
                         .open(other, &entry.name, &serde_json::Value::Object(resolved))
