@@ -1338,7 +1338,10 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     assert_eq!(node(Some(keyset)), (alice.clone(), bob));
     // Another deployment's keyset gives another reference.
     assert_ne!(node(Some([8u8; 32])).0, alice);
-    assert_ne!(boot_alice, alice, "the keyset, once bound, keys the reference");
+    assert_ne!(
+        boot_alice, alice,
+        "the keyset, once bound, keys the reference"
+    );
 }
 
 /// A NODE WITH NO SIGNING KEY AND A NON-SIGNING AUDIT CHAIN STILL LENDS EVERY VERIFIED PRINCIPAL ITS
