@@ -224,6 +224,13 @@ impl LinkedPlugin {
         }
     }
 
+    /// [`LinkedPlugin::door`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status
+    /// rows 159 and 194). #1469 makes `door` take the `MacroDoor` alone and keeps this name beside
+    /// it, so `LinkedPlugin::of_macro(manifest, plugin::MACRO_DOOR)` compiles before and after.
+    pub fn of_macro(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
+        Self::door(manifest, door.door_fn())
+    }
+
     /// The build's in-process STORE named `name` (its own alias), at the store kind's one version:
     /// its store v3 `door`, and whether what it holds is lost on restart.
     pub fn store(

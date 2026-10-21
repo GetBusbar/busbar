@@ -114,6 +114,60 @@ impl LinkedRow {
     pub fn of_macro(door: busbar_contract::abi::sdk::door::MacroDoor) -> Result<Self, LoadError> {
         Self::of(door.door_fn())
     }
+
+    /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published
+    /// suite's restated door (status rows 159 and 194). #1469's name and signature, here first.
+    ///
+    /// # Errors
+    ///
+    /// As [`LinkedRow::of`].
+    pub fn of_loaded(door: LoadedDoor) -> Result<Self, LoadError> {
+        Self::of(door.door)
+    }
+}
+
+/// A DOOR THE LOADER MAY ENTER (status rows 159 and 194): a [`MacroDoor`] the contract's macro
+/// built, or a door a test or harness restates by hand through the `unsafe`
+/// [`LoadedDoor::from_raw`]. #1469 makes [`LinkedRow::of`] take the `MacroDoor` alone and keeps
+/// this type for the rest; a hand-built door reaches a row through `LinkedRow::of_loaded(unsafe {
+/// LoadedDoor::from_raw(door) })` before and after.
+///
+/// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedDoor {
+    pub(crate) door: DoorFn,
+}
+
+impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
+    fn from(door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
+        Self {
+            door: door.door_fn(),
+        }
+    }
+}
+
+impl LoadedDoor {
+    /// A door the loader read itself, or a test's or harness's restated door: the one way to a
+    /// `LoadedDoor` other than a `MacroDoor`, and `unsafe`.
+    ///
+    /// # Safety
+    ///
+    /// `door` is a busbar door ([`DoorFn`]'s contract): read from the door symbol of a library
+    /// held open for every use of the value, or a function answering NULL or a `'static`, fully
+    /// initialised door whose Statement lists point at their stated counts of `'static` entries.
+    #[must_use]
+    pub const unsafe fn from_raw(door: DoorFn) -> Self {
+        Self { door }
+    }
+}
+
+/// [`rendering_of`] over a [`LoadedDoor`] (#1469's name and signature, here first).
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door.door)
 }
 
 /// [`rendering_of`] over a `MACRO_DOOR` (status rows 159 and 194), as [`LinkedRow::of_macro`]: the

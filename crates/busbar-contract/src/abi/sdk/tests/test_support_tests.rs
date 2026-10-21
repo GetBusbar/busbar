@@ -1290,3 +1290,51 @@ fn call_hosted_in_opens_over_the_fake_hosts_tables_as_call_hosted_does() {
     assert_eq!(closed.outcome, Outcome::Ready);
     drop(host);
 }
+
+// ── a `TestIn` names only what its builders lent (status row 194) ──────────────────────────────
+
+#[test]
+#[should_panic(expected = "is the length of the pointer at byte")]
+fn red_a_test_in_does_not_set_a_length_its_builder_set_with_its_pointer() {
+    let mut err = [0_u8; 1];
+    let _ = super::test_in::TestIn::<OpenIn>::new()
+        .buffer(|i| &i.err_buf, |i| &i.err_cap, &mut err)
+        .set(|i| &i.err_cap, 4096_usize);
+}
+
+#[test]
+#[should_panic(expected = "is the length of the pointer at byte")]
+fn red_a_test_in_does_not_state_a_length_for_a_list_it_never_lent() {
+    let _ = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.secrets_len, 1_usize << 20);
+}
+
+#[test]
+#[should_panic(expected = "are not one of the in's pointer and length pairs")]
+fn red_a_test_in_does_not_pair_a_list_with_another_lists_length() {
+    let secrets = [crate::abi::mechanism::call::Blob::ABSENT];
+    let _ = super::test_in::TestIn::<OpenIn>::new().list(|i| &i.secrets, |i| &i.err_cap, &secrets);
+}
+
+#[test]
+#[should_panic(expected = "is not slot 1's own `in`")]
+fn red_call_in_does_not_enter_a_slot_over_another_slots_in() {
+    let open = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .unwrap();
+    let wrong = super::test_in::TestIn::<crate::abi::transport::ReadIn>::new();
+    let _ = super::reply::call_in(open, None, &wrong, zeroed::<OpenOut>());
+}
+
+#[test]
+fn a_door_views_slot_knows_its_own_in() {
+    let v = view();
+    let open = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .unwrap();
+    let close = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .unwrap();
+    // GREEN, the REDs' twins: each slot over its own `in` passes the check.
+    open.check_in::<OpenIn>();
+    close.check_in::<InHead>();
+}

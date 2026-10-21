@@ -52,6 +52,40 @@ pub type LinkedStore = (
     busbar_contract::abi::mechanism::door::DoorFn,
     &'static str,
 );
+
+/// A linked STORE's entry as a store crate states it with its `MACRO_DOOR` (status rows 159 and
+/// 194): `(key, ephemeral, MACRO_DOOR, canonical)`, #1469's [`LinkedStore`] shape. A store crate's
+/// `linked::STORE` moves to this shape first; the root's store axis reads either shape through
+/// [`StoreRow`], so the same `STORE` compiles before and after #1469.
+pub type LinkedStoreDoor = (
+    &'static str,
+    bool,
+    busbar_contract::abi::sdk::door::MacroDoor,
+    &'static str,
+);
+
+/// ONE STORE-AXIS ROW as the store crate states it (status rows 159 and 194): its `linked::STORE`
+/// in either shape, a [`LinkedStore`] or a [`LinkedStoreDoor`], read as the [`LinkedStore`] the
+/// root's install carries. The composition root's generated table wraps every `STORE` in it.
+#[derive(Debug, Clone, Copy)]
+pub struct StoreRow<T>(pub T);
+
+impl StoreRow<LinkedStore> {
+    /// The row itself.
+    #[must_use]
+    pub const fn linked(self) -> LinkedStore {
+        self.0
+    }
+}
+
+impl StoreRow<LinkedStoreDoor> {
+    /// The row, its `MACRO_DOOR` read as the door function it names.
+    #[must_use]
+    pub const fn linked(self) -> LinkedStore {
+        let (key, ephemeral, door, canonical) = self.0;
+        (key, ephemeral, door.door_fn(), canonical)
+    }
+}
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
 /// one dispatcher and opened through the store v3 table.
 pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
@@ -1358,3 +1392,7 @@ mod opened_secrets_tests;
 #[cfg(test)]
 #[path = "tests/root_install_seams_tests.rs"]
 mod root_install_seams_tests;
+
+#[cfg(test)]
+#[path = "tests/store_row_tests.rs"]
+mod store_row_tests;

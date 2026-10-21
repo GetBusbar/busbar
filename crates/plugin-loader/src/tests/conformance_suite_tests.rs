@@ -1543,6 +1543,10 @@ fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike
     let by_fn = super::Subject::new(door, "plane_door_plugin", "{}");
     let by_macro = super::Subject::of_macro(macro_door, "plane_door_plugin", "{}");
     assert_eq!(by_fn.door as usize, by_macro.door as usize);
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { crate::dispatch::LoadedDoor::from_raw(door) };
+    let by_loaded = super::Subject::of_loaded(restated, "plane_door_plugin", "{}");
+    assert_eq!(by_fn.door as usize, by_loaded.door as usize);
     let row = LinkedRow::of(door).expect("the door states its Statement");
     let row_macro = LinkedRow::of_macro(macro_door).expect("the door states its Statement");
     assert_eq!(row.statement, row_macro.statement);
@@ -1550,5 +1554,35 @@ fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike
     assert_eq!(
         rendering_of(door).expect("renders"),
         rendering_of_macro(macro_door).expect("renders")
+    );
+}
+
+#[test]
+fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
+    use crate::dispatch::{rendering_of, rendering_of_loaded, LinkedRow, LoadedDoor};
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    // A restated door (a hand-built one, in a plugin's own test) and a macro door's own.
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let by_restated = LinkedRow::of_loaded(restated).expect("the door states its Statement");
+    let by_macro = LinkedRow::of_loaded(LoadedDoor::from(macro_door)).expect("states");
+    let by_fn = LinkedRow::of(door).expect("states");
+    assert_eq!(by_restated.statement, by_fn.statement);
+    assert_eq!(by_macro.statement, by_fn.statement);
+    assert_eq!(by_restated.door as usize, by_fn.door as usize);
+    assert_eq!(
+        rendering_of_loaded(restated).expect("renders"),
+        rendering_of(door).expect("renders")
+    );
+    let manifest = || crate::sign::Manifest {
+        name: "plane-door-plugin".to_string(),
+        ..crate::sign::Manifest::default()
+    };
+    let linked = crate::LinkedPlugin::door(manifest(), door);
+    let linked_macro = crate::LinkedPlugin::of_macro(manifest(), macro_door);
+    assert_eq!(
+        linked.door().map(|d| d as usize),
+        linked_macro.door().map(|d| d as usize)
     );
 }

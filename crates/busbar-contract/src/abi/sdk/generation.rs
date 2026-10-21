@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GENERATION BORROW (status row 194; `BUSBAR-1.6.0.md` THE DESIGN §11.2, the shared
-//! mechanism: memory a plugin returns is plugin-owned and valid until that plugin's next refresh
+//! THE GENERATION BORROW (status row 194; `BUSBAR-1.6.0.md` THE DESIGN, the shared mechanism's
+//! memory rule: memory a plugin returns is plugin-owned and valid until that plugin's next refresh
 //! generation). The SDK lends every op a [`Gen<'g>`]: a proof, which only the SDK can make, that
 //! what is borrowed for `'g` lives at least until the instance's next refresh generation. The
 //! runtime writers of the ABI's strings and payloads take one beside the memory they name

@@ -251,6 +251,13 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     /// ```
     #[must_use]
     pub fn generation(&self) -> Gen<'call> {
+        // `close` frees the state its borrow names before the host reads the `out`; the
+        // trampoline clears what `close` named (above), and a `close` has no use for it.
+        debug_assert_ne!(
+            self.index,
+            slot::CLOSE,
+            "Instance::generation: close frees the state the borrow names"
+        );
         // SAFETY: `'call` is the instance's lifetime, which nothing but the instance state
         // (`get`) and the program's memory is borrowed for: the body's own locals and what the
         // host lent the call live for shorter, unrelated lifetimes, and `Instance` is invariant in
@@ -534,10 +541,15 @@ impl<S: SafeSlot> Entry for Safe<S> {
                     // Not this state's box: leave it rather than free it as another type.
                     return Outcome::Fault;
                 }
+                // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
+                let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
+                // Whatever `close` named in its `out` may live in the box that goes now (a reason
+                // leased from the state's table, a string the generation borrow named): the host
+                // reads the `out` after this call, so it names none of it (status row 194).
+                head.error = crate::abi::mechanism::call::AbiStr::ABSENT;
+                head.extensions = crate::abi::mechanism::call::Blob::ABSENT;
                 if kept_report {
                     // What `close` reported lives in the box that goes now: it is not reported.
-                    // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
-                    let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
                     head.envelope.metrics = std::ptr::null();
                     head.envelope.metrics_len = 0;
                     head.envelope.diags = std::ptr::null();

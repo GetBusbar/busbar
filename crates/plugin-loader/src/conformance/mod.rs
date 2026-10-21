@@ -260,6 +260,21 @@ impl Subject {
         Self::new(door.door_fn(), cdylib_crate, inputs)
     }
 
+    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159 and
+    /// 194): a `MacroDoor`'s, or a door a crate that exports its `door` function alone restates
+    /// (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_loaded(
+        door: crate::dispatch::LoadedDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door, cdylib_crate, inputs)
+    }
+
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
     /// (Q-P4-8).
     #[must_use]
@@ -2091,7 +2106,30 @@ macro_rules! conformance_suite {
             $(s = s.with_namespace($create, $drop);)?
             s
         }
-
+        $crate::conformance_suite!(@tests);
+    };
+    // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    (
+        loaded: $loaded:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+        $(,)?
+    ) => {
+        fn __busbar_conformance_subject() -> $crate::conformance::Subject {
+            #[allow(unused_mut)]
+            let mut s = $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs);
+            $(s = s.with_host($host);)?
+            $(s = s.with_anchors($tls);)?
+            $(s = s.with_namespace($create, $drop);)?
+            s
+        }
+        $crate::conformance_suite!(@tests);
+    };
+    (@tests) => {
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
         #[test]
         fn the_linked_and_the_dropped_in_door_are_one_plugin() {

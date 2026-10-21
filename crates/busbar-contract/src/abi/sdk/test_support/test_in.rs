@@ -125,12 +125,70 @@ pub struct TestIn<'a, I> {
     /// Lists the builders made (strings, payloads, fields over borrowed bytes), each on the heap
     /// and never moved, freed with the `TestIn`.
     pub(crate) held: Vec<Box<dyn Any>>,
+    /// Every pointer and length the builders set together (status row 194): `(pointer's offset,
+    /// length's offset, length's width, pointer, length)`, as written. A call checks the `in`
+    /// against it before the slot reads a byte.
+    lent: Vec<(usize, usize, usize, u64, u64)>,
     _lent: PhantomData<&'a ()>,
 }
 
 impl<I: AllZero> Default for TestIn<'_, I> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<I: 'static> TestIn<'_, I> {
+    /// Every pointer and length pair an `I` carries, its embedded structs' included:
+    /// `(pointer's offset, length's offset, length's width)`.
+    fn pairs() -> Vec<(usize, usize, usize)> {
+        crate::abi::sdk::lent::lent_pairs(std::any::TypeId::of::<I>())
+    }
+
+    /// The `width`-byte unsigned value at byte `at` of the `in`.
+    fn read(&self, at: usize, width: usize) -> u64 {
+        // SAFETY: `at + width` lies inside `self.input` (an offset `offset` checked, or one of the
+        // `in`'s own pairs), and every byte of an `AllZero` `in` is initialised.
+        unsafe {
+            let p = ptr::from_ref(&self.input).cast::<u8>().add(at);
+            match width {
+                1 => u64::from(p.read()),
+                2 => u64::from(p.cast::<u16>().read_unaligned()),
+                4 => u64::from(p.cast::<u32>().read_unaligned()),
+                8 => p.cast::<u64>().read_unaligned(),
+                _ => panic!("TestIn: a length field of {width} bytes"),
+            }
+        }
+    }
+
+    /// THE `in` IS WHAT ITS BUILDERS SET (status row 194): every pointer and length pair holds what
+    /// a builder wrote there together, and every other pair is NULL and empty. A call runs this
+    /// before the slot reads a byte.
+    ///
+    /// # Panics
+    ///
+    /// A pair holds anything else.
+    pub(crate) fn check(&self) {
+        let word = size_of::<usize>();
+        let mut pairs = Self::pairs();
+        pairs.extend(self.lent.iter().map(|e| (e.0, e.1, e.2)));
+        for (p, n, w) in pairs {
+            let now = (self.read(p, word), self.read(n, w));
+            let set = match self.lent.iter().find(|e| e.0 == p) {
+                Some(e) => (e.3, e.4),
+                // A pair no builder set is NULL; its length is empty, unless another list the
+                // builders set shares it (a decide's candidates and their dynamics).
+                None => match self.lent.iter().find(|e| e.1 == n) {
+                    Some(e) => (0, e.4),
+                    None => (0, 0),
+                },
+            };
+            assert_eq!(
+                now, set,
+                "TestIn: the pointer at byte {p} and its length at byte {n} are not what the \
+                 builders set"
+            );
+        }
     }
 }
 
@@ -141,6 +199,7 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         Self {
             input: zeroed(),
             held: Vec::new(),
+            lent: Vec::new(),
             _lent: PhantomData,
         }
     }
@@ -158,9 +217,41 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         at - base
     }
 
+    /// The width of the length at `len` that is the pointer at `ptr`'s own: a pair the `in`
+    /// states, never two fields a test names apart.
+    ///
+    /// # Panics
+    ///
+    /// The two are not one of the `in`'s pairs.
+    fn paired(ptr: usize, len: usize) -> usize {
+        Self::pairs()
+            .into_iter()
+            .find(|&(p, n, _)| (p, n) == (ptr, len))
+            .map(|(_, _, w)| w)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TestIn: the pointer at byte {ptr} and the length at byte {len} are not one \
+                     of the in's pointer and length pairs"
+                )
+            })
+    }
+
+    /// Keep what the builders just wrote at the pair `ptr`/`len`.
+    fn record(&mut self, ptr: usize, len: usize, width: usize) {
+        let word = size_of::<usize>();
+        let stated = (self.read(ptr, word), self.read(len, width));
+        self.lent.retain(|e| e.0 != ptr);
+        self.lent.push((ptr, len, width, stated.0, stated.1));
+    }
+
     /// Write `value` into the field `pick` names.
     fn put<F>(&mut self, pick: impl FnOnce(&I) -> &F, value: F) {
         let at = Self::offset(pick);
+        self.put_at(at, value);
+    }
+
+    /// Write `value` at byte `at` of the `in`, the offset of a field of type `F` ([`Self::offset`]).
+    fn put_at<F>(&mut self, at: usize, value: F) {
         // SAFETY: `at` is the offset of a field of type `F` inside `self.input` (checked by
         // `offset`); `write_unaligned` needs no alignment and drops nothing (`F` here is plain
         // ABI data).
@@ -176,21 +267,40 @@ impl<'a, I: AllZero> TestIn<'a, I> {
     /// Set the pointer-free field `pick` names (a [`Scalar`]: a number, a span, a ticket).
     #[must_use]
     pub fn set<F: Scalar>(mut self, pick: impl FnOnce(&I) -> &F, value: F) -> Self {
-        self.put(pick, value);
+        let at = Self::offset(pick);
+        let end = at + size_of::<F>();
+        let word = size_of::<usize>();
+        let mut pairs = Self::pairs();
+        pairs.extend(self.lent.iter().map(|e| (e.0, e.1, e.2)));
+        for (p, n, w) in pairs {
+            assert!(
+                end <= p || at >= p + word,
+                "TestIn::set: byte {at} is a pointer the builders set (status row 194)"
+            );
+            assert!(
+                end <= n || at >= n + w,
+                "TestIn::set: byte {at} is the length of the pointer at byte {p}, set with it"
+            );
+        }
+        self.put_at(at, value);
         self
     }
 
     /// Set the string field `pick` names to `bytes`, borrowed for `'a`.
     #[must_use]
     pub fn string(mut self, pick: impl FnOnce(&I) -> &AbiStr, bytes: &'a [u8]) -> Self {
-        self.put(pick, lend_str(bytes));
+        let at = Self::offset(pick);
+        self.put_at(at, lend_str(bytes));
+        self.record(at, at + size_of::<usize>(), size_of::<usize>());
         self
     }
 
     /// Set the payload field `pick` names to `bytes` of `fmt`, borrowed for `'a`.
     #[must_use]
     pub fn blob(mut self, pick: impl FnOnce(&I) -> &Blob, bytes: &'a [u8], fmt: u32) -> Self {
-        self.put(pick, lend_blob(bytes, fmt));
+        let at = Self::offset(pick);
+        self.put_at(at, lend_blob(bytes, fmt));
+        self.record(at, at + size_of::<usize>(), size_of::<usize>());
         self
     }
 
@@ -202,8 +312,11 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         len: impl FnOnce(&I) -> &usize,
         items: &'a [T],
     ) -> Self {
-        self.put(ptr, items.as_ptr());
-        self.put(len, items.len());
+        let (p, n) = (Self::offset(ptr), Self::offset(len));
+        let w = Self::paired(p, n);
+        self.put_at(p, items.as_ptr());
+        self.put_at(n, items.len());
+        self.record(p, n, w);
         self
     }
 
@@ -217,8 +330,11 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         items: &[&'a [u8]],
     ) -> Self {
         let list: Box<[AbiStr]> = items.iter().map(|b| lend_str(b)).collect();
-        self.put(ptr, list.as_ptr());
-        self.put(len, list.len());
+        let (p, n) = (Self::offset(ptr), Self::offset(len));
+        let w = Self::paired(p, n);
+        self.put_at(p, list.as_ptr());
+        self.put_at(n, list.len());
+        self.record(p, n, w);
         self.held.push(Box::new(list));
         self
     }
@@ -234,8 +350,11 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         fmt: u32,
     ) -> Self {
         let list: Box<[Blob]> = items.iter().map(|b| lend_blob(b, fmt)).collect();
-        self.put(ptr, list.as_ptr());
-        self.put(len, list.len());
+        let (p, n) = (Self::offset(ptr), Self::offset(len));
+        let w = Self::paired(p, n);
+        self.put_at(p, list.as_ptr());
+        self.put_at(n, list.len());
+        self.record(p, n, w);
         self.held.push(Box::new(list));
         self
     }
@@ -256,8 +375,11 @@ impl<'a, I: AllZero> TestIn<'a, I> {
                 value: lend_str(v),
             })
             .collect();
-        self.put(ptr, list.as_ptr());
-        self.put(len, list.len());
+        let (p, n) = (Self::offset(ptr), Self::offset(len));
+        let w = Self::paired(p, n);
+        self.put_at(p, list.as_ptr());
+        self.put_at(n, list.len());
+        self.record(p, n, w);
         self.held.push(Box::new(list));
         self
     }
@@ -278,8 +400,16 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         let Ok(n) = C::try_from(buf.len()) else {
             panic!("TestIn::buffer: the buffer is longer than its capacity field states");
         };
-        self.put(ptr, buf.as_mut_ptr());
-        self.put(cap, n);
+        let (p, c) = (Self::offset(ptr), Self::offset(cap));
+        let w = Self::paired(p, c);
+        assert_eq!(
+            w,
+            size_of::<C>(),
+            "TestIn::buffer: the capacity field's width"
+        );
+        self.put_at(p, buf.as_mut_ptr());
+        self.put_at(c, n);
+        self.record(p, c, w);
         self
     }
 
@@ -291,16 +421,20 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         ptr: impl FnOnce(&I) -> &*const T,
         nested: &'a TestIn<'a, T>,
     ) -> Self {
+        nested.check();
         self.put(ptr, ptr::from_ref(&nested.input));
         self
     }
 }
 
-impl<'a, I: Settled> TestIn<'a, I> {
+impl<'a, I: Settled + AllZero> TestIn<'a, I> {
     /// The `in`'s settings: `json`, borrowed for `'a`.
     #[must_use]
     pub fn settings(mut self, json: &'a [u8]) -> Self {
-        *self.input.settings_field() = lend_blob(json, BLOB_JSON);
+        let field = ptr::from_mut(self.input.settings_field()) as usize;
+        let at = field - ptr::from_ref(&self.input) as usize;
+        self.put_at(at, lend_blob(json, BLOB_JSON));
+        self.record(at, at + size_of::<usize>(), size_of::<usize>());
         self
     }
 }

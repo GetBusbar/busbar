@@ -490,9 +490,39 @@ pub fn open_failed<T: AbiOut>(
 /// The accessors of each `in`, one per pointer field and named after it, stated once. Each is `unsafe` inside only
 /// because the kind's ABI, cited beside it, is what makes the pointer valid for the call.
 macro_rules! lend {
-    ($($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {$(
-        impl<'a> Lent<'a, $ty> { $( lend!(@one $p $how($p $(, $n)?) $(-> $el)?); )+ }
-    )+};
+    (fn $reg:ident; $($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {
+        $(
+            impl<'a> Lent<'a, $ty> { $( lend!(@one $p $how($p $(, $n)?) $(-> $el)?); )+ }
+        )+
+        /// THE POINTER AND LENGTH PAIRS of each struct this block lends (status row 194): for each
+        /// list, buffer or loose bytes, the pointer's offset, its length's (or capacity's) offset
+        /// and that field's width, which the test support holds a hand-built `in` to.
+        fn $reg(t: std::any::TypeId) -> Option<Vec<(usize, usize, usize)>> {
+            $(
+                if t == std::any::TypeId::of::<$ty>() {
+                    return Some(
+                        [$( lend!(@pair $ty, $how $p $(, $n)?) ),+]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<(usize, usize, usize)>>(),
+                    );
+                }
+            )+
+            None
+        }
+    };
+    (@pair $ty:ty, one $p:ident) => { None };
+    (@pair $ty:ty, $how:ident $p:ident, $n:ident) => {
+        Some((
+            std::mem::offset_of!($ty, $p),
+            std::mem::offset_of!($ty, $n),
+            {
+                let blank = std::mem::MaybeUninit::<$ty>::uninit();
+                // SAFETY: a place projection of an uninitialised value, never read: its address.
+                crate::abi::pointee_size(unsafe { std::ptr::addr_of!((*blank.as_ptr()).$n) })
+            },
+        ))
+    };
     (@one $name:ident bytes($p:ident, $n:ident)) => {
         #[doc = concat!("The bytes `", stringify!($p), "`/`", stringify!($n), "` lend the call.")]
         #[must_use]
@@ -552,6 +582,7 @@ use crate::abi::transport::{
 };
 
 lend! {
+    fn lend_pairs_kinds;
     // THE LIFECYCLE (`abi::mechanism::lifecycle`).
     OpenIn {
         list(secrets, secrets_len) -> Blob;
@@ -710,6 +741,7 @@ use crate::abi::store::{
 };
 
 lend! {
+    fn lend_pairs_store;
     AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
     OpBlobsIn { list(records, records_len) -> Blob; }
     AppendBatchIn { list(records, records_len) -> Blob; }
@@ -736,6 +768,7 @@ use crate::abi::export::{
 };
 
 lend! {
+    fn lend_pairs_export;
     ScrapeIn {
         list(families, families_len) -> ScrapeFamily;
         buf(buf, cap) -> u8;
@@ -747,10 +780,12 @@ lend! {
 }
 
 /// THE FIELD ACCESSORS of every struct a call lends (status row 194), one per field and named after
-/// it, so a [`Lent`] reads all of its struct without its `Deref` (which #1471 removes) and hands out
-/// nothing by value that names lent memory: a number or a pointer-free struct (`val`) is copied; a string (`str`), a payload
-/// (`blob`) or an embedded struct (`sub`) stays a `Lent` of the same call. A pointer field is read
-/// through its [`lend!`] accessor above (a list, a buffer, loose bytes or one struct).
+/// it, so a [`Lent`] reads all of its struct without its `Deref` (which #1471 removes). A number or
+/// a pointer-free struct (`val`) is copied; a string (`str`), a payload (`blob`) or an embedded
+/// struct (`sub`) stays a `Lent` of the same call. One `val` is not pointer-free: a signal entry's
+/// `value`, a union whose string arm is an `AbiStr`, is copied whole; its tag says which arm is
+/// live, and the SDK reads a string arm only inside the call. A pointer field is read through its
+/// [`lend!`] accessor above (a list, a buffer, loose bytes or one struct).
 macro_rules! lent_fields {
     ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {$(
         // A field named `len` reads the field the host stated; its struct has no emptiness.
@@ -1638,6 +1673,69 @@ macro_rules! lent_field_list {
 }
 
 lent_field_list!(lent_fields);
+
+/// The fields each lent struct embeds: a nested struct (`sub`), a string or a payload, by offset
+/// and type, from the one list the field accessors are stated from.
+macro_rules! lent_embeds {
+    ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {
+        fn lent_embeds(t: std::any::TypeId) -> Vec<(usize, std::any::TypeId)> {
+            $(
+                if t == std::any::TypeId::of::<$ty>() {
+                    #[allow(unused_mut)]
+                    let mut v = Vec::new();
+                    $( lent_embeds!(@one v, $ty, $how $name $(: $t)?); )+
+                    return v;
+                }
+            )+
+            Vec::new()
+        }
+    };
+    (@one $v:ident, $ty:ty, sub $name:ident: $t:ty) => {
+        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<$t>()));
+    };
+    (@one $v:ident, $ty:ty, str $name:ident) => {
+        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<AbiStr>()));
+    };
+    (@one $v:ident, $ty:ty, blob $name:ident) => {
+        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<Blob>()));
+    };
+    (@one $v:ident, $ty:ty, val $name:ident: $t:ty) => {};
+}
+
+lent_field_list!(lent_embeds);
+
+/// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
+/// payloads' included, at their offsets in it: `(pointer, length, length's width)` (status row
+/// 194). What the test support's builders may set together, and nothing else.
+pub(crate) fn lent_pairs(t: std::any::TypeId) -> Vec<(usize, usize, usize)> {
+    let word = std::mem::size_of::<usize>();
+    let mut out = if t == std::any::TypeId::of::<AbiStr>() {
+        vec![(
+            std::mem::offset_of!(AbiStr, ptr),
+            std::mem::offset_of!(AbiStr, len),
+            word,
+        )]
+    } else if t == std::any::TypeId::of::<Blob>() {
+        vec![(
+            std::mem::offset_of!(Blob, ptr),
+            std::mem::offset_of!(Blob, len),
+            word,
+        )]
+    } else {
+        lend_pairs_kinds(t)
+            .or_else(|| lend_pairs_store(t))
+            .or_else(|| lend_pairs_export(t))
+            .unwrap_or_default()
+    };
+    for (at, inner) in lent_embeds(t) {
+        out.extend(
+            lent_pairs(inner)
+                .into_iter()
+                .map(|(p, n, w)| (at + p, at + n, w)),
+        );
+    }
+    out
+}
 
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]

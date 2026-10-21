@@ -159,6 +159,8 @@ pub fn call_in<I: AbiIn, O: Reply>(
     input: &TestIn<'_, I>,
     out: O,
 ) -> Called<O> {
+    input.check();
+    op.check_in::<I>();
     let (raw, door, index) = op.parts();
     let at = on(op, instance);
     run_op(
@@ -184,6 +186,7 @@ pub fn call_hosted_in<'h, I: AbiIn, O: Reply>(
     input: &super::fake::LentIn<'h, I>,
     out: O,
 ) -> Called<O> {
+    op.check_in::<I>();
     let (raw, door, index) = op.parts();
     let at = on(op, instance);
     run_op(
@@ -207,6 +210,8 @@ pub fn close_in<'h, I: AbiIn, O: Reply>(
     input: &TestIn<'h, I>,
     out: O,
 ) -> Called<O> {
+    input.check();
+    op.check_in::<I>();
     let (raw, door, index) = op.parts();
     assert_eq!(
         index,

@@ -882,6 +882,7 @@ impl FakeHost {
         &'h self,
         input: super::test_in::TestIn<'h, I>,
     ) -> LentIn<'h, I> {
+        input.check();
         let super::test_in::TestIn {
             mut input, held, ..
         } = input;
