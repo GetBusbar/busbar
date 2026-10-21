@@ -232,6 +232,7 @@ impl Listening {
                 tls,
                 alpn,
                 handshake_timeout: limits.handshake_timeout,
+                guests: None,
             },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
@@ -283,12 +284,26 @@ impl Listening {
                 tls: None,
                 alpn: Vec::new(),
                 handshake_timeout: limits.handshake_timeout,
+                guests: None,
             },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
             backoff: None,
             sleep: None,
         })
+    }
+
+    /// THE SAME LISTENER, LENDING ITS GUEST LIST (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and
+    /// guest lists", steps 2 and 4: the connector owns the listener, bound to one transport, and
+    /// that transport matches each decoded head against the listener's guest list and calls the
+    /// line's auth): every connection accepted from here on is framed lent the list `book` reads
+    /// at its accept ([`Connection::accepted`], [`crate::framer::Framing::begin_lent`]), on the
+    /// framer's tickets. A listener that carries its carrier as itself, or hands its sockets up,
+    /// frames nothing and lends nothing.
+    #[must_use]
+    pub fn lending(mut self, book: crate::framer::GuestBook) -> Self {
+        self.accept.guests = Some(book);
+        self
     }
 
     /// The address bound.

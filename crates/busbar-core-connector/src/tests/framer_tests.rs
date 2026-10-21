@@ -788,3 +788,123 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
         &[(POINT_HEAD, AuthRef { id: 3, mac: 4 })]
     );
 }
+
+/// Two guest lines as a listener lends them, in match order: a `POST /v1/messages` line whose
+/// auth needs `points` and whose route names a field predicate, and a `none` `GET` line one level
+/// under `/healthz`.
+fn two_lines(points: u32) -> Arc<GuestLines> {
+    use busbar_contract::abi::host::service::AuthRef;
+    use busbar_contract::abi::transport::route::{
+        FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PREFIX,
+    };
+    Arc::new(GuestLines::new(vec![
+        GuestLine {
+            line: 0,
+            points,
+            auth: AuthRef { id: 7, mac: 70 },
+            body_limit: 0,
+            methods: METHOD_POST,
+            path_form: PATH_EXACT,
+            path: "/v1/messages".into(),
+            fields: vec![(FIELD_VALUE_PREFIX, "x-mode".into(), b"real".to_vec())],
+            rung: 0,
+        },
+        GuestLine {
+            line: 1,
+            points: 0,
+            auth: AuthRef { id: 8, mac: 80 },
+            body_limit: 0,
+            methods: METHOD_GET,
+            path_form: PATH_PREFIX,
+            path: "/healthz".into(),
+            fields: Vec::new(),
+            rung: 1,
+        },
+    ]))
+}
+
+/// RED (/status row 192 B; `BUSBAR-1.6.0.md` THE DESIGN §6 step 4: the listener's transport
+/// decodes the head, matches the guest list and calls that line's auth): an accepting framing is
+/// lent its listener's guest list. Every line, in match order, its route and predicates whole,
+/// reaches the framer's `begin` (`BeginIn::lines`) on a ticket, with no binding of the framing's
+/// own (`points` and `auth` are a dial's); the framing holds the list for its life.
+#[test]
+fn red_an_accepting_framing_lends_its_listeners_guest_lines_on_a_ticket() {
+    use busbar_contract::abi::host::service::AuthRef;
+    use busbar_contract::abi::transport::POINT_HEAD;
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
+    let lines = two_lines(POINT_HEAD);
+    let (f, _) = Framing::begin_lent(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        Some(Arc::clone(&lines)),
+    )
+    .unwrap();
+    assert_eq!(
+        door.inner.begun_lines.lock().unwrap().as_slice(),
+        &[lines.lines().to_vec()],
+        "every line, in match order, reaches begin"
+    );
+    assert_eq!(
+        door.begun.lock().unwrap().as_slice(),
+        &[(0, AuthRef::NONE)],
+        "an accepting begin carries no binding of its own"
+    );
+    assert!(
+        door.on
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(op, _, resume)| *op == "begin" && !*resume),
+        "the begin crossed on a ticket"
+    );
+    assert_eq!(
+        f.guests().map(|g| g.lines().len()),
+        Some(2),
+        "the framing holds the list for its life"
+    );
+}
+
+/// RED (/status row 192 B, no ticket-less path for an auth-calling framer): a guest list whose
+/// auths need a point is never lent ticket-less: an entry that gives no ticket is refused before
+/// anything crosses ([`TICKET_LESS_AUTH`]); a list of `none` lines is lent as it is; and a dialled
+/// framing is lent no list at all ([`LINES_ON_DIAL`]).
+#[test]
+fn red_a_guest_list_with_auth_points_is_never_lent_ticket_less() {
+    use busbar_contract::abi::transport::POINT_HEAD;
+    let door = Arc::new(TestDoor::identity("bytes"));
+    let est = Established::plain_for_test();
+    match Framing::begin_lent(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &est,
+        Some(two_lines(POINT_HEAD)),
+    ) {
+        Err(e) => {
+            assert_eq!(e.outcome, Outcome::Refused);
+            assert_eq!(e.error, TICKET_LESS_AUTH, "the refusal names the rule");
+        }
+        Ok(_) => panic!("a guest list with auth points was lent ticket-less"),
+    }
+    assert_eq!(door.count("begin"), 0, "nothing crossed");
+    let open = two_lines(0);
+    let (f, _) =
+        Framing::begin_lent(door.clone(), SIDE_ACCEPT, "", &est, Some(Arc::clone(&open))).unwrap();
+    assert_eq!(
+        door.begun_lines.lock().unwrap().as_slice(),
+        &[open.lines().to_vec()],
+        "a list of none lines is lent ticket-less"
+    );
+    drop(f);
+    match Framing::begin_lent(door.clone(), SIDE_DIAL, "t", &est, Some(open)) {
+        Err(e) => {
+            assert_eq!(e.outcome, Outcome::Fault);
+            assert_eq!(e.error, LINES_ON_DIAL);
+        }
+        Ok(_) => panic!("a dialled framing was lent a guest list"),
+    }
+    assert_eq!(door.count("begin"), 1, "the dial crossed nothing");
+}

@@ -1560,3 +1560,45 @@ fn red_a_unitless_refusal_is_shaped_by_the_requests_path() {
         }
     }
 }
+
+/// RED (/status row 192 B; THE DESIGN §6 steps 3 and 4): the guest list a listener's transport is
+/// lent is the list installed under THAT transport's identity, at that generation: every line's
+/// spec beside its own route, in the list's match order. No other owner, and no other generation,
+/// is lent it.
+#[test]
+fn red_a_listeners_guest_list_is_lent_to_its_own_transport_alone() {
+    let a = Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new());
+    let k = kit(&[("a", a)]);
+    let lent = k
+        .inbound
+        .lent(OWNER, GEN)
+        .expect("the owner's list is lent");
+    let specs = k.inbound.specs(OWNER, GEN).expect("installed");
+    let routes: Vec<Route> = k
+        .inbound
+        .table(OWNER, GEN)
+        .expect("installed")
+        .listener
+        .guests
+        .lines()
+        .iter()
+        .map(|l| l.route.clone())
+        .collect();
+    assert_eq!(
+        lent,
+        specs.into_iter().zip(routes).collect::<Vec<_>>(),
+        "each line's spec beside its own route, in match order"
+    );
+    assert!(
+        k.inbound.lent(0, GEN).is_none(),
+        "the root's identity holds no listener's list"
+    );
+    assert!(
+        k.inbound.lent(OWNER + 9, GEN).is_none(),
+        "another owner is lent nothing"
+    );
+    assert!(
+        k.inbound.lent(OWNER, GEN + 1).is_none(),
+        "nor another generation"
+    );
+}

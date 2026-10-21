@@ -455,3 +455,88 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
         );
     });
 }
+
+/// RED (/status row 192 B; `BUSBAR-1.6.0.md` THE DESIGN §6 steps 2 and 4: the connector owns the
+/// listener, bound to one transport, and that transport matches each decoded head against the
+/// listener's guest list and calls the line's auth): a listener lending its guest list frames
+/// every connection it accepts on the framer's tickets, lent the list its book reads at that
+/// accept; over a framer that gives no ticket, a list whose auth needs a point refuses the
+/// connection before anything crosses.
+#[test]
+fn red_a_lending_listener_frames_each_accepted_connection_under_its_guest_list() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    use busbar_contract::abi::host::service::AuthRef;
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_PREFIX};
+    use busbar_contract::abi::transport::POINT_HEAD;
+
+    use crate::framer::{GuestBook, GuestLine, GuestLines, TICKET_LESS_AUTH};
+    use crate::support::PendingDoor;
+
+    let lines = Arc::new(GuestLines::new(vec![GuestLine {
+        line: 0,
+        points: POINT_HEAD,
+        auth: AuthRef { id: 5, mac: 55 },
+        body_limit: 0,
+        methods: METHOD_ANY,
+        path_form: PATH_PREFIX,
+        path: "/v1".into(),
+        fields: Vec::new(),
+        rung: 0,
+    }]));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let book: GuestBook = {
+        let (lines, reads) = (Arc::clone(&lines), Arc::clone(&reads));
+        Arc::new(move || {
+            reads.fetch_add(1, SeqCst);
+            Some(Arc::clone(&lines))
+        })
+    };
+    worker().block_on(async {
+        let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
+        let framer: Arc<dyn FramerDoor> = door.clone();
+        let mut l = Listening::bind(
+            Some(framer),
+            &crate::support::via(),
+            "127.0.0.1:0",
+            None,
+            Vec::new(),
+            AcceptLimits::default(),
+        )
+        .expect("binds")
+        .lending(Arc::clone(&book));
+        let addr = l.local_addr();
+        let client = tokio::spawn(async move { Client::connect(addr).await.unwrap() });
+        let a = accept(&mut l).await;
+        let held = client.await.unwrap();
+        assert_eq!(
+            door.inner.begun_lines.lock().unwrap().as_slice(),
+            &[lines.lines().to_vec()],
+            "the accepted framing's begin is lent the listener's lines"
+        );
+        assert!(
+            door.on
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(op, _, _)| *op == "begin"),
+            "the accepted framing begins on a ticket"
+        );
+        assert_eq!(reads.load(SeqCst), 1, "the book is read at the accept");
+        drop((a, held));
+
+        let bare = Arc::new(TestDoor::identity("bytes"));
+        let mut l = plain(bare.clone(), AcceptLimits::default()).lending(Arc::clone(&book));
+        let addr = l.local_addr();
+        let client = tokio::spawn(async move { Client::connect(addr).await.unwrap() });
+        let got = futures::future::poll_fn(|cx| l.poll_accept(cx)).await;
+        let held = client.await.unwrap();
+        match got {
+            Err(Failure::Refused(e)) => assert!(e.contains(TICKET_LESS_AUTH), "{e}"),
+            Err(other) => panic!("refused for another reason: {other:?}"),
+            Ok(_) => panic!("a ticket-less framer was lent lines whose auth needs a point"),
+        }
+        assert_eq!(bare.count("begin"), 0, "nothing crossed");
+        drop(held);
+    });
+}

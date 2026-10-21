@@ -243,6 +243,10 @@ pub struct Connection {
     /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
     /// (`check_agreed`) before the framer is handed it. Empty = none offered.
     alpn_offer: Vec<u8>,
+    /// THE LISTENER'S GUEST LIST, read off its book when the connection was accepted, lent to
+    /// the framing's `begin` ([`Framing::begin_lent`]); `None` on a dial, and on a listener that
+    /// lends none.
+    lent: Option<Arc<crate::framer::GuestLines>>,
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
@@ -323,6 +327,9 @@ pub struct Accept {
     pub alpn: Vec<Vec<u8>>,
     /// The bound on the handshake; the framer's own deadlines bound the rest.
     pub handshake_timeout: Duration,
+    /// Where the listener's guest list is read at each accept, lent to the framing's `begin`
+    /// ([`crate::framer::Framing::begin_lent`]); `None` = the listener lends none.
+    pub guests: Option<crate::framer::GuestBook>,
 }
 
 impl std::fmt::Debug for Accept {
@@ -330,6 +337,7 @@ impl std::fmt::Debug for Accept {
         f.debug_struct("Accept")
             .field("tls", &self.tls.is_some())
             .field("handshake_timeout", &self.handshake_timeout)
+            .field("guests", &self.guests.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -764,6 +772,7 @@ impl Connection {
             unfed: VecDeque::new(),
             tunnel: None,
             alpn_offer: Vec::new(),
+            lent: None,
         })
     }
 }
@@ -821,6 +830,7 @@ impl Connection {
             unfed: VecDeque::new(),
             tunnel: None,
             alpn_offer: Vec::new(),
+            lent: None,
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -980,6 +990,7 @@ impl Connection {
             unfed: VecDeque::new(),
             tunnel: None,
             alpn_offer,
+            lent: accept.guests.as_ref().and_then(|book| book()),
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1769,14 +1780,26 @@ impl Connection {
         };
         // A carrier carried as itself has no framing to begin: it is open.
         if let Some(door) = self.door.as_ref() {
-            let (framing, y) = Framing::begin_ticketed(
-                Arc::clone(door),
-                self.side,
-                &self.target,
-                &self.established,
-                opening,
-            )
-            .map_err(|e| Failure::Refused(e.to_string()))?;
+            // An accepted connection is framed under its listener's guest list, on tickets: the
+            // listener's transport calls a line's auth, which may pend (THE DESIGN §6 step 4).
+            let begun = if self.side == SIDE_DIAL {
+                Framing::begin_ticketed(
+                    Arc::clone(door),
+                    self.side,
+                    &self.target,
+                    &self.established,
+                    opening,
+                )
+            } else {
+                Framing::begin_lent(
+                    Arc::clone(door),
+                    self.side,
+                    &self.target,
+                    &self.established,
+                    self.lent.clone(),
+                )
+            };
+            let (framing, y) = begun.map_err(|e| Failure::Refused(e.to_string()))?;
             let parked = framing.parked();
             self.framing = Some(framing);
             self.phase = Phase::Open;

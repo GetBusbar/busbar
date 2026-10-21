@@ -17,11 +17,14 @@
 //! ([`crate::root::serve::door_mounts`], which stages it here with the door routes' unit-less
 //! refusals); [`publish`] installs it with the generation's opened auths, the size gate's limit
 //! and the generation's app, and publishes the generation the loader verifies refs against. A
-//! listener's table is keyed by the identity of the instance that serves it: today the data
-//! listener is served by the root's own data door (identity `0`, which no plugin presents), so its
-//! table is installed under `0`; the transport bound to it holds its own identity's table once it
-//! accepts there (`boot::refuse_inbound` still refuses that binding). The legacy data door and its
-//! own verify are untouched: one serving path at a time.
+//! listener's table is keyed by THE IDENTITY OF THE TRANSPORT INSTANCE BOUND TO IT (THE DESIGN §6
+//! step 2: the connector owns every listener, each bound to one transport), the identity the
+//! loader verifies every ref that transport presents for (`auth_handle::verify_auth_ref`): never
+//! the root's own (`0`, which no transport presents). A transport is entered with [`serve_under`]
+//! when the data listener binds over it; its listener lends each accepted framing the lines
+//! [`lending`] reads (each handle minted for that identity at the published generation), through
+//! the book [`book`] gives `Listening::lending`. The legacy data door and its own verify are
+//! untouched: one serving path at a time.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -34,10 +37,6 @@ use crate::root::loader::dispatch::auth_handle::{
     self, AuthCallAnswer, AuthCallAsk, AuthDone, AuthHandleHost, AuthRan, HandInAsk, HeadCopy,
     RefusalBytes, RefuseAsk, UnitSecret,
 };
-
-/// The identity the root's own data door serves the data listener under: the composition root's
-/// identity on the instance table, never a plugin's.
-pub const ROOT_OWNER: u64 = 0;
 
 /// THE PROCESS'S INBOUND SIDE, built once.
 pub fn host() -> &'static Arc<Inbound> {
@@ -214,44 +213,97 @@ pub fn stage(
 /// The last generation published.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// PUBLISH A GENERATION (THE DESIGN §6 step 8, l.979-985): the staged data listener's list
-/// installed under [`ROOT_OWNER`] at a new generation over `app` (its opened auths, its mount
-/// table, its governance), the size gate's limit, and the generation published to the loader, so
-/// every ref is verified against it. At boot and at each configuration apply. Answers the
-/// generation; `None` when no list was staged (a build that serves no door plane).
-pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
-    let (guests, door_refusals) = staged().clone()?;
-    let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-    let auths = guests
-        .lines()
-        .iter()
-        .filter_map(|l| match &l.auth {
-            busbar_kernel::guest::LineAuth::Chain(names, _) => Some(names),
-            busbar_kernel::guest::LineAuth::None => None,
-        })
-        .flatten()
-        .filter_map(|n| Some((n.clone(), app.auth.position_calls(n)?)))
-        .collect();
+/// THE TRANSPORTS THE DATA LISTENER IS SERVED THROUGH: each one's instance identity, a table
+/// installed under it at every generation ([`serve_under`]).
+fn owners() -> std::sync::MutexGuard<'static, Vec<u64>> {
+    static OWNERS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    OWNERS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The app the last generation was published over, for a transport entered after it.
+fn published_app() -> std::sync::MutexGuard<'static, Option<Arc<busbar_kernel::state::App>>> {
+    static APP: Mutex<Option<Arc<busbar_kernel::state::App>>> = Mutex::new(None);
+    APP.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One publish or one entry at a time: a generation's tables are installed whole.
+fn installing() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: Mutex<()> = Mutex::new(());
+    ONE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The refusal of the root's own identity as a listener's transport.
+pub const ROOT_IS_NO_TRANSPORT: &str =
+    "the root's own identity serves no listener: a listener's table is its transport's";
+
+/// INSTALL THE DATA LISTENER'S TABLE under each of `owners` (the instance identities of the
+/// transports it is served through) at `generation`: the sealed `guests` with the opened auths
+/// their lines name off `app`, the size gate's limit, the door routes' unit-less refusals and each
+/// line's handle id from the line half of the shared ref-id space. Nothing is installed under the
+/// root's own identity.
+///
+/// # Errors
+///
+/// [`ROOT_IS_NO_TRANSPORT`] for an owner `0`; the kernel refused a table.
+pub fn install_listeners(
+    inbound: &Inbound,
+    owners: &[u64],
+    generation: u64,
+    guests: &busbar_kernel::guest::GuestList,
+    door_refusals: &[busbar_kernel::plane_routes::PlaneRefusalSpec],
+    app: &Arc<busbar_kernel::state::App>,
+) -> Result<(), &'static str> {
+    // RED: the table is installed under the root's own identity, whatever transport serves it.
+    let _ = owners;
+    let owners: &[u64] = &[0];
     let body_limit = busbar_kernel::config::limits::installed().map_or(
         busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
         |l| l.request_body_max_bytes,
     ) as u64;
-    // Each line's handle id from the line half of the shared ref-id space: never a binding's.
-    let ids = guests
-        .lines()
-        .iter()
-        .map(|_| auth_handle::next_ref_id(auth_handle::RefSpace::Line))
-        .collect();
-    let listener = kin::Listener {
-        guests,
-        auths,
-        body_limit,
-        app: Arc::clone(app),
-        door_refusals,
-        ids,
-        signed_ingress: kin::signed_by_dialect(),
-    };
-    if let Err(e) = host().install(ROOT_OWNER, generation, listener) {
+    for &owner in owners {
+        let auths = guests
+            .lines()
+            .iter()
+            .filter_map(|l| match &l.auth {
+                busbar_kernel::guest::LineAuth::Chain(names, _) => Some(names),
+                busbar_kernel::guest::LineAuth::None => None,
+            })
+            .flatten()
+            .filter_map(|n| Some((n.clone(), app.auth.position_calls(n)?)))
+            .collect();
+        // Each line's handle id from the line half of the shared ref-id space: never a binding's.
+        let ids = guests
+            .lines()
+            .iter()
+            .map(|_| auth_handle::next_ref_id(auth_handle::RefSpace::Line))
+            .collect();
+        let listener = kin::Listener {
+            guests: guests.clone(),
+            auths,
+            body_limit,
+            app: Arc::clone(app),
+            door_refusals: door_refusals.to_vec(),
+            ids,
+            signed_ingress: kin::signed_by_dialect(),
+        };
+        inbound.install(owner, generation, listener)?;
+    }
+    Ok(())
+}
+
+/// PUBLISH A GENERATION (THE DESIGN §6 step 8, l.979-985): the staged data listener's list
+/// installed under every transport it is served through ([`install_listeners`]) at a new
+/// generation over `app` (its opened auths, its mount table, its governance), and the generation
+/// published to the loader, so every ref is verified against it. At boot and at each
+/// configuration apply. Answers the generation; `None` when no list was staged (a build that
+/// serves no door plane) or a table was refused.
+pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
+    let (guests, door_refusals) = staged().clone()?;
+    let _one = installing();
+    let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    *published_app() = Some(Arc::clone(app));
+    let owners = owners().clone();
+    if let Err(e) = install_listeners(host(), &owners, generation, &guests, &door_refusals, app) {
         tracing::error!(
             generation,
             error = e,
@@ -261,4 +313,97 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
     }
     auth_handle::publish_generation(generation);
     Some(generation)
+}
+
+/// ENTER `owner`, the instance identity of a transport the data listener is bound to (THE DESIGN
+/// §6 step 2), as one its table is installed under: at the generation already published, at once,
+/// and at every generation [`publish`] publishes from here on. Entering one twice is entering it
+/// once.
+///
+/// # Errors
+///
+/// [`ROOT_IS_NO_TRANSPORT`] for `0`; the kernel refused the table.
+pub fn serve_under(owner: u64) -> Result<(), &'static str> {
+    if owner == 0 {
+        return Err(ROOT_IS_NO_TRANSPORT);
+    }
+    let _one = installing();
+    {
+        let mut owners = owners();
+        if !owners.contains(&owner) {
+            owners.push(owner);
+        }
+    }
+    let generation = auth_handle::generation();
+    let (Some(app), Some((guests, door_refusals))) = (published_app().clone(), staged().clone())
+    else {
+        // Nothing is published yet: the first publish installs it.
+        return Ok(());
+    };
+    install_listeners(host(), &[owner], generation, &guests, &door_refusals, &app)
+}
+
+/// THE GUEST LIST `owner`'s LISTENER LENDS at `generation`, off `inbound`'s table for that owner:
+/// each line as the kernel lends it ([`Inbound::lent`]), its handle MINTED FOR `owner` at
+/// `generation` (`auth_handle::mint_auth_ref`), so the ref the transport presents on `auth.call`
+/// verifies for the transport that presents it and for no other. `None` = no table is installed
+/// under `owner` at `generation`, or no handle could be minted.
+#[must_use]
+pub fn lending_from(
+    inbound: &Inbound,
+    owner: u64,
+    generation: u64,
+) -> Option<busbar_core_connector::framer::GuestLines> {
+    // RED: every handle is minted for the root's own identity.
+    let minted_for = 0;
+    let lines = inbound
+        .lent(owner, generation)?
+        .into_iter()
+        .map(|(spec, route)| {
+            Some(busbar_core_connector::framer::GuestLine {
+                line: spec.line,
+                points: spec.points,
+                auth: auth_handle::mint_auth_ref(minted_for, generation, spec.auth)?,
+                body_limit: spec.body_limit,
+                methods: route.methods,
+                path_form: route.path_form,
+                path: route.path,
+                fields: route.fields,
+                rung: route.rung,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(busbar_core_connector::framer::GuestLines::new(lines))
+}
+
+/// The lines last lent to each owner, with the generation they were minted at.
+type Lent = std::collections::HashMap<u64, (u64, Arc<busbar_core_connector::framer::GuestLines>)>;
+
+fn lent_cache() -> std::sync::MutexGuard<'static, Option<Lent>> {
+    static LENT: Mutex<Option<Lent>> = Mutex::new(None);
+    LENT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// THE GUEST LIST `owner`'s LISTENER LENDS NOW: [`lending_from`] the process's inbound side at the
+/// generation published to the loader, built once per generation and shared by every accept.
+#[must_use]
+pub fn lending(owner: u64) -> Option<Arc<busbar_core_connector::framer::GuestLines>> {
+    let generation = auth_handle::generation();
+    let mut cache = lent_cache();
+    let cache = cache.get_or_insert_with(Lent::new);
+    if let Some((at, lines)) = cache.get(&owner) {
+        if *at == generation {
+            return Some(Arc::clone(lines));
+        }
+    }
+    let lines = Arc::new(lending_from(host(), owner, generation)?);
+    cache.insert(owner, (generation, Arc::clone(&lines)));
+    Some(lines)
+}
+
+/// THE BOOK the data listener bound over transport `owner` lends from
+/// (`busbar_core_connector::listen::Listening::lending`): [`lending`] at each accept.
+#[must_use]
+pub fn book(owner: u64) -> busbar_core_connector::framer::GuestBook {
+    Arc::new(move || lending(owner))
 }

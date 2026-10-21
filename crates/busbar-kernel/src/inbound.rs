@@ -862,6 +862,21 @@ impl Inbound {
         self.table(owner, generation).map(|t| t.listener.specs())
     }
 
+    /// THE GUEST LIST `owner`'s LISTENER LENDS at `generation`, as its transport is lent it
+    /// (`BeginIn::lines`): each line's [`LineSpec`] beside its route, in the list's match order.
+    /// `None` = the kernel holds no list for that owner at that generation: a listener's table is
+    /// keyed by the identity of the transport instance bound to it, and no other.
+    #[must_use]
+    pub fn lent(
+        &self,
+        owner: u64,
+        generation: u64,
+    ) -> Option<Vec<(LineSpec, crate::guest::Route)>> {
+        // RED: no list is lent.
+        let _ = (owner, generation);
+        None
+    }
+
     fn table(&self, owner: u64, generation: u64) -> Option<Arc<Table>> {
         self.tables
             .read()

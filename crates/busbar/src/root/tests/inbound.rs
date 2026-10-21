@@ -45,8 +45,9 @@ fn line(path: &str, methods: u32) -> Line {
     }
 }
 
-/// The kernel side over this build's protocols, the data listener holding `NATIVE` (POST only).
-fn side() -> (Arc<Inbound>, GuestList) {
+/// The kernel side over this build's protocols with no table installed, and the data listener's
+/// list holding `NATIVE` (POST only).
+fn bare() -> (Arc<Inbound>, GuestList) {
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
@@ -60,6 +61,12 @@ fn side() -> (Arc<Inbound>, GuestList) {
         Arc::new(|_| {}),
         Arc::new(|_: &kin::RefusedUnit| {}),
     );
+    (inbound, guests)
+}
+
+/// The kernel side over this build's protocols, the data listener holding `NATIVE` (POST only).
+fn side() -> (Arc<Inbound>, GuestList) {
+    let (inbound, guests) = bare();
     inbound
         .install(
             OWNER,
@@ -273,4 +280,60 @@ fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
     assert_eq!(auth_handle::space_of(binding), Some(RefSpace::Binding));
     assert!(!kin::is_line_id(binding));
     assert_ne!(binding & kin::BINDING_BIT, 0);
+}
+
+/// RED (/status row 192 B; THE DESIGN §6 steps 2 to 4; #74): THE DATA LISTENER'S TABLE IS KEYED BY
+/// THE IDENTITY OF THE TRANSPORT INSTANCE IT IS SERVED THROUGH, never the root's own: installed
+/// under that identity, it lends that transport its lines, each handle minted for that identity at
+/// the generation, so the ref the transport presents on `auth.call` verifies for it, and for no
+/// other caller (the root's identity among them). The root's own identity is refused as a
+/// listener's transport.
+#[test]
+fn red_the_data_listeners_table_and_lent_lines_are_its_transports() {
+    use crate::root::inbound::{install_listeners, lending_from, ROOT_IS_NO_TRANSPORT};
+    let (inbound, guests) = bare();
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    install_listeners(&inbound, &[OWNER], GEN, &guests, &[], &app).expect("installed");
+    assert!(
+        inbound.specs(OWNER, GEN).is_some(),
+        "the table is the transport's"
+    );
+    assert!(
+        inbound.specs(0, GEN).is_none(),
+        "no table is keyed by the root's own identity"
+    );
+    let lent = lending_from(&inbound, OWNER, GEN).expect("the transport is lent its lines");
+    assert_eq!(lent.lines().len(), guests.lines().len());
+    for (l, g) in lent.lines().iter().zip(guests.lines()) {
+        assert_eq!(
+            (l.methods, l.path_form, l.path.as_str()),
+            (g.route.methods, g.route.path_form, g.route.path.as_str()),
+            "the line's own route"
+        );
+        assert_eq!(l.points, g.auth.points().bits());
+        assert!(
+            auth_handle::verify_auth_ref(OWNER, GEN, &l.auth).is_ok(),
+            "line {}'s handle verifies for the transport it is lent to",
+            l.line
+        );
+        assert!(
+            auth_handle::verify_auth_ref(0, GEN, &l.auth).is_err(),
+            "line {}'s handle is not the root's",
+            l.line
+        );
+        assert!(
+            auth_handle::verify_auth_ref(OWNER + 1, GEN, &l.auth).is_err(),
+            "line {}'s handle is not another transport's",
+            l.line
+        );
+    }
+    assert!(
+        lending_from(&inbound, 0, GEN).is_none(),
+        "the root's own identity is lent nothing"
+    );
+    assert_eq!(
+        install_listeners(&inbound, &[0], GEN, &guests, &[], &app),
+        Err(ROOT_IS_NO_TRANSPORT),
+        "the root's own identity serves no listener"
+    );
 }

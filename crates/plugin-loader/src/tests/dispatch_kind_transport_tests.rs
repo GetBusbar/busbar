@@ -794,6 +794,115 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
     );
 }
 
+/// RED (/status row 192 B; #65, #74; THE DESIGN §6 steps 3 and 4): an accepting `begin` is lent
+/// its listener's guest list only with every line's handle minted for THE TRANSPORT THAT FRAMES IT,
+/// at the published generation, with its mac as minted: a line of another owner (the root's own
+/// identity among them), of another generation or forged is REFUSED before the crossing, and so is
+/// a malformed table (`check_lines`: a handle-less line, a count behind NULL, lines on a dial).
+#[test]
+fn red_an_accept_begin_is_lent_only_lines_minted_for_its_own_transport() {
+    use crate::dispatch::auth_handle::{generation, mint_auth_ref};
+    use busbar_contract::abi::host::service::{AuthRef, SCHEME_PLAIN};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::transport::route::{LineEntry, RouteMatch, METHOD_ANY, PATH_PREFIX};
+    use busbar_contract::abi::transport::{POINT_HEAD, SIDE_ACCEPT, SIDE_DIAL};
+    let (framer, other) = (40, 41);
+    let admit = |i: &BeginIn, owner: u64| {
+        Transport::admit(
+            slot::BEGIN,
+            std::ptr::from_ref(i).cast(),
+            size_of::<BeginIn>(),
+            owner,
+        )
+    };
+    let path = b"/v1";
+    let line = |id: u32, auth: AuthRef| LineEntry {
+        line: id,
+        points: POINT_HEAD,
+        auth,
+        body_limit: 0,
+        route: RouteMatch {
+            methods: METHOD_ANY,
+            path_form: PATH_PREFIX,
+            path: AbiStr {
+                ptr: path.as_ptr(),
+                len: path.len(),
+            },
+            fields: std::ptr::null(),
+            fields_len: 0,
+            rung: 0,
+            _reserved: 0,
+        },
+    };
+    let minted = |owner: u64, generation: u64, id: u64| {
+        mint_auth_ref(owner, generation, id).expect("minted")
+    };
+    let begin = |lines: &[LineEntry]| {
+        let mut i: BeginIn = z();
+        i.side = SIDE_ACCEPT;
+        i.scheme = SCHEME_PLAIN;
+        i.lines = lines.as_ptr();
+        i.lines_len = lines.len();
+        i
+    };
+    let own = [
+        line(0, minted(framer, generation(), 5)),
+        line(1, minted(framer, generation(), 6)),
+    ];
+    assert_eq!(
+        admit(&begin(&own), framer),
+        None,
+        "lines minted for the transport that frames them"
+    );
+    assert_eq!(
+        admit(&begin(&own), other),
+        Some(Outcome::Refused),
+        "another transport's lines"
+    );
+    let rooted = [line(0, minted(0, generation(), 5))];
+    assert_eq!(
+        admit(&begin(&rooted), framer),
+        Some(Outcome::Refused),
+        "lines keyed by the root's own identity"
+    );
+    let stale = [
+        line(0, minted(framer, generation(), 5)),
+        line(1, minted(framer, generation().wrapping_sub(1), 6)),
+    ];
+    assert_eq!(
+        admit(&begin(&stale), framer),
+        Some(Outcome::Refused),
+        "a stale line"
+    );
+    let mut forged = own;
+    forged[1].auth.mac ^= 1 << 17;
+    assert_eq!(
+        admit(&begin(&forged), framer),
+        Some(Outcome::Refused),
+        "a forged line"
+    );
+    let unbound = [line(0, AuthRef::NONE)];
+    assert_eq!(
+        admit(&begin(&unbound), framer),
+        Some(Outcome::Refused),
+        "a line with no handle"
+    );
+    let mut hidden = begin(&own);
+    hidden.lines = std::ptr::null();
+    assert_eq!(
+        admit(&hidden, framer),
+        Some(Outcome::Refused),
+        "a count behind NULL"
+    );
+    let mut dialled = begin(&own);
+    dialled.side = SIDE_DIAL;
+    assert_eq!(
+        admit(&dialled, framer),
+        Some(Outcome::Refused),
+        "lines on a dial"
+    );
+}
+
 /// RED: a `begin` whose scheme is undeclared (`0`, a zeroed `in`) or unknown is REFUSED before
 /// the crossing, on every side; a declared scheme is admitted.
 #[test]

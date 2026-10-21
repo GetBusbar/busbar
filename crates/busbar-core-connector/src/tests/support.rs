@@ -28,7 +28,7 @@ use futures::task::AtomicWaker;
 
 use super::carrier::{Carry, Side};
 use super::compose::Via;
-use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
+use super::framer::{Call, Crossed, DoorFacts, FramerDoor, GuestLine};
 
 /// The knobs.
 #[derive(Debug, Clone, Default)]
@@ -106,6 +106,9 @@ pub struct TestDoor {
     pub begun_fields: Mutex<Vec<OpeningFields>>,
     /// The target every `begin` crossing was handed (`BeginIn::target`), in order.
     pub begun_targets: Mutex<Vec<Vec<u8>>>,
+    /// The guest list every `begin` crossing was lent (`BeginIn::lines`), read back into owned
+    /// lines, in order: empty for a crossing lent none.
+    pub begun_lines: Mutex<Vec<Vec<GuestLine>>>,
     /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
     pub dialled_keys: Mutex<Vec<u64>>,
 }
@@ -156,6 +159,7 @@ impl TestDoor {
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
             begun_targets: Mutex::new(Vec::new()),
+            begun_lines: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
         }
     }
@@ -397,6 +401,7 @@ impl FramerDoor for TestDoor {
                     // SAFETY: host-borrowed fields, `fields_len` of them, valid for the call.
                     unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
                 };
+                self.begun_lines.lock().unwrap().push(lines_lent(i));
                 self.begun_fields.lock().unwrap().push(
                     fields
                         .iter()
@@ -948,6 +953,47 @@ impl FramerDoor for PendingDoor {
             other => self.inner.cross(other),
         }
     }
+}
+
+/// The guest list a `begin` was lent (`BeginIn::lines`), read back into owned lines.
+fn lines_lent(i: &busbar_contract::abi::transport::BeginIn) -> Vec<GuestLine> {
+    if i.lines.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the host's lent table of `lines_len` entries, valid for the call.
+    let lines = unsafe { std::slice::from_raw_parts(i.lines, i.lines_len) };
+    lines
+        .iter()
+        .map(|l| {
+            let r = &l.route;
+            let predicates = if r.fields.is_null() {
+                &[][..]
+            } else {
+                // SAFETY: the host's lent predicates, `fields_len` of them, valid for the call.
+                unsafe { std::slice::from_raw_parts(r.fields, r.fields_len) }
+            };
+            GuestLine {
+                line: l.line,
+                points: l.points,
+                auth: l.auth,
+                body_limit: l.body_limit,
+                methods: r.methods,
+                path_form: r.path_form,
+                path: String::from_utf8_lossy(raw(r.path.ptr, r.path.len)).into_owned(),
+                fields: predicates
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.op,
+                            String::from_utf8_lossy(raw(p.name.ptr, p.name.len)).into_owned(),
+                            raw(p.value.ptr, p.value.len).to_vec(),
+                        )
+                    })
+                    .collect(),
+                rung: r.rung,
+            }
+        })
+        .collect()
 }
 
 /// The host's bytes an op lent (`ptr`, `len`), copied.
