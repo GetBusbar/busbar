@@ -2548,7 +2548,13 @@ fn measure_edges_granting(
     for c in crates {
         let Some(from) = c.kind else { continue };
         for decl in half.decls(c) {
-            if half == Half::Test && granted.contains(&(c.name.clone(), decl.pkg.clone())) {
+            // A granted edge: the test half's witnesses and fixtures, the shipped half's door-root
+            // edges ([`door_root_edges`]).
+            let shipped_grant =
+                half == Half::Shipped && decl.section == "dependencies" && decl.optional;
+            if (half == Half::Test || shipped_grant)
+                && granted.contains(&(c.name.clone(), decl.pkg.clone()))
+            {
                 continue;
             }
             let Some(target) = by_name.get(decl.pkg.as_str()) else {
@@ -2593,7 +2599,8 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
             g.extend(loader_fixture_edges(cx, crates));
             g
         }
-        Half::Shipped => BTreeSet::new(),
+        // THE DOOR-ROOT EDGES ([`door_root_edges`]) are granted on the shipped half, by rule.
+        Half::Shipped => door_root_edges(cx, crates),
     };
     let measured = measure_edges_granting(crates, half, &granted);
     // A TEST-LINKED DOOR (`test_linked_door_edges`) is a test edge with its own verdict; the shipped
@@ -6655,6 +6662,63 @@ fn conformance_witness_edges_with(
 /// does and the edge builds the target's door for a test to open). A shipped use is the loader
 /// linking a plugin, and stays the finding it always was. Nothing is granted to any other crate:
 /// the kernel's and the cleanliness crates' tests use in-crate doubles (R-FIX3, :3894).
+/// The table a loader manifest names its DOOR-ROOT crates in (status row 195).
+const DOOR_ROOT_TABLE: &str = "[package.metadata.busbar.door-root]";
+
+/// The crates a loader manifest's `[package.metadata.busbar.door-root]` table names, in order.
+fn door_root_table(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut out = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == DOOR_ROOT_TABLE;
+            continue;
+        }
+        if let (true, Some((k, _))) = (in_table, code.split_once('=')) {
+            out.push(k.trim().trim_matches('"').to_string());
+        }
+    }
+    out
+}
+
+/// THE DOOR-ROOT EDGES (status row 195; coordinator ruling (a), BUSBAR-1.6.0.md l.272-274 and
+/// Part 2 #2 rule (1)): the SHIPPED `[dependencies]` edges of the loader (`busbar-plugin-loader`,
+/// kind `plugin-tooling`) to the plugin crates its own `[package.metadata.busbar.door-root]` table
+/// names. The loader admits each one's `door` through `open_linked`, the `dlopen` path's own checks
+/// beside the one reviewed `unsafe`, so the `forbid(unsafe_code)` root reaches the door only as the
+/// loader admitted it. An edge is granted ONLY when ALL hold: the depender is the loader, of kind
+/// `plugin-tooling`; the dependency is a plugin-kind crate; it is declared `optional = true` in
+/// `[dependencies]` (linked behind its implicit feature, which the root forwards); and the loader's
+/// own door-root table names it. Every other plugin-tooling edge to a plugin crate, a non-optional
+/// one, one the table does not name, and the same edge from any other tooling crate, is the finding
+/// it always was.
+fn door_root_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let Some(loader) = crates
+        .iter()
+        .find(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND))
+    else {
+        return out;
+    };
+    let Ok(manifest) = cx.read(&loader.manifest) else {
+        return out;
+    };
+    for krate in door_root_table(&manifest) {
+        let is_plugin = crates
+            .iter()
+            .any(|c| c.name == krate && c.kind.is_some_and(|k| truths::PLUGIN_KINDS.contains(&k)));
+        let optional_edge = loader
+            .deps
+            .iter()
+            .any(|d| d.pkg == krate && d.optional && d.section == "dependencies");
+        if is_plugin && optional_edge {
+            out.insert((loader.name.clone(), krate));
+        }
+    }
+    out
+}
+
 fn loader_fixture_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     let Some(loader) = crates
@@ -6895,6 +6959,9 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let permitted: BTreeSet<&str> = WIRE_PERMITTED_KINDS.iter().copied().collect();
+    // THE LOADER'S DOOR-ROOT EDGES ([`door_root_edges`]): a door the loader admits is the door's
+    // only reach; the loader frames and moves no bytes through it.
+    let door_roots = door_root_edges(cx, crates);
     let mut offenders: Vec<String> = Vec::new();
 
     // A PLUGIN NEVER CHOOSES ITS WIRE. The manifest edge is the same reach spelled where no source
@@ -6925,7 +6992,11 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             .iter()
             .chain(c.dev_deps.iter().filter(|d| !witness(d)))
         {
-            if by_name.get(dep.pkg.as_str()).and_then(|t| t.kind) == Some("transport") {
+            if by_name.get(dep.pkg.as_str()).and_then(|t| t.kind) == Some("transport")
+                && !(dep.optional
+                    && dep.section == "dependencies"
+                    && door_roots.contains(&(c.name.clone(), dep.pkg.clone())))
+            {
                 let dep = dep.cite();
                 offenders.push(format!(
                     "wire-dependency\t{}\t{} is kind `{kind}` and depends on the wire crate {dep}. \
@@ -13591,3 +13662,23 @@ pub use neutral::{neutral_census, neutral_kind_src_roots, plane_wall_crates, Neu
 // The census and face readings over the real tree, one plant each (row 159, audit XC1).
 #[cfg(test)]
 mod census_faces_tests;
+
+/// THE DOOR-ROOT GRANT IS NARROW (status row 195): the table reader reads the loader's table and
+/// nothing beside it, and the grant's conditions are each required (the conditions are held in
+/// `door_root_edges`; the table reader is the one part that is pure).
+#[cfg(test)]
+mod door_root_tests {
+    use super::door_root_table;
+
+    #[test]
+    fn the_door_root_table_is_read_and_nothing_beside_it() {
+        let manifest =
+            "[dependencies]\nbusbar-transport-grpc = { workspace = true, optional = true }\n\
+            busbar-transport-tcp = { workspace = true }\n\n\
+            [package.metadata.busbar.door-root]\n\
+            busbar-transport-grpc = \"busbar_transport_grpc::door\" # the one row\n\n\
+            [package.metadata.busbar.both-ways]\ntransport = \"busbar-transport-tcp\"\n";
+        assert_eq!(door_root_table(manifest), ["busbar-transport-grpc"]);
+        assert!(door_root_table("[dependencies]\nx = \"1\"\n").is_empty());
+    }
+}
