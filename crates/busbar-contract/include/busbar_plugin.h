@@ -4298,7 +4298,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 306 of 306 structures are pinned by the golden ---- */
+/* ---- layout proof: 308 of 308 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
