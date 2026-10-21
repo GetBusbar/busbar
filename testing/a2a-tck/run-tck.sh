@@ -95,8 +95,8 @@ read_pin () {
 # hyphen -- and nothing else. Anything with a slash or a space is refused (exit 2) BEFORE it is used
 # as, or inside, a path or an argument, because `discard` removes paths with `rm -rf`.
 require_safe_pin () {
-  if ! LC_ALL=C bash -c '[[ $1 =~ ^[0-9A-Za-z.+-]+$ ]]' _ "$2"; then
-    echo "the $1 pin '$2' is not a version (it must match ^[0-9A-Za-z.+-]+\$) -- refusing to run" >&2
+  if ! LC_ALL=C bash -c '[[ $1 =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]' _ "$2"; then
+    echo "the $1 pin '$2' is not a version (it must match ^[0-9A-Za-z][0-9A-Za-z.+-]*\$) -- refusing to run" >&2
     exit 2
   fi
 }
@@ -408,7 +408,7 @@ case "${1:-}" in
   #
   # THE PINS ARE VALIDATED BEFORE ANY PATH OR COMMAND IS BUILT FROM THEM: `serve.sh` builds
   # `venv-$CONTROL_PY_VERSION`, which `discard` may `rm -rf`, so a pin that is not
-  # ^[0-9A-Za-z.+-]+$ is refused first. Its RED leg plants a `../`-style pin and a sentinel
+  # ^[0-9A-Za-z][0-9A-Za-z.+-]*$ is refused first. Its RED leg plants a `../`-style pin and a sentinel
   # directory outside the work directory, and wants both the refusal as the last line and the
   # sentinel untouched.
   #
@@ -482,6 +482,7 @@ json.dump({"summary": {}, "per_requirement":
     # the work directory), and a go pin that is a path.
     harness_tree "$st/h-sdk-traversal" "$(pins "$CONTROL_GO_VERSION" /../../outside-sentinel)"
     harness_tree "$st/h-go-traversal" "$(pins ../escape 9.9.9)"
+    harness_tree "$st/h-sdk-dash" "$(pins "$CONTROL_GO_VERSION" -x)"
     # `go` stand-ins: `go version -m` reporting the pinned module version or another one; a `go`
     # whose every command fails; and one whose `go install` installs a working binary.
     for v in "$CONTROL_GO_VERSION" v2.3.0; do
@@ -648,6 +649,9 @@ esac"
       ic "$st/h-agrees/a2a-tck" "$st/bin" "$st/go-v2.3.0"
     expect install_control_refuses_a_binary_that_does_not_run 2 "does not run" \
       ic "$st/h-agrees/a2a-tck" "$st/bin-broken" "$st/go-$CONTROL_GO_VERSION"
+    icl () { CONTROL_GO_VERSION="../escape"; ic "$@"; }
+    expect install_control_refuses_its_own_pin_that_is_not_a_version 2 "the a2a-go version (CONTROL_GO_VERSION) pin '../escape' is not a version" \
+      icl "$st/h-agrees/a2a-tck" "$st/bin" "$st/go-v2.4.0"
     expect install_control_accepts_the_pinned_binary 0 "control binary verified" \
       ic "$st/h-agrees/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
 
@@ -662,6 +666,8 @@ esac"
     expect fetch_tck_refuses_a_checkout_that_is_not_the_pin 2 "pin is $TCK_REF -- refusing to run" \
       ft "$st/tck-wrong" "$st/no-stand-in"
     ftr () { TCK_REF="$3"; ft "$1" "$2"; }
+    expect fetch_tck_refuses_a_pin_that_leads_with_a_hyphen 2 "pin '-x' is not a version" \
+      ftr "$st/tck-dashpin" "$st/git-fails" "-x"
     expect fetch_tck_refuses_a_pin_that_is_not_a_version 2 "is not a version" \
       ftr "$st/tck-badpin" "$st/git-fails" "../escape"
     expect fetch_tck_fetches_a_missing_checkout 0 "a2a-tck @ $TCK_REF" \
@@ -710,6 +716,8 @@ esac"
       if [ "$took" -le 10 ]; then echo "peer stopped in ${took}s, within the bound"; else echo "peer stopped in ${took}s, past the bound"; fi
     }
     expect stop_control_stops_a_peer_that_ignores_term 0 "within the bound" stc
+    stg () { kill () { [ "$1" = -9 ] && echo "SIGKILL sent to $2" >> "$st/kills"; builtin kill "$@"; }; sleep 30 & CONTROL_PID=$!; sleep 0.3; stop_control; if [ -s "$st/kills" ]; then cat "$st/kills"; else echo "a peer that left on TERM got no SIGKILL"; fi; }
+    expect stop_control_sends_no_sigkill_to_a_peer_that_has_gone 0 "got no SIGKILL" stg
 
     # -- scenario-agent/serve.sh and the a2a-sdk pin it reads
     # sv <tree> [work-dir] [stand-in PATH dir] [-no-port-]
@@ -734,16 +742,17 @@ esac"
     expect serve_sh_says_when_a_half_made_virtualenv_remains 2 "$st/agent-work/venv-5.5.5 is left; stopped on the refusal: yes" \
       disk_after "$st/agent-work/venv-5.5.5" "could not be removed; remove it by hand -- refusing to serve" sv "$st/h-sdk-uninstallable" "" "$st/python3-half+rm-fails"
     rm -rf "$st/agent-work/venv-5.5.5"
-    rm -rf "$st/agent-work/venv-5.5.5"
     # The pin is validated before any path is built from it. The sentinel is a directory OUTSIDE
     # the work directory that the pin points at; the leg wants the refusal as the last line, the
     # work directory never made, and the sentinel and its one file still there. A twin with a
     # valid pin and the same failing install wants the same sentinel untouched after `discard`.
+    # Each leg has its own sentinel, so the twin does not depend on the RED leg's.
     sentinel="$st/outside-sentinel"
-    mkdir -p "$sentinel"; touch "$sentinel/keep"
-    outside_after () {     # outside_after <work-dir> <present|absent> <command...>
-      local work="$1" want="$2" rc=0 out=""
-      shift 2
+    sentinel_twin="$st/outside-sentinel-twin"
+    mkdir -p "$sentinel" "$sentinel_twin"; touch "$sentinel/keep" "$sentinel_twin/keep"
+    outside_after () {     # outside_after <sentinel-dir> <work-dir> <present|absent> <command...>
+      local sentinel="$1" work="$2" want="$3" rc=0 out=""
+      shift 3
       out="$( ( "$@" ) 2>&1 )" || rc=$?
       printf '%s\n' "$out"
       if [ ! -f "$sentinel/keep" ] || [ "$(ls -A "$sentinel" | wc -l | tr -d ' ')" != 1 ]; then
@@ -755,10 +764,12 @@ esac"
       return "$rc"
     }
     expect serve_sh_refuses_a_pin_that_is_not_a_version 2 "is not a version" \
-      outside_after "$st/agent-work-traversal" absent \
+      outside_after "$sentinel" "$st/agent-work-traversal" absent \
       sv "$st/h-sdk-traversal" "$st/agent-work-traversal" "$st/python3-half"
+    expect serve_sh_refuses_a_pin_that_leads_with_a_hyphen 2 "is not a version" \
+      sv "$st/h-sdk-dash" "$st/agent-work-dash" "$st/python3-half"
     expect serve_sh_discard_stays_inside_the_work_directory 2 "was removed -- refusing to serve" \
-      outside_after "$st/agent-work-twin" present \
+      outside_after "$sentinel_twin" "$st/agent-work-twin" present \
       sv "$st/h-sdk-uninstallable" "$st/agent-work-twin" "$st/python3-half"
     expect serve_sh_installs_the_pinned_sdk_and_goes_on_to_serve 0 "would serve with a2a-sdk 4.4.4+local-1" \
       sv "$st/h-sdk-installable" "$st/agent-work-installs" "$st/python3-installs"
@@ -780,6 +791,13 @@ esac"
     expect subject_runs_the_suite_against_its_endpoint 0 "(a2a-tck exit 1; verdict comes from the baseline comparison)" \
       env -u A2AHT_CONTROL_BIN -u A2A_TCK_OUT A2A_TCK_WORK="$sw" BUSBAR_A2A_ENDPOINT=http://127.0.0.1:9 \
       PATH="$st/git-at-pin:$PATH" bash "$REAL_HERE/run-tck.sh" subject
+    # The twin: the same verb over a checkout that is no commit must stop in fetch_tck, which proves
+    # the verb runs fetch_tck (and the verdict above is not reached without it).
+    sw2="$st/subject-work-empty"
+    mkdir -p "$sw2/a2a-tck/.git"
+    expect subject_verifies_the_checkout_before_running_the_suite 2 "a2a-tck checkout is no commit" \
+      env -u A2AHT_CONTROL_BIN -u A2A_TCK_OUT A2A_TCK_WORK="$sw2" BUSBAR_A2A_ENDPOINT=http://127.0.0.1:9 \
+      PATH="$st/no-stand-in:$PATH" bash "$REAL_HERE/run-tck.sh" subject
     expect an_unknown_verb_prints_usage_and_refuses 2 "planted with stand-ins (no network, no control)" \
       bash "$REAL_HERE/run-tck.sh" no-such-verb
 

@@ -41,7 +41,7 @@ fi
 # path is built from it. A version is letters, digits, dots, plus and hyphen and nothing else: a
 # pin carrying a slash (`../`, an absolute path) could point `venv-$CONTROL_PY_VERSION` -- and the
 # `rm -rf` after a failed install -- at a directory outside the work directory.
-pin_re='^[0-9A-Za-z.+-]+$'
+pin_re='^[0-9A-Za-z][0-9A-Za-z.+-]*$'
 if ! LC_ALL=C bash -c '[[ $1 =~ $2 ]]' _ "$CONTROL_PY_VERSION" "$pin_re"; then
   echo "the CONTROL_PY_VERSION in testing/a2a-harness/scripts/install-control.sh is not a version \
 (it must match $pin_re) -- refusing to serve" >&2
