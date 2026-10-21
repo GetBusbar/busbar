@@ -240,7 +240,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 ///   attached to its members: the entry is the member the plane's projection names, as 1.5.5
 ///   bound its hooks, admitted only when it is a member of the recorded pool (`holds`, the
 ///   generation's own record of the pool's members); any other entry, the empty one included,
-///   refuses the unit (THE DESIGN §1 l.183-187: the hook gate applies to every plane the same
+///   refuses the unit (the hook gate applies to every plane the same
 ///   way);
 /// - a projection that names no entry and states no body (a task's continuation, whose call was
 ///   screened at the unit that created the task) has nothing for a gate to screen: `None`, nothing

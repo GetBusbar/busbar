@@ -1400,7 +1400,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 }
                 TransformOutcome::Reject { status, message } => {
                     self.lock().hooked = Some((hooks, view));
-                    // THE DESIGN §11.7 (HOOK Q1): a load-bearing rewrite that could not answer
+                    // A load-bearing rewrite that could not answer
                     // keeps the shared 503; only a hook's own status is clamped to the 4xx band.
                     let (status, message) = gated::rewrite_refusal(status, &message);
                     return Err(veto(status, message));
@@ -2034,7 +2034,7 @@ impl SessionStage {
                         pool = %self.pool,
                         "in-session gate could not answer; applying its on_error"
                     );
-                    // THE DESIGN §11.7: `on_error` stays 1.5.5's, one disposition on every seat; a
+                    // `on_error` stays 1.5.5's, one disposition on every seat; a
                     // load-bearing gate that cannot answer is 1.5.5's retryable 503 and its words
                     // (v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1012-1018).
                     if failed_call_refuses(on_error) {
@@ -2077,7 +2077,7 @@ impl SessionStage {
                     };
                 }
                 TransformOutcome::Reject { status, message } => {
-                    // THE DESIGN §11.7 (HOOK Q1): the shared 503 passes unclamped, as at the
+                    // The shared 503 passes unclamped, as at the
                     // request stage.
                     let (status, words) = gated::rewrite_refusal(status, &message);
                     return StageAnswer::Stop { status, words };

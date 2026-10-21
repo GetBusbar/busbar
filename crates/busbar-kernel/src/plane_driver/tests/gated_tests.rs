@@ -81,7 +81,7 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
     );
 }
 
-/// RED (Q128 p21#3; ARCHITECT 2026-10-07, THE DESIGN §1 l.183-187): under a pool route the plane's
+/// RED: under a pool route the plane's
 /// projection may name only a member of the recorded pool. A member of no recorded pool, and the
 /// empty entry with a body to screen, are refused; before the fix each bound whatever entry the
 /// plane named (another entry's gates, or none at all).
@@ -130,7 +130,7 @@ fn the_refusal_literal_is_the_shared_constant() {
     );
 }
 
-/// RED (Q128 p21#4; THE DESIGN §11.7, the hook view's `ingress_protocol`): the gate-first binder
+/// RED (the hook view's `ingress_protocol`): the gate-first binder
 /// names the plane's dialects, so a gate-first unit's in-session hooks are told the dialect it
 /// arrived in and its access amendments record it as the op, as its screen does. Before the fix
 /// the binder took the trait default and every in-session hook was told an empty dialect.

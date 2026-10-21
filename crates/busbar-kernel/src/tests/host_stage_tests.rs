@@ -370,7 +370,7 @@ async fn a_gate_stops_with_its_clamped_status_and_words_and_passes_otherwise() {
 }
 
 /// A gate that cannot answer decides by its own `on_error`: `reject` stops (RED) with the one
-/// shared refusal every seat answers, 1.5.5's retryable 503 and its words (THE DESIGN §11.7;
+/// shared refusal every seat answers, 1.5.5's retryable 503 and its words (
 /// v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1012-1018); anything else passes.
 #[tokio::test]
 async fn a_gate_that_cannot_answer_decides_by_its_on_error() {
@@ -470,7 +470,7 @@ impl RoutingPolicy for LoadBearingDown {
     }
 }
 
-/// RED (THE DESIGN §11.7, HOOK Q1): an in-session rewrite whose load-bearing hook could not answer
+/// RED: an in-session rewrite whose load-bearing hook could not answer
 /// stops with the shared 503 and its words, never clamped to a 403; a hook's own out-of-band
 /// status still is.
 #[tokio::test]

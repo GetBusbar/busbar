@@ -311,7 +311,7 @@ async fn a_request_the_plane_cannot_project_is_refused_before_any_attempt() {
     assert_eq!(rendered.status, 400);
 }
 
-/// RED (THE DESIGN §11.7, HOOK Q1, owner-signed 2026-10-02): a load-bearing rewrite that could not
+/// RED: a load-bearing rewrite that could not
 /// answer refuses the routed request with the shared retryable 503 and its words, the refusal the
 /// gate-first stage and every gate seat answer, never clamped to a 403.
 #[tokio::test]
