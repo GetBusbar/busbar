@@ -891,7 +891,9 @@ impl PlaneCalls for Double {
     /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
     /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
     /// applied by replacing the turns with its messages' `role:content`, unless the target is
-    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project. The
+    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project, and
+    /// `/refuses-rewrite` refuses to project with a rewrite (one naming a model other than the
+    /// routed one, say) while it projects the caller's own request. The
     /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
     /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
     /// gate for it.
@@ -908,7 +910,7 @@ impl PlaneCalls for Double {
             .lock()
             .unwrap()
             .push((body.clone(), rewrite.clone()));
-        if target == b"/unprojectable" {
+        if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {
             return Outcome::Refused;
         }
         let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite")
