@@ -38,6 +38,7 @@ use core::marker::PhantomData;
 use core::mem::{offset_of, size_of};
 use core::ptr;
 
+use super::test_in::TestIn;
 use super::zeroed;
 use crate::abi::host::conn::connector::{self, ConnectorSlots};
 use crate::abi::host::io::{self as hio, IoSlots};
@@ -141,11 +142,12 @@ impl sealed::Host for crate::abi::plane::PlaneOpenIn {
 }
 impl TakesHost for crate::abi::plane::PlaneOpenIn {}
 
-/// An `open` `in` whose `host` names a [`FakeHost`]'s tables, borrowed from that host: it cannot
-/// outlive it, and safe code reads no copy of it (only [`super::reply::call_hosted`] does).
+/// An `open` `in` whose `host` names a [`FakeHost`]'s tables, borrowed from that host and from
+/// every byte its [`TestIn`] names: it cannot outlive either, and safe code reads no copy of it
+/// (only [`super::reply::call_hosted`] does).
 #[derive(Debug)]
 pub struct LentIn<'h, I> {
-    pub(crate) input: I,
+    pub(crate) input: TestIn<'h, I>,
     host: PhantomData<&'h FakeHost>,
 }
 
@@ -865,8 +867,11 @@ impl FakeHost {
     /// `in` comes back as a [`LentIn`] that borrows the host, so it cannot outlive it; the test
     /// hands it to [`super::reply::call_hosted`] and never holds the `in` itself again. No table,
     /// and no `ServiceFn`, is handed to the test.
-    pub fn lend_to<I: TakesHost>(&self, mut input: I) -> LentIn<'_, I> {
-        *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
+    pub fn lend_to<'h, I: TakesHost + super::AllZero>(
+        &'h self,
+        mut input: TestIn<'h, I>,
+    ) -> LentIn<'h, I> {
+        *input.input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
         LentIn {
             input,
             host: PhantomData,

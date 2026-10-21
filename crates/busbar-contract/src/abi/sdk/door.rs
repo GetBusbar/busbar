@@ -849,6 +849,7 @@ pub const fn door<T: KindOps>(
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
 /// #     _: *mut core::ffi::c_void,
 /// #     _: *const core::ffi::c_void,
@@ -884,6 +885,7 @@ fn main() {
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
 /// #     _: *mut core::ffi::c_void,
 /// #     _: *const core::ffi::c_void,
@@ -923,6 +925,7 @@ fn main() {
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
 /// #     _: *mut core::ffi::c_void,
 /// #     _: *const core::ffi::c_void,
@@ -935,7 +938,7 @@ fn main() {
     let open = view
         .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
         .unwrap();
-    let mut opened = call(open, None, &zeroed::<OpenIn>(), zeroed::<OpenOut>());
+    let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
     opened.out.instance = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
     let _: Instance = opened.out.instance;
 }
@@ -964,6 +967,7 @@ fn main() {
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
 /// #     _: *mut core::ffi::c_void,
 /// #     _: *const core::ffi::c_void,
@@ -1001,6 +1005,7 @@ fn main() {
 /// # use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 /// # use busbar_contract::abi::sdk::test_support::reply::{call, Instance};
 /// # use busbar_contract::abi::sdk::test_support::{zeroed, DoorView, ViewOp};
+/// # use busbar_contract::abi::sdk::test_support::test_in::TestIn;
 /// # extern "C" fn forged(
 /// #     _: *mut core::ffi::c_void,
 /// #     _: *const core::ffi::c_void,
@@ -1013,7 +1018,7 @@ fn main() {
     let open = view
         .op::<busbar_contract::abi::secret::Ops>(|t| &t.head.open)
         .unwrap();
-    let mut opened = call(open, None, &zeroed::<OpenIn>(), zeroed::<OpenOut>());
+    let mut opened = call(open, None, &TestIn::<OpenIn>::new(), zeroed::<OpenOut>());
     let _: Option<Instance> = opened.take_instance();
 }
 /// ```
@@ -1022,7 +1027,7 @@ fn main() {
 ///
 /// ```compile_fail
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
 ///     let _ = host.services();
@@ -1031,10 +1036,10 @@ fn main() {
 ///
 /// ```
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
-///     let _ = host.lend_to(zeroed::<OpenIn>());
+///     let _ = host.lend_to(TestIn::<OpenIn>::new());
 /// }
 /// ```
 ///
@@ -1042,10 +1047,10 @@ fn main() {
 ///
 /// ```compile_fail
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
-///     let lent = host.lend_to(zeroed::<OpenIn>());
+///     let lent = host.lend_to(TestIn::<OpenIn>::new());
 ///     drop(host);
 ///     drop(lent);
 /// }
@@ -1053,10 +1058,10 @@ fn main() {
 ///
 /// ```
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
 ///     let host = FakeHost::new();
-///     let lent = host.lend_to(zeroed::<OpenIn>());
+///     let lent = host.lend_to(TestIn::<OpenIn>::new());
 ///     drop(lent);
 ///     drop(host);
 /// }

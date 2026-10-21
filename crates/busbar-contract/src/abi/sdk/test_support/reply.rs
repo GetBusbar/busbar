@@ -28,6 +28,7 @@
 
 use core::ffi::c_void;
 use core::fmt;
+use core::marker::PhantomData;
 use core::mem::size_of;
 use core::ptr;
 
@@ -37,6 +38,8 @@ use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
 use crate::abi::mechanism::check::{Fault, HARD_MAX_BYTES, STATEMENT_LIST_MAX};
 use crate::abi::mechanism::lifecycle::slot;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
+
+use super::test_in::TestIn;
 
 mod sealed {
     use crate::abi::mechanism::call::{OutHead, Outcome};
@@ -75,17 +78,58 @@ pub trait Reply: AbiOut + sealed::Take {
 /// in one place only, [`Called::take_instance`] of an `open` that answered READY, at most once. It
 /// names the door it was opened on, and [`close`] takes it by value: no slot is entered on a
 /// forged pointer, another door's instance, or one already closed.
+///
+/// TIED TO WHAT ITS `open` WAS LENT (status row 194): `'h` is the borrow of the [`TestIn`] (and,
+/// through [`call_hosted`], of the [`FakeHost`](super::fake::FakeHost)) its `open` ran over, so an
+/// instance that holds the fake host's tables cannot outlive the host.
+///
+/// ```compile_fail,E0505
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+/// use busbar_contract::abi::sdk::test_support::reply::call_hosted;
+/// use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+/// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
+/// fn opened(open: ViewOp) {
+///     let host = FakeHost::new();
+///     let input = TestIn::<OpenIn>::new();
+///     let lent = host.lend_to(input);
+///     let mut called = call_hosted(open, None, &lent, zeroed::<OpenOut>());
+///     let instance = called.take_instance();
+///     drop(host);
+///     drop(instance);
+/// }
+/// ```
+///
+/// GREEN, its twin: the instance goes before the host.
+///
+/// ```
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+/// use busbar_contract::abi::sdk::test_support::reply::call_hosted;
+/// use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+/// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
+/// fn opened(open: ViewOp) {
+///     let host = FakeHost::new();
+///     let input = TestIn::<OpenIn>::new();
+///     let lent = host.lend_to(input);
+///     let mut called = call_hosted(open, None, &lent, zeroed::<OpenOut>());
+///     let instance = called.take_instance();
+///     drop(instance);
+///     drop(host);
+/// }
+/// ```
 #[derive(Debug)]
-pub struct Instance {
+pub struct Instance<'h> {
     ptr: *mut c_void,
     door: &'static crate::abi::mechanism::door::Door,
+    lent: PhantomData<&'h ()>,
 }
 
 /// One op called: its outcome, its `out` with every reviewed pointer cleared (its scalars as
 /// written: `head.lease`, `instance`, `status_code`, ...), `head.error` copied, and the owned copies
 /// of the `out`'s own fields.
 #[derive(Debug)]
-pub struct Called<O: Reply> {
+pub struct Called<'h, O: Reply> {
     /// What the op answered.
     pub outcome: Outcome,
     /// The `out`, every reviewed pointer cleared.
@@ -95,13 +139,13 @@ pub struct Called<O: Reply> {
     /// The `out`'s own fields, copied.
     pub owned: O::Owned,
     /// The instance an `open` answered READY with, until [`Called::take_instance`] takes it.
-    instance: Option<Instance>,
+    instance: Option<Instance<'h>>,
 }
 
-impl<O: Reply> Called<O> {
+impl<'h, O: Reply> Called<'h, O> {
     /// The instance this call's `open` answered READY with: `Some` once, for an `open` that
     /// answered READY with a non-NULL instance, `None` for every other call and every later take.
-    pub fn take_instance(&mut self) -> Option<Instance> {
+    pub fn take_instance(&mut self) -> Option<Instance<'h>> {
         self.instance.take()
     }
 }
@@ -112,24 +156,54 @@ impl<O: Reply> Called<O> {
 /// `validate` and `open` run on no instance; every other slot but `close` runs on one its door's
 /// `open` answered ([`Called::take_instance`]); `close` is [`close`]'s.
 ///
-/// SAFE (status row 159): `op` is a [`ViewOp`](super::ViewOp), a slot of a door the contract's
-/// macro built, and `instance` an [`Instance`] that door's `open` answered, so every pointer the
-/// slot receives is one the contract vouches for.
+/// SAFE (status rows 159 and 194): `op` is a [`ViewOp`](super::ViewOp), a slot of a door the
+/// contract's macro built, `instance` an [`Instance`] that door's `open` answered, and `input` a
+/// [`TestIn`] whose every pointer borrows memory that outlives the call, so every pointer the slot
+/// receives is one the contract vouches for.
+///
+/// RED (status row 194): a hand-built `in`, whose pub pointer fields could name anything, is not
+/// a [`TestIn`].
+///
+/// ```compile_fail,E0308
+/// use busbar_contract::abi::mechanism::call::Blob;
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_contract::abi::sdk::test_support::reply::call;
+/// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
+/// fn opened(open: ViewOp) {
+///     let mut input: OpenIn = zeroed();
+///     input.settings = Blob::json(b"{}");
+///     let _ = call(open, None, &input, zeroed::<OpenOut>());
+/// }
+/// ```
+///
+/// GREEN, its twin: the same `in` through its builder.
+///
+/// ```
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_contract::abi::sdk::test_support::reply::call;
+/// use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+/// use busbar_contract::abi::sdk::test_support::{zeroed, ViewOp};
+/// fn opened(open: ViewOp) {
+///     let input = TestIn::<OpenIn>::new().settings(b"{}");
+///     let _ = call(open, None, &input, zeroed::<OpenOut>());
+/// }
+/// ```
 ///
 /// # Panics
 ///
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field. Or the
 /// instance is missing, present where none is taken, another door's, or `op` is `close`.
-pub fn call<I: AbiIn, O: Reply>(
+pub fn call<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
-    instance: Option<&Instance>,
-    input: &I,
+    instance: Option<&Instance<'h>>,
+    input: &TestIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     let at = on(op, instance);
-    // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`.
-    unsafe { run(op, at, *input, out) }
+    // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`; every
+    // pointer in the `TestIn` borrows memory that lives for `'h`, past this call.
+    unsafe { run(op, at, input.input, out) }
 }
 
 /// [`call`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to: the
@@ -138,15 +212,16 @@ pub fn call<I: AbiIn, O: Reply>(
 /// # Panics
 ///
 /// As [`call`].
-pub fn call_hosted<I: AbiIn, O: Reply>(
+pub fn call_hosted<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
-    instance: Option<&Instance>,
-    input: &super::fake::LentIn<'_, I>,
+    instance: Option<&Instance<'h>>,
+    input: &super::fake::LentIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     let at = on(op, instance);
-    // SAFETY: as `call`; the fake host the `in` was lent by outlives the call.
-    unsafe { run(op, at, input.input, out) }
+    // SAFETY: as `call`; the fake host the `in` was lent by, and every byte it names, live for
+    // `'h`, past this call and past every instance it answers.
+    unsafe { run(op, at, input.input.input, out) }
 }
 
 /// `close` of `instance`, which this takes: the instance is gone once its door closed it.
@@ -154,12 +229,12 @@ pub fn call_hosted<I: AbiIn, O: Reply>(
 /// # Panics
 ///
 /// As [`call`], or `op` is not `close`.
-pub fn close<I: AbiIn, O: Reply>(
+pub fn close<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
-    instance: Instance,
-    input: &I,
+    instance: Instance<'h>,
+    input: &TestIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     let (_, door, index) = op.parts();
     assert_eq!(
         index,
@@ -171,12 +246,12 @@ pub fn close<I: AbiIn, O: Reply>(
         "reply::close: the instance is another door's"
     );
     // SAFETY: the slot is its door's own `close`, on an instance that door's READY `open`
-    // answered, closed once (taken by value).
-    unsafe { run(op, instance.ptr, *input, out) }
+    // answered, closed once (taken by value), over a `TestIn` that outlives the call.
+    unsafe { run(op, instance.ptr, input.input, out) }
 }
 
 /// The instance pointer `op` is entered on: NULL for `validate` and `open`, else `instance`'s.
-fn on(op: super::ViewOp, instance: Option<&Instance>) -> *mut c_void {
+fn on(op: super::ViewOp, instance: Option<&Instance<'_>>) -> *mut c_void {
     let (_, door, index) = op.parts();
     assert_ne!(
         index,
@@ -214,7 +289,7 @@ pub(crate) unsafe fn call_raw<I: AbiIn, O: Reply>(
     instance: *mut c_void,
     input: &I,
     out: O,
-) -> Called<O> {
+) -> Called<'static, O> {
     // SAFETY: the caller's contract.
     unsafe { run_op(op, None, instance, *input, out) }
 }
@@ -225,12 +300,12 @@ pub(crate) unsafe fn call_raw<I: AbiIn, O: Reply>(
 ///
 /// `op` is a slot of its door and `instance` NULL or one that door's READY `open` answered, as
 /// `on` checks.
-unsafe fn run<I: AbiIn, O: Reply>(
+unsafe fn run<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: *mut c_void,
     input: I,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     let (raw, door, index) = op.parts();
     let opens = (index == slot::OPEN).then_some(door);
     // SAFETY: the caller's contract.
@@ -243,13 +318,13 @@ unsafe fn run<I: AbiIn, O: Reply>(
 /// # Safety
 ///
 /// [`Op`]'s contract for `op` and `instance`.
-unsafe fn run_op<I: AbiIn, O: Reply>(
+unsafe fn run_op<'h, I: AbiIn, O: Reply>(
     op: Op,
     opens: Option<&'static crate::abi::mechanism::door::Door>,
     instance: *mut c_void,
     mut input: I,
     mut out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     out.clear(Token(()));
     out.head().size = size_of::<O>() as u32;
     // SAFETY: `I: AbiIn` is `#[repr(C)]` and leads with an `InHead` (its unsafe contract), so the
@@ -271,7 +346,11 @@ unsafe fn run_op<I: AbiIn, O: Reply>(
     out.clear(Token(()));
     let instance = match opens {
         Some(door) if outcome == Outcome::Ready && !opened.is_null() => {
-            Some(Instance { ptr: opened, door })
+            Some(Instance {
+                ptr: opened,
+                door,
+                lent: PhantomData,
+            })
         }
         _ => None,
     };
