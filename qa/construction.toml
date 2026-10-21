@@ -1567,8 +1567,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
   "crates/busbar-kernel/src/preflight.rs::AUTH_AXIS -- one opener fn pointer the root binds (the auth axis over a registry); holds no table",
   "crates/busbar-kernel/src/preflight.rs::TEST_ROOT_HOOK_NAMES -- compiled only under test / test-support: the hook names a root test binary hands in",
-  "crates/busbar-kernel/src/rate_apply.rs::APPLY -- one rate-holder object (a port) the root installs; holds no table",
-  "crates/busbar-kernel/src/rate_apply.rs::EPOCH -- one rate-epoch object (a port) the root installs; holds no table",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
