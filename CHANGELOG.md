@@ -88,6 +88,15 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **A metadata host-list entry is read the way the destination it guards is read.**
+  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.
+  On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
+  `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
+  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries that warn are a `%`
+  outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
+  non-ASCII that UTS #46 cannot map. Every ASCII host gets 1.5.5's verdicts and texts, and a CIDR
+  entry is still refused with 1.5.5's text (owner-approved 2026-10-21).
+
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
   and both halves are caller-supplied free text: rotating `a:b` under header `c` and rotating `a`
