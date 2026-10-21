@@ -1072,7 +1072,7 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// only to each other would exit 0 here and look correct doing it.
 ///
 /// GATED ON `linked_section_tools`, set exactly when the linked door declaring `tools:` is in the
-/// build (the `linked-section` row; the linked row that once carried a `stdio-serve` axis is gone): the collision check lives in that
+/// build (the `linked-section` row; no linked row carries a serve-mode axis any more): the collision check lives in that
 /// plane and is compiled out with it — a binary without that
 /// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
 /// missed refusal this test exists to pin. The config configures that plane and nothing else (no
@@ -1397,7 +1397,7 @@ models:
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
 // reaches the credential field this test is about. The 18 sibling provider tests in this file are
-// already `plane-llm`-gated for exactly that reason; these two were not, so
+// already gated on the linked provider-pool section for exactly that reason; these two were not, so
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
@@ -1424,14 +1424,14 @@ fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `api_key: none` — the explicit keyless declaration for a local ollama / vLLM — validates CLEAN
+/// `api_key: none` — the explicit keyless declaration for a local, keyless upstream — validates CLEAN
 /// with no variable set for it anywhere. This is the migration path off the removed
 /// degrade-to-an-empty-credential behaviour, so it has to work at the outermost surface.
 // PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
 // reaches the credential field this test is about. The 18 sibling provider tests in this file are
-// already `plane-llm`-gated for exactly that reason; these two were not, so
+// already gated on the linked provider-pool section for exactly that reason; these two were not, so
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
@@ -1484,13 +1484,13 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 // plane's door states it as its one dialect and consumes `providers:`, so its folded section's
 // `PlaneCfg::known_dialects` (`busbar_kernel::plane_driver::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
-// is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
+// is a legal `protocol:` value even though no provider wire-codec module translates it.
 
 /// A config whose sole provider speaks `protocol` and whose `decisions:` block is `decisions_yaml`
 /// verbatim. Mirrors `write_configs_with_api_key`'s shape (own `providers.yaml` + `config.yaml`,
 /// not the shared `write_configs` helper) because these tests vary the provider's `protocol:`,
 /// which `write_configs` hard-codes to `anthropic`.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -1522,8 +1522,8 @@ models: {{}}
 /// speaks an unknown protocol is refused naming the dialects the plane speaks ("this plane speaks
 /// only: <d>, <d>."), so the binary itself says which protocols the linked plane reads. Exactly
 /// two are required; a refusal that stops naming them fails here, loudly.
-#[cfg(feature = "plane-decisions")]
-fn decision_dialect() -> String {
+#[cfg(linked_section_decisions)]
+fn door_dialect() -> String {
     let dir = fixture_dir("decisions-dialect-probe");
     write_decisions_configs(
         &dir,
@@ -1534,7 +1534,7 @@ fn decision_dialect() -> String {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         code, 1,
-        "a foreign dialect on the decision plane is refused: {stderr}"
+        "a foreign dialect on the plane is refused: {stderr}"
     );
     let spoken = stderr
         .split("this plane speaks only: ")
@@ -1549,13 +1549,13 @@ fn decision_dialect() -> String {
 /// CONTROL: a `decisions:` block naming a real `jev`-protocol provider validates clean. Proves the
 /// three refusals below are each triggered by their OWN defect, not by the mere presence of a
 /// `decisions:` section or by `protocol: jev` itself.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_ok_on_a_good_decisions_config() {
     let dir = fixture_dir("decisions-ok");
     write_decisions_configs(
         &dir,
-        &decision_dialect(),
+        &door_dialect(),
         "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -1568,7 +1568,7 @@ fn validate_ok_on_a_good_decisions_config() {
 }
 
 /// THE SECOND DIALECT: a model whose provider speaks the plane's second dialect validates clean too.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_ok_on_a_config_in_the_planes_second_dialect() {
     let dir = fixture_dir("plane-ok-second-dialect");
@@ -1586,13 +1586,13 @@ fn validate_ok_on_a_config_in_the_planes_second_dialect() {
 }
 
 /// DEFECT 1: `decisions.models.<m>.provider` names a provider absent from `providers:`.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
     let dir = fixture_dir("decisions-badprovider");
     write_decisions_configs(
         &dir,
-        &decision_dialect(),
+        &door_dialect(),
         "decisions:\n  models:\n    verdicts:\n      provider: ghost\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -1616,13 +1616,13 @@ fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
 }
 
 /// DEFECT 2: `decisions.hooks` names a hook absent from the top-level `hooks:` registry.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     let dir = fixture_dir("decisions-badhook");
     write_decisions_configs(
         &dir,
-        &decision_dialect(),
+        &door_dialect(),
         "decisions:\n  models:\n    verdicts:\n      provider: mock\n  hooks: [ghost-hook]\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -1646,7 +1646,7 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
 /// handed `anthropic` fails". `write_decisions_configs`'s default catalog protocol IS `anthropic`
 /// (the shipped default, `providers.rs::DEFAULT_PROTOCOL`), so this is also the config an operator
 /// gets by simply OMITTING `protocol:` on a provider meant for the decisions plane.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() {
     let dir = fixture_dir("decisions-baddialect");
@@ -1658,7 +1658,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 1,
-        "a dialect the decision plane does not speak fails closed: {stderr}"
+        "a dialect the plane does not speak fails closed: {stderr}"
     );
     assert!(
         stderr.contains("decisions.models.verdicts.provider"),
@@ -1668,7 +1668,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
         stderr.contains("anthropic"),
         "the refusal names the resolved dialect: {stderr}"
     );
-    let dialect = decision_dialect();
+    let dialect = door_dialect();
     assert!(
         stderr.contains(&dialect),
         "the refusal names the dialect the plane speaks (`{dialect}`): {stderr}"
@@ -1681,7 +1681,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
 /// that is a scalar where a mapping belongs, or that carries a member the plane does not declare,
 /// fails `--validate` naming the block, rather than landing as an untyped capture that does
 /// nothing. The control is `validate_ok_on_a_good_decisions_config`.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
     for (case, block, member) in [
@@ -1693,7 +1693,7 @@ fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
         ),
     ] {
         let dir = fixture_dir(&format!("decisions-door-{case}"));
-        write_decisions_configs(&dir, &decision_dialect(), block);
+        write_decisions_configs(&dir, &door_dialect(), block);
         let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(code, 1, "{case}: the door refuses the block: {stderr}");
@@ -1721,11 +1721,11 @@ fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
 /// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
 /// also need the linked door that declares `pools:`: a build with no provider codec refuses every provider
 /// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
-#[cfg(all(feature = "plane-decisions", linked_section_pools))]
+#[cfg(all(linked_section_decisions, linked_section_pools))]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
-#[cfg(all(feature = "plane-decisions", linked_section_pools))]
+#[cfg(all(linked_section_decisions, linked_section_pools))]
 #[test]
 fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
     let dir = fixture_dir("bogus-protocol-no-decisions");
@@ -1744,16 +1744,16 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
 /// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
 /// the section, which validates clean.)
-#[cfg(all(feature = "plane-decisions", linked_section_pools))]
+#[cfg(all(linked_section_decisions, linked_section_pools))]
 #[test]
-fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
-    let dir = fixture_dir("decision-protocol-no-decisions");
-    let dialect = decision_dialect();
+fn validate_refuses_the_planes_protocol_when_its_section_is_not_configured() {
+    let dir = fixture_dir("plane-protocol-no-section");
+    let dialect = door_dialect();
     write_decisions_configs(&dir, &dialect, "");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 1,
-        "the decision protocol with no decision plane configured fails validate: {stderr}"
+        "the plane's protocol with the plane's section unconfigured fails validate: {stderr}"
     );
     assert!(
         stderr.contains(&format!(

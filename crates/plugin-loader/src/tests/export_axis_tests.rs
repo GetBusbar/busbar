@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The export rows (`export_axis.rs`) through BOTH DOORS on the export kind's memory ABI: the real
-//! sinks (owner FIXTURES ruling: "real plugins are the proofs") — the prometheus sink, the OTLP
-//! trace sink and the request-log webhook sink — each LINKED by its logic crate's `door` and DROPPED IN as its `-plugin` crate's
-//! `cdylib` (signed first-party, its Statement rendering in its manifest), probed, validated and
-//! opened through ONE dispatcher, and required to answer the same. The validate refusal renders
+//! sinks (owner FIXTURES ruling: "real plugins are the proofs"), reached by the both-ways table's
+//! `export-scrape`, `export-trace` and `export-carried` rows — each LINKED by its logic crate's
+//! `door` and DROPPED IN as its `-plugin` crate's `cdylib` (signed first-party, its Statement
+//! rendering in its manifest), probed, validated and opened through ONE dispatcher, and required to
+//! answer the same. The validate refusal renders
 //! under the instance as 1.5.5 printed it.
 
 use std::sync::Arc;
@@ -67,14 +68,15 @@ busbar_request_duration_seconds_count 2
 /// whole sentence, and renders the recorder snapshot back byte for byte — the same either way.
 #[test]
 fn the_scrape_sink_answers_the_same_through_either_door() {
+    let row = "export-scrape";
     let doors = both(
-        "busbar-export-prometheus",
-        busbar_export_prometheus::door::door,
-        "busbar_export_prometheus_plugin",
+        row,
+        both_ways::export_scrape_fixture::door::door,
+        both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher());
-        let module = "busbar-export-prometheus";
+        let module = row;
         let good = serde_json::json!({ "buffer_seconds": 60 });
         let (streams, clean) = rows.probe(module, "metrics", &good).expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Metrics as u8]));
@@ -115,17 +117,18 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
 /// connector; the shipped binary's both-doors proof posts them (`traces_stream_both_doors`).
 #[test]
 fn the_trace_sink_answers_the_same_through_either_door() {
+    let row = "export-trace";
     let doors = both(
-        "busbar-export-otlp",
-        busbar_export_otlp::door::door,
-        "busbar_export_otlp_plugin",
+        row,
+        both_ways::export_trace_fixture::door::door,
+        both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
         // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
         // declares it and opens nothing; this row never delivers).
         let rows = ExportRows::new(&registry, dispatcher())
             .with_conns(Arc::new(crate::needs_restated::Inert));
-        let module = "busbar-export-otlp";
+        let module = row;
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
         let (streams, clean) = rows.probe(module, "trace", &good).expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Traces as u8]));
@@ -149,17 +152,18 @@ fn the_trace_sink_answers_the_same_through_either_door() {
 /// same either way. Its POSTs ride the host's connector over the `http` framer.
 #[test]
 fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
+    let row = "export-carried";
     let doors = both(
-        "busbar-export-webhook",
-        busbar_export_webhook::door,
-        "busbar_export_webhook_plugin",
+        row,
+        both_ways::export_carried_fixture::door,
+        both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
         // The webhook sink declares an http need: opened to deliver, it binds over a table (one that
         // declares it and opens nothing; this row never delivers).
         let rows = ExportRows::new(&registry, dispatcher())
             .with_conns(Arc::new(crate::needs_restated::Inert));
-        let module = "busbar-export-webhook";
+        let module = row;
         let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
         let (streams, clean) = rows.probe(module, "audit", &good).expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Logs as u8]));
