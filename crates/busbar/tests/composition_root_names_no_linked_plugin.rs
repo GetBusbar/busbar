@@ -316,13 +316,13 @@ host = "unit"
     for constant in ["::KEY", "::COMPOSES_OVER", "::SESSION"] {
         assert!(!out.contains(constant), "a row names `{constant}`: {out}");
     }
-    // The connector's view is the same doors, each beside the manifest row that links it (a label
-    // for a refusal; the door's key is its Statement's).
+    // The connector's view is the same doors, keyed by what each Statement states.
     assert!(
-        out.contains(
-            "= &[(\"wire-low\", busbar_wire::linked::door), (\"wire-high\", \
-             busbar_wire::linked::high::door), ];"
-        ),
+        out.contains("&[busbar_wire::linked::door, busbar_wire::linked::high::door, ];"),
+        "{out}"
+    );
+    assert!(
+        out.contains(".map(|door| (crate::root::doors::row_facts(*door).key, *door))"),
         "{out}"
     );
     // A DOOR-ROOT ENTRY (its crate root, whose only public item is `door`) links the same way.

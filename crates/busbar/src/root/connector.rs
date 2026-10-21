@@ -76,11 +76,10 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
-/// The framer entries of `doors` (the manifest row that links each, a label for a refusal; its
-/// door), each loaded and opened on the process's one dispatcher with the deployment's value of
-/// every setting it declares (`settings`: the h2c prior-knowledge and http1-only keys, the request
-/// timeout and body cap, at their 1.5.5 paths). A door that will not load or open is named in the
-/// refusal.
+/// The framer entries of `doors` (key, door), each loaded and opened on the process's one
+/// dispatcher with the deployment's value of every setting it declares (`settings`: the h2c
+/// prior-knowledge and http1-only keys, the request timeout and body cap, at their 1.5.5 paths). A
+/// door that will not load or open is named in the refusal.
 ///
 /// # Errors
 ///

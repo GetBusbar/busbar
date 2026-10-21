@@ -257,7 +257,14 @@ fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
 fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
     let stated: Vec<RowFacts> = crate::LINKED_TRANSPORT_DOORS
         .iter()
-        .map(|(row, door)| stated_row(*door).unwrap_or_else(|e| panic!("`{row}`: {e}")))
+        .map(|(key, door)| {
+            let stated = stated_row(*door).unwrap_or_else(|e| panic!("`{key}`: {e}"));
+            assert_eq!(
+                stated.key, *key,
+                "the connector keys `{key}` by its door's Statement"
+            );
+            stated
+        })
         .collect();
     let rows: Vec<(&str, Vec<&str>)> = crate::LINKED
         .transports

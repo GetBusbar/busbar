@@ -528,29 +528,42 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
-    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door, which the root's
-    // one Connector opens as a framer entry (`crate::root::connector`), beside the manifest row that
-    // links it. The row's name is a label for a refusal only: the door's key is its Statement's
-    // (`crate::root::doors::row_facts`), read by the connector off the door it opens, never off a
-    // constant of the entry's (BUSBAR-1.6.0.md l.3560-3561).
+    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key and its
+    // `door`, which the root's one Connector opens as a framer entry (`crate::root::connector`). The
+    // key is the door's Statement's, read on first use by the reader every row's is
+    // (`crate::root::doors::row_facts`), never a constant of the entry's (BUSBAR-1.6.0.md
+    // l.3560-3561); the table keeps its name and slice shape, which code outside this crate's
+    // source (a pinned plane's root tests) hands the connector.
     out.push_str(
-        "/// Every linked memory-ABI transport door, beside the manifest row that links it, for the\n\
-         /// root's one Connector.\n\
-         #[allow(dead_code)]\n\
-         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)] = &[",
+        "/// Every linked memory-ABI transport door, by the key its Statement states, read on first use.\n\
+         static LINKED_TRANSPORT_DOORS_READ: ::std::sync::LazyLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n    \
+         ::std::sync::LazyLock::new(|| {\n        \
+         let doors: &[busbar_contract::abi::mechanism::door::DoorFn] = &[",
     );
-    for ((e, axes), (feature, _)) in linked.iter().zip(&on) {
-        if !axes.iter().any(|x| x == TRANSPORT_AXIS) {
-            continue;
-        }
+    for (e, axes) in linked
+        .iter()
+        .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
+    {
         if axes
             .iter()
             .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
         {
-            out.push_str(&format!("({feature:?}, {e}::door), "));
+            out.push_str(&format!("{e}::door, "));
         }
     }
-    out.push_str("];\n");
+    out.push_str(
+        "];\n        \
+         doors\n            \
+         .iter()\n            \
+         .map(|door| (crate::root::doors::row_facts(*door).key, *door))\n            \
+         .collect()\n    \
+         });\n\
+         /// Every linked memory-ABI transport door, by key, for the root's one Connector (a slice\n\
+         /// wherever one is asked for).\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static LINKED_TRANSPORT_DOORS: &::std::sync::LazyLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n    \
+         &LINKED_TRANSPORT_DOORS_READ;\n",
+    );
     // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
     // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
     // plane looks.
