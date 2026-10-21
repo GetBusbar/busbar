@@ -2083,10 +2083,10 @@ pub mod store_double;
 /// The manifest `needs` a dropped-in hook declares, built from its two axes so a caller names no field
 /// of the value (the value's type is the kernel kit's to change).
 pub fn hook_needs(
-    prompt: busbar_plugin_loader::sign::NeedLevel,
-    user: busbar_plugin_loader::sign::NeedLevel,
-) -> busbar_plugin_loader::sign::HookNeeds {
-    busbar_plugin_loader::sign::HookNeeds { prompt, user }
+    prompt: busbar_contract::plugin_rows::NeedLevel,
+    user: busbar_contract::plugin_rows::NeedLevel,
+) -> HookNeeds {
+    HookNeeds { prompt, user }
 }
 
 /// Install a test build's linked auth rows and the operator credential's words, as boot does
