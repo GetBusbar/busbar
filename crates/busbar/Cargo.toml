@@ -616,9 +616,9 @@ reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
 http-body-util = { workspace = true }
 futures = { workspace = true }
-# tests/mcp_stdio_serve.rs encodes the MRTR requestState fixtures it drives over the process's
-# own stdin/stdout the same way the engine does; the binary crate no longer pulls base64 as a
-# runtime dep after the core split, so the integration test needs its own copy.
+# tests/admin_cross_plane/keys.rs encodes the plugin tarball it uploads through the admin API; the
+# binary crate no longer pulls base64 as a runtime dep after the core split, so the integration
+# suite needs its own copy.
 base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }

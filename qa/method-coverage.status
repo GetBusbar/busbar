@@ -681,8 +681,9 @@ mcp|stdio|client|client|tools/list = implemented
 #     an_early_closed_subscription_is_announced_with_cancelled
 #     a_tasks_transition_is_pushed_over_the_channel
 #     an_idle_subscriptions_keepalive_becomes_a_server_ping
-#   end-to-end, the REAL binary spawned as a child over real OS pipes
-#   (crates/busbar/tests/mcp_stdio_serve.rs):
+#   end-to-end, the REAL binary spawned as a child over real OS pipes (the plane's black-box
+#   cases, GetBusbar/busbar-plane-mcp plane-mcp/tests/blackbox/, run by
+#   crates/busbar/tests/plane_blackbox.rs):
 #     a_door_deployment_with_an_empty_chain_refuses_to_boot
 #     a_governed_deployment_refuses_an_uncredentialed_stdio_session
 #     a_governed_deployment_refuses_a_wrong_audience_credential

@@ -1,3 +1,0 @@
-mcp:
-  canonical_uri: "{canonical}"
-  authorization_servers: ["https://login.example.com"]
