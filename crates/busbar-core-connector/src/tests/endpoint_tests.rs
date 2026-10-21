@@ -116,3 +116,33 @@ fn ipv6_link_local_is_refused_in_every_spelling() {
         assert_eq!(check(target), Ok(()), "{target}");
     }
 }
+
+/// A socket-path target (`ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi`) and an opaque host whose spelling
+/// decodes to a forbidden code point (`%25`, `%40`) are refused HERE, before any entry locates or
+/// dials them, with the same refusal and the same words as before the contract read such a host as
+/// `url`'s opaque host: the target names no host. Every dial path (`Planned::locate`,
+/// `Planned::carried`, `Connector::admits_pinned`) runs this check first, so none of them is
+/// dialled as a host named `/var/run/...` or `%2Fvar...`.
+#[test]
+fn a_socket_path_or_opaque_forbidden_host_target_is_refused_as_naming_no_host() {
+    for target in [
+        "ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi",
+        "ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi/",
+        "ldap://a%25b.example:389",
+        "ldap://evil%40good.example",
+    ] {
+        let err = check(target).expect_err(target);
+        assert_eq!(
+            err,
+            EndpointRefusal::NoHost {
+                target: target.to_owned()
+            },
+            "{target}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("refused: `{target}` names no host, so there is nothing to have checked"),
+            "{target}"
+        );
+    }
+}
