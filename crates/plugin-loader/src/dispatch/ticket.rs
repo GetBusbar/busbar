@@ -48,6 +48,12 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// The store of this route's dispatcher: the services' kept results and the driver tickets'
+    /// held exchanges (`super::held`); `None` = none.
+    fn store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        None
+    }
+
     /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
         None
