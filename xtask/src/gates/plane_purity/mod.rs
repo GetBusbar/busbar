@@ -150,7 +150,16 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 ///
 /// RE-PINNED 1108 -> 1089 on #1230 (the kernel egress engine deletion): the gate's measure on
 /// c61266f99d merged with dev 0f3c9caa44 is `neutral_files=1089` (`core-llm-family-freeze`: "files=1089
-/// -- below its floor 1108"); the PR deletes the engine files, so the population fell, not the walk.
+/// -- below its floor 1108"). The population fell, not the walk: this PR deletes 27 `.rs` files from
+/// the neutral roots, all in its diff over 0f3c9caa44 (so dev's own count there was 1089 + 27 = 1116):
+/// * `busbar-kernel/src/egress/engine/{client,deadline,https,mod,observe,pool,resolve,tls}.rs` and
+///   `egress/engine/tests/{dial_judge,engine,observe,pool_h2,pool,resolver,tls,tunnel_judge}_tests.rs`
+///   (16, the kernel's own egress engine, moved out to the transport plugins);
+/// * `busbar-kernel/src/egress/{fixtures.rs,tests/pinned_pool_tests.rs}` and
+///   `egress/trust/{identity,spki,trust_anchor}.rs`, `egress/trust/tests/{identity,trust_anchor}_tests.rs`
+///   (7), `secure.rs` and `topology/worker_shard_tests.rs` (2);
+/// * `busbar-core-connector/src/tls/{engine,engine_tests}.rs` (2).
+/// None was added. The floor stays the measure, not an estimate.
 pub const NEUTRAL_FLOOR: usize = 1089;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
