@@ -2596,6 +2596,7 @@ pub(crate) mod tool_door {
             let egress = crate::root::serve::DoorEgress {
                 reach: &reach,
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+                clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
             };
             let doors = [(instance.to_string(), plane)];
             // THE KERNEL'S HOOK STAGE over this rig's generation (the App built below): the plane's
@@ -8007,6 +8008,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
         1,
     )
     .expect("the egress composes");

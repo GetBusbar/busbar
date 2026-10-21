@@ -543,6 +543,9 @@ pub(crate) struct RigOpts<'a> {
     /// The card history a unit is pinned to at its door, which the node's book prices its line
     /// against (`None`: the rig's own priceless card).
     pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
+    /// The door egress's clock, which its walk reads (`None`: the node's own,
+    /// [`crate::root::egress_ports::NodeClock`]).
+    pub clock: Option<&'a Arc<dyn busbar_kernel_egress::ports::Clock>>,
 }
 
 /// A NODE'S BOOK WHOSE JOURNAL CANNOT REACH ITS STORE: the journal is kept by a configured store
@@ -1162,6 +1165,10 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             Arc::new(move || Arc::clone(&app))
         },
     };
+    let clock: Arc<dyn busbar_kernel_egress::ports::Clock> = match opts.clock {
+        Some(clock) => Arc::clone(clock),
+        None => Arc::new(crate::root::egress_ports::NodeClock::new()),
+    };
     let reach = DoorReach {
         providers: &providers,
         secrets: Arc::clone(&secrets),
@@ -1190,6 +1197,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+            clock: Arc::clone(&clock),
         }),
         Some(&stage),
     );
@@ -1201,6 +1209,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     // lanes, the door's egress resealed over the providers with their secrets resolved anew.
     let reapply: Arc<dyn Fn() + Send + Sync> = {
         let (appliers, app, post) = (appliers.clone(), Arc::clone(&app), Arc::clone(&post));
+        let clock = Arc::clone(&clock);
         let (connector, auths) = (Arc::clone(&connector), Arc::clone(&auths));
         let lanes = opts.members.len();
         let stream_ceiling_secs = opts.stream_ceiling_secs.unwrap_or(600);
@@ -1231,6 +1240,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 &DoorEgress {
                     reach: &reach,
                     journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+                    clock: Arc::clone(&clock),
                 },
             );
         })

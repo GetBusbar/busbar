@@ -546,6 +546,8 @@ pub struct ApplyReach {
     auths: Arc<crate::root::door_steps::OutboundAuths>,
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    /// The walk's clock the deployment booted with ([`DoorEgress::clock`]).
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
     stream_ceiling_secs: u64,
     /// The top-level models catalog the deployment booted with ([`catalog_routes`]).
     catalog: Option<std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
@@ -687,6 +689,7 @@ impl DoorApply {
                     Arc::clone(&r.conns),
                     &routes,
                     Arc::clone(&r.journal),
+                    Arc::clone(&r.clock),
                     r.stream_ceiling_secs,
                 )?))
             }
@@ -1040,6 +1043,7 @@ pub fn compose_served(
     let egress = DoorEgress {
         reach,
         journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+        clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
     };
     let mut served = compose_planes(
         doors,
@@ -1389,6 +1393,10 @@ pub struct DoorEgress<'a> {
     pub reach: &'a crate::root::door_steps::DoorReach<'a>,
     /// The write-ahead dispatch record.
     pub journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    /// THE WALK'S CLOCK: every reading its walk takes (an admission, a cooldown it records, the
+    /// wait a shed advertises) is this clock's. The node's is
+    /// [`crate::root::egress_ports::NodeClock`]; a test drives its own.
+    pub clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
 }
 
 /// THE DOOR PLANES' COMPOSITION (ARCHITECT Q-SW4, 2026-10-02): every plane bound through its door
@@ -1663,6 +1671,7 @@ pub(crate) fn compose_planes_over(
             auths: Arc::clone(&e.reach.auths),
             conns: Arc::clone(&e.reach.conns),
             journal: Arc::clone(&e.journal),
+            clock: Arc::clone(&e.clock),
             stream_ceiling_secs: e.reach.stream_ceiling_secs,
             catalog: e.reach.catalog.cloned(),
             upgrades: e.reach.upgrades.clone(),
@@ -1836,6 +1845,7 @@ fn seal_live(
                     Arc::clone(&egress.reach.conns),
                     &routes,
                     Arc::clone(&egress.journal),
+                    Arc::clone(&egress.clock),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|(e, shown)| (e, Some(shown))),
@@ -1846,6 +1856,7 @@ fn seal_live(
                     Arc::clone(&egress.reach.conns),
                     &routes,
                     Arc::clone(&egress.journal),
+                    Arc::clone(&egress.clock),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|e| (e, None)),

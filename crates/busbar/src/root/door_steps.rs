@@ -1390,11 +1390,13 @@ pub fn label_bound(
 /// one member per entry `routes` seals (each named by its (plane key, entry), Q-FL3), a pool per
 /// named pool of its section (its members, its fallback pool) and a pool per entry its direct
 /// routes walk, the breaker under every pool's default ladder, the members' permits, the node's
-/// clock and counters, and `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)).
+/// counters, `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)) and `clock`, the
+/// walk's clock ([`crate::root::serve::DoorEgress::clock`]).
 ///
 /// # Errors
 ///
 /// A named pool whose member entry has no sealed route: the load is refused, naming both.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_egress(
     facts: &DoorFacts,
     pools: &DoorPools,
@@ -1402,6 +1404,7 @@ pub fn compose_egress(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
     stream_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};
@@ -1503,7 +1506,7 @@ pub fn compose_egress(
         conns,
         breaker: Arc::new(crate::root::adapters::BreakerAdapter::with_policy(policy)),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
-        clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
+        clock,
         journal,
         telemetry: Arc::new(
             crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
