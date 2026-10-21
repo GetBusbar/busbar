@@ -705,7 +705,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
     // THE MONEY THE ROOT-DRIVEN PLANE NODE PRICES WITH is not captured here and handed over once. It
-    // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
+    // arrives through the engine's rate-apply seam, on the root's install record, raised by the ONE
     // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
     // reading taken here instead would be the boot's rates forever: the usage projection would
     // reprice on an apply and this node's ledger would not, and the identity that says the two are
@@ -742,7 +742,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
     // that will not open refuses the boot.
     export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
-    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
+    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is armed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
     // at the moment it landed and none is ever rewritten. A build without those units runs none and

@@ -385,6 +385,11 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            // The root's card repricer is the kernel's rate holder and dater (the node unit, in
+            // every build's root-unit table, arms its journal before the boot resolution:
+            // `crate::root::kernel::install_card_repricer`).
+            rate_apply: Some(&crate::root::kernel::CardRepricer),
+            rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
         }),
