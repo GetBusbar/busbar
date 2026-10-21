@@ -4,20 +4,18 @@
 //! What the egress unit does to an upstream exchange's bytes and headers (#83a O1): the capped
 //! upstream-body read ([`read_capped`], and [`ReadEnd`], WHY it stopped), the two operator body caps
 //! it reads under, the network-failure labels a transient failure is recorded with, and the
-//! client-header forwarding that carries caller-sent headers onto the egress request. Moved
-//! verbatim from the retired shared value crate; the kernel's `proxy` re-exports every item at its
-//! historical `busbar_kernel::proxy::…` path.
+//! per-connection mechanics dropped from the head a plane hands the kernel ([`strip_re_derived`]).
+//! Moved verbatim from the retired shared value crate; the kernel's `proxy` re-exports every item
+//! at its historical `busbar_kernel::proxy::…` path.
 
-use busbar_contract::http;
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Historical default cap on a buffered upstream ERROR / verbatim-relay body (bytes) — 256 KiB, the
-/// value read before any operator config is installed (unit tests, pre-boot). Owned HERE, in the
-/// neutral substrate, and re-exported by core's `config` as `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES`
-/// so the number has ONE definition: core's `limits` installs the resolved value into the process
-/// global below, and a plane crate reads it back through [`max_upstream_buffered_bytes`] without
-/// reaching into `busbar-core` (whose `LimitsResolved`/`config` types are not neutral).
+/// value read before any operator config is installed (unit tests, pre-boot). Owned HERE and
+/// re-exported by the kernel's `config` as `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES` so the number has
+/// ONE definition: the kernel's `limits` installs the resolved value into the process global below,
+/// and [`max_upstream_buffered_bytes`] reads it back.
 pub const UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT: usize = 256 * 1024;
 
 /// Process-global cap on a buffered upstream ERROR body (bytes). Seeded to the historical default so
@@ -29,10 +27,8 @@ pub const UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT: usize = 256 * 1024;
 static UPSTREAM_ERROR_BODY_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT);
 
-/// Read the installed cap on a buffered upstream ERROR / verbatim-relay body (bytes). The neutral
-/// twin of core's `proxy::max_upstream_buffered_bytes()`: same process-global value, named from a
-/// plane crate without reaching into `busbar-core`. Falls back to
-/// [`UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT`] until core installs the resolved limits.
+/// Read the installed cap on a buffered upstream ERROR / verbatim-relay body (bytes). Falls back to
+/// [`UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT`] until the kernel installs the resolved limits.
 pub fn max_upstream_buffered_bytes() -> usize {
     UPSTREAM_ERROR_BODY_MAX_BYTES.load(Ordering::Relaxed)
 }
@@ -47,8 +43,7 @@ pub fn set_max_upstream_buffered_bytes(bytes: usize) {
 /// Historical default egress translate-body cap (bytes) — 32 MiB, the value read before any operator
 /// config is installed (unit tests, pre-boot). MUST equal core's `config::DEFAULT_REQUEST_BODY_MAX_BYTES`
 /// (the one knob that drives both the inbound `DefaultBodyLimit` and this egress translate cap); the two
-/// are pinned equal by construction and by core's `limits` tests. Owned HERE, in the neutral substrate,
-/// so a plane crate reads the cap without reaching into `busbar-core`.
+/// are pinned equal by construction and by core's `limits` tests. Owned HERE, beside the cap it seeds.
 pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
 
 /// Process-global egress translate-body cap (bytes). Seeded to the historical default so an
@@ -59,10 +54,9 @@ pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
 /// (not per byte), so a `Relaxed` atomic is ample.
 static TRANSLATE_BODY_MAX_BYTES: AtomicUsize = AtomicUsize::new(TRANSLATE_BODY_MAX_BYTES_DEFAULT);
 
-/// Read the installed egress translate-body cap (bytes). The neutral twin of core's
-/// `limits::translate_body_max_bytes()`: same process-global value, named from a plane crate without
-/// reaching into `busbar-core`. Falls back to [`TRANSLATE_BODY_MAX_BYTES_DEFAULT`] until core installs
-/// the resolved limits.
+/// Read the installed egress translate-body cap (bytes): the same process-global value as core's
+/// `limits::translate_body_max_bytes()`. Falls back to [`TRANSLATE_BODY_MAX_BYTES_DEFAULT`] until
+/// the kernel installs the resolved limits.
 pub fn max_translate_body_bytes() -> usize {
     TRANSLATE_BODY_MAX_BYTES.load(Ordering::Relaxed)
 }
@@ -121,7 +115,7 @@ pub async fn read_capped<E>(
                 let remaining = cap.saturating_sub(buf.len());
                 if remaining == 0 {
                     // Cap already full but more bytes arrived — the body overran the cap. Stop
-                    // reading; the connection is dropped when `r` falls out of scope.
+                    // reading; the connection goes when `chunks` is dropped.
                     end = ReadEnd::Truncated;
                     break;
                 }
@@ -146,51 +140,39 @@ pub async fn read_capped<E>(
     (Bytes::from(buf), end)
 }
 
-// ── Network-transient `err_type` values passed to `record_transient_in`. Distinct from the
-//    protocol's error-KIND tokens: they label the *category* of network failure recorded in the
-//    breaker store, not the protocol-level error kind surfaced to the caller.
-/// `err_type` recorded when the upstream connection could not be opened.
+// ── The network-failure classes a pre-response failure is counted under (the kernel's
+//    `busbar_failovers_total` `reason` values beside the dispositions). Distinct from the protocol's
+//    error-KIND tokens: they label the *category* of network failure, not the protocol-level error
+//    kind surfaced to the caller.
+/// The class counted when the upstream connection could not be opened.
 pub const ERR_NET_CONNECT: &str = "connect";
-/// `err_type` recorded when the upstream did not answer within the attempt's deadline.
+/// The class counted when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
-/// `err_type` recorded when the transport failed after the connection opened.
-pub const ERR_NET_TRANSPORT: &str = "transport";
-/// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
-pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
-// ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (OWNER HARD RULE 2026-10-02, "BUSBAR IS
-//    INVISIBLE TO UPSTREAMS") ──────────────────────────────────────────────────────────────────────
+// ── THE HEAD'S PER-CONNECTION MECHANICS (OWNER HARD RULE 2026-10-02, "BUSBAR IS INVISIBLE TO
+//    UPSTREAMS") ───────────────────────────────────────────────────────────────────────────────────
 //
-// What a client sends goes out. On a same-dialect route a plane forwards EVERY client header; a
-// translated route forwards none (the plane translates what maps and drops the rest, and no header
-// maps). The headers that never pass are mechanics, not choices, and the mechanics are stated here
-// ONCE, naming no dialect header:
-//
-//   * [`re_derived`] — the fields HTTP defines per connection (the contract's `hop_by_hop`, plus every
-//     name a `connection` field nominates) and `host`/`content-length`, which the connection carrying
-//     the upstream request derives for itself;
-//   * the names the plane GOVERNS (its dialects' credential headers and tenant selectors, declared as
-//     the plane's DATA and asked through [`collect_client_headers`]'s `governed`): busbar's own
-//     upstream credential and configuration replace them;
-//   * busbar's own control headers: its `x-busbar-` namespace ([`CONTROL_PREFIX`]) and whatever
-//     else the plane names as busbar's (a pool's affinity header) through the same predicate.
-//
-// A neutral build with no plane resident calls neither and forwards nothing.
+// What a client sends goes out; the plane decides which of its fields a request carries. The
+// fields that never pass are mechanics, not choices, and they are stated here ONCE, naming no
+// dialect header: the fields HTTP defines per connection (the contract's `hop_by_hop`, plus every
+// name a `connection` field nominates), `host`/`content-length`, which the connection carrying the
+// upstream request derives for itself (`RE_DERIVED`), and busbar's own `x-busbar-` namespace
+// (`CONTROL_PREFIX`). The far end strips them from every head a plane hands it
+// (`strip_re_derived`).
 
 /// The fields the upstream connection derives for itself, beyond HTTP's hop-by-hop set.
 ///
 /// `accept-encoding` is here because busbar reads the answer to meter it and decodes no content
 /// coding: a client's `gzip` would make the far end compress what busbar must read (escalated
 /// 2026-10-02, PROTO-FIXES; the owner's ruling decides whether it stays).
-pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
+const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
 
 /// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
-pub const CONTROL_PREFIX: &str = "x-busbar-";
+const CONTROL_PREFIX: &str = "x-busbar-";
 
 /// Whether the client field `name` is a per-connection mechanic the upstream request re-derives: a
 /// hop-by-hop field, a field a `connection` field `nominated`, or one of [`RE_DERIVED`].
-#[must_use]
-pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
+fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
     // A request's own header names are lower-case already; only a plane-spelled one pays the copy.
     let lower: std::borrow::Cow<'_, str> = if name.bytes().any(|b| b.is_ascii_uppercase()) {
         name.to_ascii_lowercase().into()
@@ -201,36 +183,10 @@ pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>)
         || busbar_contract::abi::transport::fields::hop_by_hop(&lower, nominated)
 }
 
-/// Capture every header of an inbound client request that may go upstream on a same-dialect route:
-/// all of them, in order, bytes and multiplicity preserved, except the per-connection mechanics
-/// ([`re_derived`]), busbar's own namespace ([`CONTROL_PREFIX`]) and the names `governed` answers
-/// true for: the caller (a plane) answers it off
-/// its own declared data. Nothing is synthesized.
-pub fn collect_client_headers(
-    headers: &http::HeaderMap,
-    governed: impl Fn(&str) -> bool,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    let nominated: Vec<&[u8]> = headers
-        .get_all(http::header::CONNECTION)
-        .iter()
-        .map(http::HeaderValue::as_bytes)
-        .collect();
-    headers
-        .iter()
-        .filter(|(name, _)| {
-            let n = name.as_str();
-            !re_derived(n, nominated.iter().copied())
-                && !n.starts_with(CONTROL_PREFIX)
-                && !governed(n)
-        })
-        .map(|(n, v)| (n.clone(), v.clone()))
-        .collect()
-}
-
-/// Drop from the head a plane hands the kernel what [`collect_client_headers`] drops from a client's:
-/// the per-connection mechanics ([`re_derived`], a `connection` field's nominations included) and
-/// busbar's own namespace ([`CONTROL_PREFIX`]). The connection re-derives the mechanics; the rest is
-/// addressed to busbar, never upstream.
+/// Drop from the head a plane hands the kernel the per-connection mechanics (HTTP's hop-by-hop
+/// fields, every name a `connection` field nominates, `host`, `content-length` and
+/// `accept-encoding`) and busbar's own `x-busbar-` namespace. The connection re-derives the
+/// mechanics; the rest is addressed to busbar, never upstream.
 pub fn strip_re_derived(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     let nominated: Vec<Vec<u8>> = fields
         .iter()
@@ -243,79 +199,4 @@ pub fn strip_re_derived(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
                 || n.to_ascii_lowercase().starts_with(CONTROL_PREFIX)
         })
     });
-}
-
-/// The fields of an upstream ANSWER that busbar re-derives for the caller beyond HTTP's hop-by-hop
-/// set: the body's length (busbar re-frames it) and its content coding (busbar asks for none and
-/// reads the body to meter it).
-pub const ANSWER_RE_DERIVED: &[&str] = &["content-length", "content-encoding"];
-
-/// Whether the upstream answer field `name` (lower-case, as a parsed head carries it) is a
-/// per-connection mechanic the caller's answer re-derives: a hop-by-hop field, one a `connection`
-/// field `nominated`, or one of [`ANSWER_RE_DERIVED`].
-#[must_use]
-pub fn answer_re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
-    ANSWER_RE_DERIVED.contains(&name)
-        || busbar_contract::abi::transport::fields::hop_by_hop(name, nominated)
-}
-
-/// Relay an upstream answer's head onto the answer busbar built for a same-dialect caller (busbar
-/// is invisible to the caller too): every upstream field, values and multiplicity kept, under each
-/// name the built answer does not already carry (busbar's own content type and request id stand),
-/// except the per-connection mechanics ([`answer_re_derived`]) and the names `governed` answers
-/// true for (the plane's data: the far end's echo of busbar's own credential or tenant). Borrows
-/// the upstream head and copies nothing but the relayed values' handles.
-pub fn add_relayed_headers(
-    answer: &mut http::HeaderMap,
-    upstream: &http::HeaderMap,
-    governed: impl Fn(&str) -> bool,
-) {
-    let nominated = || {
-        upstream
-            .get_all(http::header::CONNECTION)
-            .iter()
-            .map(http::HeaderValue::as_bytes)
-    };
-    for name in upstream.keys() {
-        let n = name.as_str();
-        if answer.contains_key(name) || answer_re_derived(n, nominated()) || governed(n) {
-            continue;
-        }
-        for value in upstream.get_all(name) {
-            answer.append(name.clone(), value.clone());
-        }
-    }
-}
-
-/// Drop from an answer's head fields the per-connection mechanics ([`answer_re_derived`]), as the
-/// answer is written for the caller.
-pub fn strip_answer_mechanics(fields: &mut Vec<(String, Vec<u8>)>) {
-    let nominated: Vec<Vec<u8>> = fields
-        .iter()
-        .filter(|(n, _)| n.eq_ignore_ascii_case("connection"))
-        .map(|(_, v)| v.clone())
-        .collect();
-    fields.retain(|(n, _)| {
-        !answer_re_derived(&n.to_ascii_lowercase(), nominated.iter().map(Vec::as_slice))
-    });
-}
-
-/// Fold previously-[`collect_client_headers`]ed headers into a freshly built egress header map. The
-/// FIRST value of a name REPLACES whatever busbar put there (the client's own `user-agent`, `accept`
-/// or `content-type` wins over busbar's native default); later values of the same name are
-/// APPENDED, preserving multiplicity. The collected set holds no governed name, so busbar's
-/// upstream credential is never replaced. A no-op on an empty `collected`.
-pub fn apply_client_headers(
-    egress_headers: &mut http::HeaderMap,
-    collected: &[(http::HeaderName, http::HeaderValue)],
-) {
-    let mut replaced: Vec<&http::HeaderName> = Vec::new();
-    for (name, value) in collected {
-        if replaced.contains(&name) {
-            egress_headers.append(name.clone(), value.clone());
-        } else {
-            egress_headers.insert(name.clone(), value.clone());
-            replaced.push(name);
-        }
-    }
 }

@@ -28,8 +28,10 @@ pub struct Member {
     /// The operator's name for it — the name a blocklist and a diagnostic say.
     pub name: String,
     /// Its share of the weighted order. Zero means drain: the operator is bleeding this member off
-    /// before decommissioning it, so no path may select it — not the weighted walk, not a ranked
-    /// preference, and not the sticky fast path.
+    /// before decommissioning it, so no pick selects it — not the weighted walk, not a ranked
+    /// preference, and not the sticky fast path. The last resort ([`crate::exhaustion::least_bad`])
+    /// still ranks it, as 1.5.5's did: drain kept a member out of the selection, not out of the
+    /// one breaker bypass.
     pub weight: u32,
     /// Its TIER (the core-owned per-member `tier` key, `BUSBAR-1.6.0.md` l.4196 (b), l.4202, R2-G
     /// l.4285): the pick takes the lowest tier among the members that could take the request, and
@@ -77,7 +79,7 @@ pub struct Failover {
     /// Member names this pool will never select, primary or failover. They are removed from the
     /// membership rather than marked as already-tried: a consumer reading the tried set could not
     /// otherwise tell a blocklisted member from one this request has burned through, and the
-    /// terminals read the membership directly.
+    /// terminals read the members the picks ran over, which start from this membership.
     pub exclusions: Vec<String>,
 }
 
@@ -97,13 +99,14 @@ impl Default for Failover {
 /// absence of the key rather than a spelling an operator writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum OnExhausted {
-    /// Refuse, with the wait the pool's own members justify.
+    /// Refuse, with the wait the members the walk's last pick ran over (as the unit's hooks kept
+    /// them) justify.
     #[default]
     Status503,
     /// Spill into another pool, re-applying every restriction, with a visited guard.
     FallbackPool(String),
-    /// The one documented breaker bypass: send to the member with the soonest cooldown even though
-    /// it is suppressed, owning no probe.
+    /// The one documented breaker bypass: send to the member the hooks kept with the soonest
+    /// cooldown even though it is suppressed, owning no probe.
     LeastBad,
     /// Wait a bounded time for a permit to free, then re-ask the same admission every path asks.
     Queue {
@@ -141,8 +144,8 @@ impl Pool {
 
     /// This pool's membership with its own blocklist applied.
     ///
-    /// The blocklist is applied here, once, before the walk starts and before any terminal reads
-    /// the membership — which is what stops a blocklisted member being reached by the least-bad
+    /// The blocklist is applied here, before every pick, and the terminals read only the members a
+    /// pick ran over — which is what stops a blocklisted member being reached by the least-bad
     /// terminal or counted into a shed's retry hint.
     ///
     /// A pool that blocklists nobody — the common case, and the one every hop of every walk pays

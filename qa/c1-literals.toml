@@ -85,7 +85,7 @@ count = 1
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel-egress/src/trust/net.rs"
 item = "http"
-count = 3
+count = 2
 
 [[finding]]
 rule = "c1-literals:literal"

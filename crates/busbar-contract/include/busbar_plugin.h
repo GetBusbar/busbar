@@ -242,7 +242,7 @@ extern "C" {
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
 #define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
 #define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
-#define BB_AUTH_FIELD_QUERY UINT32_C(2) /* [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends */
+#define BB_AUTH_FIELD_QUERY UINT32_C(2) /* [`FieldSpan::flags`]: the field asks to be a QUERY PARAMETER rather than a header. Reserved: */
 #define BB_AUTH_FORM_TEXT UINT32_C(1) /* [`LoginField::kind`]: plain text. */
 #define BB_AUTH_FORM_PASSWORD UINT32_C(2) /* [`LoginField::kind`]: a password; its submitted value arrives as a secret */
 #define BB_AUTH_BEGIN_AUTHORIZE UINT32_C(1) /* [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`]. */

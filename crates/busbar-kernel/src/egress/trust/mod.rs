@@ -155,21 +155,6 @@ fn unresolved(host: &str) -> Result<Vec<IpAddr>, String> {
     }
 }
 
-/// THE RESOLVER a kernel resolve-then-pin hands the guard (`resolve_and_pin`): the installed
-/// capability's [`EgressTrustHost::resolve_names`], or, with none installed, the same answer the
-/// pass-through gives.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct InstalledResolver;
-
-impl Resolver for InstalledResolver {
-    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
-        match egress_trust_host() {
-            Some(capability) => capability.resolve_names(host),
-            None => unresolved(host),
-        }
-    }
-}
-
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
 /// The composition root installs this today, so a call site that opts onto the seam gets exactly
 /// the refs, identities and pins the free functions produce now.

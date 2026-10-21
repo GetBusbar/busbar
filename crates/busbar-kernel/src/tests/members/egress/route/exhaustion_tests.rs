@@ -14,7 +14,7 @@ use super::harness::{ok_frames, Health, Script};
 use super::{member, Node, Routed};
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::exhaustion::AT_CAPACITY_RETRY_AFTER_SECS;
-use busbar_kernel_egress::pool::OnExhausted;
+use busbar_kernel_egress::pool::{Member, OnExhausted};
 use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::wire::{DETAIL_OVERLOADED, KIND_OVERLOADED, STATUS_SERVICE_UNAVAILABLE};
 
@@ -459,11 +459,79 @@ fn the_last_resort_sheds_when_every_member_is_saturated() {
     drop(held);
 }
 
+/// Hooks that keep only these destinations of every pick (a routing policy's kept set, or a
+/// required restriction over a spill), in the pool's own order.
+struct Keep(Vec<DestinationId>);
+
+impl Shape for Keep {
+    fn shape(
+        &self,
+        members: Vec<Member>,
+        _primary: bool,
+    ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
+        let kept = members
+            .into_iter()
+            .filter(|m| self.0.contains(&m.destination))
+            .collect();
+        Some((kept, Vec::new()))
+    }
+}
+
+#[test]
+fn the_last_resort_never_reaches_a_member_the_hooks_did_not_keep() {
+    let node = least_bad_node();
+    // `b` has the soonest cooldown of the pool, but the unit's hooks dropped it: the last resort
+    // ranks only what they kept, as 1.5.5 ranked its restricted candidates.
+    for (d, cooldown) in [(0, 300), (1, 10), (2, 120)] {
+        node.breaker.set(
+            DestinationId::new(d),
+            Health {
+                cooldown,
+                ..Health::default()
+            },
+        );
+    }
+
+    let mut walker = node.walker("primary");
+    let keep = Keep(vec![DestinationId::new(0), DestinationId::new(2)]);
+    match walker.step_shaped(&keep) {
+        Step::Take(taken) => {
+            assert_eq!(
+                taken.member.destination,
+                DestinationId::new(2),
+                "the soonest cooldown among the kept members, never the dropped one: {taken:?}"
+            );
+            assert!(
+                taken.degraded,
+                "the last resort's dispatch is a degraded one"
+            );
+        }
+        other => panic!("expected the last resort to take a kept member, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_sheds_wait_counts_only_the_members_the_hooks_kept() {
+    // `b`'s cooldown is the soonest of the pool, but the unit's hooks dropped it, so it says
+    // nothing about when a member this request may use is due back.
+    let node = exhausted_pool(3, &[90, 10, 60]);
+    let mut walker = node.walker("primary");
+    let keep = Keep(vec![DestinationId::new(0), DestinationId::new(2)]);
+    match walker.step_shaped(&keep) {
+        Step::Shed(shed) => assert_eq!(
+            shed.retry_after_secs,
+            Some(60),
+            "the soonest cooldown among the kept members"
+        ),
+        other => panic!("expected the shed, got {other:?}"),
+    }
+}
+
 // ── the terminals over the served breaker, and the burst (F25 row 155 rehomes) ─────────────────
 
 use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_egress::ports::{Breaker, Capacity, Outcome, Permit};
-use busbar_kernel_egress::walk::Step;
+use busbar_kernel_egress::walk::{Shape, Step};
 
 use super::harness::route_token;
 use super::walk_tests::{answer, ok_200, real_egress, route_async, route_over, RealBreaker};

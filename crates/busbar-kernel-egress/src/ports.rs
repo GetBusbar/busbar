@@ -38,9 +38,9 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Why a member cannot take a request right now.
 ///
-/// This is the taxonomy every consumer in this crate speaks: selection excludes on it, the
-/// least-bad terminal ranks on it, the wait terminal decides whether waiting could ever help from
-/// it, and the shed's retry hint is computed from it. One list, so those five can never disagree.
+/// This is the taxonomy the walk speaks: the pick records every member it passes over with it, and
+/// the wait terminal reads those records to decide whether waiting could ever help (only a member
+/// passed over at capacity can free a slot). One list, so the two can never disagree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unavailable {
     /// Administratively down. Does not recover without a configuration change.
@@ -156,9 +156,10 @@ pub struct Classified {
 
 /// `// contract:` the breaker unit, as this unit needs it.
 ///
-/// Bound by the integrator to `busbar-unit-breaker`. Six of the eight methods below map one to one
-/// onto that crate's own surface; `ready` and `admissible` are the side-effect-free peeks the
-/// order needs, which the breaker unit answers from `state`.
+/// Bound by the composition root to the breaker unit (`busbar-kernel-breaker`). `ready`,
+/// `admissible`, `cooldown_remaining` and `suppressing` are side-effect-free peeks: `ready` and
+/// `cooldown_remaining` answer from the breaker unit's `state`, `admissible` from the destination's
+/// lifetime budget alone.
 ///
 /// The division of labour is the design's: this unit decides WHO is asked first, the breaker
 /// decides WHO IS ALLOWED. Nothing in the order may mutate a cell — that is what keeps the order

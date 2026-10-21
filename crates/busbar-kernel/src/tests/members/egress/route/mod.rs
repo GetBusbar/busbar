@@ -34,7 +34,7 @@ use busbar_kernel_egress::pool::{Member, Pool};
 use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::ports::DestinationId;
 use busbar_kernel_egress::select::{RequestCtx, WeightedFloor};
-use busbar_kernel_egress::walk::{Step, Taken, Walk, WalkPorts};
+use busbar_kernel_egress::walk::{Shape, Step, Taken, Walk, WalkPorts};
 use busbar_kernel_egress::wire::Shed;
 
 use crate::plane_driver::{
@@ -454,6 +454,19 @@ impl Walker<'_> {
             }
             step => step,
         }
+    }
+
+    /// The walk's next step with every pick's members as `shape` leaves them, the way the far end
+    /// hands the unit's hooks to [`Walk::next_shaped`].
+    pub fn step_shaped(&mut self, shape: &dyn Shape) -> Step {
+        let Walker {
+            node,
+            pools,
+            token,
+            walk,
+        } = self;
+        let ports = ports(node, pools);
+        walk.next_shaped(&ports, node.affinity, Some(shape), token)
     }
 
     /// Step to the queue terminal, park its wait, poll it once and drop it there — the way a

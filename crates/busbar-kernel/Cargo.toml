@@ -37,15 +37,15 @@ bumpalo = { workspace = true }
 # consumer (router, the chain-verification module, config, config_validate) never has to name
 # "admin" to check a scope.
 busbar-contract = { path = "../busbar-contract" }
-# THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
-# folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
-# guard — the metadata name list, the address predicates, the WHATWG host extraction, the
-# resolve-then-pin. Every in-core call site names it in its unit home (the pure host atoms in
-# `busbar_contract::net`); the kernel resolves no name itself (row 130 E2: the resolver is the
-# connector's, behind the egress-trust capability). There WAS a second copy of that guard in this crate; it drifted, and the drift was a
-# live metadata bypass (`metadata.platformequinix.com` resolves and pins to a routable address, so
+# THE NETWORK READERS (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
+# folded in"). `busbar_kernel_egress::trust::net` holds the configuration-time metadata check, the
+# URL recogniser and the userinfo strip and redaction every in-core call site names (the pure host
+# atoms are `busbar_contract::net`'s); the one destination guard and its resolver are the
+# connector's, behind the egress-trust capability, and the kernel resolves no name
+# itself. There WAS a second copy of the guard in this crate; it drifted, and the drift was a live
+# metadata bypass (`metadata.platformequinix.com` resolves and pins to a routable address, so
 # nothing but the NAME arm can refuse it, and the name arm read a two-entry list). One judge is the
-# fix; this edge is what makes one judge reachable from here.
+# fix.
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # THE MONEY ARITHMETIC, so this crate does not restate it. `src/cost.rs` carried its own copy of the
 # decimal-to-rate conversion AND its own copy of the reserved-four multiply-and-sum, and both had

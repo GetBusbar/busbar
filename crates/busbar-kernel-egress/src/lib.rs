@@ -26,8 +26,9 @@
 //! the walk has left. The attempt itself — the durable record, the dial, the read — is the walk's
 //! caller's, one per member the walk takes.
 //!
-//! **The terminals.** In [`exhaustion`]: the shed with its honest wait, the spill into another
-//! pool, the bounded wait for a slot, and the one documented breaker bypass.
+//! **The terminals.** The walk runs them: the spill into another pool and the bounded wait for a
+//! slot are its own steps, in [`walk`]; the shed's honest wait and the one documented breaker
+//! bypass are in [`exhaustion`].
 //!
 //! ## What is deliberately not here
 //!
@@ -58,8 +59,6 @@ pub mod attempt;
 pub mod exhaustion;
 pub mod pool;
 pub mod ports;
-// The query-parameter auth fields (the auth ABI's FIELD_QUERY) on the request target.
-pub mod query_auth;
 pub mod race;
 pub mod select;
 // The network readers of the folded trust unit (`trust::net`).

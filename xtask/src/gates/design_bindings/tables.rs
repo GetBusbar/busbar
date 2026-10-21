@@ -323,7 +323,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "a_snapshot_swap_never_pushes_the_probe_deadline_out", "the probe schedule is inherited across a swap"),
     ]),
     ("PB-56", &[
-        ("test", "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::a_redirect_is_refused_and_names_its_target", "redirect Policy::none"),
+        ("test", "crates/busbar-core-connector/src/tests/connector_tests.rs::an_answer_naming_another_place_is_handed_up_and_never_dialled", "redirect Policy::none"),
     ]),
     ("PB-57", &[
         ("test", "crates/busbar-kernel/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected", "weight-0 lanes are filtered before selection"),

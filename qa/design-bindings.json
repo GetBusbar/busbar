@@ -2619,14 +2619,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::a_redirect_is_refused_and_names_its_target",
+     "ref": "crates/busbar-core-connector/src/tests/connector_tests.rs::an_answer_naming_another_place_is_handed_up_and_never_dialled",
      "proves": "redirect Policy::none",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::a_redirect_is_refused_and_names_its_target"
+   "verdict_detail": "test:crates/busbar-core-connector/src/tests/connector_tests.rs::an_answer_naming_another_place_is_handed_up_and_never_dialled"
   },
   {
    "id": "PB-57",

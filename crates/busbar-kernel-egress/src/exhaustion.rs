@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the pool does AFTER the walk finds nowhere to send.
+//! What the pool does AFTER the walk finds nowhere to send: the two terminal bodies that are not
+//! the walk's own steps.
 //!
-//! Nothing in this module is a second selection loop and nothing here decides who is healthy. The
-//! spill re-enters the walk's one pick against another pool; the wait parks for a bounded time and
-//! then re-asks the same admission every path asks; the last-resort route is the ONE documented
-//! breaker bypass in the unit and it says so by owning no probe; and the shed is a refusal with an
-//! honest wait computed from the pool's own members. The walk ([`crate::walk::Walk`]) runs them in
-//! that order and marks every dispatch they make degraded: an upstream's own answer is relayed to
-//! the client as it came, and only an attempt that produced no answer at all moves on.
+//! Nothing in this module is a second selection loop and nothing here decides who is healthy. Here
+//! are the shed's honest wait ([`retry_after_secs`]) and the last resort ([`least_bad`]), the ONE
+//! documented breaker bypass in the unit, which says so by owning no probe. The spill into another
+//! pool and the bounded wait for a slot are steps of the walk itself ([`crate::walk::Walk`]), which
+//! runs every terminal and marks every dispatch one makes degraded: an upstream's own answer is
+//! relayed to the client as it came, and only an attempt that produced no answer at all moves on.
+//! The last resort and the wait read the members the walk's last pick ran over, as the unit's hooks
+//! kept them, never the pool's whole membership.
 
 use busbar_contract::caps::{Pass, Route};
 
-use crate::pool::{Member, Pool};
+use crate::pool::Member;
 use crate::ports::{Breaker, Permit};
 use crate::walk::WalkPorts;
 
@@ -73,18 +75,23 @@ pub fn retry_after_secs(
 /// A DRAINED member (`weight: 0`) stays a candidate here: the previous release ranked every
 /// admissible member of the candidate list on this path (v1.5.5 `proxy/engine/walk.rs:1126-1130`),
 /// and drain only ever kept a member out of the weighted selection (v1.5.5 `proxy/select.rs:282`,
-/// `store/in_memory/mod.rs:870`). Q128 kernel-egress LOW 4, closed as 1.5.5 parity.
+/// `store/in_memory/mod.rs:870`).
+///
+/// It ranks `members`, the members of `pool` the walk's last pick ran over as the unit's hooks kept
+/// them, and never the pool's whole membership: a member the routing policy dropped or a required
+/// restriction excludes is no last resort, as 1.5.5 ranked the restricted candidates (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:2345`, `proxy/engine/walk.rs:1043-1046`).
 ///
 /// It owns NO probe and the walk passes none on: handing it the cell's current epoch instead would
 /// be actively unsafe, since a half-open cell's epoch may be a PEER's, and an owner-checked release
 /// keyed on it would revert the peer's live probe.
 pub fn least_bad(
     ports: &WalkPorts<'_>,
-    pool: &Pool,
+    pool: &str,
+    members: &[Member],
     token: &Pass<Route>,
 ) -> Option<(Member, Permit)> {
     let now = ports.clock.now_secs();
-    let members = pool.admissible_members();
     let mut ranked: Vec<&Member> = members
         .iter()
         .filter(|m| ports.breaker.admissible(m.destination))
@@ -92,7 +99,7 @@ pub fn least_bad(
     ranked.sort_by_key(|m| {
         ports
             .breaker
-            .cooldown_remaining(&pool.name, m.destination, now, token)
+            .cooldown_remaining(pool, m.destination, now, token)
     });
     ranked.into_iter().find_map(|m| {
         ports
