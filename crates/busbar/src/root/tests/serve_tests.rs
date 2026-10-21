@@ -5004,7 +5004,9 @@ async fn the_pools_door_refuses_an_expired_key_before_the_plane() {
 /// `a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing`): a gate
 /// that vetoes stops the unit before anything is dialled, answers the gate's own status in a JSON
 /// envelope, nets no spend and nothing billable (1.5.5 admitted first and refunded the fee, the
-/// hook stages running at the head of the route leg), and seals ONE record refused for the veto.
+/// hook stages running at the head of the route leg), and seals ONE record that ends failed at the
+/// Route step for the veto (the kernel's classification of a route-leg gate veto, pinned by
+/// `plane_driver_hook_cases`; a veto at Approve's screen is the one sealed Refused).
 /// RED: a vetoed unit dialled, charged, or sealed as anything but its veto.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5044,7 +5046,10 @@ async fn the_pools_doors_veto_stops_the_unit_undialled_unbilled_and_sealed_as_a_
     assert!(
         matches!(
             records[0].outcome.unit_end,
-            busbar_contract::caps::Outcome::Refused(_, busbar_contract::caps::ReasonCode::HookVeto)
+            busbar_contract::caps::Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                busbar_contract::caps::ReasonCode::HookVeto
+            )
         ),
         "sealed as its veto: {:?}",
         records[0].outcome
