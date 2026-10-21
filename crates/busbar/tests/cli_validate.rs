@@ -1973,6 +1973,7 @@ fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, St
         r#"{"client_email":"a@b","private_key":"not a key"}"#,
     )
     .unwrap();
+    std::fs::write(dir.join("pair.txt"), "client-id:client-secret").unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -2008,6 +2009,22 @@ fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
             && out.contains("client_id:client_secret"),
         "the credential refusal is named: {out}"
     );
+}
+
+/// GREEN twin of the BOOT-035 refusal: a well-formed `client_id:client_secret` under the same lane
+/// is accepted by the auth plugin's check bind, so `--validate` stays clean (the check bind refuses
+/// only what the plugin names as the credential's own fault, and never dials the token endpoint).
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_accepts_a_well_formed_oauth_client_credential() {
+    let (code, out) = validate_lane(
+        "cred-pair",
+        "{ file: \"{dir}/pair.txt\" }",
+        "oauth-client-credentials",
+        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("credential"), "no credential refusal: {out}");
 }
 
 /// The same agreement for `jwt-bearer`: a service account whose key is no key is refused by
