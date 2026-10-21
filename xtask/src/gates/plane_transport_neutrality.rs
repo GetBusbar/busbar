@@ -90,8 +90,9 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
 /// Lowered 1220 -> 1213 by the D2 plane-side breaker/arena deletion (status row 82): 7
 /// `busbar-kernel/src` files left (`plane_host/{breaker,govern,scope}.rs`,
-/// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`), no arrivals.
-pub const MIN_FILES: usize = 1213;
+/// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`), no arrivals; then to 1211,
+/// measured on that lane's head over dev 452a6e63d4, which deleted the kernel's `failover/` (#1299).
+pub const MIN_FILES: usize = 1211;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
