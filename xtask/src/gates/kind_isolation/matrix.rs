@@ -4105,6 +4105,78 @@ fn fixture_files(files: &[(&str, &str)]) -> crate::ctx::Overlay {
     ov
 }
 
+/// THE CONTROL A GREEN FIXTURE CASE IS JUDGED AGAINST: the tree WITH THE BARE FIXTURE CRATE in it,
+/// not the tree without it.
+///
+/// A green fixture case claims "this spelling adds no finding". [`instances::fixture_crate`] is a
+/// NEW, neutral kernel-kind crate, and a new core-neutral crate that measures 0 on every Law 0 axis
+/// is `law0-unarmed` (it is on no `LAW0_ENFORCED_NEUTRAL_CRATES` list, and cannot be: it exists
+/// only in the overlay). That finding is about the fixture crate EXISTING, and it is identical with
+/// or without the spelling the case plants, so measured against the tree without the fixture every
+/// zero-cell green case was red on it (`law0-unarmed busbar-kernel-planted`), whatever the scanner
+/// did with the spelling.
+///
+/// So the findings the bare fixture (manifest and an empty library root, nothing else) reports are
+/// taken out of view, exactly as [`super::debt_free`] takes out the unplanted tree's, and nothing
+/// else is. A spelling that is counted still adds a finding the bare fixture does not have
+/// (`unlisted-cell <fixture> × <kind>`), and that finding is still RED. Only GREEN cases use this
+/// subject; every red case over the fixture is judged by the subject it always was.
+pub(super) struct OverFixture<'a> {
+    inner: &'a dyn crate::gates::Gate,
+    cx: &'a Ctx,
+    debt: std::sync::OnceLock<super::debt_free::Debt>,
+}
+
+impl<'a> OverFixture<'a> {
+    /// Leaked for the battery's lifetime, as the battery's own context is: the cases borrow it.
+    pub(super) fn leak(cx: &'a Ctx, inner: &'a dyn crate::gates::Gate) -> &'a OverFixture<'a> {
+        Box::leak(Box::new(OverFixture {
+            inner,
+            cx,
+            debt: std::sync::OnceLock::new(),
+        }))
+    }
+
+    /// The bare fixture's findings, measured once, on the first case that asks.
+    fn debt(&self) -> &super::debt_free::Debt {
+        self.debt.get_or_init(|| {
+            let bare = self.cx.with_overlay(instances::fixture_crate());
+            super::debt_free::debt_of(&self.inner.run(&bare))
+        })
+    }
+}
+
+impl crate::gates::Gate for OverFixture<'_> {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    /// No shared baseline: this subject only answers green cases, which run the planted tree alone.
+    fn baseline_key(&self) -> Option<String> {
+        None
+    }
+
+    fn owed(&self) -> Vec<String> {
+        self.inner.owed()
+    }
+
+    fn run(&self, cx: &Ctx) -> crate::ledger::Verdict {
+        let debt = self.debt();
+        crate::ledger::Verdict::of(
+            self.inner
+                .run(cx)
+                .rows
+                .into_iter()
+                .map(|r| super::debt_free::without_debt(r, debt))
+                .collect(),
+        )
+    }
+
+    fn selftest<'b>(&'b self, _cx: &'b Ctx) -> crate::gates::Report<'b> {
+        crate::gates::Report::new()
+    }
+}
+
 /// [`fixture_files`] plus a `[[cell]]` row for `fixture × kind` appended to the ledger. `inherited`
 /// plants the base's copy of the ledger with the row in it as well, so the row pre-dates the
 /// branch and `minted-row` has nothing to say about it; without it the row is one this branch
@@ -4295,6 +4367,9 @@ pub fn selftest<'a>(
     report: &mut crate::gates::Report<'a>,
 ) {
     use crate::gates::{prove_rows_green, prove_rows_red};
+    // The subject of every GREEN case planted into the fixture crate: the bare fixture's own
+    // findings out of view, so the control is the tree with the fixture in it ([`OverFixture`]).
+    let over_fixture: &'a dyn crate::gates::Gate = OverFixture::leak(cx, gate);
 
     // THE ROW IS REPORT-ONLY, AND ITS NUMBER STILL COUNTS (owner 2026-10-03: "the matrix is a
     // measured to-do list, not a gate"). `gate` (the subject below) runs the rule with its findings
@@ -4359,12 +4434,12 @@ pub fn selftest<'a>(
             ),
             &["ship-ceiling 0", concat!(wire_plant_name!(), " × plane")],
         ));
-        instances::selftest(cx, gate, true, report);
+        instances::selftest(cx, gate, over_fixture, true, report);
         return;
     }
 
     // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the listed/unlisted pair.
-    instances::selftest(cx, gate, false, report);
+    instances::selftest(cx, gate, over_fixture, false, report);
 
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
@@ -4506,7 +4581,7 @@ pub fn selftest<'a>(
     // reviewed, and a listed cell is green whatever its size.
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "the same `[[cell]]` row inherited from the base is a listed edge, and green",
         &[ROW_MATRIX],
         fixture_cell(
@@ -4539,7 +4614,7 @@ pub fn selftest<'a>(
     ));
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "the same crate with that accept loop absent",
         &[ROW_MATRIX],
         fixture_files(&[]),
@@ -4744,7 +4819,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "a kernel crate whose only comment names no plane has no plane edge (the control)",
         &[ROW_MATRIX],
         comment_fixture(false),
@@ -4774,7 +4849,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "an English word that is also an instance name, in a comment, is not the instance",
         &[ROW_MATRIX],
         english_fixture(None),
@@ -4816,7 +4891,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "an export entry's frozen 1.5.x `streams: [` key is not the plane",
         &[ROW_MATRIX],
         export_fixture(None),
@@ -4851,7 +4926,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "`http` as the http crate, in prose or a URL, and `ws` as whitespace are not the instance",
         &[ROW_MATRIX],
         colliding_fixture(None),
@@ -4974,7 +5049,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "a connector file naming `TcpStream`, `TcpListener` or `UdpSocket` is not naming the tcp transport",
         &[ROW_MATRIX],
         socket_fixture(None),
@@ -5021,7 +5096,7 @@ pub fn selftest<'a>(
     };
     report.push(prove_rows_green(
         cx,
-        gate,
+        over_fixture,
         "a crate naming the contract's `RoutingDecision` is not naming the decision plane",
         &[ROW_MATRIX],
         contract_ident_fixture(false),
