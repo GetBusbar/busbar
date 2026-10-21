@@ -368,13 +368,16 @@ pub(crate) unsafe fn serve(
     if !store.held.call(h) {
         return Answered::fault();
     }
+    let bound = Bound { op: head.op, req };
     // SAFETY: the caller's contract.
-    let a = unsafe { serve_kept(store, route, h, into, body) };
+    let a = unsafe { serve_kept(store, route, h, bound, into, body) };
     store.held.answered(h, a.outcome == Outcome::Pending);
     a
 }
 
-/// [`serve`] under the ticketed handle `h`: run once, stored, redeemed on the handle.
+/// [`serve`] under the ticketed handle `h`, bound at its first use to `bound` (the service and the
+/// request's fingerprint): run once, stored, redeemed on the handle; a call naming another `bound`
+/// is [`rebound`].
 ///
 /// # Safety
 /// As [`deliver`].
@@ -382,10 +385,10 @@ unsafe fn serve_kept(
     store: &Arc<ServiceStore>,
     route: &Waking,
     h: CompletionHandle,
+    bound: Bound,
     into: Option<&ServiceBufs>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
-    let bound = Bound { op: head.op, req };
     // The epoch of the op on the ticket: the one its first result minted, or a fresh one; `None`
     // when the handle is bound to another service or request.
     let Some((epoch, fresh)) = ({
