@@ -7623,7 +7623,7 @@ mod pools_door_refusals {
             panic!("the direct admission refuses a key naming an unconfigured group");
         };
         let (direct_status, direct_kind, direct_message, _) =
-            busbar_kernel::ingress::limit_refusal("", &blocked);
+            busbar_kernel::ingress::limit_refusal(&blocked);
 
         let (status, _, body) = rig.chat().await;
         let text = String::from_utf8_lossy(&body);
