@@ -35,27 +35,33 @@ include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 /// root binds it. The kernel holds no protocol set (a plane resolves its own dialects, spec Part 1,
 /// Law 5); a test that needs a dialect reads it here, off the plane's door (BUSBAR-1.6.0.md
 /// l.4965: kernel and root users go via the plane ABI).
-pub fn fallback_registration() -> busbar_contract::plane_calls::PlaneRegistration {
+/// Bound once per test binary.
+pub fn fallback_registration() -> &'static busbar_contract::plane_calls::PlaneRegistration {
     use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
-    let mut fallbacks: Vec<_> = TEST_LINKED_DOORS
-        .iter()
-        .map(|&(label, door)| {
-            registration(linked_probe(door, label))
-                .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"))
-        })
-        .filter(|reg| reg.fallback)
-        .collect();
-    assert_eq!(
-        fallbacks.len(),
-        1,
-        "one test-linked door is the fallback plane (`[package.metadata.busbar.test-linked] planes`)"
-    );
-    fallbacks.remove(0)
+    static REG: std::sync::OnceLock<busbar_contract::plane_calls::PlaneRegistration> =
+        std::sync::OnceLock::new();
+    REG.get_or_init(|| {
+        let mut fallbacks: Vec<_> = TEST_LINKED_DOORS
+            .iter()
+            .map(|&(label, door)| {
+                registration(linked_probe(door, label))
+                    .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"))
+            })
+            .filter(|reg| reg.fallback)
+            .collect();
+        assert_eq!(
+            fallbacks.len(),
+            1,
+            "one test-linked door is the fallback plane (`[package.metadata.busbar.test-linked] \
+             planes`)"
+        );
+        fallbacks.remove(0)
+    })
 }
 
 /// The fallback door's dialects, in its Statement tail's order.
 pub fn fallback_dialects() -> Vec<&'static str> {
-    fallback_registration().dialects
+    fallback_registration().dialects.clone()
 }
 
 /// The fallback door's operation classes, in its Statement tail's order: the verbs its units are
@@ -78,14 +84,17 @@ pub fn fallback_op_classes() -> Vec<&'static str> {
 /// fallback; BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): the name a fixture
 /// lane or provider uses where any provider dialect will do.
 pub fn residual_default_dialect() -> &'static str {
-    let facing = (fallback_registration().facing)(b"{}", b"", None, &[])
-        .unwrap_or_else(|e| panic!("the fallback door faces the world: {e}"));
-    facing
-        .claims
-        .into_iter()
-        .find(|(target, _)| target == "/")
-        .map(|(_, dialect)| dialect)
-        .expect("the fallback door claims `/` for a dialect")
+    static DIALECT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    DIALECT.get_or_init(|| {
+        let facing = (fallback_registration().facing)(b"{}", b"", None, &[])
+            .unwrap_or_else(|e| panic!("the fallback door faces the world: {e}"));
+        facing
+            .claims
+            .into_iter()
+            .find(|(target, _)| target == "/")
+            .map(|(_, dialect)| dialect)
+            .expect("the fallback door claims `/` for a dialect")
+    })
 }
 
 /// Install every test-linked plane exactly as the composition root installs it in production
