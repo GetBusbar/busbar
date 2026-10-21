@@ -173,12 +173,12 @@ pub fn member_target(target_from: &str) -> Option<&str> {
         .filter(|key| !key.is_empty() && !key.contains('.'))
 }
 
-/// THE MEMBER-PROGRAM PATH of a need's `target_from` (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)):
-/// `settings.*`, where `*` stands for EACH registration of the section, names every member's own
-/// PROGRAM — the registration's `command`, `args` and `env` ([`crate::conn::Program::of_member`];
-/// its other keys are not the program's). A registration that names no `command` is not a member of
-/// such a need. The host keeps ONE long-lived program connection per (instance, need, member); an
-/// open names the member it reaches.
+/// THE MEMBER-PROGRAM PATH of a need's `target_from` (ARCHITECT round 5, the member-program
+/// upstream ruling (A)): `settings.*`, where `*` stands for EACH registration of the section, names
+/// every member's own PROGRAM — the registration's `command`, `args` and `env`
+/// ([`crate::conn::Program::of_member`]; its other keys are not the program's). A registration that
+/// names no `command` is not a member of such a need. The host keeps ONE long-lived program
+/// connection per (instance, need, member); an open names the member it reaches.
 pub const MEMBER_PROGRAM: &str = "settings.*";
 
 /// Whether `target_from` is the member-program path ([`MEMBER_PROGRAM`]).

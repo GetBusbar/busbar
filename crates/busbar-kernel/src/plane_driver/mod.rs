@@ -97,10 +97,10 @@ pub use far_end::{
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
     HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
-    UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
+    UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
@@ -672,6 +672,15 @@ pub trait DriverSteps: Units {
         None
     }
 
+    /// Whether `member` is one of the members the generation's section states for the pool
+    /// `pool` (the pool a `ROUTE_POOL` unit's `arrive` named, as the kernel recorded it). A
+    /// gate-first unit routed over a pool binds the member its projection names only when this
+    /// holds (ARCHITECT 2026-10-07: the plane's later word never trades the gates attached to the
+    /// routed entry for another's). Fail-closed: steps that state no pools hold no member.
+    fn pool_holds(&self, _pool: &[u8], _member: &str) -> bool {
+        false
+    }
+
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
     /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
     /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message
@@ -1136,6 +1145,84 @@ impl PlaneDriver {
         };
         self.render_refusal(input, None)
     }
+
+    /// A CATALOG ROUTE'S LISTING (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
+    /// the plane's pure `catalog` renders `names` (the kernel's, its visibility rule applied) for the
+    /// request `method`, `target` and head `fields`, with no unit: nothing is minted, audited or
+    /// metered. `None` when the plane renders none (it serves no catalog, or its answer failed).
+    #[must_use]
+    pub fn catalog_unitless(
+        &self,
+        method: &[u8],
+        target: &[u8],
+        head: &[(Vec<u8>, Vec<u8>)],
+        names: &[String],
+    ) -> Option<Rendered> {
+        use busbar_contract::abi::plane::{CatalogIn, CatalogOut};
+        let fields: Vec<Field> = head
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr::over(n),
+                value: AbiStr::over(v),
+            })
+            .collect();
+        let listed: Vec<AbiStr> = names.iter().map(|n| AbiStr::over(n.as_bytes())).collect();
+        let caps = self.config.caps;
+        let (mut reply, mut out_fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut input = CatalogIn {
+            method: AbiStr::over(method),
+            target: AbiStr::over(target),
+            fields: fields.as_ptr(),
+            fields_len: fields.len(),
+            names: listed.as_ptr(),
+            names_len: listed.len(),
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            fields_buf: out_fields.as_mut_ptr(),
+            fields_cap: out_fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+            ..blank_in()
+        };
+        let mut o: CatalogOut = blank_out();
+        let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            out_fields.resize(
+                (short.fields_needed as usize).max(out_fields.len()),
+                NO_FIELD,
+            );
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
+        if outcome != AbiOutcome::Ready {
+            return None;
+        }
+        let span = |s: Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+                .to_vec()
+        };
+        Some(Rendered {
+            status: o.status,
+            fields: out_fields
+                .iter()
+                .take(o.fields_written as usize)
+                .map(|f| (span(f.name), span(f.value)))
+                .collect(),
+            body: reply
+                .get(..o.reply_written as usize)
+                .unwrap_or_default()
+                .to_vec(),
+        })
+    }
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
@@ -1341,7 +1428,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let (streamed, cut) = {
             let st = self.lock();
             let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
-            (st.facts.streamed && success, st.facts.cut)
+            (st.facts.content && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
         self.steps.audit(token, ctx, outcome)
@@ -1431,7 +1518,15 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    /// key; the principal itself never enters a plane input.
+    ///
+    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
+    /// unit, so a driver whose book lends references never lends an empty one to a governed
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
     fn verify(
         &self,
         token: &Pass<Verify>,
@@ -1439,14 +1534,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> StepAnswer<Verify> {
-        let key = self
-            .driver
-            .config
-            .caller_refs
-            .as_ref()
-            .and_then(|slot| slot.read().unwrap_or_else(|e| e.into_inner()).clone());
-        if let Some(key) = key {
-            self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+        if let Some(slot) = &self.driver.config.caller_refs {
+            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if *principal != PrincipalId::anonymous() {
+                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
+                    return StepAnswer::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
+                };
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            } else if let Some(key) = key {
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            }
         }
         // The verified principal: the hooks the unit binds read it, and the unit's audit row is
         // written under it (never a plane input).

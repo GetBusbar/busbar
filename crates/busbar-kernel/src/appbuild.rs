@@ -25,9 +25,9 @@ use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit,
-    snapshot, state, store, telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
+    state, store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -558,15 +558,9 @@ impl InstalledLimits {
 /// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
 /// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
 /// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
-/// sealed over, and reads the projection back when the generation is swapped in.
+/// sealed over, and reads the projection back when the generation is swapped in. The root hands it
+/// in on its install record ([`crate::preflight::RootInstall::config_projection`]).
 pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
-
-static CONFIG_PROJECTION: std::sync::OnceLock<ConfigProjection> = std::sync::OnceLock::new();
-
-/// Bind the composition root's [`ConfigProjection`], once, before the first build.
-pub fn set_config_projection(project: ConfigProjection) {
-    let _ = CONFIG_PROJECTION.set(project);
-}
 
 /// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
 /// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
@@ -626,7 +620,9 @@ pub fn build_app_from_config(
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
     // The root's projection of this configuration, taken before any part of it is consumed.
-    let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
+    let config_projection = crate::preflight::root_rows()
+        .config_projection
+        .map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -925,17 +921,22 @@ pub fn build_app_from_config(
         // The provider entry's lane-capability keys, carried unread in its table and resolved
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
-        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
-            // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
-            // hand-maintained literal: the codec dialects are whatever the linked plane crates
-            // registered, so a build with the fallback plane compiled out names only what it actually
-            // serves (and a build with a new dialect names it) — the deletion-test property at the
-            // vocabulary level. Empty roster is a real answer.
+        // The "supported:" roster is the planes' DECLARED provider dialects
+        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // literal and not a codec list: a build with the plane that declares them compiled out names
+        // only what it actually serves, and a build with a new dialect names it. Empty roster is a
+        // real answer.
+        let providers = crate::plane::provider_dialects();
+        let Some(protocol) = providers
+            .iter()
+            .copied()
+            .find(|d| *d == provider_cfg.dialect())
+        else {
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.route,
                 provider_cfg.dialect(),
-                crate::proto::known_protocols().join(", ")
+                providers.join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as

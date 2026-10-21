@@ -3,9 +3,9 @@
 
 //! THE AUTH ROWS (WIRE-AUTH): [`AuthRows`] answers and opens the plugin registry's `kind: auth` rows
 //! on the process's one dispatcher. The composition root implements the contract's `AuthAxis` over
-//! it and installs that axis on the kernel (`install_auth_axis`, ARCHITECT ruling 2026-09-29: the
-//! opener seam, impl in the root), so the kernel's identity chain opens auth instances naming
-//! neither this crate nor the root.
+//! it and hands that axis to the kernel on its install record (`RootInstall::auth_axis`, ARCHITECT
+//! ruling 2026-09-29: the opener seam, impl in the root), so the kernel's identity chain opens auth
+//! instances naming neither this crate nor the root.
 //!
 //! A row opens on the auth kind's MEMORY ABI (`abi::auth`, through [`AuthInstance`]) when it is a
 //! linked door ([`crate::registry::LinkedEntry::Door`]) or a dropped-in library exporting
@@ -87,8 +87,8 @@ impl AuthRows {
     }
 
     /// Each instance opened to serve declares its needs on the table `conns` answers when it opens
-    /// (the process's one connector): a networked auth door (a directory over `tcp`) dials through
-    /// it.
+    /// (the process's one connector): a networked auth door (a directory over a stream transport)
+    /// dials through it.
     #[must_use]
     pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);

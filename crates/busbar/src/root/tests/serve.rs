@@ -762,6 +762,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
         crate::root::door_steps::DoorPools::of(&applied)
+            .expect("the pools")
             .pools()
             .get("files")
             .cloned(),
@@ -783,7 +784,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
 /// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's
 /// discovery documents answer a caller who holds no credential yet, with the operator's data chain
 /// configured exactly as without one.
-#[cfg(linked_axis_node)]
+#[cfg(linked_section_pools)]
 #[test]
 fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -800,7 +801,7 @@ fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
 
 /// THE RED ARM: a claim that is NOT open owes the operator's chain, configured or empty — the open
 /// exception never widens to a line a credential is owed on.
-#[cfg(linked_axis_node)]
+#[cfg(linked_section_pools)]
 #[test]
 fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -859,4 +860,57 @@ async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spell
             .expect("the body");
         assert_eq!(&body[..], b"hello world", "the bytes as written");
     }
+}
+
+/// THE CLAIM DOORS' BINDS (row 132): a served plane's INBOUND need whose `target_from` block in its
+/// section states a `listen` is bound there, under the need's transport and its own index, and the
+/// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a
+/// block that states no `listen` and a plane whose section is absent bind nothing; an address that
+/// is not `ip:port` refuses the composition, naming the setting.
+#[test]
+fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
+    use crate::root::loader::boot::BindOwner;
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        section: "a-section",
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+        ],
+        need_targets: vec!["far", "media", "", "quiet"],
+        need_transports: vec!["out-t", "in-t", "bare-t", "quiet-t"],
+        ..Default::default()
+    };
+    let doc = |yaml: &str| -> BTreeMap<&'static str, serde_yaml::Value> {
+        BTreeMap::from([("a-section", serde_yaml::from_str(yaml).expect("yaml"))])
+    };
+    let sections =
+        doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");
+    let binds = super::need_binds("inst", &facts, &sections).expect("binds");
+    assert_eq!(
+        binds.len(),
+        1,
+        "only the inbound need whose block states a listen"
+    );
+    let b = &binds[0];
+    assert_eq!(b.transport, "in-t");
+    assert_eq!(b.at, "a-section.media");
+    assert_eq!(b.listen_setting(), "a-section.media.listen");
+    assert_eq!(b.listen, "127.0.0.1:7001".parse().unwrap());
+    assert!(matches!(
+        &b.owner,
+        BindOwner::Need { instance, need: 1, .. } if instance == "inst"
+    ));
+    assert!(
+        super::need_binds("inst", &facts, &BTreeMap::new())
+            .expect("no section")
+            .is_empty(),
+        "a plane whose section is absent binds nothing"
+    );
+    assert_eq!(
+        super::need_binds("inst", &facts, &doc("media: {listen: \"nowhere\"}\n")).unwrap_err(),
+        "a-section.media.listen: `nowhere` is not an ip:port address"
+    );
 }

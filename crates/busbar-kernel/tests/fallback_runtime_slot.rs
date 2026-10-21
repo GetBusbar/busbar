@@ -13,7 +13,7 @@
 //! the fallback plane's runtime replaced a sibling's own under the sibling's key (merge-group run
 //! 37567965022; fixed in #521 by `plane::fallback_decl`, one read for both).
 //!
-//! #521's regression probe hung on the legacy MCP engine's runtime slot, a crate P3 FLIP-MCP deletes.
+//! #521's regression probe hung on a retired plane engine's runtime slot, a crate a door flip deletes.
 //! The fix is the kernel's, so its probe is the kernel's too, over two neutral planes this file
 //! declares: a sibling whose own runtime is installed in its slot, and a fallback plane whose
 //! `build_runtime` answers a different object. The shape is #521's: one App first (so the sibling is
@@ -63,6 +63,7 @@ static SIBLING: PlaneDecl = PlaneDecl {
         caller_credential_refusal: None,
     },
     wire_format_names: || &["slotsibling"],
+    provider_dialects: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -112,6 +113,7 @@ static FALLBACK: PlaneDecl = PlaneDecl {
         caller_credential_refusal: None,
     },
     wire_format_names: || &["slotfallback"],
+    provider_dialects: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
