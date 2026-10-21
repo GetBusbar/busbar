@@ -43,6 +43,9 @@ usage:
   cargo xtask plugin-gates cdeps <metadata.json> <deps.toml> [--tree <shipped-tree.txt>]
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
+  cargo xtask plugin-gates devfeatures --tree <shipped-tree.txt>
+  (busbar-contract's dev-only features, alloc-counter, test-seal and services-double, are on
+   nowhere in the shipped build)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
   cargo xtask plugin-gates gitsources <deps.toml>
   (every [git-sources] row admits one repository under https://github.com/GetBusbar/, at a 40-hex rev,
@@ -371,6 +374,44 @@ pub fn depwall(meta: &Value, shipped: Option<&Shipped>, repo: &str) -> Res<Vec<S
         }
     }
     Ok(out)
+}
+
+/// busbar-contract's features a plugin may turn on from `[dev-dependencies]` only: the test-only
+/// counting allocator (`alloc-counter`, ARCHITECT ruling 2026-10-21), the test seal that
+/// implements the sealed `KernelSeal` (`test-seal`, #65) and the shared host-services test double
+/// (`services-double`). busbar's own workspace holds the same line in
+/// `crates/busbar-contract/tests/test_seal_is_dev_only.rs`.
+const DEV_ONLY_CONTRACT_FEATURES: [&str; 3] = ["alloc-counter", "test-seal", "services-double"];
+
+/// No dev-only busbar-contract feature is on in the SHIPPED build: the release graph `cargo tree`
+/// resolves over normal and build edges (`--tree`), so a feature a dev-dependency turns on is not
+/// seen and one a `[dependencies]` row, a `[features]` entry or a `default` turns on is. A tree
+/// that names no busbar-contract is RED too: the gate would be judging nothing.
+pub fn devfeatures(shipped: &Shipped) -> Vec<String> {
+    let mut contract: Vec<(&String, &BTreeSet<String>)> = shipped
+        .0
+        .iter()
+        .filter(|((name, _), _)| name == "busbar-contract")
+        .map(|((_, version), features)| (version, features))
+        .collect();
+    contract.sort();
+    if contract.is_empty() {
+        return vec![
+            "DEVFEATURE no busbar-contract in the shipped tree: nothing was judged".to_string(),
+        ];
+    }
+    let mut out = Vec::new();
+    for (version, features) in contract {
+        for f in DEV_ONLY_CONTRACT_FEATURES {
+            if features.contains(f) {
+                out.push(format!(
+                    "DEVFEATURE busbar-contract {version} has `{f}` on in the shipped build \
+                     (a [dev-dependencies]-only feature)"
+                ));
+            }
+        }
+    }
+    out
 }
 
 fn str_list(v: &Json) -> Vec<String> {
@@ -1814,6 +1855,38 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         true,
     ));
     v.push(("gitsources committed", gitsources(&committed), false));
+    let tree = |contract: &str| {
+        Shipped::parse(&format!(
+            "busbar-transport-x v1.0.0 (/w/transport-x)|\n\
+             busbar-contract v1.6.0 (https://github.com/GetBusbar/busbar?rev={FORTY_HEX}#{FORTY_HEX})|{contract}\n\
+             serde v1.0.0|default,std\n"
+        ))
+    };
+    v.push((
+        "devfeatures green",
+        Ok(devfeatures(&tree("dispatch,runtime"))),
+        false,
+    ));
+    v.push((
+        "devfeatures alloc-counter shipped",
+        Ok(devfeatures(&tree("alloc-counter,dispatch"))),
+        true,
+    ));
+    v.push((
+        "devfeatures test-seal shipped",
+        Ok(devfeatures(&tree("dispatch,test-seal"))),
+        true,
+    ));
+    v.push((
+        "devfeatures services-double shipped",
+        Ok(devfeatures(&tree("services-double"))),
+        true,
+    ));
+    v.push((
+        "devfeatures no contract",
+        Ok(devfeatures(&Shipped::parse("serde v1.0.0|default,std\n"))),
+        true,
+    ));
     v
 }
 
@@ -1985,6 +2058,9 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
         "depwall" => depwall(&load_json(a(0)?)?, sh, a(1)?),
         "netban" => netban(&load_json(a(0)?)?, sh, &load_toml(a(1)?)?, a(2)?),
         "cdeps" => cdeps(&load_json(a(0)?)?, sh, &load_toml(a(1)?)?),
+        "devfeatures" => Ok(devfeatures(sh.ok_or_else(|| {
+            format!("plugin-gates: `devfeatures` needs `--tree <shipped-tree.txt>`\n{USAGE}")
+        })?)),
         "imports" => {
             let (u, n) = (read(a(0)?)?, read(a(1)?)?);
             imports(&splitlines(&u), &splitlines(&n), &load_toml(a(2)?)?, a(3)?)
@@ -2078,6 +2154,11 @@ mod tests {
 
     case_tests! {
         depwall_green => "depwall green",
+        devfeatures_green => "devfeatures green",
+        devfeatures_alloc_counter_shipped => "devfeatures alloc-counter shipped",
+        devfeatures_test_seal_shipped => "devfeatures test-seal shipped",
+        devfeatures_services_double_shipped => "devfeatures services-double shipped",
+        devfeatures_no_contract => "devfeatures no contract",
         depwall_kernel => "depwall kernel",
         netban_dev_only => "netban dev-only",
         netban_rustls => "netban rustls",
