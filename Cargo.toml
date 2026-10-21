@@ -338,6 +338,11 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["h
 # generated in the plane from the vendored `a2a.proto` (below), with it. Already in the lock and the
 # shipped artifact through opentelemetry-otlp.
 prost = { version = "0.14", default-features = false, features = ["std"] }
+# The Public Suffix List, compiled in: the authorization server's metadata-document fetch bounds
+# fetches per REGISTRABLE domain (busbar-core-oauth2 `cimd::site_of`), so the tenants of a shared
+# suffix (`github.io`, `co.uk`) are separate sites and one owner's many hosts are one. `no_std`, no
+# dependency but its own types crate.
+psl = "2.1"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
