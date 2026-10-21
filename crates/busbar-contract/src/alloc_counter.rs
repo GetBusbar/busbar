@@ -133,21 +133,20 @@ pub fn marked_key<const N: usize>(id: u8) -> [u8; N] {
     k
 }
 
-/// Watch `secret` under `id`: from now on a freed block holding any [`WINDOW`] consecutive bytes
+/// Watch `watched` under `id`: from now on a freed block holding any [`WINDOW`] consecutive bytes
 /// of it (all of it when it is shorter) counts against `id`. A test names here every secret it
 /// derives from its marked key (a split-out part, a derived session key, a round key), copied
 /// from the stack: a heap copy the test frees would be counted itself.
 ///
 /// # Panics
 ///
-/// When `id` is not below [`MARKED_IDS`], `secret` is shorter than 2 or longer than
+/// When `id` is not below [`MARKED_IDS`], `watched` is shorter than 2 or longer than
 /// [`MAX_WATCHED_LEN`] bytes, or [`MAX_WATCHED`] secrets are already watched.
-pub fn watch(id: u8, secret: &[u8]) {
+pub fn watch(id: u8, watched: &[u8]) {
     assert!(usize::from(id) < MARKED_IDS, "key id {id} >= {MARKED_IDS}");
     assert!(
-        (2..=MAX_WATCHED_LEN).contains(&secret.len()),
-        "a watched secret is 2..={MAX_WATCHED_LEN} bytes, not {}",
-        secret.len()
+        (2..=MAX_WATCHED_LEN).contains(&watched.len()),
+        "a watched secret is 2..={MAX_WATCHED_LEN} bytes"
     );
     let slot = WATCHING.fetch_add(1, Ordering::SeqCst);
     assert!(
@@ -155,17 +154,17 @@ pub fn watch(id: u8, secret: &[u8]) {
         "more than {MAX_WATCHED} watched secrets"
     );
     let w = &WATCHED[slot];
-    for (to, b) in w.bytes.iter().zip(secret) {
+    for (to, b) in w.bytes.iter().zip(watched) {
         to.store(*b, Ordering::Relaxed);
     }
     w.id.store(usize::from(id), Ordering::Relaxed);
-    let win = secret.len().min(WINDOW);
-    for pair in secret.windows(2).take(secret.len() - win + 1) {
+    let win = watched.len().min(WINDOW);
+    for pair in watched.windows(2).take(watched.len() - win + 1) {
         let bit = prefix(pair[0], pair[1]);
         PREFIXES[bit / 64].fetch_or(1_u64 << (bit % 64), Ordering::SeqCst);
     }
     // Published last: a reader that sees the length sees the bytes and the id.
-    w.len.store(secret.len(), Ordering::Release);
+    w.len.store(watched.len(), Ordering::Release);
 }
 
 /// Where the witness last saw a secret watched under one id: what a failing zeroise gate names,
