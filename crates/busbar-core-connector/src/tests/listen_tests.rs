@@ -355,9 +355,6 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
 /// config's own (v1.5.5's client offered two protocols, its listener one).
 #[test]
 fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
-    use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
-    const OWNER: InstanceId = InstanceId(1);
-    crate::tls::install_crypto_provider();
     let door = TestDoor::new(
         "sec",
         &["sec"],
@@ -379,14 +376,59 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
         vec![b"x-one".to_vec()],
         "the accept offer is the entry's own, and not its dial offer"
     );
+    // The entry's own accept offer wins over the transport's registered list.
+    assert_eq!(
+        agreed_on_the_listener(door, vec![b"x-two".to_vec()]).as_deref(),
+        Some(&b"x-one"[..]),
+        "the listener agreed off the entry's accept offer"
+    );
+}
+
+/// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
+/// LISTENS WITH THE TRANSPORT'S REGISTERED PROTOCOL LIST (the registry's `Entry::alpn`, the
+/// operator's settings dealt at boot), as a dial whose `locate` answers no offer dials with it
+/// (`compose`, "the registration's stands only for an entry that answers none"). A TLS listener
+/// whose entry answers no accepting offer still agrees a protocol off its registration: a client
+/// that needs one negotiated refuses a connection that agreed none. RED before the fix: the
+/// bind took the entry's accept offer alone (`accept_offer(..).unwrap_or_default()`), so the
+/// listener offered nothing and the handshake agreed no protocol.
+#[test]
+fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
+    let door = TestDoor::new(
+        "sec",
+        &["sec"],
+        &[],
+        crate::support::Knobs {
+            secure_name: Some("localhost"),
+            ..crate::support::Knobs::default()
+        },
+    );
+    assert_eq!(
+        crate::framer::accept_offer(&door).unwrap(),
+        Vec::<Vec<u8>>::new(),
+        "the entry states no accept offer"
+    );
+    assert_eq!(
+        agreed_on_the_listener(door, vec![b"x-one".to_vec()]).as_deref(),
+        Some(&b"x-one"[..]),
+        "the listener agreed off the transport's registered list"
+    );
+}
+
+/// What a TLS client offering `x-two, x-one` agrees with the listener the connector binds for an
+/// inbound need declared over `door`'s scheme (`sec`), the entry registered with the protocol list
+/// `registered`. The entry is a FRAMER (it names a secure layer), so its listener rides the address
+/// carrier the view holds beside it, as every connector does (`Connector::listen`).
+fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Vec<u8>> {
+    use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
+    const OWNER: InstanceId = InstanceId(1);
+    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        // The entry is a FRAMER (it names a secure layer and an offer), so its listener rides the
-        // address carrier the view holds beside it, as every connector does (`Connector::listen`).
         let view = crate::registry::Transports::new(vec![
             crate::registry::Entry {
                 door: Arc::new(door),
-                alpn: Vec::new(),
+                alpn: registered,
             },
             crate::registry::Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
@@ -447,13 +489,8 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
             }
         }
         c.close(OWNER, id).unwrap();
-        let agreed = client.await.unwrap();
-        assert_eq!(
-            agreed.as_deref(),
-            Some(&b"x-one"[..]),
-            "the listener agreed off the entry's accept offer"
-        );
-    });
+        client.await.unwrap()
+    })
 }
 
 /// RED (/status row 192 B; `BUSBAR-1.6.0.md` THE DESIGN §6 steps 2 and 4: the connector owns the
@@ -839,6 +876,8 @@ fn red_an_uncapped_secured_bind_admits_past_the_default_cap() {
             .expect("closed at once")
             .unwrap_or(0);
         assert_eq!(n, 0, "not a byte written");
+    });
+}
 
 /// RED (/status row 192 B, the agreed protocol): the protocol an accepting framer states it agreed
 /// (`FramerYield::agreed`, a 1-based position in its accepting offer) is read back by the
@@ -895,5 +934,76 @@ fn red_an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_o
             Ok(a) => panic!("a position past the offer was taken: {:?}", a.conn.agreed()),
         }
         drop(held);
+    });
+}
+
+/// RED (row 192 C under A STREAM'S OWN BACKPRESSURE, `busbar_contract::abi::transport`): an
+/// answer head on a FULL stream is taken as an `emit` on it is: not at all (`Ok(0)`, nothing
+/// crosses, its status with it) until the framer says the stream is writable again; then the
+/// head goes whole, its status on its emit.
+#[test]
+fn an_answer_head_on_a_full_stream_waits_until_it_is_writable() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::new(
+            "messages",
+            &["messages"],
+            &[],
+            crate::support::Knobs {
+                messages: Some(1),
+                full_at: Some(1),
+                ..crate::support::Knobs::default()
+            },
+        ));
+        let mut l = plain(door.clone(), AcceptLimits::default());
+        let addr = l.local_addr();
+        let (go, went) = tokio::sync::oneshot::channel::<()>();
+        let client = tokio::spawn(async move {
+            let mut s = Client::connect(addr).await.unwrap();
+            s.write_all(b"q").await.unwrap();
+            let mut first = [0_u8; 1];
+            s.read_exact(&mut first).await.unwrap();
+            let _ = went.await;
+            // The window opens: the framer's writable piece.
+            s.write_all(b"w").await.unwrap();
+            let mut second = [0_u8; 1];
+            s.read_exact(&mut second).await.unwrap();
+            [first, second]
+        });
+        let mut conn = accept(&mut l).await.conn;
+        let p = next(&mut conn).await.unwrap().unwrap();
+        assert_eq!((p.stream, p.bytes.as_slice()), (1, &b"q"[..]));
+        assert_eq!(
+            conn.emit_head(1, 100, b"C", false, &mut noop()),
+            Ok(1),
+            "the first head is taken whole, and fills the stream"
+        );
+        assert_eq!(
+            conn.emit_head(1, 200, b"H", false, &mut noop()),
+            Ok(0),
+            "the stream is full: the head is not taken"
+        );
+        assert_eq!(
+            door.emitted_statuses.lock().unwrap().as_slice(),
+            &[100],
+            "nothing of the held head crossed"
+        );
+        let _ = go.send(());
+        let taken = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::poll_fn(|cx| match conn.emit_head(1, 200, b"H", false, cx) {
+                Ok(0) => std::task::Poll::Pending,
+                r => std::task::Poll::Ready(r),
+            }),
+        )
+        .await
+        .expect("the writable piece releases the head");
+        assert_eq!(taken, Ok(1));
+        assert_eq!(
+            door.emitted_statuses.lock().unwrap().as_slice(),
+            &[100, 200],
+            "the head goes with its status once the stream is writable"
+        );
+        tokio::spawn(async move { while let Ok(Some(_)) = next(&mut conn).await {} });
+        assert_eq!(client.await.unwrap(), [[b'C'], [b'H']]);
     });
 }

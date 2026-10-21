@@ -288,7 +288,6 @@ fn register_planes() {
         LINKED.auths,
         root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
@@ -714,7 +713,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
     // THE MONEY THE ROOT-DRIVEN PLANE NODE PRICES WITH is not captured here and handed over once. It
-    // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
+    // arrives through the engine's rate-apply seam, on the root's install record, raised by the ONE
     // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
     // reading taken here instead would be the boot's rates forever: the usage projection would
     // reprice on an apply and this node's ledger would not, and the identity that says the two are
@@ -726,6 +725,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
+    // The resolved providers' URLs select the dropped-in transports the seal opens (Law 7).
+    root::boot::note_provider_urls(cfg.providers.values().map(|p| p.base_url.clone()));
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
     // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
@@ -745,13 +746,20 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
-    root::boot::load_door_planes();
+    // Law 7: a plane binds only when the sections its composition reads are written.
+    root::boot::load_door_planes(
+        deploy
+            .door_sections()
+            .keys()
+            .chain(root::door_steps::kernel_sections(&cfg).keys())
+            .copied(),
+    );
     // THE EXPORT AXIS'S SINKS, opened once on the same dispatcher, each declaring its needs on the
     // one connector just built — before the first app is built, so the routes they declare are in
     // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
     // that will not open refuses the boot.
     export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
-    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
+    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is armed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
     // at the moment it landed and none is ever rewritten. A build without those units runs none and
@@ -796,9 +804,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
-    // What the door planes are sealed over, projected from every configuration as it is built
-    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
-    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
     // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
@@ -959,13 +964,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
-    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
-    // once, here, so an apply that first writes one's section is stored and validated but
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED OR NEVER BOUND (their section absent, Law 7): a door
+    // plane is bound and opened once, at boot, so an apply that first writes one's section is stored and validated but
     // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
     // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
     // Without governance no door plane is opened at all, at boot or after a restart: none is held.
     if app.governance.is_some() {
-        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+        root_rules.hold_unopened(
+            served
+                .unopened(root::boot::door_planes())
+                .into_iter()
+                .chain(root::boot::unbound_sections()),
+        );
     }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
@@ -1166,6 +1176,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every opened plugin instance's log sink follows the applied `plugins.logs` (THE DESIGN §11.2).
     app_handle.on_apply(Box::new(|app| {
         root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
+    }));
+    // Every opened transport instance is refreshed with the applied limits, as boot opened it with
+    // them (`root::doors::refresh_live`): a plugin is a plugin, and every kind's `refresh` slot is
+    // called on an apply. A refresh binds nothing; a listener set change applies on restart.
+    app_handle.on_apply(Box::new(|_| {
+        let refused = root::doors::refresh_live(&root::policy::client_settings(
+            &busbar_kernel::config::limits::installed().unwrap_or_default(),
+        ));
+        for why in refused {
+            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
+        }
     }));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.

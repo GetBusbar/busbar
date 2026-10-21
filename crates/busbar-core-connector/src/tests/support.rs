@@ -20,8 +20,8 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, READ_END_OF_FRAME,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, PIECE_WRITABLE,
+    READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -72,6 +72,11 @@ pub struct Knobs {
     /// An accepting `begin` states this agreed protocol (`FramerYield::agreed`, a 1-based position
     /// in the accepting offer).
     pub agreed: Option<u32>,
+    /// A STREAM'S OWN BACKPRESSURE: an `emit` that brings the bytes emitted since the stream was
+    /// last writable to this many answers `YIELD_STREAM_FULL`; a scripted `w` from the far end
+    /// ([`Knobs::messages`]) is a `PIECE_WRITABLE` piece on the scripted stream, and makes it
+    /// writable again.
+    pub full_at: Option<usize>,
 }
 
 #[derive(Default)]
@@ -90,6 +95,8 @@ struct State {
     spin: bool,
     holds: bool,
     kept: Vec<u8>,
+    full_at: Option<usize>,
+    emitted: usize,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -124,6 +131,9 @@ pub struct TestDoor {
     pub emitted_statuses: Mutex<Vec<u32>>,
     /// The leftover bytes every `adopt` crossing was handed (`AdoptIn::leftover`), in order.
     pub adopted: Mutex<Vec<Vec<u8>>>,
+    /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
+    /// program it holds down.
+    pub held_keys: Mutex<HashSet<u64>>,
 }
 
 impl TestDoor {
@@ -177,6 +187,7 @@ impl TestDoor {
             dialled_keys: Mutex::new(Vec::new()),
             emitted_statuses: Mutex::new(Vec::new()),
             adopted: Mutex::new(Vec::new()),
+            held_keys: Mutex::new(HashSet::new()),
         }
     }
 
@@ -251,6 +262,10 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 b'b' => (0, PIECE_END_OF_FRAME),
                 b't' => (0, PIECE_TEXT | PIECE_END_OF_FRAME),
                 b'e' => (0, PIECE_END | PIECE_END_OF_FRAME),
+                b'w' => {
+                    st.emitted = 0;
+                    (0, PIECE_WRITABLE)
+                }
                 other => {
                     // SAFETY: `frame_len < frame_cap`.
                     unsafe { sink.frame.add(frame_len).write(other) };
@@ -407,10 +422,6 @@ impl FramerDoor for TestDoor {
                 ("locate", ok)
             }
             Call::Begin(i, o) => {
-                self.begun_targets
-                    .lock()
-                    .unwrap()
-                    .push(raw(i.target.ptr, i.target.len).to_vec());
                 let fields = if i.fields.is_null() {
                     &[][..]
                 } else {
@@ -439,6 +450,7 @@ impl FramerDoor for TestDoor {
                     echo: self.knobs.echo,
                     spin: self.knobs.spin,
                     holds: self.knobs.holds,
+                    full_at: self.knobs.full_at,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);
@@ -508,7 +520,11 @@ impl FramerDoor for TestDoor {
                         self.emitted_statuses.lock().unwrap().push(i.status);
                     }
                     st.outbound.extend(raw(i.bytes, i.len));
+                    st.emitted += i.len;
                     answer(st, &i.sink, o, silence);
+                    if st.full_at.is_some_and(|n| st.emitted >= n) {
+                        o.yielded.flags |= YIELD_STREAM_FULL;
+                    }
                     // A text emit is counted as its own op, so a test sees the bit cross.
                     let op = if i.flags & EMIT_TEXT != 0 {
                         "emit text"
@@ -548,6 +564,9 @@ impl FramerDoor for TestDoor {
                     std::ptr::copy_nonoverlapping(body.as_ptr(), i.sink.wire, body.len());
                 }
                 o.yielded.wire_len = body.len() as u64;
+                if self.knobs.spin {
+                    o.yielded.flags = YIELD_MORE;
+                }
                 ("encode", ok)
             }
             Call::Finish(i, o) => {
@@ -713,7 +732,12 @@ impl TestDoor {
                 self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 // SAFETY: the connector's destination, live for the call.
                 let d = unsafe { &*i.dest };
-                let r = if d.kind == DEST_PROGRAM {
+                let held = self.held_keys.lock().unwrap().contains(&i.supervision_key);
+                let r = if held {
+                    Err(IoRefusal::Refused(
+                        "held down by the carrier's supervisor".to_owned(),
+                    ))
+                } else if d.kind == DEST_PROGRAM {
                     let program = text_of(d.program);
                     let args: Vec<String> = (0..d.args_len)
                         // SAFETY: `args_len` strings at `args`.

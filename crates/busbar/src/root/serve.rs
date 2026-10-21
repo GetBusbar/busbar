@@ -660,7 +660,8 @@ impl DoorApply {
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
-        let pools = DoorPools::of(&table);
+        let pools =
+            DoorPools::of(&table).map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -966,8 +967,11 @@ impl Checkpoints {
     /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
     fn tick(&self) -> usize {
         // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
-        // directory keeps journaling under its host's id only while it holds it.
-        crate::root::durability::refresh_held_lease();
+        // directory keeps journaling under its host's id only while it holds it. It is held on the
+        // lane of the book the node settles onto.
+        if let Some(lane) = self.post.node().book_lane() {
+            lane.refresh_held_lease();
+        }
         self.epoch.bump();
         self.money
             .iter()
@@ -1053,7 +1057,89 @@ pub fn compose_served(
     )?;
     served.post = Some(post);
     served.epoch = epoch;
+    // THE CLAIM DOORS (row 132, ARCHITECT seam ruling (d)): each served plane's inbound need whose
+    // settings block states a `listen` binds there, and the ones a datagram framer answers become
+    // claim doors (`serve_datagram::ClaimDoors::bind`). The connector is read only when something
+    // binds: by now boot has installed it.
+    let binds = datagram_binds(doors, sections)?;
+    if !binds.is_empty() {
+        served.claim_doors = serve_datagram::ClaimDoors::bind(&binds, |t| {
+            crate::root::connector::the().framer_for(t)
+        })?;
+    }
     Ok(served)
+}
+
+/// THE BINDS OF THE SERVED PLANES' INBOUND NEEDS that name a settings block (`target_from`): each
+/// at the `listen` its plane's section states there (`<section>.<target_from>.listen`), in plane
+/// order. A block that states no `listen` binds nothing; one whose address is not `ip:port` refuses
+/// the composition, naming the setting.
+///
+/// # Errors
+///
+/// The setting whose address does not parse.
+pub fn datagram_binds(
+    doors: &[(String, DoorPlane)],
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
+    let mut binds = Vec::new();
+    for (instance, plugin) in doors {
+        binds.extend(need_binds(instance, &plugin.served(), sections)?);
+    }
+    Ok(binds)
+}
+
+/// [`datagram_binds`] for one served plane: `instance`'s inbound needs whose `target_from` block in
+/// its section states a `listen`, each under the need's transport and its own index.
+///
+/// # Errors
+///
+/// The setting whose address does not parse.
+pub(crate) fn need_binds(
+    instance: &str,
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    let mut binds = Vec::new();
+    let Some(section) = sections.get(facts.section) else {
+        return Ok(binds);
+    };
+    for (i, ((direction, _), target)) in
+        facts.need_auths.iter().zip(&facts.need_targets).enumerate()
+    {
+        if *direction != DIRECTION_INBOUND || target.is_empty() {
+            continue;
+        }
+        let at = format!("{}.{target}", facts.section);
+        let Some(listen) = target
+            .split('.')
+            .try_fold(section, |v, k| v.get(k))
+            .and_then(|block| block.get("listen"))
+            .and_then(serde_yaml::Value::as_str)
+        else {
+            continue;
+        };
+        let listen: std::net::SocketAddr = listen
+            .parse()
+            .map_err(|_| format!("{at}.listen: `{listen}` is not an ip:port address"))?;
+        binds.push(crate::root::loader::boot::InboundBind {
+            owner: crate::root::loader::boot::BindOwner::Need {
+                instance: instance.to_string(),
+                kind: KindCode::Plane,
+                need: u32::try_from(i).unwrap_or(u32::MAX),
+            },
+            transport: facts
+                .need_transports
+                .get(i)
+                .map_or_else(String::new, |t| (*t).to_string()),
+            at,
+            listen,
+            tls: None,
+            max_conns: crate::root::loader::boot::DEFAULT_MAX_CONNS,
+        });
+    }
+    Ok(binds)
 }
 
 /// THE KERNEL'S HOOK STAGE as a door plane's units bind it: the current generation's engine host
@@ -1643,7 +1729,7 @@ pub(crate) fn compose_planes_over(
             // The route table: the section, with the catalog model its `session.model` names
             // folded in.
             let table = routes_of(section, egress.reach.catalog);
-            let pools = DoorPools::of(&table);
+            let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
             let routes = crate::root::door_steps::member_routes(
                 &table,
                 &pools,
@@ -1827,7 +1913,7 @@ fn seal_live(
     // The route table: the section, with the catalog model its `session.model` names folded in
     // ([`catalog_routes`]).
     let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
-    let pools = DoorPools::of(&table);
+    let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(
@@ -4395,6 +4481,11 @@ impl FarEnd for DoorFar<'_, '_> {
 
     fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
         self.far().and_then(|far| far.failure(token))
+    }
+
+    /// Why nothing left, when no attempt of the walk sent its request, read off the walk.
+    fn unsent(&self, token: &Pass<Route>) -> Option<busbar_contract::abi::plane::RefusalCode> {
+        self.far().and_then(|far| far.unsent(token))
     }
 
     fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {

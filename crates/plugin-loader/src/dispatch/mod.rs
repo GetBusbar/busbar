@@ -49,6 +49,7 @@ pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
 pub mod handle;
+pub(crate) mod held;
 pub mod inline;
 pub mod io_slots;
 pub mod kinds;

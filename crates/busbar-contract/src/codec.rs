@@ -72,9 +72,9 @@ pub enum TranslatedResponse {
     /// A final ingress body + its own content-type (a non-JSON ingress wire — speech audio — or the
     /// opaque egress→ingress bridge).
     Typed(WireBody),
-    /// Synthesized native stream frames (a wants-stream ingress answered by a BUFFERED upstream — e.g.
-    /// an event-stream client served a non-SSE buffered body). Delivered under the ingress stream
-    /// content-type.
+    /// Synthesized native stream frames (a wants-stream ingress answered by a BUFFERED upstream —
+    /// e.g. an event-stream client served a buffered, non-event-stream body). Delivered under the
+    /// ingress stream content-type.
     StreamFrames(Vec<u8>),
     /// JSON path only: the ingress protocol does not serve this operation → the caller renders the 404
     /// (`DETAIL_ENDPOINT_UNSUPPORTED_OPERATION`). The egress read succeeded, but NO completion reaches

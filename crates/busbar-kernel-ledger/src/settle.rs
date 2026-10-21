@@ -5,7 +5,7 @@
 //!
 //! ## The one act that closes a unit
 //!
-//! [`Ledger::settle`] takes the hold BY VALUE. That is not a style choice — it is the whole
+//! [`Ledger::settle_recording`] takes the hold BY VALUE. That is not a style choice — it is the whole
 //! mechanism by which a hold is settled at most once. A settled hold does not exist any more, so
 //! there is no second one to settle, and no amount of care at the call sites is required to make
 //! that true. The token is the other half: a posting cannot be built by anything that is not the
@@ -166,38 +166,23 @@ impl Ledger {
         &self.book
     }
 
-    /// The books, to be moved directly. No production caller: the book moves through this type's
-    /// own verbs, and only tests reach in here.
+    /// The books, to be moved directly: TEST SUPPORT only (a test corrupts a book to prove a check
+    /// sees it). The book moves through this type's own verbs everywhere else.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn book_mut(&mut self) -> &mut Book {
         &mut self.book
     }
 
-    /// Settle a hold against what the unit's usage priced at, and move the books.
+    /// Settle a hold against what the unit's usage priced at, move the books, and hand back what
+    /// the settlement left behind as well as the posting: the residual it released and the
+    /// overdraft it noted, the two facts a posting record cannot carry on its own.
     ///
     /// The token is required by the capability itself, so this function cannot be reached by
     /// anything that is not the ledger unit mid-settlement. The hold is consumed.
     ///
     /// `priced_nanos` is the money figure, in the unit the reservation is written in; `usage` is
-    /// the report it was priced from. See [`busbar_contract::caps::Posted::settle`] for why those are two
-    /// arguments and not one.
-    pub fn settle(
-        &mut self,
-        key: &TotalsKey,
-        window: WindowStart,
-        hold: Hold,
-        priced_nanos: u128,
-        usage: &Usage,
-        token: &Grant<WriteMoney>,
-    ) -> Posted {
-        self.settle_recording(key, window, hold, priced_nanos, usage, token)
-            .posted
-    }
-
-    /// Settle, and hand back what the settlement left behind as well as the posting.
-    ///
-    /// The same act as [`Ledger::settle`] — one function, so the two can never move the books
-    /// differently — reporting the residual it released and the overdraft it noted. The composition
-    /// root wants both: they are the two facts a posting record cannot carry on its own.
+    /// the report it was priced from. See [`busbar_contract::caps::Posted::settle`] for why those are
+    /// two arguments and not one.
     pub fn settle_recording(
         &mut self,
         key: &TotalsKey,
