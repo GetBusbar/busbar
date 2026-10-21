@@ -143,7 +143,11 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     // A DIFFERENT (store) plugin present, so the dir is non-empty but the auth ref is absent.
     crate::test_support::rows::drop_in(
         &dir,
-        vec![dropped("acme-store-x", "x", "store")],
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
         Vec::new(),
     );
     let plugins = plugins_cfg_allow_unsigned(&dir);

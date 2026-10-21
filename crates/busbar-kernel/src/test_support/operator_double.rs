@@ -204,13 +204,12 @@ pub(crate) struct OperatorCalls(OperatorDouble);
 impl OperatorCalls {
     /// The double's answer over `request`'s lines, revealed under the kernel's seal (as the loader's
     /// dispatcher, lent that seal, reveals them to the door), lowered to the auth port's answer
-    /// exactly as the loader reads a door's: the verdict, the decision and the strips.
+    /// exactly as the loader reads a door's: the verdict (with the continue-or-stop it implies) and
+    /// the strips.
     fn answer(&self, request: &VerifyRequest) -> VerifyAnswer {
         let seal = crate::seal::lend();
         let Answer {
-            verdict,
-            strips,
-            decision,
+            verdict, strips, ..
         } = self.0.answer(|name| {
             request
                 .lines
@@ -218,14 +217,14 @@ impl OperatorCalls {
                 .find(|(n, _)| n.eq_ignore_ascii_case(name))
                 .map(|(_, v)| v.expose(&seal).as_slice())
         });
+        let verified = match verdict {
+            Verdict::Identity(id) => Verified::Identity(id),
+            Verdict::Reject => Verified::Reject,
+            Verdict::Pass => Verified::Pass,
+        };
         VerifyAnswer {
-            verified: match verdict {
-                Verdict::Identity(id) => Verified::Identity(id),
-                Verdict::Reject => Verified::Reject,
-                Verdict::Pass => Verified::Pass,
-            },
-            decision,
             strips,
+            ..VerifyAnswer::from(verified)
         }
     }
 }

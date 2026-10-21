@@ -218,6 +218,65 @@ fn scanned_hook_env(dir: &std::path::Path) -> busbar_kernel::hooks::HookEnv {
     )
 }
 
+/// The upload body `POST /plugins` and `POST /plugins/inspect` take, by the admin contract's field
+/// names (typed here so no field is spelled as a string).
+#[derive(serde::Serialize)]
+struct Upload<'a> {
+    file: &'a str,
+    tarball_b64: String,
+}
+
+impl<'a> Upload<'a> {
+    /// `tarball` under `file`, base64-encoded as the contract carries it.
+    fn of(file: &'a str, tarball: &[u8]) -> serde_json::Value {
+        Self::raw(
+            file,
+            base64::engine::general_purpose::STANDARD.encode(tarball),
+        )
+    }
+
+    /// `file` with `tarball_b64` as given (a malformed body's).
+    fn raw(file: &'a str, tarball_b64: impl Into<String>) -> serde_json::Value {
+        serde_json::to_value(Upload {
+            file,
+            tarball_b64: tarball_b64.into(),
+        })
+        .expect("an upload body serializes")
+    }
+}
+
+/// The install view's fields, by the admin contract's names: what a successful `POST /plugins`
+/// answers.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct InstallShape {
+    file: String,
+    interface_version: u64,
+    name: String,
+    note: String,
+    publisher: String,
+    trust: String,
+    version: String,
+}
+
+/// A catalog or install row's artifact file (`None` for a compiled-in row), read by its field.
+fn file_of(row: &serde_json::Value) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Filed {
+        file: Option<String>,
+    }
+    serde_json::from_value::<Filed>(row.clone()).ok()?.file
+}
+
+/// The key of the first store this build links: the store catalog's compiled-in head, read off the
+/// installed root rows (the root's table, or a test build's stand-in), never spelled here.
+fn linked_store() -> &'static str {
+    busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .map(|s| s.0)
+        .expect("the build links a store")
+}
+
 /// `POST /api/v1/admin/plugins` of `tarball` as `file`: (status, body).
 async fn install(
     addr: std::net::SocketAddr,
@@ -227,10 +286,7 @@ async fn install(
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "file": file,
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(tarball),
-        }))
+        .json(&Upload::of(file, tarball))
         .send()
         .await
         .unwrap();
@@ -243,10 +299,7 @@ async fn inspect(addr: std::net::SocketAddr, tarball: &[u8]) -> (u16, serde_json
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "file": "candidate.tar.gz",
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(tarball),
-        }))
+        .json(&Upload::of("candidate.tar.gz", tarball))
         .send()
         .await
         .unwrap();
@@ -856,29 +909,20 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
         .map(String::as_str)
         .collect();
     fields.sort_unstable();
+    let shape = serde_json::to_value(InstallShape::default()).expect("the shape serializes");
+    let mut want: Vec<&str> = shape
+        .as_object()
+        .expect("the shape is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    want.sort_unstable();
+    assert_eq!(fields, want, "the install view's shape: {v}");
+    let typed: InstallShape = serde_json::from_value(v.clone())
+        .unwrap_or_else(|e| panic!("the install view's field types: {e}: {v}"));
     assert_eq!(
-        fields,
-        [
-            "file",
-            "interface_version",
-            "name",
-            "note",
-            "publisher",
-            "trust",
-            "version"
-        ],
-        "the install view's shape: {v}"
-    );
-    assert!(
-        v["interface_version"].is_u64()
-            && ["file", "name", "note", "publisher", "trust", "version"]
-                .iter()
-                .all(|k| v[*k].is_string()),
-        "the install view's field types: {v}"
-    );
-    assert_eq!(
-        (v["file"].as_str(), v["name"].as_str()),
-        (Some(file), Some(canonical))
+        (typed.file.as_str(), typed.name.as_str()),
+        (file, canonical)
     );
     assert_eq!(
         v["note"],
@@ -909,10 +953,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     let client = reqwest::Client::new();
 
     // INSTALL — 201 with a trust verdict of "unverified" (unsigned under allow_unsigned).
-    let body = serde_json::json!({
-        "file": file,
-        "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-    });
+    let body = Upload::of(file, &tarball);
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
         .header("x-admin-token", "admintok")
@@ -922,7 +963,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201, "install returns 201 Created");
     let v: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(v["file"], file);
+    assert_eq!(file_of(&v).as_deref(), Some(file));
     assert_eq!(v["trust"], "unverified");
     assert_eq!(
         v["name"], "acme-store-junk",
@@ -950,7 +991,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .await
         .unwrap();
     let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], "memory");
+    assert_eq!(items[0]["name"], linked_store());
     let dyn_row = items
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
@@ -1040,7 +1081,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     let (status, _) = install(
         addr,
         "acme-secret-vault.tar.gz",
-        &admin_test_tarball_kind("acme-secret-vault", "vault", "secret"),
+        &admin_test_tarball_kind("acme-secret-vault", "acmevault", "secret"),
     )
     .await;
     assert_eq!(status, 201, "install must succeed");
@@ -1092,7 +1133,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
         .map(|p| p["name"].as_str().unwrap())
         .collect();
     assert!(
-        store_names.contains(&"memory") && store_names.contains(&"acme-store-junk"),
+        store_names.contains(&linked_store()) && store_names.contains(&"acme-store-junk"),
         "type=store still lists the compiled-in default + the store plugin: {store_list}"
     );
     assert!(
@@ -1178,7 +1219,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["name"] == "memory")
+        .find(|p| p["name"] == linked_store())
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
 
@@ -1259,7 +1300,8 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         .find(|p| p["name"] == "acme-store-filecheck-with")
         .expect("the schema-carrying row is present");
     assert_eq!(
-        with_row["file"], "acme-store-filecheck-with-1.0.0.tar.gz",
+        file_of(with_row).as_deref(),
+        Some("acme-store-filecheck-with-1.0.0.tar.gz"),
         "`file` is the on-disk artifact filename, not the manifest name"
     );
     assert_eq!(with_row["has_schema"], true);
@@ -1270,7 +1312,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     // Round-trip: `file` is exactly what `DELETE /plugins/{file}` and `GET /plugins/{file}/schema`
     // take.
-    let file = with_row["file"].as_str().unwrap();
+    let file = file_of(with_row).expect("the row names its file");
     let schema_resp: serde_json::Value = client
         .get(format!(
             "http://{addr}/api/v1/admin/plugins/{}/schema",
@@ -1301,7 +1343,8 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         .find(|p| p["name"] == "acme-store-filecheck-without")
         .expect("the schema-less row is present");
     assert_eq!(
-        without_row["file"], "acme-store-filecheck-without-1.0.0.tar.gz",
+        file_of(without_row).as_deref(),
+        Some("acme-store-filecheck-without-1.0.0.tar.gz"),
         "`file` is populated even when the manifest has no schema"
     );
     assert_eq!(without_row["has_schema"], false);
@@ -1309,11 +1352,11 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     let memory_row = items
         .iter()
-        .find(|p| p["name"] == "memory")
+        .find(|p| p["name"] == linked_store())
         .expect("compiled-in memory row present");
     assert_eq!(
-        memory_row["file"],
-        serde_json::Value::Null,
+        file_of(memory_row),
+        None,
         "no backing artifact for a compiled-in row"
     );
     assert_eq!(memory_row["has_schema"], false);
@@ -1338,10 +1381,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     let client = reqwest::Client::new();
 
     let tarball = admin_test_tarball("acme-store-candidate", "candidate");
-    let body = serde_json::json!({
-        "file": "candidate.tar.gz",
-        "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-    });
+    let body = Upload::of("candidate.tar.gz", &tarball);
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
@@ -1388,7 +1428,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     // this test's job is the wire behavior, not re-deriving the scope lattice.)
 
     // Malformed body (bad base64) is a 400, never a panic/500.
-    let bad = serde_json::json!({"file": "x.tar.gz", "tarball_b64": "not-base64!!"});
+    let bad = Upload::raw("x.tar.gz", "not-base64!!");
     let bad_resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
@@ -1668,7 +1708,7 @@ async fn test_admin_v1_plugin_install_rejections() {
     let bad = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file": "x.tar.gz", "tarball_b64": "!!!not base64!!!"}))
+        .json(&Upload::raw("x.tar.gz", "!!!not base64!!!"))
         .send()
         .await
         .unwrap();

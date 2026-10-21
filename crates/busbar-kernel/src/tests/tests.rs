@@ -802,7 +802,11 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
     // `allow_unsigned` admits it.
     crate::test_support::rows::drop_in(
         &dir,
-        vec![dropped("acme-lines", "lines", "store")],
+        vec![dropped(
+            "acme-lines",
+            "lines",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
         Vec::new(),
     );
     let mut cfg = plugins_cfg(&dir, true);
@@ -878,8 +882,14 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     )
     .expect("the configured store resolves on the axis");
     let row = reg.resolve(name).expect("the configured store is a row");
-    assert_eq!((row.kind.as_str(), row.ephemeral), ("store", true));
-    let stores = reg.linked().into_iter().filter(|p| p.kind == "store");
+    assert_eq!(
+        (row.kind.as_str(), row.ephemeral),
+        (busbar_contract::abi::mechanism::kind::STORE, true)
+    );
+    let stores = reg
+        .linked()
+        .into_iter()
+        .filter(|p| p.kind == busbar_contract::abi::mechanism::kind::STORE);
     assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
     reg.store_door(name)
         .expect("the row states its door to boot");
@@ -1020,7 +1030,15 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     );
 
     let dir = tmp_plugin_dir("linked-secret");
-    crate::test_support::rows::drop_in(&dir, vec![dropped("env", "acme-env", "store")], Vec::new());
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "env",
+            "acme-env",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
+    );
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let reg = crate::plugins_preflight(
@@ -1288,7 +1306,11 @@ fn unknown_store_name_is_a_clear_boot_error() {
     cfg.trust.allow_unsigned = true;
     crate::test_support::rows::drop_in(
         &dir,
-        vec![dropped("acme-store-x", "x", "store")],
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
         Vec::new(),
     );
     let err = crate::plugins_preflight(
@@ -1324,7 +1346,11 @@ fn secret_registry(
     cfg.trust.allow_unsigned = true;
     crate::test_support::rows::drop_in(
         &dir,
-        vec![dropped("acme-secret-vault", "vault", "secret")],
+        vec![dropped(
+            "acme-secret-vault",
+            "vault",
+            busbar_contract::abi::mechanism::kind::SECRET,
+        )],
         Vec::new(),
     );
     let reg = crate::plugins_preflight(
@@ -1395,7 +1421,11 @@ fn secrets_block_rejects_non_secret_kind() {
     // A STORE-kind plugin — wrong kind for a secrets: entry.
     crate::test_support::rows::drop_in(
         &dir,
-        vec![dropped("acme-store-x", "x", "store")],
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
         Vec::new(),
     );
     let reg = crate::plugins_preflight(
@@ -1585,7 +1615,11 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     cfg.trust.allow_unsigned = true;
     crate::test_support::rows::drop_in(
         &dir,
-        vec![dropped("acme-store-x", "x", "store")],
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
         Vec::new(),
     );
     let reg = crate::plugins_preflight(

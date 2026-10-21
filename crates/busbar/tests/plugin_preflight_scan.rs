@@ -148,15 +148,15 @@ fn the_built_in_stores_dropped_in_copy_is_admitted_once_and_a_rival_is_refused()
 fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let dir = tmp_plugin_dir("untrusted-store");
     let tarball = unsigned_tarball(
-        plugin_manifest("busbar-store-durable", "durable", "busbar"),
+        plugin_manifest("busbar-store-held", "held", "busbar"),
         b"unsigned lib bytes",
     );
-    std::fs::write(dir.join("durable.tar.gz"), tarball).unwrap();
+    std::fs::write(dir.join("held.tar.gz"), tarball).unwrap();
 
     // STRICT default trust: the referenced store plugin is skipped -> preflight fails, naming it.
-    let err = preflight(Some(&gov_with_store("durable")), &plugins_cfg(&dir, true)).unwrap_err();
+    let err = preflight(Some(&gov_with_store("held")), &plugins_cfg(&dir, true)).unwrap_err();
     assert!(
-        err.contains("busbar-store-durable") || err.contains("'durable'"),
+        err.contains("busbar-store-held") || err.contains("'held'"),
         "names the plugin: {err}"
     );
     assert!(
@@ -167,16 +167,16 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     // Opt in to unsigned: preflight passes and the store resolves by alias AND canonical name.
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
-    let reg = preflight(Some(&gov_with_store("durable")), &cfg)
+    let reg = preflight(Some(&gov_with_store("held")), &cfg)
         .expect("allow_unsigned permits the unsigned store plugin at boot");
-    assert!(reg.resolve("durable").is_some(), "alias resolves");
+    assert!(reg.resolve("held").is_some(), "alias resolves");
     assert!(
-        reg.resolve("busbar-store-durable").is_some(),
+        reg.resolve("busbar-store-held").is_some(),
         "canonical name resolves"
     );
-    let reg2 = preflight(Some(&gov_with_store("busbar-store-durable")), &cfg)
+    let reg2 = preflight(Some(&gov_with_store("busbar-store-held")), &cfg)
         .expect("the canonical name is equally valid as governance.store");
-    assert!(reg2.resolve("busbar-store-durable").is_some());
+    assert!(reg2.resolve("busbar-store-held").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

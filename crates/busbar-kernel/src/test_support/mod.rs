@@ -2118,7 +2118,11 @@ pub fn test_hook_env_with_schema(
         .iter()
         .enumerate()
         .map(|(i, alias)| {
-            let mut row = rows::row(&format!("hook-double-{i}"), alias, "hook");
+            let mut row = rows::row(
+                &format!("hook-double-{i}"),
+                alias,
+                busbar_contract::abi::mechanism::kind::HOOK,
+            );
             row.needs_prompt = needs.prompt;
             row.needs_user = needs.user;
             row.settings_schema = settings_schema.map(str::to_string);
@@ -2136,7 +2140,11 @@ pub fn test_hook_env_with_wrong_kind_plugin(
     wrong_kind_alias: &str,
 ) -> crate::hooks::HookEnv {
     let registry = rows::linked_only()
-        .with_dropped(rows::row("hook-double-real", hook_alias, "hook"))
+        .with_dropped(rows::row(
+            "hook-double-real",
+            hook_alias,
+            busbar_contract::abi::mechanism::kind::HOOK,
+        ))
         .with_dropped(rows::row(
             "hook-double-wrongkind",
             wrong_kind_alias,
@@ -2432,7 +2440,8 @@ impl crate::admission::PluginAdmission for AdmissionStandIn {
     /// The binding lifecycle default: a settings change of a `hook` or `auth` plugin applies live;
     /// any other kind's needs a restart.
     fn restart_default(&self, kind: &str) -> bool {
-        !matches!(kind, "hook" | "auth")
+        kind != busbar_contract::abi::mechanism::kind::HOOK
+            && kind != busbar_contract::abi::mechanism::kind::AUTH
     }
 
     fn policy_resolves(&self, _cfg: &crate::config::PluginsCfg) -> Result<(), String> {

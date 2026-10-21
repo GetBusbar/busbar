@@ -1381,8 +1381,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:export"
-count = "31"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "17"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 31 -> 17: the plugin-admission tests that judge a real tarball moved to the composition root with the kernel -> loader drain (#1375), and their upload bodies and catalog reads there name the contract's fields by type and the linked store by the installed rows (law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1393,14 +1393,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:secret"
-count = "38"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 50 -> 38: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
+count = "23"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 50 -> 38: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); LOWERED 38 -> 23: the plugin-admission tests that judge a real tarball moved to the composition root with the kernel -> loader drain (#1375), and their upload bodies and catalog reads there name the contract's fields by type and the linked store by the installed rows (law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:store"
-count = "21"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "17"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 21 -> 17: the plugin-admission tests that judge a real tarball moved to the composition root with the kernel -> loader drain (#1375), and their upload bodies and catalog reads there name the contract's fields by type and the linked store by the installed rows (law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"

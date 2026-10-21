@@ -247,7 +247,11 @@ impl PluginRows for Rows {
     }
 
     fn store_door(&self, name_or_alias: &str) -> Result<StoreDoor, String> {
-        let e = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
+        let e = self.resolve_kind(
+            name_or_alias,
+            busbar_contract::abi::mechanism::kind::STORE,
+            "back the governance store",
+        )?;
         match (e.row.in_process, e.door) {
             (true, Some(door)) => Ok(StoreDoor::Linked(door)),
             _ => Err(format!(
