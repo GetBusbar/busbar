@@ -2629,7 +2629,8 @@ pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
 ///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
 ///
 /// A FAULT answered to a `project` where no rewrite hook is configured and no rewrite was carried
-/// stops the unit as unreadable, as any refused `project` does.
+/// (`faultable` false) is no 500: the kernel's hooks judge the request as 1.5.5's judged a body it
+/// could not parse, a Null body, and the request proceeds (v1.5.5 `proxy/engine/mod.rs:957-961`).
 ///
 /// This is the one home of the mapping; the kernel holds no status or words of its own for it.
 #[must_use]

@@ -1224,15 +1224,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // document is materialized before any hook runs, and a body that will not parse is the
         // shared 500) or the call carried a rewrite: always the shared 500, whatever the hook's
         // `on_error` says, and the body is never forwarded (`abi::plane::project_faults`).
-        if busbar_contract::abi::plane::project_faults(outcome, true) {
-            if !faultable && rewrite.is_none() {
-                return Err(Stopped::Unparseable);
-            }
+        if busbar_contract::abi::plane::project_faults(outcome, faultable || rewrite.is_some()) {
             tracing::error!(
                 "the plane could not apply a request rewrite it must not leave unapplied; \
                  rejecting rather than forwarding the body un-rewritten"
             );
             return Err(fault_veto());
+        }
+        // A FAULT with no rewrite configured or carried is no 500: the caller judges the request
+        // as 1.5.5 judged a body it could not parse, a Null body (`proxy/engine/mod.rs:957-961`).
+        if outcome == AbiOutcome::Fault {
+            return Err(Stopped::Unparseable);
         }
         if outcome != AbiOutcome::Ready {
             return Err(Stopped::Unreadable);

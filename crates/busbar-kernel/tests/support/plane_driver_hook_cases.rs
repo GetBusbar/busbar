@@ -948,6 +948,35 @@ async fn an_unparseable_body_with_only_a_gate_is_judged_as_a_null_body_and_serve
     assert_eq!(sent, 0, "never dialled");
 }
 
+/// GREEN twin: gates only, a body the plane parses. The up-front `project` answers the view and
+/// the gate judges the request's own turns, the unit served.
+#[tokio::test]
+async fn with_only_a_gate_a_parseable_body_is_judged_over_its_own_turns() {
+    let (seen, g) = gate(None);
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(bound(Vec::new(), vec![(0, g)])),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+    let outcome = drive(&units).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert_eq!(far.sent().len(), 1, "the body went through");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![vec![("user".to_string(), "hello".to_string())]],
+        "the gate judged the request's own turn"
+    );
+}
+
 /// RED (opus review B1; v1.5.5 `proxy/engine/mod.rs:1330`, the policy's document read `.ok()`):
 /// the same with only a base routing policy bound for the pool: it judges the zeroed view and the
 /// unit is served. RED before: 400 `DecodeFailed`.
