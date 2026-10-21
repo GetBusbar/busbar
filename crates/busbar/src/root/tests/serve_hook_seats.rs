@@ -37,7 +37,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress, HookStage};
+use super::{compose_planes, door_mounts, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -1235,14 +1235,42 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
-        .expect("its claims mount");
-    let door_table = doors
+    // The door's mounts as production builds the data router with them (`main`'s
+    // `build_split_routers_serving_doors` over `serve::data_mounts`): its routes, its sessions, each
+    // route's unit-less refusal, and the kernel-shaped refusals rendered by the plane that owns the
+    // path, bound to the handle.
+    let mounts = door_mounts(
+        served,
+        pin,
+        &[],
+        &busbar_kernel::base_data_core_lines(&app),
+        &[],
+        &[],
+    )
+    .expect("its claims mount");
+    busbar_kernel::plane_routes::pair_door_refusals(
+        &mounts.routes,
+        &mounts.sessions,
+        &mounts.refusals,
+    )
+    .expect("its routes and refusals pair");
+    let door_table = mounts
+        .routes
         .iter()
         .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
         .collect();
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+    let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        1 << 20,
+        0,
+        false,
+    );
+    if let Some(refuse) = mounts.refuse_by_path {
+        handle.bind_door_refuser(refuse);
+    }
     Ok(DoorRig {
         router,
         door_table,

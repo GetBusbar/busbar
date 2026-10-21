@@ -3165,3 +3165,72 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
         "the native-API root asks no door"
     );
 }
+
+/// A KERNEL-SHAPED REFUSAL UNDER A MOUNTED PLANE keeps that plane's wire format: the door renderer
+/// is told the path is mounted (so the fallback plane's path rule never takes it), and a refusal no
+/// line of the plane renders is answered in JSON-RPC 2.0, the mounted plane's own format, beneath
+/// the mount at a segment boundary as at the mount itself. A residual path is told it is not
+/// mounted and keeps the kernel's neutral envelope. RED: the mounted path answered in the neutral
+/// envelope (its JSON-RPC client decodes nothing else), or the renderer not told it is mounted.
+#[tokio::test]
+async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    use http_body_util::BodyExt as _;
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+    let refuser: PlaneRefuseByPathFn = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |r: &KernelRefusal<'_>| {
+            seen.lock().unwrap().push((r.path.to_string(), r.mounted));
+            None
+        })
+    };
+    let planes = crate::plane::PlaneDispatch::default().mount(
+        "refusal-under-a-mount",
+        "/mcp",
+        crate::plane::WIRE_JSONRPC,
+    );
+    let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    handle.bind_door_refuser(refuser);
+    let answer = |path: &str| {
+        crate::router::kernel_refusal_response(
+            &handle,
+            &planes,
+            ReasonCode::BodyTooLarge,
+            path,
+            path,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            "request body exceeds the maximum allowed size",
+        )
+    };
+    let json = |r: axum::response::Response| async move {
+        let bytes = r.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON")
+    };
+    for path in ["/mcp", "/mcp/anything"] {
+        let v = json(answer(path)).await;
+        assert_eq!(v["jsonrpc"], "2.0", "{path}: {v}");
+        assert!(
+            v.pointer("/error/code")
+                .is_some_and(serde_json::Value::is_i64),
+            "{path}: {v}"
+        );
+        assert!(v.pointer("/error/type").is_none(), "{path}: {v}");
+    }
+    let v = json(answer("/mcpx")).await;
+    assert!(
+        v.get("jsonrpc").is_none(),
+        "a sibling is not under the mount: {v}"
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            ("/mcp".to_string(), true),
+            ("/mcp/anything".to_string(), true),
+            ("/mcpx".to_string(), false),
+        ],
+        "the renderer is told which paths lie under a mounted plane"
+    );
+}
