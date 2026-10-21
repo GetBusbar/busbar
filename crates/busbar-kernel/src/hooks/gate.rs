@@ -154,16 +154,8 @@ impl IncrementalScan<'_> {
     ///
     /// Domain-separated: each field is length-tagged and delimited so no boundary can alias into
     /// another (principal `"a"` + sid `"b"` can never collide with principal `""` + sid `"ab"`).
-    pub(crate) fn derive_session_key(
-        sid: &str,
-        principal_id: &str,
-        hook_generation: u64,
-    ) -> crate::session::SessionKey {
-        Self::derive_session_key_octets(sid.as_bytes(), principal_id, hook_generation)
-    }
-
-    /// [`Self::derive_session_key`] over a session of opaque octets (the request view's
-    /// `session`, which no reader interprets): the same domain-separated material with the session's
+    ///
+    /// The session is opaque octets (the request view's `session`, which no reader interprets), its
     /// bytes last, so a UTF-8 session keys exactly as its string does.
     pub(crate) fn derive_session_key_octets(
         sid: &[u8],
@@ -257,29 +249,21 @@ fn context<'a>(subject: &'a GateSubject<'_>) -> RoutingContext<'a> {
 const NO_CANDIDATES: &[Candidate<'static>] = &[];
 
 /// FIRE the gates attached to this container, in priority order, and return the first verdict that
-/// stops the request.
+/// stops the request, told whether the request's content could be READ.
 ///
 /// ZERO COST when nothing is attached: an empty slice returns before any projection is built, which
 /// is the same shape (and the same guarantee) as the model plane's `global_gates.is_empty()`
-/// early-out.
-pub(crate) async fn decide(
-    gates: &[(u16, ResolvedPolicy)],
-    subject: &GateSubject<'_>,
-) -> GateVerdict {
-    decide_over(gates, subject, true, &mut Vec::new()).await
-}
-
-/// [`decide`], told whether the request's content could be READ, and each gate that ran pushed onto
-/// `ran` in the order it ran, with its decision head and whether it failed (THE DESIGN §1: the audit
-/// record's "controls (... hooks applied)"). A gate the incremental scan had nothing new for was not
-/// asked and is not pushed. A failed gate's `on_error` links are pushed after it, each as it ran
-/// ([`Fallback::walk`]): a link the walk asked is a hook applied.
+/// early-out. Each gate that ran is pushed onto `ran` in the order it ran, with its decision head
+/// and whether it failed (THE DESIGN §1: the audit record's "controls (... hooks applied)"). A gate
+/// the incremental scan had nothing new for was not asked and is not pushed. A failed gate's
+/// `on_error` links are pushed after it, each as it ran ([`Fallback::walk`]): a link the walk asked
+/// is a hook applied.
 ///
 /// When the content could not be read (a door plane's projected body that is absent or not JSON),
 /// a gate granted the content cannot screen it: it is a gate that could not answer, and its
 /// `on_error` decides, never a gate shown empty content that abstains (audit Q128 p15#3). A
 /// shape-only gate (`prompt: no`) reads no content and fires as it always does.
-async fn decide_over(
+pub(crate) async fn decide_over(
     gates: &[(u16, ResolvedPolicy)],
     subject: &GateSubject<'_>,
     readable: bool,
@@ -767,7 +751,7 @@ fn read_projected(projected: Option<&[u8]>) -> Option<busbar_contract::ir::invok
 /// the session half): the same gate the engine fired (each gate that ran pushed onto `ran`), over
 /// the plane's projected body, with the incremental scan KEYED ON THE VIEW'S SESSION, bound to the
 /// caller principal and the hook generation exactly as the engine's was
-/// ([`IncrementalScan::derive_session_key`]), and each clearance bound to the container
+/// ([`IncrementalScan::derive_session_key_octets`]), and each clearance bound to the container
 /// ([`clearance_of`]). A request whose view names no session, or
 /// a node that did not opt in, screens the whole projection every time.
 ///
