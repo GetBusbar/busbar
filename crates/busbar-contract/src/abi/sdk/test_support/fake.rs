@@ -22,8 +22,10 @@
 //!     }
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-//! let lent = host.lend_to(open_in); // borrows the host: it cannot outlive it
-//! let opened = reply::call_hosted(open, None, &lent, open_out);
+//! // SAFETY: `open_in`'s fields are this test's own; the host outlives the instance.
+//! let lent = unsafe { host.lend_to(open_in) }; // borrows the host: it cannot outlive it
+//! // SAFETY: as above.
+//! let opened = unsafe { reply::call_hosted(open, None, &lent, open_out) };
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable
@@ -865,7 +867,14 @@ impl FakeHost {
     /// `in` comes back as a [`LentIn`] that borrows the host, so it cannot outlive it; the test
     /// hands it to [`super::reply::call_hosted`] and never holds the `in` itself again. No table,
     /// and no `ServiceFn`, is handed to the test.
-    pub fn lend_to<I: TakesHost>(&self, mut input: I) -> LentIn<'_, I> {
+    ///
+    /// # Safety
+    ///
+    /// INTERIM (status row 159; safe again with #1471's sealed `in` builders): every raw pointer
+    /// field of `input` other than the `host` this sets points at live memory of its stated length
+    /// for as long as the `LentIn` is used, and the host outlives every call on an instance opened
+    /// over it.
+    pub unsafe fn lend_to<I: TakesHost>(&self, mut input: I) -> LentIn<'_, I> {
         *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
         LentIn {
             input,

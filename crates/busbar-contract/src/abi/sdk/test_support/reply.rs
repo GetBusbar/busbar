@@ -11,7 +11,8 @@
 //! use busbar_contract::abi::sdk::test_support::reply::call;
 //!
 //! let resolve = view.op::<Ops>(|t| &t.resolve).expect("the door states resolve");
-//! let resolved = call(resolve, Some(&instance), &input, out);
+//! // SAFETY: `input`'s fields are this test's own live buffers; the host outlives `instance`.
+//! let resolved = unsafe { call(resolve, Some(&instance), &input, out) };
 //! assert_eq!(resolved.owned.material(), b"s3cret");
 //! release(instance, resolved.out.head.lease); // the copy is already taken
 //! ```
@@ -112,23 +113,32 @@ impl<O: Reply> Called<O> {
 /// `validate` and `open` run on no instance; every other slot but `close` runs on one its door's
 /// `open` answered ([`Called::take_instance`]); `close` is [`close`]'s.
 ///
-/// SAFE (status row 159): `op` is a [`ViewOp`](super::ViewOp), a slot of a door the contract's
-/// macro built, and `instance` an [`Instance`] that door's `open` answered, so every pointer the
-/// slot receives is one the contract vouches for.
+/// SEALED (status row 159): `op` is a [`ViewOp`](super::ViewOp), a slot of a door the contract's
+/// macro built, and `instance` an [`Instance`] that door's `open` answered.
 ///
 /// # Panics
 ///
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field. Or the
 /// instance is missing, present where none is taken, another door's, or `op` is `close`.
-pub fn call<I: AbiIn, O: Reply>(
+///
+/// # Safety
+///
+/// INTERIM (status row 159; safe again once #1471's sealed `in` builders and an `Instance`
+/// lifetime land): the `op` and `instance` are sealed (above), but the `in`'s raw fields are not.
+/// The caller guarantees (a) every raw pointer field of `input` (an `OpenIn`'s `host`, a
+/// `settings` or other `Blob`, `secrets`, `err_buf`/`err_cap`, every other pointer and its length)
+/// points at live memory of its stated length for the call, and (b) the host tables lent at
+/// `instance`'s `open` (a [`FakeHost`](super::fake::FakeHost)'s) outlive every call on it.
+pub unsafe fn call<I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Option<&Instance>,
     input: &I,
     out: O,
 ) -> Called<O> {
     let at = on(op, instance);
-    // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`.
+    // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`; the
+    // caller vouches for the `in`'s raw fields and the instance's lent tables.
     unsafe { run(op, at, *input, out) }
 }
 
@@ -138,14 +148,19 @@ pub fn call<I: AbiIn, O: Reply>(
 /// # Panics
 ///
 /// As [`call`].
-pub fn call_hosted<I: AbiIn, O: Reply>(
+///
+/// # Safety
+///
+/// As [`call`].
+pub unsafe fn call_hosted<I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Option<&Instance>,
     input: &super::fake::LentIn<'_, I>,
     out: O,
 ) -> Called<O> {
     let at = on(op, instance);
-    // SAFETY: as `call`; the fake host the `in` was lent by outlives the call.
+    // SAFETY: as `call`, the caller's contract; the fake host the `in` was lent by outlives the
+    // call (the `LentIn` borrows it).
     unsafe { run(op, at, input.input, out) }
 }
 
@@ -154,7 +169,11 @@ pub fn call_hosted<I: AbiIn, O: Reply>(
 /// # Panics
 ///
 /// As [`call`], or `op` is not `close`.
-pub fn close<I: AbiIn, O: Reply>(
+///
+/// # Safety
+///
+/// As [`call`].
+pub unsafe fn close<I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Instance,
     input: &I,
@@ -171,7 +190,7 @@ pub fn close<I: AbiIn, O: Reply>(
         "reply::close: the instance is another door's"
     );
     // SAFETY: the slot is its door's own `close`, on an instance that door's READY `open`
-    // answered, closed once (taken by value).
+    // answered, closed once (taken by value); the caller vouches for the rest.
     unsafe { run(op, instance.ptr, *input, out) }
 }
 

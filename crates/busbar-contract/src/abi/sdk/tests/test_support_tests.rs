@@ -185,7 +185,8 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
 
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    let mut opened = call(open, None, &input, zeroed::<OpenOut>());
+    // SAFETY: an all-zero `OpenIn` (its head stamped) names no memory.
+    let mut opened = unsafe { call(open, None, &input, zeroed::<OpenOut>()) };
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
     let instance = opened
@@ -196,12 +197,15 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
         "an instance is taken once"
     );
 
-    let closed = super::reply::close(
-        close,
-        instance,
-        &in_head::<InHead>(slot::CLOSE),
-        out_head::<OutHead>(),
-    );
+    // SAFETY: a bare head names no memory; the instance was opened over no host tables.
+    let closed = unsafe {
+        super::reply::close(
+            close,
+            instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
     assert_eq!(closed.outcome, Outcome::Ready);
 }
 
@@ -386,7 +390,9 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
     };
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
-    let mut got = call(open, None, &input, zeroed::<OpenOut>());
+    // SAFETY: `settings` and `err_buf`/`err_cap` name this test's own live buffers, at their
+    // lengths.
+    let mut got = unsafe { call(open, None, &input, zeroed::<OpenOut>()) };
     assert!(
         got.take_instance().is_none(),
         "a FAILED open hands no instance"
@@ -1146,12 +1152,32 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
     // The lent `in` lives only in this block: it borrows the host, and its borrow ends here.
-    let opened = {
-        let lent = host.lend_to(input);
-        super::reply::call_hosted(open, None, &lent, zeroed::<OpenOut>())
+    let mut opened = {
+        // SAFETY: the `in`'s only pointer is the `host` this lends; the host outlives the
+        // instance (it is closed below, before the host goes).
+        let lent = unsafe { host.lend_to(input) };
+        // SAFETY: as above.
+        unsafe { super::reply::call_hosted(open, None, &lent, zeroed::<OpenOut>()) }
     };
-    // Nothing the host lent is left, so the host may go.
-    drop(host);
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
+    // The instance keeps the tables it was opened over, so it is closed while the host lives; only
+    // then may the host go.
+    let instance = opened
+        .take_instance()
+        .expect("a READY open hands its instance");
+    let close = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .expect("the door states close");
+    // SAFETY: a bare head names no memory; the host the instance was opened over still lives.
+    let closed = unsafe {
+        super::reply::close(
+            close,
+            instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
+    assert_eq!(closed.outcome, Outcome::Ready);
+    drop(host);
 }
