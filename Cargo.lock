@@ -460,6 +460,7 @@ dependencies = [
  "hex",
  "http",
  "hyper",
+ "idna",
  "indexmap",
  "jsonschema",
  "libc",
@@ -544,6 +545,7 @@ dependencies = [
  "http",
  "http-body-util",
  "oauth-as",
+ "psl",
  "reqwest",
  "ring",
  "serde",
@@ -556,7 +558,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-file"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=06176694c96bc30803046f5d38a95f541f5aa2a0#06176694c96bc30803046f5d38a95f541f5aa2a0"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=51e744af4a46222e7bb5ecb8d5c86b97a450f929#51e744af4a46222e7bb5ecb8d5c86b97a450f929"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -567,7 +569,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-file-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=06176694c96bc30803046f5d38a95f541f5aa2a0#06176694c96bc30803046f5d38a95f541f5aa2a0"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=51e744af4a46222e7bb5ecb8d5c86b97a450f929#51e744af4a46222e7bb5ecb8d5c86b97a450f929"
 dependencies = [
  "busbar-contract",
  "busbar-export-file",
@@ -597,7 +599,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=65346c953856af5030ab141a55d59e458c608bff#65346c953856af5030ab141a55d59e458c608bff"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=8535098ecf2723bf73dc6e4b1a3174c63b0d8500#8535098ecf2723bf73dc6e4b1a3174c63b0d8500"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -607,7 +609,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=65346c953856af5030ab141a55d59e458c608bff#65346c953856af5030ab141a55d59e458c608bff"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=8535098ecf2723bf73dc6e4b1a3174c63b0d8500#8535098ecf2723bf73dc6e4b1a3174c63b0d8500"
 dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
@@ -637,7 +639,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=a1eddb3b87f7879b488d64d6ae3e2407b48b71d1#a1eddb3b87f7879b488d64d6ae3e2407b48b71d1"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=10e49c1fa56b186d0f6aac7d1cce12f52359fbbc#10e49c1fa56b186d0f6aac7d1cce12f52359fbbc"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -840,6 +842,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
+ "busbar-auth-admin-tokens",
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc",
  "busbar-auth-oidc-plugin",
@@ -878,7 +881,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=046296aecc8088128dee36971f8da8cd8fd79175#046296aecc8088128dee36971f8da8cd8fd79175"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=2cd7e1c6f70397e964d61fa47b1cc64c65ecf2e1#2cd7e1c6f70397e964d61fa47b1cc64c65ecf2e1"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -887,7 +890,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=3186c8664591e407ad0487fafa081f393769382d#3186c8664591e407ad0487fafa081f393769382d"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=c1891cf96aa83ddb43239ead823749049c803f25#c1891cf96aa83ddb43239ead823749049c803f25"
 dependencies = [
  "busbar-contract",
  "libc",
@@ -2652,6 +2655,21 @@ name = "protoc-bin-vendored-win32"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
+
+[[package]]
+name = "psl"
+version = "2.1.244"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc3ac0c25b0c40554a755e56dfe268855c53f391bbb7922a1c1fe59b73b163a9"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
 name = "ptr_meta"
