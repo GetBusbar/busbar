@@ -1147,3 +1147,44 @@ async fn a_framed_claims_closing_block_is_never_surfaced_on_the_data_listener() 
         })
         .await;
 }
+
+/// AN ABSOLUTE-FORM h1 REQUEST LEFT UNREAD CLOSES ITS CONNECTION ON BOTH PATHS (1.5.5's hyper:
+/// an h1 request whose body the handler left unread closes the connection after its answer,
+/// whatever form its target takes): a request naming its target in absolute form, its body past the
+/// cap, is answered alike handed up and framed, and its connection is closed on both. Naming an
+/// authority in the head makes no h1 connection a multiplexed one.
+#[tokio::test(flavor = "current_thread")]
+async fn an_absolute_form_over_cap_request_closes_its_connection_on_both_paths() {
+    let _one = PUBLISHING.lock().await;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let rig = rig("accepted-absolute-form", Chain::Keys, 0);
+            let handed_up = rig.handed_up();
+            let framed = rig.framed(rig.linked_framer());
+            let scheme = axum::http::uri::Scheme::HTTP;
+            let target = format!("{scheme}://door.test/call/local-whole");
+            let keyed = bearer(&rig.token);
+            let over = vec![b'x'; CAP + 4096];
+            let request = post(&target, &keyed, "application/json", &over, false);
+            let (l, l_after) = answered(handed_up, request.clone()).await;
+            let (r, r_after) = answered(framed, request).await;
+            let text = String::from_utf8_lossy(&l).to_ascii_lowercase();
+            assert!(
+                text.contains(" 413 "),
+                "the over-cap body is answered 413: {text}"
+            );
+            assert_eq!(l_after, After::Closed, "the hand-up closes the connection");
+            assert_eq!(
+                String::from_utf8_lossy(&l),
+                String::from_utf8_lossy(&r),
+                "the absolute-form answers differ"
+            );
+            assert_eq!(
+                r_after,
+                After::Closed,
+                "the framed door closes the connection"
+            );
+        })
+        .await;
+}
