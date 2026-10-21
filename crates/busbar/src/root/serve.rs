@@ -2657,8 +2657,7 @@ fn data_lines(
     }
     // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
     // THE DESIGN §6).
-    let mut rung = 0u32;
-    for (path, method, auth) in core {
+    for (rung, (path, method, auth)) in (0u32..).zip(core) {
         let auth = match auth {
             RouteAuth::None => LineAuth::None,
             _ => chain_auth(data_chain),
@@ -2670,8 +2669,8 @@ fn data_lines(
             rung,
             auth,
         ));
-        rung += 1;
     }
+    let mut rung = u32::try_from(core.len()).unwrap_or(u32::MAX);
     // The routes the router serves beside them: each plane's public routes, then the plugin
     // routes, each at its own path, its gate the router's.
     let public = planes.iter().flat_map(|(_, snapshot)| {
@@ -2698,7 +2697,7 @@ fn data_lines(
         });
         if !known {
             lines.push(core_line(methods, form, path, rung, LineAuth::Claimant));
-            rung += 1;
+            rung = rung.saturating_add(1);
         }
     }
     // The residual line, placed last by its form.
