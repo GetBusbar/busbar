@@ -768,7 +768,8 @@ async fn an_unparseable_body_with_a_configured_rewrite_hook_is_the_shared_500_an
     }
 }
 
-/// RED: the same for a rewrite the POOL configures, with no global rewrite hook.
+/// RED: the same for a rewrite the POOL configures, with no global rewrite hook. The far end names
+/// its pool to the hooks, as the kernel's egress walk does: a pool's hooks bind only so.
 #[tokio::test]
 async fn an_unparseable_body_with_a_pool_rewrite_is_the_shared_500() {
     for (how, answer) in ANSWERS {
@@ -783,7 +784,7 @@ async fn an_unparseable_body_with_a_pool_rewrite_is_the_shared_500() {
         );
         let (steps, far, caller) = (
             TestUnits::passing(),
-            Far::new(&["ok"], &[b"done"]),
+            Far::new(&["ok"], &[b"done"]).naming_its_pool(),
             Caller::default(),
         );
         let units = r.driver.unit(
