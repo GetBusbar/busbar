@@ -119,7 +119,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
         stated,
         None,
         Origin::Dropped {
-            file: format!("{logic}.tar.gz"),
+            file: format!("{}.tar.gz", crate::both_ways::fixture("secret").0),
             bytes: Arc::new(bytes),
         },
     )
