@@ -611,6 +611,13 @@ fn is_test_attr(body: &TokenStream) -> bool {
     }
 }
 
+/// Whether the `>` at `i` is the tail of `->` or `=>`, not a closing angle bracket.
+fn arrow_before(toks: &[TokenTree], i: usize) -> bool {
+    i > 0
+        && matches!(&toks[i - 1], TokenTree::Punct(p)
+            if matches!(p.as_char(), '-' | '=') && p.spacing() == Spacing::Joint)
+}
+
 /// The token stream with every test-marked item removed: the attribute, the attributes after it,
 /// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
 /// the scope it opens.
@@ -635,12 +642,37 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
     };
     let mut out: Vec<TokenTree> = Vec::new();
     let mut i = 0;
+    // The `<..>` depth of the kept tokens: an attribute inside generics marks one parameter.
+    let mut angle = 0usize;
     while i < toks.len() {
         if let Some((len, inner)) = attr_at(i) {
             if inner {
                 return TokenStream::new();
             }
             i += len;
+            if angle > 0 {
+                // A test-marked generic parameter: skip it to its own end (the next top-level `,`
+                // or the `>` closing the list, left in place), never on into the item's body.
+                let mut depth = 0usize;
+                while i < toks.len() {
+                    match &toks[i] {
+                        TokenTree::Punct(p) if p.as_char() == '<' => depth += 1,
+                        TokenTree::Punct(p) if p.as_char() == '>' && !arrow_before(&toks, i) => {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => {
+                            i += 1;
+                            break;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                continue;
+            }
             // Skip the item: further attributes, then up to its body or its `;`.
             while i < toks.len() {
                 match &toks[i] {
@@ -658,7 +690,18 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
             continue;
         }
         match &toks[i] {
+            TokenTree::Punct(p) if p.as_char() == '<' => angle += 1,
+            TokenTree::Punct(p) if p.as_char() == '>' && !arrow_before(&toks, i) => {
+                angle = angle.saturating_sub(1)
+            }
+            TokenTree::Punct(p) if p.as_char() == ';' => angle = 0,
+            _ => {}
+        }
+        match &toks[i] {
             TokenTree::Group(g) => {
+                if g.delimiter() == Delimiter::Brace {
+                    angle = 0;
+                }
                 let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
                 kept.set_span(g.span());
                 out.push(TokenTree::Group(kept));
@@ -1005,10 +1048,35 @@ impl Gate for DepWallGate {
             ov,
             &["new-offender", "busbar-plane-llm", "std::net"],
         ));
+        // A TEST MARK ON A GENERIC PARAMETER must hide that parameter only, never the body.
+        for (what, src) in [
+            (
+                "last",
+                "pub fn dial<U, #[cfg(test)] T>() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+            (
+                "middle",
+                "pub fn dial<U, #[cfg(test)] T, V>() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set("crates/busbar-plane-decisions/src/planted_generic_socket.rs", src);
+            report.push(prove_red(
+                cx,
+                self,
+                match what {
+                    "last" => "a test mark on the last generic parameter does not hide the body",
+                    _ => "a test mark on a middle generic parameter does not hide the body",
+                },
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
         // THE SAME PLANT IN AN IN-TREE PLUGIN, whose source the wall reads off the disk.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm/src/planted_socket.rs",
+            "crates/busbar-plane-llm/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
         report.push(prove_red(
@@ -1017,7 +1085,7 @@ impl Gate for DepWallGate {
             "an in-tree plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
-            &["new-offender", "busbar-llm", "std::net"],
+            &["new-offender", "busbar-plane-llm", "std::net"],
         ));
         // AND IN A PINNED PLUGIN THE BASE LAYER DOES NOT LAY: read from its cargo checkout.
         let mut ov = Overlay::new();
@@ -1043,12 +1111,12 @@ impl Gate for DepWallGate {
         };
         let mut ov = based();
         ov.set(
-            "crates/busbar-llm/src/planted_socket.rs",
+            "crates/busbar-plane-llm/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
         ov.set(
             LEDGER,
-            format!("{}\nbusbar-llm\tstd::net\n", held.trim_end()),
+            format!("{}\nbusbar-plane-llm\tstd::net\n", held.trim_end()),
         );
         report.push(prove_red(
             cx,
@@ -1056,7 +1124,7 @@ impl Gate for DepWallGate {
             "a pin written in the change that introduced its offence is refused",
             &[ROW_NEW],
             ov,
-            &["minted", "busbar-llm", "std::net"],
+            &["minted", "busbar-plane-llm", "std::net"],
         ));
         // A CARRIER MINTED IN THIS CHANGE, on a real transport crate the workspace resolves.
         let mut ov = based();
