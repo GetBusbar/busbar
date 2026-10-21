@@ -5,11 +5,12 @@
 //!
 //! The node keeps each seal's head and not its balances ([`CheckpointHead`]); a reader that needs
 //! the sealed figures has them re-derived here from the chain, through the configured store, in
-//! ONE ordered walk: the records fold into a single scratch book, and at each held checkpoint's own
-//! record the book is the checkpoint's totals. The body digest then says whether they are the
-//! sealed ones. A checkpoint whose figures the chain does not reproduce, whose record is not on the
-//! chain, or whose journal cannot be read is a typed refusal naming its sequence number — never
-//! zeros and never the wrong numbers.
+//! ONE ordered walk of the WHOLE chain ([`Durability::chain`]: on a node resumed from the store, the
+//! store's copy joined to the resident segment): the records fold into a single scratch book, and
+//! at each held checkpoint's own record the book is the checkpoint's totals. The body digest then
+//! says whether they are the sealed ones. A checkpoint whose figures the chain does not reproduce,
+//! whose record is not on the chain, or whose journal cannot be read is a typed refusal naming its
+//! sequence number — never zeros and never the wrong numbers.
 
 use super::*;
 
@@ -98,7 +99,10 @@ impl Durability {
         let Some(first) = self.checkpoints.first() else {
             return Ok(());
         };
-        let records = match self.journal.replay() {
+        // THE WHOLE CHAIN, as `/verify` reads it (`Durability::chain`): on a node resumed from the
+        // store the journal's own replay is only its resident memory segment, a suffix once the
+        // chain outgrows one, and a walk of a suffix re-derives nothing a held checkpoint sealed.
+        let records = match self.chain() {
             Ok(Ok(records)) => records,
             Ok(Err(broken)) => {
                 return Err(CheckpointUnreadable::Journal {

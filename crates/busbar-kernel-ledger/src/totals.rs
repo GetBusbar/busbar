@@ -19,7 +19,6 @@
 //! unsigned figures with a separate direction flag is how a sign error becomes invisible. Nothing
 //! here is floating point, for the reason nothing in a ledger ever is.
 
-
 //! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
 //!
 //! Every arithmetic operator in this file saturates — the same policy `settle.rs` states, for the

@@ -3989,7 +3989,10 @@ fn a_store_resumed_chain_past_one_segment_re_derives_every_held_checkpoint() {
     }
 
     let mut restarted = store_book(&slots, NODE);
-    assert!(restarted.keeps_chain(), "the chain was resumed from the store");
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
     assert!(
         restarted.journal.log().segments_used() >= 2,
         "the resumed memory journal rolled past one segment"
