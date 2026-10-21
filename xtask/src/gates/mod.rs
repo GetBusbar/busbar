@@ -3448,7 +3448,8 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(config_scope::ConfigScopeGate),
         summary: "the config-time proof (ConfigScope) is constructed only in the host's boot, apply, \
-                  refresh, pre-flight and validate functions, never on a request path",
+                  refresh, pre-flight and validate functions, never on a request path (THE DESIGN \
+                  §11.11 R4)",
     },
     Registration {
         name: "money-invariants",

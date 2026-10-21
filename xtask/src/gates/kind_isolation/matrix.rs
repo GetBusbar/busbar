@@ -3361,7 +3361,7 @@ impl BaseTree<'_> {
 /// THE MERGE-BASE'S LEDGER, AS THE BASE HAD IT: `bcx` is this tree laid back to the base's bytes.
 ///
 /// A BASE THAT PREDATES THE LEDGER IS A BASE WITH NO ROWS, NOT A BASE THAT CANNOT BE READ. The
-/// `dev` -> `qa` move measures against `qa`, and `qa` is 1.5.5, which never carried
+/// `dev` -> `qa` move measures against `qa`, and `qa` is 1.5.5 (a71b21e9), which never carried
 /// `qa/kind-isolation.toml`. This used to refuse there ("the merge-base's Law 0 cells could not be
 /// read"), so the row named no cell at all on the one move DEV-GREEN is judged on (BUSBAR-1.6.0.md
 /// Part 5, DONE = DEV-GREEN item 3). The base's cells ARE readable: its bytes are in history and
@@ -5330,7 +5330,7 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         plant(
             cx,
-            // THE DIRECTORY THE CENSUS READS: `busbar-store-memory` is pinned and its checkout
+            // THE DIRECTORY THE CENSUS READS: `busbar-store-memory` is pinned (P5) and its checkout
             // is mounted at `crates/<package>`, or the plant lands under no crate at all.
             "crates/busbar-store-memory/src/vendor.rs",
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
@@ -6264,7 +6264,7 @@ mod tests {
         (cx.with_overlay(ov), dir)
     }
 
-    /// RED ARM, THE PREDEV -> DEV HOP. The merge-base with `dev` is 1.5.5, which never
+    /// RED ARM, THE PREDEV -> DEV HOP. The merge-base with `dev` is 1.5.5 (a71b21e9), which never
     /// carried `qa/kind-isolation.toml`. Its cells are read and judged, not refused: a neutral cell
     /// the branch grew from nothing is RED as `law0-grown` over "no `[[law0]]` row there", and the
     /// rows this tree carries for it cover none of it (each is minted on the branch).
@@ -6762,7 +6762,7 @@ mod tests {
         let ws = Ctx::workspace().expect("the workspace opens");
         let rel = "crates/busbar-store-memory/src/vendor.rs";
         let body = "pub const PLANTED: &str = \"planted\";\n";
-        // The store is a pinned checkout: the tree the gate reads lays it at its mount, beneath
+        // The store is a pinned checkout (P5): the tree the gate reads lays it at its mount, beneath
         // the plant, exactly as the gate run does.
         let pinned = super::super::pinned::with_pinned(&ws);
         let cx = super::super::pinned::with_pinned(&ws.with_overlay(plant(&pinned, rel, body)));

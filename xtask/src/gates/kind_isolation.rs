@@ -764,7 +764,8 @@ const DEP_VERDICTS: &[&str] = &[
     TEST_LINKED_DOOR_VERDICT,
 ];
 
-/// A TEST-LINKED DOOR's verdict ([`test_linked_door_edges`]): a row claims it only for such
+/// A TEST-LINKED DOOR's verdict ([`test_linked_door_edges`]; ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1); ported from lane-dg-mcp dd0d4438ba at P3 DEL-MCP): a row claims it only for such
 /// an edge, and such an edge's row claims nothing else.
 const TEST_LINKED_DOOR_VERDICT: &str = "test-linked-door";
 
@@ -4913,7 +4914,7 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
                 .extend(facts.door_kinds.iter().copied());
         }
     }
-    // A PLUGIN REPO IS ITS LOGIC CRATE AND ITS `-plugin` TWIN ("Each plugin repo is a
+    // A PLUGIN REPO IS ITS LOGIC CRATE AND ITS `-plugin` TWIN (spec §9, "Each plugin repo is a
     // logic crate plus a plugin crate"; #31 topology; the R-FIX1 door per real plugin; ARCHITECT
     // 2026-10-07). The census reads a pinned repo's logic crate, and the twin is where that repo
     // EXPORTS its door (`export_door!`) and RUNS its battery (`tests/conformance.rs`). Those two
@@ -5480,7 +5481,7 @@ fn door_kind_marks(text: &str) -> Vec<&'static str> {
 }
 
 /// THE DOOR IS THE KIND'S IMPLEMENTATION (ARCHITECT ruling GRPC-DOOR 2026-10-02, widened to every
-/// kind, -locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI
+/// kind; spec §11, owner-locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI
 /// door table, and compiled in = dropped in = the same table). A crate of kind K whose shipped
 /// source BUILDS a door with an SDK builder ([`door_builder_kinds`]) over K's memory ABI
 /// ([`door_kind_marks`]) AND exports it through the SDK door macro ([`exports_door`], in `src/` or
@@ -6051,8 +6052,8 @@ const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
 // WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
 // `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
-// written for the `control` plugin kind, which is cancelled (Part 2 "There is no
-// "control" plugin kind"). The cleanliness crates' rule is each depends one way on
+// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
+// "control" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
 // the kernel, names no plugin, and gets its listeners through the connector. Those six words name
 // no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
 // breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
@@ -6438,11 +6439,13 @@ const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
     ("secret", "secret"),
 ];
 
-/// The drain a test-linked door's test edge must state.
+/// The drain a test-linked door's test edge must state (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)).
 pub const TEST_LINKED_DOOR_DRAIN: &str =
     "moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC)";
 
-/// The `(from, to)` TEST edges that are a TEST-LINKED DOOR: a crate's harness folds a plane door's Statement into its registry, which links
+/// The `(from, to)` TEST edges that are a TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)): a crate's harness folds a plane door's Statement into its registry, which links
 /// the door's crate into the test binary and nothing else. Exempt from `new-forbidden-edge` only
 /// when ALL hold: the crate's `[package.metadata.busbar] test-linked` list names `door:<to>`; `to`
 /// is a `[dev-dependencies]` entry and NOT a shipped one; `to` is of kind `plane`; and a `[[dep]]`
@@ -8261,7 +8264,7 @@ impl Gate for KindIsolationGate {
                 ],
             ));
 
-            // A TEST-LINKED DOOR is exempt
+            // A TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4 Q-L3B-GATES (1)) is exempt
             // only while its row states the drain and its crate's `test-linked` list names the
             // door: the kernel's row with its drain struck, or the kernel no longer naming the door,
             // is the edge's own verdict again, and red. The tree has no test-linked door since the
@@ -8290,7 +8293,7 @@ impl Gate for KindIsolationGate {
                 let registry = format!(
                     "{}\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-plane-mcp\"\n\
                      half    = \"test\"\ncount   = \"1\"\nverdict = \"{TEST_LINKED_DOOR_VERDICT}\"\n\
-                     cite    = \"test-linked door\"\n\
+                     cite    = \"ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1)\"\n\
                      why     = \"busbar-kernel names busbar-plane-mcp: declared dev in the test \
                      graph (dev-dependencies), 1 declaration(s) at this commit.\"\n\
                      drain   = \"{drain}\"\n",
@@ -10957,7 +10960,7 @@ impl Gate for KindIsolationGate {
             ov,
         ));
 
-        // A CLEANLINESS SURFACE NAMES NO PLUGIN. The rule that holds it is
+        // A CLEANLINESS SURFACE NAMES NO PLUGIN (THE DESIGN §8). The rule that holds it is
         // `:matrix`'s armed `law0-neutral-instance` class, at zero on the ship twin: a plane
         // instance noun written in core-admin's shipped source is RED there, whatever
         // `:control-path` says.
@@ -11418,7 +11421,7 @@ impl Gate for KindIsolationGate {
             &["no-implementor", "busbar-store-subjectless", "Store"],
         ));
 
-        // A PINNED REPO'S DOOR AND BATTERY ARE ITS `-plugin` TWIN'S
+        // A PINNED REPO'S DOOR AND BATTERY ARE ITS `-plugin` TWIN'S (spec §9; ARCHITECT
         // 2026-10-07). The real export-file twin exports the door and runs the published suite,
         // so the logic crate reads green; each plant below takes one of those two facts away and
         // the row says so, and a repo with no twin at all reads exactly as it did before twins

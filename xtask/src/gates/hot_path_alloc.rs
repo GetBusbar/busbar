@@ -38,7 +38,7 @@
 //!
 //! THE SUBJECT. The HOT lane's `PlaneHostVtable` was deleted with `abi/hot` (status row 84); the
 //! batch crosses the host-services table that replaced it, `HostSlots`
-//! (`crates/busbar-contract/src/abi/host/service.rs`), through its `clock.now`
+//! (`crates/busbar-contract/src/abi/host/service.rs`, THE DESIGN §11.12), through its `clock.now`
 //! slot, ARMED against the table's own construction (the subject
 //! `crates/busbar-contract/tests/layout_golden.rs` pins): an allocation-free call is allocation-free
 //! wherever it is made.

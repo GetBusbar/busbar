@@ -218,7 +218,7 @@ has one ROUTE step and one dispatch; the code should have one too."""
 send_verb = '\.conns\.open\('
 allowed_function = "send_attempt"
 # THE ONE NAMED KNOWN SITE, measured: the contract's ABI host shim opens a PLUGIN'S OWN declared
-# connection for it (/ DECISIONS a plugin reaches the network only through a
+# connection for it (THE DESIGN §5 / DECISIONS #40: a plugin reaches the network only through a
 # declared need, and the host opens it on its behalf), not a second attempt for a unit. Each entry
 # is `file::fn`; a known site that stops opening anything is RED, so the list cannot go stale.
 known_sites = ["crates/busbar-contract/src/abi/host/conn/mod.rs::host_open"]
@@ -267,7 +267,7 @@ needle = "busbar_kernel::"
 # through the root's secret axis) added two `busbar_kernel::config::secret::resolve_linked_string` calls,
 # one in mcp/upstream.rs and one in mcp/client/stdio.rs (lane lane-dg-auth, lanes/L2-AUTH.md). The two
 # lines are the secret axis replacing the removed busbar-mcp -> env/file secret dependency, not new reach.
-# busbar-mcp is deleted by DEL-MCP, and the row goes with the crate.
+# busbar-mcp is deleted by DEL-MCP (W2), and the row goes with the crate.
 # STRUCK: busbar-mcp = 281 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
 # STRUCK: busbar-a2a = 232 (FLIP-A2A, the flip: the plane is served through its door, and its row
 # went with the crate).
