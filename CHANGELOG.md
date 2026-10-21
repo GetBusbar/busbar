@@ -552,7 +552,8 @@ minted secret carries over.
   JSON reader that maps numbers to doubles rounded it and reported an honest chain as tampered.
   The digest framing is unchanged; the envelope members (`from`, `to`, `next_seq`, and a head's
   `seq`/`wall`) stay JSON numbers. **Migration:** a third-party verifier parses each recipe number
-  from its decimal text, framing it by the kind column of `docs/audit-chain-digest-v4.md`.
+  from its decimal text, framing it by the kind column of `docs/audit-chain-digest-v4.md`
+  (owner-approved 2026-10-21).
 - 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation`.
   Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
   already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in

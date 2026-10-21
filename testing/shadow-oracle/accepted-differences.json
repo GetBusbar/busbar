@@ -1729,8 +1729,13 @@
       "id": "row 159 every recipe number in an audit range record is published as decimal text",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: every recipe number in a `GET /api/v1/admin/audit/range` record is published as its decimal text in a JSON string.",
-      "by": "owner (Matthew Jackson), OWNER-LISTED for signoff 2026-10-21 16:00Z (row 159, PR #1427); not yet signed",
-      "owner_listed": "2026-10-21T16:00Z: the owner signs this entry or rules otherwise; until then it carries no `signoff` and the changelog-register gate names it unsigned",
+      "status": "owner-approved 2026-10-21",
+      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (row 159, PR #1427)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-21",
+        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): every 64-bit recipe number in a GET /api/v1/admin/audit/range record is published as its decimal text in a JSON string, so a double-mapping JSON reader no longer rounds the sealing node and reports an honest chain as tampered"
+      },
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
