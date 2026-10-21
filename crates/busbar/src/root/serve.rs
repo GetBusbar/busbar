@@ -2558,9 +2558,12 @@ struct DataLines {
 /// serves a `HEAD` from the `GET` handler (1.5.5's `get()`).
 fn line_methods(method: RouteMethod) -> u32 {
     use busbar_contract::abi::transport::route::{method_bit, METHOD_GET, METHOD_HEAD};
-    // RED: HEAD does not ride GET.
-    let _ = (METHOD_GET, METHOD_HEAD);
-    method_bit(method.as_str())
+    let bit = method_bit(method.as_str());
+    if bit == METHOD_GET {
+        bit | METHOD_HEAD
+    } else {
+        bit
+    }
 }
 
 /// A route of the kernel's own router as a line's path form: a path with a `{…}` segment is a
@@ -2669,8 +2672,43 @@ fn data_lines(
         ));
         rung += 1;
     }
-    // RED: no line for the router's other routes, and no residual line.
-    let _ = (residual, rung, METHOD_ANY, PATH_CONTAINS, LineAuth::Claimant);
+    // The routes the router serves beside them: each plane's public routes, then the plugin
+    // routes, each at its own path, its gate the router's.
+    let public = planes.iter().flat_map(|(_, snapshot)| {
+        snapshot
+            .admin_routes
+            .iter()
+            .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
+            .filter_map(|r| {
+                let method = METHODS
+                    .into_iter()
+                    .find(|m| m.as_str().eq_ignore_ascii_case(&r.verb))?;
+                Some((r.target.clone(), method))
+            })
+    });
+    for (path, method) in public.chain(residual.iter().cloned()) {
+        let methods = line_methods(method);
+        let form = router_path_form(&path);
+        // One line per (path, method set): a route both lists name is one route on the router.
+        let known = lines.iter().any(|l: &busbar_kernel::guest::Line| {
+            l.claimant == busbar_kernel::guest::Claimant::Clean(CORE_CLAIMANT.to_string())
+                && l.route.path == path
+                && l.route.path_form == form
+                && l.route.methods & methods == methods
+        });
+        if !known {
+            lines.push(core_line(methods, form, path, rung, LineAuth::Claimant));
+            rung += 1;
+        }
+    }
+    // The residual line, placed last by its form.
+    lines.push(core_line(
+        METHOD_ANY,
+        PATH_CONTAINS,
+        "/".to_string(),
+        rung,
+        LineAuth::Claimant,
+    ));
     let guests =
         GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
     Ok(DataLines {
