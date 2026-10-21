@@ -361,8 +361,8 @@ impl LaneRuntime for HealthState {
         self.cooldown_remaining_for(pool, lane, now)
     }
 
-    fn record_success_in(&self, pool: &str, lane: usize) {
-        self.record_success_for(pool, lane);
+    fn record_success_in(&self, pool: &str, lane: usize, now: u64) {
+        self.record_success_for(pool, lane, now);
     }
 
     fn record_probe_success_all_cells(&self, lane: usize) {

@@ -72,6 +72,50 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     );
 }
 
+/// A SUCCESS JOINS THE ERROR-RATE WINDOW AT THE WALK'S `now`, as a failure does: six successes
+/// and then five transient failures against the member of pool `p`, every one observed through the
+/// served breaker port at the same instant of the walk's clock, leave a window of 5 errors in 11
+/// outcomes (45%, under the default trip of 50% over at least five), so the cell stays Closed, as
+/// 1.5.5's one clock kept it. The walk's clock reads an hour past the wall, as a test clock may.
+/// RED: a success recorded on the store's own wall-clock read falls out of the window the walk's
+/// failures are judged in, so those five read as 5 of 5 and trip the cell Open.
+#[test]
+fn a_success_is_recorded_on_the_walks_clock() {
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
+        .pool("p", &[(0, 1)])
+        .build();
+    let cells = cells_over(Arc::clone(&app), &["p"]);
+    let dest = DestinationId::new(0);
+    let token = busbar_kernel::test_support::tokens::pass();
+    let now = wall_secs() + 3_600;
+
+    for _ in 0..6 {
+        assert!(!cells.observe("p", dest, Outcome::Success, now, &token));
+    }
+    for _ in 0..5 {
+        cells.observe(
+            "p",
+            dest,
+            Outcome::Transient { retry_after: None },
+            now,
+            &token,
+        );
+    }
+    assert_eq!(
+        app.store.error_rate_in("p", 0, now),
+        Some(5.0 / 11.0),
+        "the window at the walk's clock holds every outcome the walk recorded"
+    );
+    assert!(
+        matches!(
+            app.store.breaker_state_in("p", 0),
+            busbar_kernel::store::BreakerState::Closed
+        ),
+        "5 errors in 11 outcomes is under the trip"
+    );
+}
+
 /// The pools `upstream_credentials` resolves to, for `section` (the `pools:` body).
 fn pools_of(section: &str) -> ModelPools {
     // The deployment names `models:`/`pools:`, which config resolution hands a plane: register the

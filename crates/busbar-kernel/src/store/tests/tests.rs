@@ -2096,7 +2096,7 @@ fn test_cell_read_path_returns_stable_identity() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     // First touch creates the cell (write path); subsequent reads (read path) must reuse it.
-    store.record_success_in("p", 0);
+    store.record_success_in("p", 0, HealthState::now_secs());
     store.record_transient_in("p", 0, "x", &BreakerCfg::default(), None);
     // A failure recorded through the same cell must be visible on the next read of that cell —
     // proving the read path resolves the SAME object, not a fresh Closed duplicate.
@@ -2189,8 +2189,8 @@ fn test_record_hard_down_all_cells_trips_default_and_every_pool() {
 
     // Materialize per-pool cells for two pools by touching them (a successful op creates the
     // cell lazily), so the lane has a default cell PLUS pool "A" and pool "B" cells, all Closed.
-    store.record_success_in("A", 0);
-    store.record_success_in("B", 0);
+    store.record_success_in("A", 0, HealthState::now_secs());
+    store.record_success_in("B", 0, HealthState::now_secs());
     assert!(store.usable(0, 9000), "default cell starts usable");
     assert!(store.usable_in("A", 0, 9000), "pool A starts usable");
     assert!(store.usable_in("B", 0, 9000), "pool B starts usable");
@@ -2331,7 +2331,7 @@ fn test_concurrent_pool_isolation_stress() {
         handles.push(thread::spawn(move || {
             for _ in 0..ITERS {
                 // Successes route via pool "A" (also bumps the lane-global ok counter).
-                s.record_success_in("A", 0);
+                s.record_success_in("A", 0, HealthState::now_secs());
                 // Transients route via pool "B" — must NOT affect pool A's cell.
                 s.record_transient_in("B", 0, "5xx", &c, None);
                 // Concurrent reads against both pools + a recovery, to stir the cells.
@@ -3079,7 +3079,7 @@ fn test_swrr_reset_on_recovery_is_generational() {
     );
 
     // Recovery: success on the half-open probe → HalfOpen→Closed → generational SWRR reset.
-    store.record_success_for("", 0);
+    store.record_success_for("", 0, HealthState::now_secs());
     assert_eq!(
         store.breaker_state(0),
         BreakerState::Closed,
@@ -3816,7 +3816,7 @@ fn test_try_admit_probe_winnable_at_capacity_preserves_probe() {
         "winning the preserved probe flips the cell HalfOpen"
     );
     // Recording a success on the won probe recovers the breaker to Closed.
-    store.record_success_in("p", 0);
+    store.record_success_in("p", 0, HealthState::now_secs());
     assert!(
         matches!(store.breaker_state_in("p", 0), BreakerState::Closed),
         "a success on the recovery probe closes the breaker — the wedge is gone"

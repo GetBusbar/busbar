@@ -663,9 +663,13 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // `#[cfg(test)]`-gated out of the release binary.
     #[cfg(any(test, feature = "test-support"))]
     fn record_success(&self, lane: usize) {
-        self.record_success_in("", lane);
+        self.record_success_in("", lane, super::HealthState::now_secs());
     }
-    fn record_success_in(&self, pool: &str, lane: usize);
+    /// Record a success on the `(pool, lane)` cell at the caller's `now` (whole seconds), never a
+    /// clock this store reads: a walk records an attempt's success at the instant its failures, its
+    /// admission and its shed read, so the error-rate window a later failure trips on holds every
+    /// outcome on one clock ([`Self::record_transient_in_at`], [`Self::record_rate_limit_in`]).
+    fn record_success_in(&self, pool: &str, lane: usize, now: u64);
     /// A SUCCESSFUL (2xx) out-of-band health probe: push a success outcome into the sliding
     /// error-rate window of EVERY cell for the lane (the default/direct-route cell AND every existing
     /// per-pool cell), mirroring the all-cells iteration of `record_probe_failure_all_cells`. The

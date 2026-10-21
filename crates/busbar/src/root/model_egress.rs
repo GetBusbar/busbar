@@ -463,13 +463,14 @@ impl Breaker for DirectCells {
             return false;
         };
         match outcome {
+            // At the walk's `now`, the instant its admission and its shed read: the outcome a
+            // success or a failure pushes into the error-rate window, the cooldown a failure arms
+            // and the wait a shed advertises are one clock's, as 1.5.5's record took its
+            // `now_time`.
             Outcome::Success => {
-                store.record_success_in(cell, lane);
+                store.record_success_in(cell, lane, now);
                 false
             }
-            // At the walk's `now`, the instant its admission and its shed read: the cooldown armed
-            // here and the wait a shed advertises are one clock's, as 1.5.5's record took its
-            // `now_time`.
             Outcome::Transient { retry_after } => {
                 store.record_transient_in_at(cell, lane, now, cfg, retry_after)
             }
