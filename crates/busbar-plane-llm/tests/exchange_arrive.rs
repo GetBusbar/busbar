@@ -404,11 +404,15 @@ fn the_adhoc_route_reaches_configured_models_only() {
     .expect("the door takes the route as asked");
     assert_eq!(a.model, "../secret");
     assert!(catalogue.lane("../secret").is_none(), "no far end to reach");
-    let row = busbar_plane_llm::refusal::REFUSAL_STATUSES
+    // The no-destination status is the kernel's class default (`NotFound`, 404), not a row.
+    assert!(!busbar_plane_llm::refusal::REFUSAL_STATUSES
         .iter()
-        .find(|r| r.reason == reason::NO_DESTINATION)
-        .expect("the no-destination status");
-    assert_eq!(row.status, 404);
+        .any(|r| r.reason == reason::NO_DESTINATION));
+    assert_eq!(
+        busbar_contract::abi::plane::reason_of(reason::NO_DESTINATION)
+            .map(busbar_contract::abi::plane::class_of),
+        Some(busbar_contract::abi::plane::RefusalClass::NotFound)
+    );
     let r = kernel_refusal(
         HOST,
         a.dialect,
