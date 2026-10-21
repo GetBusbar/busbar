@@ -15,9 +15,14 @@ use super::*;
 /// THE UNCLAIMED-PATH ANSWER: the 404 for a path no claimed row owns. The kernel identifies no
 /// protocol here; it names the path's shape only through the mount table
 /// ([`crate::fallback_error_response`]).
+///
+/// THE BODY IS READ, AND LAST, so the body cap answers first: axum's `DefaultBodyLimit` fires only
+/// when an extractor reads the body, and 1.5.5 answered an oversized body with 413 before any 404.
+/// Dropping the read would turn that 413 into this 404.
 pub(crate) async fn protocol_dispatch(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     OriginalUri(uri): OriginalUri,
+    _body: axum::body::Bytes,
 ) -> Response {
     crate::fallback_error_response(
         &app.planes,
