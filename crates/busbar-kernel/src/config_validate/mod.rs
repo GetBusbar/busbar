@@ -1298,7 +1298,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// rest of `validate`). The bounds are intentionally loose: each default is the production working
 /// value, so we only reject values that would make a subsystem non-functional.
 #[cfg(test)]
-fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
+pub(crate) fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
     validate_limits_with(limits, errors, &mut |_| {});
 }
 
