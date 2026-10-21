@@ -2383,6 +2383,13 @@ pub fn install_root_hook_names(names: &'static [&'static str]) {
     let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
 }
 
+/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
+/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
+/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
+pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
+}
+
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
 /// by the names its pinned table spells them with — one read and two mutations — so a kernel test of
 /// the per-verb allow-list (#77(9) l.2279) has a vocabulary without linking the admin service, which
