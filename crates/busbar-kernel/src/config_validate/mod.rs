@@ -2687,3 +2687,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/store_required_tests.rs"]
 mod store_required_tests;
+
+#[cfg(test)]
+#[path = "tests/secret_shorthand_declared_tests.rs"]
+mod secret_shorthand_declared_tests;
