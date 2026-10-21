@@ -10,7 +10,7 @@
 # SPAWN_SECRETS, CONFIG_PROJECTION, AUTH_AXIS and HELD. They are drain-only architecture debt at
 # today's measured count (ARCHITECT ruling, row 159: honest measurement of debt already there; Law
 # 9: the ceiling only falls); each names its drain PR.
-# drain PR: pending
+# drain PR: #1426
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-core-connector/src/spawn_env.rs"
@@ -64,7 +64,7 @@ file = "crates/busbar-kernel/src/rate_apply.rs"
 item = "EPOCH"
 count = 1
 
-# drain PR: pending
+# drain PR: #1426
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar/src/root/durability/store_identity.rs"
