@@ -117,7 +117,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-19", &[
         ("test", "the_pools_door_fails_closed_on_a_key_naming_an_unconfigured_group", "429 with the literal group is not configured body"),
         ("test", "test_missing_group_fails_closed", "try_admit returns MissingGroup, never admitted"),
-        ("test", "govern_admit_reason_reason_bytes_match_direct_try_admit", "the rendered MissingGroup reason is byte-identical through the plane host"),
+        ("test", "the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes", "the rendered MissingGroup refusal on the door is byte-identical to the kernel's spelling of the direct try_admit block"),
     ]),
     ("PB-20", &[
         ("test", "a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification", "hash = SHA-256 hex over the canonical prev|seq|ts|action|resource|outcome|principal"),

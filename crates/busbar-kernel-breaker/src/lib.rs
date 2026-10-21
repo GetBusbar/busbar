@@ -44,6 +44,7 @@ pub mod classify;
 pub mod port;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
@@ -194,8 +195,11 @@ pub struct BreakerUnit {
     /// destination is touched.
     pools_by_destination: RwLock<HashMap<DestinationId, Vec<String>>>,
     budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
-    hard_down_cooldown_secs: u64,
-    max_honored_retry_after_secs: u64,
+    /// Atomics, not plain fields: a unit that outlives one configuration generation (the plane
+    /// breaker store is process-lifetime) takes each new generation's `limits.*` through
+    /// [`Self::set_limits`] without being rebuilt and losing its learned cells.
+    hard_down_cooldown_secs: AtomicU64,
+    max_honored_retry_after_secs: AtomicU64,
 }
 
 impl Default for BreakerUnit {
@@ -211,21 +215,30 @@ impl BreakerUnit {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
-            hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
-            max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+            hard_down_cooldown_secs: AtomicU64::new(DEFAULT_HARD_DOWN_COOLDOWN_SECS),
+            max_honored_retry_after_secs: AtomicU64::new(DEFAULT_MAX_HONORED_RETRY_AFTER_SECS),
         }
     }
 
     /// Override the hard-down sticky cooldown and the absolute requested-wait honoring ceiling
     /// (1.5.5's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`).
     pub fn with_limits(
-        mut self,
+        self,
         hard_down_cooldown_secs: u64,
         max_honored_retry_after_secs: u64,
     ) -> Self {
-        self.hard_down_cooldown_secs = hard_down_cooldown_secs;
-        self.max_honored_retry_after_secs = max_honored_retry_after_secs;
+        self.set_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
         self
+    }
+
+    /// [`Self::with_limits`] on a unit already in service: the next hard-down arms the new sticky
+    /// cooldown and the next honoured wait is clamped to the new ceiling; every learned cell stays
+    /// as it is. A cooldown already armed keeps the `until` it was armed with.
+    pub fn set_limits(&self, hard_down_cooldown_secs: u64, max_honored_retry_after_secs: u64) {
+        self.hard_down_cooldown_secs
+            .store(hard_down_cooldown_secs, Ordering::Relaxed);
+        self.max_honored_retry_after_secs
+            .store(max_honored_retry_after_secs, Ordering::Relaxed);
     }
 
     /// Declare a destination's lifetime request budget. `max_requests < 0` means unlimited
@@ -252,12 +265,12 @@ impl BreakerUnit {
 
     /// The sticky cooldown a hard-down trip arms (see [`Self::with_limits`]).
     pub fn hard_down_cooldown_secs(&self) -> u64 {
-        self.hard_down_cooldown_secs
+        self.hard_down_cooldown_secs.load(Ordering::Relaxed)
     }
 
     /// The absolute ceiling on an honored upstream requested wait (see [`Self::with_limits`]).
     pub fn max_honored_retry_after_secs(&self) -> u64 {
-        self.max_honored_retry_after_secs
+        self.max_honored_retry_after_secs.load(Ordering::Relaxed)
     }
 
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
@@ -416,11 +429,11 @@ impl BreakerUnit {
     /// ([`Self::cell`]), and until then [`Breaker::state`] reads it so.
     pub fn hard_down_all(&self, destination: DestinationId, now: u64) -> bool {
         let default_cell = self.cell("", destination);
-        let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs);
+        let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs());
 
         for pool in self.named_pools(destination) {
             let cell = self.cell(&pool, destination);
-            let _ = cell.hard_down(now, self.hard_down_cooldown_secs);
+            let _ = cell.hard_down(now, self.hard_down_cooldown_secs());
         }
         default_was_fresh
     }
@@ -493,7 +506,7 @@ impl BreakerUnit {
                             now,
                             &cfg,
                             retry_after,
-                            self.max_honored_retry_after_secs,
+                            self.max_honored_retry_after_secs(),
                         );
                     }
                 }
@@ -575,7 +588,7 @@ impl Breaker for BreakerUnit {
             // takes the lock, and would count a probe's reopen as a fresh trip.
             Outcome::Transient { retry_after } => self
                 .cell(pool, destination)
-                .record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs)
+                .record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs())
                 .tripped(),
         }
     }
