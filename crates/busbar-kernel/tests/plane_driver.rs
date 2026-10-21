@@ -18,6 +18,9 @@ mod cases;
 #[path = "support/plane_driver_hook_cases.rs"]
 mod hook_cases;
 
+#[path = "support/plane_driver_close_cases.rs"]
+mod close_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -232,6 +235,10 @@ struct Double {
     scope_members: Mutex<Vec<(u32, Vec<u8>)>>,
     /// The caller reference every piece it was handed was lent, in order.
     caller_refs: Mutex<Vec<Vec<u8>>>,
+    /// THE CLOSING CALLS each unit had, by its key: an `on_piece` answer that says its reply is
+    /// complete (`EMIT_DONE`, its last window), a `refusal` naming it, a `cancel` naming it or the
+    /// op it had in flight. A unit is let go at its first; a second finds nothing.
+    closes: Mutex<HashMap<u64, u32>>,
 }
 
 /// The double's driver-ticket wake line (R-PUSH): off, it has no wake channel.
@@ -298,6 +305,11 @@ unsafe fn put(i: &OnPieceIn, at: &mut usize, b: &[u8]) -> Span {
 impl Double {
     fn count(&self, k: usize) {
         self.stats[k].fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A closing call for `unit` crossed.
+    fn closed(&self, unit: u64) {
+        *self.closes.lock().unwrap().entry(unit).or_default() += 1;
     }
 
     /// The state of the unit `ticket` serves, removed.
@@ -552,6 +564,21 @@ impl Double {
                 _ => busbar_contract::abi::plane::TAP_FAULT_NONE,
             };
         }
+        // A plane that writes a record on its answer's second window (mode `row-late`): with no
+        // record path for it (the store out), the write fails the unit after its answer began.
+        if u.mode == b"row-late" && u.far_pieces == 2 {
+            let mut at = o.arena_written as usize;
+            let key = put(i, &mut at, b"late");
+            let value = put(i, &mut at, b"row");
+            *i.records_buf = RecordWrite {
+                kind: 0,
+                op: RECORD_PUT,
+                key,
+                value,
+            };
+            o.records_written = 1;
+            o.arena_written = at as u64;
+        }
         let n = u.pending.len().min(i.reply_cap);
         std::ptr::copy_nonoverlapping(u.pending.as_ptr(), i.reply_buf, n);
         u.pending.drain(..n);
@@ -771,6 +798,9 @@ impl PlaneCalls for Double {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
+        if input.unit != 0 {
+            self.closed(input.unit);
+        }
         // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
         // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
         // or that carries no text, is FAULT. A gate's refusal carries the hook's own words instead.
@@ -1044,6 +1074,7 @@ impl PlaneCalls for Double {
         let taught = self.tickets.lock().unwrap().get(&ticket).copied();
         if let Some(key) = named.or(taught) {
             self.heads.lock().unwrap().remove(&key);
+            self.closed(key);
         }
         let u = self.unit_of(ticket);
         self.disposition(&u)
@@ -1125,6 +1156,9 @@ impl PlaneCalls for Double {
         };
         self.count(stat::CANCELS);
         self.count(stat::CANCELS_ON_WORKER);
+        if let Some(key) = self.tickets.lock().unwrap().get(&ticket).copied() {
+            self.closed(key);
+        }
         let u = self.unit_of(ticket);
         let answer = match self.disposition(&u) {
             Some(d) => Answered {
@@ -1154,6 +1188,13 @@ impl PlaneCalls for Double {
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
+        if answer.outcome == Outcome::Ready
+            && out.flags & EMIT_DONE != 0
+            && out.more == 0
+            && input.flags & PIECE_REFUSED == 0
+        {
+            self.closed(input.unit);
+        }
         match hold {
             Hold::No => slot.put(answer, out),
             Hold::Forever => {
