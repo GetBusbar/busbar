@@ -558,7 +558,8 @@ pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
 /// The Statement tail, at load: the role is exactly one of carrier or framer, and a carrier composes
 /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
 /// framing and fact bits are known; one to [`MAX_CLAIMS`]
-/// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`],
+/// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`] (and
+/// each row's [`check_claim_facts`]), [`check_composes_over`], [`check_upgrades_to`],
 /// [`check_status_rows`], [`check_fault_rows`], [`check_fault_cover`], [`check_settings`].
 ///
 /// # Errors
@@ -607,8 +608,8 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     text(t.handshake_frame_kind, "tail.handshake_frame_kind")
 }
 
-/// Every claim row: no string or list counted with a NULL pointer, the session bits `0`/`1` and
-/// the trigger and status-frame codes known. (A row's scheme name is the Statement's; see
+/// Every claim row: no string or list counted with a NULL pointer, its fact-key list bounded and
+/// aligned, the session bits `0`/`1` and the trigger and status-frame codes known. (A row's scheme name is the Statement's; see
 /// [`check_claim_rows`].)
 ///
 /// # Errors
@@ -620,6 +621,8 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
         text(c.egress_selector_forms, "claim.egress_selector_forms")?;
         text(c.status_namespace, "claim.status_namespace")?;
         listed(c.facts, c.facts_len, "claim.facts")?;
+        // Bounded and aligned before the host builds the slice [`check_claim_facts`] reads.
+        bounded(c.facts, c.facts_len, "claim.facts")?;
         code(u64::from(c.session), 0, 1, "claim.session")?;
         code(u64::from(c.session_bound), 0, 1, "claim.session_bound")?;
         code(
@@ -997,15 +1000,30 @@ pub fn check_route_fields(fields: &[super::route::FieldPredicate]) -> Result<(),
     Ok(())
 }
 
-/// A route's CONTENT, read: a path that is not empty; an exact, pattern or prefix path that starts
-/// with `/`; a pattern that keeps the syntax; field names that are non-empty lower-case tokens; a
-/// value on a value-prefix predicate and none on a presence predicate.
+/// A route's CONTENT, read: a method set inside the vocabulary and not empty, a known path form, a
+/// path that is not empty; an exact, pattern or prefix path that starts with `/`; a pattern that
+/// keeps the syntax; field names that are non-empty lower-case tokens; a value on a value-prefix
+/// predicate and none on a presence predicate. The kernel runs it on every line it seals into a
+/// guest list, so a route no request can match is refused at boot, never mounted.
 ///
 /// # Errors
 ///
 /// The rule the route breaks.
 pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
-    use super::route::{pattern_segments, FIELD_PRESENT, PATH_EXACT, PATH_PATTERN, PATH_PREFIX};
+    use super::route::{
+        pattern_segments, FIELD_PRESENT, METHOD_ANY, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN,
+        PATH_PREFIX,
+    };
+    if r.methods == 0 {
+        return Err(fault(Rule::Missing, "route.methods"));
+    }
+    bits(u64::from(r.methods), u64::from(METHOD_ANY), "route.methods")?;
+    code(
+        u64::from(r.path_form),
+        u64::from(PATH_EXACT),
+        u64::from(PATH_CONTAINS),
+        "route.path_form",
+    )?;
     if r.path.is_empty() {
         return Err(fault(Rule::Missing, "route.path"));
     }

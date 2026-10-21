@@ -1640,17 +1640,20 @@ fn records_secret_serves_only_a_declared_kind() {
         }; 1],
     );
     // A caller that declares no credential kind.
-    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let i = secret_in("signed", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(d.ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNDECLARED_KIND);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    // A caller that declares `sigv4`.
+    // A caller that declares `signed`.
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
-    assert!(wake.credential_kinds.set(vec!["sigv4".to_string()]).is_ok());
+    assert!(wake
+        .credential_kinds
+        .set(vec!["signed".to_string()])
+        .is_ok());
     let reader = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     let other = secret_in("bearer", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(reader, &other);
@@ -1658,14 +1661,14 @@ fn records_secret_serves_only_a_declared_kind() {
     assert_eq!(error(&o), UNDECLARED_KIND);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    let mut ticketless = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let mut ticketless = secret_in("signed", "AKID", &mut buf, &mut spans);
     ticketless.head.handle.ticket = Ticket::NONE;
     let (ret, o) = call_secret(reader, &ticketless);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNTICKETED);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let i = secret_in("signed", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(reader, &i);
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::SECRET_LIVE);
@@ -1673,7 +1676,7 @@ fn records_secret_serves_only_a_declared_kind() {
     assert_eq!(&buf[..6], b"s3cr3t");
     assert_eq!(
         d.route.provider.secrets.lock().unwrap().as_slice(),
-        &["sigv4:AKID".to_string()]
+        &["signed:AKID".to_string()]
     );
 }
 

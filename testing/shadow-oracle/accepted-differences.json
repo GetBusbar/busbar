@@ -18,7 +18,7 @@
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
-      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|",
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|([^L]|L[^A]|LA[^W]|LAW[^0])",
       "expected_cells": 495,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
@@ -407,13 +407,13 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok_stream",
         "status": 200
@@ -438,13 +438,13 @@
       "kind": "improvement",
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|responses|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|responses|anthropic|request|ok_stream except the model name, so the Responses stream writer produces for it the same body this entry already accepts on that sibling. The regex signed 2026-09-04 (`^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged.",
       "premise": {
         "cell": "llm|responses|anthropic|request|ok_stream",
         "body_contains": "event: response.content_part.added"
@@ -620,12 +620,12 @@
       "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
-      "expected_cells": 9,
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value.",
+      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value. COUNT 2026-10-20 (status row 86, oracle cause I): 9 -> 10. llm|anthropic|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its judged difference is the signed behaviour: message_start's message gains `container: null` (\"Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members ... required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults\"). The regex signed 2026-09-04 (`(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?`) already named it, and this restores exactly that regex. Classes and premise unchanged.",
       "premise": {
         "all": [
           {
@@ -1055,7 +1055,7 @@
       "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
-      "cells": "^llm\\|bedrock\\|[a-z_]+\\|request\\|ok(_stream)?$",
+      "cells": "^llm\\|bedrock\\|([a-z_]+\\|request\\|ok|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream)$",
       "expected_cells": 11,
       "classes": [
         "body"
@@ -1220,7 +1220,7 @@
       "kind": "improvement",
       "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -1251,7 +1251,7 @@
       "kind": "improvement",
       "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -1290,7 +1290,7 @@
       "kind": "improvement",
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)$",
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|((anthropic|bedrock|cohere|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)|gemini\\|request\\|(ok_stream_array|stream_upstream_error@fixture))$",
       "expected_cells": 31,
       "classes": [
         "body",
@@ -2077,7 +2077,7 @@
     },
     {
       "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
-      "kind": "improvement",
+      "kind": "breaking",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
       "by": "owner (Matthew Jackson), RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
@@ -2404,7 +2404,7 @@
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
       "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
-      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_cut$",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
       "expected_cells": 1,
       "classes": [
         "effects.usage"
@@ -2454,7 +2454,7 @@
       "kind": "improvement",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
       "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
-      "cells": "^llm\\|(anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|gemini\\|gemini|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)$",
+      "cells": "^llm\\|((anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)|gemini\\|gemini\\|request\\|(ok|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture))$",
       "expected_cells": 21,
       "classes": [
         "headers"

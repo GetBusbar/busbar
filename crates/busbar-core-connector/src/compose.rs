@@ -239,6 +239,10 @@ pub struct Connection {
     /// What the carrier read while the framing's `begin` was parked, in order, for the framer
     /// once it completes: `(bytes, end, end_of_frame)`.
     unfed: VecDeque<(Vec<u8>, bool, bool)>,
+    /// The protocols connection security offered (a dial) or agrees to (an accept), in the
+    /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
+    /// (`check_agreed`) before the framer is handed it. Empty = none offered.
+    alpn_offer: Vec<u8>,
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
@@ -361,6 +365,38 @@ where
 
 fn failed(e: impl std::fmt::Display) -> Failure {
     Failure::Failed(e.to_string())
+}
+
+/// `protocols`, most preferred first, in the handshake's ProtocolNameList encoding (one length
+/// byte, then the id). An id that cannot be written so (empty, or over 255 bytes) is left out: it is
+/// never offered, so it is never agreed.
+fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
+    let mut list = Vec::new();
+    for id in protocols {
+        if let Ok(n @ 1..=u8::MAX) = u8::try_from(id.len()) {
+            list.push(n);
+            list.extend_from_slice(id);
+        }
+    }
+    list
+}
+
+/// THE AGREED PROTOCOL IS ONE THE HANDSHAKE OFFERED (`check_agreed`, before the framer is handed
+/// [`Established::agreed_protocol`]): none agreed, or one of `offer`'s ids exactly. Anything else
+/// fails the connection before the framing begins.
+///
+/// # Errors
+///
+/// [`Failure::Refused`], naming the rule.
+fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure> {
+    busbar_contract::abi::transport::check::check_agreed(offer, agreed.unwrap_or_default()).map_err(
+        |f| {
+            Failure::Refused(format!(
+                "connection security: the protocol agreed breaks {:?} at {}",
+                f.rule, f.field
+            ))
+        },
+    )
 }
 
 impl Connection {
@@ -556,6 +592,7 @@ impl Planned {
             located,
         } = self;
         let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut alpn_offer = Vec::new();
         let tls = if located.secure {
             let base = dial.tls.clone().ok_or_else(|| {
                 Failure::Refused("the target asks for connection security and none is set".into())
@@ -568,6 +605,7 @@ impl Planned {
             } else {
                 located.offer.clone()
             };
+            alpn_offer = protocol_name_list(&config.alpn_protocols);
             // A PINNED DESTINATION IS VERIFIED ON EVERY CONNECTION: no session is resumed, so each
             // handshake carries the far end's certificate and its key is held to the pin afresh
             // (a resumed session would present the key of the handshake it resumed).
@@ -614,6 +652,7 @@ impl Planned {
             offered_name,
             &located.offer,
         )?;
+        conn.alpn_offer = alpn_offer;
         conn.tunnel = connect.map(|request| Tunnel {
             request,
             asked: false,
@@ -724,6 +763,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            alpn_offer: Vec::new(),
         })
     }
 }
@@ -780,6 +820,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            alpn_offer: Vec::new(),
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -878,6 +919,11 @@ impl Connection {
         accept: &Accept,
         slot: Option<Slot>,
     ) -> Result<Self, Failure> {
+        let alpn_offer = if accept.tls.is_some() {
+            protocol_name_list(&accept.alpn)
+        } else {
+            Vec::new()
+        };
         let tls = match &accept.tls {
             None => None,
             Some(base) => {
@@ -933,6 +979,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            alpn_offer,
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1202,6 +1249,7 @@ impl Connection {
             }
             let mut config = (**config).clone();
             config.alpn_protocols.clear();
+            self.alpn_offer.clear();
             let server = rustls::pki_types::ServerName::try_from(
                 name.trim_start_matches('[')
                     .trim_end_matches(']')
@@ -1815,6 +1863,10 @@ impl Connection {
                     .tls
                     .as_ref()
                     .and_then(|t| t.alpn_protocol().map(<[u8]>::to_vec));
+                agreed_was_offered(
+                    &self.alpn_offer,
+                    self.established.agreed_protocol.as_deref(),
+                )?;
                 if let Some(rustls::Connection::Server(s)) = self.tls.as_ref() {
                     self.established.offered_name = s.server_name().map(str::to_owned);
                 }
