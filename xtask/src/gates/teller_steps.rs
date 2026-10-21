@@ -966,6 +966,7 @@ fn target_roots(cx: &Ctx, krate: &str) -> BTreeSet<String> {
 /// breaker cells), which the selftest extends with a cell CI's build is not shown to compile.
 const MEMBER_CELL_FILE: &str = "crates/busbar-kernel/src/tests/breaker_tests.rs";
 /// A file in that member no `mod` and no target reaches, planted by the selftest.
+// qa-names: crates/busbar-kernel/src/tests/a_file_no_mod_reaches.rs -- xtask/src/gates/teller_steps.rs -- a PLANT: the selftest writes this file into an overlay to show a cited cell no target reaches is refused; its absence from the tree is the point
 const MEMBER_UNREACHED_FILE: &str = "crates/busbar-kernel/src/tests/a_file_no_mod_reaches.rs";
 
 /// The composition root's crate directory.
