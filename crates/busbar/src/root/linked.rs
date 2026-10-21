@@ -338,16 +338,17 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
-/// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
-/// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
-/// taken of every configuration as it is built (`crate::root::door_steps::door_config`), so a
-/// config apply refreshes them onto the new generation. No row is a default store: the store is
-/// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
-/// the boot (exit 2) before anything resolves a store or a secret.
-pub fn register_stores(linked: &Linked) {
+/// THE STORE, HOOK AND SECRET AXES: the root's INSTALL RECORD — the linked store and hook rows for
+/// the kernel's cold-kind axis, and the secret axis ([`secret_rows`]), with the auth-axis opener
+/// (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over, taken of
+/// every configuration as it is built (`crate::root::door_steps::door_config`) — which the root owns
+/// and lends to every reader (the configuration it resolves carries it to the validation, the
+/// preflight and the build; the kernel keeps no copy). No row is a default store: the store is the
+/// one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses the
+/// boot (exit 2) before anything resolves a store or a secret.
+pub fn register_stores(linked: &Linked) -> RootInstall {
     match link_secrets(linked.secrets, linked.secret_declares) {
-        Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+        Ok(secrets) => RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
@@ -365,12 +366,30 @@ pub fn register_stores(linked: &Linked) {
             trust_policy: Some(crate::root::boot::trust_policy),
             auth_axis: Some(crate::root::dispatch::auth_axis),
             config_projection: Some(crate::root::door_steps::door_config),
-        }),
+        },
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
+}
+
+/// A program environment's secret reference, resolved at config time through the linked secret
+/// plugins ([`secret_rows`], the axis [`register_stores`] lends the kernel): the connector's
+/// spawn-secret resolver ([`crate::root::connector::spawn_secret_resolver`]).
+///
+/// # Errors
+///
+/// The reference does not resolve through the linked secret plugins.
+pub fn spawn_secret(
+    secret: &busbar_kernel::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    busbar_kernel::config::secret::resolve_linked_string_at_config(
+        Some(secret_rows()),
+        secret,
+        scope,
+    )
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's

@@ -51,6 +51,10 @@ pub struct SecretResolver {
     /// name + its settings JSON, return the secret bytes (or a fail-closed error). `None` when no
     /// plugin registry is available (built-ins only).
     plugin: Option<ScopedPluginResolveFn>,
+    /// The secret axis the composition root lent this resolver (its install record's
+    /// `secret_axis`, [`crate::preflight::RootInstall`]): a module the build LINKS resolves through
+    /// it, on its one shared instance. `None` = no root lent one; only the cold lane resolves.
+    linked: crate::preflight::LinkedSecrets,
 }
 
 /// The boxed closure a [`SecretResolver`] delegates a non-built-in module to: `(module, settings
@@ -71,15 +75,25 @@ pub(crate) type ScopedPluginResolveFn = Box<
 >;
 
 impl SecretResolver {
-    /// A resolver over the linked secret plugins alone (no cold lane): what the build links (`env`
-    /// / `file` in the default build) resolves, everything else is fail-closed.
+    /// A resolver over the linked secret plugins `linked` alone (no cold lane): what the build
+    /// links (`env` / `file` in the default build) resolves, everything else is fail-closed.
+    pub fn linked_only(linked: crate::preflight::LinkedSecrets) -> Self {
+        Self {
+            plugin: None,
+            linked,
+        }
+    }
+
+    /// A test build's [`Self::linked_only`] over the secret axis its stand-in install record lends
+    /// ([`crate::preflight::RootInstall::STAND_IN`]).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn builtins_only() -> Self {
-        Self { plugin: None }
+        Self::linked_only(crate::preflight::RootInstall::STAND_IN.secret_axis)
     }
 
     /// A resolver whose non-built-in modules resolve through `plugin` (a `kind: secret` plugin
-    /// loader). Built-ins still short-circuit to the inline `env` / `file` path.
-    pub fn with_plugin(plugin: PluginResolveFn) -> Self {
+    /// loader). Modules `linked` answers still short-circuit to the linked rows.
+    pub fn with_plugin(linked: crate::preflight::LinkedSecrets, plugin: PluginResolveFn) -> Self {
         Self {
             plugin: Some(Box::new(
                 move |module: &str,
@@ -88,19 +102,24 @@ impl SecretResolver {
                     plugin(module, settings)
                 },
             )),
+            linked,
         }
     }
 
     /// [`Self::with_plugin`], the plugin handed the caller's config-time proof when it holds one.
-    pub(crate) fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
+    pub(crate) fn with_scoped_plugin(
+        linked: crate::preflight::LinkedSecrets,
+        plugin: ScopedPluginResolveFn,
+    ) -> Self {
         Self {
             plugin: Some(plugin),
+            linked,
         }
     }
 
     /// Resolve a reference to raw bytes. A module the build LINKS (`env` / `file` in the default
-    /// build) resolves through the root's secret axis, on its one shared instance; any other module
-    /// delegates to the plugin resolver (fail-closed if none is wired or it fails).
+    /// build) resolves through the secret axis the root lent, on its one shared instance; any other
+    /// module delegates to the plugin resolver (fail-closed if none is wired or it fails).
     pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
         self.resolve_with(secret, None)
     }
@@ -137,7 +156,7 @@ impl SecretResolver {
             return Err(NONE_HAS_NO_VALUE.to_string());
         }
         let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
-        if let Some(axis) = axis().filter(|a| a.linked(module)) {
+        if let Some(axis) = self.linked.filter(|a| a.linked(module)) {
             let shared = axis.shared(module)?;
             let material = match scope {
                 Some(scope) => shared.resolve_at_config(settings.as_bytes(), scope),
@@ -352,40 +371,42 @@ const NONE_HAS_NO_VALUE: &str = "the `none` secret reference declares that there
      so it has no value to resolve; it is accepted only where an absent credential is meaningful (a \
      provider `api_key` for a keyless upstream such as ollama or vLLM)";
 
-/// The secret axis the composition root installed (a test build answers it with the in-crate
-/// secret double, `test_support::secrets`).
-/// The kernel names none of the plugins behind it.
-pub(crate) fn axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis> {
-    crate::preflight::root_rows().secret_axis
+/// Whether a secret plugin of the secret axis the root lent (`linked`) answers `module` (a
+/// reference to it needs no `secrets:` block and no plugins directory). The kernel names none of
+/// the plugins behind it.
+pub(crate) fn is_linked_secret(linked: crate::preflight::LinkedSecrets, module: &str) -> bool {
+    linked.is_some_and(|a| a.linked(module))
 }
 
-/// Whether a secret plugin the build LINKS answers `module` (a reference to it needs no `secrets:`
-/// block and no plugins directory).
-pub(crate) fn is_linked_secret(module: &str) -> bool {
-    axis().is_some_and(|a| a.linked(module))
+/// Resolve `secret` to a UTF-8 string through the linked secret plugins `linked` alone (no
+/// `secrets:` block, no cold lane). OWED: a plane still calls this (the mcp stdio child's
+/// environment and its token-exchange subject token) until those sites move to host-held
+/// replacements; the plane-secret-blindness gate lists them.
+pub fn resolve_linked_string(
+    linked: crate::preflight::LinkedSecrets,
+    secret: &SecretRef,
+) -> Result<String, String> {
+    SecretResolver::linked_only(linked).resolve_string(secret)
 }
 
-/// The SUGARS the loaded secret plugins' Statements declare (audit contract-admin #10, Law 1): the
-/// shorthand each answers to, the settings key its value lands under and what a refusal says that
-/// value names. The kernel reads them here and spells none; no axis installed, none is declared.
-pub(crate) fn sugars() -> busbar_contract::secret_ref::Sugars {
-    axis().map(|a| a.sugars()).unwrap_or_default()
+/// The SUGARS the secret plugins of the secret axis the root lent (`linked`) declare in their
+/// Statements (audit contract-admin #10, Law 1): the shorthand each answers to, the settings key its
+/// value lands under and what a refusal says that value names. The kernel reads them here and spells
+/// none; no axis lent, none is declared.
+pub(crate) fn sugars(
+    linked: crate::preflight::LinkedSecrets,
+) -> busbar_contract::secret_ref::Sugars {
+    linked.map(|a| a.sugars()).unwrap_or_default()
 }
 
-/// Resolve `secret` to a UTF-8 string through the linked secret plugins alone (no `secrets:` block,
-/// no cold lane). OWED: a plane still calls this (the mcp stdio child's environment and its
-/// token-exchange subject token) until those sites move to host-held replacements; the
-/// plane-secret-blindness gate lists them.
-pub fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {
-    SecretResolver::builtins_only().resolve_string(secret)
-}
-
-/// [`resolve_linked_string`] at CONFIG TIME, with its proof (`--validate`, the config checks).
+/// [`resolve_linked_string`] at CONFIG TIME, with its proof (`--validate`, the config checks, and
+/// the root's program environments, through the secret axis it lends).
 pub fn resolve_linked_string_at_config(
+    linked: crate::preflight::LinkedSecrets,
     secret: &SecretRef,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<String, String> {
-    SecretResolver::builtins_only().resolve_string_at_config(secret, scope)
+    SecretResolver::linked_only(linked).resolve_string_at_config(secret, scope)
 }
 
 #[cfg(test)]

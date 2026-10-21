@@ -92,6 +92,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         export: Default::default(),
         identity_providers: Default::default(),
         export_defs: Default::default(),
+        // A test build has no root: the stand-in install record is lent in its place.
+        root: crate::preflight::RootInstall::STAND_IN,
     }
 }
 

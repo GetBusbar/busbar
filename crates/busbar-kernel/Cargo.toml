@@ -84,7 +84,7 @@ busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
 # THE STAND-IN LINKED ROWS are no crate at all: the composition root links the build's store and
-# ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no root,
+# ranking hooks on the install record it lends (`preflight::RootInstall`); a test build has no root,
 # so the in-crate R-FIX3 doubles stand in, linked only — `test_support::store_double` (the store row
 # and the `MemoryStore` the kernel's tests build a `GovState` over) and `test_support::ranking_double`.
 # The kernel names no store crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store

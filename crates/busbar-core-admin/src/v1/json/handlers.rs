@@ -1560,7 +1560,12 @@ pub(crate) async fn reset_overlay_section(
                     );
                 }
                 let mut cfg =
-                    busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, snapshot.legacy)
+                    busbar_kernel::config::resolve_in(
+                        snapshot.root,
+                        &loaded.deploy,
+                        &loaded.defs,
+                        snapshot.legacy,
+                    )
                         .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
@@ -2246,8 +2251,13 @@ pub(crate) fn rebuild_app_from_disk(
             current.legacy,
         );
     }
-    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, current.legacy)
-        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+    let mut cfg = busbar_kernel::config::resolve_in(
+        current.root,
+        &loaded.deploy,
+        &loaded.defs,
+        current.legacy,
+    )
+    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
     // Base hook + group names = the config-defined registry, pre-overlay (the admin API refuses
     // to PUT-replace / DELETE one); then merge the persisted overlay onto the resolved registry.
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
@@ -2515,33 +2525,38 @@ pub(crate) async fn apply_config(
                 // live audited plugin rollback until the next restart re-applies the pin.
                 busbar_kernel::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
-            let next = busbar_kernel::config::resolve(&deploy, &providers, snapshot.legacy)
-                .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
-                .and_then(|mut cfg| {
-                    // Base names are the APPLIED config's own registry, taken pre-merge so an
-                    // overlay-only hook is not misread as base-defined (and so undeletable).
-                    let base_hook_names: std::collections::HashSet<String> =
-                        cfg.hooks.keys().cloned().collect();
-                    let base_group_names: std::collections::HashSet<String> =
-                        cfg.groups.keys().cloned().collect();
-                    if let Some(doc) = overlay_doc {
-                        busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
-                    }
-                    busbar_kernel::build_app_from_config(
-                        cfg,
-                        deploy.plugins.clone(),
-                        snapshot.overlay_path.clone(),
-                        base_hook_names,
-                        base_group_names,
-                        (
-                            snapshot.config_path.clone(),
-                            snapshot.providers_path.clone(),
-                        ),
-                        Some(&snapshot),
-                        &snapshot.root_rules,
-                    )
-                })
-                .map_err(AdminError::Validation)?;
+            let next = busbar_kernel::config::resolve_in(
+                snapshot.root,
+                &deploy,
+                &providers,
+                snapshot.legacy,
+            )
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
+            .and_then(|mut cfg| {
+                // Base names are the APPLIED config's own registry, taken pre-merge so an
+                // overlay-only hook is not misread as base-defined (and so undeletable).
+                let base_hook_names: std::collections::HashSet<String> =
+                    cfg.hooks.keys().cloned().collect();
+                let base_group_names: std::collections::HashSet<String> =
+                    cfg.groups.keys().cloned().collect();
+                if let Some(doc) = overlay_doc {
+                    busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
+                }
+                busbar_kernel::build_app_from_config(
+                    cfg,
+                    deploy.plugins.clone(),
+                    snapshot.overlay_path.clone(),
+                    base_hook_names,
+                    base_group_names,
+                    (
+                        snapshot.config_path.clone(),
+                        snapshot.providers_path.clone(),
+                    ),
+                    Some(&snapshot),
+                    &snapshot.root_rules,
+                )
+            })
+            .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
             // LIVE-only (the response `note` says so): an applied config is not written to disk.
@@ -3062,9 +3077,13 @@ pub(crate) async fn put_config_settings(
                         snapshot.legacy,
                     );
                 }
-                let mut cfg =
-                    busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, snapshot.legacy)
-                        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let mut cfg = busbar_kernel::config::resolve_in(
+                    snapshot.root,
+                    &loaded.deploy,
+                    &loaded.defs,
+                    snapshot.legacy,
+                )
+                .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
@@ -3676,7 +3695,7 @@ const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
 // feature-on bin build has no caller, so allow it dead there.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn openapi_doc() -> serde_json::Value {
+pub(crate) fn openapi_doc(hook_names: &[&str]) -> serde_json::Value {
     let mut paths = serde_json::Map::new();
     for (path, summary) in V1_GET_PATHS {
         paths.insert(
@@ -5002,6 +5021,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // test asserts every declared body resolves, which would catch it if one ever were.
     for (name, schema) in req_gen.definitions() {
         schemas.insert(name.clone(), schema.clone());
+    }
+    // The served description of `BuildInfo::hook_plugins`: 1.5.5's text byte for byte, its example
+    // the hook names the composition root lends the document (`hook_names`, the list the info read
+    // reports off its install record), so this contract spells no hook plugin.
+    if let Some(hook_plugins) = schemas
+        .get_mut("BuildInfo")
+        .and_then(|info| info.pointer_mut("/properties/hook_plugins"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        hook_plugins.insert(
+            "description".to_string(),
+            json!(format!(
+                "Hook plugins baked into this binary (e.g. `{hook_names:?}`)."
+            )),
+        );
     }
     schemas.insert(
         "Error".to_string(),

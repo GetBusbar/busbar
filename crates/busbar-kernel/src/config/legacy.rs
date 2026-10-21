@@ -29,7 +29,7 @@ use serde_yaml::{Mapping, Value};
 pub type Rows = &'static [(&'static str, &'static str)];
 
 /// THE ROOT LEGACY TABLE, LENT: the composition root owns its rows and lends this value to every
-/// reader — the config load and parse ([`crate::config::resolve`], which keeps it on the resolved
+/// reader — the config load and parse ([`crate::config::resolve_in`], which keeps it on the resolved
 /// configuration and the generation built from it), the migrator and the registry link. No static
 /// of the kernel holds it (`BUSBAR-1.6.0.md`: "add no new kernel `OnceLock` seam beyond the two R6
 /// exempts"), so two compositions in one process read their own tables.

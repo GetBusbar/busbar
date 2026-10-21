@@ -82,6 +82,7 @@ pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
     // Asked at CONFIG TIME, as boot and an apply ask it (R4, BUSBAR-1.6.0.md l.1464-1469): a request
     // path's form is refused by a disk-reading source before the source says anything of its own.
     let text = busbar_kernel::config::secret::resolve_linked_string_at_config(
+        busbar_kernel::preflight::RootInstall::STAND_IN.secret_axis,
         secret,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )

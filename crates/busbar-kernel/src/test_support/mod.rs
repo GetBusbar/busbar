@@ -902,6 +902,7 @@ pub struct TestApp {
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    root: Option<crate::preflight::RootInstall>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
@@ -1009,6 +1010,7 @@ impl TestApp {
             plugins_dir: None,
             plugins_cfg: None,
             plugin_trust: None,
+            root: None,
             hook_env: None,
             disk_paths: None,
             no_plugin_routes: false,
@@ -1116,6 +1118,12 @@ impl TestApp {
     /// build's [`trust_policy_stand_in`].
     pub fn plugin_trust(mut self, build: crate::preflight::TrustPolicyBuild) -> Self {
         self.plugin_trust = Some(build);
+        self
+    }
+    /// Lend the snapshot `root` — a composition root's own install record — in place of the test
+    /// build's [`crate::preflight::RootInstall::STAND_IN`].
+    pub fn root(mut self, root: crate::preflight::RootInstall) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -1742,8 +1750,13 @@ impl TestApp {
         // control-plane surface, and the per-container gate resolution below.
         let hook_env = self.hook_env.clone().unwrap_or_else(|| {
             crate::hooks::HookEnv::new(
+                &self.root.unwrap_or(crate::preflight::RootInstall::STAND_IN),
                 std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+                std::sync::Arc::new(crate::config::secret::SecretResolver::linked_only(
+                    self.root
+                        .unwrap_or(crate::preflight::RootInstall::STAND_IN)
+                        .secret_axis,
+                )),
             )
             .expect("an empty registry's hook axis")
         });
@@ -1914,7 +1927,11 @@ impl TestApp {
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
                 let legacy = crate::config::Legacy::stand_in();
                 let reg = std::sync::Arc::new(
-                    crate::preflight::linked(legacy).expect("the linked registry"),
+                    crate::preflight::linked(
+                        &self.root.unwrap_or(crate::preflight::RootInstall::STAND_IN),
+                        legacy,
+                    )
+                    .expect("the linked registry"),
                 );
                 chain.operator =
                     crate::auth::open_operator(&reg, digest, &self.identity_providers, legacy)
@@ -1963,7 +1980,11 @@ impl TestApp {
             max_auto_provisioned_groups: 0,
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
-                crate::config::secret::SecretResolver::builtins_only(),
+                crate::config::secret::SecretResolver::linked_only(
+                    self.root
+                        .unwrap_or(crate::preflight::RootInstall::STAND_IN)
+                        .secret_axis,
+                ),
             ),
             cost: self
                 .cost
@@ -1973,6 +1994,7 @@ impl TestApp {
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
             plugin_trust: Some(self.plugin_trust.unwrap_or(trust_policy_stand_in)),
+            root: self.root.unwrap_or(crate::preflight::RootInstall::STAND_IN),
             self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
@@ -2335,23 +2357,6 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
-
-/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
-/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
-/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
-/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
-/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
-/// and lists none. The first hand-in stands.
-pub fn install_root_hook_names(names: &'static [&'static str]) {
-    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
-}
-
-/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
-/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
-/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
-pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
-}
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
 /// by the names its pinned table spells them with — one read and two mutations — so a kernel test of

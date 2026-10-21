@@ -120,7 +120,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     // RED with a hook name spelled here rather than read off the root's install record (Law 1).
     assert_eq!(
         body["build"]["hook_plugins"],
-        serde_json::json!(busbar_kernel::preflight::root_rows().hook_names),
+        serde_json::json!(busbar_kernel::preflight::RootInstall::STAND_IN.hook_names),
         "hook_plugins must be exactly the linked hook rows the root's install record carries"
     );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
@@ -4181,7 +4181,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     assert!(h_items
         .iter()
         .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
-    for linked in busbar_kernel::preflight::root_rows().hook_names {
+    for linked in busbar_kernel::preflight::RootInstall::STAND_IN.hook_names {
         assert!(
             h_items
                 .iter()
@@ -7514,6 +7514,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     };
     let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -7662,6 +7663,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     };
     let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -7912,6 +7914,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     };
     let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -7948,6 +7951,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
     let registry2 = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env2 = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry2),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -8021,6 +8025,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let bad_registry =
         busbar_kernel::plugin_admission::scan_and_validate(&bad_dir, &policy).unwrap();
     let bad_hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(bad_registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )

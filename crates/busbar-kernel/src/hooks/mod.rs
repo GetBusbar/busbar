@@ -131,6 +131,10 @@ pub struct HookEnv {
     /// every `kind: hook` row, compiled in or dropped in, opened on the hook kind's ABI over the
     /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
     axis: Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>>,
+    /// THE INSTALL RECORD THE COMPOSITION ROOT LENT this build ([`crate::preflight::RootInstall`]):
+    /// where a built-in ranking strategy word resolves, on the hook axis over its LINKED rows
+    /// alone.
+    root: crate::preflight::RootInstall,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
@@ -152,23 +156,25 @@ pub struct HookEnv {
 }
 
 impl HookEnv {
-    /// Bundle a registry, the hook axis the root builds over it and the secret resolver into the
-    /// resolution environment.
+    /// Bundle a registry, the hook axis the root (`root`, the install record it lent) builds over
+    /// it and the secret resolver into the resolution environment.
     ///
     /// # Errors
     /// The root's axis refuses the registry (a hook row that will not state itself — a 1.5.5 JSON
     /// hook plugin is refused here, naming the rebuild).
     pub fn new(
+        root: &crate::preflight::RootInstall,
         registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Result<Self, String> {
-        let axis = match crate::preflight::root_rows().hook_axis {
+        let axis = match root.hook_axis {
             Some(build) => Some(build(&registry)?),
             None => None,
         };
         Ok(HookEnv {
             registry,
             axis,
+            root: *root,
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -187,6 +193,7 @@ impl HookEnv {
         HookEnv {
             registry,
             axis: Some(axis),
+            root: crate::preflight::RootInstall::STAND_IN,
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -334,7 +341,10 @@ impl HookEnv {
 /// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
 /// through to the base. The resolved base is stored on `PoolRuntime::policy` and consumed
 /// per-request by `proxy::decide_policy_order`.
-pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
+pub fn resolve_policy(
+    root: &crate::preflight::RootInstall,
+    cfg: &crate::config::PoolCfg,
+) -> Option<ResolvedPolicy> {
     // `weighted` ⇒ the zero-cost default path (no policy object, inline SWRR) — byte-identical to
     // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
     // short-circuit BELOW regardless of the ranking feature.
@@ -342,7 +352,7 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // The non-weighted ranking strategies are hook words of the linked `hooks-ranking` door on the
     // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
     // running server); degrade to None (SWRR) as belt-and-suspenders.
-    let (policy, timeout) = crate::preflight::builtin_ranking(name)?;
+    let (policy, timeout) = crate::preflight::builtin_ranking(root, name)?;
     Some(ResolvedPolicy::Policy {
         policy,
         on_error: crate::config::PolicyOnError::default(),
@@ -401,7 +411,7 @@ pub fn resolve_pool_ordering(
             }
         }
     }
-    resolve_policy(cfg)
+    resolve_policy(&env.root, cfg)
 }
 
 /// Resolve a pool's GATES (`hook:` / the non-strategy names in `hooks: [...]`) into their transports,
@@ -1481,7 +1491,7 @@ fn resolve_on_error_chain<'a>(
         }
         // A built-in ranking strategy: sync, no I/O, cannot fail — one link, then done. Compiled
         // out, the name falls through to the registry lookup below (and validation errored at boot).
-        if let Some((policy, timeout)) = crate::preflight::builtin_ranking(current) {
+        if let Some((policy, timeout)) = crate::preflight::builtin_ranking(&env.root, current) {
             chain.push(FallbackHook {
                 policy,
                 timeout,

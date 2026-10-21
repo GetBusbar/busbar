@@ -165,7 +165,8 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
 /// environment + YAML; an unrecognized flag is a usage error rather than a silent server start.
-pub(crate) fn handle_cli_flags() -> Option<i32> {
+/// `lent`: the install record `main` owns and lends (the `--validate` run resolves under it).
+pub(crate) fn handle_cli_flags(lent: busbar_kernel::preflight::RootInstall) -> Option<i32> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => None, // no args → run the gateway
@@ -239,7 +240,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // swaps the two listeners for the process's own stdin/stdout. Recognised here so it is not
         // refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
-        Some("--validate") => Some(validate_config_command()),
+        Some("--validate") => Some(validate_config_command(lent)),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
@@ -275,7 +276,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
 /// Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
 /// Prints an OK summary + exits 0 when valid;
 /// prints every error (same text boot prints) + exits 1 when not.
-fn validate_config_command() -> i32 {
+fn validate_config_command(lent: busbar_kernel::preflight::RootInstall) -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
@@ -309,7 +310,7 @@ fn validate_config_command() -> i32 {
     if let Some(doc) = loaded.overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc, legacy);
     }
-    let mut cfg = match config::resolve(&loaded.deploy, &loaded.defs, legacy) {
+    let mut cfg = match config::resolve_in(lent, &loaded.deploy, &loaded.defs, legacy) {
         Ok(c) => c,
         Err(errs) => {
             eprintln!(

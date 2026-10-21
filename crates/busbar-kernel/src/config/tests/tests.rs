@@ -351,7 +351,11 @@ fn test_otlp_folds_into_an_export_instance() {
     )
     .expect("an otlp export instance parses");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:?}");
     let otlp: Vec<_> = export
         .plugins
@@ -1784,7 +1788,11 @@ models:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
-        &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
+        &crate::config::resolve_export(
+            crate::preflight::RootInstall::STAND_IN.export_axis,
+            &deploy.export,
+            &mut Vec::new(),
+        ),
         &deploy.health,
         &deploy.routing,
     );
@@ -1900,7 +1908,11 @@ routing:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
-        &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
+        &crate::config::resolve_export(
+            crate::preflight::RootInstall::STAND_IN.export_axis,
+            &deploy.export,
+            &mut Vec::new(),
+        ),
         &deploy.health,
         &deploy.routing,
     );
@@ -2074,7 +2086,10 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         SecretResolver::builtins_only().resolve(&sref).unwrap(),
         b"file-secret\n".to_vec()
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(crate::preflight::RootInstall::STAND_IN.secret_axis, &sref).unwrap(),
+        "file-secret"
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
@@ -3512,7 +3527,11 @@ fn export_named_map_allows_two_instances_of_one_module() {
     )
     .expect("two instances of one module parse");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(export.plugins.len(), 2);
     assert_eq!(export.plugins[0].name, "req-log");
@@ -3539,7 +3558,11 @@ fn export_named_map_allows_two_instances_of_one_module() {
     )
     .expect("parses");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert_eq!(
         errors,
         vec!["export.two: the scrape double takes one instance, and 'one' is it".to_string()],
@@ -3558,7 +3581,11 @@ fn export_named_map_allows_two_instances_of_one_module() {
     let defs: crate::config::ExportDefs =
         serde_yaml::from_str("x: { module: nope }\n").expect("parses");
     let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
+    let _ = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(
         errors.iter().any(|e| e.starts_with(
             "export.x.module: unknown exporter 'nope'; the built-in export modules are "

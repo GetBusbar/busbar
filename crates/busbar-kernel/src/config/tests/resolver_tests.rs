@@ -36,18 +36,21 @@ fn resolver_unknown_module_without_plugin_fails_closed() {
 #[test]
 fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
     // Plugin that returns bytes for `vault` and errors for anything else.
-    let r = SecretResolver::with_plugin(Box::new(|module: &str, settings: &str| {
-        if module == "vault" {
-            let v: serde_json::Value = serde_json::from_str(settings).unwrap();
-            match v.get("path").and_then(|p| p.as_str()) {
-                Some("kv/ok") => Ok(b"plugin-secret".to_vec()),
-                Some("kv/empty") => Ok(Vec::new()),
-                _ => Err("no such path".to_string()),
+    let r = SecretResolver::with_plugin(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        Box::new(|module: &str, settings: &str| {
+            if module == "vault" {
+                let v: serde_json::Value = serde_json::from_str(settings).unwrap();
+                match v.get("path").and_then(|p| p.as_str()) {
+                    Some("kv/ok") => Ok(b"plugin-secret".to_vec()),
+                    Some("kv/empty") => Ok(Vec::new()),
+                    _ => Err("no such path".to_string()),
+                }
+            } else {
+                Err("unknown module".to_string())
             }
-        } else {
-            Err("unknown module".to_string())
-        }
-    }));
+        }),
+    );
     let mk = |path: &str| {
         let mut settings = serde_json::Map::new();
         settings.insert(

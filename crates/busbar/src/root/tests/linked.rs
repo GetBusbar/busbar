@@ -256,12 +256,12 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 }
 
 /// K5d (DECISIONS #2 rule (1), #40) — THE LINKED STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
-/// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
-/// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
-/// registers them through `PluginRegistry::link` like any dropped-in row: the linked store is an
-/// ephemeral in-process store that opens (a config names it; no row is a default, Q-STORE = (B));
-/// the hook table is the linked ranking DOOR, whose Statement claims each built-in strategy word
-/// (the root's hook axis binds it).
+/// LINKED TABLES. The kernel names neither; `main` lends the `stores`/`hooks` tables to the
+/// kernel's cold-kind axis on its install record (`root::linked::register_stores` ->
+/// `preflight::RootInstall`), whose registry link registers them through `PluginRegistry::link`
+/// like any dropped-in row: the linked store is an ephemeral in-process store that opens (a config
+/// names it; no row is a default, Q-STORE = (B)); the hook table is the linked ranking DOOR, whose
+/// Statement claims each built-in strategy word (the root's hook axis binds it).
 ///
 /// RED by deleting the store and ranking rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no store (and no ranking row) to hand the kernel.

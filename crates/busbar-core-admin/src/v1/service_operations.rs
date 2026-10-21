@@ -59,7 +59,7 @@ impl AdminService {
         // auth rows, plus the ranking hooks. `weighted` is the one baked in
         // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
         let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
+        let hook_plugins = hook_plugins_compiled_in(&self.app.root);
 
         let view = self.app.engine_tables_view();
         let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
@@ -534,7 +534,7 @@ impl AdminService {
                     None,
                     None,
                 ));
-                for name in hook_plugins_compiled_in() {
+                for name in hook_plugins_compiled_in(&self.app.root) {
                     plugins.push(PluginView::basic(
                         name.to_string(),
                         "hooks",
@@ -642,7 +642,7 @@ impl AdminService {
         // off the root's linked rows; admin names no store. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = linked_store_rows();
+        let mut out = linked_store_rows(&self.app.root);
         let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
             return out;
         };
@@ -879,7 +879,7 @@ impl AdminService {
                 // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
                 // an unparseable `plugins_cfg` (`trust_policy` failing) just above.
-                Ok(linked_store_rows())
+                Ok(linked_store_rows(&self.app.root))
             }
         }
     }
@@ -992,7 +992,7 @@ impl AdminService {
         // plugin at the same version is already served by the linked row, so the install is an
         // accepted no-op (nothing is written); another version is refused now, in the words boot
         // would refuse it with, never published to brick the next boot.
-        match busbar_kernel::preflight::linked(self.app.legacy)
+        match busbar_kernel::preflight::linked(&self.app.root, self.app.legacy)
             .and_then(|r| r.linked_copy(manifest, &file))
         {
             Ok(None) => {}
@@ -1321,10 +1321,11 @@ impl AdminService {
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
         // The running generation's root rules: a dry run judges what an apply would.
         let rules = std::sync::Arc::clone(&self.app.root_rules);
-        // The running generation's legacy table: the dry run resolves as an apply would.
-        let legacy = self.app.legacy;
+        // The running generation's install record and legacy table, both the root's: the dry run
+        // resolves under them, as an apply does.
+        let (root, legacy) = (self.app.root, self.app.legacy);
         match tokio::task::spawn_blocking(move || {
-            validate_config_blocking(deploy, &defs, plugins_dir, &rules, legacy)
+            validate_config_blocking(root, deploy, &defs, plugins_dir, &rules, legacy)
         })
         .await
         {
@@ -1824,9 +1825,9 @@ impl AdminService {
 
 /// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
 /// the root's table order (none a default: a config names its store, Q-STORE = (B)). Read off the
-/// kernel's installed root rows, so admin names no store instance.
-fn linked_store_rows() -> Vec<PluginView> {
-    let stores = busbar_kernel::preflight::root_rows().stores;
+/// install record the root lent the snapshot (`root`), so admin names no store instance.
+fn linked_store_rows(root: &busbar_kernel::preflight::RootInstall) -> Vec<PluginView> {
+    let stores = root.stores;
     let row = |s: &busbar_kernel::preflight::LinkedStore| {
         PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
     };
@@ -1864,6 +1865,7 @@ fn rollup_refused(error: &'static str) -> AdminError {
 /// boot-time semantic validation, then the plugin and secret pre-flight over the running install's
 /// `plugins_dir`.
 fn validate_config_blocking(
+    lent: busbar_kernel::preflight::RootInstall,
     mut deploy: DeployCfg,
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
@@ -1872,7 +1874,7 @@ fn validate_config_blocking(
 ) -> ConfigValidateView {
     // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
     // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-    let root = match busbar_kernel::config::resolve(&deploy, defs, legacy) {
+    let root = match busbar_kernel::config::resolve_in(lent, &deploy, defs, legacy) {
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };

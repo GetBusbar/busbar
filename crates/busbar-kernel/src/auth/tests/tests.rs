@@ -1773,7 +1773,11 @@ fn the_operator_credential_opens_from_the_axis() {
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
     let linked = std::sync::Arc::new(
-        crate::preflight::linked(crate::config::Legacy::stand_in()).expect("the linked registry"),
+        crate::preflight::linked(
+            &crate::preflight::RootInstall::STAND_IN,
+            crate::config::Legacy::stand_in(),
+        )
+        .expect("the linked registry"),
     );
     let none = Default::default();
     let open = |digest| {

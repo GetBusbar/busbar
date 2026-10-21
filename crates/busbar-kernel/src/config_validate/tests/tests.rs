@@ -46,6 +46,8 @@ fn make_root_cfg(
         export: Default::default(),
         identity_providers: Default::default(),
         export_defs: Default::default(),
+        // A test build has no root: the stand-in install record is lent in its place.
+        root: crate::preflight::RootInstall::STAND_IN,
     }
 }
 
