@@ -812,8 +812,9 @@ pub fn compose_book(
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
     // corrected count and every recorded content access survive the restart — off the disk, or off
-    // the chain the store kept.
-    durability.restore_amendments();
+    // the chain the store kept. A chain that will not read back refuses the boot here as it would
+    // have at the book's build: taken for an empty one, every signed correction would revert.
+    durability.restore_amendments()?;
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
