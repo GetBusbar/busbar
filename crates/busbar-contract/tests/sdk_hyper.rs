@@ -167,7 +167,7 @@ impl SafeSlot for FillSlot {
             let owes = owes.as_mut().expect("a framing to fill from");
             fill(
                 owes,
-                i.field(|x| &x.sink),
+                i.sink(),
                 &mut o,
                 |c| if c == 0 { 1 } else { 3 },
                 |c| if c == 0 { 0 } else { 2 },

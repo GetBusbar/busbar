@@ -60,7 +60,7 @@ fn the_concurrency_none_and_slot_layout_rules_are_stated_on_the_lifecycle() {
 
 #[test]
 fn every_kind_tail_leads_with_a_kind_tail_head() {
-    assert!(DOOR.contains("pub kind_tail: *const KindTailHead"));
+    assert!(DOOR.contains("pub(crate) kind_tail: *const KindTailHead"));
     assert!(DOOR.contains("pub struct KindTailHead"));
 }
 

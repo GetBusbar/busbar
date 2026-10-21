@@ -79,7 +79,7 @@ impl Slot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
     fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
-        if input.settings.len == 13 {
+        if input.settings.len() == 13 {
             panic!("the dropped-in slot panics");
         }
         Outcome::Ready

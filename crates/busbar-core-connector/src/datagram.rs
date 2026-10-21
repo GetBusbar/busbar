@@ -66,19 +66,13 @@ const ROUTES_CAP: usize = 64;
 /// The most far-end addresses one association numbers at once.
 const MAX_PATHS: usize = 64;
 
-const NO_TEXT: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_TEXT: AbiStr = AbiStr::ABSENT;
 
 fn text(b: &[u8]) -> AbiStr {
     if b.is_empty() {
         return NO_TEXT;
     }
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    crate::framer::abi(b)
 }
 
 fn fault(why: impl Into<String>) -> Refused {

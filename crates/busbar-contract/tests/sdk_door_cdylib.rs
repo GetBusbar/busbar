@@ -131,12 +131,7 @@ fn in_head(size: usize, op: u32) -> InHead {
 }
 
 fn absent() -> Blob {
-    Blob {
-        ptr: ptr::null(),
-        len: 0,
-        fmt: BLOB_ABSENT,
-        flags: 0,
-    }
+    Blob::ABSENT
 }
 
 /// The host's pre-fill, with `outcome` set to READY so a FAULT is proven written.
@@ -205,12 +200,9 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     // A panicking `validate`.
     let panics = ValidateIn {
         head: in_head(size_of::<ValidateIn>(), slot::VALIDATE),
-        settings: Blob {
-            ptr: ptr::null(),
-            len: 13,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        },
+        // SAFETY: a NULL blob stating 13 bytes: the fixture's `validate` reads its length alone
+        // (its trigger to panic), never its bytes.
+        settings: unsafe { Blob::from_raw_parts(ptr::null(), 13, BLOB_ABSENT, 0) },
         err_buf: ptr::null_mut(),
         err_cap: 0,
     };

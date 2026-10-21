@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::log_witness_plugin as witness;
-use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::Blob;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, OpsHead, TickIn, TickOut};
 use busbar_contract::abi::mechanism::KindCode;
 
@@ -142,12 +142,7 @@ fn open(p: &Plugin<WitnessKind>) {
 /// One `tick` in `mode`.
 fn tick(p: &Plugin<WitnessKind>, mode: &'static [u8]) {
     let mut head = in_head();
-    head.extensions = Blob {
-        ptr: mode.as_ptr(),
-        len: mode.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
+    head.extensions = Blob::of(mode);
     let mut f = Frame::new(
         TickIn {
             head,

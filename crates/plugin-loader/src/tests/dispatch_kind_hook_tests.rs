@@ -12,7 +12,7 @@ use busbar_contract::abi::hook::{
     slot, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn, ServeIn, ServeOut,
     StatusOut, TransformOut, VERB_ABSTAIN, VERB_PREFER, VERB_REJECT, VERB_REWRITE,
 };
-use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check::{Fault, Rule};
 
 use crate::dispatch::kinds::hook::Hook;
@@ -260,12 +260,13 @@ fn transform_short_answer() {
 fn notify_green_red_foreign() {
     let i: NotifyIn = input();
     let mut o: OutHead = output(Outcome::Failed);
-    o.error.ptr = &BYTE;
-    o.error.len = 1;
+    o.error = AbiStr::of_bytes(std::slice::from_ref(&BYTE));
     assert_eq!(check(slot::NOTIFY, &i, size_of::<NotifyIn>(), &o), Ok(()));
 
     let mut null = o;
-    null.error.ptr = std::ptr::null();
+    // SAFETY: the same length over NULL, as a foreign hook could answer it, read only by the check,
+    // which refuses it.
+    null.error = unsafe { AbiStr::from_raw_parts(std::ptr::null(), null.error.len()) };
     fails(
         check(slot::NOTIFY, &i, size_of::<NotifyIn>(), &null),
         Rule::NullWithCount,
@@ -302,8 +303,9 @@ fn configure_green_red_foreign() {
 fn status_green_red_foreign() {
     let i: InHead = in_head();
     let mut o: StatusOut = output(Outcome::Ready);
-    o.status.ptr = &BYTE;
-    o.status.len = 1;
+    o.status = Blob::of(std::slice::from_ref(&BYTE))
+        .with_fmt(o.status.fmt)
+        .with_flags(o.status.flags);
     o.head.lease = 3;
     assert_eq!(check(slot::STATUS, &i, size_of::<InHead>(), &o), Ok(()));
 
@@ -340,8 +342,9 @@ fn serve_green_red_foreign() {
     let i: ServeIn = input();
     let mut o: ServeOut = output(Outcome::Ready);
     o.status_code = 200;
-    o.body.ptr = &BYTE;
-    o.body.len = 1;
+    o.body = Blob::of(std::slice::from_ref(&BYTE))
+        .with_fmt(o.body.fmt)
+        .with_flags(o.body.flags);
     o.head.lease = 3;
     assert_eq!(check(slot::SERVE, &i, size_of::<ServeIn>(), &o), Ok(()));
 

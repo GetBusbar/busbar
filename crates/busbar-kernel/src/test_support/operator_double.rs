@@ -123,14 +123,10 @@ const CARRIERS: &[MarkWord] = &[carrier(AUTHORIZATION), carrier(OPERATOR_HEADER)
 const TAIL: &AuthTail = &with_operator(verify_tail(0, AuthPoints::HEAD), WORDS.principal_id);
 
 /// The double's Statement: the stand-in provider's name, its two carriers, the operator tail.
-const STATEMENT: Statement = with_tail(
-    Statement {
-        mark_words: CARRIERS.as_ptr(),
-        mark_words_len: CARRIERS.len(),
-        ..statement(WORDS.provider, env!("CARGO_PKG_VERSION"), 64)
-    },
-    TAIL,
-);
+const STATEMENT: Statement = {
+    let base = statement(WORDS.provider, env!("CARGO_PKG_VERSION"), 64);
+    with_tail(base.with_mark_words(CARRIERS), TAIL)
+};
 
 busbar_contract::auth_verify_door!(OperatorDouble, STATEMENT);
 

@@ -450,10 +450,7 @@ fn blank() -> ServiceOut {
 fn judge_in(dest: &'static str, ticket: Ticket, seq: u32, flags: u32) -> DestJudgeIn {
     DestJudgeIn {
         head: head(op::DEST_JUDGE, ticket, seq, size_of::<DestJudgeIn>()),
-        dest: AbiStr {
-            ptr: dest.as_ptr(),
-            len: dest.len(),
-        },
+        dest: AbiStr::of(dest),
         egress_class: 0,
         flags,
         into: ServiceBufs {
@@ -501,7 +498,7 @@ fn call_judge(d: &Double, i: &DestJudgeIn) -> (RawOutcome, ServiceOut) {
 
 fn error(o: &ServiceOut) -> &'static str {
     // SAFETY: the host's error texts are `'static`.
-    let bytes = unsafe { std::slice::from_raw_parts(o.error.ptr, o.error.len) };
+    let bytes = unsafe { std::slice::from_raw_parts(o.error.ptr(), o.error.len()) };
     Box::leak(String::from_utf8(bytes.to_vec()).unwrap().into_boxed_str())
 }
 
@@ -652,7 +649,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             );
         }
         // No slot of the table is left unserved.
-        if !o.error.ptr.is_null() {
+        if !o.error.ptr().is_null() {
             assert_ne!(
                 error(&o),
                 busbar_contract::services::UNSERVED,
@@ -672,18 +669,14 @@ fn no_bufs() -> ServiceBufs {
 }
 
 fn over(b: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    // SAFETY: every caller keeps `b` alive and unwritten across each read of the string.
+    unsafe { AbiStr::from_raw_parts(b.as_ptr(), b.len()) }
 }
 
 fn blob_over(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
-    busbar_contract::abi::mechanism::call::Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: 0,
-        flags: 0,
+    // SAFETY: every caller keeps `b` alive and unwritten across each read of the blob.
+    unsafe {
+        busbar_contract::abi::mechanism::call::Blob::from_raw_parts(b.as_ptr(), b.len(), 0, 0)
     }
 }
 
@@ -1249,10 +1242,7 @@ fn a_recall_reads_the_stored_result_without_running_again() {
 }
 
 fn text(s: &'static str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    AbiStr::of(s)
 }
 
 fn claim_in(ttl_ms: u64) -> RecordsClaimIn {
@@ -1351,12 +1341,7 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
     let data = b"payload";
     let i = SignIn {
         head: head(op::SIGN, Ticket::NONE, 0, size_of::<SignIn>()),
-        data: busbar_contract::abi::mechanism::call::Blob {
-            ptr: data.as_ptr(),
-            len: data.len(),
-            fmt: 0,
-            flags: 0,
-        },
+        data: busbar_contract::abi::mechanism::call::Blob::of(data).with_fmt(0),
         into: bufs(&mut [], &mut []),
     };
     let mut o = blank();
@@ -1387,12 +1372,7 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
 }
 
 fn blob(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
-    busbar_contract::abi::mechanism::call::Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: 0,
-        flags: 0,
-    }
+    blob_over(b)
 }
 
 /// `trust.verify` reaches the kernel from a ticketless op as its caller, with the counterparty,
@@ -1445,8 +1425,11 @@ fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
         signatures: blob(b""),
         into: bufs(&mut [], &mut []),
     };
-    i.signatures.ptr = std::ptr::null();
-    i.signatures.len = 2;
+    // SAFETY: two bytes counted over NULL, as a foreign plugin could state them, read only by the
+    // service's checks, which refuse them.
+    i.signatures = unsafe {
+        busbar_contract::abi::mechanism::call::Blob::from_raw_parts(std::ptr::null(), 2, 0, 0)
+    };
     let mut o = blank();
     // SAFETY: the host's own static service table on a context the dispatcher minted (or a forged
     // handle its handle table refuses unread); the `in` is a local of the service's type, its
@@ -1931,16 +1914,8 @@ fn disk_in(
 ) -> svc::DiskAppendIn {
     svc::DiskAppendIn {
         head: head(op::DISK_APPEND, TICKET, seq, size_of::<svc::DiskAppendIn>()),
-        dest_key: AbiStr {
-            ptr: key.as_ptr(),
-            len: key.len(),
-        },
-        bytes: Blob {
-            ptr: bytes.as_ptr(),
-            len: bytes.len(),
-            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
-            flags: 0,
-        },
+        dest_key: AbiStr::of(key),
+        bytes: Blob::of(bytes),
         result: std::ptr::from_mut(result),
     }
 }
@@ -2416,16 +2391,13 @@ fn oversize_service_lengths_child() {
     );
     let b = [7_u8; 8];
     let past = u32::MAX as usize + 1;
-    let s = AbiStr {
-        ptr: b.as_ptr(),
-        len: past,
-    };
+    // SAFETY: a length past the cap over real bytes, read only by the readers below, which cap it
+    // before any slice is made.
+    let s = unsafe { AbiStr::from_raw_parts(b.as_ptr(), past) };
     assert!(bytes_of(s, "test.bytes").is_none(), "a string over the cap");
     assert!(text_of(s, "test.text").is_none(), "a text over the cap");
-    let blob = Blob {
-        len: past,
-        ..blob_over(&b)
-    };
+    // SAFETY: as `s`: read only by `blob_of`, which caps it before any slice is made.
+    let blob = unsafe { Blob::from_raw_parts(b.as_ptr(), past, 0, 0) };
     assert!(blob_of(blob, "test.blob").is_none(), "a blob over the cap");
     assert_eq!(bytes_of(over(&b), "test.bytes"), Some(b.to_vec()));
 }

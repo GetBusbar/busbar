@@ -57,13 +57,9 @@ mod hung {
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::store::Ops,
-        statement: busbar_contract::abi::mechanism::door::Statement {
-            diag_ids: DIAGS.as_ptr(),
-            diag_ids_len: 2,
-            kind_tail: ::core::ptr::from_ref(&TAIL)
-                .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
-            ..busbar_contract::abi::sdk::door::statement("hung", "0", 64)
-        },
+        statement: busbar_contract::abi::sdk::door::statement("hung", "0", 64)
+            .with_diag_ids(&DIAGS)
+            .with_kind_tail(&TAIL),
                 lifecycle: {
                     validate: S<d::Validate<M>>,
                     open: S<d::Open<M>>,

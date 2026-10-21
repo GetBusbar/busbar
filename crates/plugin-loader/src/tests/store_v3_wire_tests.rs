@@ -785,11 +785,11 @@ fn a_bound_covers_the_handshake_after_the_dial() {
 // ── verify-off (ARCHITECT ruling 2026-10-03 on Q-L16-4: 1.5.5's `#insecure`) ──────────────────
 
 /// One outbound `tcp` need of class operator-infrastructure (a database).
-const TCP_OPERATOR: &[busbar_contract::abi::host::conn::connector::Need] =
-    &[busbar_contract::abi::host::conn::connector::Need {
-        egress_class: busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
-        ..TCP[0]
-    }];
+const TCP_OPERATOR: &[busbar_contract::abi::host::conn::connector::Need] = &[{
+    let mut need = TCP[0];
+    need.egress_class = busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    need
+}];
 
 /// A line backend whose certificate the table's TLS double is told is SELF-SIGNED: its port.
 fn self_signed_tls_backend() -> u16 {

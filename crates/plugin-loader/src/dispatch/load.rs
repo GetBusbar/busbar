@@ -857,13 +857,13 @@ pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     if st.kind_abi != door.kind_abi {
         return Err(LoadError::StatementDisagrees("kind_abi"));
     }
-    if st.families_len > 0 && st.families.is_null() {
+    if st.families_len() > 0 && st.families_ptr().is_null() {
         return Err(LoadError::BadStatement("families is NULL".into()));
     }
-    if st.secret_refs_len > 0 && st.secret_refs.is_null() {
+    if st.secret_refs_len() > 0 && st.secret_refs_ptr().is_null() {
         return Err(LoadError::BadStatement("secret_refs is NULL".into()));
     }
-    if st.diag_ids_len > 0 && st.diag_ids.is_null() {
+    if st.diag_ids_len() > 0 && st.diag_ids_ptr().is_null() {
         return Err(LoadError::BadStatement("diag_ids is NULL".into()));
     }
     // THE LISTS' BOUNDS FIRST: `check_statement` refuses a NULL list with a count, a count above
@@ -872,16 +872,16 @@ pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     // SAFETY: a door's Statement is `'static` plugin data; every list is checked before it is read.
     unsafe { check_statement(&st) }
         .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
-    for i in 0..st.families_len {
+    for i in 0..st.families_len() {
         // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
-        let fam: MetricFamily = unsafe { st.families.add(i).read_unaligned() };
+        let fam: MetricFamily = unsafe { st.families_ptr().add(i).read_unaligned() };
         if fam.kind > FAMILY_HISTOGRAM {
             return Err(LoadError::BadStatement(format!(
                 "family {i} has kind {}",
                 fam.kind
             )));
         }
-        if fam.label_keys_len > 0 && fam.label_keys.is_null() {
+        if fam.label_keys_len() > 0 && fam.label_keys_ptr().is_null() {
             return Err(LoadError::BadStatement(format!(
                 "family {i}'s label keys are NULL"
             )));
@@ -899,9 +899,9 @@ pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
 /// is the host's [`FramePiece`], with exactly one claim row per scheme the Statement names (the
 /// names are the Statement's alone).
 pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
-    if st.kind_tail.is_null() {
+    if st.kind_tail().is_null() {
         // A transport that names claims has a row per name, so it has a tail.
-        if st.kind == KindCode::Transport as u32 && st.claims_len != 0 {
+        if st.kind == KindCode::Transport as u32 && st.claims_len() != 0 {
             return Err(LoadError::KindTail(
                 "a transport names claims but states no tail for their rows".into(),
             ));
@@ -909,7 +909,7 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
         return Ok(());
     }
     // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
-    let tail = unsafe { st.kind_tail.read_unaligned() };
+    let tail = unsafe { st.kind_tail().read_unaligned() };
     if (tail.size as usize) < size_of::<KindTailHead>() {
         return Err(LoadError::KindTail(format!(
             "its head states {} bytes, less than the head itself",
@@ -929,7 +929,7 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     let stated = if tail.size as usize >= word + size_of::<u32>() {
         // SAFETY: the tail states it covers the word; a kind tail is `'static` plugin data.
         unsafe {
-            addr_of!((*st.kind_tail.cast::<TransportTail>()).frame_piece_size).read_unaligned()
+            addr_of!((*st.kind_tail().cast::<TransportTail>()).frame_piece_size).read_unaligned()
         }
     } else {
         0
@@ -952,8 +952,8 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
         )));
     }
     // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
-    let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
-    check_claim_rows(st.claims_len, &t)
+    let t = unsafe { st.kind_tail().cast::<TransportTail>().read_unaligned() };
+    check_claim_rows(st.claims_len(), &t)
         .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))
 }
 
@@ -965,7 +965,7 @@ fn plane_layout(st: &Statement, size: u32) -> Result<(), LoadError> {
     let word = std::mem::offset_of!(PlaneTail, answer_layout);
     let stated = if size as usize >= word + size_of::<u32>() {
         // SAFETY: the tail states it covers the word; a kind tail is `'static` plugin data.
-        unsafe { addr_of!((*st.kind_tail.cast::<PlaneTail>()).answer_layout).read_unaligned() }
+        unsafe { addr_of!((*st.kind_tail().cast::<PlaneTail>()).answer_layout).read_unaligned() }
     } else {
         0
     };
@@ -982,5 +982,5 @@ fn plane_layout(st: &Statement, size: u32) -> Result<(), LoadError> {
 }
 
 fn str_is_bad(s: AbiStr) -> bool {
-    s.ptr.is_null() || s.len == 0
+    s.ptr().is_null() || s.is_empty()
 }

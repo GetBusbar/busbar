@@ -220,17 +220,13 @@ pub fn validate_dealt<'s>(
 /// The lifecycle `validate` of one bound door, over `settings` (JSON): its reason when it does not
 /// answer READY.
 fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSON};
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, ValidateIn};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
     let mut err = [0_u8; 1024];
     let mut i: ValidateIn = blank_in();
-    i.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    };
+    // The settings are lent to this one `validate` call (status row 194): `settings` outlives it.
+    i.settings = crate::root::loader::lend::blob(settings, BLOB_JSON);
     i.err_buf = err.as_mut_ptr();
     i.err_cap = err.len();
     let mut f = super::loader::dispatch::Frame::new(i, blank_out::<OutHead>());

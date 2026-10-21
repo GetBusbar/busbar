@@ -181,12 +181,8 @@ fn output<T: OutFrame>() -> T {
 }
 
 fn blob(bytes: &[u8], fmt: u32) -> Blob {
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt,
-        flags: 0,
-    }
+    // SAFETY: every caller keeps `bytes` alive and unwritten across the call the blob is lent to.
+    unsafe { Blob::from_raw_parts(bytes.as_ptr(), bytes.len(), fmt, 0) }
 }
 
 /// One transcript line: the step, the outcome, the error text.
@@ -244,10 +240,10 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> (Called, u32, Vec<u8>, u32) {
     let mut f: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
     f.input.settings = blob(settings, BLOB_JSON);
     let c = p.call(secret::slot::RESOLVE, &mut f);
-    let material = if c.outcome == Outcome::Ready && !f.out.secret.ptr.is_null() {
+    let material = if c.outcome == Outcome::Ready && !f.out.secret.ptr().is_null() {
         // SAFETY: a READY resolve's blob is the plugin's, live until `release` of its lease, which
         // has not run; the dispatcher's `check_resolve` judged its pointer/length pairing.
-        unsafe { std::slice::from_raw_parts(f.out.secret.ptr, f.out.secret.len) }.to_vec()
+        unsafe { std::slice::from_raw_parts(f.out.secret.ptr(), f.out.secret.len()) }.to_vec()
     } else {
         Vec::new()
     };

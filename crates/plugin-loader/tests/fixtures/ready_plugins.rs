@@ -204,11 +204,7 @@ pub mod auth {
         auth_door!(
             NeedsSecret,
             with_tail(
-                busbar_contract::abi::mechanism::door::Statement {
-                    secret_refs: SECRET_REFS.as_ptr(),
-                    secret_refs_len: SECRET_REFS.len(),
-                    ..statement(SECRET_NAME, "0", 4)
-                },
+                statement(SECRET_NAME, "0", 4).with_secret_refs(SECRET_REFS),
                 TAIL
             ),
         );
@@ -280,24 +276,12 @@ pub mod export {
     const STREAMS: &[u8] = &[busbar_contract::abi::export::ExportStream::Logs as u8];
 
     /// The export kind's Statement tail: `logs`, no route.
-    const TAIL: busbar_contract::abi::export::Tail = busbar_contract::abi::export::Tail {
-        head: busbar_contract::abi::mechanism::door::KindTailHead {
-            size: std::mem::size_of::<busbar_contract::abi::export::Tail>() as u32,
-            _reserved: 0,
-        },
-        streams: STREAMS.as_ptr(),
-        streams_len: STREAMS.len(),
-        routes: std::ptr::null(),
-        routes_len: 0,
-    };
+    const TAIL: busbar_contract::abi::export::Tail =
+        busbar_contract::abi::export::Tail::EMPTY.with_streams(STREAMS);
 
     /// Its Statement: the name, and the export tail.
     const STATEMENT: busbar_contract::abi::mechanism::door::Statement =
-        busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: (&TAIL as *const busbar_contract::abi::export::Tail)
-                .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
-            ..busbar_contract::abi::sdk::door::statement(NAME, "0", 4)
-        };
+        busbar_contract::abi::sdk::door::statement(NAME, "0", 4).with_kind_tail(&TAIL);
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::export::Ops,

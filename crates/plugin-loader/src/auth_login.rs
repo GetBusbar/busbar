@@ -112,10 +112,7 @@ fn begin_out() -> BeginLoginOut {
         head: out_head(),
         shape: 0,
         _reserved: 0,
-        authorize_url: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        authorize_url: AbiStr::ABSENT,
         form: std::ptr::null(),
         form_len: 0,
     }

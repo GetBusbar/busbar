@@ -181,10 +181,7 @@ pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<(u64, Dri
         .admit(side.ticket(), Admission::Bind(bind.to_owned()));
     let mut addr = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
     let mut i: ListenIn = blank_in();
-    i.bind = busbar_contract::abi::mechanism::call::AbiStr {
-        ptr: bind.as_ptr(),
-        len: bind.len(),
-    };
+    i.bind = crate::framer::abi(bind.as_bytes());
     i.addr_buf = addr.as_mut_ptr();
     i.addr_cap = addr.len();
     let mut o: ListenOut = blank_out();

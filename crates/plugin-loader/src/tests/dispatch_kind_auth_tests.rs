@@ -21,10 +21,7 @@ use busbar_contract::abi::mechanism::KindCode;
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{in_head, out_head, Answer, Kind, NO_BLOB};
 
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_STR: AbiStr = AbiStr::ABSENT;
 const ABSENT: Span = Span {
     offset: SPAN_ABSENT,
     len: 0,
@@ -219,10 +216,7 @@ fn begin_login_out(shape: u32, url: &'static str) -> BeginLoginOut {
         head: out_head(),
         shape,
         _reserved: 0,
-        authorize_url: AbiStr {
-            ptr: url.as_ptr(),
-            len: url.len(),
-        },
+        authorize_url: AbiStr::of(url),
         form: std::ptr::null(),
         form_len: 0,
     }
@@ -674,32 +668,19 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
         AuthTail, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_NONE,
         LOGIN_KIND_REDIRECT,
     };
-    use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::statement;
     let bind = |caps: u32, login_kind: u32| {
-        let tail = Box::leak(Box::new(AuthTail {
-            head: KindTailHead {
-                size: size_of::<AuthTail>() as u32,
-                _reserved: 0,
-            },
-            caps,
-            facts: 0,
-            login_kind,
-            inbound_points: if caps & CAP_INBOUND != 0 {
-                POINT_HEAD
-            } else {
-                0
-            },
-            styles: std::ptr::null(),
-            styles_len: 0,
-            operator_principal: busbar_contract::abi::sdk::door::abi_str(""),
-            credential_kinds: std::ptr::null(),
-            credential_kinds_len: 0,
-        }));
-        let st = busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: std::ptr::from_ref(tail).cast(),
-            ..statement("t", "1", 0)
+        let mut t = AuthTail::EMPTY;
+        t.caps = caps;
+        t.login_kind = login_kind;
+        t.inbound_points = if caps & CAP_INBOUND != 0 {
+            POINT_HEAD
+        } else {
+            0
         };
+        t.operator_principal = busbar_contract::abi::sdk::door::abi_str("");
+        let tail: &'static AuthTail = Box::leak(Box::new(t));
+        let st = statement("t", "1", 0).with_kind_tail(tail);
         <Auth as Kind>::context(&st).map(|c| {
             c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
                 .map(|f| f.login_kind)
@@ -738,28 +719,15 @@ fn a_tail_with_a_broken_point_set_refuses() {
         AuthPoints, AuthTail, StyleDecl, CAP_INBOUND, CAP_OUTBOUND, LOGIN_KIND_NONE, POINT_FRAME,
         POINT_HEAD_BODY, POINT_PEER, STYLE_NEEDS_HEADERS,
     };
-    use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     let bind = |caps: u32, inbound_points: u32, styles: &'static [StyleDecl]| {
-        let tail = Box::leak(Box::new(AuthTail {
-            head: KindTailHead {
-                size: size_of::<AuthTail>() as u32,
-                _reserved: 0,
-            },
-            caps,
-            facts: 0,
-            login_kind: LOGIN_KIND_NONE,
-            inbound_points,
-            styles: styles.as_ptr(),
-            styles_len: styles.len(),
-            operator_principal: abi_str(""),
-            credential_kinds: std::ptr::null(),
-            credential_kinds_len: 0,
-        }));
-        let st = busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: std::ptr::from_ref(tail).cast(),
-            ..statement("t", "1", 0)
-        };
+        let mut t = AuthTail::EMPTY.with_styles(styles);
+        t.caps = caps;
+        t.login_kind = LOGIN_KIND_NONE;
+        t.inbound_points = inbound_points;
+        t.operator_principal = abi_str("");
+        let tail: &'static AuthTail = Box::leak(Box::new(t));
+        let st = statement("t", "1", 0).with_kind_tail(tail);
         <Auth as Kind>::context(&st).map(|c| {
             c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
                 .map(|f| f.inbound_points)
@@ -819,32 +787,22 @@ fn a_tail_with_a_broken_point_set_refuses() {
 #[test]
 fn the_carriers_are_the_statements_carrier_marks() {
     use busbar_contract::abi::auth::{AuthTail, CAP_INBOUND, LOGIN_KIND_NONE, POINT_HEAD};
-    use busbar_contract::abi::mechanism::door::{KindTailHead, MarkWord, MARK_WORD_HOOK};
+    use busbar_contract::abi::mechanism::door::{MarkWord, MARK_WORD_HOOK};
     use busbar_contract::abi::sdk::auth_door::carrier;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    const TAIL: AuthTail = AuthTail {
-        head: KindTailHead {
-            size: size_of::<AuthTail>() as u32,
-            _reserved: 0,
-        },
-        caps: CAP_INBOUND,
-        facts: 0,
-        login_kind: LOGIN_KIND_NONE,
-        inbound_points: POINT_HEAD,
-        styles: std::ptr::null(),
-        styles_len: 0,
-        operator_principal: abi_str(""),
-        credential_kinds: std::ptr::null(),
-        credential_kinds_len: 0,
+    const TAIL: AuthTail = {
+        let mut t = AuthTail::EMPTY;
+        t.caps = CAP_INBOUND;
+        t.login_kind = LOGIN_KIND_NONE;
+        t.inbound_points = POINT_HEAD;
+        t.operator_principal = abi_str("");
+        t
     };
     let tail: &'static AuthTail = Box::leak(Box::new(TAIL));
     let carriers = |words: &'static [MarkWord]| {
-        let st = busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: std::ptr::from_ref(tail).cast(),
-            mark_words: words.as_ptr(),
-            mark_words_len: words.len(),
-            ..statement("t", "1", 0)
-        };
+        let st = statement("t", "1", 0)
+            .with_kind_tail(tail)
+            .with_mark_words(words);
         <Auth as Kind>::context(&st).map(|c| {
             c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
                 .map(|f| f.carriers)
@@ -880,32 +838,21 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
     use busbar_contract::abi::auth::{
         AuthTail, AUTH_TAIL_FROZEN, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE,
     };
-    use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     let bind = |size: usize, caps: u32, facts: u32, principal: &'static str| {
-        let tail = Box::leak(Box::new(AuthTail {
-            head: KindTailHead {
-                size: size as u32,
-                _reserved: 0,
-            },
-            caps,
-            facts,
-            login_kind: LOGIN_KIND_NONE,
-            inbound_points: if caps & CAP_INBOUND != 0 {
-                POINT_HEAD
-            } else {
-                0
-            },
-            styles: std::ptr::null(),
-            styles_len: 0,
-            operator_principal: abi_str(principal),
-            credential_kinds: std::ptr::null(),
-            credential_kinds_len: 0,
-        }));
-        let st = busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: std::ptr::from_ref(tail).cast(),
-            ..statement("t", "1", 0)
+        let mut t = AuthTail::EMPTY;
+        t.head.size = size as u32;
+        t.caps = caps;
+        t.facts = facts;
+        t.login_kind = LOGIN_KIND_NONE;
+        t.inbound_points = if caps & CAP_INBOUND != 0 {
+            POINT_HEAD
+        } else {
+            0
         };
+        t.operator_principal = abi_str(principal);
+        let tail: &'static AuthTail = Box::leak(Box::new(t));
+        let st = statement("t", "1", 0).with_kind_tail(tail);
         <Auth as Kind>::context(&st).map(|c| {
             c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
                 .map(|f| f.operator_principal)
@@ -950,32 +897,21 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
     use busbar_contract::abi::auth::{
         AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
     };
-    use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     let bind = |size: usize, caps: u32, facts: u32, kinds: &'static [AbiStr]| {
-        let tail = Box::leak(Box::new(AuthTail {
-            head: KindTailHead {
-                size: size as u32,
-                _reserved: 0,
-            },
-            caps,
-            facts,
-            login_kind: LOGIN_KIND_NONE,
-            inbound_points: if caps & CAP_INBOUND != 0 {
-                POINT_HEAD
-            } else {
-                0
-            },
-            styles: std::ptr::null(),
-            styles_len: 0,
-            operator_principal: abi_str(""),
-            credential_kinds: kinds.as_ptr(),
-            credential_kinds_len: kinds.len(),
-        }));
-        let st = busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: std::ptr::from_ref(tail).cast(),
-            ..statement("t", "1", 0)
+        let mut t = AuthTail::EMPTY.with_credential_kinds(kinds);
+        t.head.size = size as u32;
+        t.caps = caps;
+        t.facts = facts;
+        t.login_kind = LOGIN_KIND_NONE;
+        t.inbound_points = if caps & CAP_INBOUND != 0 {
+            POINT_HEAD
+        } else {
+            0
         };
+        t.operator_principal = abi_str("");
+        let tail: &'static AuthTail = Box::leak(Box::new(t));
+        let st = statement("t", "1", 0).with_kind_tail(tail);
         <Auth as Kind>::context(&st).map(|c| <Auth as Kind>::credential_kinds(c.as_deref()))
     };
     const SIGNED: &[AbiStr] = &[abi_str("signed")];
@@ -1020,7 +956,7 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
         AuthTail, CAP_INBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
     };
     use busbar_contract::abi::mechanism::door::{
-        KindTailHead, MarkWord, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
+        MarkWord, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
         MARK_WORD_ISSUED_ID_PREFIX, MARK_WORD_ISSUED_SECRET_ALPHABET,
         MARK_WORD_ISSUED_SECRET_LENGTH,
     };
@@ -1028,29 +964,17 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
     use busbar_contract::auth_calls::IssuedShape;
     const KINDS: &[AbiStr] = &[abi_str("kind-a")];
     let bind = |facts: u32, marks: Vec<(u32, &'static str)>| {
-        let tail = Box::leak(Box::new(AuthTail {
-            head: KindTailHead {
-                size: size_of::<AuthTail>() as u32,
-                _reserved: 0,
-            },
-            caps: CAP_INBOUND,
-            facts,
-            login_kind: LOGIN_KIND_NONE,
-            inbound_points: POINT_HEAD,
-            styles: std::ptr::null(),
-            styles_len: 0,
-            operator_principal: abi_str(""),
-            credential_kinds: if facts & FACT_READS_CREDENTIALS != 0 {
-                KINDS.as_ptr()
-            } else {
-                std::ptr::null()
-            },
-            credential_kinds_len: if facts & FACT_READS_CREDENTIALS != 0 {
-                KINDS.len()
-            } else {
-                0
-            },
-        }));
+        let mut t = if facts & FACT_READS_CREDENTIALS != 0 {
+            AuthTail::EMPTY.with_credential_kinds(KINDS)
+        } else {
+            AuthTail::EMPTY
+        };
+        t.caps = CAP_INBOUND;
+        t.facts = facts;
+        t.login_kind = LOGIN_KIND_NONE;
+        t.inbound_points = POINT_HEAD;
+        t.operator_principal = abi_str("");
+        let tail: &'static AuthTail = Box::leak(Box::new(t));
         let words: &'static [MarkWord] = Box::leak(
             marks
                 .into_iter()
@@ -1062,12 +986,9 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         );
-        let st = busbar_contract::abi::mechanism::door::Statement {
-            kind_tail: std::ptr::from_ref(tail).cast(),
-            mark_words: words.as_ptr(),
-            mark_words_len: words.len(),
-            ..statement("t", "1", 0)
-        };
+        let st = statement("t", "1", 0)
+            .with_kind_tail(tail)
+            .with_mark_words(words);
         <Auth as Kind>::context(&st).map(|c| {
             c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
                 .and_then(|f| f.issued)

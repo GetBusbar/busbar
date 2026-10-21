@@ -31,11 +31,11 @@ fn piece(from: u32, attempt_no: u32, head: bool) -> Piece {
 }
 
 fn text(s: AbiStr) -> Vec<u8> {
-    if s.ptr.is_null() {
+    if s.ptr().is_null() {
         return Vec::new();
     }
     // SAFETY: the frame's strings point into `bufs`, alive for the test.
-    unsafe { std::slice::from_raw_parts(s.ptr, s.len).to_vec() }
+    unsafe { std::slice::from_raw_parts(s.ptr(), s.len()).to_vec() }
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn a_node_without_signing_material_lends_no_caller_reference() {
     let mut b = bufs(0);
     b.caller_ref.clear();
     let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);
-    assert!(i.caller_ref.ptr.is_null() && i.caller_ref.len == 0);
+    assert!(i.caller_ref.ptr().is_null() && i.caller_ref.len() == 0);
 }
 
 // ── F25 rows 630-633: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs. The

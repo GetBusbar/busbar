@@ -637,16 +637,10 @@ impl Conns for Endpoint {
 // ---- the calls ----
 
 fn abi_str(b: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    crate::dispatch::lend_str(b)
 }
 
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_STR: AbiStr = AbiStr::ABSENT;
 
 /// The leg's instance of `door`, through the ONE loader, on `conns` (a minting style's endpoint).
 fn load_leg(
@@ -752,12 +746,7 @@ impl Lend {
             .zip(&l.values)
             .map(|(n, v)| NamedValue {
                 name: abi_str(n),
-                value: Blob {
-                    ptr: v.as_ptr(),
-                    len: v.len(),
-                    fmt: BLOB_OCTETS,
-                    flags: 0,
-                },
+                value: crate::dispatch::lend_blob(v, BLOB_OCTETS, 0),
             })
             .collect();
         l
@@ -789,20 +778,10 @@ impl Lend {
             i.headers_len = self.lines.len();
         }
         if point == POINT_HEAD_BODY {
-            i.body = Blob {
-                ptr: self.body.as_ptr(),
-                len: self.body.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            i.body = crate::dispatch::lend_blob(&self.body, BLOB_OCTETS, 0);
         }
         if !self.ext.is_empty() {
-            i.head.extensions = Blob {
-                ptr: self.ext.as_ptr(),
-                len: self.ext.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            i.head.extensions = crate::dispatch::lend_blob(&self.ext, BLOB_OCTETS, 0);
         }
         i
     }
@@ -1550,10 +1529,10 @@ unsafe extern "C" fn open_outbound_twice(
     // host's for the call. The second call's `in` and `out` are this frame's own.
     unsafe {
         let mut again = *input.cast::<OpenOutboundIn>();
-        let mut longer = if again.settings.ptr.is_null() {
+        let mut longer = if again.settings.ptr().is_null() {
             Vec::new()
         } else {
-            std::slice::from_raw_parts(again.settings.ptr, again.settings.len).to_vec()
+            std::slice::from_raw_parts(again.settings.ptr(), again.settings.len()).to_vec()
         };
         longer.push(b' ');
         again.settings = json(&longer);
@@ -1591,22 +1570,17 @@ unsafe extern "C" fn fields_arming_twice(
         unsafe {
             let mut again = *input.cast::<FieldsIn>();
             let ext = again.head.extensions;
-            let blob = if ext.ptr.is_null() {
+            let blob = if ext.ptr().is_null() {
                 &[][..]
             } else {
-                std::slice::from_raw_parts(ext.ptr, ext.len)
+                std::slice::from_raw_parts(ext.ptr(), ext.len())
             };
             let mut scope = extensions::get(blob, auth::EXT_SCOPE)
                 .unwrap_or_default()
                 .to_vec();
             scope.push(b' ');
             let other = extensions::encode(&[(auth::EXT_SCOPE, &scope)]);
-            again.head.extensions = Blob {
-                ptr: other.as_ptr(),
-                len: other.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            again.head.extensions = crate::dispatch::lend_blob(&other, BLOB_OCTETS, 0);
             let mut scratch: FieldsOut = output();
             let _ = real(
                 instance,

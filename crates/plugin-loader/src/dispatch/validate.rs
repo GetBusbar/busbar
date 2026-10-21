@@ -110,7 +110,7 @@ pub(crate) unsafe fn lent_mut<'a, T>(ptr: *mut T, len: usize) -> Option<&'a mut 
 /// As [`lent`].
 pub(crate) unsafe fn lent_str<'a>(s: AbiStr) -> Option<&'a [u8]> {
     // SAFETY: the caller's contract.
-    unsafe { lent(s.ptr, s.len) }
+    unsafe { lent(s.ptr(), s.len()) }
 }
 
 /// A non-empty range's bounds: non-NULL, aligned for `T`, at most [`MAX_LENT_BYTES`].
@@ -123,8 +123,8 @@ fn within<T>(ptr: *const T, len: usize) -> bool {
 }
 
 fn text(s: AbiStr) -> Result<(), Violation> {
-    if (s.ptr.is_null() && s.len != 0) || s.len > MAX_ERROR_LEN {
-        return Err(Violation::ErrorText(s.len));
+    if (s.ptr().is_null() && !s.is_empty()) || s.len() > MAX_ERROR_LEN {
+        return Err(Violation::ErrorText(s.len()));
     }
     Ok(())
 }

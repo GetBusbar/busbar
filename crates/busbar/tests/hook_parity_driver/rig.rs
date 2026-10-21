@@ -419,13 +419,10 @@ impl Hooks {
 
 // ── one unit ─────────────────────────────────────────────────────────────────────────────────────
 
+/// `b` as an octets blob, lent to one host call.
 fn octets(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    // SAFETY: every caller lends `b` to one call only, and `b` outlives that call.
+    unsafe { Blob::from_raw_parts(b.as_ptr(), b.len(), BLOB_OCTETS, 0) }
 }
 
 /// THE LINKED DOOR SERVING THE `pools` MAP, found by what its Statement declares
@@ -503,16 +500,8 @@ fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
-            public_url: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            owned: Blob {
-                ptr: std::ptr::null(),
-                len: 0,
-                fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-                flags: 0,
-            },
+            public_url: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+            owned: Blob::ABSENT,
             providers: std::ptr::null(),
             providers_len: 0,
         },

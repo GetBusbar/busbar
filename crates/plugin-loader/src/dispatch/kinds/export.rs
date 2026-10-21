@@ -77,7 +77,7 @@ fn route(r: &export::Route) -> Result<Route, String> {
 
 /// Read and judge the export tail ([`validate::check_tail`], then [`validate::check_tail_entries`]).
 fn facts(st: &Statement) -> Result<ExportFacts, String> {
-    let p = st.kind_tail;
+    let p = st.kind_tail();
     if p.is_null() {
         return Err("an export plugin states no kind tail".into());
     }
@@ -97,18 +97,18 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     // `'static` plugin data.
     let (streams, routes) = unsafe {
         (
-            listed(t.streams, t.streams_len),
-            listed(t.routes, t.routes_len),
+            listed(t.streams_ptr(), t.streams_len()),
+            listed(t.routes_ptr(), t.routes_len()),
         )
     };
     validate::check_tail_entries(streams, routes).map_err(why)?;
     let routes = routes.iter().map(route).collect::<Result<Vec<_>, _>>()?;
     // SAFETY: the loader's Statement check bounded `families` and refused it behind NULL.
-    let declared = unsafe { listed(st.families, st.families_len) };
+    let declared = unsafe { listed(st.families_ptr(), st.families_len()) };
     let mut families = Vec::with_capacity(declared.len());
     for f in declared {
         // SAFETY: as above, for each family's label keys.
-        let keys = unsafe { listed(f.label_keys, f.label_keys_len) };
+        let keys = unsafe { listed(f.label_keys_ptr(), f.label_keys_len()) };
         let keys = keys
             .iter()
             .map(|k| owned(*k))

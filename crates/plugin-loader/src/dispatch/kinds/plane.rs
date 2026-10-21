@@ -261,40 +261,40 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // of an unknown framing or kind, or a route cost naming no billable class, refuses the plane at
     // load rather than reaching the host as a declaration it cannot keep.
     check_record_chains(
-        &listed(tail.record_chains, tail.record_chains_len),
-        tail.record_kinds_len as u64,
+        &listed(tail.record_chains_ptr(), tail.record_chains_len()),
+        tail.record_kinds_len() as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_route_cost(
-        &listed(tail.route_cost, tail.route_cost_len),
-        tail.billable_classes_len as u64,
+        &listed(tail.route_cost_ptr(), tail.route_cost_len()),
+        tail.billable_classes_len() as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    check_metric_lanes(&listed(tail.metric_lanes, tail.metric_lanes_len))
+    check_metric_lanes(&listed(tail.metric_lanes_ptr(), tail.metric_lanes_len()))
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
-    let sections = if st.sections_len == 0 {
+    let sections = if st.sections_len() == 0 {
         &[][..]
     } else {
         // SAFETY: a non-NULL `sections` holds `sections_len` `'static` entries.
-        unsafe { std::slice::from_raw_parts(st.sections, st.sections_len) }
+        unsafe { std::slice::from_raw_parts(st.sections_ptr(), st.sections_len()) }
     };
     check_sections(sections)
         .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
-    let refusal_statuses: Vec<RefusalStatus> = (0..tail.refusal_statuses_len)
+    let refusal_statuses: Vec<RefusalStatus> = (0..tail.refusal_statuses_len())
         .map(|i| {
             // SAFETY: `check_tail` refused a count over a NULL list; the list is `'static` plugin
             // data of `refusal_statuses_len` entries.
-            unsafe { tail.refusal_statuses.add(i).read_unaligned() }
+            unsafe { tail.refusal_statuses_ptr().add(i).read_unaligned() }
         })
         .collect();
-    check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
+    check_refusal_statuses(&refusal_statuses, tail.dialects_len() as u64)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // Each dialect's default style and its parameters, judged before they are kept.
     busbar_contract::abi::plane::check::check_dialect_auth(
-        &listed(tail.dialect_auth, tail.dialect_auth_len),
-        tail.dialects_len as u64,
+        &listed(tail.dialect_auth_ptr(), tail.dialect_auth_len()),
+        tail.dialects_len() as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     Ok(PlaneFacts {
@@ -326,11 +326,11 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .filter(|s| s.flags & SECTION_REQUIRED != 0)
                 .map(|s| kept(s.name))
                 .collect(),
-            secret_refs: listed(st.secret_refs, st.secret_refs_len)
+            secret_refs: listed(st.secret_refs_ptr(), st.secret_refs_len())
                 .into_iter()
                 .map(kept)
                 .collect(),
-            admin_routes: listed(tail.admin_routes, tail.admin_routes_len)
+            admin_routes: listed(tail.admin_routes_ptr(), tail.admin_routes_len())
                 .into_iter()
                 .map(|r| busbar_contract::plane_calls::StatedAdminRoute {
                     verb: kept(r.verb),
@@ -339,66 +339,66 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                     audit_verb: kept(r.audit_verb),
                 })
                 .collect(),
-            admin_openapi: (!tail.admin_openapi.ptr.is_null()).then(|| {
+            admin_openapi: (!tail.admin_openapi.ptr().is_null()).then(|| {
                 // SAFETY: the tail check accepted the blob: `len` bytes of `'static` plugin data.
                 let bytes = unsafe {
-                    std::slice::from_raw_parts(tail.admin_openapi.ptr, tail.admin_openapi.len)
+                    std::slice::from_raw_parts(tail.admin_openapi.ptr(), tail.admin_openapi.len())
                 };
                 &*bytes.to_vec().leak()
             }),
-            op_classes: listed(tail.op_classes, tail.op_classes_len)
+            op_classes: listed(tail.op_classes_ptr(), tail.op_classes_len())
                 .into_iter()
                 .map(|c| kept(c.op))
                 .collect(),
             audit_kind: kept(tail.audit_kind),
-            billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
+            billable_classes: listed(tail.billable_classes_ptr(), tail.billable_classes_len())
                 .into_iter()
                 .map(|c| kept(c.class))
                 .collect(),
-            fee_units: listed(tail.fee_units, tail.fee_units_len)
+            fee_units: listed(tail.fee_units_ptr(), tail.fee_units_len())
                 .into_iter()
                 .map(kept)
                 .collect(),
-            metric_lanes: listed(tail.metric_lanes, tail.metric_lanes_len)
+            metric_lanes: listed(tail.metric_lanes_ptr(), tail.metric_lanes_len())
                 .into_iter()
                 .map(kept)
                 .collect(),
-            keeps: listed(st.needs, st.needs_len)
+            keeps: listed(st.needs_ptr(), st.needs_len())
                 .into_iter()
                 .map(|n| NeedKeep {
                     mode: n.keep_mode,
-                    kept: listed(n.keep_response_headers, n.keep_response_headers_len)
+                    kept: listed(n.keep_response_headers_ptr(), n.keep_response_headers_len())
                         .into_iter()
                         .map(kept)
                         .collect(),
-                    denied: listed(n.deny_response_headers, n.deny_response_headers_len)
+                    denied: listed(n.deny_response_headers_ptr(), n.deny_response_headers_len())
                         .into_iter()
                         .map(kept)
                         .collect(),
                 })
                 .collect(),
-            need_auths: listed(st.needs, st.needs_len)
+            need_auths: listed(st.needs_ptr(), st.needs_len())
                 .into_iter()
                 .map(|n| (n.direction, kept(n.auth)))
                 .collect(),
-            need_targets: listed(st.needs, st.needs_len)
+            need_targets: listed(st.needs_ptr(), st.needs_len())
                 .into_iter()
                 .map(|n| kept(n.target_from))
                 .collect(),
-            need_trust: listed(st.needs, st.needs_len)
+            need_trust: listed(st.needs_ptr(), st.needs_len())
                 .into_iter()
                 .map(|n| kept(n.trust_from))
                 .collect(),
             trust_keys: declared(&tail).trust_keys,
-            need_transports: listed(st.needs, st.needs_len)
+            need_transports: listed(st.needs_ptr(), st.needs_len())
                 .into_iter()
                 .map(|n| kept(n.transport))
                 .collect(),
-            dialects: listed(tail.dialects, tail.dialects_len)
+            dialects: listed(tail.dialects_ptr(), tail.dialects_len())
                 .into_iter()
                 .map(kept)
                 .collect(),
-            dialect_auth: listed(tail.dialect_auth, tail.dialect_auth_len)
+            dialect_auth: listed(tail.dialect_auth_ptr(), tail.dialect_auth_len())
                 .into_iter()
                 .map(|d| (d.dialect, kept(d.style), kept_blob(d.params)))
                 .collect(),
@@ -408,7 +408,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 kept(tail.subject_noun),
                 kept(tail.admin_noun),
             ),
-            billable_families: listed(tail.billable_classes, tail.billable_classes_len)
+            billable_families: listed(tail.billable_classes_ptr(), tail.billable_classes_len())
                 .into_iter()
                 .map(|c| kept(c.family))
                 .collect(),
@@ -428,13 +428,13 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
 fn stated_provider_keys(
     ext: Blob,
 ) -> Result<Option<busbar_contract::provider_keys::ProviderKeys>, String> {
-    if ext.ptr.is_null() || ext.len == 0 {
+    if ext.ptr().is_null() || ext.is_empty() {
         return Ok(None);
     }
     // SAFETY: a non-NULL Statement blob is `len` bytes of `'static` plugin data, read here while the
     // plugin is loaded, its length capped before the slice is formed; the descriptor is decoded
     // into owned values before this returns.
-    let bytes = unsafe { crate::dispatch::validate::lent(ext.ptr, ext.len) }
+    let bytes = unsafe { crate::dispatch::validate::lent(ext.ptr(), ext.len()) }
         .ok_or("the Statement's extensions are longer than any blob may be")?;
     busbar_contract::provider_keys::stated(bytes)
         .map_err(|e| format!("the plane's provider keys are refused: {e}"))
@@ -444,8 +444,8 @@ fn stated_provider_keys(
 /// `dialect_auth` lines' flags (`check_dialect_auth` judged every line's index and bits), `0` for a
 /// dialect with none.
 fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
-    let mut flags = vec![0; tail.dialects_len];
-    for d in listed(tail.dialect_auth, tail.dialect_auth_len) {
+    let mut flags = vec![0; tail.dialects_len()];
+    for d in listed(tail.dialect_auth_ptr(), tail.dialect_auth_len()) {
         if let Some(f) = flags.get_mut(d.dialect as usize) {
             *f |= d.flags;
         }
@@ -455,7 +455,7 @@ fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
 
 /// A tail string, kept for the process (`""` when absent).
 fn kept(s: AbiStr) -> &'static str {
-    if s.ptr.is_null() || s.len == 0 {
+    if s.ptr().is_null() || s.is_empty() {
         return "";
     }
     // SAFETY: `check_tail` judged every tail string: a non-NULL span of `len` bytes of `'static`
@@ -469,13 +469,13 @@ fn kept(s: AbiStr) -> &'static str {
 
 /// A tail blob's bytes, kept for the process (empty when absent).
 fn kept_blob(b: Blob) -> &'static [u8] {
-    if b.ptr.is_null() || b.len == 0 {
+    if b.ptr().is_null() || b.is_empty() {
         return &[];
     }
     // SAFETY: `check_dialect_auth` judged the blob (`tail_facts`): a non-NULL span of `len` bytes of
     // `'static` plugin data, read here while the plugin is loaded and copied; its length capped
     // first.
-    let Some(bytes) = (unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }) else {
+    let Some(bytes) = (unsafe { crate::dispatch::validate::lent(b.ptr(), b.len()) }) else {
         over_cap();
         return &[];
     };
@@ -503,7 +503,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         listed(p, n).into_iter().map(kept).collect()
     };
     let (domain, prefix) = (kept(t.signing_domain), kept(t.signing_kid_prefix));
-    let trust_keys = listed(t.trust_keys, t.trust_keys_len)
+    let trust_keys = listed(t.trust_keys_ptr(), t.trust_keys_len())
         .into_iter()
         .map(|k| TrustKeyDecl {
             key: kept(k.key),
@@ -516,7 +516,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
             },
             fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
             default: Some(kept(k.default)).filter(|d| !d.is_empty()),
-            mechanisms: listed(k.mechanisms, k.mechanisms_len)
+            mechanisms: listed(k.mechanisms_ptr(), k.mechanisms_len())
                 .into_iter()
                 .map(|m| PinMechanismDecl {
                     token: kept(m.token),
@@ -529,11 +529,11 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         .collect();
     InstanceDecl {
         label: Arc::from(""),
-        record_kinds: words(t.record_kinds, t.record_kinds_len),
+        record_kinds: words(t.record_kinds_ptr(), t.record_kinds_len()),
         signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
-        scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
+        scope_kinds: words(t.scope_kinds_ptr(), t.scope_kinds_len()),
         trust_keys,
-        record_chains: listed(t.record_chains, t.record_chains_len),
+        record_chains: listed(t.record_chains_ptr(), t.record_chains_len()),
     }
 }
 
@@ -646,11 +646,11 @@ pub fn linked_declaring_section(
     )
     .map_err(|e| format!("{e:?}"))?;
     let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
-    let sections = if st.sections_len == 0 {
+    let sections = if st.sections_len() == 0 {
         &[][..]
     } else {
         // SAFETY: a non-NULL `sections` holds `sections_len` `'static` entries.
-        unsafe { std::slice::from_raw_parts(st.sections, st.sections_len) }
+        unsafe { std::slice::from_raw_parts(st.sections_ptr(), st.sections_len()) }
     };
     check_sections(sections)
         .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
@@ -785,32 +785,38 @@ struct Probe {
 pub fn provider_facts(
     dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Vec<busbar_contract::abi::plane::ProviderFacts> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
-    let text = |s: &str| AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    };
+    use busbar_contract::abi::mechanism::call::BLOB_JSON;
+    let text = |s: &str| crate::dispatch::lend_str(s.as_bytes());
     dialects
         .iter()
         .map(|d| busbar_contract::abi::plane::ProviderFacts {
             name: text(&d.name),
             protocol: text(&d.protocol),
             error_map: match &d.error_map {
-                Some(json) => Blob {
-                    ptr: json.as_ptr(),
-                    len: json.len(),
-                    fmt: BLOB_JSON,
-                    flags: 0,
-                },
-                None => Blob {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    fmt: BLOB_ABSENT,
-                    flags: 0,
-                },
+                Some(json) => crate::dispatch::lend_blob(json, BLOB_JSON, 0),
+                None => Blob::ABSENT,
             },
         })
         .collect()
+}
+
+/// `bytes` the host lends one call as a JSON blob; empty is absent.
+fn lend_json(bytes: &[u8]) -> Blob {
+    use busbar_contract::abi::mechanism::call::BLOB_JSON;
+    if bytes.is_empty() {
+        Blob::ABSENT
+    } else {
+        crate::dispatch::lend_blob(bytes, BLOB_JSON, 0)
+    }
+}
+
+/// `s` the host lends one call as a string; empty is absent (NULL).
+fn lend_text(s: &str) -> AbiStr {
+    if s.is_empty() {
+        AbiStr::ABSENT
+    } else {
+        crate::dispatch::lend_str(s.as_bytes())
+    }
 }
 
 /// OPEN `plugin` at generation 1 over `settings` (JSON; empty = absent), its `owned` sections (one
@@ -827,47 +833,22 @@ pub fn open_door(
     owned: &[u8],
     public_url: Option<&str>,
 ) -> Result<OwnedSnapshot, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::OpenOut;
-    let blob = |bytes: &[u8]| {
-        if bytes.is_empty() {
-            Blob {
-                ptr: std::ptr::null(),
-                len: 0,
-                fmt: BLOB_ABSENT,
-                flags: 0,
-            }
-        } else {
-            Blob {
-                ptr: bytes.as_ptr(),
-                len: bytes.len(),
-                fmt: BLOB_JSON,
-                flags: 0,
-            }
-        }
-    };
     let url = public_url.unwrap_or_default();
     let mut frame = Frame::new(
         PlaneOpenIn {
             open: OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
-                settings: blob(settings),
+                settings: lend_json(settings),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
-            public_url: AbiStr {
-                ptr: if url.is_empty() {
-                    std::ptr::null()
-                } else {
-                    url.as_ptr()
-                },
-                len: url.len(),
-            },
-            owned: blob(owned),
+            public_url: lend_text(url),
+            owned: lend_json(owned),
             providers: std::ptr::null(),
             providers_len: 0,
         },
@@ -905,22 +886,8 @@ pub fn refresh_door(
     owned: &[u8],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
-    };
+    use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
+    let blob = lend_json(settings);
     // ITS OTHER OWNED SECTIONS ride the extensions blob under `EXT_OWNED` (the same JSON object
     // `open` carries in `PlaneOpenIn::owned`; absent when the document writes none), so a need whose
     // trust anchor sits in one is re-declared over the applied value.
@@ -934,12 +901,7 @@ pub fn refresh_door(
     };
     let mut head = in_head();
     if !extensions.is_empty() {
-        head.extensions = Blob {
-            ptr: extensions.as_ptr(),
-            len: extensions.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        };
+        head.extensions = crate::dispatch::lend_blob(&extensions, BLOB_OCTETS, 0);
     }
     let mut frame = Frame::new(
         RefreshIn {
@@ -999,23 +961,8 @@ fn facing(
     public_url: Option<&str>,
     facts: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{GenIn, OpenOut, RefreshIn};
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
-    };
+    let blob = lend_json(settings);
     let snapshot = if *current == 0 {
         let url = public_url.unwrap_or_default();
         // Each points into `facts`, which outlives the open.
@@ -1032,29 +979,8 @@ fn facing(
                     err_buf: std::ptr::null_mut(),
                     err_cap: 0,
                 },
-                public_url: AbiStr {
-                    ptr: if url.is_empty() {
-                        std::ptr::null()
-                    } else {
-                        url.as_ptr()
-                    },
-                    len: url.len(),
-                },
-                owned: if owned.is_empty() {
-                    Blob {
-                        ptr: std::ptr::null(),
-                        len: 0,
-                        fmt: BLOB_ABSENT,
-                        flags: 0,
-                    }
-                } else {
-                    Blob {
-                        ptr: owned.as_ptr(),
-                        len: owned.len(),
-                        fmt: BLOB_JSON,
-                        flags: 0,
-                    }
-                },
+                public_url: lend_text(url),
+                owned: lend_json(owned),
                 // The same list the served instance's open is handed: the plane resolves each
                 // model's dialect from it, and its claims follow.
                 providers: if providers.is_empty() {
@@ -1139,23 +1065,8 @@ fn facing(
 /// `validate` `settings` on `plugin` (ticket-less; it never pends): `Ok` when READY, else the
 /// plugin's words.
 fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::ValidateIn;
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
-    };
+    let blob = lend_json(settings);
     let mut f = Frame::new(
         ValidateIn {
             head: in_head(),
@@ -1181,9 +1092,10 @@ fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<
 /// unit to one of the classes (the plane reports "a fee unit was incurred" as a count on it; a fee
 /// unit no class lists could never be reported, and its fee would be refunded on every unit).
 fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
-    let classes: Vec<BillableClass> = listed(tail.billable_classes, tail.billable_classes_len);
+    let classes: Vec<BillableClass> =
+        listed(tail.billable_classes_ptr(), tail.billable_classes_len());
     check_billable_classes(&classes)?;
-    let fee_units: Vec<AbiStr> = listed(tail.fee_units, tail.fee_units_len);
+    let fee_units: Vec<AbiStr> = listed(tail.fee_units_ptr(), tail.fee_units_len());
     check_fee_units(&fee_units, &classes)
 }
 
@@ -1191,21 +1103,21 @@ fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
 /// pin's mechanisms by `check_pin_mechanisms`. `check_tail` proved only that no list is counted over
 /// a NULL pointer; the elements are read here, once, at bind.
 fn check_tail_trust_keys(tail: &PlaneTail) -> Result<(), Fault> {
-    let keys: &[TrustKey] = if tail.trust_keys_len == 0 {
+    let keys: &[TrustKey] = if tail.trust_keys_len() == 0 {
         &[]
     } else {
         // SAFETY: `check_tail` refused a NULL `trust_keys` counted non-zero; the tail is `'static`
         // plugin data whose list is `trust_keys_len` `TrustKey`s.
-        unsafe { std::slice::from_raw_parts(tail.trust_keys, tail.trust_keys_len) }
+        unsafe { std::slice::from_raw_parts(tail.trust_keys_ptr(), tail.trust_keys_len()) }
     };
     check_trust_keys(keys)?;
     for key in keys {
-        let mechanisms: &[PinMechanism] = if key.mechanisms_len == 0 {
+        let mechanisms: &[PinMechanism] = if key.mechanisms_len() == 0 {
             &[]
         } else {
             // SAFETY: `check_trust_keys` refused a NULL `mechanisms` counted non-zero; the list is
             // `'static` plugin data of `mechanisms_len` `PinMechanism`s.
-            unsafe { std::slice::from_raw_parts(key.mechanisms, key.mechanisms_len) }
+            unsafe { std::slice::from_raw_parts(key.mechanisms_ptr(), key.mechanisms_len()) }
         };
         check_pin_mechanisms(mechanisms)?;
     }
@@ -1692,7 +1604,7 @@ fn project(a: &Answer) -> Result<(), Fault> {
             messages,
             messages_cap,
             arena: (i.arena_buf.cast_const(), i.arena_cap as u64),
-            rewrite: i.rewrite.len != 0,
+            rewrite: !i.rewrite.is_empty(),
         },
     )
 }
@@ -1816,7 +1728,7 @@ impl crate::dispatch::Plugin<Plane> {
 /// is formed (THE DESIGN §11.13 M1). Called only on data a READY crossing's checks accepted (no
 /// string counted over a NULL pointer).
 fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
-    if s.ptr.is_null() {
+    if s.ptr().is_null() {
         return Some(None);
     }
     // SAFETY: the plugin's generation data, valid until `retire` of its generation, and read only
@@ -1828,11 +1740,11 @@ fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<
 /// A blob of the plugin's generation data, owned; `Some(None)` when absent, `None` (the snapshot
 /// refused) for a length over the hard byte maximum, refused before any slice is formed.
 fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
-    if b.ptr.is_null() {
+    if b.ptr().is_null() {
         return Some(None);
     }
     // SAFETY: as `owned_str`.
-    unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }.map(|bytes| Some(bytes.to_vec()))
+    unsafe { crate::dispatch::validate::lent(b.ptr(), b.len()) }.map(|bytes| Some(bytes.to_vec()))
 }
 
 /// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has

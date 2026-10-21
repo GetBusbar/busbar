@@ -65,14 +65,10 @@ const MARKS: &[MarkWord] = &[
 ];
 
 /// The Statement: [`NAME`], [`MAX_INFLIGHT`], [`TAIL`] and [`MARKS`].
-const STATEMENT: Statement = statement_with_tail(
-    Statement {
-        mark_words: MARKS.as_ptr(),
-        mark_words_len: MARKS.len(),
-        ..statement(NAME, "1.6.0", MAX_INFLIGHT)
-    },
-    TAIL,
-);
+const STATEMENT: Statement = {
+    let base = statement(NAME, "1.6.0", MAX_INFLIGHT);
+    statement_with_tail(base.with_mark_words(MARKS), TAIL)
+};
 
 /// One ranking order (`hook-ranking/src/lib.rs`, the strategies [`rank`] answers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

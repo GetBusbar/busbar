@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{AuthPoints, AuthTail, CANCEL_ABANDONED};
-use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
+use busbar_contract::abi::mechanism::door::MarkWord;
 use busbar_contract::abi::sdk::auth_door::{carrier, verify_tail, with_tail};
 use busbar_contract::abi::sdk::door::{statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::lent::Lent;
@@ -97,11 +97,7 @@ macro_rules! door {
             busbar_contract::plugin_door! {
                 ops: k::Ops,
                 statement: with_tail(
-                    Statement {
-                        mark_words: CARRIERS.as_ptr(),
-                        mark_words_len: CARRIERS.len(),
-                        ..statement($name, "1.0.0", 8)
-                    },
+                    statement($name, "1.0.0", 8).with_mark_words(CARRIERS),
                     TAIL
                 ),
                 lifecycle: life($life),

@@ -81,7 +81,7 @@
 //! (`super::datagram`: its every call carries the host's lane); a CARRIER runs the carrier script (`super::carrier`: listen/accept, dial, read, write, flush,
 //! shut and arrival over the suite's host I/O). An unknown role fails the suite.
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{Field, OutHead, Outcome};
 use busbar_contract::abi::transport::{
     slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
@@ -370,10 +370,7 @@ fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (C
         Op::Begin(side, target) => {
             let mut i: BeginIn = input();
             (i.side, i.sink) = (side, raw);
-            i.target = AbiStr {
-                ptr: target.as_ptr(),
-                len: target.len(),
-            };
+            i.target = crate::dispatch::lend_str(target);
             go(p, slot::BEGIN, i)
         }
         Op::Ingest(bytes, end) => {
@@ -495,10 +492,7 @@ pub(super) fn locate(
     let (mut authority, mut name, mut alpn) =
         (vec![0_u8; cap], vec![0_u8; AMPLE], vec![0_u8; AMPLE]);
     let mut i: LocateIn = input();
-    i.target = AbiStr {
-        ptr: target.as_ptr(),
-        len: target.len(),
-    };
+    i.target = crate::dispatch::lend_str(target);
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
@@ -543,10 +537,7 @@ fn relocate(
         vec![0_u8; AMPLE],
     );
     let mut i: LocateIn = input();
-    i.target = AbiStr {
-        ptr: target.as_ptr(),
-        len: target.len(),
-    };
+    i.target = crate::dispatch::lend_str(target);
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
@@ -810,14 +801,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let fields: Vec<Field> = named
             .iter()
             .map(|(n, v)| Field {
-                name: AbiStr {
-                    ptr: n.as_ptr(),
-                    len: n.len(),
-                },
-                value: AbiStr {
-                    ptr: v.as_ptr(),
-                    len: v.len(),
-                },
+                name: crate::dispatch::lend_str(n),
+                value: crate::dispatch::lend_str(v),
             })
             .collect();
         let label = format!("encode #{n}");

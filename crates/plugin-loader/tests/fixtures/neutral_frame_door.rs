@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
@@ -62,29 +62,18 @@ const SELECTOR_CODES: [u8; SELECTOR_FORMS.len()] = form_codes(SELECTOR_FORMS);
 
 const FACTS: &[AbiStr] = &[abi_str(tfacts::PEER)];
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-
 /// The schemes this door claims, by name: the Statement's `claims`, the one place they are stated.
 const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
 
 /// Each claimed scheme's row, by index into [`CLAIM_NAMES`].
-const CLAIMS: &[Claim] = &[Claim {
-    selector_forms: AbiStr {
-        ptr: SELECTOR_CODES.as_ptr(),
-        len: SELECTOR_CODES.len(),
-    },
-    egress_selector_forms: abi_str(""),
-    facts: FACTS.as_ptr(),
-    facts_len: FACTS.len(),
-    status_namespace: abi_str(KEY),
-    session: 1,
-    session_bound: 0,
-    unit0_trigger: UNIT0_FIRST_BYTES,
-    status_at: 0,
-    _reserved: 0,
+const CLAIMS: &[Claim] = &[{
+    let mut claim = Claim::EMPTY.with_facts(FACTS);
+    claim.selector_forms = AbiStr::of_bytes(&SELECTOR_CODES);
+    claim.egress_selector_forms = abi_str("");
+    claim.status_namespace = abi_str(KEY);
+    claim.session = 1;
+    claim.unit0_trigger = UNIT0_FIRST_BYTES;
+    claim
 }];
 
 /// The claim's numbering: `0` a stream that ended whole, `1..=9` any other end.
@@ -113,46 +102,25 @@ const FAULT_ROWS: &[FaultRow] = &[FaultRow {
     fault: FAULT_CALLER as u32,
 }];
 
-const TAIL: TransportTail = TransportTail {
-    head: KindTailHead {
-        size: std::mem::size_of::<TransportTail>() as u32,
-        _reserved: 0,
-    },
+const TAIL: TransportTail = {
+    let mut tail = TransportTail::EMPTY
+        .with_claim_rows(CLAIMS)
+        .with_status_rows(STATUS_ROWS)
+        .with_fault_rows(FAULT_ROWS);
     // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
     // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
     // one the connector may pick as its address carrier, and this one would refuse every dial.
-    role: ROLE_FRAMER,
-    framing: FRAMING_STREAM,
-    facts: 0,
-    handshake_max_steps: 0,
-    composes_over: std::ptr::null(),
-    composes_over_len: 0,
-    claim_rows: CLAIMS.as_ptr(),
-    claim_rows_len: CLAIMS.len(),
-    upgrades_to: std::ptr::null(),
-    upgrades_to_len: 0,
-    handoff_from: NONE,
-    handoff_to: NONE,
-    handoff_binding_fact: NONE,
-    handshake_frame_kind: NONE,
-    status_rows: STATUS_ROWS.as_ptr(),
-    status_rows_len: STATUS_ROWS.len(),
-    settings: std::ptr::null(),
-    settings_len: 0,
-    fault_rows: FAULT_ROWS.as_ptr(),
-    fault_rows_len: FAULT_ROWS.len(),
+    tail.role = ROLE_FRAMER;
+    tail.framing = FRAMING_STREAM;
     // The stride this framer writes its pieces at: the contract's it was built against.
-    frame_piece_size: FRAME_PIECE_SIZE,
-    _reserved: 0,
+    tail.frame_piece_size = FRAME_PIECE_SIZE;
+    tail
 };
 
 /// The door's Statement: the identity framer.
-pub const STATEMENT: Statement = Statement {
-    kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
-    claims: CLAIM_NAMES.as_ptr(),
-    claims_len: CLAIM_NAMES.len(),
-    ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
-};
+pub const STATEMENT: Statement = statement(KEY, env!("CARGO_PKG_VERSION"), 64)
+    .with_kind_tail(&TAIL)
+    .with_claims(CLAIM_NAMES);
 
 // ── the instance ─────────────────────────────────────────────────────────────────────────────────
 
@@ -194,7 +162,7 @@ fn raw<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
 }
 
 fn text(s: &AbiStr) -> &[u8] {
-    raw(s.ptr, s.len)
+    raw(s.ptr(), s.len())
 }
 
 fn err(out: &mut OutHead, text: &'static str) {

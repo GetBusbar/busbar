@@ -1820,12 +1820,10 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
     use busbar_contract::abi::mechanism::door::Statement;
     use busbar_contract::abi::mechanism::rendering::render;
     use busbar_contract::abi::mechanism::KindCode;
-    let st = Statement {
-        size: std::mem::size_of::<Statement>() as u32,
-        kind: KindCode::Store as u32,
-        kind_abi,
-        ..busbar_contract::abi::sdk::door::statement("busbar-store-stated", "1.6.0", 4)
-    };
+    let mut st = busbar_contract::abi::sdk::door::statement("busbar-store-stated", "1.6.0", 4);
+    st.size = std::mem::size_of::<Statement>() as u32;
+    st.kind = KindCode::Store as u32;
+    st.kind_abi = kind_abi;
     // SAFETY: the SDK Statement names only `'static` strings and no list.
     let rendering = unsafe { render(&st) }.unwrap();
     let mut m = plugins::manifest("store", name, "acme");

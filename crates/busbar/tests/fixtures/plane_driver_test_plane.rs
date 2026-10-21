@@ -55,11 +55,11 @@ use busbar_contract::abi::host::service::{
     HOOK_GATE, HOOK_REWRITE,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, FLAG_RESUME,
+    AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, FLAG_RESUME,
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
+    Door, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
@@ -78,6 +78,7 @@ use busbar_contract::abi::plane::{
     ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT,
     UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
+use busbar_contract::abi::sdk::door::statement;
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
 /// its clock (`/refuse` is 7, `/post-only` is 9).
@@ -145,21 +146,10 @@ unsafe impl<T> Sync for Shared<T> {}
 pub const WEDGE: Duration = Duration::from_millis(1500);
 
 const fn s(b: &'static [u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    AbiStr::of_bytes(b)
 }
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
+const NO_STR: AbiStr = AbiStr::ABSENT;
+const NO_BLOB: Blob = Blob::ABSENT;
 
 /// Its declaring section, and an owned section beside it (handed at `open` as `PlaneOpenIn::owned`).
 static SECTIONS: Shared<[Section; 2]> = Shared([
@@ -256,116 +246,47 @@ static STATUSES: Shared<[RefusalStatus; 3]> = Shared([
     },
 ]);
 
-static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
-    head: KindTailHead {
-        size: std::mem::size_of::<PlaneTail>() as u32,
-        _reserved: 0,
-    },
-    flags: 0,
-    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
-    dispatch_shape: SHAPE_WHOLE,
+static TAIL: Shared<PlaneTail> = Shared({
+    let mut t = PlaneTail::EMPTY
+        .with_dialects(&DIALECTS.0)
+        .with_op_classes(&OP_CLASSES.0)
+        .with_billable_classes(&CLASSES.0)
+        .with_refusal_statuses(&STATUSES.0);
+    t.ingress = INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION;
+    t.dispatch_shape = SHAPE_WHOLE;
     // The layout this plane writes its answers in: the contract's it was built against.
-    answer_layout: ANSWER_LAYOUT,
-    scope: s(b"test"),
-    label: s(b"Test plane"),
-    subject_noun: NO_STR,
-    admin_noun: NO_STR,
-    audit_kind: NO_STR,
-    signing_domain: NO_STR,
-    signing_kid_prefix: NO_STR,
-    cli_help: NO_STR,
-    dialects: &DIALECTS.0 as *const AbiStr,
-    dialects_len: 1,
-    dialect_auth: std::ptr::null(),
-    dialect_auth_len: 0,
-    scope_kinds: std::ptr::null(),
-    scope_kinds_len: 0,
-    op_classes: &OP_CLASSES.0 as *const OpClass,
-    op_classes_len: 1,
-    billable_classes: &CLASSES.0 as *const BillableClass,
-    billable_classes_len: 12,
-    route_cost: std::ptr::null(),
-    route_cost_len: 0,
-    fee_units: std::ptr::null(),
-    fee_units_len: 0,
-    record_kinds: std::ptr::null(),
-    record_kinds_len: 0,
-    egress_targets: std::ptr::null(),
-    egress_targets_len: 0,
-    record_chains: std::ptr::null(),
-    record_chains_len: 0,
-    trust_keys: std::ptr::null(),
-    trust_keys_len: 0,
-    refusal_statuses: &STATUSES.0 as *const RefusalStatus,
-    refusal_statuses_len: 3,
-    caller_credential_refusal: NO_STR,
-    admin_routes: std::ptr::null(),
-    admin_routes_len: 0,
-    admin_openapi: NO_BLOB,
-    metric_lanes: std::ptr::null(),
-    metric_lanes_len: 0,
-    stream_ceiling_secs: 0,
+    t.answer_layout = ANSWER_LAYOUT;
+    t.scope = s(b"test");
+    t.label = s(b"Test plane");
+    t
 });
 
-static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
-    name: s(b"plane_driver_test_drives"),
-    help: NO_STR,
-    unit: NO_STR,
-    label_keys: std::ptr::null(),
-    label_keys_len: 0,
-    kind: FAMILY_GAUGE,
-    _reserved: [0; 7],
-}]);
+static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily::new(
+    s(b"plane_driver_test_drives"),
+    NO_STR,
+    NO_STR,
+    FAMILY_GAUGE,
+)]);
 
-static STATEMENT: Shared<Statement> = Shared(Statement {
-    size: std::mem::size_of::<Statement>() as u32,
-    kind: KindCode::Plane as u32,
-    kind_abi: KindCode::Plane.abi_version(),
-    max_inflight: 64,
-    name: s(b"plane-driver-test-plane"),
-    version: s(b"1.6.0"),
-    families: &FAMILIES.0 as *const MetricFamily,
-    families_len: 1,
-    diag_ids: std::ptr::null(),
-    diag_ids_len: 0,
-    secret_refs: std::ptr::null(),
-    secret_refs_len: 0,
-    settings_schema: NO_BLOB,
-    kind_tail: &TAIL.0.head as *const KindTailHead,
-    extensions: NO_BLOB,
-    marks: 0,
-    mark_words: std::ptr::null(),
-    mark_words_len: 0,
-    rewrites: std::ptr::null(),
-    rewrites_len: 0,
-    sections: &SECTIONS.0 as *const Section,
-    sections_len: 2,
-    needs: &NEEDS.0 as *const Need,
-    needs_len: 1,
-    target_from: NO_STR,
-    trust_from: NO_STR,
-    answers: std::ptr::null(),
-    answers_len: 0,
-    claims: std::ptr::null(),
-    claims_len: 0,
+static STATEMENT: Shared<Statement> = Shared({
+    let mut st = statement("plane-driver-test-plane", "1.6.0", 64)
+        .with_families(&FAMILIES.0)
+        .with_kind_tail(&TAIL.0)
+        .with_sections(&SECTIONS.0)
+        .with_needs(&NEEDS.0);
+    st.size = std::mem::size_of::<Statement>() as u32;
+    st.kind = KindCode::Plane as u32;
+    st.kind_abi = KindCode::Plane.abi_version();
+    st
 });
 
 /// Its one outbound need: handed the host's connection slots only where the host binds a table.
-static NEEDS: Shared<[Need; 1]> = Shared([Need {
-    direction: DIRECTION_OUTBOUND,
-    egress_class: 0,
-    transport: s(b"sock"),
-    auth: NO_STR,
-    target_from: NO_STR,
-    trust_from: NO_STR,
-    details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
-    keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: std::ptr::null(),
-    deny_response_headers_len: 0,
+static NEEDS: Shared<[Need; 1]> = Shared([{
+    let mut n = Need::EMPTY;
+    n.direction = DIRECTION_OUTBOUND;
+    n.transport = s(b"sock");
+    n.keep_mode = busbar_contract::abi::host::conn::connector::KEEP_NAMED;
+    n
 }]);
 
 static OPS: Shared<Ops> = Shared(Ops {
@@ -545,19 +466,23 @@ unsafe fn inst(instance: *mut c_void) -> &'static Inst {
 }
 
 unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
-    if b.ptr.is_null() || b.len == 0 {
-        &[]
-    } else {
-        std::slice::from_raw_parts(b.ptr, b.len)
-    }
+    b.bytes()
 }
 
 unsafe fn text<'a>(s: AbiStr) -> &'a [u8] {
-    if s.ptr.is_null() || s.len == 0 {
-        &[]
-    } else {
-        std::slice::from_raw_parts(s.ptr, s.len)
-    }
+    s.bytes()
+}
+
+/// `b`, lent to one host service call.
+unsafe fn lend(b: &[u8]) -> AbiStr {
+    // SAFETY: every caller lends `b` to one host call only, and `b` outlives that call.
+    AbiStr::from_raw_parts(b.as_ptr(), b.len())
+}
+
+/// `b` as a blob of format `0`, lent to one host service call.
+unsafe fn lend_blob(b: &[u8]) -> Blob {
+    // SAFETY: every caller lends `b` to one host call only, and `b` outlives that call.
+    Blob::from_raw_parts(b.as_ptr(), b.len(), 0, 0)
 }
 
 extern "C" fn ready(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
@@ -646,12 +571,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
                     .unwrap_or_default()
                     .into_boxed_slice(),
             );
-            Blob {
-                ptr: json.as_ptr(),
-                len: json.len(),
-                fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
-                flags: 0,
-            }
+            Blob::json(json)
         } else {
             NO_BLOB
         };
@@ -888,26 +808,20 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             }
             b"/call/local-estimated" => {
                 o.route = ROUTE_LOCAL;
-                vec![estimate(0, i.body.len as u64)]
+                vec![estimate(0, i.body.len() as u64)]
             }
             t if t.starts_with(b"/call/services-pool:") => {
                 // The in-session services on a unit routed over the pool the target names.
                 let name: &'static [u8] = Box::leak(t[20..].to_vec().into_boxed_slice());
                 o.route = ROUTE_POOL;
-                o.pool = AbiStr {
-                    ptr: name.as_ptr(),
-                    len: name.len(),
-                };
-                vec![estimate(0, i.body.len as u64)]
+                o.pool = AbiStr::of_bytes(name);
+                vec![estimate(0, i.body.len() as u64)]
             }
             t if t == b"/call/local" || t == b"/call/services" || t.starts_with(b"/call/nest:") => {
                 // A local answer, or a nesting unit: each routes directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
-                o.pool = AbiStr {
-                    ptr: b"m".as_ptr(),
-                    len: 1,
-                };
-                vec![estimate(0, i.body.len as u64)]
+                o.pool = s(b"m");
+                vec![estimate(0, i.body.len() as u64)]
             }
             b"/framed/refuse" => {
                 // A framed stream the plane refuses: its code, and the 4xx it wears.
@@ -918,11 +832,8 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             t if t == b"/open" || t.starts_with(b"/framed") => {
                 // The open claims route directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
-                o.pool = AbiStr {
-                    ptr: b"m".as_ptr(),
-                    len: 1,
-                };
-                vec![estimate(0, i.body.len as u64)]
+                o.pool = s(b"m");
+                vec![estimate(0, i.body.len() as u64)]
             }
             t if t.starts_with(b"/call/pool:") || t.starts_with(b"/call/direct:") => {
                 // The route the target names (ARCHITECT Q-SW6/Q-FL3): `pool:<pool>` or
@@ -935,11 +846,8 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 let name: &'static [u8] = Box::leak(t[at..].to_vec().into_boxed_slice());
                 o.route = class;
-                o.pool = AbiStr {
-                    ptr: name.as_ptr(),
-                    len: name.len(),
-                };
-                vec![estimate(0, i.body.len as u64)]
+                o.pool = AbiStr::of_bytes(name);
+                vec![estimate(0, i.body.len() as u64)]
             }
             b"/stats" => me
                 .stats
@@ -947,7 +855,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 .enumerate()
                 .map(|(k, v)| estimate(k as u32, v.load(Ordering::SeqCst)))
                 .collect(),
-            _ => vec![estimate(0, i.body.len as u64)],
+            _ => vec![estimate(0, i.body.len() as u64)],
         };
         if wants.len() > cap {
             o.units_needed = wants.len() as u32;
@@ -1243,16 +1151,8 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             },
         },
         verb: s(b"POST"),
-        target: AbiStr {
-            ptr: child.as_ptr(),
-            len: child.len(),
-        },
-        body: Blob {
-            ptr: body.as_ptr(),
-            len: body.len(),
-            fmt: 0,
-            flags: 0,
-        },
+        target: lend(child),
+        body: lend_blob(body),
         into: ServiceBufs {
             buf: buf.as_mut_ptr(),
             cap: buf.len(),
@@ -1270,11 +1170,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             Some([format!("nested:{}:", answer.value).as_bytes(), child_body].concat())
         }
         _ => {
-            let why = if answer.error.ptr.is_null() {
-                &[][..]
-            } else {
-                std::slice::from_raw_parts(answer.error.ptr, answer.error.len)
-            };
+            let why = text(answer.error);
             Some([b"nest-refused:".as_slice(), why].concat())
         }
     }
@@ -1307,31 +1203,15 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
         spans: spans.as_mut_ptr(),
         spans_cap: spans.len(),
     };
-    let blob = Blob {
-        ptr: body.as_ptr(),
-        len: body.len(),
-        fmt: 0,
-        flags: 0,
-    };
+    let blob = lend_blob(body);
     let message = MessageView {
         role: s(b"user"),
-        text: AbiStr {
-            ptr: body.as_ptr(),
-            len: body.len(),
-        },
+        text: lend(body),
     };
     let prompt = PromptView {
-        system: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        system: NO_STR,
         message_count: 1,
-        body: Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: 0,
-            flags: 0,
-        },
+        body: NO_BLOB,
         messages: &message,
         messages_len: 1,
     };
@@ -1363,10 +1243,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
             std::mem::size_of::<VerifyLookupIn>(),
             3,
         ),
-        key: AbiStr {
-            ptr: body.as_ptr(),
-            len: body.len(),
-        },
+        key: lend(body),
         into: into(),
     };
     let calls: [(&str, Option<ServiceFn>, *const c_void); 4] = [
@@ -1400,11 +1277,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
             Outcome::Pending => pending = true,
             Outcome::Ready => said.push(format!("{name}={}", answer.value)),
             _ => {
-                let why = if answer.error.ptr.is_null() {
-                    &[][..]
-                } else {
-                    std::slice::from_raw_parts(answer.error.ptr, answer.error.len)
-                };
+                let why = text(answer.error);
                 said.push(format!("{name}!{}", String::from_utf8_lossy(why)));
             }
         }
@@ -1419,16 +1292,8 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
                     std::mem::size_of::<VerifyStoreIn>(),
                     4,
                 ),
-                key: AbiStr {
-                    ptr: body.as_ptr(),
-                    len: body.len(),
-                },
-                entry: Blob {
-                    ptr: entry.as_ptr(),
-                    len: entry.len(),
-                    fmt: 0,
-                    flags: 0,
-                },
+                key: lend(body),
+                entry: Blob::of(entry).with_fmt(0),
                 ttl_ms: 0,
             };
             let mut answer = std::mem::zeroed::<ServiceOut>();

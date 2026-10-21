@@ -326,17 +326,15 @@ fn the_meter_classes_are_the_doors_billable_classes_by_their_1_5_5_names() {
         .iter()
         .map(|c| (c.key.as_str(), c.family))
         .collect();
-    // SAFETY: the tail's billable classes are a `'static` list of `billable_classes_len` entries.
-    let stated =
-        unsafe { std::slice::from_raw_parts(TAIL.billable_classes, TAIL.billable_classes_len) };
+    let stated = TAIL.billable_classes();
     let door: Vec<(&str, &str)> = stated[..declared.len()]
         .iter()
         .map(|b| {
             // SAFETY: each `AbiStr` names a `'static` string of `len` bytes.
             let (c, f) = unsafe {
                 (
-                    std::slice::from_raw_parts(b.class.ptr, b.class.len),
-                    std::slice::from_raw_parts(b.family.ptr, b.family.len),
+                    std::slice::from_raw_parts(b.class.ptr(), b.class.len()),
+                    std::slice::from_raw_parts(b.family.ptr(), b.family.len()),
                 )
             };
             (

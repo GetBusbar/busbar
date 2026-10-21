@@ -31,7 +31,7 @@ use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
+use busbar_contract::abi::mechanism::call::{Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     FieldList, OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_CARRIES_OWN_TOKEN,
@@ -41,7 +41,7 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane_calls::{Lent, PlaneCalls};
 
-use super::{blob, refusal_status, BufferCaps, HeadFields, NO_FIELD};
+use super::{blob, lend, refusal_status, BufferCaps, HeadFields, NO_FIELD};
 use crate::auth::{AuthPrincipal, ConsumedCredentials};
 
 /// One admin route of an instance's snapshot, in snapshot order.
@@ -522,7 +522,7 @@ impl Bufs {
     fn frame(&mut self, route: u32) -> (ServeIn, ServeOut) {
         let input = ServeIn {
             route,
-            target: AbiStr::over(&self.target),
+            target: lend(&self.target),
             fields: self.head.as_ptr(),
             fields_len: self.head.len(),
             body: blob(&self.body),

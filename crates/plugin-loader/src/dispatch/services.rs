@@ -420,9 +420,9 @@ fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
 /// A checked blob of the caller's, copied: `None` for NULL with a length, or a length over the hard
 /// byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
-    check::listed(b.ptr, b.len, field).ok()?;
+    check::listed(b.ptr(), b.len(), field).ok()?;
     // SAFETY: as `bytes_of`.
-    unsafe { super::validate::lent(b.ptr, b.len) }.map(<[u8]>::to_vec)
+    unsafe { super::validate::lent(b.ptr(), b.len()) }.map(<[u8]>::to_vec)
 }
 
 /// A checked UTF-8 string of the caller's, copied: `None` for NULL with a length or bad UTF-8.
@@ -486,13 +486,10 @@ fn framed(
             items: a.items,
             needed_bytes: a.needed_bytes,
             needed_items: a.needed_items,
-            error: AbiStr {
-                ptr: if a.error.is_empty() {
-                    std::ptr::null()
-                } else {
-                    a.error.as_ptr()
-                },
-                len: a.error.len(),
+            error: if a.error.is_empty() {
+                AbiStr::ABSENT
+            } else {
+                AbiStr::of(a.error)
             },
         };
         // SAFETY: the caller's `out`, checked non-NULL.
@@ -814,7 +811,7 @@ extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut Service
             let list = RecordsList {
                 kind,
                 prefix,
-                after: (!i.after.ptr.is_null()).then_some(after),
+                after: (!i.after.is_absent()).then_some(after),
                 limit: i.limit,
             };
             let provider = Arc::clone(&served.provider);
@@ -1497,7 +1494,7 @@ unsafe fn prompt_of(prompt: *const busbar_contract::abi::hook::PromptView) -> Op
     // SAFETY: the caller's contract.
     let view = unsafe { prompt.read_unaligned() };
     busbar_contract::abi::hook::validate::check_prompt_view(&view).ok()?;
-    let system = if view.system.ptr.is_null() {
+    let system = if view.system.is_absent() {
         None
     } else {
         Some(text_of(view.system, "hook_call.prompt.system")?)

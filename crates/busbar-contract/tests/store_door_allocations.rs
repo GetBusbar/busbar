@@ -526,19 +526,11 @@ fn out_head<T>() -> OutHead {
 }
 
 fn s(t: &'static [u8]) -> AbiStr {
-    AbiStr {
-        ptr: t.as_ptr(),
-        len: t.len(),
-    }
+    AbiStr::of_bytes(t)
 }
 
 fn octets(t: &'static [u8]) -> Blob {
-    Blob {
-        ptr: t.as_ptr(),
-        len: t.len(),
-        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
-        flags: 0,
-    }
+    Blob::of(t)
 }
 
 fn host<T>(buf: &mut [T]) -> (*mut T, usize) {
@@ -580,12 +572,9 @@ fn open() -> *mut c_void {
 }
 
 fn text(t: AbiStr) -> String {
-    if t.ptr.is_null() {
-        return String::new();
-    }
     // SAFETY: the door's error text lives in its ring until the next TEXT_RING texts, and the
-    // call has returned with nothing else in flight.
-    let b = unsafe { std::slice::from_raw_parts(t.ptr, t.len) };
+    // call has returned with nothing else in flight; an absent text reads empty.
+    let b = unsafe { t.bytes() };
     String::from_utf8_lossy(b).into_owned()
 }
 

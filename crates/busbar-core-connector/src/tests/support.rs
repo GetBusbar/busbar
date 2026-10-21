@@ -352,7 +352,7 @@ impl FramerDoor for TestDoor {
         let mut framings = self.framings.lock().unwrap();
         let (op, answered) = match call {
             Call::Locate(i, o) => {
-                let target = raw(i.target.ptr, i.target.len);
+                let target = raw(i.target.ptr(), i.target.len());
                 let authority = self.knobs.authority.map_or(target, str::as_bytes);
                 // SAFETY: host buffer of `authority_cap` bytes; the test's authorities fit.
                 unsafe {
@@ -394,7 +394,7 @@ impl FramerDoor for TestDoor {
                 self.begun_targets
                     .lock()
                     .unwrap()
-                    .push(raw(i.target.ptr, i.target.len).to_vec());
+                    .push(raw(i.target.ptr(), i.target.len()).to_vec());
                 let fields = if i.fields.is_null() {
                     &[][..]
                 } else {
@@ -406,8 +406,8 @@ impl FramerDoor for TestDoor {
                         .iter()
                         .map(|f| {
                             (
-                                raw(f.name.ptr, f.name.len).to_vec(),
-                                raw(f.value.ptr, f.value.len).to_vec(),
+                                raw(f.name.ptr(), f.name.len()).to_vec(),
+                                raw(f.value.ptr(), f.value.len()).to_vec(),
                             )
                         })
                         .collect(),
@@ -629,7 +629,7 @@ fn polled<T>(p: Poll<Result<T, IoRefusal>>, ok: impl FnOnce(T)) -> Crossed {
 }
 
 fn text_of(s: busbar_contract::abi::mechanism::call::AbiStr) -> String {
-    String::from_utf8_lossy(raw(s.ptr, s.len)).into_owned()
+    String::from_utf8_lossy(raw(s.ptr(), s.len())).into_owned()
 }
 
 impl TestDoor {

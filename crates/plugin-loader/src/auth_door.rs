@@ -68,21 +68,12 @@ const IDENTITY_BUF_MAX: u64 = 1024 * 1024;
 
 /// A string the host lends for a call.
 fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    crate::dispatch::lend_str(s.as_bytes())
 }
 
 /// An optional string the host lends; `None` is absent (NULL).
 fn lend_opt(s: Option<&str>) -> AbiStr {
-    s.map_or(
-        AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        lend,
-    )
+    s.map_or(AbiStr::ABSENT, lend)
 }
 
 /// Bytes the host lends for a call, as a blob of `fmt` with `flags`; empty is absent.
@@ -90,12 +81,7 @@ fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
     if b.is_empty() && fmt != BLOB_OCTETS {
         return crate::dispatch::NO_BLOB;
     }
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt,
-        flags,
-    }
+    crate::dispatch::lend_blob(b, fmt, flags)
 }
 
 /// A fresh `verify` `out`: no verdict, no identity, no decision, no strip.
@@ -636,12 +622,7 @@ pub fn split_secrets(
 fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
     secrets
         .iter()
-        .map(|s| Blob {
-            ptr: s.as_ptr(),
-            len: s.len(),
-            fmt: BLOB_OCTETS,
-            flags: BLOB_SECRET,
-        })
+        .map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET))
         .collect()
 }
 

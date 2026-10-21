@@ -23,14 +23,12 @@
 
 #![forbid(unsafe_code)]
 
-use std::mem::size_of;
-use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::hook::signal;
 use busbar_contract::abi::host::service::DISTRUST_NONE;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SECTION_DECLARING};
+use busbar_contract::abi::mechanism::door::{Section, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
@@ -48,12 +46,6 @@ use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::services::Services;
 use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
-
-/// An absent string.
-const NONE: AbiStr = AbiStr {
-    ptr: ptr::null(),
-    len: 0,
-};
 
 const SECTIONS: &[Section] = &[Section {
     name: abi_str("door"),
@@ -73,60 +65,22 @@ const RECORD_KINDS: &[AbiStr] = &[abi_str("last")];
 
 /// The Statement tail: one of each list the per-call indices name. Its sections are the
 /// Statement's own ([`SECTIONS`]).
-const TAIL: &PlaneTail = &PlaneTail {
-    head: KindTailHead {
-        size: size_of::<PlaneTail>() as u32,
-        _reserved: 0,
-    },
-    flags: 0,
-    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_DUPLEX_SESSION,
-    dispatch_shape: SHAPE_PIECEWISE,
+const TAIL: PlaneTail = {
+    let mut tail = PlaneTail::EMPTY
+        .with_dialects(DIALECTS)
+        .with_op_classes(OP_CLASSES)
+        .with_billable_classes(CLASSES)
+        .with_record_kinds(RECORD_KINDS);
+    tail.ingress = INGRESS_REQUEST_RESPONSE | INGRESS_DUPLEX_SESSION;
+    tail.dispatch_shape = SHAPE_PIECEWISE;
     // The layout this plane writes its answers in: the contract's it was built against.
-    answer_layout: ANSWER_LAYOUT,
-    scope: abi_str("door"),
-    label: abi_str("Door"),
-    subject_noun: abi_str("door"),
-    admin_noun: abi_str("door"),
-    audit_kind: abi_str("door"),
-    signing_domain: NONE,
-    signing_kid_prefix: NONE,
-    cli_help: NONE,
-    dialects: DIALECTS.as_ptr(),
-    dialects_len: DIALECTS.len(),
-    dialect_auth: ptr::null(),
-    dialect_auth_len: 0,
-    scope_kinds: ptr::null(),
-    scope_kinds_len: 0,
-    op_classes: OP_CLASSES.as_ptr(),
-    op_classes_len: OP_CLASSES.len(),
-    billable_classes: CLASSES.as_ptr(),
-    billable_classes_len: CLASSES.len(),
-    route_cost: ptr::null(),
-    route_cost_len: 0,
-    fee_units: ptr::null(),
-    fee_units_len: 0,
-    record_kinds: RECORD_KINDS.as_ptr(),
-    record_kinds_len: RECORD_KINDS.len(),
-    egress_targets: ptr::null(),
-    egress_targets_len: 0,
-    record_chains: ptr::null(),
-    record_chains_len: 0,
-    trust_keys: ptr::null(),
-    trust_keys_len: 0,
-    refusal_statuses: std::ptr::null(),
-    refusal_statuses_len: 0,
-    caller_credential_refusal: NONE,
-    admin_routes: std::ptr::null(),
-    admin_routes_len: 0,
-    admin_openapi: busbar_contract::abi::mechanism::call::Blob {
-        ptr: std::ptr::null(),
-        len: 0,
-        fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-        flags: 0,
-    },
-    metric_lanes: std::ptr::null(),
-    metric_lanes_len: 0,
-    stream_ceiling_secs: 0,
+    tail.answer_layout = ANSWER_LAYOUT;
+    tail.scope = abi_str("door");
+    tail.label = abi_str("Door");
+    tail.subject_noun = abi_str("door");
+    tail.admin_noun = abi_str("door");
+    tail.audit_kind = abi_str("door");
+    tail
 };
 
 /// Every generation's claims: the request door, and with a public URL the session door.
@@ -197,7 +151,7 @@ macro_rules! slot {
 }
 
 slot!(Validate, ValidateIn, OutHead, |_, input, _out| {
-    if input.field(|i| &i.settings).bytes() == BAD_SETTINGS {
+    if input.settings().bytes() == BAD_SETTINGS {
         Outcome::Refused
     } else {
         Outcome::Ready
@@ -209,16 +163,13 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         snapshots: Generations::new(),
         ready: AtomicU64::new(0),
         session_ticket: AtomicU64::new(0),
-        public: !input.field(|i| &i.public_url).bytes().is_empty(),
-        services: input
-            .field(|i| &i.open)
-            .host()
-            .and_then(|h| Services::of(&h)),
+        public: !input.public_url().bytes().is_empty(),
+        services: input.open().host().and_then(|h| Services::of(&h)),
     };
     out.publish(
         |o| &o.snapshot,
         &p.snapshots,
-        input.open.generation,
+        input.open().generation(),
         &p.spec(false),
     );
     instance.open(p);
@@ -236,7 +187,7 @@ slot!(
         out.publish(
             |o| &o.snapshot,
             &p.snapshots,
-            input.generation,
+            input.generation(),
             &p.spec(true),
         );
         Outcome::Ready
@@ -245,13 +196,13 @@ slot!(
 
 slot!(Retire, GenIn, OutHead, |instance, input, _out| {
     if let Some(p) = instance.get() {
-        p.snapshots.retire(input.generation);
+        p.snapshots.retire(input.generation());
     }
     Outcome::Ready
 });
 
 slot!(Tick, TickIn, TickOut, |_, input, out| {
-    out.set(|o| &o.next_tick_ns, input.now_ns + 1_000_000);
+    out.set(|o| &o.next_tick_ns, input.now_ns() + 1_000_000);
     Outcome::Ready
 });
 
@@ -290,7 +241,7 @@ slot!(
     PlaneCancelIn,
     PlaneCancelOut,
     |instance, input, out| {
-        let named = packed(input.cancel.ticket);
+        let named = packed(input.cancel().ticket());
         if let Some(p) = instance.get() {
             if named != 0
                 && p.session_ticket
@@ -315,7 +266,7 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     units.push(UnitCount {
         class: 0,
         source: UNITS_ESTIMATED,
-        amount: input.body.len as u64,
+        amount: input.body().bytes().len() as u64,
     });
     if !units.fits() {
         out.set(|o| &o.units_needed, units.needed() as u32);
@@ -325,26 +276,26 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     out.set(|o| &o.op_class, 0);
     out.set(|o| &o.dialect, 0);
     out.set(|o| &o.principal_need, PRINCIPAL_NONE);
-    if input.claim == 1 {
+    if input.claim() == 1 {
         out.session();
     }
     Outcome::Ready
 });
 
 slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
-    let piece = input.field(|i| &i.bytes).bytes();
+    let piece = input.bytes().bytes();
     let mut arena = input.arena_buf();
     let mut reply = input.reply_buf();
-    match (input.from, input.attempt_no) {
+    match (input.from(), input.attempt_no()) {
         // An ATTEMPT: the request bound for the member the kernel picked.
         (FROM_KERNEL, 1..) => {
             if let Some(s) = instance.get().and_then(|p| p.services) {
                 let handle = |seq| CompletionHandle {
-                    ticket: input.head.ticket,
+                    ticket: input.head().ticket(),
                     seq,
                     _reserved: 0,
                 };
-                let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+                let member = input.member().as_str().unwrap_or_default();
                 // A service the host does not serve gates nothing.
                 let refused = s.entitled(handle(0), "door:echo") == Ok(false)
                     || s.trust_serves(handle(1), member, Some("echo"), None)
@@ -361,7 +312,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
             out.set(|o| &o.verb, verb);
             out.set(|o| &o.target, target);
             out.set(|o| &o.arena_written, arena.written() as u64);
-            let member = input.field(|i| &i.member).bytes();
+            let member = input.member().bytes();
             out.set(|o| &o.emitted, reply.stream(member) as u64);
             out.set(|o| &o.flags, EMIT_TO_FAR_END);
         }
@@ -374,9 +325,9 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
             let Some(p) = instance.get() else {
                 return Outcome::Failed;
             };
-            p.ready.store(input.stream, Ordering::Release);
+            p.ready.store(input.stream(), Ordering::Release);
             p.session_ticket
-                .store(packed(input.head.ticket), Ordering::Release);
+                .store(packed(input.head().ticket()), Ordering::Release);
         }
         // The far end's answer: echoed to the caller, with a field, a count and a record.
         (FROM_FAR_END, _) => {
@@ -422,7 +373,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
             out.set(|o| &o.verdict, VERDICT_OK);
             if n < piece.len() {
                 out.set(|o| &o.more, 1);
-            } else if input.flags & PIECE_LAST != 0 {
+            } else if input.flags() & PIECE_LAST != 0 {
                 out.set(|o| &o.flags, EMIT_DONE);
             }
         }
@@ -434,7 +385,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
 slot!(Refusal, RefusalIn, RefusalOut, |_, input, out| {
     let (mut reply, mut fields, mut arena) =
         (input.reply_buf(), input.fields_buf(), input.arena_buf());
-    reply.extend(input.field(|i| &i.text).bytes());
+    reply.extend(input.text().bytes());
     fields.push(OutField {
         name: arena.span(b"x-refusal"),
         value: arena.span(b"gate"),
@@ -474,11 +425,11 @@ slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 // `project`: the body, its length as a signal and, when the host lends a turns buffer, one `user`
 // turn of the body.
 slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
-    let body = input.field(|i| &i.body).bytes();
+    let body = input.body().bytes();
     let (mut signals, mut arena, mut turns) =
         (input.signals_buf(), input.arena_buf(), input.messages_buf());
     let (pool, projected) = (arena.span(b"door"), arena.span(body));
-    if input.messages_cap > 0 {
+    if input.messages_cap() > 0 {
         let role = arena.span(b"user");
         turns.push_turn(&arena, role, projected);
     }
@@ -499,7 +450,7 @@ slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
     }
     out.set(|o| &o.body, projected);
     out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
-    debug_assert_eq!(out.get().view.signals_len, sw);
+    debug_assert_eq!(out.get(|o| &o.view.signals_len), sw);
     out.host_str(|o| &o.view.pool, &arena, pool);
     if tw > 0 {
         out.host_rows(|o| &o.prompt.messages, &turns);
@@ -511,12 +462,9 @@ slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
 
 busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,
-    statement: Statement {
-        kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
-        sections: SECTIONS.as_ptr(),
-        sections_len: SECTIONS.len(),
-        ..statement("plane-door", "1.0.0", 8)
-    },
+    statement: statement("plane-door", "1.0.0", 8)
+        .with_kind_tail(&TAIL)
+        .with_sections(SECTIONS),
     lifecycle: {
         validate: Safe<Validate>, open: Safe<Open>, refresh: Safe<Refresh>, retire: Safe<Retire>,
         tick: Safe<Tick>, drive: Safe<Drive>, cancel: Safe<Cancel>, release: Safe<Release>,

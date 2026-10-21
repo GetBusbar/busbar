@@ -136,8 +136,20 @@ macro_rules! record_pinned {
         for (field, at) in <$t>::LAYOUT {
             writeln!($out, "{}.{}={}", stringify!($t), field, at).unwrap();
         }
-        writeln!($out, "{}.__size={}", stringify!($t), std::mem::size_of::<$t>()).unwrap();
-        writeln!($out, "{}.__align={}", stringify!($t), std::mem::align_of::<$t>()).unwrap();
+        writeln!(
+            $out,
+            "{}.__size={}",
+            stringify!($t),
+            std::mem::size_of::<$t>()
+        )
+        .unwrap();
+        writeln!(
+            $out,
+            "{}.__align={}",
+            stringify!($t),
+            std::mem::align_of::<$t>()
+        )
+        .unwrap();
     }};
 }
 

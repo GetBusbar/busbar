@@ -17,7 +17,7 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_JSON, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, TickIn, TickOut};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut,
@@ -65,39 +65,27 @@ fn zeros<T>(n: usize) -> Vec<T> {
 
 /// A JSON blob over static bytes.
 pub fn json(b: &'static [u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
+    Blob::json(b)
 }
 
 /// An octet blob over `b`.
 fn octets(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    // SAFETY: the harness, as the host, lends `b` into one call's `in`; the bytes outlive that call.
+    unsafe { Blob::from_raw_parts(b.as_ptr(), b.len(), BLOB_OCTETS, 0) }
 }
 
 /// A static string, as the ABI lends it.
 pub fn text(s: &'static str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    AbiStr::of(s)
 }
 
 /// A string the plugin lent, copied.
 pub fn read(s: AbiStr) -> String {
-    if s.ptr.is_null() || s.len == 0 {
+    if s.ptr().is_null() || s.len() == 0 {
         return String::new();
     }
     // SAFETY: the plugin's text, valid while its generation is live (read before the next call).
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr(), s.len()) }).into_owned()
 }
 
 /// The bytes a span names in `buf`; `<OUTSIDE>` for a span past it.

@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{Blob, InHead, OutHead, Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{Blob, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{RecordStore, VirtualKey};
@@ -52,12 +52,7 @@ fn open_frame(settings: &'static [u8]) -> Frame<OpenIn, OpenOut> {
         OpenIn {
             head: in_head(),
             host: std::ptr::null(),
-            settings: Blob {
-                ptr: settings.as_ptr(),
-                len: settings.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            },
+            settings: Blob::of(settings),
             secrets: std::ptr::null(),
             secrets_len: 0,
             generation: 1,

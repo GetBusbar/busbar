@@ -156,14 +156,10 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
             _reserved: 0,
         },
     ];
-    let st = busbar_contract::abi::mechanism::door::Statement {
-        kind: KindCode::Secret as u32,
-        rewrites: REWRITES.as_ptr(),
-        rewrites_len: REWRITES.len(),
-        sections: SECTIONS.as_ptr(),
-        sections_len: SECTIONS.len(),
-        ..statement("the-plugin", "1.0.0", 1)
-    };
+    let mut st = statement("the-plugin", "1.0.0", 1)
+        .with_rewrites(REWRITES)
+        .with_sections(SECTIONS);
+    st.kind = KindCode::Secret as u32;
     // SAFETY: the lists are `'static` arrays of their stated counts.
     let stated = unsafe { render(&st) }.unwrap();
     let c = Candidate::from_rendering(
@@ -200,12 +196,8 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
 fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] =
         &[abi_str("tele"), abi_str("teles")];
-    let st = busbar_contract::abi::mechanism::door::Statement {
-        kind: KindCode::Transport as u32,
-        claims: CLAIMS.as_ptr(),
-        claims_len: CLAIMS.len(),
-        ..statement("sockets", "1.0.0", 1)
-    };
+    let mut st = statement("sockets", "1.0.0", 1).with_claims(CLAIMS);
+    st.kind = KindCode::Transport as u32;
     let dropped = |st: &busbar_contract::abi::mechanism::door::Statement| {
         // SAFETY: the claims are a `'static` array of their stated count.
         let stated = unsafe { render(st) }.unwrap();
@@ -230,10 +222,7 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
         vec![("sockets".to_string(), "sockets".to_string())]
     );
     // RED: the same transport claiming nothing is not selected.
-    let cands = vec![dropped(&busbar_contract::abi::mechanism::door::Statement {
-        claims_len: 0,
-        ..st
-    })];
+    let cands = vec![dropped(&st.with_claims(&[]))];
     assert!(select(&u, &cands).is_empty());
 }
 
@@ -467,7 +456,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
 /// own door with its tail's `trust_keys` swapped for a pin that names nothing to be rooted in.
 #[test]
 fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
-    use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
     use busbar_contract::abi::plane::{PlaneTail, TrustKey, TRUST_PIN};
     use std::sync::OnceLock;
 
@@ -477,24 +466,18 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
             // SAFETY: `plug::door` answers the fixture's `'static` Door, Statement and tail.
             unsafe {
                 let good = plug::door();
-                let mut tail = (*(*good).statement)
-                    .kind_tail
+                let tail = (*(*good).statement)
+                    .kind_tail()
                     .cast::<PlaneTail>()
                     .read_unaligned();
-                let keys: &'static [TrustKey] = Box::leak(Box::new([TrustKey {
-                    key: abi_str("anchor"),
-                    role: TRUST_PIN,
-                    flags: 0,
-                    default: abi_str(""),
-                    mechanisms: std::ptr::null(),
-                    mechanisms_len: 0,
-                }]));
-                tail.trust_keys = keys.as_ptr();
-                tail.trust_keys_len = keys.len();
-                let tail: &'static PlaneTail = Box::leak(Box::new(tail));
-                let mut st: Statement = *(*good).statement;
-                st.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
-                let st: &'static Statement = Box::leak(Box::new(st));
+                let mut key = TrustKey::EMPTY;
+                key.key = abi_str("anchor");
+                key.role = TRUST_PIN;
+                key.default = abi_str("");
+                let keys: &'static [TrustKey] = Box::leak(Box::new([key]));
+                let tail: &'static PlaneTail = Box::leak(Box::new(tail.with_trust_keys(keys)));
+                let st: Statement = *(*good).statement;
+                let st: &'static Statement = Box::leak(Box::new(st.with_kind_tail(tail)));
                 let mut d: Door = *good;
                 d.statement = st;
                 std::ptr::from_ref::<Door>(Box::leak(Box::new(d))) as usize
@@ -732,33 +715,19 @@ fn red_two_listeners_on_one_address_are_refused() {
 fn a_candidate_carries_its_statements_needs() {
     use busbar_contract::abi::host::conn::connector::{Need, KEEP_NAMED};
     use busbar_contract::abi::mechanism::call::Blob;
-    const NEEDS: &[Need] = &[Need {
-        direction: DIRECTION_INBOUND,
-        egress_class: 0,
-        transport: abi_str("scheme-a"),
-        auth: abi_str(""),
-        target_from: abi_str("ingress"),
-        trust_from: abi_str(""),
-        details: Blob {
-            fmt: 0,
-            flags: 0,
-            len: 0,
-            ptr: core::ptr::null(),
-        },
-        keep_response_headers: core::ptr::null(),
-        keep_response_headers_len: 0,
-        timeout_ms: 0,
-        keep_mode: KEEP_NAMED,
-        _reserved: 0,
-        deny_response_headers: core::ptr::null(),
-        deny_response_headers_len: 0,
+    const NEEDS: &[Need] = &[{
+        let mut need = Need::EMPTY;
+        need.direction = DIRECTION_INBOUND;
+        need.transport = abi_str("scheme-a");
+        need.auth = abi_str("");
+        need.target_from = abi_str("ingress");
+        need.trust_from = abi_str("");
+        need.details = Blob::ABSENT;
+        need.keep_mode = KEEP_NAMED;
+        need
     }];
-    let st = busbar_contract::abi::mechanism::door::Statement {
-        kind: KindCode::Plane as u32,
-        needs: NEEDS.as_ptr(),
-        needs_len: NEEDS.len(),
-        ..statement("p", "1.0.0", 1)
-    };
+    let mut st = statement("p", "1.0.0", 1).with_needs(NEEDS);
+    st.kind = KindCode::Plane as u32;
     // SAFETY: the list is a `'static` array of its stated count.
     let stated = unsafe { render(&st) }.unwrap();
     let c = Candidate::from_rendering(

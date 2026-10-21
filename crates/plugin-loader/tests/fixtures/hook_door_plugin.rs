@@ -112,8 +112,8 @@ impl SafeSlot for Decide {
         if gate.1 > 0 {
             std::thread::sleep(std::time::Duration::from_millis(gate.1));
         }
-        let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
-        if input.request.message_count > gate.0 || gate.2.as_deref() == Some(session) {
+        let session = input.request().session().bytes();
+        if input.request().message_count() > gate.0 || gate.2.as_deref() == Some(session) {
             out.set(|o| &o.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
             out.set(|o| &o.reject_status, REJECT_STATUS);
         } else {

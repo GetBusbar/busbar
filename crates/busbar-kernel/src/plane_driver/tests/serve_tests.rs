@@ -87,7 +87,7 @@ impl PieceInFlight for NoPiece {
 /// # Safety
 /// `s` points at `s.len` live bytes (the host's buffers, for the crossing).
 unsafe fn text(s: AbiStr) -> String {
-    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr(), s.len()) };
     String::from_utf8_lossy(bytes).into_owned()
 }
 

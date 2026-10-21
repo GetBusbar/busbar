@@ -408,10 +408,7 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     let copied = crate::dispatch::kinds::plane::copy_snapshot(&older, 4)
         .expect("the older snapshot is copied");
     assert!(copied.listed.is_empty(), "{:?}", copied.listed);
-    let names = [AbiStr {
-        ptr: b"listed-one".as_ptr(),
-        len: 10,
-    }];
+    let names = [AbiStr::of_bytes(b"listed-one")];
     let mut newer = snap(7);
     newer.listed = names.as_ptr();
     newer.listed_len = 1;
@@ -428,10 +425,7 @@ fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
     use busbar_contract::abi::plane::{
         Claim, CLAIM_CATALOG, CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS,
     };
-    let s = |t: &'static str| AbiStr {
-        ptr: t.as_ptr(),
-        len: t.len(),
-    };
+    let s = |t: &'static str| AbiStr::of(t);
     let claim = |target: &'static str, flags: u32| Claim {
         verb: s("chat"),
         target: s(target),
@@ -554,10 +548,8 @@ fn project_green_a_view_inside_the_hosts_buffers() {
     let mut o: ProjectOut = z();
     o.view.signals = i.signals_buf.cast_const();
     o.view.signals_len = 1;
-    o.view.pool = AbiStr {
-        ptr: i.arena_buf.cast_const(),
-        len: 4,
-    };
+    // SAFETY: four bytes inside the host's arena, which outlives the check.
+    o.view.pool = unsafe { AbiStr::from_raw_parts(i.arena_buf.cast_const(), 4) };
     o.body = span(4, 8);
     o.arena_written = 12;
     assert_eq!(
@@ -579,10 +571,9 @@ fn project_red_signals_past_the_cap_and_a_string_outside_the_arena() {
         f(Rule::OverCap, "project.signals")
     );
     let mut o: ProjectOut = z();
-    o.view.pool = AbiStr {
-        ptr: i.arena_buf.cast_const().wrapping_add(12),
-        len: 8,
-    };
+    // SAFETY: a string running past the arena, as a foreign plugin could answer, read only by the
+    // check, which refuses it before any slice is made.
+    o.view.pool = unsafe { AbiStr::from_raw_parts(i.arena_buf.cast_const().wrapping_add(12), 8) };
     o.arena_written = 16;
     assert_eq!(
         Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
@@ -626,13 +617,7 @@ fn project_red_a_rewritten_body_for_a_call_that_carried_no_rewrite() {
         Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
         f(Rule::Contradiction, "project.rewritten_without_rewrite")
     );
-    let rewrite = b"{}";
-    i.rewrite = busbar_contract::abi::mechanism::call::Blob {
-        ptr: rewrite.as_ptr(),
-        len: rewrite.len(),
-        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
-        flags: 0,
-    };
+    i.rewrite = busbar_contract::abi::mechanism::call::Blob::of(b"{}");
     assert_eq!(
         Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
         Ok(()),
@@ -768,13 +753,14 @@ fn red_a_tail_index_past_its_list_is_fault_at_the_crossing() {
 #[test]
 fn red_a_plane_without_a_whole_tail_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    let mut st: Statement = z();
+    let st: Statement = z();
     assert!(Plane::context(&st).is_err(), "no tail");
     let short = KindTailHead {
         size: 8,
         _reserved: 0,
     };
-    st.kind_tail = &short;
+    // SAFETY: `short` states its own size and outlives every read of `st`.
+    let st = unsafe { st.with_raw_kind_tail(&short) };
     assert!(
         Plane::context(&st).is_err(),
         "a tail shorter than this host's"
@@ -801,17 +787,19 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         };
         t.ingress = INGRESS_REQUEST_RESPONSE;
         t.dispatch_shape = SHAPE_WHOLE;
-        t.trust_keys = keys.as_ptr();
-        t.trust_keys_len = keys.len();
+        // SAFETY: `keys` outlives the bind below, the one read of the tail.
+        let t = unsafe { t.with_raw_trust_keys(keys.as_ptr(), keys.len()) };
         let sections = [busbar_contract::abi::mechanism::door::Section {
             name: abi("door"),
             flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
             _reserved: 0,
         }];
-        let mut st: Statement = z();
-        st.kind_tail = std::ptr::from_ref(&t).cast();
-        st.sections = sections.as_ptr();
-        st.sections_len = sections.len();
+        let st: Statement = z();
+        // SAFETY: `t` and `sections` outlive the bind below, the one read of the Statement.
+        let st = unsafe {
+            st.with_raw_kind_tail(std::ptr::from_ref(&t).cast())
+                .with_raw_sections(sections.as_ptr(), sections.len())
+        };
         Plane::context(&st).map(|_| ())
     }
     let good = [PinMechanism {
@@ -819,13 +807,14 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         flags: MECHANISM_ROOT,
         _reserved: 0,
     }];
-    let pin = |mechs: &[PinMechanism]| TrustKey {
-        key: abi("anchor"),
-        role: TRUST_PIN,
-        flags: 0,
-        default: z(),
-        mechanisms: mechs.as_ptr(),
-        mechanisms_len: mechs.len(),
+    let pin = |mechs: &[PinMechanism]| {
+        let mut key = TrustKey::EMPTY;
+        key.key = abi("anchor");
+        key.role = TRUST_PIN;
+        key.flags = 0;
+        key.default = z();
+        // SAFETY: every `mechs` here outlives the bind its key is read by.
+        unsafe { key.with_raw_mechanisms(mechs.as_ptr(), mechs.len()) }
     };
     assert_eq!(bind(&[pin(&good)]), Ok(()));
     // A pin with no mechanisms: refused by the key's own rule.
@@ -858,10 +847,7 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
         }]))
     };
     let dialects: &'static [busbar_contract::abi::mechanism::call::AbiStr] =
-        Box::leak(Box::new([busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: b"plain".as_ptr(),
-            len: 5,
-        }]));
+        Box::leak(Box::new([AbiStr::of("plain")]));
     let bind = |rows: &'static [RefusalStatus]| {
         let mut tail: PlaneTail = z();
         tail.head = KindTailHead {
@@ -869,24 +855,16 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
             _reserved: 0,
         };
         tail.ingress = INGRESS_REQUEST_RESPONSE;
-        tail.dialects = dialects.as_ptr();
-        tail.dialects_len = 1;
-        tail.refusal_statuses = rows.as_ptr();
-        tail.refusal_statuses_len = rows.len();
+        let tail = tail.with_dialects(dialects).with_refusal_statuses(rows);
         let tail: &'static PlaneTail = Box::leak(Box::new(tail));
         let sections: &'static [busbar_contract::abi::mechanism::door::Section] =
             Box::leak(Box::new([busbar_contract::abi::mechanism::door::Section {
-                name: busbar_contract::abi::mechanism::call::AbiStr {
-                    ptr: b"door".as_ptr(),
-                    len: 4,
-                },
+                name: AbiStr::of("door"),
                 flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
                 _reserved: 0,
             }]));
-        let mut st: Statement = z();
-        st.kind_tail = &tail.head;
-        st.sections = sections.as_ptr();
-        st.sections_len = sections.len();
+        let st: Statement = z();
+        let st = st.with_kind_tail(tail).with_sections(sections);
         Plane::context(&st)
     };
     let facts = bind(rows(400)).expect("a valid row binds");
@@ -909,10 +887,7 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
     };
     use busbar_contract::abi::plane::{BillableClass, PlaneTail, INGRESS_DUPLEX_SESSION};
     fn s(text: &'static str) -> AbiStr {
-        AbiStr {
-            ptr: text.as_ptr(),
-            len: text.len(),
-        }
+        AbiStr::of(text)
     }
     let bind = |classes: &'static [BillableClass], fees: &'static [AbiStr]| {
         let mut tail: PlaneTail = z();
@@ -921,20 +896,15 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
             _reserved: 0,
         };
         tail.ingress = INGRESS_DUPLEX_SESSION;
-        tail.billable_classes = classes.as_ptr();
-        tail.billable_classes_len = classes.len();
-        tail.fee_units = fees.as_ptr();
-        tail.fee_units_len = fees.len();
+        let tail = tail.with_billable_classes(classes).with_fee_units(fees);
         let tail: &'static PlaneTail = Box::leak(Box::new(tail));
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
             _reserved: 0,
         }]));
-        let mut st: Statement = z();
-        st.kind_tail = &tail.head;
-        st.sections = sections.as_ptr();
-        st.sections_len = sections.len();
+        let st: Statement = z();
+        let st = st.with_kind_tail(tail).with_sections(sections);
         Plane::context(&st).map(|_| ())
     };
     let class = |name: &'static str, family: &'static str| BillableClass {
@@ -976,10 +946,7 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
         PlaneTail, RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED, INGRESS_REQUEST_RESPONSE,
     };
     fn s(text: &'static str) -> AbiStr {
-        AbiStr {
-            ptr: text.as_ptr(),
-            len: text.len(),
-        }
+        AbiStr::of(text)
     }
     let kinds: &'static [AbiStr] = Box::leak(Box::new([s("task"), s("task_event")]));
     let bind = |chains: &'static [RecordChain]| {
@@ -989,20 +956,15 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
             _reserved: 0,
         };
         tail.ingress = INGRESS_REQUEST_RESPONSE;
-        tail.record_kinds = kinds.as_ptr();
-        tail.record_kinds_len = kinds.len();
-        tail.record_chains = chains.as_ptr();
-        tail.record_chains_len = chains.len();
+        let tail = tail.with_record_kinds(kinds).with_record_chains(chains);
         let tail: &'static PlaneTail = Box::leak(Box::new(tail));
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
             _reserved: 0,
         }]));
-        let mut st: Statement = z();
-        st.kind_tail = &tail.head;
-        st.sections = sections.as_ptr();
-        st.sections_len = sections.len();
+        let st: Statement = z();
+        let st = st.with_kind_tail(tail).with_sections(sections);
         Plane::context(&st)
     };
     let chain = |kind: u32, framing: u32| RecordChain {
@@ -1053,17 +1015,12 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
         tail.stream_ceiling_secs = 600;
         let tail: &'static PlaneTail = Box::leak(Box::new(tail));
         let sections: &'static [Section] = Box::leak(Box::new([Section {
-            name: AbiStr {
-                ptr: b"door".as_ptr(),
-                len: 4,
-            },
+            name: AbiStr::of("door"),
             flags: SECTION_DECLARING,
             _reserved: 0,
         }]));
-        let mut st: Statement = z();
-        st.kind_tail = &tail.head;
-        st.sections = sections.as_ptr();
-        st.sections_len = sections.len();
+        let st: Statement = z();
+        let st = st.with_kind_tail(tail).with_sections(sections);
         Plane::context(&st)
             .expect("the tail binds")
             .expect("a plane has a context")

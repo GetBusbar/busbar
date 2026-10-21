@@ -921,11 +921,11 @@ unsafe fn keep_plugin_local(out: *mut c_void) {
         // SAFETY: as above.
         let diags: &[Diag] = unsafe { std::slice::from_raw_parts(env.diags, env.diags_len) };
         local.extend(diags.iter().map(|d| {
-            let text = if d.text.ptr.is_null() {
+            let text = if d.text.ptr().is_null() {
                 &[][..]
             } else {
                 // SAFETY: the plugin's text, valid until its next op.
-                unsafe { std::slice::from_raw_parts(d.text.ptr, d.text.len) }
+                unsafe { std::slice::from_raw_parts(d.text.ptr(), d.text.len()) }
             };
             entry_text(d.id_idx, d.severity, text)
         }));

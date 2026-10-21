@@ -261,29 +261,21 @@ fn z<T: Copy>() -> T {
 }
 
 fn octets(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    crate::dispatch::lend_blob(b, BLOB_OCTETS, 0)
 }
 
 fn abi(b: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    crate::dispatch::lend_str(b)
 }
 
 /// Text the plane answered in its own memory, read at once (valid until its next call).
 fn read(s: AbiStr) -> String {
-    if s.ptr.is_null() || s.len == 0 {
+    if s.ptr().is_null() || s.is_empty() {
         return String::new();
     }
     // SAFETY: the kind's check admitted the answer; the plane's text is valid until the
     // instance's next call, and it is read before any.
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr(), s.len()) }).into_owned()
 }
 
 fn at(buf: &[u8], s: Span) -> String {

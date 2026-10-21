@@ -862,7 +862,7 @@ fn open_ready<K: crate::dispatch::Kind>(
     c: &Candidate,
     instance: &str,
 ) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
+    use busbar_contract::abi::mechanism::call::{Outcome, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 
@@ -884,12 +884,7 @@ fn open_ready<K: crate::dispatch::Kind>(
     let blobs = held.blobs();
     let settings = serde_json::to_vec(&block).unwrap_or_default();
     let mut i: OpenIn = blank_in();
-    i.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    };
+    i.settings = crate::dispatch::lend_blob(&settings, BLOB_JSON, 0);
     i.secrets = blobs.as_ptr();
     i.secrets_len = blobs.len();
     i.generation = 1;
@@ -979,15 +974,10 @@ struct Secrets(Vec<Vec<u8>>);
 impl Secrets {
     /// One `BLOB_SECRET` blob per secret, in order, over the bytes held here.
     fn blobs(&self) -> Vec<busbar_contract::abi::mechanism::call::Blob> {
-        use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
+        use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
         self.0
             .iter()
-            .map(|b| Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_OCTETS,
-                flags: BLOB_SECRET,
-            })
+            .map(|b| crate::dispatch::lend_blob(b, BLOB_OCTETS, BLOB_SECRET))
             .collect()
     }
 

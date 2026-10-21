@@ -580,16 +580,15 @@ pub(crate) fn ready(c: Crossed) -> Result<(), Refused> {
 }
 
 /// An absent string.
-const NO_TEXT: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_TEXT: AbiStr = AbiStr::ABSENT;
 
-fn abi(s: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+/// `s` lent to a plugin as an [`AbiStr`]: the crate's one place host memory is named by one
+/// (status row 194, the string's pointer and length sealed in the contract).
+#[allow(unsafe_code)]
+pub(crate) fn abi(s: &[u8]) -> AbiStr {
+    // SAFETY: every caller lends `s` only into an `in` (or a row an `in` points at) that it hands
+    // the plugin while it holds `s`: the bytes outlive the call the `in` is lent to.
+    unsafe { AbiStr::from_raw_parts(s.as_ptr(), s.len()) }
 }
 
 /// What connection security established, owned, for `begin`/`adopt`'s [`ConnFacts`].
@@ -781,7 +780,7 @@ pub fn encode_head(
     let room = body.len()
         + fields
             .iter()
-            .map(|f| f.name.len + f.value.len + 8)
+            .map(|f| f.name.len() + f.value.len() + 8)
             .sum::<usize>();
     let mut bufs = Buffers::new(room + method.len() + target.len() + 4096, 1, 1);
     let mut i: EncodeIn = blank_in();

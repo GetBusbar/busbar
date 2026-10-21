@@ -43,7 +43,7 @@ use busbar_contract::hooks::{
 };
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
-use super::{blob, FarEnd, PlaneUnits};
+use super::{blob, lend, FarEnd, PlaneUnits};
 use crate::config::PolicyOnError;
 use crate::diagnostics::{
     DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
@@ -1120,8 +1120,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .fields
             .iter()
             .map(|(n, v)| Field {
-                name: AbiStr::over(n),
-                value: AbiStr::over(v),
+                name: lend(n),
+                value: lend(v),
             })
             .collect();
         let mut bufs = ProjectBufs {
@@ -1135,8 +1135,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             ],
             messages: vec![
                 MessageView {
-                    role: AbiStr::over(b""),
-                    text: AbiStr::over(b"")
+                    role: AbiStr::of_bytes(b""),
+                    text: AbiStr::of_bytes(b"")
                 };
                 MESSAGES_CAP
             ],
@@ -1144,7 +1144,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         };
         let mut input = ProjectIn {
             claim: a.claim,
-            target: AbiStr::over(&a.target),
+            target: lend(&a.target),
             fields: fields.as_ptr(),
             fields_len: fields.len(),
             body: blob(&body),
@@ -1192,16 +1192,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // buffer. A string is read back as its offset into the arena, never through its pointer.
         let base = bufs.arena.as_ptr() as usize;
         let text = |s: AbiStr| -> String {
-            if s.ptr.is_null() || s.len == 0 {
+            if s.ptr().is_null() || s.len() == 0 {
                 return String::new();
             }
-            let at = (s.ptr as usize).wrapping_sub(base);
+            let at = (s.ptr() as usize).wrapping_sub(base);
             bufs.arena
-                .get(at..at.saturating_add(s.len))
+                .get(at..at.saturating_add(s.len()))
                 .map(|b| String::from_utf8_lossy(b).into_owned())
                 .unwrap_or_default()
         };
-        let opt = |s: AbiStr| (!s.ptr.is_null()).then(|| text(s));
+        let opt = |s: AbiStr| (!s.ptr().is_null()).then(|| text(s));
         let span = |sp: Span| -> Option<Vec<u8>> {
             if sp.offset == SPAN_ABSENT || sp.len == 0 {
                 return None;
@@ -1232,11 +1232,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             rewritten: span(o.rewritten),
             projected: span(o.body),
             session: (v.session.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
-                && !v.session.ptr.is_null())
+                && !v.session.ptr().is_null())
             .then(|| {
-                let at = (v.session.ptr as usize).wrapping_sub(base);
+                let at = (v.session.ptr() as usize).wrapping_sub(base);
                 bufs.arena
-                    .get(at..at.saturating_add(v.session.len))
+                    .get(at..at.saturating_add(v.session.len()))
                     .map(<[u8]>::to_vec)
                     .unwrap_or_default()
             }),

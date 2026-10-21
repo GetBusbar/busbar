@@ -507,48 +507,27 @@ impl Owned {
 
     fn text(&mut self, s: &str) -> AbiStr {
         let (ptr, len) = self.keep(s.as_bytes().to_vec());
-        AbiStr { ptr, len }
+        raw_str(ptr, len)
     }
 
     fn opt_text(&mut self, s: Option<&str>) -> AbiStr {
-        s.map_or(
-            AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            |s| self.text(s),
-        )
+        s.map_or(AbiStr::ABSENT, |s| self.text(s))
     }
 
     fn octets(&mut self, b: &[u8]) -> Blob {
         let (ptr, len) = self.keep(b.to_vec());
-        Blob {
-            ptr,
-            len,
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        }
+        raw_blob(ptr, len, BLOB_OCTETS, 0)
     }
 
     fn json(&mut self, b: Vec<u8>) -> Blob {
         let (ptr, len) = self.keep(b);
-        Blob {
-            ptr,
-            len,
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
+        raw_blob(ptr, len, BLOB_JSON, 0)
     }
 
     fn secret_json(&mut self, b: Vec<u8>) -> Blob {
         let (ptr, len) = (b.as_ptr(), b.len());
         self.secrets.push(Zeroing(b));
-        Blob {
-            ptr,
-            len,
-            fmt: BLOB_JSON,
-            flags: BLOB_SECRET,
-        }
+        raw_blob(ptr, len, BLOB_JSON, BLOB_SECRET)
     }
 
     fn rows<T: 'static>(&mut self, v: Vec<T>) -> (*const T, usize) {
@@ -698,12 +677,20 @@ fn blank<O: OutFrame>() -> O {
 }
 
 fn octets(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    raw_blob(b.as_ptr(), b.len(), BLOB_OCTETS, 0)
+}
+
+/// `len` bytes at `ptr` the host lends as a string: its request ([`Owned`]) or the caller's borrow
+/// keeps them alive past the call the `in` is lent to (status row 194).
+fn raw_str(ptr: *const u8, len: usize) -> AbiStr {
+    // SAFETY: the bytes outlive the call the `in` is lent to (above).
+    unsafe { AbiStr::from_raw_parts(ptr, len) }
+}
+
+/// `len` bytes at `ptr` the host lends as a blob of `fmt` with `flags`, alive as [`raw_str`]'s.
+fn raw_blob(ptr: *const u8, len: usize, fmt: u32, flags: u32) -> Blob {
+    // SAFETY: the bytes outlive the call the `in` is lent to (`raw_str`).
+    unsafe { Blob::from_raw_parts(ptr, len, fmt, flags) }
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Vec<u8> {
@@ -736,7 +723,7 @@ fn items<T: Copy>(ptr: *const T, len: usize) -> Vec<T> {
 impl LoadedStore {
     fn read_one(&self, ran: Ran<LeasedBlobOut>) -> Result<Option<Vec<u8>>, StoreFailure> {
         let r = ran.ok().map(|()| {
-            (ran.out.found == FOUND).then(|| copy(ran.out.record.ptr, ran.out.record.len))
+            (ran.out.found == FOUND).then(|| copy(ran.out.record.ptr(), ran.out.record.len()))
         });
         self.release(ran.lease);
         r
@@ -746,7 +733,7 @@ impl LoadedStore {
         let r = ran.ok().map(|()| {
             items(ran.out.items, ran.out.items_len)
                 .iter()
-                .map(|b| copy(b.ptr, b.len))
+                .map(|b| copy(b.ptr(), b.len()))
                 .collect()
         });
         self.release(ran.lease);
@@ -757,7 +744,7 @@ impl LoadedStore {
         let r = ran.ok().map(|()| {
             items(ran.out.items, ran.out.items_len)
                 .iter()
-                .map(|s| String::from_utf8_lossy(&copy(s.ptr, s.len)).into_owned())
+                .map(|s| String::from_utf8_lossy(&copy(s.ptr(), s.len())).into_owned())
                 .collect()
         });
         self.release(ran.lease);
@@ -1249,7 +1236,7 @@ impl LoadedStore {
 
 /// Read a host-buffer blob the plugin pointed into (inside the host's own byte buffer).
 fn host_blob(b: &Blob) -> Vec<u8> {
-    copy(b.ptr, b.len)
+    copy(b.ptr(), b.len())
 }
 
 // ── StoreCalls: submitted and awaited ────────────────────────────────────────────────────────
@@ -1415,7 +1402,8 @@ impl StoreCalls for LoadedStore {
                     .iter()
                     .map(|h| {
                         (
-                            String::from_utf8_lossy(&copy(h.stream.ptr, h.stream.len)).into_owned(),
+                            String::from_utf8_lossy(&copy(h.stream.ptr(), h.stream.len()))
+                                .into_owned(),
                             Head {
                                 seq: h.seq,
                                 epoch: h.epoch,
@@ -1471,7 +1459,7 @@ impl StoreCalls for LoadedStore {
                 .map(|s| {
                     (
                         s.session,
-                        String::from_utf8_lossy(&copy(s.node.ptr, s.node.len)).into_owned(),
+                        String::from_utf8_lossy(&copy(s.node.ptr(), s.node.len())).into_owned(),
                     )
                 })
                 .collect())

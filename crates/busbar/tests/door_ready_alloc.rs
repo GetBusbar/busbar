@@ -276,8 +276,8 @@ impl Bufs {
             ],
             messages: vec![
                 MessageView {
-                    role: AbiStr::over(b""),
-                    text: AbiStr::over(b"")
+                    role: AbiStr::of_bytes(b""),
+                    text: AbiStr::of_bytes(b"")
                 };
                 8
             ],
@@ -296,8 +296,8 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
         slot::ARRIVE => {
             let mut frame = Frame::new(
                 ArriveIn {
-                    target: AbiStr::over(STATS),
-                    method: AbiStr::over(POST),
+                    target: AbiStr::of_bytes(STATS),
+                    method: AbiStr::of_bytes(POST),
                     body: NO_BLOB,
                     units_buf: b.units.as_mut_ptr(),
                     units_cap: b.units.len(),
@@ -327,8 +327,8 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
                 RefusalIn {
                     status: 503,
                     reason: 0,
-                    text: AbiStr::over(REASON_TEXT),
-                    target: AbiStr::over(STATS),
+                    text: AbiStr::of_bytes(REASON_TEXT),
+                    target: AbiStr::of_bytes(STATS),
                     reply_buf: b.reply.as_mut_ptr(),
                     reply_cap: b.reply.len(),
                     fields_buf: b.fields.as_mut_ptr(),
@@ -345,7 +345,7 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
             let mut frame = Frame::new(
                 ServeIn {
                     route: 0,
-                    target: AbiStr::over(STATS),
+                    target: AbiStr::of_bytes(STATS),
                     body: NO_BLOB,
                     reply_buf: b.reply.as_mut_ptr(),
                     reply_cap: b.reply.len(),
@@ -362,7 +362,7 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
         slot::PROJECT => {
             let mut frame = Frame::new(
                 ProjectIn {
-                    target: AbiStr::over(STATS),
+                    target: AbiStr::of_bytes(STATS),
                     body: NO_BLOB,
                     rewrite: NO_BLOB,
                     signals_buf: b.signals.as_mut_ptr(),
@@ -380,8 +380,8 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
         slot::CATALOG => {
             let mut frame = Frame::new(
                 CatalogIn {
-                    method: AbiStr::over(b"GET"),
-                    target: AbiStr::over(STATS),
+                    method: AbiStr::of_bytes(b"GET"),
+                    target: AbiStr::of_bytes(STATS),
                     reply_buf: b.reply.as_mut_ptr(),
                     reply_cap: b.reply.len(),
                     fields_buf: b.fields.as_mut_ptr(),

@@ -97,12 +97,7 @@ fn blob(bytes: &[u8], fmt: u32, flags: u32) -> Blob {
     if bytes.is_empty() {
         return NO_BLOB;
     }
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt,
-        flags,
-    }
+    crate::dispatch::lend_blob(bytes, fmt, flags)
 }
 
 fn refused(error_kind: u32, text: String) -> SecretRefused {
@@ -254,10 +249,10 @@ impl Opened {
                 // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's
                 // lease until `release` (the secret kind's answer rule, checked by `check_resolve`
                 // in the crossing); it is copied here, before the release below.
-                let material = if b.ptr.is_null() || b.len == 0 {
+                let material = if b.ptr().is_null() || b.is_empty() {
                     Vec::new()
                 } else {
-                    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+                    unsafe { std::slice::from_raw_parts(b.ptr(), b.len()) }.to_vec()
                 };
                 let material = SecretValue::new(material);
                 if c.lease != 0 {
@@ -350,10 +345,10 @@ impl SecretCalls for LoadedSecret {
                 // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's
                 // lease until `release` (the secret kind's answer rule, checked by `check_resolve`
                 // before this answer was settled); it is copied here, before the release below.
-                let material = if b.ptr.is_null() || b.len == 0 {
+                let material = if b.ptr().is_null() || b.is_empty() {
                     Vec::new()
                 } else {
-                    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+                    unsafe { std::slice::from_raw_parts(b.ptr(), b.len()) }.to_vec()
                 };
                 let material = SecretValue::new(material);
                 if done.lease != 0 {

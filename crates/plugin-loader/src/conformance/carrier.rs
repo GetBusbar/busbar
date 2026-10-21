@@ -158,10 +158,7 @@ struct Dest {
 }
 
 fn abi(t: &str) -> AbiStr {
-    AbiStr {
-        ptr: t.as_ptr(),
-        len: t.len(),
-    }
+    crate::dispatch::lend_str(t.as_bytes())
 }
 
 impl Dest {

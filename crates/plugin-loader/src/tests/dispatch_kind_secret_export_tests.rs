@@ -10,7 +10,7 @@ use std::mem::size_of;
 
 use busbar_contract::abi::export::{self, CheckOut, ScrapeIn, ScrapeOut, ServeOut, StatusOut};
 use busbar_contract::abi::mechanism::call::{
-    Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_ABSENT, BLOB_SECRET,
+    AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_ABSENT, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::check::{fault, Rule};
 use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND};
@@ -56,12 +56,7 @@ fn secret_resolve_is_checked() {
         settings: NO_BLOB,
     };
     let key = b"k";
-    let material = Blob {
-        ptr: key.as_ptr(),
-        len: 1,
-        fmt: BLOB_ABSENT,
-        flags: BLOB_SECRET,
-    };
+    let material = Blob::of(key).with_fmt(BLOB_ABSENT).with_flags(BLOB_SECRET);
     let s = secret::slot::RESOLVE;
     let mut ok = resolve(Outcome::Ready, material, 0);
     ok.head.lease = 7;
@@ -152,7 +147,9 @@ fn export_every_slot_is_named_and_reaches_its_check() {
     // RED through `deliver`: FAILED error text with a length behind NULL.
     let input: InHead = in_head();
     let mut bad = head(Outcome::Failed);
-    bad.error.len = 3;
+    // SAFETY: a length behind the error's NULL, as a foreign plugin could answer it, read only by
+    // the check, which refuses it.
+    bad.error = unsafe { AbiStr::from_raw_parts(bad.error.ptr(), 3) };
     assert_eq!(
         Export::check(&answer(
             export::slot::DELIVER,

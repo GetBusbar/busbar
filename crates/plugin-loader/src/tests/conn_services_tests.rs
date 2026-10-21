@@ -14,7 +14,7 @@ use busbar_contract::abi::host::conn::connector::{
     service, EstablishIn, Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, RefreshIn};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -171,26 +171,18 @@ impl Conns for Recording {
     }
 }
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ABSENT;
 
-const NEEDS: [Need; 1] = [Need {
-    direction: DIRECTION_OUTBOUND,
-    egress_class: 0,
-    transport: abi_str("sock"),
-    auth: NONE,
-    target_from: abi_str("settings.upstream"),
-    trust_from: NONE,
-    details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
-    keep_mode: KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: core::ptr::null(),
-    deny_response_headers_len: 0,
+const NEEDS: [Need; 1] = [{
+    let mut need = Need::EMPTY;
+    need.direction = DIRECTION_OUTBOUND;
+    need.transport = abi_str("sock");
+    need.auth = NONE;
+    need.target_from = abi_str("settings.upstream");
+    need.trust_from = NONE;
+    need.details = NO_BLOB;
+    need.keep_mode = KEEP_NAMED;
+    need
 }];
 
 /// The test plugin's door, its Statement declaring `needs`, bound over `table`.
@@ -215,11 +207,7 @@ fn bind_as(
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement };
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        needs: needs.as_ptr(),
-        needs_len: needs.len(),
-        ..st
-    }));
+    let st: &'static Statement = Box::leak(Box::new(st.with_needs(needs)));
     let door: &'static Door = Box::leak(Box::new(Door {
         statement: st,
         ..real
@@ -339,12 +327,7 @@ fn establish_as(
 
 /// A JSON settings blob over `json`.
 fn settings(json: &'static [u8]) -> Blob {
-    Blob {
-        ptr: json.as_ptr(),
-        len: json.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
+    Blob::json(json)
 }
 
 /// `open` with `json` as the instance's settings, ticket-less.
@@ -435,10 +418,11 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
 /// scheme; the same inbound need over a served scheme binds.
 #[test]
 fn an_inbound_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
-    const INBOUND: [Need; 1] = [Need {
-        direction: DIRECTION_INBOUND,
-        target_from: NONE,
-        ..NEEDS[0]
+    const INBOUND: [Need; 1] = [{
+        let mut need = NEEDS[0];
+        need.direction = DIRECTION_INBOUND;
+        need.target_from = NONE;
+        need
     }];
     let unserved = Arc::new(Recording {
         unserved: vec!["sock"],
@@ -542,10 +526,11 @@ fn a_refresh_re_declares_a_config_targeted_need_at_its_new_target() {
 }
 
 /// A need whose target the plugin names and whose trust anchors come from `settings.ca`.
-const TRUSTING: [Need; 1] = [Need {
-    target_from: NONE,
-    trust_from: abi_str("settings.ca"),
-    ..NEEDS[0]
+const TRUSTING: [Need; 1] = [{
+    let mut need = NEEDS[0];
+    need.target_from = NONE;
+    need.trust_from = abi_str("settings.ca");
+    need
 }];
 
 /// RED: a need whose `trust_from` names a config path is not declared at bind; at `open` it is
@@ -586,10 +571,11 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
 }
 
 /// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
-const OWNED_TRUSTING: [Need; 1] = [Need {
-    target_from: NONE,
-    trust_from: abi_str("owned.agent_push.ca"),
-    ..NEEDS[0]
+const OWNED_TRUSTING: [Need; 1] = [{
+    let mut need = NEEDS[0];
+    need.target_from = NONE;
+    need.trust_from = abi_str("owned.agent_push.ca");
+    need
 }];
 
 /// `refresh` with `json` as the instance's new settings and `owned` as its owned sections, carried
@@ -601,12 +587,9 @@ fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Ou
         owned,
     )]);
     let mut head = in_head();
-    head.extensions = Blob {
-        ptr: extensions.as_ptr(),
-        len: extensions.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
+    // SAFETY: `extensions` outlives the `refresh` the head is lent to.
+    head.extensions =
+        unsafe { Blob::from_raw_parts(extensions.as_ptr(), extensions.len(), BLOB_OCTETS, 0) };
     let mut f = Frame::new(
         RefreshIn {
             head,
@@ -1046,21 +1029,16 @@ impl Conns for Scripted {
 }
 
 /// A need the plugin names the target of: declared at bind.
-const NAMED: [Need; 1] = [Need {
-    direction: DIRECTION_OUTBOUND,
-    egress_class: 0,
-    transport: abi_str("sock"),
-    auth: NONE,
-    target_from: NONE,
-    trust_from: NONE,
-    details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
-    keep_mode: KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: core::ptr::null(),
-    deny_response_headers_len: 0,
+const NAMED: [Need; 1] = [{
+    let mut need = Need::EMPTY;
+    need.direction = DIRECTION_OUTBOUND;
+    need.transport = abi_str("sock");
+    need.auth = NONE;
+    need.target_from = NONE;
+    need.trust_from = NONE;
+    need.details = NO_BLOB;
+    need.keep_mode = KEEP_NAMED;
+    need
 }];
 
 /// The ticket every op in these tests runs on.
@@ -1078,11 +1056,7 @@ fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement };
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        needs: NAMED.as_ptr(),
-        needs_len: NAMED.len(),
-        ..st
-    }));
+    let st: &'static Statement = Box::leak(Box::new(st.with_needs(&NAMED)));
     let door: &'static Door = Box::leak(Box::new(Door {
         statement: st,
         ..real
@@ -1211,11 +1185,11 @@ fn ready(o: &ServiceOut) -> bool {
 }
 
 fn error_text(o: &ServiceOut) -> String {
-    if o.error.ptr.is_null() {
+    if o.error.ptr().is_null() {
         return String::new();
     }
     // SAFETY: the host's static text.
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(o.error.ptr, o.error.len) })
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(o.error.ptr(), o.error.len()) })
         .into_owned()
 }
 
@@ -1707,9 +1681,9 @@ fn facts_expose_the_peer_certificate_hash() {
         let out = call(&p, CONN_SLOTS.facts, &i);
         assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
         let text = |s: AbiStr| {
-            (!s.ptr.is_null()).then(|| {
+            (!s.ptr().is_null()).then(|| {
                 // SAFETY: the host holds the facts' strings until the stream closes.
-                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr(), s.len()) }.to_vec())
                     .unwrap()
             })
         };
@@ -1767,9 +1741,10 @@ fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
 }
 
 /// The member-program need (`settings.*`): each registration that names a program is a member.
-const MEMBER_NEEDS: [Need; 1] = [Need {
-    target_from: abi_str("settings.*"),
-    ..NEEDS[0]
+const MEMBER_NEEDS: [Need; 1] = [{
+    let mut need = NEEDS[0];
+    need.target_from = abi_str("settings.*");
+    need
 }];
 
 /// RED (ARCHITECT round 5, the member-program upstream ruling (A)): a need whose `target_from` is
@@ -2522,21 +2497,17 @@ impl crate::dispatch::Kind for AuthShaped {
 fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
     use busbar_contract::abi::mechanism::KindCode;
     let table = Arc::new(Recording::default());
-    let unpinned: &'static [Need] = Box::leak(Box::new([Need {
-        target_from: NONE,
-        ..NEEDS[0]
-    }]));
+    let mut need = NEEDS[0];
+    need.target_from = NONE;
+    let unpinned: &'static [Need] = Box::leak(Box::new([need]));
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement };
     let auth = KindCode::Auth;
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        kind: auth as u32,
-        kind_abi: auth.abi_version(),
-        needs: unpinned.as_ptr(),
-        needs_len: unpinned.len(),
-        ..st
-    }));
+    let mut st = st.with_needs(unpinned);
+    st.kind = auth as u32;
+    st.kind_abi = auth.abi_version();
+    let st: &'static Statement = Box::leak(Box::new(st));
     let door: &'static Door = Box::leak(Box::new(Door {
         kind: auth as u32,
         kind_abi: auth.abi_version(),

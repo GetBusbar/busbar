@@ -110,7 +110,7 @@ use busbar_contract::abi::auth::{
 };
 use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS, BLOB_SECRET,
+    AbiStr, Blob, DeadlineClass, Outcome, Span, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -208,30 +208,36 @@ fn stated(s: &Subject) -> Stated {
         let st: *const Statement = std::ptr::addr_of!((*door).statement).read_unaligned();
         assert!(!st.is_null(), "the door states no Statement");
         let st = st.read_unaligned();
-        assert!(!st.kind_tail.is_null(), "an auth door states its auth tail");
-        let tail = st.kind_tail.cast::<AuthTail>().read_unaligned();
-        let words: &[MarkWord] = if st.mark_words.is_null() {
+        assert!(
+            !st.kind_tail().is_null(),
+            "an auth door states its auth tail"
+        );
+        let tail = st.kind_tail().cast::<AuthTail>().read_unaligned();
+        let words: &[MarkWord] = if st.mark_words_ptr().is_null() {
             &[]
         } else {
-            std::slice::from_raw_parts(st.mark_words, st.mark_words_len)
+            std::slice::from_raw_parts(st.mark_words_ptr(), st.mark_words_len())
         };
         let carriers = words
             .iter()
             .filter(|w| w.class == MARK_WORD_CARRIER)
             .map(|w| {
-                String::from_utf8_lossy(std::slice::from_raw_parts(w.word.ptr, w.word.len))
+                String::from_utf8_lossy(std::slice::from_raw_parts(w.word.ptr(), w.word.len()))
                     .into_owned()
             })
             .collect();
-        let styles = if tail.styles.is_null() {
+        let styles = if tail.styles_ptr().is_null() {
             Vec::new()
         } else {
-            std::slice::from_raw_parts(tail.styles, tail.styles_len)
+            std::slice::from_raw_parts(tail.styles_ptr(), tail.styles_len())
                 .iter()
                 .map(|d| {
                     (
-                        String::from_utf8_lossy(std::slice::from_raw_parts(d.name.ptr, d.name.len))
-                            .into_owned(),
+                        String::from_utf8_lossy(std::slice::from_raw_parts(
+                            d.name.ptr(),
+                            d.name.len(),
+                        ))
+                        .into_owned(),
                         d.flags,
                         d.points,
                     )
@@ -281,12 +287,7 @@ fn case_text(case: &serde_json::Value, key: &str) -> Option<Vec<u8>> {
 
 /// A secret octet blob over `bytes`.
 fn secret(bytes: &[u8]) -> Blob {
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt: BLOB_OCTETS,
-        flags: BLOB_SECRET,
-    }
+    crate::dispatch::lend_blob(bytes, BLOB_OCTETS, BLOB_SECRET)
 }
 
 // SAFETY: the raw pointers in `carriers` point into `names` and `_values`, owned by the same
@@ -330,7 +331,7 @@ impl Presented {
             .iter()
             .zip(&values)
             .map(|(n, v)| NamedValue {
-                name: AbiStr::over(n.as_bytes()),
+                name: crate::dispatch::lend_str(n.as_bytes()),
                 value: secret(v),
             })
             .collect();
@@ -370,7 +371,7 @@ impl Presented {
             .iter()
             .zip(&values)
             .map(|(n, v)| NamedValue {
-                name: AbiStr::over(n.as_bytes()),
+                name: crate::dispatch::lend_str(n.as_bytes()),
                 value: secret(v),
             })
             .collect();
@@ -425,20 +426,15 @@ impl Presented {
         };
         f.input.strip = self.strips.as_mut_ptr();
         f.input.strip_cap = self.strips.len() as u32;
-        f.input.request.method = AbiStr::over(&self.method);
-        f.input.request.authority = AbiStr::over(b"conformance.invalid");
-        f.input.request.canonical_path = AbiStr::over(&self.path);
+        f.input.request.method = crate::dispatch::lend_str(&self.method);
+        f.input.request.authority = AbiStr::of_bytes(b"conformance.invalid");
+        f.input.request.canonical_path = crate::dispatch::lend_str(&self.path);
         if let Some(q) = &self.query {
-            f.input.request.query = AbiStr::over(q);
+            f.input.request.query = crate::dispatch::lend_str(q);
         }
         f.input.request.timestamp = self.timestamp;
         if let Some(b) = &self.body {
-            f.input.body = Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            f.input.body = crate::dispatch::lend_blob(b, BLOB_OCTETS, 0);
         }
         f.input.out_buf = self.buf(full);
         f
@@ -759,11 +755,11 @@ fn word(v: &serde_json::Value, key: &str) -> Vec<u8> {
 /// # Safety
 /// `s` names plugin memory valid until the answer's lease is released (the caller copies first).
 unsafe fn copied(s: AbiStr) -> String {
-    if s.ptr.is_null() {
+    if s.ptr().is_null() {
         return String::new();
     }
     // SAFETY: the caller's contract.
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr(), s.len()) }).into_owned()
 }
 
 /// A credential form as the transcript spells it: `name:kind[:required]` a field, in order.
@@ -805,10 +801,10 @@ fn begin_login(p: &Plugin<Auth>, begin: &serde_json::Value) -> String {
         word(begin, "nonce"),
     );
     let mut f: Frame<BeginLoginIn, BeginLoginOut> = Frame::new(input(), output());
-    f.input.redirect_uri = AbiStr::over(&redirect);
-    f.input.state = AbiStr::over(&state);
-    f.input.code_challenge = AbiStr::over(&challenge);
-    f.input.nonce = AbiStr::over(&nonce);
+    f.input.redirect_uri = crate::dispatch::lend_str(&redirect);
+    f.input.state = crate::dispatch::lend_str(&state);
+    f.input.code_challenge = crate::dispatch::lend_str(&challenge);
+    f.input.nonce = crate::dispatch::lend_str(&nonce);
     let c = p.call(slot::BEGIN_LOGIN, &mut f);
     let shape = if f.out.shape == BEGIN_FORM {
         format!("form={}", spelled_form(&f.out))
@@ -831,12 +827,7 @@ fn secret_or_absent(v: &serde_json::Value, key: &str, bytes: &[u8]) -> Blob {
     if v.get(key).is_some() {
         secret(bytes)
     } else {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
+        Blob::ABSENT
     }
 }
 
@@ -882,7 +873,7 @@ fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::V
     let named: Vec<NamedValue> = submitted
         .iter()
         .map(|(name, value)| NamedValue {
-            name: AbiStr::over(name.as_bytes()),
+            name: crate::dispatch::lend_str(name.as_bytes()),
             value: secret(value),
         })
         .collect();
@@ -902,9 +893,9 @@ fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::V
     let [code, state, nonce, redirect, verifier] = &lend.words;
     let mut f: Frame<CompleteLoginIn, IdentifyOut> = Frame::new(input(), output());
     f.input.code = secret_or_absent(complete, "code", code);
-    f.input.state = AbiStr::over(state);
-    f.input.nonce = AbiStr::over(nonce);
-    f.input.redirect_uri = AbiStr::over(redirect);
+    f.input.state = crate::dispatch::lend_str(state);
+    f.input.nonce = crate::dispatch::lend_str(nonce);
+    f.input.redirect_uri = crate::dispatch::lend_str(redirect);
     f.input.code_verifier = secret_or_absent(complete, "code_verifier", verifier);
     if !lend.named.is_empty() {
         f.input.submitted = lend.named.as_ptr();

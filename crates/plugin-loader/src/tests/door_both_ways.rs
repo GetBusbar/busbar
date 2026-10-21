@@ -73,12 +73,8 @@ pub(crate) fn dropped_from<K: Kind>(door: DoorFn, path: &std::path::Path) -> Loa
 
 /// `bytes` as an octets blob, lent for one call.
 pub(crate) fn octets(bytes: &[u8]) -> Blob {
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    // SAFETY: every caller keeps `bytes` alive and unwritten across the call the blob is lent to.
+    unsafe { Blob::from_raw_parts(bytes.as_ptr(), bytes.len(), BLOB_OCTETS, 0) }
 }
 
 /// An `in` of `T`, every field zero but its head.

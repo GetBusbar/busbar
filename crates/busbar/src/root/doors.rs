@@ -21,7 +21,7 @@ use super::loader::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
     OutFrame, Plugin,
 };
-use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
@@ -132,19 +132,10 @@ impl Dispatched {
         let blob = (!stated.settings_keys.is_empty())
             .then(|| settings_blob(&stated.settings_keys, settings));
         let mut i: OpenIn = blank_in();
+        // Lent to this one `open` call (status row 194): `blob` outlives it.
         i.settings = match &blob {
-            Some(b) => Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_JSON,
-                flags: 0,
-            },
-            None => Blob {
-                ptr: std::ptr::null(),
-                len: 0,
-                fmt: BLOB_ABSENT,
-                flags: 0,
-            },
+            Some(b) => crate::root::loader::lend::blob(b, BLOB_JSON),
+            None => Blob::ABSENT,
         };
         let mut f = Frame::new(i, blank_out::<OpenOut>());
         let opened = plugin.call(life::OPEN, &mut f);

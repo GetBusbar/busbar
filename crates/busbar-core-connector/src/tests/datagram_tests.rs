@@ -196,7 +196,7 @@ fn read_lane(st: &mut St, lane: *const DatagramLane) -> Option<&'static Datagram
         // SAFETY: as above, `paths_len` of them.
         let paths = unsafe { std::slice::from_raw_parts(l.paths, l.paths_len) };
         for path in paths {
-            let addr = String::from_utf8_lossy(raw(path.addr.ptr, path.addr.len)).into_owned();
+            let addr = String::from_utf8_lossy(raw(path.addr.ptr(), path.addr.len())).into_owned();
             st.addrs.insert(path.path, addr.clone());
             seen.told.push((path.path, addr));
         }

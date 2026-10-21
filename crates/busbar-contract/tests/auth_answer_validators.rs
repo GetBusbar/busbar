@@ -17,7 +17,7 @@ use busbar_contract::abi::auth::{
     CAP_OUTBOUND, DECISION_CONTINUE, DECISION_STOP, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY,
     POINT_PEER, STRIP_FIELD, STRIP_QUERY,
 };
-use busbar_contract::abi::mechanism::call::{Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 
 const CAP: usize = 64;
@@ -345,7 +345,9 @@ fn the_part_a_shape_names_must_be_present() {
 #[test]
 fn a_url_length_with_a_null_pointer_is_fault() {
     let mut o = authorize();
-    o.authorize_url.ptr = std::ptr::null();
+    // SAFETY: a forged URL (NULL with a length), as a foreign plugin could answer: only the check
+    // reads it, through its raw pointer and length.
+    o.authorize_url = unsafe { AbiStr::from_raw_parts(std::ptr::null(), URL.len()) };
     assert_eq!(
         check_begin_login(Outcome::Ready, &o),
         red(Rule::NullWithCount, "begin_login.null_with_count")
@@ -372,8 +374,7 @@ const URL: &str = "https://idp.example/authorize";
 fn authorize() -> BeginLoginOut {
     let mut o: BeginLoginOut = zeroed();
     o.shape = BEGIN_AUTHORIZE;
-    o.authorize_url.ptr = URL.as_ptr();
-    o.authorize_url.len = URL.len();
+    o.authorize_url = AbiStr::of(URL);
     o
 }
 

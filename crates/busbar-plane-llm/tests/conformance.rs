@@ -14,7 +14,7 @@
 use std::mem::zeroed;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span};
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
@@ -52,19 +52,11 @@ fn bind(d: &Dispatcher) -> Bind {
 }
 
 fn octets(b: &'static [u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    Blob::of(b)
 }
 
 const fn text(b: &'static [u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    AbiStr::of_bytes(b)
 }
 
 const fn field(name: &'static [u8], value: &'static [u8]) -> Field {
@@ -653,10 +645,10 @@ impl SafeSlot for Uncounted {
         input: Lent<'_, OnPieceIn>,
         mut out: Out<'_, OnPieceOut>,
     ) -> Outcome {
-        let bytes = input.field(|i| &i.bytes).bytes();
+        let bytes = input.bytes().bytes();
         let n = input.reply_buf().stream(bytes);
         out.set(|o| &o.emitted, n as u64);
-        if input.from == FROM_FAR_END && input.flags & PIECE_LAST != 0 {
+        if input.from() == FROM_FAR_END && input.flags() & PIECE_LAST != 0 {
             out.set(|o| &o.flags, EMIT_DONE);
         }
         Outcome::Ready
@@ -752,7 +744,7 @@ mod door_units {
     use std::mem::zeroed;
     use std::sync::Arc;
 
-    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome};
     use busbar_contract::abi::plane::{
         slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
         UnitCount, EMIT_DONE, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FINAL,
@@ -771,19 +763,11 @@ mod door_units {
     }
 
     fn octets(b: &'static [u8]) -> Blob {
-        Blob {
-            ptr: b.as_ptr(),
-            len: b.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        }
+        Blob::of(b)
     }
 
     const fn text(b: &'static [u8]) -> AbiStr {
-        AbiStr {
-            ptr: b.as_ptr(),
-            len: b.len(),
-        }
+        AbiStr::of_bytes(b)
     }
 
     const fn field(name: &'static [u8], value: &'static [u8]) -> Field {

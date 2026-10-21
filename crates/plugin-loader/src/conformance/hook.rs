@@ -115,10 +115,7 @@ pub(super) struct Request {
 }
 
 fn str_of(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    crate::dispatch::lend_str(s.as_bytes())
 }
 
 // SAFETY: the raw pointers in `statics` point into `_names`, owned by the same `Request` (their heap
@@ -172,10 +169,7 @@ impl Request {
                     .unwrap_or(1),
                 _reserved3: 0,
                 context_max: 0,
-                tier: AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                },
+                tier: AbiStr::ABSENT,
                 cost_per_mtok: cost.unwrap_or(0.0),
                 tags: std::ptr::null(),
                 tags_len: 0,

@@ -46,32 +46,23 @@ fn oversize_snapshot_lengths_child() {
         "a snapshot within every cap copies"
     );
     let mut audience = snap();
-    audience.audience = AbiStr {
-        ptr: b.as_ptr(),
-        len: over,
-    };
+    // SAFETY: a length past the cap over eight real bytes, read only by `copy_snapshot`, which
+    // refuses it before any slice is formed.
+    audience.audience = unsafe { AbiStr::from_raw_parts(b.as_ptr(), over) };
     assert!(
         copy_snapshot(&audience, 0).is_none(),
         "an audience over the cap"
     );
     let mut openapi = snap();
-    openapi.openapi = Blob {
-        ptr: b.as_ptr(),
-        len: over,
-        fmt: 0,
-        flags: 0,
-    };
+    // SAFETY: as `audience`.
+    openapi.openapi = unsafe { Blob::from_raw_parts(b.as_ptr(), over, 0, 0) };
     assert!(
         copy_snapshot(&openapi, 0).is_none(),
         "an openapi over the cap"
     );
     let mut facts = snap();
-    facts.resource_facts = Blob {
-        ptr: b.as_ptr(),
-        len: over,
-        fmt: 0,
-        flags: 0,
-    };
+    // SAFETY: as `audience`.
+    facts.resource_facts = unsafe { Blob::from_raw_parts(b.as_ptr(), over, 0, 0) };
     assert!(
         copy_snapshot(&facts, 0).is_none(),
         "resource facts over the cap"

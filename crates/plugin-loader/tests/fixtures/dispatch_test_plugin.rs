@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
-    FLAG_RESUME, METRIC_ADD, METRIC_SET,
+    AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, Outcome, RawOutcome, FLAG_RESUME,
+    METRIC_ADD, METRIC_SET,
 };
 use busbar_contract::abi::mechanism::door::{
     Door, MetricFamily, Statement, FAMILY_COUNTER, FAMILY_GAUGE,
@@ -34,6 +34,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+use busbar_contract::abi::sdk::door::statement;
 
 /// The kind this test plugin states; its table is that kind's lifecycle skeleton.
 pub const KIND: KindCode = KindCode::Export;
@@ -121,35 +122,17 @@ struct Shared<T>(T);
 unsafe impl<T> Sync for Shared<T> {}
 
 const fn s(b: &'static [u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    AbiStr::of_bytes(b)
 }
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
+const NO_STR: AbiStr = AbiStr::ABSENT;
+const NO_BLOB: Blob = Blob::ABSENT;
 
 const fn family(name: &'static [u8], kind: u8, labels: usize) -> MetricFamily {
-    MetricFamily {
-        name: s(name),
-        help: NO_STR,
-        unit: NO_STR,
-        label_keys: if labels == 0 {
-            std::ptr::null()
-        } else {
-            &LABEL_KEYS.0 as *const AbiStr
-        },
-        label_keys_len: labels,
-        kind,
-        _reserved: [0; 7],
+    let family = MetricFamily::new(s(name), NO_STR, NO_STR, kind);
+    if labels == 0 {
+        family
+    } else {
+        family.with_label_keys(LABEL_KEYS.0.split_at(labels).0)
     }
 }
 
@@ -164,37 +147,21 @@ static FAMILIES: Shared<[MetricFamily; 6]> = Shared([
 ]);
 static DIAG_IDS: Shared<[AbiStr; 1]> = Shared([s(b"m1.note")]);
 
-static STATEMENT: Shared<Statement> = Shared(Statement {
-    size: std::mem::size_of::<Statement>() as u32,
-    kind: KIND as u32,
-    kind_abi: KIND.abi_version(),
-    max_inflight: 2,
-    name: s(b"dispatch-test-plugin"),
-    version: s(b"1.6.0"),
-    families: &FAMILIES.0 as *const MetricFamily,
-    families_len: 6,
-    diag_ids: &DIAG_IDS.0 as *const AbiStr,
-    diag_ids_len: 1,
-    kind_tail: std::ptr::null(),
-    extensions: NO_BLOB,
-    secret_refs: std::ptr::null(),
-    secret_refs_len: 0,
-    settings_schema: NO_BLOB,
-    marks: 0,
-    mark_words: std::ptr::null(),
-    mark_words_len: 0,
-    rewrites: std::ptr::null(),
-    rewrites_len: 0,
-    sections: std::ptr::null(),
-    sections_len: 0,
-    needs: std::ptr::null(),
-    needs_len: 0,
-    target_from: NO_STR,
-    trust_from: NO_STR,
-    answers: std::ptr::null(),
-    answers_len: 0,
-    claims: std::ptr::null(),
-    claims_len: 0,
+static STATEMENT: Shared<Statement> = Shared({
+    let mut st = statement("dispatch-test-plugin", "1.6.0", 2)
+        .with_families(&FAMILIES.0)
+        .with_diag_ids(&DIAG_IDS.0);
+    st.size = std::mem::size_of::<Statement>() as u32;
+    st.kind = KIND as u32;
+    st.kind_abi = KIND.abi_version();
+    st.name = s(b"dispatch-test-plugin");
+    st.version = s(b"1.6.0");
+    st.extensions = NO_BLOB;
+    st.settings_schema = NO_BLOB;
+    st.marks = 0;
+    st.target_from = NO_STR;
+    st.trust_from = NO_STR;
+    st
 });
 
 static OPS: Shared<OpsHead> = Shared(OpsHead {
@@ -397,7 +364,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         let open_in = &*input.cast::<OpenIn>();
         // Settings `hang:open`: `open` does not return until `unhang:open`.
         let st = open_in.settings;
-        if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == b"hang:open" {
+        if !st.ptr().is_null() && std::slice::from_raw_parts(st.ptr(), st.len()) == b"hang:open" {
             hang_until(b"open");
         }
         let Some(wake) = open_in.host.as_ref().and_then(|h| h.wake) else {
@@ -407,7 +374,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             return say(out, Outcome::Refused);
         }
         // Settings `overlong:open`: FAILED, stating a reason longer than the buffer the host lent.
-        if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == b"overlong:open" {
+        if !st.ptr().is_null() && std::slice::from_raw_parts(st.ptr(), st.len()) == b"overlong:open"
+        {
             (*out.cast::<OpenOut>()).err_len = open_in.err_cap + 1;
             return say(out, Outcome::Failed);
         }
@@ -506,10 +474,10 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
     unsafe {
         let tin = &*input.cast::<TickIn>();
         let ext = tin.head.extensions;
-        let mode: &[u8] = if ext.ptr.is_null() {
+        let mode: &[u8] = if ext.ptr().is_null() {
             &[]
         } else {
-            std::slice::from_raw_parts(ext.ptr, ext.len)
+            std::slice::from_raw_parts(ext.ptr(), ext.len())
         };
         if (*out.cast::<OutHead>()).size as usize >= std::mem::size_of::<TickOut>() {
             (*out.cast::<TickOut>()).next_tick_ns = 0;
@@ -579,10 +547,9 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             }
             SILENT => RawOutcome::of(Outcome::Ready),
             HUGE_TEXT => {
-                (*out.cast::<OutHead>()).error = AbiStr {
-                    ptr: HUGE_TEXT.as_ptr(),
-                    len: isize::MAX as usize + 1,
-                };
+                // A length no slice may have, over real bytes: the host caps it before reading.
+                (*out.cast::<OutHead>()).error =
+                    AbiStr::from_raw_parts(HUGE_TEXT.as_ptr(), isize::MAX as usize + 1);
                 say(out, Outcome::Failed)
             }
             COUNT => {
@@ -607,10 +574,8 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
                 say(out, Outcome::Ready)
             }
             BAD_TEXT => {
-                (*out.cast::<OutHead>()).error = AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 5,
-                };
+                // A length over NULL: the host refuses it before reading.
+                (*out.cast::<OutHead>()).error = AbiStr::from_raw_parts(std::ptr::null(), 5);
                 say(out, Outcome::Failed)
             }
             BAD_ENVELOPE => {

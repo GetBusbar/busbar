@@ -33,7 +33,7 @@ use std::sync::Arc;
 use busbar_contract::abi::host::conn::connector::{service, EstablishIn, IoIn, StreamIn};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use busbar_contract::abi::mechanism::door::{Door, DoorFn, KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
@@ -75,14 +75,9 @@ const OTHER_VERSION: &str = "0.0.0-conformance-restated";
 /// The real door restated with another version in its Statement.
 fn with_another_version(real: Door) -> Door {
     // SAFETY: a door's Statement is `'static`; only its version is restated.
-    let st: Statement = unsafe { real.statement.read_unaligned() };
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        version: AbiStr {
-            ptr: OTHER_VERSION.as_ptr(),
-            len: OTHER_VERSION.len(),
-        },
-        ..st
-    }));
+    let mut st: Statement = unsafe { real.statement.read_unaligned() };
+    st.version = AbiStr::of(OTHER_VERSION);
+    let st: &'static Statement = Box::leak(Box::new(st));
     Door {
         statement: st,
         ..real
@@ -133,15 +128,11 @@ fn with_another_piece(real: Door, stated: u32) -> Door {
     let st: Statement = unsafe { real.statement.read_unaligned() };
     // SAFETY: the honest door loaded, so its kind tail is a whole `'static` `TransportTail` (the
     // loader refuses a shorter one). Only the piece size is restated.
-    let tail: TransportTail = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
-    let tail: &'static TransportTail = Box::leak(Box::new(TransportTail {
-        frame_piece_size: stated,
-        ..tail
-    }));
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
-        ..st
-    }));
+    let mut tail: TransportTail =
+        unsafe { st.kind_tail().cast::<TransportTail>().read_unaligned() };
+    tail.frame_piece_size = stated;
+    let tail: &'static TransportTail = Box::leak(Box::new(tail));
+    let st: &'static Statement = Box::leak(Box::new(st.with_kind_tail(tail)));
     Door {
         statement: st,
         ..real
@@ -201,25 +192,20 @@ fn with_another_layout(real: Door, stated: u32) -> Door {
     // field reads it absent, as the host reads it), its stated size kept; only the layout is
     // restated.
     // SAFETY: a non-NULL kind tail leads with a `KindTailHead`.
-    let size = unsafe { st.kind_tail.read_unaligned() }.size as usize;
+    let size = unsafe { st.kind_tail().read_unaligned() }.size as usize;
     // SAFETY: an all-zero `PlaneTail` is a valid value (integers and pointers).
     let mut tail: PlaneTail = unsafe { std::mem::zeroed() };
     // SAFETY: at most the plugin's stated size and at most a `PlaneTail` is copied.
     unsafe {
         std::ptr::copy_nonoverlapping(
-            st.kind_tail.cast::<u8>(),
+            st.kind_tail().cast::<u8>(),
             std::ptr::from_mut(&mut tail).cast::<u8>(),
             size.min(std::mem::size_of::<PlaneTail>()),
         );
     }
-    let tail: &'static PlaneTail = Box::leak(Box::new(PlaneTail {
-        answer_layout: stated,
-        ..tail
-    }));
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
-        ..st
-    }));
+    tail.answer_layout = stated;
+    let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+    let st: &'static Statement = Box::leak(Box::new(st.with_kind_tail(tail)));
     Door {
         statement: st,
         ..real
@@ -330,11 +316,11 @@ fn out() -> ServiceOut {
 
 /// A host slot's answer: its outcome, scalar and text.
 fn answered(raw: RawOutcome, o: &ServiceOut) -> (Outcome, u64, String) {
-    let text = if o.error.ptr.is_null() {
+    let text = if o.error.ptr().is_null() {
         String::new()
     } else {
         // SAFETY: the host's text, `'static` (interned) or held for the call.
-        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(o.error.ptr, o.error.len) })
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(o.error.ptr(), o.error.len()) })
             .into_owned()
     };
     (raw.outcome(), o.value, text)
@@ -342,18 +328,12 @@ fn answered(raw: RawOutcome, o: &ServiceOut) -> (Outcome, u64, String) {
 
 /// `ESTABLISH` of `need` at `target`, on `p`'s own context, as the plugin calls it.
 fn establish<K: Kind>(p: &Plugin<K>, need: u32, target: &str) -> (Outcome, u64, String) {
-    let none = AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    };
+    let none = AbiStr::ABSENT;
     let i = EstablishIn {
         head: head(service::ESTABLISH, std::mem::size_of::<EstablishIn>()),
         need,
         timeout_ms: 5_000,
-        target: AbiStr {
-            ptr: target.as_ptr(),
-            len: target.len(),
-        },
+        target: crate::dispatch::lend_str(target.as_bytes()),
         within: none,
         member: none,
     };

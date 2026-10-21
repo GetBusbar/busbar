@@ -480,10 +480,7 @@ fn reserve_and_slice_release_through_the_sdk_allocate_nothing() {
     let instance = open_out.instance;
 
     let cells = [UnitCell {
-        bucket: AbiStr {
-            ptr: BUCKET.as_ptr(),
-            len: BUCKET.len(),
-        },
+        bucket: AbiStr::of(BUCKET),
         dimension: DIM_REQUESTS,
         amount: 3,
         window_start: 1_000,

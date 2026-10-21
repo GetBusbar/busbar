@@ -261,14 +261,7 @@ fn slot(
             items: 0,
             needed_bytes: 0,
             needed_items: 0,
-            error: AbiStr {
-                ptr: if a.error.is_empty() {
-                    std::ptr::null()
-                } else {
-                    a.error.as_ptr()
-                },
-                len: a.error.len(),
-            },
+            error: abi(a.error),
         };
         // SAFETY: the caller's `out`, checked non-NULL.
         unsafe { out.write_unaligned(o) };
@@ -326,12 +319,12 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             // `size` stops there names no registration.
             let i = unsafe { read_establish(input) };
             // SAFETY: a checked range of the caller's, live for the call.
-            let Some(target) = (unsafe { bytes(i.target.ptr.cast_mut(), i.target.len) }) else {
+            let Some(target) = (unsafe { bytes(i.target.ptr().cast_mut(), i.target.len()) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
             let target = String::from_utf8_lossy(target);
             // SAFETY: a checked range of the caller's, live for the call.
-            let Some(within) = (unsafe { bytes(i.within.ptr.cast_mut(), i.within.len) }) else {
+            let Some(within) = (unsafe { bytes(i.within.ptr().cast_mut(), i.within.len()) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
             let Some(within) = addresses(within) else {
@@ -341,7 +334,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 );
             };
             // SAFETY: a checked range of the caller's, live for the call.
-            let Some(member) = (unsafe { bytes(i.member.ptr.cast_mut(), i.member.len) }) else {
+            let Some(member) = (unsafe { bytes(i.member.ptr().cast_mut(), i.member.len()) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
             let member = String::from_utf8_lossy(member).into_owned();
@@ -487,9 +480,9 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
 /// An optional text the caller handed: `Ok(None)` when absent or empty, `Err` when it is not text.
 ///
 /// # Safety
-/// A non-NULL `s.ptr` names `s.len` live bytes for the call.
+/// A non-NULL `s.ptr()` names `s.len()` live bytes for the call.
 unsafe fn optional_text<'a>(s: AbiStr) -> Result<Option<&'a str>, ()> {
-    if s.ptr.is_null() || s.len == 0 {
+    if s.ptr().is_null() || s.is_empty() {
         return Ok(None);
     }
     // SAFETY: the caller's contract; the length is capped before the slice is formed.
@@ -593,20 +586,15 @@ fn held_facts() -> MutexGuard<'static, HeldFacts> {
 /// `text`, held for `stream` until it closes, as the caller reads it.
 fn held_text(all: &mut HeldFacts, key: (InstanceId, u64), text: Option<&str>) -> AbiStr {
     let Some(text) = text else {
-        return AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        };
+        return AbiStr::ABSENT;
     };
     let kept = all.entry(key).or_default();
     if !kept.iter().any(|k| &**k == text) {
         kept.push(text.into());
     }
     let k = kept.iter().find(|k| &***k == text).expect("just kept");
-    AbiStr {
-        ptr: k.as_ptr(),
-        len: k.len(),
-    }
+    // The text is held until the stream closes, past every read the caller makes of it.
+    super::lend_str(k.as_bytes())
 }
 
 extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
@@ -1525,14 +1513,12 @@ fn process() -> &'static (String, String) {
     })
 }
 
+/// `s`, which lives for the program; empty is absent (NULL).
 fn abi(s: &'static str) -> AbiStr {
-    AbiStr {
-        ptr: if s.is_empty() {
-            std::ptr::null()
-        } else {
-            s.as_ptr()
-        },
-        len: s.len(),
+    if s.is_empty() {
+        AbiStr::ABSENT
+    } else {
+        AbiStr::of(s)
     }
 }
 

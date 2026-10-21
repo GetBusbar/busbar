@@ -56,10 +56,10 @@ fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8])
     let (blob, error_kind) = f.map_or((crate::dispatch::NO_BLOB, 0), |f| {
         (f.out.secret, f.out.error_kind)
     });
-    let got = if c.outcome == Outcome::Ready && !blob.ptr.is_null() {
+    let got = if c.outcome == Outcome::Ready && !blob.ptr().is_null() {
         // SAFETY: a READY resolve's blob is the plugin's, live until `release` of its lease, which
         // has not run; the dispatcher's kind check judged its pointer/length pairing.
-        unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) }.to_vec()
+        unsafe { std::slice::from_raw_parts(blob.ptr(), blob.len()) }.to_vec()
     } else {
         Vec::new()
     };

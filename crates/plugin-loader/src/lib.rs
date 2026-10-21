@@ -13,10 +13,10 @@
 //! UNSAFE CODE (`BUSBAR-1.6.0.md` THE DESIGN §2: "transport, loader, store and export crates are
 //! `#![deny(unsafe_code)]` with a reviewed allow-list"): denied for the whole crate. THE REVIEWED
 //! ALLOW-LIST is every `#[allow(unsafe_code)]` below and the two named functions: the modules that
-//! cross the memory ABI (the dispatcher, the doors and axes that lend it memory, the plugin thread,
-//! the staging `memfd`, the published conformance suite) and their tests; `dlopen_on_worker`
-//! (`Library::new`); `boot`'s secret wipe (a volatile write). A new `unsafe` anywhere else does
-//! not compile until it is added here, by name, for review.
+//! cross the memory ABI (the dispatcher, the doors and axes that lend it memory, the host's lending
+//! `lend`, the plugin thread, the staging `memfd`, the published conformance suite) and their
+//! tests; `dlopen_on_worker` (`Library::new`); `boot`'s secret wipe (a volatile write). A new
+//! `unsafe` anywhere else does not compile until it is added here, by name, for review.
 #![deny(unsafe_code)]
 
 use libloading::Library;
@@ -62,6 +62,10 @@ mod host;
 /// connector. No TLS library: TLS stays in the connector.
 #[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod https_conns;
+/// THE HOST'S LENDING (status row 194): an `AbiStr` or a `Blob` over memory the host lends a plugin
+/// for one call, for every host crate (busbar's root, which writes no `unsafe`, among them).
+#[allow(unsafe_code)] // REVIEWED: the host's one door for lending runtime memory to one call
+pub mod lend;
 pub mod observe;
 pub mod open_once;
 pub mod registry;

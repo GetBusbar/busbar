@@ -61,8 +61,8 @@ fn a_forged_context_in_a_non_lifecycle_op_answers_fault_and_quarantines() {
     ];
     let mut arrive_frame = Frame::new(
         ArriveIn {
-            target: AbiStr::over(b"/forge-context"),
-            method: AbiStr::over(b"POST"),
+            target: AbiStr::of_bytes(b"/forge-context"),
+            method: AbiStr::of_bytes(b"POST"),
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),

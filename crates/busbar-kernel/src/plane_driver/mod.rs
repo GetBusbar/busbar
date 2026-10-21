@@ -781,16 +781,25 @@ impl<S, F, C> std::fmt::Debug for PlaneUnits<'_, S, F, C> {
     }
 }
 
+/// `bytes`, lent to the one plane call an `in` crosses in (status row 194, the call-lending
+/// contract): the caller of every call that reads it holds `bytes` alive until the call returns.
+#[allow(unsafe_code)]
+fn lend(bytes: &[u8]) -> AbiStr {
+    // SAFETY: `bytes` is a live slice, and the `in` this string crosses in is lent to one call
+    // its caller makes while still holding `bytes` (status row 194): every read of it finds
+    // `len` readable bytes at a non-NULL `ptr`.
+    unsafe { AbiStr::from_raw_parts(bytes.as_ptr(), bytes.len()) }
+}
+
+/// `b` as opaque octets lent to one plane call ([`lend`]); empty bytes cross as ABSENT.
+#[allow(unsafe_code)]
 fn blob(b: &[u8]) -> Blob {
     if b.is_empty() {
         return Blob::ABSENT;
     }
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+    // SAFETY: as [`lend`]: `b` is a live slice its caller holds until the one call the `in`
+    // carrying it is lent to returns (status row 194).
+    unsafe { Blob::from_raw_parts(b.as_ptr(), b.len(), BLOB_OCTETS, 0) }
 }
 
 const ZERO_UNIT: UnitCount = UnitCount {
@@ -866,21 +875,21 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             .fields
             .iter()
             .map(|(n, v)| Field {
-                name: AbiStr::over(n),
-                value: AbiStr::over(v),
+                name: lend(n),
+                value: lend(v),
             })
             .collect();
         let mut units = vec![ZERO_UNIT; self.driver.config.caps.units];
         let mut input = ArriveIn {
             unit,
             claim: a.claim,
-            target: AbiStr::over(&a.target),
+            target: lend(&a.target),
             fields: fields.as_ptr(),
             fields_len: fields.len(),
             body: blob(&a.body),
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
-            method: AbiStr::over(&a.method),
+            method: lend(&a.method),
             ..blank_in()
         };
         let mut o: ArriveOut = blank_out();
@@ -999,11 +1008,11 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             status,
             dialect,
             reason: reason_code(reason),
-            text: AbiStr::over(text),
+            text: lend(text),
             unit,
             plane_code: declined.map_or(0, |(code, _)| code),
             retry_after_s,
-            target: AbiStr::over(&self.arrival.target),
+            target: lend(&self.arrival.target),
             trust: if reason == ReasonCode::Untrusted {
                 self.lock().distrust.map_or(0, |why| {
                     u32::try_from(crate::host_services::distrust_code(why)).unwrap_or(0)
@@ -1015,7 +1024,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         };
         // The vetoing hook's name, on a gate refusal alone (absent = NULL otherwise).
         if let Some(hook) = hook {
-            input.hook = AbiStr::over(hook.as_bytes());
+            input.hook = lend(hook.as_bytes());
         }
         let principal = self.lock().principal.clone();
         self.driver.render_refusal(input, principal.as_ref())
@@ -1115,9 +1124,9 @@ impl PlaneDriver {
             status,
             dialect,
             reason: reason_code(reason),
-            text: AbiStr::over(text.as_bytes()),
+            text: lend(text.as_bytes()),
             unit: 0,
-            target: AbiStr::over(target),
+            target: lend(target),
             ..blank_in()
         };
         let rendered = self.render_refusal(input, None);
@@ -1138,9 +1147,9 @@ impl PlaneDriver {
             status: self.config.status(dialect, reason),
             dialect,
             reason: reason_code(reason),
-            text: AbiStr::over(reason.as_str().as_bytes()),
+            text: lend(reason.as_str().as_bytes()),
             unit: 0,
-            target: AbiStr::over(target),
+            target: lend(target),
             ..blank_in()
         };
         self.render_refusal(input, None)
@@ -1162,11 +1171,11 @@ impl PlaneDriver {
         let fields: Vec<Field> = head
             .iter()
             .map(|(n, v)| Field {
-                name: AbiStr::over(n),
-                value: AbiStr::over(v),
+                name: lend(n),
+                value: lend(v),
             })
             .collect();
-        let listed: Vec<AbiStr> = names.iter().map(|n| AbiStr::over(n.as_bytes())).collect();
+        let listed: Vec<AbiStr> = names.iter().map(|n| lend(n.as_bytes())).collect();
         let caps = self.config.caps;
         let (mut reply, mut out_fields, mut arena) = (
             vec![0u8; caps.reply],
@@ -1174,8 +1183,8 @@ impl PlaneDriver {
             vec![0u8; caps.arena],
         );
         let mut input = CatalogIn {
-            method: AbiStr::over(method),
-            target: AbiStr::over(target),
+            method: lend(method),
+            target: lend(target),
             fields: fields.as_ptr(),
             fields_len: fields.len(),
             names: listed.as_ptr(),

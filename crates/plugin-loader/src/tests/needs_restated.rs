@@ -14,30 +14,20 @@ use busbar_contract::abi::sdk::door::abi_str;
 
 use crate::dispatch::NO_BLOB;
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ABSENT;
 
 /// One outbound need over `transport`, its target the plugin's own.
 #[must_use]
 pub(crate) const fn need(transport: AbiStr) -> Need {
-    Need {
-        direction: DIRECTION_OUTBOUND,
-        egress_class: 0,
-        transport,
-        auth: NONE,
-        target_from: NONE,
-        trust_from: NONE,
-        details: NO_BLOB,
-        keep_response_headers: std::ptr::null(),
-        keep_response_headers_len: 0,
-        timeout_ms: 0,
-        keep_mode: KEEP_NAMED,
-        _reserved: 0,
-        deny_response_headers: std::ptr::null(),
-        deny_response_headers_len: 0,
-    }
+    let mut need = Need::EMPTY;
+    need.direction = DIRECTION_OUTBOUND;
+    need.transport = transport;
+    need.auth = NONE;
+    need.target_from = NONE;
+    need.trust_from = NONE;
+    need.details = NO_BLOB;
+    need.keep_mode = KEEP_NAMED;
+    need
 }
 
 /// One `tcp` need.
@@ -52,11 +42,7 @@ pub(crate) fn restate(slot: &AtomicPtr<Door>, real: DoorFn, needs: &'static [Nee
     // SAFETY: a door function answers a `'static` door with a `'static` Statement.
     let door: Door = unsafe { real().read_unaligned() };
     let st: Statement = unsafe { door.statement.read_unaligned() };
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        needs: needs.as_ptr(),
-        needs_len: needs.len(),
-        ..st
-    }));
+    let st: &'static Statement = Box::leak(Box::new(st.with_needs(needs)));
     let door = Box::into_raw(Box::new(Door {
         statement: st,
         ..door

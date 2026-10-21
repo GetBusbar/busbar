@@ -3537,20 +3537,17 @@ mod tools_door {
     /// reload): the plane's catalogue moves; the kernel's sealed egress does not.
     fn reload(rig: &Rig, section: &serde_yaml::Value) {
         use crate::root::loader::dispatch::{in_head, out_head, Frame};
-        use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_JSON};
+        use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome};
         use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
         use busbar_contract::abi::plane::PlaneRefreshOut;
+        // Leaked: a `'static` JSON blob without `unsafe` (this crate forbids it); one per reload.
         let settings = serde_json::to_vec(section).expect("json");
+        let settings: &'static [u8] = Box::leak(settings.into_boxed_slice());
         let mut frame = Frame::new(
             RefreshIn {
                 head: in_head(),
                 generation: 2,
-                settings: Blob {
-                    ptr: settings.as_ptr(),
-                    len: settings.len(),
-                    fmt: BLOB_JSON,
-                    flags: 0,
-                },
+                settings: Blob::json(settings),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
             },

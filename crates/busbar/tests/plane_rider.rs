@@ -111,10 +111,7 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
-            public_url: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            public_url: AbiStr::ABSENT,
             owned: NO_BLOB,
             providers: std::ptr::null(),
             providers_len: 0,
@@ -136,7 +133,7 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
 }
 
 /// `arrive` on `target`: its outcome and the unit amounts it wrote.
-fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
+fn arrive(plugin: &Plugin<Plane>, target: &'static [u8]) -> (AbiOutcome, Vec<u64>) {
     let mut units = [UnitCount {
         class: 0,
         source: 0,
@@ -148,19 +145,13 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             unit: 0,
             claim: 0,
             _reserved: 0,
-            target: AbiStr {
-                ptr: target.as_ptr(),
-                len: target.len(),
-            },
+            target: AbiStr::of_bytes(target),
             fields: std::ptr::null(),
             fields_len: 0,
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
-            method: AbiStr {
-                ptr: b"GET".as_ptr(),
-                len: 3,
-            },
+            method: AbiStr::of_bytes(b"GET"),
         },
         ArriveOut {
             head: out_head(),
@@ -174,29 +165,14 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             refusal_flags: 0,
             correlation: 0,
             cancels: 0,
-            pool: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            pool: AbiStr::ABSENT,
             route: 0,
             route_flags: 0,
             _route_reserved: [0; 6],
-            affinity: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            trust_counterparty: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            trust_item: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            trust_digest: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            affinity: AbiStr::ABSENT,
+            trust_counterparty: AbiStr::ABSENT,
+            trust_item: AbiStr::ABSENT,
+            trust_digest: AbiStr::ABSENT,
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;

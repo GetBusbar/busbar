@@ -34,7 +34,7 @@ use busbar_contract::abi::transport::{
     MAX_ADDR, READ_END_OF_FRAME, WRITE_END_OF_FRAME,
 };
 
-use crate::framer::{Crossed, FramerDoor};
+use crate::framer::{abi, Crossed, FramerDoor};
 use crate::hostio::{Admission, HostIo, OpenFailure};
 
 /// ONE SIDE of a carried connection: a ticket its entry's ops are driven on inline, and the task
@@ -158,13 +158,6 @@ impl Driven {
         let mut o: CancelOut = blank_out();
         let _ = door.carry(self.side.as_ref(), false, Carry::Cancel(&mut i, &mut o));
         self.pending = 0;
-    }
-}
-
-const fn abi(b: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
     }
 }
 

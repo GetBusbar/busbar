@@ -477,12 +477,7 @@ fn raw_session_remove(
         oi.head = in_head();
         oi.head.size = std::mem::size_of::<OpenIn>() as u32;
         oi.head.op = busbar_contract::abi::mechanism::lifecycle::slot::OPEN;
-        oi.settings = busbar_contract::abi::mechanism::call::Blob {
-            ptr: b"{}".as_ptr(),
-            len: 2,
-            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
-            flags: 0,
-        };
+        oi.settings = busbar_contract::abi::mechanism::call::Blob::of(b"{}");
         oi.generation = 1;
         let mut oo: OpenOut = std::mem::zeroed();
         oo.head = out_head();
@@ -711,29 +706,20 @@ impl Hooks for OverTcp {
 }
 
 pub(super) const NO_TEXT: busbar_contract::abi::mechanism::call::AbiStr =
-    busbar_contract::abi::mechanism::call::AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    };
+    busbar_contract::abi::mechanism::call::AbiStr::ABSENT;
 
 /// One outbound `tcp` need, its target named by the store.
-pub(super) const TCP: &[busbar_contract::abi::host::conn::connector::Need] =
-    &[busbar_contract::abi::host::conn::connector::Need {
-        direction: busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND,
-        egress_class: 0,
-        transport: busbar_contract::abi::sdk::door::abi_str("tcp"),
-        auth: NO_TEXT,
-        target_from: NO_TEXT,
-        trust_from: NO_TEXT,
-        details: crate::dispatch::NO_BLOB,
-        keep_response_headers: std::ptr::null(),
-        keep_response_headers_len: 0,
-        timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
-        _reserved: 0,
-        deny_response_headers: std::ptr::null(),
-        deny_response_headers_len: 0,
-    }];
+pub(super) const TCP: &[busbar_contract::abi::host::conn::connector::Need] = &[{
+    let mut need = busbar_contract::abi::host::conn::connector::Need::EMPTY;
+    need.direction = busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    need.transport = busbar_contract::abi::sdk::door::abi_str("tcp");
+    need.auth = NO_TEXT;
+    need.target_from = NO_TEXT;
+    need.trust_from = NO_TEXT;
+    need.details = crate::dispatch::NO_BLOB;
+    need.keep_mode = busbar_contract::abi::host::conn::connector::KEEP_NAMED;
+    need
+}];
 
 mod over_tcp {
     busbar_contract::store_door!(
@@ -786,11 +772,11 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
 fn a_store_door_without_needs_states_none() {
     // SAFETY: the SDK's `'static` door and Statement.
     let st = unsafe { *(*remote_denylist::door()).statement };
-    assert!(st.needs.is_null());
-    assert_eq!(st.needs_len, 0);
+    assert!(st.needs_ptr().is_null());
+    assert_eq!(st.needs_len(), 0);
     // SAFETY: as above.
     let st = unsafe { *(*over_tcp::door()).statement };
-    assert_eq!(st.needs_len, 1);
+    assert_eq!(st.needs_len(), 1);
 }
 
 // ── open on a ticket, with a connect step (ARCHITECT ruling 2026-10-03 on Q-L16-2) ────────────

@@ -59,7 +59,7 @@ fn a_committed_rewrite_crosses_to_the_plane_as_one_and_never_as_absent() {
         );
         let crossed = blob(&bytes);
         assert!(
-            !crossed.ptr.is_null() && crossed.len == bytes.len() && crossed.fmt == BLOB_OCTETS,
+            !crossed.ptr().is_null() && crossed.len() == bytes.len() && crossed.fmt == BLOB_OCTETS,
             "{what}: the plane is handed the rewrite, never the absent blob"
         );
         assert_eq!(
@@ -69,5 +69,5 @@ fn a_committed_rewrite_crosses_to_the_plane_as_one_and_never_as_absent() {
         );
     }
     // The control: empty bytes ARE the absent blob, which is why the crossing must never make them.
-    assert!(blob(&[]).ptr.is_null(), "empty bytes cross as ABSENT");
+    assert!(blob(&[]).ptr().is_null(), "empty bytes cross as ABSENT");
 }

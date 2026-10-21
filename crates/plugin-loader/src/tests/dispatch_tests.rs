@@ -209,12 +209,7 @@ fn dropped(sink: Arc<Recorder>) -> Plugin<TestKind> {
 /// A `tick` frame whose extensions blob names the test op.
 fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
     let mut head = in_head();
-    head.extensions = Blob {
-        ptr: mode.as_ptr(),
-        len: mode.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
+    head.extensions = Blob::of(mode);
     Frame::new(
         TickIn {
             head,
@@ -714,13 +709,7 @@ fn opened(d: &Dispatcher) -> (Plugin<TestKind>, Arc<Recorder>) {
 fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
     let p = linked(quiet());
     let mut f = open_frame();
-    let settings = b"overlong:open";
-    f.input.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
+    f.input.settings = Blob::of(b"overlong:open");
     let c = p.call(slot::OPEN, &mut f);
     assert_eq!(c.outcome, Outcome::Fault);
     assert_eq!(c.error, None);
@@ -1426,10 +1415,9 @@ fn red_every_door_refusal() {
         with(&|d| d.statement = std::ptr::null()),
         Some(LoadError::NullStatement)
     );
-    let other = Box::leak(Box::new(Statement {
-        kind_abi: abi + 1,
-        ..st
-    }));
+    let mut other = st;
+    other.kind_abi = abi + 1;
+    let other = Box::leak(Box::new(other));
     assert_eq!(
         with(&|d| d.statement = other),
         Some(LoadError::StatementDisagrees("kind_abi"))
@@ -1438,10 +1426,8 @@ fn red_every_door_refusal() {
         size: 4,
         _reserved: 0,
     }));
-    let short = Box::leak(Box::new(Statement {
-        kind_tail: tail,
-        ..st
-    }));
+    // SAFETY: a leaked head, alive for the program, stating a size shorter than itself.
+    let short = Box::leak(Box::new(unsafe { st.with_raw_kind_tail(tail) }));
     assert!(matches!(
         with(&|d| d.statement = short),
         Some(LoadError::KindTail(_))
@@ -1450,27 +1436,26 @@ fn red_every_door_refusal() {
         size: 8,
         _reserved: 0,
     }));
-    let fine = Box::leak(Box::new(Statement {
-        kind_tail: tail,
-        ..st
-    }));
+    // SAFETY: a leaked head, alive for the program, stating its own size.
+    let fine = Box::leak(Box::new(unsafe { st.with_raw_kind_tail(tail) }));
     assert!(
         with(&|d| d.statement = fine).is_none(),
         "a well-formed kind tail loads"
     );
     // THE STATEMENT'S LISTS (the design's One Statement): marks, rewrites, sections, needs and
     // answers are judged at load, the same for either origin.
-    let unknown_mark = Box::leak(Box::new(Statement {
-        marks: 1 << 20,
-        ..st
-    }));
+    let mut unknown_mark = st;
+    unknown_mark.marks = 1 << 20;
+    let unknown_mark = Box::leak(Box::new(unknown_mark));
     assert_eq!(
         with(&|d| d.statement = unknown_mark),
         Some(LoadError::BadStatement(
             "statement.marks breaks UnknownCode".into()
         ))
     );
-    let null_needs = Box::leak(Box::new(Statement { needs_len: 1, ..st }));
+    // SAFETY: forged as a foreign plugin could: one need counted over the Statement's NULL, read
+    // only by the load's checks, which refuse it.
+    let null_needs = Box::leak(Box::new(unsafe { st.with_raw_needs(st.needs_ptr(), 1) }));
     assert_eq!(
         with(&|d| d.statement = null_needs),
         Some(LoadError::BadStatement(
@@ -1484,21 +1469,16 @@ fn red_every_door_refusal() {
             from: busbar_contract::abi::sdk::door::abi_str("x"),
             to: busbar_contract::abi::sdk::door::abi_str(""),
         }]));
-    let bad_rewrite = Box::leak(Box::new(Statement {
-        rewrites: rewrite.as_ptr(),
-        rewrites_len: 1,
-        ..st
-    }));
+    let bad_rewrite = Box::leak(Box::new(st.with_rewrites(rewrite)));
     assert_eq!(
         with(&|d| d.statement = bad_rewrite),
         Some(LoadError::BadStatement(
             "rewrite.class breaks UnknownCode".into()
         ))
     );
-    let marked = Box::leak(Box::new(Statement {
-        marks: busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE,
-        ..st
-    }));
+    let mut marked = st;
+    marked.marks = busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE;
+    let marked = Box::leak(Box::new(marked));
     assert!(
         with(&|d| d.statement = marked).is_none(),
         "a known mark loads"
@@ -1910,28 +1890,17 @@ fn red_text_is_capped_before_any_slice_is_made() {
     use crate::dispatch::plugin::{str_bytes, MAX_TEXT};
     use busbar_contract::abi::mechanism::call::AbiStr;
     let bytes = b"x";
-    let huge = AbiStr {
-        ptr: bytes.as_ptr(),
-        len: isize::MAX as usize + 1,
-    };
+    // SAFETY: miscounted as a foreign plugin could, read only by `str_bytes`, which caps the
+    // length before any slice is made.
+    let huge = unsafe { AbiStr::from_raw_parts(bytes.as_ptr(), isize::MAX as usize + 1) };
     assert_eq!(str_bytes(huge), None, "no slice of isize::MAX + 1 bytes");
-    let over = AbiStr {
-        ptr: bytes.as_ptr(),
-        len: MAX_TEXT + 1,
-    };
+    // SAFETY: as `huge`: read only by `str_bytes`, which caps it.
+    let over = unsafe { AbiStr::from_raw_parts(bytes.as_ptr(), MAX_TEXT + 1) };
     assert_eq!(str_bytes(over), None);
-    let null = AbiStr {
-        ptr: std::ptr::null(),
-        len: 3,
-    };
+    // SAFETY: a length over NULL, read only by `str_bytes`, which refuses it.
+    let null = unsafe { AbiStr::from_raw_parts(std::ptr::null(), 3) };
     assert_eq!(str_bytes(null), None);
-    assert_eq!(
-        str_bytes(AbiStr {
-            ptr: bytes.as_ptr(),
-            len: 1
-        }),
-        Some(&b"x"[..])
-    );
+    assert_eq!(str_bytes(AbiStr::of_bytes(bytes)), Some(&b"x"[..]));
     // Through a crossing: the answer is FAULT and nothing is read.
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
@@ -2249,13 +2218,7 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
     let hung = Arc::clone(&p);
     let caller = std::thread::spawn(move || {
         let mut f = open_frame();
-        let settings = b"hang:open";
-        f.input.settings = busbar_contract::abi::mechanism::call::Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        };
+        f.input.settings = Blob::of(b"hang:open");
         hung.call(slot::OPEN, &mut f).outcome
     });
     // No submit ever reached the dispatcher: the instance was adopted at bind.
@@ -2437,12 +2400,10 @@ impl Drop for LentMode {
 /// A `tick` frame over `lent`'s bytes (NOT `'static`: the pointer is only as good as `lent`).
 fn lent_frame(lent: &LentMode) -> Frame<TickIn, TickOut> {
     let mut f = frame(b"");
-    f.input.head.extensions = Blob {
-        ptr: lent.bytes.as_ptr(),
-        len: lent.bytes.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
+    // SAFETY: the frame is only as good as `lent`, which each caller hands the dispatcher with it
+    // (`submit_lent`), to be held until the crossing returns.
+    f.input.head.extensions =
+        unsafe { Blob::from_raw_parts(lent.bytes.as_ptr(), lent.bytes.len(), BLOB_OCTETS, 0) };
     f
 }
 
@@ -2578,21 +2539,17 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         busbar_contract::abi::sdk::door::abi_str("tele"),
         busbar_contract::abi::sdk::door::abi_str("teles"),
     ];
-    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
-    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
-    // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set below.
-    let mut t: TransportTail = unsafe { std::mem::zeroed() };
+    const ROWS: &[Claim] = &[Claim::EMPTY];
+    let mut t = TransportTail::EMPTY.with_claim_rows(ROWS);
     t.head.size = std::mem::size_of::<TransportTail>() as u32;
     t.frame_piece_size = std::mem::size_of::<busbar_contract::abi::transport::FramePiece>() as u32;
-    t.claim_rows = row;
-    t.claim_rows_len = 1;
-    let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
-    let st = |names: usize, kind: KindCode| Statement {
-        kind: kind as u32,
-        kind_tail: tail,
-        claims: NAMES.as_ptr(),
-        claims_len: names,
-        ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+    let tail: &'static TransportTail = Box::leak(Box::new(t));
+    let st = |names: usize, kind: KindCode| {
+        let mut s = busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+            .with_kind_tail(tail)
+            .with_claims(&NAMES[..names]);
+        s.kind = kind as u32;
+        s
     };
     assert!(crate::dispatch::load::kind_tail(&st(1, KindCode::Transport)).is_ok());
     assert!(matches!(
@@ -2603,10 +2560,8 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
     // `a_plane_built_against_another_answer_layout_is_refused_at_load`).
     assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Hook)).is_ok());
     // A transport naming claims with no tail at all has no rows: refused, not skipped.
-    let untailed = Statement {
-        kind_tail: std::ptr::null(),
-        ..st(1, KindCode::Transport)
-    };
+    // SAFETY: NULL states no tail.
+    let untailed = unsafe { st(1, KindCode::Transport).with_raw_kind_tail(std::ptr::null()) };
     assert!(matches!(
         crate::dispatch::load::kind_tail(&untailed),
         Err(LoadError::KindTail(_))
@@ -2628,29 +2583,24 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
         host, FRAME_PIECE_SIZE,
         "the contract states the host's piece"
     );
-    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
-    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
+    const ROWS: &[Claim] = &[Claim::EMPTY];
     let tail = |size: usize, piece: u32| {
-        // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set.
-        let mut t: TransportTail = unsafe { std::mem::zeroed() };
+        let mut t = TransportTail::EMPTY.with_claim_rows(ROWS);
         t.head.size = size as u32;
         t.frame_piece_size = piece;
-        t.claim_rows = row;
-        t.claim_rows_len = 1;
         (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>()
     };
     // Through the load path's own Statement read (`validate`, the pack tool's rendering and
     // `statement_of` all go through it), on a transport door.
     let load = |kind_tail: *const KindTailHead| {
-        let st: &'static Statement = Box::leak(Box::new(Statement {
-            size: std::mem::size_of::<Statement>() as u32,
-            kind: KindCode::Transport as u32,
-            kind_abi: KindCode::Transport.abi_version(),
-            kind_tail,
-            claims: NAMES.as_ptr(),
-            claims_len: NAMES.len(),
-            ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
-        }));
+        let st =
+            busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1).with_claims(NAMES);
+        // SAFETY: every tail here is leaked, alive for the program, its head's size within it.
+        let mut st = unsafe { st.with_raw_kind_tail(kind_tail) };
+        st.size = std::mem::size_of::<Statement>() as u32;
+        st.kind = KindCode::Transport as u32;
+        st.kind_abi = KindCode::Transport.abi_version();
+        let st: &'static Statement = Box::leak(Box::new(st));
         let door = Door {
             magic: DOOR_MAGIC,
             mechanism_version: MECHANISM_VERSION,
@@ -2719,13 +2669,13 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
     // Through the load path's own Statement read (`validate`, the pack tool's rendering and
     // `statement_of` all go through it), on a plane door.
     let load = |kind_tail: *const KindTailHead| {
-        let st: &'static Statement = Box::leak(Box::new(Statement {
-            size: std::mem::size_of::<Statement>() as u32,
-            kind: KindCode::Plane as u32,
-            kind_abi: KindCode::Plane.abi_version(),
-            kind_tail,
-            ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
-        }));
+        let st = busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1);
+        // SAFETY: every tail here is leaked, alive for the program, its head's size within it.
+        let mut st = unsafe { st.with_raw_kind_tail(kind_tail) };
+        st.size = std::mem::size_of::<Statement>() as u32;
+        st.kind = KindCode::Plane as u32;
+        st.kind_abi = KindCode::Plane.abi_version();
+        let st: &'static Statement = Box::leak(Box::new(st));
         let door = Door {
             magic: DOOR_MAGIC,
             mechanism_version: MECHANISM_VERSION,

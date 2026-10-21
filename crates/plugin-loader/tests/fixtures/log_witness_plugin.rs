@@ -26,7 +26,7 @@
 use std::ffi::c_void;
 use std::mem::{size_of, MaybeUninit};
 
-use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{Blob, InHead, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn,
     TickIn, TickOut, ValidateIn,
@@ -68,11 +68,11 @@ unsafe impl KindOps for Ops {
 /// The `tick` mode the `in` names.
 fn mode(input: &TickIn) -> &[u8] {
     let b = input.head.extensions;
-    if b.ptr.is_null() || b.fmt != BLOB_OCTETS {
+    if b.ptr().is_null() || b.fmt != BLOB_OCTETS {
         return &[];
     }
     // SAFETY: the host's extensions blob names `len` live bytes for the call.
-    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }
+    unsafe { std::slice::from_raw_parts(b.ptr(), b.len()) }
 }
 
 /// Log through `tracing` and `log`, from here and from `h2` and `tungstenite`.
@@ -113,9 +113,7 @@ fn call_b(mode: &'static [u8]) {
     let mut out: TickOut = unsafe { MaybeUninit::zeroed().assume_init() };
     input.head.size = size_of::<TickIn>() as u32;
     input.head.op = slot::TICK;
-    input.head.extensions.ptr = mode.as_ptr();
-    input.head.extensions.len = mode.len();
-    input.head.extensions.fmt = BLOB_OCTETS;
+    input.head.extensions = Blob::of(mode);
     out.head.size = size_of::<TickOut>() as u32;
     let instance = std::ptr::NonNull::<u8>::dangling()
         .as_ptr()

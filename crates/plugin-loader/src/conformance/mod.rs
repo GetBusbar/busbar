@@ -1082,12 +1082,7 @@ pub fn output<T: OutFrame>() -> T {
 /// A JSON blob over `bytes`.
 #[must_use]
 pub fn json(bytes: &[u8]) -> Blob {
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
+    crate::dispatch::lend_blob(bytes, BLOB_JSON, 0)
 }
 
 /// A call's answer as one transcript line: outcome, whether it leased, the error text.
@@ -1147,12 +1142,7 @@ fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
     use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
     secrets
         .iter()
-        .map(|s| Blob {
-            ptr: s.as_ptr(),
-            len: s.len(),
-            fmt: BLOB_OCTETS,
-            flags: BLOB_SECRET,
-        })
+        .map(|s| crate::dispatch::lend_blob(s, BLOB_OCTETS, BLOB_SECRET))
         .collect()
 }
 
@@ -1575,10 +1565,7 @@ extern "C" fn ready_fails(
     unsafe {
         let head = out.cast::<OutHead>();
         (*head).outcome = failed;
-        (*head).error = AbiStr {
-            ptr: READY_FAILURE.as_ptr(),
-            len: READY_FAILURE.len(),
-        };
+        (*head).error = AbiStr::of(READY_FAILURE);
     }
     failed
 }
@@ -1773,41 +1760,19 @@ pub fn red_ready(s: &Subject) {
 fn with_an_outbound_need(real: Door) -> Door {
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::door::Statement;
-    const NONE: AbiStr = AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    };
     let stream: &'static str = Box::leak(
         crate::stand_in::StreamFacts::stand_in()
             .transport
             .into_boxed_str(),
     );
-    let needs: &'static [Need] = Box::leak(Box::new([Need {
-        direction: DIRECTION_OUTBOUND,
-        egress_class: 0,
-        transport: AbiStr {
-            ptr: stream.as_ptr(),
-            len: stream.len(),
-        },
-        auth: NONE,
-        target_from: NONE,
-        trust_from: NONE,
-        details: crate::dispatch::NO_BLOB,
-        keep_response_headers: std::ptr::null(),
-        keep_response_headers_len: 0,
-        timeout_ms: 0,
-        keep_mode: KEEP_NAMED,
-        _reserved: 0,
-        deny_response_headers: std::ptr::null(),
-        deny_response_headers_len: 0,
-    }]));
+    let mut need = Need::EMPTY;
+    need.direction = DIRECTION_OUTBOUND;
+    need.transport = AbiStr::of(stream);
+    need.keep_mode = KEEP_NAMED;
+    let needs: &'static [Need] = Box::leak(Box::new([need]));
     // SAFETY: a door's Statement is `'static`; only its needs are restated.
     let st: Statement = unsafe { real.statement.read_unaligned() };
-    let st: &'static Statement = Box::leak(Box::new(Statement {
-        needs: needs.as_ptr(),
-        needs_len: needs.len(),
-        ..st
-    }));
+    let st: &'static Statement = Box::leak(Box::new(st.with_needs(needs)));
     Door {
         statement: st,
         ..real

@@ -262,10 +262,10 @@ fn ready(outcome: Outcome) -> Answered {
 }
 
 unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
-    if b.ptr.is_null() || b.len == 0 {
+    if b.ptr().is_null() || b.len() == 0 {
         &[]
     } else {
-        std::slice::from_raw_parts(b.ptr, b.len)
+        std::slice::from_raw_parts(b.ptr(), b.len())
     }
 }
 
@@ -276,10 +276,10 @@ const NOT_FOR_THE_CALLER: &[u8] = b"not-for-the-caller";
 const REFUSAL_WORDS: &[u8] = b"the body is not a document";
 
 unsafe fn text<'a>(s: AbiStr) -> &'a [u8] {
-    if s.ptr.is_null() || s.len == 0 {
+    if s.ptr().is_null() || s.len() == 0 {
         &[]
     } else {
-        std::slice::from_raw_parts(s.ptr, s.len)
+        std::slice::from_raw_parts(s.ptr(), s.len())
     }
 }
 
@@ -666,7 +666,7 @@ impl PlaneCalls for Double {
         if let Some(rest) = target.strip_prefix(b"/trusted/") {
             let leak = |b: &[u8]| -> AbiStr {
                 let kept: &'static [u8] = Box::leak(b.to_vec().into_boxed_slice());
-                AbiStr::over(kept)
+                AbiStr::of_bytes(kept)
             };
             let (cp, cap) = match rest.iter().position(|b| *b == b'/') {
                 Some(i) => (&rest[..i], Some(&rest[i + 1..])),
@@ -703,7 +703,7 @@ impl PlaneCalls for Double {
                     // The same refusal, stating why in its own words (`head.error`).
                     out.refusal = 7;
                     out.refusal_status = 400;
-                    out.head.error = AbiStr::over(REFUSAL_WORDS);
+                    out.head.error = AbiStr::of_bytes(REFUSAL_WORDS);
                     return Outcome::Refused;
                 }
                 b"/scope-local" | b"/scope-local-far" => {
@@ -719,7 +719,7 @@ impl PlaneCalls for Double {
                 }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
-                _ => vec![estimate(input.body.len as u64)],
+                _ => vec![estimate(input.body.len() as u64)],
             };
             if wants.len() > cap {
                 if call == 1 {
@@ -743,15 +743,15 @@ impl PlaneCalls for Double {
     }
 
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>> {
-        (!out.pool.ptr.is_null()).then(|| unsafe { text(out.pool) }.to_vec())
+        (!out.pool.ptr().is_null()).then(|| unsafe { text(out.pool) }.to_vec())
     }
 
     fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
-        (!out.head.error.ptr.is_null()).then(|| unsafe { text(out.head.error) }.to_vec())
+        (!out.head.error.ptr().is_null()).then(|| unsafe { text(out.head.error) }.to_vec())
     }
 
     fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {
-        let read = |s: AbiStr| (!s.ptr.is_null()).then(|| unsafe { text(s) }.to_vec());
+        let read = |s: AbiStr| (!s.ptr().is_null()).then(|| unsafe { text(s) }.to_vec());
         Some(ArrivedTrust {
             counterparty: read(out.trust_counterparty)?,
             item: read(out.trust_item),
@@ -967,9 +967,8 @@ impl PlaneCalls for Double {
                 unsafe {
                     std::ptr::copy_nonoverlapping(b.as_ptr(), input.arena_buf.add(at), b.len())
                 };
-                let s = AbiStr {
-                    ptr: unsafe { input.arena_buf.add(at) }.cast_const(),
-                    len: b.len(),
+                let s = unsafe {
+                    AbiStr::from_raw_parts(input.arena_buf.add(at).cast_const(), b.len())
                 };
                 at += b.len();
                 s
@@ -997,12 +996,7 @@ impl PlaneCalls for Double {
                 flags: 0,
                 signals: input.signals_buf.cast_const(),
                 signals_len: 0,
-                session: Blob {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-                    flags: 0,
-                },
+                session: Blob::ABSENT,
             };
             out.prompt.system = sys;
             out.prompt.message_count = turns.len() as u64;
@@ -1164,9 +1158,9 @@ impl PlaneCalls for Double {
                     std::thread::sleep(WEDGE);
                     let i = input.0;
                     // SAFETY: the crossing still owns the buffers: `lent` is held until here.
-                    if i.bytes.len != 0 {
+                    if i.bytes.len() != 0 {
                         unsafe {
-                            let seen = std::slice::from_raw_parts(i.bytes.ptr, i.bytes.len);
+                            let seen = std::slice::from_raw_parts(i.bytes.ptr(), i.bytes.len());
                             let n = seen.len().min(i.reply_cap);
                             std::ptr::copy(seen.as_ptr(), i.reply_buf, n);
                         }

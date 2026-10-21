@@ -76,7 +76,7 @@ impl Slot for WedgedGet {
     type In = RecordGetIn;
     type Out = HostBytesOut;
     fn call(_: *mut c_void, i: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
-        GET_GATE.hold_then_read(i.key.ptr, i.key.len);
+        GET_GATE.hold_then_read(i.key.ptr(), i.key.len());
         Outcome::Ready
     }
 }
@@ -87,7 +87,7 @@ impl Slot for WedgedPlaneGet {
     type In = GetPlaneRecordIn;
     type Out = HostBytesOut;
     fn call(_: *mut c_void, i: &GetPlaneRecordIn, _: &mut HostBytesOut) -> Outcome {
-        PLANE_GATE.hold_then_read(i.id.ptr, i.id.len);
+        PLANE_GATE.hold_then_read(i.id.ptr(), i.id.len());
         Outcome::Ready
     }
 }
@@ -103,13 +103,9 @@ mod wedged {
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::store::Ops,
-        statement: busbar_contract::abi::mechanism::door::Statement {
-            diag_ids: DIAGS.as_ptr(),
-            diag_ids_len: 2,
-            kind_tail: ::core::ptr::from_ref(&TAIL)
-                .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
-            ..busbar_contract::abi::sdk::door::statement("wedged", "0", 64)
-        },
+        statement: busbar_contract::abi::sdk::door::statement("wedged", "0", 64)
+            .with_diag_ids(&DIAGS)
+            .with_kind_tail(&TAIL),
                 lifecycle: {
                     validate: S<d::Validate<M>>,
                     open: S<d::Open<M>>,

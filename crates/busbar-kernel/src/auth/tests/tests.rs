@@ -3537,11 +3537,8 @@ mod other_style {
     busbar_contract::auth_verify_door!(
         super::OtherStyle,
         busbar_contract::abi::sdk::auth_door::with_tail(
-            busbar_contract::abi::mechanism::door::Statement {
-                mark_words: super::OTHER_MARKS.as_ptr(),
-                mark_words_len: super::OTHER_MARKS.len(),
-                ..busbar_contract::abi::sdk::door::statement("other-style", "1.0.0", 4)
-            },
+            busbar_contract::abi::sdk::door::statement("other-style", "1.0.0", 4)
+                .with_mark_words(super::OTHER_MARKS),
             super::OTHER_TAIL,
         )
     );

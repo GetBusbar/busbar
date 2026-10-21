@@ -125,7 +125,7 @@ mod door {
     use std::sync::Arc;
 
     use busbar_contract::abi::hook::{SignalEntry, SIGNAL_TAG_U64};
-    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
     use busbar_contract::abi::mechanism::door::Door;
     use busbar_contract::abi::mechanism::lifecycle::{
         slot as life, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut, ValidateIn,
@@ -162,19 +162,11 @@ mod door {
     }
 
     fn octets(b: &'static [u8]) -> Blob {
-        Blob {
-            ptr: b.as_ptr(),
-            len: b.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        }
+        Blob::of(b)
     }
 
     fn text(b: &'static [u8]) -> AbiStr {
-        AbiStr {
-            ptr: b.as_ptr(),
-            len: b.len(),
-        }
+        AbiStr::of_bytes(b)
     }
 
     /// `len` bytes of a host buffer, as text.
@@ -194,7 +186,7 @@ mod door {
         // SAFETY: the snapshot names `claims_len` claims.
         let claim = unsafe { &*s.claims };
         // SAFETY: the claim's target is `'static` plugin text.
-        let target = unsafe { std::slice::from_raw_parts(claim.target.ptr, claim.target.len) };
+        let target = unsafe { std::slice::from_raw_parts(claim.target.ptr(), claim.target.len()) };
         format!(
             "gen={} claims={} target={} routes={}",
             s.generation,

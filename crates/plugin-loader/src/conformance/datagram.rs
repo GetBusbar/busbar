@@ -68,19 +68,13 @@ const LOCAL: &str = "198.51.100.1:40000";
 /// reads nothing else of it.
 const CERTIFICATE: &[u8] = b"the host's public certificate, DER";
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ABSENT;
 
 fn abi(s: &[u8]) -> AbiStr {
     if s.is_empty() {
         return NONE;
     }
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    crate::dispatch::lend_str(s)
 }
 
 /// The host's buffers and lane for one framer op.

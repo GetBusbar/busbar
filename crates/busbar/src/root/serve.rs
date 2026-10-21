@@ -2031,12 +2031,7 @@ fn open(
             open: OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
-                settings: Blob {
-                    ptr: settings.as_ptr(),
-                    len: settings.len(),
-                    fmt: BLOB_JSON,
-                    flags: 0,
-                },
+                settings: crate::root::loader::lend::blob(&settings, BLOB_JSON),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
@@ -2045,27 +2040,15 @@ fn open(
             },
             // The deployment's public base URL, which a plane states its audience and its claims
             // against (a plane with none fronts nothing).
-            public_url: AbiStr {
-                ptr: if url.is_empty() {
-                    std::ptr::null()
-                } else {
-                    url.as_ptr()
-                },
-                len: url.len(),
+            public_url: if url.is_empty() {
+                AbiStr::ABSENT
+            } else {
+                crate::root::loader::lend::str(url.as_bytes())
             },
-            owned: Blob {
-                ptr: if owned.is_empty() {
-                    std::ptr::null()
-                } else {
-                    owned.as_ptr()
-                },
-                len: owned.len(),
-                fmt: if owned.is_empty() {
-                    busbar_contract::abi::mechanism::call::BLOB_ABSENT
-                } else {
-                    BLOB_JSON
-                },
-                flags: 0,
+            owned: if owned.is_empty() {
+                Blob::ABSENT
+            } else {
+                crate::root::loader::lend::blob(&owned, BLOB_JSON)
             },
             providers: if providers.is_empty() {
                 std::ptr::null()

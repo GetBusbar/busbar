@@ -259,7 +259,7 @@ fn heads(a: &Answer) -> Result<(), Fault> {
 fn window_caps(a: &Answer) -> Result<(), Fault> {
     let input = a.input::<WindowCapsIn>()?;
     let error: AbiStr = a.out::<OutHead>()?.error;
-    let text = if error.ptr.is_null() {
+    let text = if error.ptr().is_null() {
         None
     } else {
         // SAFETY: the mechanism validated the error text before any kind check (non-NULL with
@@ -267,8 +267,8 @@ fn window_caps(a: &Answer) -> Result<(), Fault> {
         // the ticket); `reported` re-checks that bound.
         Some(unsafe {
             reported(
-                error.ptr,
-                u(error.len),
+                error.ptr(),
+                u(error.len()),
                 u(MAX_ERROR_LEN),
                 "window_caps.error",
             )

@@ -75,14 +75,13 @@ fn a_section_that_does_not_read_is_refused_naming_it() {
 
 #[test]
 fn the_statement_owns_the_section_neither_declaring_nor_consumed() {
-    // SAFETY: the Statement's sections are a `'static` list of `sections_len` entries.
-    let sections =
-        unsafe { std::slice::from_raw_parts(STATEMENT.sections, STATEMENT.sections_len) };
+    let statement = STATEMENT;
+    let sections = statement.sections();
     let owned: Vec<&[u8]> = sections
         .iter()
         .filter(|s| s.flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0)
         // SAFETY: each `AbiStr` names a `'static` string of `len` bytes.
-        .map(|s| unsafe { std::slice::from_raw_parts(s.name.ptr, s.name.len) })
+        .map(|s| unsafe { std::slice::from_raw_parts(s.name.ptr(), s.name.len()) })
         .collect();
     assert_eq!(owned, [SECTION.as_bytes()]);
 }

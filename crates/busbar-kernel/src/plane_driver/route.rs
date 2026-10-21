@@ -38,7 +38,9 @@ use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, Checkpoint};
-use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
+use super::{
+    blob, lend, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT,
+};
 use crate::host_records::Acked;
 use crate::slice::takes_lease;
 use crate::teller::UnitCtx;
@@ -502,15 +504,9 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
     };
     let str_of = |b: &[u8]| {
         if b.is_empty() {
-            AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            }
+            AbiStr::ABSENT
         } else {
-            AbiStr {
-                ptr: b.as_ptr(),
-                len: b.len(),
-            }
+            lend(b)
         }
     };
     let input = OnPieceIn {
@@ -531,7 +527,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         fields_cap: bufs.fields.len(),
         arena_buf: bufs.arena.as_mut_ptr(),
         arena_cap: bufs.arena.len(),
-        member: AbiStr::over(member),
+        member: lend(member),
         attempt_no: p.attempt_no,
         // The walk's pool is named with its member, on an ATTEMPT piece.
         pool: str_of(pool),

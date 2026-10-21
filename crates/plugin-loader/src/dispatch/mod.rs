@@ -68,7 +68,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{
-    Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
+    AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome,
 };
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
@@ -351,12 +351,18 @@ impl<I: InFrame, O: OutFrame> Frame<I, O> {
 }
 
 /// An absent blob.
-pub const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
+pub const NO_BLOB: Blob = Blob::ABSENT;
+
+/// `bytes` as a string the host lends one call ([`crate::lend::str`], status row 194): every
+/// caller keeps the bytes alive, unmoved and unwritten, until the call it lends the `in` returns.
+pub(crate) fn lend_str(bytes: &[u8]) -> AbiStr {
+    crate::lend::str(bytes)
+}
+
+/// As [`lend_str`], for `bytes` lent as a blob of `fmt`, flagged `flags` ([`crate::lend::blob`]).
+pub(crate) fn lend_blob(bytes: &[u8], fmt: u32, flags: u32) -> Blob {
+    crate::lend::blob(bytes, fmt).with_flags(flags)
+}
 
 /// A blank [`InHead`]; the dispatcher fills it before each crossing.
 pub fn in_head() -> InHead {
@@ -383,10 +389,7 @@ pub fn out_head() -> OutHead {
         _reserved: [0; 3],
         wake_at_ns: 0,
         lease: 0,
-        error: busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        error: AbiStr::ABSENT,
         envelope: busbar_contract::abi::mechanism::call::Envelope {
             metrics: std::ptr::null(),
             metrics_len: 0,

@@ -25,7 +25,7 @@ use busbar_contract::abi::auth::{
     MODE_OWN, MODE_PASSTHROUGH,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    AbiStr, Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::redacted::Secret;
@@ -135,33 +135,17 @@ impl OutboundInstance {
     }
 }
 
-const ABSENT_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const ABSENT_STR: AbiStr = AbiStr::ABSENT;
 
 fn abi_str(b: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
+    super::lend_str(b)
 }
 
 fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt,
-        flags,
-    }
+    super::lend_blob(b, fmt, flags)
 }
 
-const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
+const NO_BLOB: Blob = Blob::ABSENT;
 
 const NO_FIELD: FieldSpan = FieldSpan {
     name: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },

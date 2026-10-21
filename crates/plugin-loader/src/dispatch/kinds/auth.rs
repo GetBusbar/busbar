@@ -143,10 +143,10 @@ fn owned(s: AbiStr) -> Option<String> {
 /// never a tail fact). At most [`MAX_CARRIERS`].
 fn carriers(st: &Statement) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
-    for i in 0..st.mark_words_len {
+    for i in 0..st.mark_words_len() {
         // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
         // `mark_words_len` `'static` word marks.
-        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        let w = unsafe { st.mark_words_ptr().add(i).read_unaligned() };
         if w.class != MARK_WORD_CARRIER {
             continue;
         }
@@ -178,10 +178,10 @@ fn issued(st: &Statement) -> Result<Option<IssuedShape>, String> {
         MARK_WORD_ISSUED_SECRET_LENGTH,
         MARK_WORD_ISSUED_SECRET_ALPHABET,
     ];
-    for i in 0..st.mark_words_len {
+    for i in 0..st.mark_words_len() {
         // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
         // `mark_words_len` `'static` word marks.
-        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        let w = unsafe { st.mark_words_ptr().add(i).read_unaligned() };
         let Some(slot) = classes.iter().position(|c| *c == w.class) else {
             continue;
         };
@@ -293,17 +293,17 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     // The credential-read fact agrees with its kinds, and with the inbound capability: a `verify`
     // that reads host-held credentials names exactly the kinds it reads. Either without the other
     // refuses the load.
-    if t.credential_kinds_len > MAX_CREDENTIAL_KINDS
-        || (t.credential_kinds.is_null() && t.credential_kinds_len != 0)
+    if t.credential_kinds_len() > MAX_CREDENTIAL_KINDS
+        || (t.credential_kinds_ptr().is_null() && t.credential_kinds_len() != 0)
     {
         return Err(format!(
             "the auth tail states {} credential kinds",
-            t.credential_kinds_len
+            t.credential_kinds_len()
         ));
     }
-    let credential_kinds = (0..t.credential_kinds_len)
+    let credential_kinds = (0..t.credential_kinds_len())
         // SAFETY: `credential_kinds` holds `credential_kinds_len` `'static` strings (checked above).
-        .map(|i| owned(unsafe { t.credential_kinds.add(i).read_unaligned() }))
+        .map(|i| owned(unsafe { t.credential_kinds_ptr().add(i).read_unaligned() }))
         .collect::<Option<Vec<_>>>()
         .ok_or("an auth credential kind is over-long")?;
     let reads = t.facts & auth::FACT_READS_CREDENTIALS != 0;
@@ -324,13 +324,13 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         );
     }
     // Every style states known flags and the points it needs; a stray bit refuses the load.
-    if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
-        return Err(format!("the auth tail states {} styles", t.styles_len));
+    if t.styles_len() > MAX_STYLES || (t.styles_ptr().is_null() && t.styles_len() != 0) {
+        return Err(format!("the auth tail states {} styles", t.styles_len()));
     }
-    let mut styles = Vec::with_capacity(t.styles_len);
-    for i in 0..t.styles_len {
+    let mut styles = Vec::with_capacity(t.styles_len());
+    for i in 0..t.styles_len() {
         // SAFETY: `styles` holds `styles_len` `'static` declarations (checked non-NULL above).
-        let d = unsafe { t.styles.add(i).read_unaligned() };
+        let d = unsafe { t.styles_ptr().add(i).read_unaligned() };
         styles.push(OutboundStyle {
             name: owned(d.name).ok_or("an auth style name is over-long")?,
             flags: d.flags,
@@ -346,17 +346,17 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         })?;
     }
     let mut cache_family = None;
-    for i in 0..st.families_len {
+    for i in 0..st.families_len() {
         // SAFETY: the loader's Statement check: `families` holds `families_len` `'static` entries.
-        let f = unsafe { st.families.add(i).read_unaligned() };
+        let f = unsafe { st.families_ptr().add(i).read_unaligned() };
         if owned(f.name).as_deref() == Some(auth::METRIC_CACHE_FLUSHED) {
             cache_family = u32::try_from(i).ok();
         }
     }
-    let secret_refs = (0..st.secret_refs_len)
+    let secret_refs = (0..st.secret_refs_len())
         // SAFETY: the loader's Statement check refused a NULL `secret_refs` with a count; it holds
         // `secret_refs_len` `'static` strings.
-        .map(|i| owned(unsafe { st.secret_refs.add(i).read_unaligned() }))
+        .map(|i| owned(unsafe { st.secret_refs_ptr().add(i).read_unaligned() }))
         .collect::<Option<Vec<_>>>()
         .ok_or("an auth secret-ref key is over-long")?;
     Ok(AuthFacts {

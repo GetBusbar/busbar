@@ -36,12 +36,8 @@ impl TestOp for StatusFaults {
         // SAFETY: the host hands `status` a `StatusOut`.
         unsafe {
             let o = &mut *out.cast::<StatusOut>();
-            o.status = Blob {
-                ptr: GARBAGE,
-                len: HUGE,
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            // Garbage the host must never read: it judges the FAULT answer unread.
+            o.status = Blob::from_raw_parts(GARBAGE, HUGE, BLOB_OCTETS, 0);
             o.head.outcome = RawOutcome::of(Outcome::Fault);
         }
         RawOutcome::of(Outcome::Fault)
@@ -59,12 +55,8 @@ impl TestOp for CheckFaults {
         // SAFETY: the host hands `check` a `CheckOut`.
         unsafe {
             let o = &mut *out.cast::<CheckOut>();
-            o.findings = Blob {
-                ptr: GARBAGE,
-                len: HUGE,
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            // Garbage the host must never read: it judges the FAULT answer unread.
+            o.findings = Blob::from_raw_parts(GARBAGE, HUGE, BLOB_OCTETS, 0);
             o.head.outcome = RawOutcome::of(Outcome::Fault);
         }
         RawOutcome::of(Outcome::Fault)
@@ -84,12 +76,8 @@ impl TestOp for ServeFaults {
             let o = &mut *out.cast::<ServeOut>();
             o.headers_out = GARBAGE.cast::<AbiStr>();
             o.headers_out_len = HUGE;
-            o.body = Blob {
-                ptr: GARBAGE,
-                len: HUGE,
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            };
+            // Garbage the host must never read: it judges the FAULT answer unread.
+            o.body = Blob::from_raw_parts(GARBAGE, HUGE, BLOB_OCTETS, 0);
             o.head.outcome = RawOutcome::of(Outcome::Fault);
         }
         RawOutcome::of(Outcome::Fault)

@@ -75,14 +75,10 @@ const SLOT_WAIT_MAX: Duration = Duration::from_millis(16);
 
 /// A string the host lends for a call; empty is absent (NULL).
 fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: if s.is_empty() {
-            std::ptr::null()
-        } else {
-            s.as_ptr()
-        },
-        len: s.len(),
+    if s.is_empty() {
+        return AbiStr::ABSENT;
     }
+    crate::dispatch::lend_str(s.as_bytes())
 }
 
 /// JSON bytes the host lends for a call.
@@ -90,21 +86,16 @@ fn json(b: &[u8]) -> Blob {
     if b.is_empty() {
         return NO_BLOB;
     }
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
+    crate::dispatch::lend_blob(b, BLOB_JSON, 0)
 }
 
 /// A plugin-owned blob's bytes, copied (the dispatcher's checks bounded them).
 fn copy_blob(b: Blob) -> Vec<u8> {
-    if b.len == 0 || b.ptr.is_null() || b.fmt == BLOB_ABSENT {
+    if b.is_empty() || b.ptr().is_null() || b.fmt == BLOB_ABSENT {
         return Vec::new();
     }
     // SAFETY: a checked plugin-owned blob, live under its lease until `release`.
-    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+    unsafe { std::slice::from_raw_parts(b.ptr(), b.len()) }.to_vec()
 }
 
 /// A plugin's error text, lossily UTF-8.

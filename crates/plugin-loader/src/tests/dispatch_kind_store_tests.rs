@@ -22,10 +22,7 @@ use busbar_contract::abi::store::{
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{in_head, out_head, Answer, InFrame, Kind, OutFrame, NO_BLOB};
 
-const NO_STR: AbiStr = AbiStr {
-    ptr: null(),
-    len: 0,
-};
+const NO_STR: AbiStr = AbiStr::ABSENT;
 
 fn answer<I: InFrame, O: OutFrame>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'static> {
     // SAFETY: `i`/`o` outlive every use of the answer in the test that built it.
@@ -311,12 +308,9 @@ fn list_out(items_written: u64, bytes_written: u64) -> HostListOut {
 }
 
 fn blob_at(ptr: *const u8, len: usize) -> Blob {
-    Blob {
-        ptr,
-        len,
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
+    // SAFETY: an item as a foreign store could answer it (inside the host's buffer, past it, or a
+    // length over NULL), read only by the check, which judges it before any slice is made.
+    unsafe { Blob::from_raw_parts(ptr, len, BLOB_JSON, 0) }
 }
 
 #[test]
@@ -449,10 +443,8 @@ fn cancel_green_and_red() {
 
 fn window_caps_error(i: &WindowCapsIn, outcome: Outcome, text: &[u8]) -> Result<(), Fault> {
     let mut o = out_head();
-    o.error = AbiStr {
-        ptr: text.as_ptr(),
-        len: text.len(),
-    };
+    // SAFETY: `text` outlives the check, the one read of the answer.
+    o.error = unsafe { AbiStr::from_raw_parts(text.as_ptr(), text.len()) };
     Store::check(&answer(slot::WINDOW_CAPS, outcome, i, &o))
 }
 

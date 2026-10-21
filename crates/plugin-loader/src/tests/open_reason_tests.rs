@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
@@ -105,13 +105,8 @@ fn a_plugin_that_writes_no_reason_reads_as_a_stable_text() {
     );
 }
 
-fn octets(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    }
+fn octets(b: &'static [u8]) -> Blob {
+    Blob::of(b)
 }
 
 /// A kind on the SDK's generic lifecycle whose `validate` and `open` refuse in their own OWNED words

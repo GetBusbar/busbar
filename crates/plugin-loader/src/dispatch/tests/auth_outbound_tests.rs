@@ -17,8 +17,7 @@ use busbar_contract::abi::auth::{
     StyleDecl, CAP_INBOUND, CAP_OUTBOUND, FIELD_SENSITIVE, LOGIN_KIND_NONE, MODE_PASSTHROUGH,
     POINT_HEAD, POINT_HEAD_BODY,
 };
-use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, Span};
-use busbar_contract::abi::mechanism::door::KindTailHead;
+use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::auth_door::{Answer, Verdict, Verifier, VerifyPlugin, VerifyView};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -73,7 +72,7 @@ mod plugin {
             input: Lent<'_, OpenOutboundIn>,
             mut out: Out<'_, OpenOutboundOut>,
         ) -> Outcome {
-            let handle = match input.field(|i| &i.style).bytes() {
+            let handle = match input.style().bytes() {
                 b"bearer" => 1,
                 b"wide" => 2,
                 b"signed" => 3,
@@ -99,31 +98,31 @@ mod plugin {
             input: Lent<'_, FieldsIn>,
             mut out: Out<'_, FieldsOut>,
         ) -> Outcome {
-            let i: &FieldsIn = &input;
-            let fields: Vec<(Vec<u8>, Vec<u8>, u32)> = match (i.handle, i.mode) {
+            let fields: Vec<(Vec<u8>, Vec<u8>, u32)> = match (input.handle(), input.mode()) {
                 (1, MODE_PASSTHROUGH) => return Outcome::Refused,
                 (1, _) => {
                     let mut v = b"Bearer ".to_vec();
-                    v.extend_from_slice(input.field(|i| &i.request.method).bytes());
+                    let request = input.request();
+                    v.extend_from_slice(request.method().bytes());
                     v.push(b' ');
-                    v.extend_from_slice(input.field(|i| &i.request.authority).bytes());
-                    v.extend_from_slice(input.field(|i| &i.request.canonical_path).bytes());
+                    v.extend_from_slice(request.authority().bytes());
+                    v.extend_from_slice(request.canonical_path().bytes());
                     vec![(b"authorization".to_vec(), v, FIELD_SENSITIVE)]
                 }
                 (2, _) => (0..17)
                     .map(|k| (format!("x-f{k:02}").into_bytes(), b"v".to_vec(), 0))
                     .collect(),
                 (3, _) => {
-                    let mut v = i.point.to_string().into_bytes();
+                    let mut v = input.point().to_string().into_bytes();
                     v.push(b' ');
-                    match i.body.fmt {
+                    match input.body().fmt() {
                         busbar_contract::abi::mechanism::call::BLOB_ABSENT => v.push(b'-'),
-                        _ => v.extend_from_slice(input.field(|i| &i.body).bytes()),
+                        _ => v.extend_from_slice(input.body().bytes()),
                     }
                     vec![(b"x-signed".to_vec(), v, 0)]
                 }
                 (4, _) => {
-                    let blob = input.field(|i| &i.head.extensions).bytes();
+                    let blob = input.head().extensions().bytes();
                     let scope = busbar_contract::abi::mechanism::extensions::get(
                         blob,
                         busbar_contract::abi::auth::EXT_SCOPE,
@@ -134,36 +133,21 @@ mod plugin {
                 _ => return Outcome::Failed,
             };
             let bytes: usize = fields.iter().map(|(n, v, _)| n.len() + v.len()).sum();
-            if fields.len() > i.fields_cap as usize || bytes > i.field_buf_cap {
+            let (mut buf, mut spans) = (input.field_buf(), input.fields());
+            if fields.len() > spans.cap() || bytes > buf.cap() {
                 out.set(|o| &o.needed_fields, fields.len() as u32);
                 out.set(|o| &o.needed_bytes, bytes as u64);
                 return Outcome::Failed;
             }
-            let mut at = 0usize;
-            for (k, (n, v, flags)) in fields.iter().enumerate() {
-                // SAFETY: the host lends `field_buf` (`field_buf_cap` bytes) and `fields`
-                // (`fields_cap` spans) for the call; both bounds were checked above.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(n.as_ptr(), i.field_buf.add(at), n.len());
-                    std::ptr::copy_nonoverlapping(
-                        v.as_ptr(),
-                        i.field_buf.add(at + n.len()),
-                        v.len(),
-                    );
-                    *i.fields.add(k) = FieldSpan {
-                        name: Span {
-                            offset: at as u32,
-                            len: n.len() as u32,
-                        },
-                        value: Span {
-                            offset: (at + n.len()) as u32,
-                            len: v.len() as u32,
-                        },
-                        flags: *flags,
-                        _reserved: 0,
-                    };
-                }
-                at += n.len() + v.len();
+            for (n, v, flags) in &fields {
+                // Each name and value lands right after the last, as the spans state them.
+                let (name, value) = (buf.span(n), buf.span(v));
+                spans.push(FieldSpan {
+                    name,
+                    value,
+                    flags: *flags,
+                    _reserved: 0,
+                });
             }
             out.set(|o| &o.fields_len, fields.len() as u32);
             Outcome::Ready
@@ -192,21 +176,15 @@ mod plugin {
             points: POINT_HEAD,
         },
     ];
-    const TAIL: &AuthTail = &AuthTail {
-        head: KindTailHead {
-            size: std::mem::size_of::<AuthTail>() as u32,
-            _reserved: 0,
-        },
-        caps: CAP_INBOUND | CAP_OUTBOUND,
-        facts: 0,
-        login_kind: LOGIN_KIND_NONE,
-        inbound_points: POINT_HEAD,
-        styles: STYLES.as_ptr(),
-        styles_len: STYLES.len(),
-        operator_principal: busbar_contract::abi::sdk::door::abi_str(""),
-        credential_kinds: std::ptr::null(),
-        credential_kinds_len: 0,
+    const TAIL_STATED: AuthTail = {
+        let mut tail = AuthTail::EMPTY.with_styles(STYLES);
+        tail.caps = CAP_INBOUND | CAP_OUTBOUND;
+        tail.login_kind = LOGIN_KIND_NONE;
+        tail.inbound_points = POINT_HEAD;
+        tail.operator_principal = busbar_contract::abi::sdk::door::abi_str("");
+        tail
     };
+    const TAIL: &AuthTail = &TAIL_STATED;
 
     use busbar_contract::abi::sdk::auth_door as a;
     busbar_contract::plugin_door! {

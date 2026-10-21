@@ -37,7 +37,7 @@ pub const NO_TAIL: &str =
 /// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
 fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
-    let p = st.kind_tail;
+    let p = st.kind_tail();
     if p.is_null() {
         return Err(NO_TAIL.to_string());
     }
@@ -74,12 +74,12 @@ fn facts(st: &Statement) -> Result<HookFacts, String> {
         infallible: t.infallible != 0,
         words: Vec::new(),
     };
-    let marks: &[MarkWord] = if st.mark_words_len == 0 || st.mark_words.is_null() {
+    let marks: &[MarkWord] = if st.mark_words_len() == 0 || st.mark_words_ptr().is_null() {
         &[]
     } else {
         // SAFETY: the loader's Statement check bounded `mark_words` and refused it behind NULL; it
         // is `'static` plugin data.
-        unsafe { std::slice::from_raw_parts(st.mark_words, st.mark_words_len) }
+        unsafe { std::slice::from_raw_parts(st.mark_words_ptr(), st.mark_words_len()) }
     };
     for m in marks.iter().filter(|m| m.class == MARK_WORD_HOOK) {
         facts

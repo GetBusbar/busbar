@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome};
 use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
 use busbar_contract::abi::plane::PlaneRefreshOut;
 use http_body_util::BodyExt as _;
@@ -144,17 +144,14 @@ fn section_with(port: u16, extra: &[&str]) -> serde_yaml::Value {
 
 /// Publish generation 2 of the door over `section` (the operator's reload): the catalogue moves.
 fn refresh(rig: &Rig, section: &serde_yaml::Value) {
+    // Leaked: a `'static` JSON blob without `unsafe` (this crate forbids it); one per test refresh.
     let settings = serde_json::to_vec(section).expect("json");
+    let settings: &'static [u8] = Box::leak(settings.into_boxed_slice());
     let mut frame = Frame::new(
         RefreshIn {
             head: in_head(),
             generation: 2,
-            settings: Blob {
-                ptr: settings.as_ptr(),
-                len: settings.len(),
-                fmt: BLOB_JSON,
-                flags: 0,
-            },
+            settings: Blob::json(settings),
             secrets: std::ptr::null(),
             secrets_len: 0,
         },

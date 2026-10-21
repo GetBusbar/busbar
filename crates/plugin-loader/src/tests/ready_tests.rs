@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{Blob, Outcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
@@ -45,12 +45,7 @@ fn opened(d: &Dispatcher, door: DoorFn, settings: &'static [u8]) -> Plugin<Secre
     let row = LinkedRow::of(door).expect("the witness states its Statement");
     let plugin = load_linked::<Secret>(&row, bind(d)).expect("the witness loads");
     let mut i: OpenIn = blank_in();
-    i.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
+    i.settings = Blob::of(settings);
     let mut f = Frame::new(i, blank_out::<OpenOut>());
     assert_eq!(plugin.call(slot::OPEN, &mut f).outcome, Outcome::Ready);
     plugin

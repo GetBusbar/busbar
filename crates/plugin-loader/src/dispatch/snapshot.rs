@@ -62,10 +62,9 @@ impl Bump {
             unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), p, s.len()) };
         }
         self.at += s.len();
-        AbiStr {
-            ptr: p.cast_const(),
-            len: s.len(),
-        }
+        // SAFETY: the range lies in the caller's buffer (the caller's contract), which the caller
+        // reads the layout from.
+        unsafe { AbiStr::from_raw_parts(p.cast_const(), s.len()) }
     }
 
     /// [`Self::text`] for an optional string: `None` is absent (NULL).
@@ -76,10 +75,7 @@ impl Bump {
         match s {
             // SAFETY: the caller's contract.
             Some(s) => unsafe { self.text(s) },
-            None => AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            None => AbiStr::ABSENT,
         }
     }
 }

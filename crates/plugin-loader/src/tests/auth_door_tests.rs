@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail, METRIC_CACHE_FLUSHED};
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, Statement, FAMILY_COUNTER};
+use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, FAMILY_COUNTER};
 use busbar_contract::abi::sdk::auth_door::{
     carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifyPlugin, VerifyView,
 };
@@ -121,29 +121,19 @@ mod judge {
 
     const CARRIERS: &[MarkWord] = &[carrier("X-Alt")];
     const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
-    const FAMILIES: &[MetricFamily] = &[MetricFamily {
-        name: abi_str(METRIC_CACHE_FLUSHED),
-        help: abi_str("inbound cache entries dropped by refresh"),
-        unit: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        label_keys: std::ptr::null(),
-        label_keys_len: 0,
-        kind: FAMILY_COUNTER,
-        _reserved: [0; 7],
-    }];
+    const FAMILIES: &[MetricFamily] = &[MetricFamily::new(
+        abi_str(METRIC_CACHE_FLUSHED),
+        abi_str("inbound cache entries dropped by refresh"),
+        AbiStr::ABSENT,
+        FAMILY_COUNTER,
+    )];
 
     busbar_contract::auth_verify_door!(
         Judge,
         with_tail(
-            Statement {
-                families: FAMILIES.as_ptr(),
-                families_len: FAMILIES.len(),
-                mark_words: CARRIERS.as_ptr(),
-                mark_words_len: CARRIERS.len(),
-                ..statement("judge", "1.0.0", 8)
-            },
+            statement("judge", "1.0.0", 8)
+                .with_families(FAMILIES)
+                .with_mark_words(CARRIERS),
             TAIL
         )
     );
@@ -472,11 +462,7 @@ mod keyed {
     busbar_contract::auth_verify_door!(
         Keyed,
         with_tail(
-            Statement {
-                secret_refs: SECRET_REFS.as_ptr(),
-                secret_refs_len: SECRET_REFS.len(),
-                ..statement("keyed", "1.0.0", 8)
-            },
+            statement("keyed", "1.0.0", 8).with_secret_refs(SECRET_REFS),
             TAIL
         )
     );
@@ -548,22 +534,15 @@ mod aliased {
         class: REWRITE_ALIAS,
         _reserved: 0,
         from: abi_str("keyed-too"),
-        to: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        to: AbiStr::ABSENT,
     }];
 
     busbar_contract::auth_verify_door!(
         Keyed,
         with_tail(
-            Statement {
-                secret_refs: SECRET_REFS.as_ptr(),
-                secret_refs_len: SECRET_REFS.len(),
-                rewrites: REWRITES.as_ptr(),
-                rewrites_len: REWRITES.len(),
-                ..statement("aliased", "1.0.0", 8)
-            },
+            statement("aliased", "1.0.0", 8)
+                .with_secret_refs(SECRET_REFS)
+                .with_rewrites(REWRITES),
             TAIL
         )
     );

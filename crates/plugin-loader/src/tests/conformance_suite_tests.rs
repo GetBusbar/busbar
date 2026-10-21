@@ -133,28 +133,18 @@ mod suite_conns {
     use crate::dispatch_test_plugin as plug;
     use crate::dispatch_tests::TestKind;
 
-    const NONE: AbiStr = AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    };
+    const NONE: AbiStr = AbiStr::ABSENT;
 
     const fn need(transport: AbiStr) -> Need {
-        Need {
-            direction: DIRECTION_OUTBOUND,
-            egress_class: 0,
-            transport,
-            auth: NONE,
-            target_from: NONE,
-            trust_from: NONE,
-            details: NO_BLOB,
-            keep_response_headers: std::ptr::null(),
-            keep_response_headers_len: 0,
-            timeout_ms: 0,
-            keep_mode: KEEP_NAMED,
-            _reserved: 0,
-            deny_response_headers: std::ptr::null(),
-            deny_response_headers_len: 0,
-        }
+        let mut need = Need::EMPTY;
+        need.direction = DIRECTION_OUTBOUND;
+        need.transport = transport;
+        need.auth = NONE;
+        need.target_from = NONE;
+        need.trust_from = NONE;
+        need.details = NO_BLOB;
+        need.keep_mode = KEEP_NAMED;
+        need
     }
 
     const TCP: [Need; 1] = [need(abi_str("tcp"))];
@@ -170,11 +160,7 @@ mod suite_conns {
         // SAFETY: the test door and its Statement are `'static`.
         let real: Door = unsafe { *plug::busbar_plugin_door() };
         let st: Statement = unsafe { *real.statement };
-        let st: &'static Statement = Box::leak(Box::new(Statement {
-            needs: needs.as_ptr(),
-            needs_len: needs.len(),
-            ..st
-        }));
+        let st: &'static Statement = Box::leak(Box::new(st.with_needs(needs)));
         let door = Box::into_raw(Box::new(Door {
             statement: st,
             ..real
@@ -930,7 +916,7 @@ mod lent_ops {
     use std::sync::{Arc, Weak};
     use std::time::{Duration, Instant};
 
-    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome};
     use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
 
     use super::super::{bind, on_ticket_frame, open};
@@ -944,12 +930,7 @@ mod lent_ops {
     /// A `tick` frame whose extensions blob names the test plugin's op.
     fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
         let mut head = in_head();
-        head.extensions = Blob {
-            ptr: mode.as_ptr(),
-            len: mode.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        };
+        head.extensions = Blob::of(mode);
         Frame::new(
             TickIn {
                 head,
@@ -1132,7 +1113,7 @@ mod deadline_without_wake {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome};
     use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
 
     use super::super::{bind, dispatcher, on_ticket, open, woken};
@@ -1142,12 +1123,7 @@ mod deadline_without_wake {
 
     fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
         let mut head = in_head();
-        head.extensions = Blob {
-            ptr: mode.as_ptr(),
-            len: mode.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        };
+        head.extensions = Blob::of(mode);
         Frame::new(
             TickIn {
                 head,

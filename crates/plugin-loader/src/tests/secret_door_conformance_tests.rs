@@ -46,12 +46,8 @@ const CROSSINGS: u64 = 10;
 
 /// A JSON blob, lent for one call.
 fn json(bytes: &[u8]) -> Blob {
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
+    // SAFETY: every caller keeps `bytes` alive and unwritten across the call the blob is lent to.
+    unsafe { Blob::from_raw_parts(bytes.as_ptr(), bytes.len(), BLOB_JSON, 0) }
 }
 
 /// The crossings `p` has made.
@@ -87,10 +83,10 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> (String, u64) {
     let mut r: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
     r.input.settings = json(settings);
     let c = p.call(slot::RESOLVE, &mut r);
-    let material = if c.outcome == Outcome::Ready && !r.out.secret.ptr.is_null() {
+    let material = if c.outcome == Outcome::Ready && !r.out.secret.ptr().is_null() {
         // SAFETY: a READY resolve's blob is the plugin's, valid until `release` of its lease,
         // which has not run; `check_resolve` judged its pointer/length pairing.
-        let bytes = unsafe { std::slice::from_raw_parts(r.out.secret.ptr, r.out.secret.len) };
+        let bytes = unsafe { std::slice::from_raw_parts(r.out.secret.ptr(), r.out.secret.len()) };
         String::from_utf8_lossy(bytes).into_owned()
     } else {
         String::new()

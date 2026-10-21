@@ -74,11 +74,7 @@ const fn stating(
     marks: &'static [busbar_contract::abi::mechanism::door::MarkWord],
 ) -> busbar_contract::abi::mechanism::door::Statement {
     busbar_contract::abi::sdk::auth_door::with_tail(
-        busbar_contract::abi::mechanism::door::Statement {
-            mark_words: marks.as_ptr(),
-            mark_words_len: marks.len(),
-            ..busbar_contract::abi::sdk::door::statement(name, "1.0.0", 4)
-        },
+        busbar_contract::abi::sdk::door::statement(name, "1.0.0", 4).with_mark_words(marks),
         tail,
     )
 }

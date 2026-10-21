@@ -726,11 +726,11 @@ impl Instance {
         let Some((instance, table)) = self.wake.conn.get() else {
             return;
         };
-        let bytes: &[u8] = if settings.ptr.is_null() {
+        let bytes: &[u8] = if settings.ptr().is_null() {
             &[]
         } else {
             // SAFETY: the host's own settings blob, live for the crossing it is handed to.
-            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+            unsafe { std::slice::from_raw_parts(settings.ptr(), settings.len()) }
         };
         let doc = serde_json::from_slice::<serde_json::Value>(bytes).ok();
         let owned = owned
@@ -784,11 +784,11 @@ impl Instance {
         let Some(keys) = self.wake.destinations.get() else {
             return;
         };
-        let bytes: &[u8] = if settings.ptr.is_null() {
+        let bytes: &[u8] = if settings.ptr().is_null() {
             &[]
         } else {
             // SAFETY: the host's own settings blob, live for the crossing it is handed to.
-            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+            unsafe { std::slice::from_raw_parts(settings.ptr(), settings.len()) }
         };
         let doc = serde_json::from_slice::<serde_json::Value>(bytes).unwrap_or_default();
         let rotate_at = doc
@@ -1377,7 +1377,7 @@ pub(crate) unsafe fn kind_tail<T: Copy>(
     who: &str,
     frozen: usize,
 ) -> Result<T, String> {
-    let p = st.kind_tail;
+    let p = st.kind_tail();
     if p.is_null() {
         return Err(format!("{who} states no kind tail"));
     }
@@ -1399,20 +1399,20 @@ pub(crate) unsafe fn kind_tail<T: Copy>(
 /// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
 /// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
 pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
-    if s.len == 0 {
+    if s.is_empty() {
         return Some(&[]);
     }
-    if s.ptr.is_null() || s.len > MAX_TEXT {
+    if s.ptr().is_null() || s.len() > MAX_TEXT {
         return None;
     }
     // SAFETY: a non-NULL `AbiStr` in an `out` names `len` (<= MAX_TEXT) live bytes until the next
     // op on the ticket.
-    Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) })
+    Some(unsafe { std::slice::from_raw_parts(s.ptr(), s.len()) })
 }
 
 /// A copy of the text; `None` for absent (or malformed, which `validate` refused before).
 pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
-    (!s.ptr.is_null())
+    (!s.ptr().is_null())
         .then(|| str_bytes(s).map(<[u8]>::to_vec))
         .flatten()
 }
@@ -1481,13 +1481,13 @@ fn observed(
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
         let st = v.statement;
-        let families = (0..st.families_len)
+        let families = (0..st.families_len())
             .map(|i| {
                 // SAFETY: `validate` checked `families` holds `families_len` entries.
-                let f = unsafe { st.families.add(i).read_unaligned() };
+                let f = unsafe { st.families_ptr().add(i).read_unaligned() };
                 FamilyShape {
                     kind: f.kind,
-                    labels: f.label_keys_len,
+                    labels: f.label_keys_len(),
                 }
             })
             .collect();
@@ -1506,7 +1506,7 @@ impl<K: Kind> Plugin<K> {
         let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
-            match (&bind.conns, st.needs_len) {
+            match (&bind.conns, st.needs_len()) {
                 (ConnTable::NoNeeds, n) if n > 0 => {
                     return Err(LoadError::NoConnectionTable {
                         plugin: str_bytes(st.name)
@@ -1572,11 +1572,11 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
-        let secret_refs: Box<[String]> = (0..st.secret_refs_len)
+        let secret_refs: Box<[String]> = (0..st.secret_refs_len())
             .map(|i| {
                 // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a count;
                 // the list holds `secret_refs_len` `'static` strings.
-                let key = unsafe { st.secret_refs.add(i).read_unaligned() };
+                let key = unsafe { st.secret_refs_ptr().add(i).read_unaligned() };
                 str_bytes(key)
                     .map(|k| String::from_utf8_lossy(k).into_owned())
                     .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
@@ -1602,8 +1602,8 @@ impl<K: Kind> Plugin<K> {
                 ready: v.ready,
                 families,
                 diag_ids: DiagIds {
-                    ptr: st.diag_ids,
-                    len: st.diag_ids_len,
+                    ptr: st.diag_ids_ptr(),
+                    len: st.diag_ids_len(),
                 },
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
                 opened: AtomicBool::new(false),
@@ -1892,11 +1892,11 @@ pub(crate) fn resolve_owned(owned: &serde_json::Value, at: &str) -> Option<Strin
 ///
 /// `blob` is the host's own, its `ptr` valid for `len` bytes for as long as the slice is read.
 unsafe fn blob_bytes<'b>(blob: Blob) -> &'b [u8] {
-    if blob.ptr.is_null() || blob.len == 0 {
+    if blob.ptr().is_null() || blob.is_empty() {
         &[]
     } else {
         // SAFETY: the caller's contract.
-        unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) }
+        unsafe { std::slice::from_raw_parts(blob.ptr(), blob.len()) }
     }
 }
 

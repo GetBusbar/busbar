@@ -150,10 +150,7 @@ fn load_open(
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
-            public_url: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            public_url: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
             owned: NO_BLOB,
             providers: std::ptr::null(),
             providers_len: 0,
@@ -186,19 +183,13 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             unit: 0,
             claim: 0,
             _reserved: 0,
-            target: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: target.as_ptr(),
-                len: target.len(),
-            },
+            target: busbar_contract::abi::mechanism::call::AbiStr::of_bytes(target),
             fields: std::ptr::null(),
             fields_len: 0,
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
-            method: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: b"POST".as_ptr(),
-                len: 4,
-            },
+            method: busbar_contract::abi::mechanism::call::AbiStr::of_bytes(b"POST"),
         },
         ArriveOut {
             head: out_head(),
@@ -212,29 +203,14 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             refusal_flags: 0,
             correlation: 0,
             cancels: 0,
-            pool: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            pool: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
             route: 0,
             route_flags: 0,
             _route_reserved: [0; 6],
-            affinity: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            trust_item: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            trust_digest: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
+            affinity: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+            trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+            trust_item: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+            trust_digest: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
         },
     );
     assert_eq!(
@@ -363,19 +339,19 @@ fn arrive_at(plugin: &Plugin<Plane>, target: &str) -> [u64; 8] {
             unit: 0,
             claim: 0,
             _reserved: 0,
-            target: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: target.as_ptr(),
-                len: target.len(),
+            // SAFETY: `target` outlives the one `arrive` this frame is lent to.
+            target: unsafe {
+                busbar_contract::abi::mechanism::call::AbiStr::from_raw_parts(
+                    target.as_ptr(),
+                    target.len(),
+                )
             },
             fields: std::ptr::null(),
             fields_len: 0,
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
-            method: busbar_contract::abi::mechanism::call::AbiStr {
-                ptr: b"POST".as_ptr(),
-                len: 4,
-            },
+            method: busbar_contract::abi::mechanism::call::AbiStr::of_bytes(b"POST"),
         },
         zero_arrive_out(),
     );
@@ -399,29 +375,14 @@ fn zero_arrive_out() -> ArriveOut {
         refusal_flags: 0,
         correlation: 0,
         cancels: 0,
-        pool: busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        pool: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
         route: 0,
         route_flags: 0,
         _route_reserved: [0; 6],
-        affinity: busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        trust_item: busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        trust_digest: busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        affinity: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+        trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+        trust_item: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+        trust_digest: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
     }
 }
 
@@ -757,20 +718,11 @@ fn the_crossing_is_under_a_microsecond() {
                 fields_cap: 0,
                 arena_buf: std::ptr::null_mut(),
                 arena_cap: 0,
-                member: busbar_contract::abi::mechanism::call::AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                },
+                member: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
                 attempt_no: 0,
                 _reserved: 0,
-                pool: busbar_contract::abi::mechanism::call::AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                },
-                caller_ref: busbar_contract::abi::mechanism::call::AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                },
+                pool: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
+                caller_ref: busbar_contract::abi::mechanism::call::AbiStr::ABSENT,
                 claim: 0,
                 dialect: 0,
                 head_fields: std::ptr::null(),

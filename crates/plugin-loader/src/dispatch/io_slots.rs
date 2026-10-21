@@ -188,13 +188,10 @@ fn slot<I: Copy>(
             items: 0,
             needed_bytes: 0,
             needed_items: 0,
-            error: AbiStr {
-                ptr: if a.error.is_empty() {
-                    std::ptr::null()
-                } else {
-                    a.error.as_ptr()
-                },
-                len: a.error.len(),
+            error: if a.error.is_empty() {
+                AbiStr::ABSENT
+            } else {
+                AbiStr::of(a.error)
             },
         };
         // SAFETY: the caller's `out`, checked non-NULL.

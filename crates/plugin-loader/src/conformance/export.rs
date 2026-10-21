@@ -142,26 +142,17 @@ fn expected(v: &serde_json::Value) -> String {
 
 /// Borrowed bytes; NULL when empty (absent).
 fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: if s.is_empty() {
-            std::ptr::null()
-        } else {
-            s.as_ptr()
-        },
-        len: s.len(),
+    if s.is_empty() {
+        return AbiStr::ABSENT;
     }
+    crate::dispatch::lend_str(s.as_bytes())
 }
 
 fn blob(bytes: &[u8], fmt: u32) -> Blob {
     if bytes.is_empty() {
         return NO_BLOB;
     }
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt,
-        flags: 0,
-    }
+    crate::dispatch::lend_blob(bytes, fmt, 0)
 }
 
 /// `len` bytes at `ptr`, copied (`""` for none).
@@ -337,7 +328,7 @@ fn status(p: &Plugin<Export>) -> (String, u64) {
         return (format!("{} status={UNREAD}", called(&c)), c.lease);
     }
     // SAFETY: the plugin's status blob, judged by `check_status`, live under the lease.
-    let body = unsafe { copied(f.out.status.ptr, f.out.status.len) };
+    let body = unsafe { copied(f.out.status.ptr(), f.out.status.len()) };
     (format!("{} status={body:?}", called(&c)), c.lease)
 }
 
@@ -352,7 +343,7 @@ fn check(p: &Plugin<Export>, phase: u32, instances: &[CheckInstance]) -> (String
         return (format!("{} findings={UNREAD}", called(&c)), c.lease);
     }
     // SAFETY: the plugin's findings blob, judged by `check_check`, live under the lease.
-    let findings = unsafe { copied(f.out.findings.ptr, f.out.findings.len) };
+    let findings = unsafe { copied(f.out.findings.ptr(), f.out.findings.len()) };
     (format!("{} findings={findings:?}", called(&c)), c.lease)
 }
 
@@ -386,11 +377,11 @@ fn serve(p: &Plugin<Export>, r: &serde_json::Value) -> (String, u64) {
         unsafe { std::slice::from_raw_parts(f.out.headers_out, f.out.headers_out_len) }
             .iter()
             // SAFETY: as above.
-            .map(|h| unsafe { copied(h.ptr, h.len) })
+            .map(|h| unsafe { copied(h.ptr(), h.len()) })
             .collect()
     };
     // SAFETY: the response body, judged by `check_serve`, live under the lease.
-    let out = unsafe { copied(f.out.body.ptr, f.out.body.len) };
+    let out = unsafe { copied(f.out.body.ptr(), f.out.body.len()) };
     (
         format!(
             "{} code={} headers={headers:?} body={out:?}",

@@ -8,16 +8,18 @@
 use std::mem::{size_of, zeroed};
 use std::ptr::NonNull;
 
-use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
+use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::transport::{
-    slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, HeadSlots,
-    IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn,
-    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, MAX_ADDR, PIECE_END_OF_FRAME, PIECE_FIELDS, SLOTS,
-    YIELD_MORE,
+    slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut,
+    DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn,
+    HeadSlots, IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn,
+    TransportTail, WriteIn, CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, MAX_ADDR, PIECE_END_OF_FRAME,
+    PIECE_FIELDS, ROLE_FRAMER, SLOTS, YIELD_MORE,
 };
 
 use crate::dispatch::kinds::transport::Transport;
@@ -432,60 +434,49 @@ fn the_kind_is_transport_and_times_out_failed() {
 
 // ── the tail the registry view reads ──
 
+/// A claim row stating every string empty, `namespace` its status numbering.
+fn claim_row(namespace: &'static str, session: u8, unit0_trigger: u8) -> Claim {
+    let mut row = Claim::EMPTY;
+    row.selector_forms = abi_str("");
+    row.egress_selector_forms = abi_str("");
+    row.status_namespace = abi_str(namespace);
+    row.session = session;
+    row.unit0_trigger = unit0_trigger;
+    row
+}
+
+/// A framer's tail whose claim rows are `claims`, lent by the test.
+fn framer(claims: &[Claim]) -> TransportTail {
+    let mut tail = TransportTail::EMPTY;
+    tail.role = ROLE_FRAMER;
+    // SAFETY: every test keeps `claims` alive and unwritten past each read of the tail.
+    unsafe { tail.with_raw_claim_rows(claims.as_ptr(), claims.len()) }
+}
+
+/// The Statement `t` stating `tail` and the claim `names`, both lent by the test.
+fn stating(tail: &TransportTail, names: &[AbiStr]) -> Statement {
+    // SAFETY: every test keeps `tail` and `names` alive and unwritten past each read of the
+    // Statement.
+    unsafe {
+        statement("t", "0", 1)
+            .with_raw_kind_tail(std::ptr::from_ref(tail).cast::<KindTailHead>())
+            .with_raw_claims(names.as_ptr(), names.len())
+    }
+}
+
 /// A transport's tail is read and checked at bind: none refuses the load; a framer over the host's
 /// socket states its claims and no layer.
 #[test]
 fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
-    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER};
-
     use crate::dispatch::kinds::transport::TransportFacts;
 
     let bare: Statement = statement("t", "0", 1);
     assert!(Transport::context(&bare).is_err(), "no tail, no load");
 
-    let claims: [Claim; 2] = [
-        Claim {
-            selector_forms: abi_str(""),
-            egress_selector_forms: abi_str(""),
-            facts: std::ptr::null(),
-            facts_len: 0,
-            status_namespace: abi_str(""),
-            session: 0,
-            session_bound: 0,
-            unit0_trigger: 0,
-            status_at: 0,
-            _reserved: 0,
-        },
-        Claim {
-            selector_forms: abi_str(""),
-            egress_selector_forms: abi_str(""),
-            facts: std::ptr::null(),
-            facts_len: 0,
-            status_namespace: abi_str(""),
-            session: 0,
-            session_bound: 0,
-            unit0_trigger: 0,
-            status_at: 0,
-            _reserved: 0,
-        },
-    ];
-    let mut tail: TransportTail = z();
-    tail.head = KindTailHead {
-        size: size_of::<TransportTail>() as u32,
-        _reserved: 0,
-    };
-    tail.role = ROLE_FRAMER;
-    tail.claim_rows = claims.as_ptr();
-    tail.claim_rows_len = 2;
+    let claims = [claim_row("", 0, 0), claim_row("", 0, 0)];
+    let tail = framer(&claims);
     let names = [abi_str("one"), abi_str("two")];
-    let st = Statement {
-        kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
-        claims: names.as_ptr(),
-        claims_len: names.len(),
-        ..bare
-    };
+    let st = stating(&tail, &names);
     let ctx = Transport::context(&st)
         .expect("a framer tail binds")
         .expect("a context");
@@ -496,10 +487,8 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     assert!(facts.composes_over.is_empty());
     assert_eq!(facts.role, ROLE_FRAMER);
     // The names are the Statement's: a tail whose rows outnumber them is refused at bind.
-    let one_name = Statement {
-        claims_len: 1,
-        ..st
-    };
+    // SAFETY: the first of `names`, which outlive every read of `one_name`.
+    let one_name = unsafe { st.with_raw_claims(st.claims_ptr(), 1) };
     assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }
 
@@ -509,40 +498,15 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
 /// upgrade line for it.
 #[test]
 fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
-    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER, UNIT0_UPGRADE};
+    use busbar_contract::abi::transport::UNIT0_UPGRADE;
 
     use crate::dispatch::kinds::transport::TransportFacts;
 
     let upgrades_of = |trigger: u8| -> Vec<&'static str> {
-        let claims: [Claim; 1] = [Claim {
-            selector_forms: abi_str(""),
-            egress_selector_forms: abi_str(""),
-            facts: std::ptr::null(),
-            facts_len: 0,
-            status_namespace: abi_str(""),
-            session: 1,
-            session_bound: 0,
-            unit0_trigger: trigger,
-            status_at: 0,
-            _reserved: 0,
-        }];
-        let mut tail: TransportTail = z();
-        tail.head = KindTailHead {
-            size: size_of::<TransportTail>() as u32,
-            _reserved: 0,
-        };
-        tail.role = ROLE_FRAMER;
-        tail.claim_rows = claims.as_ptr();
-        tail.claim_rows_len = 1;
+        let claims = [claim_row("", 1, trigger)];
+        let tail = framer(&claims);
         let names = [abi_str("up")];
-        let st = Statement {
-            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
-            claims: names.as_ptr(),
-            claims_len: names.len(),
-            ..statement("t", "0", 1)
-        };
+        let st = stating(&tail, &names);
         let ctx = Transport::context(&st)
             .expect("a framer tail binds")
             .expect("a context");
@@ -569,25 +533,11 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
 /// status rows owes none, so a carrier built before the append still binds.
 #[test]
 fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
-    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::sdk::door::{abi_str, statement};
     use busbar_contract::abi::transport::{
-        Claim, FaultRow, StatusRow, TransportTail, FAULT_HARD, ROLE_CARRIER, ROLE_FRAMER,
-        STATUS_CALLER_FAULT,
+        FaultRow, StatusRow, FAULT_HARD, ROLE_CARRIER, STATUS_CALLER_FAULT,
     };
 
-    let claims: [Claim; 1] = [Claim {
-        selector_forms: abi_str(""),
-        egress_selector_forms: abi_str(""),
-        facts: std::ptr::null(),
-        facts_len: 0,
-        status_namespace: abi_str("numbering"),
-        session: 0,
-        session_bound: 0,
-        unit0_trigger: 0,
-        status_at: 0,
-        _reserved: 0,
-    }];
+    let claims = [claim_row("numbering", 0, 0)];
     let status = [StatusRow {
         claim: 0,
         lo: 1,
@@ -602,32 +552,19 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     }];
     let names = [abi_str("one")];
     let bind = |tail: &TransportTail| {
-        let st = Statement {
-            kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
-            claims: names.as_ptr(),
-            claims_len: names.len(),
-            ..statement("t", "0", 1)
-        };
+        let st = stating(tail, &names);
         Transport::context(&st).map(|_| ())
     };
-    let mut tail: TransportTail = z();
-    tail.head = KindTailHead {
-        size: size_of::<TransportTail>() as u32,
-        _reserved: 0,
-    };
-    tail.role = ROLE_FRAMER;
-    tail.claim_rows = claims.as_ptr();
-    tail.claim_rows_len = 1;
-    tail.status_rows = status.as_ptr();
-    tail.status_rows_len = 1;
+    // SAFETY: `status` outlives every bind below.
+    let mut tail = unsafe { framer(&claims).with_raw_status_rows(status.as_ptr(), 1) };
 
     // RED: status rows, no fault table.
     let refused = bind(&tail).expect_err("a classed claim with no fault table is refused");
     assert!(refused.contains("fault_rows"), "{refused}");
 
     // GREEN: the same claim with its fault table.
-    tail.fault_rows = faults.as_ptr();
-    tail.fault_rows_len = 1;
+    // SAFETY: `faults` outlives every bind below.
+    tail = unsafe { tail.with_raw_fault_rows(faults.as_ptr(), 1) };
     assert!(
         bind(&tail).is_ok(),
         "a classed claim with a fault table binds"
@@ -635,15 +572,20 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
 
     // A tail built before the append: the host reads its fault table as absent, so the same
     // status rows refuse it...
-    tail.head.size = std::mem::offset_of!(TransportTail, fault_rows) as u32;
+    let (_, fault_rows_at) = TransportTail::LAYOUT
+        .iter()
+        .copied()
+        .find(|&(field, _)| field == "fault_rows")
+        .expect("the fault table's offset");
+    tail.head.size = fault_rows_at as u32;
     assert!(
         bind(&tail).is_err(),
         "a pre-append framer that classes is refused"
     );
     // ...and a pre-append carrier that classes nothing still binds.
     tail.role = ROLE_CARRIER;
-    tail.status_rows = std::ptr::null();
-    tail.status_rows_len = 0;
+    // SAFETY: no status rows: NULL and none.
+    tail = unsafe { tail.with_raw_status_rows(std::ptr::null(), 0) };
     assert!(
         bind(&tail).is_ok(),
         "a pre-append tail that owes no fault table binds"
@@ -655,8 +597,8 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
         fault: 0,
         ..faults[0]
     }];
-    tail.fault_rows = none.as_ptr();
-    tail.fault_rows_len = 1;
+    // SAFETY: `none` outlives the bind below.
+    tail = unsafe { tail.with_raw_fault_rows(none.as_ptr(), 1) };
     assert!(bind(&tail).is_err(), "a FAULT_NONE row is refused");
 }
 
@@ -669,51 +611,23 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
 fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
     use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
-    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::mechanism::extensions::encode;
-    use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, EXT_OFFERED_POINTS, ROLE_FRAMER};
+    use busbar_contract::abi::transport::EXT_OFFERED_POINTS;
 
     use crate::dispatch::kinds::transport::TransportFacts;
 
     let offered = |extensions: &[u8]| -> Result<AuthPoints, String> {
-        let claims: [Claim; 1] = [Claim {
-            selector_forms: abi_str(""),
-            egress_selector_forms: abi_str(""),
-            facts: std::ptr::null(),
-            facts_len: 0,
-            status_namespace: abi_str(""),
-            session: 0,
-            session_bound: 0,
-            unit0_trigger: 0,
-            status_at: 0,
-            _reserved: 0,
-        }];
-        let mut tail: TransportTail = z();
-        tail.head = KindTailHead {
-            size: size_of::<TransportTail>() as u32,
-            _reserved: 0,
-        };
-        tail.role = ROLE_FRAMER;
-        tail.claim_rows = claims.as_ptr();
-        tail.claim_rows_len = 1;
+        let claims = [claim_row("", 0, 0)];
+        let tail = framer(&claims);
         let names = [abi_str("own")];
-        let st = Statement {
-            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
-            claims: names.as_ptr(),
-            claims_len: names.len(),
-            extensions: Blob {
-                ptr: if extensions.is_empty() {
-                    std::ptr::null()
-                } else {
-                    extensions.as_ptr()
-                },
-                len: extensions.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            },
-            ..statement("t", "0", 1)
+        let mut st = stating(&tail, &names);
+        let at = if extensions.is_empty() {
+            std::ptr::null()
+        } else {
+            extensions.as_ptr()
         };
+        // SAFETY: `extensions` outlives the bind below, the one read of the Statement.
+        st.extensions = unsafe { Blob::from_raw_parts(at, extensions.len(), BLOB_OCTETS, 0) };
         let ctx = Transport::context(&st)?.expect("a context");
         Ok(ctx
             .downcast_ref::<TransportFacts>()
@@ -743,51 +657,24 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
 /// (`check_claim_facts`) were never judged by the host.
 #[test]
 fn red_a_null_upgrade_name_or_claim_fact_refuses_the_bind() {
-    use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER};
-
-    let broken = AbiStr {
-        ptr: std::ptr::null(),
-        len: 3,
-    };
+    // SAFETY: forged as a foreign plugin could: three bytes counted over NULL, read only by the
+    // host's bind checks, which refuse it.
+    let broken = unsafe { AbiStr::from_raw_parts(std::ptr::null(), 3) };
     let bind = |upgrades: &[AbiStr], facts: &[AbiStr]| -> Result<(), String> {
-        let claims: [Claim; 1] = [Claim {
-            selector_forms: abi_str(""),
-            egress_selector_forms: abi_str(""),
-            facts: if facts.is_empty() {
-                std::ptr::null()
-            } else {
-                facts.as_ptr()
-            },
-            facts_len: facts.len(),
-            status_namespace: abi_str(""),
-            session: 0,
-            session_bound: 0,
-            unit0_trigger: 0,
-            status_at: 0,
-            _reserved: 0,
-        }];
-        let mut tail: TransportTail = z();
-        tail.head = KindTailHead {
-            size: size_of::<TransportTail>() as u32,
-            _reserved: 0,
+        let at = if facts.is_empty() {
+            std::ptr::null()
+        } else {
+            facts.as_ptr()
         };
-        tail.role = ROLE_FRAMER;
-        tail.claim_rows = claims.as_ptr();
-        tail.claim_rows_len = 1;
+        // SAFETY: `facts` outlives the bind below; the host's checks judge what it states.
+        let claims = [unsafe { claim_row("", 0, 0).with_raw_facts(at, facts.len()) }];
+        let mut tail = framer(&claims);
         if !upgrades.is_empty() {
-            tail.upgrades_to = upgrades.as_ptr();
-            tail.upgrades_to_len = upgrades.len();
+            // SAFETY: `upgrades` outlives the bind below; the host's checks judge what it states.
+            tail = unsafe { tail.with_raw_upgrades_to(upgrades.as_ptr(), upgrades.len()) };
         }
         let names = [abi_str("own")];
-        let st = Statement {
-            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
-            claims: names.as_ptr(),
-            claims_len: names.len(),
-            ..statement("t", "0", 1)
-        };
+        let st = stating(&tail, &names);
         Transport::context(&st).map(|_| ())
     };
     let good = [abi_str("next-claim")];
