@@ -3179,7 +3179,7 @@ async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
     };
     let planes = crate::plane::PlaneDispatch::default().mount(
         "refusal-under-a-mount",
-        "/mcp",
+        "/front-door",
         crate::plane::WIRE_JSONRPC,
     );
     let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
@@ -3200,7 +3200,7 @@ async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
         let bytes = r.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON")
     };
-    for path in ["/mcp", "/mcp/anything"] {
+    for path in ["/front-door", "/front-door/anything"] {
         let v = json(answer(path)).await;
         assert_eq!(v["jsonrpc"], "2.0", "{path}: {v}");
         assert!(
@@ -3210,7 +3210,7 @@ async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
         );
         assert!(v.pointer("/error/type").is_none(), "{path}: {v}");
     }
-    let v = json(answer("/mcpx")).await;
+    let v = json(answer("/front-doorx")).await;
     assert!(
         v.get("jsonrpc").is_none(),
         "a sibling is not under the mount: {v}"
@@ -3218,9 +3218,9 @@ async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
-            ("/mcp".to_string(), true),
-            ("/mcp/anything".to_string(), true),
-            ("/mcpx".to_string(), false),
+            ("/front-door".to_string(), true),
+            ("/front-door/anything".to_string(), true),
+            ("/front-doorx".to_string(), false),
         ],
         "the renderer is told which paths lie under a mounted plane"
     );
