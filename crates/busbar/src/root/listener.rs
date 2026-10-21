@@ -75,38 +75,11 @@ fn handshake_timeout() -> Duration {
 /// connection task, an FD, AND (critically) one of the finite `max_inbound_concurrent` (default 8192)
 /// permits indefinitely, starving real traffic. `DefaultBodyLimit` caps total SIZE, not TIME between
 /// frames, so it does not help. This wraps every inbound body in a [`TimeoutBody`] that trips when no
-/// frame arrives within this bound. Operator-tunable via `limits.request_body_read_timeout_secs`
-/// (default 30s), read per connection through the process-wide `crate::limits` install; falls back to
-/// the default when limits aren't installed (tests / pre-install).
+/// frame arrives within this bound. The bound, the throughput floor after its grace and the total
+/// deadline are the kernel's one body policy (`busbar_kernel::limits::body`), read here and on the
+/// accepted path alike; this page holds the IO (the timer and the frames).
 fn body_read_timeout() -> Duration {
-    Duration::from_secs(busbar_kernel::limits::request_body_read_timeout_secs())
-}
-
-/// MINIMUM sustained throughput a body read must maintain once the grace period has elapsed. The
-/// inter-frame timer (`body_read_timeout`) resets on ANY progress at all, so a client that dribbles
-/// exactly one byte per `body_read_timeout` interval holds a connection, an FD, and an
-/// inbound-concurrency permit indefinitely without ever tripping it. This floor catches that: it
-/// bounds RETENTION IN TIME, not size (`DefaultBodyLimit`/the per-request buffer cap already bound
-/// size) and not concurrency (`GlobalConcurrencyLimitLayer` already bounds that globally). Hardcoded
-/// rather than an operator knob (per owner decision): 1 KiB/s is far below any honest client's
-/// sustained rate and comfortably above "a client stalling one byte every ~30s".
-const MIN_BODY_THROUGHPUT_BYTES_PER_SEC: u64 = 1024;
-
-/// Grace period before the throughput floor is evaluated. Before it, `bytes / elapsed` is unstable
-/// (a client that pauses briefly before its first frame, or whose first frame is large relative to
-/// elapsed time, would false-positive). Hardcoded alongside the floor for the same reason.
-const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
-
-/// TOTAL wall-clock deadline for reading one inbound body — the backstop that bounds retention even
-/// for a client that stays JUST above the throughput floor forever. DERIVED from the configured body
-/// size cap and the throughput floor (`body_cap / floor`), NOT a bare constant: `request_body_max_bytes`
-/// is an operator knob with a 1 GiB ceiling, so a fixed total would silently demand an arbitrarily
-/// high sustained rate from an honest client uploading near that ceiling. Deriving it means the total
-/// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
-/// configured the cap.
-fn total_body_deadline() -> Duration {
-    let cap_bytes = busbar_kernel::proxy::max_translate_body_bytes() as u64;
-    Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
+    busbar_kernel::limits::body::read_timeout()
 }
 
 use std::future::Future;
@@ -116,6 +89,7 @@ use std::task::{Context, Poll};
 use axum::Router;
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
 use busbar_core_connector::listen::{Admits, Admitted};
+use busbar_kernel::limits::body::BodyBound;
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -524,57 +498,14 @@ impl<B> TimeoutBody<B> {
     }
 }
 
-/// The error a [`TimeoutBody`] yields when the inter-frame bound elapses. Boxed into the router's
-/// body-error type; the message is generic (no client bytes) so it is safe to surface.
-#[derive(Debug)]
-struct BodyReadTimeout;
-
-impl std::fmt::Display for BodyReadTimeout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "inbound request body read timed out (slow-loris body bound)"
-        )
-    }
-}
-impl std::error::Error for BodyReadTimeout {}
-
-/// The error a [`TimeoutBody`] yields when the TOTAL body deadline or the MINIMUM-THROUGHPUT floor
-/// is exceeded - the retention-in-time bound `BodyReadTimeout`'s inter-frame check cannot catch,
-/// because a dribbling client that polls at least once per byte keeps resetting that timer forever.
-/// Same discipline as `BodyReadTimeout`: generic message, no client bytes.
-#[derive(Debug)]
-enum BodyBoundExceeded {
-    Total,
-    Throughput,
-}
-
-impl std::fmt::Display for BodyBoundExceeded {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Total => write!(f, "inbound request body exceeded its total read deadline"),
-            Self::Throughput => write!(
-                f,
-                "inbound request body fell below the minimum throughput floor"
-            ),
-        }
-    }
-}
-impl std::error::Error for BodyBoundExceeded {}
-
-/// Shared by both the `Ready` and `Pending` arms of `poll_frame`: evaluate the total deadline, then
-/// (after the grace period) the throughput floor. `None` means neither tripped.
-fn check_body_bounds(started: Instant, bytes: u64) -> Option<BodyBoundExceeded> {
-    let elapsed = started.elapsed();
-    if elapsed > total_body_deadline() {
-        return Some(BodyBoundExceeded::Total);
-    }
-    if elapsed > BODY_THROUGHPUT_GRACE
-        && bytes < MIN_BODY_THROUGHPUT_BYTES_PER_SEC * elapsed.as_secs()
-    {
-        return Some(BodyBoundExceeded::Throughput);
-    }
-    None
+/// The kernel's body policy judged at `started` with `bytes` delivered, under the total deadline
+/// installed now (`busbar_kernel::limits::body::bounds`). `None` means neither bound tripped.
+fn check_body_bounds(started: Instant, bytes: u64) -> Option<BodyBound> {
+    busbar_kernel::limits::body::bounds(
+        started.elapsed(),
+        bytes,
+        busbar_kernel::limits::body::total_deadline(),
+    )
 }
 
 impl<B> Body for TimeoutBody<B>
@@ -621,7 +552,7 @@ where
                     .sleep
                     .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
                 match sleep.as_mut().poll(cx) {
-                    Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyReadTimeout)))),
+                    Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyBound::Idle)))),
                     Poll::Pending => Poll::Pending,
                 }
             }

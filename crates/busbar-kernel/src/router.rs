@@ -232,48 +232,48 @@ pub(crate) async fn request_activity_tick(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    request_activity();
     next.run(req).await
 }
 
-/// ONE REQUEST'S ACTIVITY TICK (row 192 C). RED: ticks nothing.
-pub fn request_activity() {}
-
-/// THE `Server-Timing` VALUE (row 192 C). RED: none.
-#[must_use]
-pub fn server_timing_value(total_us: u64, upstream_us: u64) -> String {
-    let _ = (total_us, upstream_us);
-    String::new()
+/// ONE REQUEST'S ACTIVITY TICK (row 192 C): the idle-purge ticker ([`REQUEST_ACTIVITY_TICKS`])
+/// bumped once, for every request that enters, the router's layer and the accepted path alike.
+pub fn request_activity() {
+    REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// THE `Server-Timing` FIELD (row 192 C). RED: none.
+/// THE `Server-Timing` VALUE for a request that took `total_us` with `upstream_us` of upstream
+/// round-trip ([`NO_UPSTREAM_RTT`] = none): `busbar;dur=<ms, 3 places>`, the gateway's own time
+/// ([`server_timing_dur_ms`]).
+#[must_use]
+pub fn server_timing_value(total_us: u64, upstream_us: u64) -> String {
+    let dur_ms = server_timing_dur_ms(total_us, upstream_us);
+    format!("busbar;dur={dur_ms:.3}")
+}
+
+/// THE `Server-Timing` FIELD for a request begun at `start` with `upstream_us` of upstream
+/// round-trip (row 192 C: one source for the router's layer and the accepted path): the field's
+/// name and [`server_timing_value`] over the time elapsed now; `None` when the value is no field
+/// value. Stamped only where `advanced.response_headers.server_timing` is on, as
+/// `apply_common_layers` composes the layer.
 #[must_use]
 pub fn server_timing_field(
     start: std::time::Instant,
     upstream_us: u64,
 ) -> Option<(axum::http::HeaderName, axum::http::HeaderValue)> {
-    let _ = (start, upstream_us);
-    None
+    let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    axum::http::HeaderValue::from_str(&server_timing_value(total_us, upstream_us))
+        .ok()
+        .map(|v| (axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v))
 }
 
-/// The upstream round-trip slot around `fut` (row 192 C). RED: no slot.
+/// Run `fut` with the upstream round-trip slot the forward path records into
+/// ([`proxy::UPSTREAM_RTT_US`]), and answer its output beside the round-trip it recorded
+/// ([`NO_UPSTREAM_RTT`] when no upstream was called).
 pub async fn with_upstream_rtt<F: std::future::Future>(fut: F) -> (F::Output, u64) {
-    (fut.await, NO_UPSTREAM_RTT)
-}
-
-/// THE PANIC BOUNDARY AROUND ONE REQUEST (row 192 C). RED: catches nothing.
-///
-/// # Errors
-///
-/// The panic's payload.
-pub async fn catch_request_panic<F, M>(
-    start: M,
-) -> Result<F::Output, Box<dyn std::any::Any + Send + 'static>>
-where
-    M: FnOnce() -> F,
-    F: std::future::Future,
-{
-    Ok(start().await)
+    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
+    let out = proxy::UPSTREAM_RTT_US.scope(slot.clone(), fut).await;
+    (out, slot.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
@@ -295,17 +295,10 @@ pub(crate) async fn server_timing(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use std::sync::atomic::Ordering;
-    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
     let start = std::time::Instant::now();
-    let mut resp = proxy::UPSTREAM_RTT_US
-        .scope(slot.clone(), next.run(req))
-        .await;
-    let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-    let dur_ms = server_timing_dur_ms(total_us, slot.load(Ordering::Relaxed));
-    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
-        resp.headers_mut()
-            .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
+    let (mut resp, upstream_us) = with_upstream_rtt(next.run(req)).await;
+    if let Some((name, value)) = server_timing_field(start, upstream_us) {
+        resp.headers_mut().insert(name, value);
     }
     resp
 }
@@ -1033,42 +1026,13 @@ where
     }
 
     fn call(&mut self, req: axum::extract::Request) -> Self::Future {
-        use std::future::Future as _;
-        use std::panic::{catch_unwind, AssertUnwindSafe};
-        use std::task::Poll;
         // tower's clone-out-of-`self` idiom (see `InboundAdmissionService::call`).
         let mut inner = self.inner.clone();
         let handle = self.handle.clone();
         let uri = req.uri().clone();
         let method = req.method().clone();
         Box::pin(async move {
-            // `AssertUnwindSafe`: nothing observed across the boundary is reused after an unwind —
-            // the panicked future is never polled again and is dropped with this one.
-            // The scope lives INSIDE each `catch_unwind` closure: on an unwind it is dropped while
-            // the thread is still panicking (and so leaves the hook's record for this boundary);
-            // on a normal return it is dropped first and reports any panic an inner boundary
-            // caught.
-            let started = catch_unwind(AssertUnwindSafe(|| {
-                let _scope = RequestPanicScope::enter();
-                inner.call(req)
-            }));
-            let outcome = match started {
-                Err(payload) => Err(payload),
-                Ok(fut) => {
-                    let mut fut = std::pin::pin!(fut);
-                    std::future::poll_fn(|cx| {
-                        match catch_unwind(AssertUnwindSafe(|| {
-                            let _scope = RequestPanicScope::enter();
-                            fut.as_mut().poll(cx)
-                        })) {
-                            Ok(Poll::Ready(r)) => Poll::Ready(Ok(r)),
-                            Ok(Poll::Pending) => Poll::Pending,
-                            Err(payload) => Poll::Ready(Err(payload)),
-                        }
-                    })
-                    .await
-                }
-            };
+            let outcome = catch_request_panic(|| inner.call(req)).await;
             match outcome {
                 Ok(r) => r,
                 Err(payload) => Ok(request_panicked(&handle, &method, &uri, payload.as_ref())),
@@ -1077,8 +1041,52 @@ where
     }
 }
 
-/// Log the caught panic once, with its location, and shape the one request's `500`.
-fn request_panicked(
+/// THE PANIC BOUNDARY AROUND ONE REQUEST (row 192 C: one source for the router's
+/// [`CatchPanic`] and the accepted path): `start` called and the future it gives polled to its
+/// end, each inside `catch_unwind` with the panic-hook depth marker (`RequestPanicScope`) held
+/// for that call alone, so the hook records the panic's location for the boundary rather than
+/// printing it. A panic at the start or at any poll answers its payload, and the panicked future
+/// is never polled again; [`request_panicked`] shapes the request's `500`.
+///
+/// # Errors
+///
+/// The panic's payload.
+pub async fn catch_request_panic<F, M>(
+    start: M,
+) -> Result<F::Output, Box<dyn std::any::Any + Send + 'static>>
+where
+    M: FnOnce() -> F,
+    F: std::future::Future,
+{
+    use std::future::Future as _;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::task::Poll;
+    // `AssertUnwindSafe`: nothing observed across the boundary is reused after an unwind — the
+    // panicked future is never polled again and is dropped with this one. The scope lives INSIDE
+    // each `catch_unwind` closure: on an unwind it is dropped while the thread is still panicking
+    // (and so leaves the hook's record for this boundary); on a normal return it is dropped first
+    // and reports any panic an inner boundary caught.
+    let fut = catch_unwind(AssertUnwindSafe(|| {
+        let _scope = RequestPanicScope::enter();
+        start()
+    }))?;
+    let mut fut = std::pin::pin!(fut);
+    std::future::poll_fn(|cx| {
+        match catch_unwind(AssertUnwindSafe(|| {
+            let _scope = RequestPanicScope::enter();
+            fut.as_mut().poll(cx)
+        })) {
+            Ok(Poll::Ready(r)) => Poll::Ready(Ok(r)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(payload) => Poll::Ready(Err(payload)),
+        }
+    })
+    .await
+}
+
+/// Log the caught panic once, with its location, and shape the one request's `500` (the kernel's
+/// refusal through the path's own envelope, `fallback_error_response` when no door renders it).
+pub fn request_panicked(
     handle: &std::sync::Arc<state::AppHandle>,
     method: &axum::http::Method,
     uri: &axum::http::Uri,

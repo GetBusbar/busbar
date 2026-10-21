@@ -46,9 +46,7 @@ pub fn read_timeout() -> Duration {
 /// The TOTAL deadline for a body under a cap of `cap_bytes`: the whole cap at the floor.
 #[must_use]
 pub const fn total_deadline_for(cap_bytes: u64) -> Duration {
-    // RED: no deadline.
-    let _ = cap_bytes;
-    Duration::ZERO
+    Duration::from_secs(cap_bytes / MIN_THROUGHPUT_BYTES_PER_SEC)
 }
 
 /// [`total_deadline_for`] the body cap installed now (`request_body_max_bytes`, the translate cap).
@@ -72,9 +70,11 @@ impl BodyBound {
     /// The bound's words: generic, no client byte in them.
     #[must_use]
     pub const fn text(self) -> &'static str {
-        // RED: no words.
-        let _ = (self, IDLE_TEXT, TOTAL_TEXT, THROUGHPUT_TEXT);
-        ""
+        match self {
+            Self::Idle => IDLE_TEXT,
+            Self::Total => TOTAL_TEXT,
+            Self::Throughput => THROUGHPUT_TEXT,
+        }
     }
 }
 
@@ -93,8 +93,14 @@ impl std::error::Error for BodyBound {}
 /// every wait: a dribbling client polls at least once per byte.
 #[must_use]
 pub fn bounds(elapsed: Duration, bytes: u64, total: Duration) -> Option<BodyBound> {
-    // RED: nothing is judged.
-    let _ = (elapsed, bytes, total);
+    if elapsed > total {
+        return Some(BodyBound::Total);
+    }
+    if elapsed > THROUGHPUT_GRACE
+        && bytes < MIN_THROUGHPUT_BYTES_PER_SEC.saturating_mul(elapsed.as_secs())
+    {
+        return Some(BodyBound::Throughput);
+    }
     None
 }
 
@@ -103,9 +109,7 @@ pub fn bounds(elapsed: Duration, bytes: u64, total: Duration) -> Option<BodyBoun
 /// listener's timer fires.
 #[must_use]
 pub fn idle(since_frame: Duration, read_timeout: Duration) -> Option<BodyBound> {
-    // RED: nothing is judged.
-    let _ = (since_frame, read_timeout);
-    None
+    (since_frame >= read_timeout).then_some(BodyBound::Idle)
 }
 
 #[cfg(test)]
