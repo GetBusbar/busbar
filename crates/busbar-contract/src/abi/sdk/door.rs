@@ -633,6 +633,12 @@ pub const fn door<T: KindOps>(
 /// private and its one constructor is `unsafe`, called only in the macro's expansion, so safe code
 /// holds one only for a door the contract laid out, never for an arbitrary `fn() -> *const Door`.
 ///
+/// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
+/// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
+/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
+/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
+/// fields private behind `const` constructors from `'static` slices and strs).
+///
 /// THE SAFE SURFACE OF THE TEST SUPPORT, PROVED IN PAIRS. Each `compile_fail` below has a twin
 /// that differs from it in the one forbidden spelling and MUST compile, so the failure is the
 /// guard's and nothing else's (stable rustdoc checks no error code). They sit here, on an item
@@ -884,6 +890,12 @@ impl MacroDoor {
 
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
+///
+/// Beside `door` it expands `MACRO_DOOR`, the [`MacroDoor`] the contract's test support reads the
+/// door through. The `statement` it is given is the caller's own `const` data: its lists, strings,
+/// blobs and kind tail are stated through the ABI's public pointer/length fields, which the
+/// root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` puts behind `const` constructors
+/// from `'static` slices and strs.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
 /// `pub extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
 ///
