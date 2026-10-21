@@ -75,6 +75,7 @@ mod history;
 mod posting;
 mod project;
 mod rate;
+mod rollup;
 mod unit_rate;
 mod view;
 
@@ -93,6 +94,7 @@ pub use rate::{
     RateCard, TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
     PER_REQUEST, PER_SESSION,
 };
+pub use rollup::{budget_remaining, sum_spend};
 pub use unit_rate::UnitRate;
 pub use view::{
     nanos_of_exact, price as price_ledger, price_exact, price_in_view, whole, LedgerEntry, Money,

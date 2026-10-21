@@ -149,10 +149,7 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 /// Who a node is and the key it signs with, kept in the configured store: the node registry, the
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;
-pub use store_identity::{
-    hold_lease, host_identity, keep_keyset, persisted_node, refresh_held_lease, release_held_lease,
-    stored_keyset, take_node,
-};
+pub use store_identity::{host_identity, keep_keyset, persisted_node, stored_keyset, take_node};
 // The host registry's own id, read by the boot through `take_node`; the tests reach it directly.
 #[cfg(test)]
 pub use store_identity::node_id;
@@ -183,6 +180,12 @@ pub use seal::{keyset_of, KeySetVerifier};
 /// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
 /// module, as `replay` is; its methods are `Durability`'s own.
 mod audit;
+
+/// The three disaster-recovery verbs over the node's journal and the configured store (status row
+/// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
+/// A private child module, as `replay` is; its public items are re-exported here.
+mod recovery;
+pub use recovery::{boot_recovery, node_verb_store};
 
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
@@ -451,19 +454,15 @@ impl Durability {
     }
 
     /// What `/admin/verify` needs to walk every chain the store keeps, taken under the book's lock
-    /// so the walk itself runs without it: the store's calls, this node's id and the keys this
+    /// so the walk itself runs without it: the lane to the store, this node's id and the keys this
     /// node signs with. `None` on a book with no store behind it.
     #[must_use]
     pub fn stored_walk_inputs(
         &self,
-    ) -> Option<(
-        std::sync::Arc<dyn busbar_contract::store_calls::StoreCalls>,
-        u64,
-        busbar_kernel_audit::AuditKeySet,
-    )> {
+    ) -> Option<(JournalLane, u64, busbar_kernel_audit::AuditKeySet)> {
         let lane = self.lane.as_ref()?;
         Some((
-            lane.calls(),
+            lane.clone(),
             self.journal.node(),
             seal::keyset_of(&self.record),
         ))
@@ -2638,10 +2637,9 @@ pub struct NodeBook {
     /// The previous release's rows, as the dual write fills them. The write half is inside the
     /// ledger; this is the same value, kept so a view has somewhere to read them from.
     pub rows: std::sync::Arc<SummedRows>,
-    /// The configured store, behind the published ABI, as the admin verbs unit reaches it: the SAME
-    /// loader adapter boot shipped this book's batches through (`StoreAdapter::verb_store`), so the
-    /// disaster-recovery verbs land on the store the book is shipped to. `None` on a node with no
-    /// configured store (row 113, ruling (B)).
+    /// The disaster-recovery verbs' store, as the admin verbs unit reaches it ([`node_verb_store`]):
+    /// this book's journal for the chain break and the store the book is shipped to for the epoch
+    /// floor (row 187). `None` on a node with no configured store (row 113, ruling (B)).
     pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 
