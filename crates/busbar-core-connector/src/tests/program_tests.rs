@@ -530,15 +530,15 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
     });
 }
 
-/// RED (`BUSBAR-1.6.0.md` l.388: "the stdio supervisor is the stdio transport's"): THE HOST MAKES
-/// NO RESTART DECISION OF ITS OWN. A member's program that ends is dialled anew on the very next
+/// RED (`BUSBAR-1.6.0.md` l.388: the supervisor of a spawned program is its carrier's): THE HOST
+/// HOLDS NO RESTART POLICY OF ITS OWN. A member's program that ends is dialled anew on the very next
 /// open, however often it ends: seven ends inside a second, and the eighth open is a new generation
 /// (the host's copy of the policy refused the open inside its backoff, and for good after five
 /// ends). Whether the program may be spawned is the carrier's verdict, carried by the dial: while
 /// the carrier refuses the member's supervision key the open is refused, and once it lets the dial
 /// through the program runs again.
 #[test]
-fn the_host_makes_no_restart_decision_of_its_own() {
+fn the_host_holds_no_restart_policy_of_its_own() {
     worker().block_on(async {
         let door = Arc::new(TestDoor::identity("bytes"));
         let view = Transports::new(vec![Entry {

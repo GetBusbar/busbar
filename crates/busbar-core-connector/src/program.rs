@@ -22,10 +22,10 @@
 //! * Closing a lease leaves the program running. A program that ends (its output closed, a failed
 //!   pipe, or found exited when a lease opens) ends every lease of its generation, and the next
 //!   open spawns it anew: the next generation. WHETHER IT MAY BE SPAWNED AGAIN IS NOT DECIDED
-//!   HERE: the stdio supervisor is the stdio transport's (`BUSBAR-1.6.0.md` l.388). Every spawn is
-//!   a `dial` carrying the member's supervision key (`DialIn::supervision_key`), and the carrier's
-//!   verdict on it (spawned, or refused while it holds the program down) is the open's answer. The
-//!   host keeps only the spawn's hygiene ([`Connection::spawn`], `hostio`).
+//!   HERE: the supervisor of a spawned program is its carrier's (`BUSBAR-1.6.0.md` l.388). Every
+//!   spawn is a `dial` carrying the member's supervision key (`DialIn::supervision_key`), and the
+//!   carrier's verdict on it (spawned, or refused while it holds the program down) is the open's
+//!   answer. The host keeps only the spawn's hygiene ([`Connection::spawn`], `hostio`).
 //! * A member RETIRED by a re-declaration (its registration gone, or its program changed) admits
 //!   no new lease; its program is killed once its last lease closes (at once when it has none).
 
