@@ -456,6 +456,7 @@ fn admin_modules_rebuilt_on_reload() {
         &cfg,
         &registry,
         &resolver,
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("boot builds admin chain");
@@ -474,6 +475,7 @@ fn admin_modules_rebuilt_on_reload() {
         &cfg,
         &registry,
         &resolver,
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("reload rebuilds admin chain");

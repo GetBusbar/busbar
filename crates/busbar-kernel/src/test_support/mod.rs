@@ -1912,10 +1912,9 @@ impl TestApp {
             admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
             base_hook_names: self.base_hook_names,
-            admin_chain: self
-                .admin_chain
-                .clone()
-                .unwrap_or_else(crate::config::default_admin_auth_names),
+            admin_chain: self.admin_chain.clone().unwrap_or_else(|| {
+                crate::config::default_admin_auth_names(&self.root.unwrap_or_else(lent_stand_in))
+            }),
             admin_modules: {
                 // The operator credential answers over the fixture's governance token, through
                 // whatever auth row the test binary links (none, in this crate's own tests).
@@ -1924,13 +1923,18 @@ impl TestApp {
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
                 let legacy = crate::config::Legacy::stand_in();
+                let root = self.root.unwrap_or_else(lent_stand_in);
                 let reg = std::sync::Arc::new(
-                    crate::preflight::linked(&self.root.unwrap_or_else(lent_stand_in), legacy)
-                        .expect("the linked registry"),
+                    crate::preflight::linked(&root, legacy).expect("the linked registry"),
                 );
-                chain.operator =
-                    crate::auth::open_operator(&reg, digest, &self.identity_providers, legacy)
-                        .expect("the linked operator credential opens");
+                chain.operator = crate::auth::open_operator(
+                    &reg,
+                    digest,
+                    &self.identity_providers,
+                    &root,
+                    legacy,
+                )
+                .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
             },
             login_methods: std::sync::Arc::new(
@@ -2078,16 +2082,6 @@ pub fn hook_needs(
     user: busbar_plugin_loader::sign::NeedLevel,
 ) -> busbar_plugin_loader::sign::HookNeeds {
     busbar_plugin_loader::sign::HookNeeds { prompt, user }
-}
-
-/// Install a test build's linked auth rows and the operator credential's words, as boot does
-/// ([`install_root_auth`], which hands them to the install record); a cell calls this so it names
-/// neither the call's result nor the types behind it.
-pub fn install_linked_auth(
-    rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
-    words: busbar_kernel_identity::operator::OperatorWords,
-) {
-    install_root_auth(rows, words);
 }
 
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
@@ -2327,52 +2321,52 @@ impl Drop for EnvVarGuard {
     }
 }
 
-/// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
-/// as the composition root links it into the shipped one: `door` is the memory-ABI door of whichever
-/// auth plugin the test binary links for the purpose, registered
-/// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
-/// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
-/// first install stands (the axis is process-wide). A test crate names that plugin only in its
-/// manifest; its build script turns the manifest row into the `door` it hands here.
-pub fn install_operator_auth_row(door: AuthDoor) {
-    let words = OperatorWords {
-        provider: crate::config::operator_provider(),
-        principal_id: crate::config::operator_principal_id(),
-    };
-    install_operator_auth_row_as(words, door)
-}
-
-/// [`install_operator_auth_row`] under a test binary's OWN operator words — a binary that links the
-/// operator plugin the composition root links, and pins the root's bytes, hands in the root's words
-/// as the root does: `door` linked under the provider key of `words`. The first install stands.
-pub fn install_operator_auth_row_as(words: OperatorWords, door: AuthDoor) {
-    let _ =
-        crate::preflight::TEST_ROOT_AUTH.set((vec![(words.provider, words.provider, door)], words));
-}
-
-/// THE ROOT'S AUTH ROWS in a test binary of the composition root: its linked table's `auths` and
-/// the operator words off its legacy table, which the install record
-/// ([`crate::preflight::root_rows`]) then reports as the root's install record does. The first
-/// hand-in stands.
-pub fn install_root_auth(rows: &[crate::preflight::LinkedAuth], words: OperatorWords) {
-    let _ = crate::preflight::TEST_ROOT_AUTH.set((rows.to_vec(), words));
+/// A record carrying the auth rows `auths` under the operator words `operator`, the stand-in's in
+/// every other part ([`crate::preflight::RootInstall::STAND_IN`]): what a test binary that links its
+/// own operator plugin, or the composition root's table, lends its `TestApp`
+/// ([`TestApp::root`]) and its configurations, as the composition root lends its own record.
+#[must_use]
+pub const fn lending_auth(
+    auths: &'static [crate::preflight::LinkedAuth],
+    operator: OperatorWords,
+) -> crate::preflight::RootInstall {
+    crate::preflight::RootInstall {
+        auths,
+        operator,
+        ..crate::preflight::RootInstall::STAND_IN
+    }
 }
 
 pub use busbar_kernel_identity::operator::{AuthDoor, OperatorWords};
 
-// FINAL-REPIN: delete with `preflight::install_auth_axis` when the pinned door root cells lend
-// their TestApp a record of their own (`TestApp::root`).
-/// The auth-axis opener the pinned door root cells hand in (`preflight::install_auth_axis`): a
-/// [`TestApp`] lent no record of its own lends the stand-in with it in place of the stand-in's
-/// opener ([`lent_stand_in`]). Read by nothing else; a test that lends a record
-/// ([`TestApp::root`]) reads the opener that record lends. The first hand-in stands.
-static ROOT_AUTH_AXIS_HANDED_IN: std::sync::OnceLock<crate::preflight::AuthAxisOpener> =
-    std::sync::OnceLock::new();
+// FINAL-REPIN: delete with `preflight::install_auth_axis` and `preflight::install_linked_auth` when
+// the pinned door root cells lend their TestApp a record of their own (`TestApp::root`).
+/// What the pinned door root cells hand in (`preflight::install_auth_axis`,
+/// `preflight::install_linked_auth`): their auth-axis opener, and the composition root's auth rows
+/// and operator words. A [`TestApp`] lent no record of its own lends the stand-in with these in
+/// place of the stand-in's ([`lent_stand_in`]). Read by nothing else; a test that lends a record
+/// ([`TestApp::root`]) reads what that record lends. The first hand-in of each stands.
+struct PinnedCellsHandIn {
+    auth_axis: std::sync::OnceLock<crate::preflight::AuthAxisOpener>,
+    auth_rows: std::sync::OnceLock<(&'static [crate::preflight::LinkedAuth], OperatorWords)>,
+}
 
-/// Hand the pinned door root cells' auth-axis opener in ([`ROOT_AUTH_AXIS_HANDED_IN`]).
+/// The one holder of [`PinnedCellsHandIn`].
+static PINNED_CELLS_HAND_IN: PinnedCellsHandIn = PinnedCellsHandIn {
+    auth_axis: std::sync::OnceLock::new(),
+    auth_rows: std::sync::OnceLock::new(),
+};
+
+/// Hand the pinned door root cells' auth-axis opener in ([`PINNED_CELLS_HAND_IN`]).
 #[cfg(feature = "test-support")]
 pub(crate) fn hand_in_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    let _ = ROOT_AUTH_AXIS_HANDED_IN.set(open);
+    let _ = PINNED_CELLS_HAND_IN.auth_axis.set(open);
+}
+
+/// Hand the pinned door root cells' auth rows and operator words in ([`PINNED_CELLS_HAND_IN`]).
+#[cfg(feature = "test-support")]
+pub fn hand_in_root_auth_rows(rows: &'static [crate::preflight::LinkedAuth], words: OperatorWords) {
+    let _ = PINNED_CELLS_HAND_IN.auth_rows.set((rows, words));
 }
 
 /// A program environment's secret reference resolved at config time through the secret axis the
@@ -2394,15 +2388,24 @@ pub fn resolve_stand_in_secret_at_config(
 }
 
 /// The record a [`TestApp`] lent none of its own lends: the stand-in
-/// ([`crate::preflight::RootInstall::STAND_IN`]), with the pinned door root cells' auth-axis opener
-/// in place of the stand-in's when they handed one in ([`ROOT_AUTH_AXIS_HANDED_IN`]).
+/// ([`crate::preflight::RootInstall::STAND_IN`]), with the pinned door root cells' auth-axis opener,
+/// auth rows and operator words in place of the stand-in's when they handed them in
+/// ([`PINNED_CELLS_HAND_IN`]).
 pub(crate) fn lent_stand_in() -> crate::preflight::RootInstall {
     let stand_in = crate::preflight::RootInstall::STAND_IN;
+    let (auths, operator) = PINNED_CELLS_HAND_IN
+        .auth_rows
+        .get()
+        .copied()
+        .unwrap_or((stand_in.auths, stand_in.operator));
     crate::preflight::RootInstall {
-        auth_axis: ROOT_AUTH_AXIS_HANDED_IN
+        auth_axis: PINNED_CELLS_HAND_IN
+            .auth_axis
             .get()
             .copied()
             .or(stand_in.auth_axis),
+        auths,
+        operator,
         ..stand_in
     }
 }

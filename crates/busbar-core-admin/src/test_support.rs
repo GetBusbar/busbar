@@ -26,11 +26,12 @@ pub fn openapi_json() -> String {
 }
 
 /// The OpenAPI document generated from the typed route contract over the registered planes, its
-/// `build.hook_plugins` example the hook names the caller lends (the composition root's admin tests
-/// generate it with the linked planes registered and the root's own hook names).
+/// `build.hook_plugins` example the hook names the caller lends and its operator-credential examples
+/// the provider it lends (the composition root's admin tests generate it with the linked planes
+/// registered and the root's own hook names and operator words).
 #[cfg(feature = "openapi-schema")]
-pub fn openapi_doc(hook_names: &[&str]) -> serde_json::Value {
-    crate::v1::json::openapi_doc(hook_names)
+pub fn openapi_doc(hook_names: &[&str], operator_provider: &str) -> serde_json::Value {
+    crate::v1::json::openapi_doc(hook_names, operator_provider)
 }
 
 /// Every component schema a registered plane's `openapi_schemas` contributes, as

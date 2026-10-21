@@ -2371,8 +2371,12 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
 
     // Mirrors `migrate_config_command`: read the real file from disk, run the real migrator.
     let raw = std::fs::read_to_string(&legacy_config_path).unwrap();
-    let migrated = crate::config::migrate::migrate_config(&raw, crate::config::Legacy::stand_in())
-        .expect("legacy config migrates");
+    let migrated = crate::config::migrate::migrate_config(
+        &raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("legacy config migrates");
 
     let migrated_path = dir.join("migrated-config.yaml");
     std::fs::write(&migrated_path, &migrated.yaml).unwrap();

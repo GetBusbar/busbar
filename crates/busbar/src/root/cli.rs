@@ -243,7 +243,7 @@ pub(crate) fn handle_cli_flags(lent: busbar_kernel::preflight::RootInstall) -> O
         Some("--validate") => Some(validate_config_command(lent)),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
-        Some("--migrate-config") => Some(migrate_config_command(args.next())),
+        Some("--migrate-config") => Some(migrate_config_command(args.next(), lent)),
         Some("--help" | "-h") => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(0)
@@ -308,7 +308,7 @@ fn validate_config_command(lent: busbar_kernel::preflight::RootInstall) -> i32 {
     // boot-guard over the merged shape), not just the base file. The hooks/groups sections merge
     // POST-resolve below.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc, legacy);
+        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc, &lent, legacy);
     }
     let mut cfg = match config::resolve_in(lent, &loaded.deploy, &loaded.defs, legacy) {
         Ok(c) => c,
@@ -529,7 +529,10 @@ fn list_plugins_command() -> i32 {
 /// to STDERR - zero side effects, nothing is written, no env interpolation (a `${VAR}` reference
 /// passes through verbatim so the output stays a template). Exit 0 on success (even with TODOs -
 /// they are review items, not errors), 1 on unreadable/unparseable input, 2 on a missing path.
-fn migrate_config_command(path: Option<String>) -> i32 {
+fn migrate_config_command(
+    path: Option<String>,
+    lent: busbar_kernel::preflight::RootInstall,
+) -> i32 {
     let Some(path) = path else {
         eprintln!(
             "busbar: --migrate-config requires a path: busbar --migrate-config <old-config.yaml>"
@@ -543,7 +546,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
             return 1;
         }
     };
-    match config::migrate::migrate_config(&raw, crate::root::legacy::table()) {
+    match config::migrate::migrate_config(&raw, &lent, crate::root::legacy::table()) {
         Ok(out) => {
             print!("{}", out.yaml);
             eprintln!("migrated '{path}' to the 1.5.0 config shape.");

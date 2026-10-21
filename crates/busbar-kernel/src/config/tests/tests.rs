@@ -1726,7 +1726,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     let auth = crate::config::AuthDeployCfg {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
         chain: vec![KEYS_MODULE.to_string()],
-        admin_auth: vec![crate::config::operator_provider().to_string()],
+        admin_auth: Some(vec![crate::config::operator_provider().to_string()]),
         role_bindings: RoleBindings::new(),
         key_ttl: None,
         policy: Default::default(),
@@ -2139,6 +2139,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
@@ -2190,6 +2191,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
@@ -2218,6 +2220,7 @@ fn test_dangling_identity_provider_reference_is_an_error() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(
@@ -2269,6 +2272,7 @@ fn test_token_on_a_non_operator_provider_is_an_error() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(
@@ -2412,8 +2416,10 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    // The serde default for admin_auth is the operator credential's bare provider NAME.
-    assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
+    // An omitted admin_auth parses as absent; `resolve` reads it as the operator credential's bare
+    // provider NAME under the record it is lent (`test_resolve_projects_admin_auth_names` pins
+    // the resolved default).
+    assert_eq!(auth.admin_auth, None);
 }
 
 // ── groups / limits ──────────────────────────────────────────────────────────────────────────────
@@ -2893,7 +2899,10 @@ fn test_resolve_projects_admin_auth_names() {
     assert_eq!(
         cfg.auth
             .as_ref()
-            .and_then(|a| a.admin_token_ref(crate::config::Legacy::stand_in()))
+            .and_then(|a| a.admin_token_ref(
+                &crate::test_support::lent_stand_in(),
+                crate::config::Legacy::stand_in()
+            ))
             .and_then(|t| t.env_var()),
         Some("BUSBAR_ADMIN_TOKEN")
     );
@@ -2957,6 +2966,7 @@ test-idp-double:
         &serde_yaml::from_str("chain: [test-idp-double]\n").expect("auth parses"),
         &providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
@@ -3241,7 +3251,10 @@ fn reserved_hook_names_are_frozen() {
     // (d) The operator credential's provider — the word the root hands in (this build's double) —
     //     is reserved on the same path, without the kernel spelling it.
     let operator = crate::config::operator_provider();
-    assert!(crate::config::is_reserved_hook_name(operator));
+    assert!(crate::config::is_reserved_hook_name(
+        operator,
+        &crate::test_support::lent_stand_in()
+    ));
     let mut deploy = base_deploy();
     deploy.hooks.insert(
         operator.to_string(),
@@ -3746,6 +3759,7 @@ fn test_auth_policy_block_parses_and_resolves() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
@@ -3794,6 +3808,7 @@ fn test_auth_policy_absent_is_default() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");

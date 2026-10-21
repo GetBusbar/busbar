@@ -1077,12 +1077,14 @@ pub struct AdminAuthView {
 }
 
 /// The served description of [`AdminAuthView::modules`]: 1.5.5's text byte for byte, its example
-/// read off the operator credential's frozen provider row, so the kernel spells no auth module.
+/// the operator credential's provider, which the generated document fills in under the words of the
+/// install record it is lent (`busbar_kernel::api::fill_operator_provider`), so the kernel spells no
+/// auth module.
 #[cfg(feature = "openapi-schema")]
 fn modules_description() -> String {
     format!(
         "The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.\n`[\"{}\"]`), reported in order. Empty when the admin plane is open.",
-        busbar_kernel::config::operator_module()
+        busbar_kernel::api::OPERATOR_PROVIDER_MARK
     )
 }
 

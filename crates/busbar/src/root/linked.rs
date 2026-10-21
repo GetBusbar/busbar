@@ -338,18 +338,23 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
-/// THE STORE, HOOK AND SECRET AXES: the root's INSTALL RECORD — the linked store and hook rows for
-/// the kernel's cold-kind axis, and the secret axis ([`secret_rows`]), with the auth-axis opener
-/// (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over, taken of
-/// every configuration as it is built (`crate::root::door_steps::door_config`) — which the root owns
-/// and lends to every reader (the configuration it resolves carries it to the validation, the
-/// preflight and the build; the kernel keeps no copy). No row is a default store: the store is the
-/// one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses the
-/// boot (exit 2) before anything resolves a store or a secret.
+/// THE STORE, AUTH, HOOK AND SECRET AXES: the root's INSTALL RECORD — the linked store, auth and
+/// hook rows for the kernel's cold-kind axis, the operator credential's words, the secret axis
+/// ([`secret_rows`]), the auth-axis opener (`crate::root::dispatch::auth_axis`), the rate holder
+/// and dater, and the projection the door planes are sealed over, taken of every configuration as
+/// it is built (`crate::root::door_steps::door_config`) — which the root owns and lends to every
+/// reader (the configuration it resolves carries it to the validation, the preflight and the build;
+/// the kernel keeps no copy). No row is a default store: the store is the one config names
+/// (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
+/// before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) -> RootInstall {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => RootInstall {
             stores: linked.stores,
+            // The build's linked auth rows and the operator credential's words off the root legacy
+            // table: the record holds them, as it holds the stores.
+            auths: linked.auths,
+            operator: crate::root::auth_bindings::operator_words(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),

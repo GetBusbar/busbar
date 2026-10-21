@@ -1522,7 +1522,7 @@ pub(crate) async fn reset_overlay_section(
                             .keys()
                             .filter(|name| !nm.contains(&loaded_base.deploy, name))
                             .filter_map(|name| {
-                                let referents = nm.referents(&loaded_base.deploy, name);
+                                let referents = nm.referents(&loaded_base.deploy, &snapshot.root, name);
                                 (!referents.is_empty())
                                     .then(|| format!("`{name}` (still referenced by {})", referents.join(", ")))
                             })
@@ -1556,6 +1556,7 @@ pub(crate) async fn reset_overlay_section(
                     busbar_kernel::config::overlay::apply_root_to_deploy(
                         &mut loaded.deploy,
                         doc,
+                        &snapshot.root,
                         snapshot.legacy,
                     );
                 }
@@ -2071,7 +2072,7 @@ pub(crate) async fn put_auth(
         // Known-module validation (the boot rule, by MODULE): a provider backed by the operator
         // credential, under any name the effective `identity-providers:` gives it; the test-only
         // stand-in exists in test builds only. An unknown name can never silently drop auth.
-        let operator = busbar_kernel::config::operator_provider();
+        let operator = current.root.operator.provider;
         for name in &req.admin_auth {
             let known = current.admin_modules.operator.is(name)
                 || (cfg!(any(test, feature = "test-support")) && name == "test-scope-module");
@@ -2248,6 +2249,7 @@ pub(crate) fn rebuild_app_from_disk(
         busbar_kernel::config::overlay::apply_root_to_deploy(
             &mut loaded.deploy,
             doc,
+            &current.root,
             current.legacy,
         );
     }
@@ -2519,6 +2521,7 @@ pub(crate) async fn apply_config(
                 busbar_kernel::config::overlay::apply_root_to_deploy(
                     &mut deploy,
                     doc,
+                    &snapshot.root,
                     snapshot.legacy,
                 );
                 // Without this an apply re-validates against the BASE floors and silently reverts a
@@ -3074,6 +3077,7 @@ pub(crate) async fn put_config_settings(
                     busbar_kernel::config::overlay::apply_pre_resolve_sections(
                         &mut loaded.deploy,
                         doc,
+                        &snapshot.root,
                         snapshot.legacy,
                     );
                 }
@@ -3695,7 +3699,7 @@ const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
 // feature-on bin build has no caller, so allow it dead there.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn openapi_doc(hook_names: &[&str]) -> serde_json::Value {
+pub(crate) fn openapi_doc(hook_names: &[&str], operator_provider: &str) -> serde_json::Value {
     let mut paths = serde_json::Map::new();
     for (path, summary) in V1_GET_PATHS {
         paths.insert(
@@ -5110,7 +5114,7 @@ pub(crate) fn openapi_doc(hook_names: &[&str]) -> serde_json::Value {
         }
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "Busbar Admin API",
@@ -5141,7 +5145,11 @@ pub(crate) fn openapi_doc(hook_names: &[&str]) -> serde_json::Value {
             "schemas": schemas
         },
         "paths": paths
-    })
+    });
+    // The operator credential's provider, which the schema derives write as a mark: the provider
+    // of the install record the document is generated under.
+    busbar_kernel::api::fill_operator_provider(&mut doc, operator_provider);
+    doc
 }
 
 /// `METHOD + path -> PascalCase operationId`, e.g. `post` + `/api/v1/admin/keys/{id}/rotate` ->

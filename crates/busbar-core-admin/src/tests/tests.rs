@@ -113,8 +113,10 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         auth_modules
             .iter()
             .any(|m| m == busbar_kernel::config::operator_provider()),
-        busbar_kernel::preflight::linked_auth_names()
-            .contains(&busbar_kernel::config::operator_provider()),
+        busbar_kernel::preflight::linked_auth_names(
+            &busbar_kernel::test_support::operator_double::RECORD,
+        )
+        .contains(&busbar_kernel::config::operator_provider()),
         "auth_modules must contain the operator credential iff its row is linked: {auth_modules:?}"
     );
     // RED with a hook name spelled here rather than read off the root's install record (Law 1).
@@ -4165,8 +4167,10 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         .find(|p| p["name"] == busbar_kernel::config::operator_provider());
     assert_eq!(
         admin_tokens.is_some(),
-        busbar_kernel::preflight::linked_auth_names()
-            .contains(&busbar_kernel::config::operator_provider()),
+        busbar_kernel::preflight::linked_auth_names(
+            &busbar_kernel::test_support::operator_double::RECORD,
+        )
+        .contains(&busbar_kernel::config::operator_provider()),
         "the operator credential is listed iff linked"
     );
     if let Some(admin_tokens) = admin_tokens {
@@ -10113,6 +10117,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             busbar_kernel::config::overlay::apply_root_to_deploy(
                 &mut loaded.deploy,
                 doc,
+                &busbar_kernel::preflight::RootInstall::STAND_IN,
                 busbar_kernel::config::Legacy::stand_in(),
             );
         }

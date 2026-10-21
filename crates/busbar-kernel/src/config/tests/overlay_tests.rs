@@ -684,6 +684,7 @@ fn apply_root_to_deploy_noop_and_active() {
     apply_root_to_deploy(
         &mut deploy,
         &OverlayDoc::default(),
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert_eq!(
@@ -694,7 +695,12 @@ fn apply_root_to_deploy_noop_and_active() {
         root: Some(sample_root()),
         ..Default::default()
     };
-    apply_root_to_deploy(&mut deploy, &doc, crate::config::Legacy::stand_in());
+    apply_root_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     assert_eq!(deploy.per_request_fee, 7, "root override applied");
 }
 
@@ -771,6 +777,7 @@ fn no_pins_leaves_first_party_floor_none() {
     apply_root_to_deploy(
         &mut deploy,
         &OverlayDoc::default(),
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(

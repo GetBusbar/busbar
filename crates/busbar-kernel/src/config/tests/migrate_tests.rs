@@ -124,7 +124,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     // This test needs a plane registered so the migrated `pools:` section resolves (not real
     // llm/mcp/a2a behaviour — it only asserts the migrated document's SHAPE).
     crate::test_support::register_neutral_test_plane();
-    let out = migrate_config(LEGACY_14X, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        LEGACY_14X,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let get = |path: &[&str]| -> serde_yaml::Value {
@@ -323,7 +328,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
 
 /// Small helper: migrate `raw` and return the parsed output document (panics if migrate fails).
 fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     (out, doc)
 }
@@ -608,7 +618,12 @@ models:
   m2: { provider: p }
 pools: {}
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
     let card = doc
         .as_mapping()
@@ -648,7 +663,12 @@ pools:
     members: [ { target: widget, weight: 1 } ]
     policy: cheapest
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
     let hooks = doc
         .as_mapping()
@@ -672,6 +692,7 @@ pools:
 fn migrate_auth_mode_arms() {
     let out = migrate_config(
         "auth:\n  mode: passthrough\nproviders: {}\nmodels: {}\npools: {}\n",
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     )
     .unwrap();
@@ -679,6 +700,7 @@ fn migrate_auth_mode_arms() {
 
     let out = migrate_config(
         "auth:\n  mode: token\nproviders: {}\nmodels: {}\npools: {}\n",
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     )
     .unwrap();
@@ -702,7 +724,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).unwrap();
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     assert!(out.yaml.contains("<module>"));
     assert!(out
         .todos
@@ -726,7 +753,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).unwrap();
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     // The data must survive SOMEWHERE in the migrated document - either restored at the top level,
     // or (if a future fix manages to migrate it) folded into auth.role_bindings. Either way it must
     // not disappear, and there must be a loud TODO/warning naming the problem.
@@ -762,7 +794,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).unwrap();
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     assert!(
         out.yaml.contains("group_map"),
         "a non-mapping group_map must not silently vanish from the migrated document:\n{}",
@@ -803,7 +840,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let get = |path: &[&str]| -> serde_yaml::Value {
@@ -841,7 +883,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let store = root
@@ -889,7 +936,12 @@ pools:
     members:
       - { target: widget, weight: 1 }
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let auth = doc
         .as_mapping()
@@ -1288,7 +1340,12 @@ pools:
 global_hooks:
   - { module: busbar-audit, settings: { url: "https://s/audit" }, kind: tap, at: completion }
 "#;
-    let out1 = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out1 = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     // Boot-parses into the 1.5.3 DeployCfg and trips no legacy marker.
     let doc: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).expect("valid YAML");
     assert!(
@@ -1330,7 +1387,12 @@ global_hooks:
 
     // IDEMPOTENT: re-migrating the output leaves the config tree byte-for-byte identical (the header
     // comment block carries run-specific todos, so compare the parsed VALUE, not the raw text).
-    let out2 = migrate_config(&out1.yaml, crate::config::Legacy::stand_in()).expect("re-migrates");
+    let out2 = migrate_config(
+        &out1.yaml,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("re-migrates");
     let v1: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).unwrap();
     let v2: serde_yaml::Value = serde_yaml::from_str(&out2.yaml).unwrap();
     assert_eq!(
@@ -1693,6 +1755,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         deploy.auth.as_ref().expect("auth"),
         &deploy.identity_providers,
         &mut errs,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(errs.is_empty(), "{errs:?}");
@@ -2711,7 +2774,12 @@ tools:
       url: "https://docs.example.com/rpc"
       pin: { mechanism: unpinned }
 "#;
-    let out = migrate_config(raw, crate::config::Legacy::stand_in()).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let root: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("valid yaml");
     let get = |keys: &[&str]| -> serde_yaml::Value {
         let mut v = root.clone();

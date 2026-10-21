@@ -13,7 +13,8 @@
 //! credential addressed to it that does not, and passes one shaped like a JWS (another verifier's).
 //! The carriers are stripped whatever the verdict. Its Statement name is its own, never a plugin's.
 //!
-//! [`install`] links it as the operator credential's test registry row; the first install stands.
+//! [`ROWS`] is the operator credential's test registry row; [`RECORD`] is the stand-in install
+//! record lending it, which a test binary that links the double lends its apps and configurations.
 
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
@@ -134,8 +135,10 @@ const STATEMENT: Statement = with_tail(
 
 busbar_contract::auth_verify_door!(OperatorDouble, STATEMENT);
 
-/// Link the double as the operator credential's test registry row, under the stand-in words. The
-/// first install stands (the axis is process-wide).
-pub fn install() {
-    crate::test_support::install_operator_auth_row_as(WORDS, door);
-}
+/// The double as the operator credential's test registry row, under the stand-in words: the auth
+/// rows an install record lends.
+pub const ROWS: &[busbar_kernel_identity::operator::LinkedAuth] =
+    &[(WORDS.provider, WORDS.provider, door)];
+
+/// The stand-in install record lending [`ROWS`] under the stand-in words.
+pub const RECORD: crate::preflight::RootInstall = crate::test_support::lending_auth(ROWS, WORDS);

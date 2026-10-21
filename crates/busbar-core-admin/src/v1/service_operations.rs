@@ -58,7 +58,7 @@ impl AdminService {
         // The compiled-in plugin sets reflect the ACTUAL binary: the `keys` builtin and the linked
         // auth rows, plus the ranking hooks. `weighted` is the one baked in
         // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
-        let auth_modules = auth_modules_compiled_in();
+        let auth_modules = auth_modules_compiled_in(&self.app.root);
         let hook_plugins = hook_plugins_compiled_in(&self.app.root);
 
         let view = self.app.engine_tables_view();
@@ -276,6 +276,7 @@ impl AdminService {
         for (name, entry) in busbar_kernel::config::overlay::unparseable_named_map_entries(
             self.app.overlay_path.as_deref(),
             section,
+            &self.app.root,
             self.app.legacy,
         ) {
             if !defs.iter().any(|d| d.name == name) {
@@ -315,6 +316,7 @@ impl AdminService {
             busbar_kernel::config::overlay::unparseable_named_map_entries(
                 self.app.overlay_path.as_deref(),
                 section,
+                &self.app.root,
                 self.app.legacy,
             )
             .get(name)
@@ -469,10 +471,10 @@ impl AdminService {
                 // is engine-handled (a flag, not a boxed module), the operator credential lives on the
                 // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
-                for name in auth_modules_compiled_in() {
+                for name in auth_modules_compiled_in(&self.app.root) {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if name == busbar_kernel::config::operator_provider() {
+                    } else if name == self.app.root.operator.provider {
                         // By module: a provider of any name backed by the operator credential.
                         let op = &self.app.admin_modules.operator;
                         self.app.admin_chain.iter().any(|m| op.is(m))
@@ -492,7 +494,7 @@ impl AdminService {
                 // `role_bindings.<module>` keys off) appears in `chain_names()` but is NOT
                 // compiled-in — report each such module as a loaded plugin, always `active` (it is
                 // in the chain by construction).
-                let compiled = auth_modules_compiled_in();
+                let compiled = auth_modules_compiled_in(&self.app.root);
                 for name in &chain {
                     if !compiled.contains(&name.as_str()) {
                         plugins.push(PluginView::basic(

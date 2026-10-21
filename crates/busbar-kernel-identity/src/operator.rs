@@ -272,11 +272,15 @@ pub struct Operator {
 
 impl Operator {
     /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
-    /// with nothing opened yet.
+    /// with nothing opened yet. An empty `op` (a record that lends no words) answers for no
+    /// provider at all, so nothing is the operator credential on its say-so.
     pub fn new(op: &str) -> Self {
         Self {
             cred: OperatorCredential::Unanswered,
-            names: vec![op.to_string()],
+            names: (!op.is_empty())
+                .then(|| op.to_string())
+                .into_iter()
+                .collect(),
             carriers: Vec::new(),
         }
     }
@@ -311,7 +315,7 @@ impl Operator {
         let module_of = |name: &str| defs.iter().find(|d| d.0 == name).map(|d| d.1);
         let names = std::iter::once(op)
             .chain(defs.iter().map(|d| d.0))
-            .filter(|name| Self::backed(op, name, module_of(name), is_op))
+            .filter(|name| !name.is_empty() && Self::backed(op, name, module_of(name), is_op))
             .map(str::to_string)
             .collect();
         let cred = OperatorCredential::open(answered, digest.as_deref(), open)?;
@@ -344,8 +348,9 @@ impl Operator {
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the
     /// provider is the operator credential and `id` is the principal id it mints (`principal_id`).
+    /// An empty principal id (a record that lends no words) is minted by nobody.
     pub fn mints(&self, name: Option<&str>, id: &str, principal_id: &str) -> bool {
-        name.is_some_and(|n| self.is(n)) && id == principal_id
+        !principal_id.is_empty() && name.is_some_and(|n| self.is(n)) && id == principal_id
     }
 }
 

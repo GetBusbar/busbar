@@ -4951,19 +4951,18 @@ pub(crate) mod door_boundary {
         let row = row();
         registry(row);
         let slot = slot_over(row, tools.clone());
-        // The operator credential's row on the auth axis, as boot links it: the admin chain the
-        // admin router authenticates `x-admin-token` with.
-        busbar_kernel::test_support::install_root_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
-        // The record the admin chain is opened under: the stand-in, its auth rows opened through
-        // the root's own auth axis, as the shipped root's install record lends it.
+        // The record the admin chain is opened under: the stand-in lending the root's linked auth
+        // rows and operator words (the operator credential's row, the admin chain the admin router
+        // authenticates `x-admin-token` with), its rows opened through the root's own auth axis, as
+        // the shipped root's install record lends them.
         let lent = busbar_kernel::preflight::RootInstall {
             auth_axis: Some(crate::root::dispatch::auth_axis),
-            ..busbar_kernel::preflight::RootInstall::STAND_IN
+            ..busbar_kernel::test_support::lending_auth(
+                crate::LINKED.auths,
+                crate::root::auth_bindings::operator_words(),
+            )
         };
-        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        let chain = vec![lent.operator.provider.to_string()];
         let rig = rig_tools(instance, port, tools, &|app| {
             dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
         });
@@ -5088,17 +5087,18 @@ pub(crate) mod door_boundary {
                  "inputSchema": super::tool_door::tool_schema()}
             ])))
         };
-        busbar_kernel::test_support::install_root_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
-        // The record the admin chain is opened under: the stand-in, its auth rows opened through
-        // the root's own auth axis, as the shipped root's install record lends it.
+        // The record the admin chain is opened under: the stand-in lending the root's linked auth
+        // rows and operator words (the operator credential's row, the admin chain the admin router
+        // authenticates `x-admin-token` with), its rows opened through the root's own auth axis, as
+        // the shipped root's install record lends them.
         let lent = busbar_kernel::preflight::RootInstall {
             auth_axis: Some(crate::root::dispatch::auth_axis),
-            ..busbar_kernel::preflight::RootInstall::STAND_IN
+            ..busbar_kernel::test_support::lending_auth(
+                crate::LINKED.auths,
+                crate::root::auth_bindings::operator_words(),
+            )
         };
-        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        let chain = vec![lent.operator.provider.to_string()];
         let row = row();
         registry(row);
 

@@ -43,10 +43,6 @@ impl EngineTestKit for CoreEngineKit {
         crate::snapshot::init();
     }
 
-    fn install_operator_auth_row(&self, door: crate::test_support::AuthDoor) {
-        crate::test_support::install_operator_auth_row(door);
-    }
-
     fn new_app(&self) -> Box<dyn TestAppKit> {
         Box::new(TestApp::new())
     }

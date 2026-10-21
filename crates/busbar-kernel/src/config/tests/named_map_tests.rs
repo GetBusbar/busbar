@@ -97,14 +97,21 @@ fn referents_finds_every_bare_name_reference_site() {
     );
     let mut auth = crate::config::AuthDeployCfg {
         chain: vec!["keys".into(), "corp-ad".into()],
-        admin_auth: vec![crate::config::operator_provider().into(), "corp-ad".into()],
+        admin_auth: Some(vec![
+            crate::config::operator_provider().into(),
+            "corp-ad".into(),
+        ]),
         ..Default::default()
     };
     auth.role_bindings
         .insert("corp-ad".into(), Default::default());
     deploy.auth = Some(auth);
 
-    let refs = NamedMapSection::IdentityProviders.referents(&deploy, "corp-ad");
+    let refs = NamedMapSection::IdentityProviders.referents(
+        &deploy,
+        &crate::test_support::lent_stand_in(),
+        "corp-ad",
+    );
     assert_eq!(
         refs,
         vec![
@@ -115,13 +122,17 @@ fn referents_finds_every_bare_name_reference_site() {
     );
     assert!(
         NamedMapSection::IdentityProviders
-            .referents(&deploy, "unreferenced")
+            .referents(
+                &deploy,
+                &crate::test_support::lent_stand_in(),
+                "unreferenced"
+            )
             .is_empty(),
         "an unreferenced definition dangles nothing"
     );
     // An exporter is a LEAF in 1.5.3 — nothing references it by name, so nothing can dangle.
     assert!(NamedMapSection::Export
-        .referents(&deploy, "metrics")
+        .referents(&deploy, &crate::test_support::lent_stand_in(), "metrics")
         .is_empty());
 }
 
@@ -145,6 +156,7 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
         .parse_def(
             "dock",
             &serde_json::json!({}),
+            &crate::test_support::lent_stand_in(),
             crate::config::Legacy::stand_in(),
         )
         .err()

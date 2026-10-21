@@ -317,8 +317,9 @@ fn main() {
 }
 
 /// `$OUT_DIR/test_operator_auth.rs` from `[package.metadata.busbar.test-linked] operator-auth`:
-/// `extern crate` per listed auth plugin, then a `for_each_operator_auth_row!($f)` macro calling
-/// `($f)(<crate>::door::door)` for each, in list order (the admin tests' operator credential row).
+/// `extern crate` per listed auth plugin, then an `operator_auth_rows!($provider)` macro naming the
+/// linked auth rows `[($provider, $provider, <crate>::door::door), ..]`, in list order (the admin
+/// tests' operator credential row, which their install record lends).
 fn test_operator_auth_source(manifest: &str) -> String {
     let idents: Vec<String> = test_linked_list(manifest, "operator-auth")
         .iter()
@@ -328,11 +329,13 @@ fn test_operator_auth_source(manifest: &str) -> String {
     for id in &idents {
         out.push_str(&format!("extern crate {id} as _;\n"));
     }
-    out.push_str("macro_rules! for_each_operator_auth_row {\n    ($f:expr) => {{\n");
+    out.push_str("macro_rules! operator_auth_rows {\n    ($provider:expr) => {\n        &[\n");
     for id in &idents {
-        out.push_str(&format!("        ($f)({id}::door::door);\n"));
+        out.push_str(&format!(
+            "            ($provider, $provider, {id}::door::door),\n"
+        ));
     }
-    out.push_str("    }};\n}\n");
+    out.push_str("        ]\n    };\n}\n");
     out
 }
 

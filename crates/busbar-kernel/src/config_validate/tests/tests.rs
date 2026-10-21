@@ -30,7 +30,7 @@ fn make_root_cfg(
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
-        admin_auth: config::default_admin_auth_names(),
+        admin_auth: config::default_admin_auth_names(&crate::test_support::lent_stand_in()),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
@@ -5747,6 +5747,7 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
         &doc.auth,
         &doc.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
         crate::config::Legacy::stand_in(),
     );
     assert!(
