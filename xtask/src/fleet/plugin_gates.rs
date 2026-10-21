@@ -44,7 +44,8 @@ usage:
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
   cargo xtask plugin-gates devfeatures --tree <shipped-tree.txt>
-  (busbar-contract's dev-only features, `alloc-counter`, are on nowhere in the shipped build)
+  (busbar-contract's dev-only features, alloc-counter, test-seal and services-double, are on
+   nowhere in the shipped build)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
   cargo xtask plugin-gates gitsources <deps.toml>
   (every [git-sources] row admits one repository under https://github.com/GetBusbar/, at a 40-hex rev,
@@ -376,9 +377,11 @@ pub fn depwall(meta: &Value, shipped: Option<&Shipped>, repo: &str) -> Res<Vec<S
 }
 
 /// busbar-contract's features a plugin may turn on from `[dev-dependencies]` only: the test-only
-/// counting allocator (ARCHITECT ruling 2026-10-21; busbar's own workspace holds the same line in
-/// `crates/busbar-contract/tests/test_seal_is_dev_only.rs`).
-const DEV_ONLY_CONTRACT_FEATURES: [&str; 1] = ["alloc-counter"];
+/// counting allocator (`alloc-counter`, ARCHITECT ruling 2026-10-21), the test seal that
+/// implements the sealed `KernelSeal` (`test-seal`, #65) and the shared host-services test double
+/// (`services-double`). busbar's own workspace holds the same line in
+/// `crates/busbar-contract/tests/test_seal_is_dev_only.rs`.
+const DEV_ONLY_CONTRACT_FEATURES: [&str; 3] = ["alloc-counter", "test-seal", "services-double"];
 
 /// No dev-only busbar-contract feature is on in the SHIPPED build: the release graph `cargo tree`
 /// resolves over normal and build edges (`--tree`), so a feature a dev-dependency turns on is not
@@ -403,7 +406,7 @@ pub fn devfeatures(shipped: &Shipped) -> Vec<String> {
             if features.contains(f) {
                 out.push(format!(
                     "DEVFEATURE busbar-contract {version} has `{f}` on in the shipped build \
-                     (a [dev-dependencies]-only feature: the test-only counting allocator)"
+                     (a [dev-dependencies]-only feature)"
                 ));
             }
         }
@@ -1870,6 +1873,16 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         true,
     ));
     v.push((
+        "devfeatures test-seal shipped",
+        Ok(devfeatures(&tree("dispatch,test-seal"))),
+        true,
+    ));
+    v.push((
+        "devfeatures services-double shipped",
+        Ok(devfeatures(&tree("services-double"))),
+        true,
+    ));
+    v.push((
         "devfeatures no contract",
         Ok(devfeatures(&Shipped::parse("serde v1.0.0|default,std\n"))),
         true,
@@ -2143,6 +2156,8 @@ mod tests {
         depwall_green => "depwall green",
         devfeatures_green => "devfeatures green",
         devfeatures_alloc_counter_shipped => "devfeatures alloc-counter shipped",
+        devfeatures_test_seal_shipped => "devfeatures test-seal shipped",
+        devfeatures_services_double_shipped => "devfeatures services-double shipped",
         devfeatures_no_contract => "devfeatures no contract",
         depwall_kernel => "depwall kernel",
         netban_dev_only => "netban dev-only",
