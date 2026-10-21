@@ -801,6 +801,7 @@ fn resolve_upgrading(
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
@@ -1444,6 +1445,7 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
         None,
         crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
             as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     )
 }
 
@@ -2639,6 +2641,7 @@ pub(crate) mod tool_door {
                 crate::root::loader::dispatch::ConnTable::Host(
                     Arc::clone(&tokens) as Arc<dyn DeclaredConns>
                 ),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             );
             let reach = crate::root::door_steps::DoorReach {
                 providers: &providers,
@@ -7185,6 +7188,7 @@ fn own_reach() -> super::DoorReach<'static> {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,

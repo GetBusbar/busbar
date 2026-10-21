@@ -9,7 +9,7 @@
 //! three rewrite-pass refusals, the two per-attempt timeouts and the restrict fallback with no
 //! eligible lane). The plane owns its constants exactly as every other plane does, and hands them
 //! to the host's catalog through [`DIAGNOSTICS`](crate::codec::diagnostics::DIAGNOSTICS)
-//! (`install_diagnostics` at the composition root); the host's own registry holds none of them.
+//! (folded into the catalogue the composition root lends); the host's own registry holds none of them.
 //!
 //! NUMBERING AND TEXT ARE FROZEN. Each constant keeps the `BUSBAR-NNNN`, slug, title, summary and
 //! action the host catalog publishes in `docs/diagnostics.md` / `docs/diagnostics.json`, so an
@@ -545,7 +545,7 @@ pub const FALLBACK_RESTRICT_NO_ELIGIBLE_LANE: Diagnostic = Diagnostic {
     retired: false,
 };
 /// Every code this plane defines, in catalog order, for the composition root's
-/// `install_diagnostics`.
+/// diagnostics fold (`register_diagnostics`).
 pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &USAGE_TAP_UNKNOWN_PROTOCOL,
     &USAGE_TAP_BAD_JSON,

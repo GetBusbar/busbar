@@ -333,6 +333,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         crate::root::loader::dispatch::ConnTable::Host(
             Arc::clone(&connector) as Arc<dyn DeclaredConns>
         ),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let reach = DoorReach {
         providers: &providers,
@@ -1122,6 +1123,7 @@ pub(super) mod session_door {
             crate::root::loader::dispatch::ConnTable::Host(
                 Arc::clone(&connector) as Arc<dyn DeclaredConns>
             ),
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         );
         let reach = DoorReach {
             providers: &providers,
@@ -4143,6 +4145,7 @@ async fn serve_configured(
         crate::root::loader::dispatch::ConnTable::Host(
             Arc::clone(&connector) as Arc<dyn DeclaredConns>
         ),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let reach = DoorReach {
         providers: &providers,
