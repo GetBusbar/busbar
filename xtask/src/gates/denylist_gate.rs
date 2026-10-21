@@ -35,15 +35,21 @@ impl Gate for DenylistGate {
         let report = denylist::run(cx);
         let mut rows = Vec::new();
 
-        // A GATE WHOSE OWN INPUT VANISHED MUST NOT ANSWER GREEN: zero crates scanned, or any
-        // defect reading the tree, is RED before the hit list is even consulted.
-        if report.crates_scanned == 0 || !report.defects.is_empty() {
+        // A GATE WHOSE OWN INPUT VANISHED MUST NOT ANSWER GREEN: zero crates scanned, any crate
+        // skipped, or any defect reading the tree, is RED before the hit list is even consulted.
+        // SCANNED AND SKIPPED ARE REPORTED APART: "5 crate(s) scanned" over five crates whose
+        // closures were never found was a pass over nothing.
+        if report.crates_scanned == 0
+            || !report.crates_skipped.is_empty()
+            || !report.defects.is_empty()
+        {
             rows.push(Row::fail(
                 ROW_SCAN,
-                "the denylist scanned nothing, or could not read its own input",
+                "the denylist scanned nothing, skipped a crate, or could not read its own input",
                 format!(
-                    "{} crate(s) scanned; defects: {}",
+                    "{} crate(s) scanned, {} skipped; defects: {}",
                     report.crates_scanned,
+                    report.crates_skipped.len(),
                     if report.defects.is_empty() {
                         "none".to_string()
                     } else {
@@ -54,8 +60,8 @@ impl Gate for DenylistGate {
         } else {
             rows.push(Row::pass(
                 ROW_SCAN,
-                "the pure-kind crate list resolved and was scanned",
-                format!("{} crate(s) scanned", report.crates_scanned),
+                "the pure-kind crate list resolved and every crate of it was scanned",
+                format!("{} crate(s) scanned, 0 skipped", report.crates_scanned),
             ));
         }
 
@@ -125,6 +131,107 @@ impl Gate for DenylistGate {
             renamed,
             &["scanned"],
         ));
+
+        // ZERO SCANNED IS RED, NEVER A PASS. The run that printed "5 crate(s) scanned" had found
+        // none of the five in `cargo metadata` and skipped every closure. Here the resolve graph is
+        // planted EMPTY, so every pure crate the walk matches is skipped: the row must say 0
+        // scanned and name the skips, red. Count matched crates as scanned again and this goes
+        // green.
+        let mut empty_graph = Overlay::new();
+        empty_graph.set_command(
+            denylist::METADATA_KEY,
+            r#"{"packages":[],"resolve":{"nodes":[]}}"#,
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a walk that scanned zero crates (every closure skipped) is a red run, not a pass",
+            &[ROW_SCAN],
+            empty_graph,
+            &["0 crate(s) scanned", "skipped", "0 of"],
+        ));
+
+        // THE PINNED PLANES ARE THE CRATES THE DENYLIST JUDGES. With the base layer gone the walk
+        // matches no pure crate at all, so the gate going red here is the proof it reads the
+        // pinned checkouts and not just whatever is left on disk (ARCHITECT row 106 (A),
+        // condition 3).
+        report.push({
+            let verdict = crate::gates::execute(self, &cx.without_base());
+            Case {
+                name: "the denylist over the tree WITHOUT the pinned planes' base layer is red"
+                    .to_string(),
+                covers: vec![ROW_SCAN.to_string()],
+                expected: Expect::Red {
+                    naming: vec!["scanned".to_string()],
+                },
+                got: if verdict.red {
+                    Expect::Red {
+                        naming: verdict
+                            .rows
+                            .iter()
+                            .map(|r| format!("{} {}", r.title, r.detail))
+                            .collect(),
+                    }
+                } else {
+                    Expect::Green
+                },
+            }
+        });
+
+        // A BANNED DEPENDENCY PLANTED IN A PINNED PLANE'S CHECKOUT IS RED. Two plants into the
+        // first base-laid plane: a resolve-graph edge to `async-std` (the closure half, judged at
+        // the checkout cargo resolved) and a `std::net` path in its laid `src/lib.rs` (the own-src
+        // half). Neither banned name occurs anywhere else in the tree, so each case's naming is
+        // carried only by its own plant. Point the closure walk back at the tree path and the
+        // first goes green; drop the base layer from the source walk and the second does.
+        let pinned = denylist::base_laid_pure_crates(cx);
+        match pinned.first().cloned() {
+            Some(plane) => {
+                let mcx = cx.clone();
+                let target = plane.clone();
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a banned crate in a pinned plane's resolved dependencies is a RED hit",
+                    &[ROW_HITS],
+                    move || {
+                        let mut ov = Overlay::new();
+                        if let Ok(mut meta) = denylist::workspace_metadata(&mcx) {
+                            if plant_banned_dep(&mut meta, &target, "async-std") {
+                                ov.set_command(denylist::METADATA_KEY, meta.to_string());
+                            }
+                        }
+                        ov
+                    },
+                    &[plane.as_str(), "async-std"],
+                ));
+                let lib = format!("crates/{plane}/src/lib.rs");
+                let mut src = Overlay::new();
+                src.set(
+                    &lib,
+                    format!(
+                        "{}\npub fn denylist_selftest_plant() {{ let _ = std::net::TcpStream::connect(\"x\"); }}\n",
+                        cx.read(&lib).unwrap_or_default()
+                    ),
+                );
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a banned std path planted in a pinned plane's laid source is a RED hit",
+                    &[ROW_HITS],
+                    src,
+                    &[plane.as_str(), "std::net"],
+                ));
+            }
+            None => report.push(Case {
+                name: "a banned dependency planted in a pinned plane's checkout is red".to_string(),
+                covers: vec![ROW_HITS.to_string()],
+                expected: Expect::Red {
+                    naming: vec!["no pinned plane is laid by the base".to_string()],
+                },
+                got: Expect::Green,
+            }),
+        }
 
         // X-1206: A LINE THE READER CANNOT PLACE. The subset reader used to drop it in silence, so
         // the gate judged a config shorter than the file. A stray line planted into the real
@@ -280,4 +387,50 @@ impl Gate for DenylistGate {
 
         report
     }
+}
+
+/// Give `crate_name`'s pinned (`git+`) node in a `cargo metadata` answer a NORMAL edge to a
+/// synthetic package named `banned`. `false` when the answer has no such pinned package, which
+/// leaves the plant empty and the case without its naming.
+fn plant_banned_dep(meta: &mut serde_json::Value, crate_name: &str, banned: &str) -> bool {
+    let Some(pid) = meta["packages"].as_array().and_then(|ps| {
+        ps.iter()
+            .find(|p| {
+                p["name"].as_str() == Some(crate_name)
+                    && p["source"].as_str().is_some_and(|s| s.starts_with("git+"))
+            })
+            .and_then(|p| p["id"].as_str().map(str::to_string))
+    }) else {
+        return false;
+    };
+    let bid = format!("path+file:///denylist-selftest/{banned}#{banned}@0.0.0");
+    let Some(nodes) = meta["resolve"]["nodes"].as_array_mut() else {
+        return false;
+    };
+    let Some(node) = nodes
+        .iter_mut()
+        .find(|n| n["id"].as_str() == Some(pid.as_str()))
+    else {
+        return false;
+    };
+    let Some(deps) = node["deps"].as_array_mut() else {
+        return false;
+    };
+    deps.push(serde_json::json!({
+        "name": banned.replace('-', "_"),
+        "pkg": bid,
+        "dep_kinds": [{"kind": null, "target": null}],
+    }));
+    nodes.push(serde_json::json!({"id": bid, "deps": [], "features": []}));
+    if let Some(ps) = meta["packages"].as_array_mut() {
+        ps.push(serde_json::json!({
+            "id": bid,
+            "name": banned,
+            "source": null,
+            "manifest_path": format!("/denylist-selftest/{banned}/Cargo.toml"),
+            "dependencies": [],
+            "features": {},
+        }));
+    }
+    true
 }

@@ -529,6 +529,7 @@ fn check_stale_waiver_is_red(fails: &mut Vec<String>) {
     let report = denylist::Report {
         hits: Vec::new(),
         crates_scanned: 3,
+        crates_skipped: Vec::new(),
         defects: Vec::new(),
         stale_waivers: vec!["a waiver that matched nothing".to_string()],
     };
