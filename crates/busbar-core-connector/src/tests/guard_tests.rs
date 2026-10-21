@@ -562,3 +562,62 @@ fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address
         );
     }
 }
+
+/// RED (Q128 arch u22 HIGH 2; ARCHITECT PB-100: metadata and link-local are refused on every need,
+/// whatever its egress class): the guard, the one metadata and link-local refusal a judged dial
+/// meets, refuses an IPv6 link-local answer in every class, operator infrastructure included, with
+/// the endpoint check's verdict; only an IP or CIDR entry naming the address admits it (the
+/// allowlist's in any class, a provider carve-out's for a provider dial). A host entry, a private
+/// reach, `allow_all_metadata` and `block_private_addresses: false` admit nothing of it.
+#[test]
+fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
+    let ll = ip("fe80::1");
+    let lax = Guard::from_config(&Destinations {
+        block_private_addresses: false,
+        allow: vec!["router.test".into()],
+        allow_all_metadata: true,
+        ..Destinations::default()
+    })
+    .unwrap();
+    for class in [
+        EGRESS_DEFAULT,
+        EGRESS_PROVIDER,
+        EGRESS_OPEN_WEB,
+        EGRESS_LOOPBACK_ALLOWED,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+    ] {
+        assert_eq!(
+            verdict(lax.judge_answer("router.test", &[ll], class)),
+            Some(DEST_METADATA),
+            "class {class}"
+        );
+        assert_eq!(
+            lax.judge_name("[fe80::1]", class).unwrap_err().verdict,
+            DEST_METADATA,
+            "class {class}"
+        );
+        assert_eq!(
+            verdict(lax.judge_answer_with("router.test", &[ll], class, false, true)),
+            Some(DEST_METADATA),
+            "a private reach, class {class}"
+        );
+    }
+    let listed = guard(true, &["fe80::/10"]);
+    assert_eq!(
+        listed.judge_answer("router.test", &[ll], EGRESS_OPERATOR_INFRASTRUCTURE),
+        Ok(())
+    );
+    let carved = Guard::from_config(&Destinations {
+        legacy_allow: vec!["fe80::1".into()],
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        carved.judge_answer("router.test", &[ll], EGRESS_PROVIDER),
+        Ok(())
+    );
+    assert_eq!(
+        verdict(carved.judge_answer("router.test", &[ll], EGRESS_DEFAULT)),
+        Some(DEST_METADATA)
+    );
+}
