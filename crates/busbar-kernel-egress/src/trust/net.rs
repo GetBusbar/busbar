@@ -62,14 +62,13 @@
 //! They live in `busbar_contract::net`, the one URL and host reader, and are re-exported here
 //! unchanged: a plugin that links only the contract reads a host exactly as this guard does.
 
-use std::net::{IpAddr, SocketAddr};
-
 // THE PURE PRIMITIVES, re-exported from the one reader in `busbar_contract::net`: the metadata list,
 // the v4/v6 range predicates, the alternate IPv4 spellings, the WHATWG host extraction and the
 // per-scheme URL reader. They moved there so a plugin that links only the contract judges a host
 // exactly as this guard does (BUSBAR-1.6.0.md, the engine-folds paragraph: a shared reader is "a
 // pure, stateless helper in `busbar-contract` outside `abi/`"); what stays here is the guard
 // itself — the policy, the denylist, and resolve-then-pin.
+// `IpAddr` and `SocketAddr` come through it too: the contract re-exports the address value types.
 pub use busbar_contract::net::*;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
