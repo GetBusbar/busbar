@@ -4664,14 +4664,47 @@
    "paths": [
     "crates/busbar-plane-llm/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-llm/tests"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-llm/tests",
+    "paths": [
+     "crates/busbar-llm/tests"
+    ]
+   },
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
+     "hashed_as": {
+      "id": "crates/busbar-llm/tests",
+      "paths": [
+       "crates/busbar-llm/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-llm/tests"
+     ]
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/examples",

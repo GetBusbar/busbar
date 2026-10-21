@@ -938,13 +938,18 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // A RELOCATION IS A THIRD VERDICT: the same type, a new module path, no grammar change. A gate
     // that reds on this teaches reviewers to wave it through, which is how a stability gate dies.
+    // The baseline's type is the field's OWN type as the tree renders it today, qualified with an
+    // in-tree module path: a hard-coded name (it was `ToolsSection`, until the kernel's sections went
+    // opaque as `DeclaredSections`) turns the plant into a real retype the day the field's type is
+    // renamed, and the case then proves the RED arm under a GREEN arm's name.
     report.push(additive_green(
         cx,
         gate,
         "relocation: a field type that only MOVED module is not a break",
         |d| {
-            d["types"][T_STRUCT]["fields"][F_OPTIONAL]["type"] =
-                json!("busbar_someplace::config::ToolsSection");
+            let field = &mut d["types"][T_STRUCT]["fields"][F_OPTIONAL]["type"];
+            let now = field.as_str().unwrap_or_default().to_string();
+            *field = json!(format!("busbar_someplace::config::{now}"));
         },
     ));
 

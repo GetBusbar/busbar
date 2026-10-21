@@ -474,6 +474,10 @@ jobs:
           "$PLUGIN_GATES" plugin-gates imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
           rm -rf plugin/target/release
           exit $rc
+      - name: busbar-contract's dev-only features (alloc-counter, test-seal, services-double) are off in the shipped build (the release graph, normal and build edges)
+        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
+        run: |
+          "$PLUGIN_GATES" plugin-gates devfeatures --tree "$RUNNER_TEMP/tree.txt"
       - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
@@ -678,6 +682,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
+      # The same busbar the linux test job uses: a plugin test that reads BUSBAR_CHECKOUT (the
+      # end-to-end tests) or BUSBAR_GOLDEN_DIR must find it here too, or coverage runs it red.
+      - name: busbar at the pin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.pin.outputs.sha }}
+          path: busbar
+      - name: the test environment (as the linux job sets it)
+        env:
+          CHECKOUT: ${{ inputs.busbar_checkout }}
+        run: |
+          set -euo pipefail
+          {
+            echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            if [ "$CHECKOUT" = true ]; then
+              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "CARGO_PROFILE_RELEASE_LTO=off"
+              echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
+            fi
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview

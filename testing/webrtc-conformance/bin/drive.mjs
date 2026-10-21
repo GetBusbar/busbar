@@ -107,11 +107,22 @@ async function drive(url, mode, out) {
     lines.push(l);
     console.log(l);
   };
+  // THE PAGE'S ORIGIN IS A SECURE CONTEXT. The subject serves the page over plain http on the
+  // host's non-loopback address (the one candidate its answer advertises), and a browser exposes
+  // `navigator.mediaDevices` only to a secure context, so without this every leg dies in the page
+  // before any cell is graded. Each browser is told to treat exactly this origin as secure.
+  const origin = new URL(url);
   const launch = {
     chromium: () =>
       pw.chromium.launch({
         headless: true,
-        args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
+        // The full build in its headless mode: the headless shell ignores the secure-origin switch.
+        channel: "chromium",
+        args: [
+          "--use-fake-ui-for-media-stream",
+          "--use-fake-device-for-media-stream",
+          `--unsafely-treat-insecure-origin-as-secure=${origin.origin}`,
+        ],
       }),
     firefox: () =>
       pw.firefox.launch({
@@ -119,6 +130,9 @@ async function drive(url, mode, out) {
         firefoxUserPrefs: {
           "media.navigator.streams.fake": true,
           "media.navigator.permission.disabled": true,
+          "dom.securecontext.allowlist": origin.hostname,
+          "media.devices.insecure.enabled": true,
+          "media.getusermedia.insecure.enabled": true,
         },
       }),
   };
