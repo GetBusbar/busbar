@@ -53,6 +53,8 @@ struct Recording {
     /// Every instance whose authority the host was asked to hold, and how many of its needs had
     /// been declared by then.
     held: Mutex<Vec<(InstanceId, usize)>>,
+    /// Every instance the table was told is gone ([`DeclaredConns::forget`]), in order.
+    forgotten: Mutex<Vec<InstanceId>>,
 }
 
 /// One member-program declaration as it reached the table.
@@ -63,6 +65,9 @@ type MemberDeclared = (
 );
 
 impl DeclaredConns for Recording {
+    fn forget(&self, owner: InstanceId) {
+        self.forgotten.lock().unwrap().push(owner);
+    }
     fn hold_authority(&self, owner: InstanceId) {
         let before = self
             .declared
@@ -2239,6 +2244,42 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
+/// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
+/// an instance that is let go (closed, or replaced by a reload) is forgotten on the host's
+/// connection table under its own id, once, so the table drops its needs and kills its member
+/// programs. GREEN twin: a neighbour bound over the same table, still live, is never forgotten.
+#[test]
+fn a_dropped_instance_is_forgotten_on_the_table_and_a_live_neighbour_is_not() {
+    let table = Arc::new(Recording::default());
+    let gone = bound(Box::leak(Box::new(NEEDS)), &table);
+    let neighbour = bound(Box::leak(Box::new(NEEDS)), &table);
+    for p in [&gone, &neighbour] {
+        assert_eq!(
+            open_with(p, br#"{"upstream":"127.0.0.1:9"}"#),
+            Outcome::Ready
+        );
+    }
+    let (id, kept) = (gone.instance(), neighbour.instance());
+    assert_ne!(id, kept);
+    assert!(
+        table.forgotten.lock().unwrap().is_empty(),
+        "no live instance is forgotten"
+    );
+    drop(gone);
+    assert_eq!(
+        *table.forgotten.lock().unwrap(),
+        vec![id],
+        "the dropped instance is forgotten on the table, once"
+    );
+    assert_eq!(
+        establish(&neighbour, 0, "127.0.0.1:9").outcome,
+        RawOutcome::of(Outcome::Ready),
+        "the live neighbour still reaches its need"
+    );
+    drop(neighbour);
+    assert_eq!(*table.forgotten.lock().unwrap(), vec![id, kept]);
 }
 
 /// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
