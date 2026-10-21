@@ -1401,9 +1401,8 @@ impl TestApp {
     /// something a chain module would have admitted.
     ///
     /// The stand-in's role is BOUND (all pools, no group) under `role_bindings`, as a deployed IdP's
-    /// must be: an identified principal that earns no key is refused `NoGrant`, so an
-    /// unbound stand-in would admit nothing and every "core refused it" assertion would pass against
-    /// a closed door.
+    /// is: the principal is admitted under a governance key, so every "core refused it" assertion
+    /// judges a governed admission, never a keyless one.
     pub fn idp_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare("test-idp-module")],
@@ -2255,6 +2254,8 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+/// The rate holder and dater a test binary hands in, in place of the root's install record's.
+pub mod rate_holders;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
@@ -2376,6 +2377,13 @@ pub use busbar_kernel_identity::operator::{
 /// and lists none. The first hand-in stands.
 pub fn install_root_hook_names(names: &'static [&'static str]) {
     let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+}
+
+/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
+/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
+/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
+pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
