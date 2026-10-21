@@ -3053,7 +3053,14 @@ mod tools_door {
                 name: "granted-only".to_string(),
                 ..Default::default()
             },
-            Some(&[("scope_server", "granted")]),
+            // Both grants pass for every capability (docs/mcp.md, "Both must pass"): the key holds
+            // the server grant for `granted` alone, and the tool grant for a tool on EACH server,
+            // so the one thing `fenced_read_file` lacks is its server's grant.
+            Some(&[
+                ("scope_server", "granted"),
+                ("scope_tool", "granted_read_file"),
+                ("scope_tool", "fenced_read_file"),
+            ]),
         );
 
         let (status, answer) = call(&rig, &token, "fenced_read_file", serde_json::json!({})).await;
