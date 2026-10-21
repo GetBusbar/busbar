@@ -124,7 +124,8 @@ fn main() {
     std::fs::write(out, linked_hook_names_source(&manifest, &enabled))
         .expect("write linked_hook_names.rs");
     // THE ROOT LEGACY TABLE (`[package.metadata.busbar.legacy]`, rendered from plugins.yaml; the
-    // root's tests hold it to the render) as `LEGACY_ROWS`, which `root::legacy` hands to the kernel.
+    // root's tests hold it to the render) as `LEGACY_ROWS`, which `root::legacy` lends to the kernel
+    // as `config::Legacy`.
     let legacy: String = metadata_map(&manifest, "package.metadata.busbar.legacy")
         .iter()
         .map(|(k, v)| format!("    ({k:?}, {v:?}),\n"))

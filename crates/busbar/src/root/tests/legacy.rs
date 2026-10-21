@@ -274,7 +274,7 @@ const HEADER: &str = "[package.metadata.busbar.legacy]";
 const NOTE: &str = "# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each\n\
 # entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the\n\
 # render to paste.\n\
-# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.\n";
+# build.rs emits it as `LEGACY_ROWS`, which the root lends to the kernel as `config::Legacy`.\n";
 
 fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
     v[k].as_str().map(str::to_string)
