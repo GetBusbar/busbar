@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{encode, entries, entry, entry_len, get};
+use super::{concat, encode, entries, entry, entry_len, get};
 
 /// A SCOPE ROUND-TRIPS: what the host encodes under a key reads back byte for byte, beside a key
 /// the reader does not know (passed over), and a key named twice answers its first entry.
@@ -46,4 +46,24 @@ fn an_entry_built_at_compile_time_is_the_encoded_entry() {
     assert_eq!(get(&BLOB, KEY), Some(VALUE));
     let empty: [u8; entry_len("e", b"")] = entry("e", b"");
     assert_eq!(get(&empty, "e"), Some(&b""[..]));
+}
+
+/// TWO ENTRIES JOINED AT COMPILE TIME read as `encode` of both: a door that states its own key and
+/// its `declares` document ([`crate::abi::mechanism::door::EXT_DECLARES`]) in one `const` blob has
+/// each read back under its key.
+#[test]
+fn two_entries_joined_at_compile_time_are_the_encoded_pair() {
+    use crate::abi::mechanism::door::EXT_DECLARES;
+    const OWN: &str = "own";
+    const OWN_VALUE: &[u8] = b"a b";
+    const DECLARES: &[u8] = b"{\"destinations\":[\"path\"]}";
+    const A: [u8; entry_len(OWN, OWN_VALUE)] = entry(OWN, OWN_VALUE);
+    const B: [u8; entry_len(EXT_DECLARES, DECLARES)] = entry(EXT_DECLARES, DECLARES);
+    const BLOB: [u8; A.len() + B.len()] = concat(&A, &B);
+    assert_eq!(
+        BLOB.to_vec(),
+        encode(&[(OWN, OWN_VALUE), (EXT_DECLARES, DECLARES)])
+    );
+    assert_eq!(get(&BLOB, OWN), Some(OWN_VALUE));
+    assert_eq!(get(&BLOB, EXT_DECLARES), Some(DECLARES));
 }

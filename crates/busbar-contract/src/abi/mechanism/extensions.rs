@@ -73,6 +73,34 @@ pub const fn entry<const N: usize>(key: &str, value: &[u8]) -> [u8; N] {
     out
 }
 
+/// TWO BUILT ENTRIES AS ONE BLOB, at compile time: `first`'s bytes, then `second`'s, as an array a
+/// `'static` Statement can point at. A door that states two keys (its own and
+/// [`super::door::EXT_DECLARES`]) builds each with [`entry`] and joins them here; the blob reads as
+/// [`encode`] of both, in that order.
+///
+/// # Panics
+///
+/// `N` is not `first.len() + second.len()`; in a `const`, that is a compile error.
+#[must_use]
+pub const fn concat<const N: usize>(first: &[u8], second: &[u8]) -> [u8; N] {
+    assert!(
+        N == first.len() + second.len(),
+        "N is not first.len() + second.len()"
+    );
+    let mut out = [0u8; N];
+    let mut i = 0;
+    while i < first.len() {
+        out[i] = first[i];
+        i += 1;
+    }
+    let mut i = 0;
+    while i < second.len() {
+        out[first.len() + i] = second[i];
+        i += 1;
+    }
+    out
+}
+
 /// Every whole entry of `blob`, in order: `(key, value)`.
 pub fn entries(blob: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     let mut at = 0usize;

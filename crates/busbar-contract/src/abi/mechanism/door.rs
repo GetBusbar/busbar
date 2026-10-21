@@ -219,6 +219,15 @@ pub const REWRITE_SUGAR_NAMES: u32 = 5;
 /// word its value plays. Accepted and not yet read: a later contract reads it.
 pub const REWRITE_SUGAR_ROLE: u32 = 6;
 
+/// THE DECLARES DOCUMENT'S EXTENSIONS KEY: the key under which a Statement's `extensions` states
+/// the plugin's `declares` section (its metric shed flags, catalogue codes, destinations, disk need
+/// and breaker facts), as the UTF-8 JSON its signed manifest's `declares` carries. A new Statement
+/// field lives in the extensions blob first ([`super::extensions`]: keyed entries, so no layout
+/// changes). The composition root reads a linked row's `declares` here, off the row's door, so the
+/// row names its crate's door and nothing else (BUSBAR-1.6.0.md, the door-only gate). A Statement
+/// that states no entry under it declares nothing on its Statement.
+pub const EXT_DECLARES: &str = "declares";
+
 /// One live rewrite.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
