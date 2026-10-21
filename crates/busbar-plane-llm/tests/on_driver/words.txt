@@ -29,6 +29,20 @@ generate_v1_path = /v1/models/p:generateContent
 generate_body = {"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
 converse_path = /model/p/converse
 converse_body = {"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+# EVERY CALLER DIALECT THIS PLANE MOUNTS, one row each, read by the composition root's decode cell
+# (one row per dialect the plane declares on the protocol axis): `caller.<name> = <path onto pool
+# p> | <a request in that dialect> | body` (its model rides the body) or `| path` (the URL).
+caller.chat = /v1/chat/completions | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body
+caller.messages = /v1/messages | {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]} | body
+caller.chat_v2 = /v2/chat | {"model":"p","messages":[{"role":"user","content":"hi"}]} | body
+caller.respond = /v1/responses | {"model":"p","input":"hi"} | body
+caller.generate = /v1beta/models/p:generateContent | {"contents":[{"role":"user","parts":[{"text":"hi"}]}]} | path
+caller.converse = /model/p/converse | {"messages":[{"role":"user","content":[{"text":"hi"}]}]} | path
+# The decode step's refusal sentences, as 1.5.5 wrote them: a body naming no model, a body that is
+# not JSON, and the generate dialect's own words for the token-count action the door does not serve.
+missing_model_sentence = Missing required parameter: 'model'.
+unparsable_sentence = We could not parse the JSON body of your request.
+unserved_action_sentence = or is not supported for countTokens.
 # The converse dialect's model-scoped invoke path, and the generate dialect's token-count action
 # (one the door does not serve), both on pool `p`.
 invoke_path = /model/p/invoke

@@ -132,7 +132,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape",
-          "note": "each of the six caller dialects the door words name driven through the door in every decode shape: a named model reaches the door and is served, a body-model request with no model is the ladder's own 400, a malformed body is the arrival refusal, and the action the door does not serve is the endpoint's own 404"
+          "note": "every caller dialect the plane states (one per dialect it declares on the protocol axis, read from its door words) driven through the door: a named model reaches the door and is served, a body-model request with no model is the ladder's own 400 with its missing-model sentence, a malformed body is the arrival's 400 with its parse sentence, and the action the door does not serve is the endpoint's own 404 with its own words"
         }
       },
       "authenticate": {
@@ -142,8 +142,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_none",
-          "note": "three credentials through the deployment's own data door: the live bearer is admitted, charged to its key and its line on the node's book names that key; a bearer never minted and one whose lifetime ran out are both refused at the door, so no unit, line, record, dial or charge exists for either"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_attributes_the_identity_it_resolved_and_invents_none",
+          "note": "three credentials through the deployment's own data door: the live bearer is admitted, charged to its key and its line names that key; a bearer never minted and an expired one are refused at the door, so no unit, line, record, dial or charge exists; and on a door that binds no key the same bearer's unit is attributed to the anonymous actor, never to a key or the bearer"
         }
       },
       "verify": {
@@ -187,7 +187,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
-          "note": "the walk the route step drives on all six fixtures: each delivered unit dials its far end once and a refused one never, the same-dialect answer is relayed byte for byte, admissions are drawn exactly where the shipped path drew them, and the member's breaker stays closed"
+          "note": "the walk the route step drives on all six fixtures: each delivered unit dials its far end once and a refused one never, the same-dialect answer is relayed byte for byte, the answer's media type and the budget refusal's Retry-After are the shipped ones, admissions and fees are drawn exactly where the shipped path drew them, and the member's breaker stays closed"
         }
       },
       "meter": {
@@ -209,7 +209,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_seals_one_record_per_unit_end_on_one_chain_and_none_without_a_unit",
-          "note": "a served unit and an abandoned one (the caller gone while the far end holds its body) each seal exactly one record on one chain, linked and verifiable, a forgery detected, and a request refused at the door before it was a unit seals none"
+          "note": "a served unit and an abandoned one (the caller gone while the far end holds its body) each seal exactly one record on one chain, linked and verifiable, a forgery detected; a request refused at the door before it was a unit, and a unit the node declines before any step so its audit door is never asked, seal none"
         }
       },
       "encode": {
@@ -219,8 +219,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_door_dials_a_served_unit_once_and_a_refused_one_never",
-          "note": "a served unit reaches its far end exactly once and a refused one never, on three ends each on its own deployment (refused at the pool guard, refused at the door, served), so the exit posts once; the one-terminal-per-unit count is crates/busbar-kernel/src/ingress/tests/terminal_tests.rs"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_dispatches_a_served_unit_once_and_a_refused_one_never",
+          "note": "the route seam's count on the door path: the egress walk's write-ahead dispatch records on the node's journal read exactly one for a served unit and none for a unit refused before or at the door, the far end's own dial count agreeing, so the exit posts once; the one-terminal-per-unit count is crates/busbar-kernel/src/ingress/tests/terminal_tests.rs"
         }
       }
     },
