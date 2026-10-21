@@ -8092,6 +8092,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
         1,
     )
     .expect("the egress composes");
