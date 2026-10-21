@@ -842,6 +842,11 @@ fn calls_terminal(
         return true;
     };
     match receiver_of(lines, idx, at) {
+        // `Self::fn(` is a path call on the enclosing impl's type; outside every impl it names no
+        // single type, so it is counted (an unread call is a finding, never a pass).
+        Some(Ok(path_ty)) if path_ty == "Self" => {
+            impl_owner(tree, rel, lines[idx].no).is_none_or(|owner| &owner == ty)
+        }
         Some(Ok(path_ty)) => &path_ty == ty,
         Some(Err(ident)) if ident == "self" => impl_owner(tree, rel, lines[idx].no)
             .is_none_or(|owner| &owner == ty || !owners.contains(&owner)),

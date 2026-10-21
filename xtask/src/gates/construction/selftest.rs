@@ -511,6 +511,30 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
+    // A TERMINAL CALLED AS A PATH CALL ON `Self` IS STILL A CALL OF THE TERMINAL: inside
+    // `impl PlaneMoney`, `Self::settle_end(` and `Self::settle_end_as(` are the terminals spelled as
+    // path calls. The plant also defines `settle_end` on another type so the call must be
+    // attributed by its receiver; a rule that read `Self` as a type of its own would pass it.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_self_path_call.rs",
+        "pub struct ZzOtherMoney;\n\nimpl ZzOtherMoney {\n    fn settle_end(&self) {}\n}\n\n\
+         impl PlaneMoney {\n    fn zz_planted_self_path_caller(&self) {\n        \
+         Self::settle_end(unit, 200);\n        \
+         Self::settle_end_as(unit, end);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a `Self::` path call of each money terminal",
+        &["single-terminal"],
+        ov,
+        &[
+            "PlaneMoney::zz_planted_self_path_caller",
+            "zz_planted_self_path_call.rs",
+        ],
+    ));
+
     // AN UNRELATED `fn settle_end` ON ANOTHER TYPE IS NEITHER COUNTED NOR ALLOWED: the terminal is
     // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
     // `self`, is that type's business.
