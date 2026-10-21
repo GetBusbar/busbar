@@ -12010,6 +12010,97 @@ mod model_door_root_cells {
         body: serde_json::Value,
         /// The oracle's normalisations of this cell (`ts.unix`: a timestamp read as 0).
         applied: Vec<String>,
+        /// An owner-signed `improvement` of the oracle's accepted-differences register covers this
+        /// cell's body ([`signed_widening`]): the door may carry members 1.5.5 did not send, and
+        /// every member 1.5.5 did send is still held by value.
+        widened: bool,
+    }
+
+    /// `v` with every numeric member the oracle's timing normalisation drops removed, at any depth
+    /// (`golden_timing_members`: a request's own measured duration, which no two runs share and
+    /// nothing can drive). The oracle drops them from the answer it records, 1.5.5's golden
+    /// included, so the door's answer is read the same way before it is held to that golden.
+    fn untimed(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(o) => {
+                for name in door_word("golden_timing_members").split(',').map(str::trim) {
+                    if o.get(name).is_some_and(serde_json::Value::is_number) {
+                        o.remove(name);
+                    }
+                }
+                o.values_mut().for_each(untimed);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(untimed),
+            _ => {}
+        }
+    }
+
+    /// How [`same`] reads a golden: `unix`, the cell applied `ts.unix`; `widened`, see
+    /// [`Golden::widened`].
+    #[derive(Clone, Copy)]
+    struct Reading {
+        unix: bool,
+        widened: bool,
+    }
+
+    /// The oracle's register of the differences from 1.5.5 the owner accepted.
+    const ACCEPTED_REGISTER: &str = "testing/shadow-oracle/accepted-differences.json";
+
+    /// Whether the register entry the door words name for the caller dialect `golden`
+    /// (`golden_accepted.<golden> = <entry id>`) is an owner-signed `improvement` of the body class
+    /// whose cells are that dialect's served answers over the members' dialect. No word: the
+    /// answer is held to 1.5.5's members exactly. A word naming an entry the register does not
+    /// hold, or one that is not such an entry, is a broken cell and panics.
+    fn signed_widening(golden: &str) -> bool {
+        let key = format!("golden_accepted.{golden}");
+        let Some(id) = DRIVER_WORDS
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .map(|(_, v)| v.trim())
+        else {
+            return false;
+        };
+        let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(ACCEPTED_REGISTER);
+        let register: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&at)
+                .unwrap_or_else(|e| panic!("the register {} reads: {e}", at.display())),
+        )
+        .expect("the register is JSON");
+        let entry = register["accepted"]
+            .as_array()
+            .expect("the register's entries")
+            .iter()
+            .find(|e| e["id"] == id)
+            .unwrap_or_else(|| panic!("{key}: the register holds no entry `{id}`"));
+        let cells = entry["cells"].as_str().unwrap_or_default();
+        assert_eq!(
+            entry["kind"], "improvement",
+            "{key}: `{id}` is not an improvement"
+        );
+        assert!(
+            entry["classes"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c == "body")),
+            "{key}: `{id}` does not accept the body class"
+        );
+        assert!(
+            entry["signoff"]["who"]
+                .as_str()
+                .is_some_and(|w| w.starts_with("owner")),
+            "{key}: `{id}` is not owner-signed"
+        );
+        assert!(
+            cells.contains(&format!("llm\\|{golden}\\|"))
+                && cells.contains(door_word("golden_egress"))
+                && cells.contains("request\\|ok"),
+            "{key}: `{id}` does not cover the served answer of `{golden}` (cells `{cells}`)"
+        );
+        true
     }
 
     /// A door word naming a 1.5.5 golden cell file, its `{ingress}` and `{egress}` filled (the
@@ -12057,6 +12148,7 @@ mod model_door_root_cells {
                 .clone(),
             body: answer["body"].clone(),
             applied,
+            widened: false,
         }
     }
 
@@ -12073,12 +12165,14 @@ mod model_door_root_cells {
     }
 
     /// Whether `door` is `golden` field for field, a normalised golden value standing for any value
-    /// of its kind and, where the cell applied `ts.unix`, a golden `0` timestamp for any number.
+    /// of its kind and, where the cell applied `ts.unix`, a golden `0` timestamp for any number. A
+    /// widened reading admits door members 1.5.5 did not send; a member 1.5.5 sent is never
+    /// optional.
     fn same(
         golden: &serde_json::Value,
         door: &serde_json::Value,
         at: &str,
-        unix: bool,
+        how: Reading,
         out: &mut Vec<String>,
     ) {
         use serde_json::Value;
@@ -12087,17 +12181,22 @@ mod model_door_root_cells {
             (Value::Object(g), Value::Object(d)) => {
                 let gk: std::collections::BTreeSet<&String> = g.keys().collect();
                 let dk: std::collections::BTreeSet<&String> = d.keys().collect();
-                if gk != dk {
+                let kept = if how.widened {
+                    gk.is_subset(&dk)
+                } else {
+                    gk == dk
+                };
+                if !kept {
                     out.push(format!("{at}: members {dk:?}, 1.5.5 had {gk:?}"));
                 }
                 for (k, gv) in g {
                     if let Some(dv) = d.get(k) {
-                        let stamp = unix
+                        let stamp = how.unix
                             && gv.as_u64() == Some(0)
                             && dv.is_number()
                             && (k == "created" || k == "created_at");
                         if !stamp {
-                            same(gv, dv, &format!("{at}.{k}"), unix, out);
+                            same(gv, dv, &format!("{at}.{k}"), how, out);
                         }
                     }
                 }
@@ -12105,7 +12204,7 @@ mod model_door_root_cells {
             (Value::Array(g), Value::Array(d)) => {
                 if g.len() == d.len() {
                     for (i, (gv, dv)) in g.iter().zip(d).enumerate() {
-                        same(gv, dv, &format!("{at}[{i}]"), unix, out);
+                        same(gv, dv, &format!("{at}[{i}]"), how, out);
                     }
                 } else {
                     out.push(format!("{at}: {} item(s), 1.5.5 had {}", d.len(), g.len()));
@@ -12114,6 +12213,73 @@ mod model_door_root_cells {
             (g, d) if g == d => {}
             (g, d) => out.push(format!("{at}: {d}, 1.5.5 had {g}")),
         }
+    }
+
+    /// RED: an exact reading refuses a member 1.5.5 did not send. GREEN twin: a widened reading
+    /// admits it; and a widened reading still refuses a 1.5.5 member that is missing or moved.
+    #[test]
+    fn a_widened_reading_admits_only_members_beyond_the_golden() {
+        let golden = serde_json::json!({"a": 1, "b": {"c": "x"}});
+        let more = serde_json::json!({"a": 1, "b": {"c": "x", "d": null}, "e": 0});
+        let exact = Reading {
+            unix: false,
+            widened: false,
+        };
+        let widened = Reading {
+            unix: false,
+            widened: true,
+        };
+        let mut out = Vec::new();
+        same(&golden, &more, "body", exact, &mut out);
+        assert_eq!(
+            out.len(),
+            2,
+            "an exact reading names both extra members: {out:?}"
+        );
+        out.clear();
+        same(&golden, &more, "body", widened, &mut out);
+        assert!(out.is_empty(), "a widened reading admits them: {out:?}");
+        let lost = serde_json::json!({"b": {"c": "y", "d": null}, "e": 0});
+        same(&golden, &lost, "body", widened, &mut out);
+        assert_eq!(
+            out.len(),
+            2,
+            "a lost member and a moved value both red: {out:?}"
+        );
+    }
+
+    /// RED: a numeric timing member the oracle drops stays and the golden's object reads short.
+    /// GREEN twin: after [`untimed`] it is gone at any depth, and a non-numeric one is kept.
+    #[test]
+    fn the_timing_members_the_oracle_drops_are_dropped_from_the_door_answer() {
+        let name = door_word("golden_timing_members")
+            .split(',')
+            .map(str::trim)
+            .next()
+            .expect("a timing member");
+        let golden = serde_json::json!({"m": {}, "n": [{}]});
+        let mut door = serde_json::json!({"m": {name: 7}, "n": [{name: 3}]});
+        let exact = Reading {
+            unix: false,
+            widened: false,
+        };
+        let mut out = Vec::new();
+        same(&golden, &door, "body", exact, &mut out);
+        assert_eq!(
+            out.len(),
+            2,
+            "undropped, both read as members 1.5.5 lacked: {out:?}"
+        );
+        out.clear();
+        untimed(&mut door);
+        same(&golden, &door, "body", exact, &mut out);
+        assert!(out.is_empty(), "dropped at every depth: {out:?}");
+        let mut text = serde_json::json!({name: "slow"});
+        untimed(&mut text);
+        assert_eq!(
+            text[name], "slow",
+            "only a numeric timing member is dropped"
+        );
     }
 
     /// AN ANSWER HELD TO THE ANSWER 1.5.5 GAVE: the status; every header 1.5.5 sent (the wire's
@@ -12161,10 +12327,16 @@ mod model_door_root_cells {
                 out.push(format!("{what}: `{name}` is a header 1.5.5 did not send"));
             }
         }
-        let unix = golden.applied.iter().any(|a| a == "ts.unix");
+        let how = Reading {
+            unix: golden.applied.iter().any(|a| a == "ts.unix"),
+            widened: golden.widened,
+        };
         if let Some(json) = golden.body.get("json") {
             match serde_json::from_slice::<serde_json::Value>(body) {
-                Ok(door) => same(json, &door, &format!("{what} body"), unix, out),
+                Ok(mut door) => {
+                    untimed(&mut door);
+                    same(json, &door, &format!("{what} body"), how, out);
+                }
                 Err(_) => out.push(format!(
                     "{what}: the body is not JSON: {}",
                     String::from_utf8_lossy(body)
@@ -13023,7 +13195,10 @@ mod model_door_root_cells {
                     path: caller.path.to_string(),
                     headers: Vec::new(),
                     body: Some(request.clone()),
-                    golden: golden_at(&golden_file("golden_ok", caller.golden), None),
+                    golden: Golden {
+                        widened: signed_widening(caller.golden),
+                        ..golden_at(&golden_file("golden_ok", caller.golden), None)
+                    },
                     money: (1, 1, 1, 18),
                     priced: false,
                 },

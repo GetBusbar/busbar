@@ -72,6 +72,16 @@ capture.converse.wrong_method = GET | /model/p/converse | {} | - | testing/shado
 golden_ok = testing/shadow-oracle/golden/1.5.5/cells/llm__{ingress}__{egress}__request__ok.json
 golden_malformed = testing/shadow-oracle/golden/1.5.5/cells/llm__{ingress}__{ingress}__request__malformed.json
 golden_egress = openai
+# The served answers whose body an owner-signed improvement of the oracle's accepted-differences
+# register (testing/shadow-oracle/accepted-differences.json) covers, by the caller row's golden
+# name: the door may carry the members that entry accepts beyond 1.5.5's, and every member 1.5.5
+# sent is still held by value. The decode cell refuses a row whose entry is not an owner-signed
+# body-class improvement over that dialect's served answer.
+golden_accepted.anthropic = S-4 anthropic required members
+golden_accepted.responses = S-6 responses required members
+# The members the oracle's timing normalisation drops from every answer it records, at any depth,
+# when numeric (busbar-release oracle normalize.rs TIMING_KEYS: a request's own duration).
+golden_timing_members = latency_ms, latencyMs
 golden_stream_usage_event = {"choices":[],"created":0,"id":"chatcmpl-oracle","model":"m-openai-chat","object":"chat.completion.chunk","usage":{"completion_tokens":7,"prompt_tokens":11,"total_tokens":18}}
 # THE 1.5.5 GOLDEN CAPTURES the root's route cell holds each fixture's response head to: the oracle's
 # recorded cell (repo-relative), and for a capture of several requests the step's own request.
