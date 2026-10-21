@@ -3421,7 +3421,10 @@ pub(crate) mod tool_door {
         // token still base64-decodes and only the signature check can refuse it), to a different
         // valid base64url character, never the same one.
         let forged = {
-            let dot = rig.token.rfind('.').expect("a token has a signature segment");
+            let dot = rig
+                .token
+                .rfind('.')
+                .expect("a token has a signature segment");
             let at = dot + 1 + (rig.token.len() - dot - 1) / 2;
             let mut bytes = rig.token.clone().into_bytes();
             bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
