@@ -2405,6 +2405,24 @@ pub(crate) fn hand_in_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
     let _ = ROOT_AUTH_AXIS_HANDED_IN.set(open);
 }
 
+/// A program environment's secret reference resolved at config time through the secret axis the
+/// stand-in record lends ([`crate::preflight::RootInstall::STAND_IN`]): the resolver a test build
+/// hands the connector it builds, in place of the root's.
+///
+/// # Errors
+///
+/// The reference does not resolve through the stand-in's secret axis.
+pub fn resolve_stand_in_secret_at_config(
+    secret: &crate::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    crate::config::secret::resolve_linked_string_at_config(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        secret,
+        scope,
+    )
+}
+
 /// The record a [`TestApp`] lent none of its own lends: the stand-in
 /// ([`crate::preflight::RootInstall::STAND_IN`]), with the pinned door root cells' auth-axis opener
 /// in place of the stand-in's when they handed one in ([`ROOT_AUTH_AXIS_HANDED_IN`]).

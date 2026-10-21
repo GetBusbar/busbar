@@ -1276,6 +1276,10 @@ pub fn build_app_from_config(
         // material), so the live one stands. REMOVING a declaration therefore still needs a restart
         // — documented, and the narrow case; ROTATING one, the operational path that matters and
         // the one that silently did nothing, now works.
+        //
+        // THE RATE HOLDER AND DATER carry forward with the reused book: the new record's
+        // (`root.rate_apply`, `root.rate_epoch`) are ignored, which is exact while there is one root,
+        // and so one record, per process.
         if let Some(gs) = p.governance.clone() {
             let auth = cfg.auth.as_ref();
             let declares_operator = auth.is_some_and(|a| {

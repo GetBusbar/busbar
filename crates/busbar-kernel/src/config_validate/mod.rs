@@ -1835,7 +1835,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // contract-admin #10, Law 1: the kernel reads the shorthand off the plugins and names no
     // source). The VALUE is never resolved here (CI validates config structure without secrets
     // present); resolution failures are boot-time fail-closed errors.
-    let sugars = crate::config::secret::sugars();
+    let sugars = crate::config::secret::sugars(cfg.root.secret_axis);
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
         // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
