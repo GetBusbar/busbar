@@ -1561,9 +1561,13 @@ impl Connection {
     /// [`EmitIn::status`](busbar_contract::abi::transport::EmitIn::status), a tail field: no ABI
     /// change): `fields` is the head as the entry's `encode` rendered it, `status` the answer's
     /// status in the numbering of the claim `stream` arrived on, `end` = the answer ends with its
-    /// head. The head goes whole (it is never cut at the write buffer's room, so its status rides
-    /// the emit that carries all of it), now if the framing has begun, else once it does, and
-    /// behind any write its stream still holds back.
+    /// head. The head goes WHOLE OR NOT AT ALL (it is never cut, so its status rides the emit that
+    /// carries all of it), now if the framing has begun, else once it does, and behind any write
+    /// its stream still holds back; how many bytes were taken is answered as [`Self::emit`]
+    /// answers it. A FULL stream (A STREAM'S OWN BACKPRESSURE: the framer answered its last emit
+    /// `YIELD_STREAM_FULL`) takes none, `Ok(0)`, `cx` parked on the socket whose bytes bring the
+    /// framer's writable piece, and so does a write buffer without room for the head while it
+    /// holds anything; call again once it is writable.
     ///
     /// # Errors
     ///
@@ -1577,7 +1581,7 @@ impl Connection {
         fields: &[u8],
         end: bool,
         cx: &mut Context<'_>,
-    ) -> Result<(), Failure> {
+    ) -> Result<usize, Failure> {
         if self.side != SIDE_ACCEPT || self.door.is_none() {
             return Err(Failure::Refused(
                 "an answer head is stated on an accepted, framed connection only".into(),
@@ -1585,6 +1589,23 @@ impl Connection {
         }
         if status == 0 {
             return Err(Failure::Refused("an answer head states its status".into()));
+        }
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
+            _ => {}
+        }
+        // Let the socket take what it can (and the framer's writable piece arrive) first.
+        if let Err(f) = self.drive(cx) {
+            self.fail(f.clone());
+            return Err(f);
+        }
+        if self.full.contains(&stream) && !fields.is_empty() {
+            return Ok(0);
+        }
+        let buffered = self.buffered();
+        if buffered > 0 && fields.len() > WRITE_BUFFER_BYTES.saturating_sub(buffered) {
+            return Ok(0);
         }
         match &self.phase {
             Phase::Failed(f) => return Err(f.clone()),
@@ -1603,7 +1624,7 @@ impl Connection {
             self.fail(f.clone());
             return Err(f);
         }
-        Ok(())
+        Ok(fields.len())
     }
 
     /// REFUSE ONE STREAM of this connection: the framer's `refuse` ([`Framing::refuse`]) renders
@@ -1688,6 +1709,8 @@ impl Connection {
             }
         };
         self.inbox.clear();
+        // The old framing's backpressure was its own: the adopting framer states its own.
+        self.full.clear();
         self.framer_deadline = None;
         self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
         let (framing, y) =
