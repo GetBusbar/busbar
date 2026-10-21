@@ -97,8 +97,10 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// _tests.rs`, `secure.rs`, `topology/worker_shard_tests.rs`; `busbar-core-connector/src`:
 /// `tls/{engine,engine_tests}.rs`. Lowered again 1197 -> 1196, the gate's measure on #1230 merged
 /// with dev e39ad75c42 (one file fewer than the 1197 measured over dev 18036aea0e): the same
-/// kernel egress engine files above are the ones that left; none arrived.
-pub const MIN_FILES: usize = 1196;
+/// kernel egress engine files above are the ones that left; none arrived. Lowered again 1196 ->
+/// 1195, the count on #1230 merged with dev 9791fbba72: dev's `busbar-contract/src/transport/
+/// driver.rs` left (deleted on dev, not by this PR), none arrived.
+pub const MIN_FILES: usize = 1195;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
