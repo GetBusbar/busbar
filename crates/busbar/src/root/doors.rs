@@ -14,16 +14,17 @@
 // under its own name. So it names nothing of the root's own, only crates the root links and
 // `super::loader` (the root's one loader module, or the one-line re-export each other mount gives).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
     OutFrame, Plugin,
 };
-use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::slot;
 use busbar_core_connector::{
@@ -78,8 +79,102 @@ pub fn row_bind(row: &str) -> Bind {
 
 /// One transport door, opened, as the connector reaches it.
 pub struct Dispatched {
-    plugin: Plugin<TransportKind>,
+    live: Arc<Live>,
     facts: DoorFacts,
+}
+
+/// ONE OPENED TRANSPORT INSTANCE, as a config apply refreshes it: the instance, the setting paths
+/// its tail declares, and the generation its last `open` or `refresh` opened.
+struct Live {
+    plugin: Plugin<TransportKind>,
+    settings_keys: Vec<&'static str>,
+    generation: AtomicU64,
+}
+
+/// EVERY TRANSPORT INSTANCE THIS PROCESS OPENED and still holds, linked and dropped in alike: what
+/// [`refresh_live`] refreshes on a config apply. An instance whose last holder dropped it leaves
+/// with its next pass.
+static LIVE: Mutex<Vec<Weak<Live>>> = Mutex::new(Vec::new());
+
+/// The settings blob a door that declares `blob` is handed (`None`: it declares none, and is handed
+/// no settings).
+fn settings_arg(blob: Option<&[u8]>) -> Blob {
+    match blob {
+        Some(b) => Blob {
+            ptr: b.as_ptr(),
+            len: b.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        },
+        None => Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        },
+    }
+}
+
+impl Live {
+    /// REFRESH this instance onto the next generation with the deployment's value of every
+    /// setting its tail declares ([`settings_blob`]), as its `open` was handed them. It moves
+    /// settings only: no listener is bound or re-bound, and every connection stays open.
+    fn refresh(
+        &self,
+        settings: &busbar_contract::transport::TransportSettings,
+    ) -> Result<(), String> {
+        let blob =
+            (!self.settings_keys.is_empty()).then(|| settings_blob(&self.settings_keys, settings));
+        let mut i: RefreshIn = blank_in();
+        i.generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        i.settings = settings_arg(blob.as_deref());
+        let mut f = Frame::new(i, blank_out::<OutHead>());
+        let called = self.plugin.call(life::REFRESH, &mut f);
+        if called.outcome == Outcome::Ready {
+            return Ok(());
+        }
+        let why = called
+            .error
+            .as_deref()
+            .map(|e| format!(": {}", String::from_utf8_lossy(e)))
+            .unwrap_or_default();
+        Err(format!(
+            "transport `{}` did not refresh ({:?}){why}",
+            self.plugin.name(),
+            called.outcome
+        ))
+    }
+}
+
+/// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4, "a plugin
+/// is a plugin": every kind's `refresh` slot is called on an apply, as the planes' and the
+/// credentials' are): each live instance is refreshed with the applied `settings`
+/// ([`Dispatched::refresh`]). An instance that will not refresh keeps the settings it holds and
+/// keeps serving, and says why; the refusals are answered. A listener set change still applies on
+/// restart (THE DESIGN, the generations rule): a refresh binds nothing.
+pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
+    refresh_named(settings, |_| true)
+}
+
+/// [`refresh_live`] over the live instances whose name `named` keeps.
+pub fn refresh_named(
+    settings: &busbar_contract::transport::TransportSettings,
+    named: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let live: Vec<Arc<Live>> = {
+        let mut book = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        book.retain(|w| w.strong_count() > 0);
+        book.iter()
+            .filter_map(Weak::upgrade)
+            .filter(|l| named(l.plugin.name()))
+            .collect()
+    };
+    live.iter()
+        .filter_map(|l| l.refresh(settings).err())
+        .inspect(|why| {
+            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
+        })
+        .collect()
 }
 
 /// The deployment's value of the transport setting at config path `path`, as the door's settings
@@ -132,20 +227,7 @@ impl Dispatched {
         let blob = (!stated.settings_keys.is_empty())
             .then(|| settings_blob(&stated.settings_keys, settings));
         let mut i: OpenIn = blank_in();
-        i.settings = match &blob {
-            Some(b) => Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_JSON,
-                flags: 0,
-            },
-            None => Blob {
-                ptr: std::ptr::null(),
-                len: 0,
-                fmt: BLOB_ABSENT,
-                flags: 0,
-            },
-        };
+        i.settings = settings_arg(blob.as_deref());
         let mut f = Frame::new(i, blank_out::<OpenOut>());
         let opened = plugin.call(life::OPEN, &mut f);
         if opened.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
@@ -175,7 +257,28 @@ impl Dispatched {
         };
         // A carrier moves bytes over the host's I/O (`io.*`): the process's one, the connector's.
         let _ = dispatcher().install_io(busbar_core_connector::hostio::process());
-        Ok(Self { plugin, facts })
+        let live = Arc::new(Live {
+            plugin,
+            settings_keys: stated.settings_keys,
+            generation: AtomicU64::new(0),
+        });
+        LIVE.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::downgrade(&live));
+        Ok(Self { live, facts })
+    }
+
+    /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
+    /// for every opened instance on a config apply.
+    ///
+    /// # Errors
+    ///
+    /// The instance did not answer READY; it keeps the settings it holds.
+    pub fn refresh(
+        &self,
+        settings: &busbar_contract::transport::TransportSettings,
+    ) -> Result<(), String> {
+        self.live.refresh(settings)
     }
 }
 
@@ -240,7 +343,7 @@ impl FramerDoor for Dispatched {
     }
 
     fn carry(&self, side: &dyn Side, resume: bool, call: Carry<'_>) -> Crossed {
-        let (p, t) = (&self.plugin, side.ticket());
+        let (p, t) = (&self.live.plugin, side.ticket());
         match call {
             Carry::Listen(i, o) => go_inline(p, t, resume, slot::LISTEN, i, o),
             Carry::Accept(i, o) => go_inline(p, t, resume, slot::ACCEPT, i, o),
@@ -256,7 +359,7 @@ impl FramerDoor for Dispatched {
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {
-        let p = &self.plugin;
+        let p = &self.live.plugin;
         match call {
             Call::Locate(i, o) => go(p, slot::LOCATE, i, o),
             Call::Begin(i, o) => go(p, slot::BEGIN, i, o),
