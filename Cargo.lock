@@ -920,7 +920,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=12b078389496d4c1fd81b730f5d9d0887537c3b0#12b078389496d4c1fd81b730f5d9d0887537c3b0"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=3d63af2865a6a687b805cec7bddfa0d4c19f98dc#3d63af2865a6a687b805cec7bddfa0d4c19f98dc"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=223ec3f02000de94089a1752635b9e206f7492e5#223ec3f02000de94089a1752635b9e206f7492e5"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=e3a24585cc854b89c9ad1e78d2063218ca95c288#e3a24585cc854b89c9ad1e78d2063218ca95c288"
 dependencies = [
  "busbar-contract",
 ]
@@ -950,7 +950,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=223ec3f02000de94089a1752635b9e206f7492e5#223ec3f02000de94089a1752635b9e206f7492e5"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=e3a24585cc854b89c9ad1e78d2063218ca95c288#e3a24585cc854b89c9ad1e78d2063218ca95c288"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
