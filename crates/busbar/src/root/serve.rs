@@ -3068,7 +3068,11 @@ pub fn door_mounts(
     routes_of.extend(public);
     // THE DATA LISTENER'S LIST, staged for the inbound auth handle's tables (`root::inbound`),
     // with the door routes' unit-less refusals a stopped request is answered with.
-    crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
+    crate::root::inbound::stage(
+        routes.guests.clone(),
+        refusals.clone(),
+        Some(Arc::clone(&refuse_by_path)),
+    );
     Ok(DoorMounts {
         routes: routes_of,
         sessions,

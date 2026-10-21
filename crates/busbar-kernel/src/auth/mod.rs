@@ -2617,50 +2617,58 @@ pub(crate) async fn auth_middleware(
             strike_named(&mut req, &mut consumed, &strips);
             req.extensions_mut().insert(consumed);
         }
-        Err(IdentityRefusal::Denied) => {
-            // On an audience-bound plane the refusal is an RFC 6750 challenge, not a protocol-shaped
-            // envelope: the caller is an OAuth client, and the `WWW-Authenticate` header is the only
-            // place the discovery loop's next step was ever going to come from. `Absent` (no
-            // credential at all) and `invalid_token` (one was presented and failed) are different
-            // signals and clients branch on the difference, so they are not collapsed.
-            if let Some(adm) = admission.as_ref() {
-                let kind = if client_token.is_none() {
-                    challenge::ChallengeError::Absent
-                } else {
-                    challenge::ChallengeError::InvalidToken
-                };
-                return Err(challenge::refuse(
-                    kind,
-                    &adm.resource_metadata,
-                    "Authentication is required for this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
+        Err(refusal) => {
+            return Err(data_identity_refusal(
                 &app,
                 &path,
                 door.as_ref(),
-            ));
-        }
-        Err(IdentityRefusal::NoGrant) => {
-            if let Some(adm) = admission.as_ref() {
-                return Err(challenge::refuse(
-                    challenge::ChallengeError::InsufficientScope,
-                    &adm.resource_metadata,
-                    "The authenticated principal carries no grant on this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
-                &app,
-                &path,
-                door.as_ref(),
-            ));
+                refusal,
+                client_token.is_some(),
+            ))
         }
     }
 
     drop(_mw.take());
     Ok(next.run(req).await)
+}
+
+/// THE DATA-PLANE GATE'S ANSWER to a chain verdict that resolved to `refusal` on `path` (`presented`:
+/// the request carried a client credential), the one the auth middleware answers with and the
+/// inbound handle's refusals render through (THE DESIGN §6 l.962, every refusal the kernel's).
+///
+/// On an audience-bound plane the refusal is an RFC 6750 challenge, not a protocol-shaped envelope:
+/// the caller is an OAuth client, and the `WWW-Authenticate` header is the only place the discovery
+/// loop's next step was ever going to come from. `Absent` (no credential at all) and
+/// `invalid_token` (one was presented and failed) are different signals and clients branch on the
+/// difference, so they are not collapsed; an identity holding no grant is `insufficient_scope`.
+/// Anywhere else it is the path's native 401, rendered by the door route's plane when `door`
+/// names one.
+pub(crate) fn data_identity_refusal(
+    app: &std::sync::Arc<crate::state::App>,
+    path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    refusal: IdentityRefusal,
+    presented: bool,
+) -> Response {
+    match (refusal, app.planes.admission_for(path)) {
+        (IdentityRefusal::Denied, Some(adm)) => challenge::refuse(
+            if presented {
+                challenge::ChallengeError::InvalidToken
+            } else {
+                challenge::ChallengeError::Absent
+            },
+            &adm.resource_metadata,
+            "Authentication is required for this resource.",
+            None,
+        ),
+        (IdentityRefusal::NoGrant, Some(adm)) => challenge::refuse(
+            challenge::ChallengeError::InsufficientScope,
+            &adm.resource_metadata,
+            "The authenticated principal carries no grant on this resource.",
+            None,
+        ),
+        (_, None) => unauthorized_with_completion_taps(app, path, door),
+    }
 }
 
 // IdentityRefusal (WHY a chain verdict did not resolve to an admitted identity) now lives in the

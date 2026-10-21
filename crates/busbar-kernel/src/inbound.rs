@@ -518,6 +518,10 @@ struct UnitState {
     shed: bool,
     /// Its admission slot, given back when the unit leaves the table (its drop).
     admission: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// Whether the request carried a client credential on the default inbound style's carriers,
+    /// read off the first head the kernel saw (before any strip): a refusal on an audience-bound
+    /// plane tells a credential that failed from none at all, as the data-plane gate did.
+    presented: Option<bool>,
 }
 
 /// Who answers for a unit's caller, by its line's auth.
@@ -569,6 +573,7 @@ impl UnitState {
             door: Door::Chain,
             shed: false,
             admission: None,
+            presented: None,
         }
     }
 
@@ -798,6 +803,12 @@ fn ordered(names: &[String]) -> Vec<String> {
         .chain(names.iter().filter(|n| *n == keys).take(1))
         .cloned()
         .collect()
+}
+
+/// Whether `head` carries a client credential on the default inbound style's carriers, as the
+/// data-plane gate read one (`AuthMiddleware::extract_client_token`).
+fn carries_credential(app: &App, head: &Head) -> bool {
+    app.auth.extract_client_token(&header_map(head)).is_some()
 }
 
 /// THE DATA-PLANE GATE'S RESOLUTION of `u`'s verdict over `app`
@@ -1284,6 +1295,7 @@ impl Inbound {
             let mut shed = false;
             if let Some(u) = self.units().get_mut(&unit.id) {
                 if u.head.is_none() {
+                    u.presented = Some(carries_credential(&table.listener.app, &call.head));
                     u.head = Some(call.head.clone());
                 }
                 shed = u.shed;
@@ -1539,6 +1551,9 @@ impl Inbound {
             FLOW_STOP
         };
         if let Some(u) = self.units().get_mut(&unit.id) {
+            if u.presented.is_none() {
+                u.presented = Some(carries_credential(&table.listener.app, &h.head));
+            }
             u.head = Some(h.head);
             // Only an admitted request is there for the root to take up.
             u.handed = h
@@ -1695,13 +1710,27 @@ impl Inbound {
         ) {
             return Err(CAUSE_UNKNOWN);
         }
-        let (head, overloaded, unit_shed) = unit
+        let app = &table.listener.app;
+        let (head, overloaded, unit_shed, judged) = unit
             .and_then(|u| {
-                self.units()
-                    .get(&u.id)
-                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded), s.shed))
+                self.units().get(&u.id).map(|s| {
+                    // The data-plane gate's refusal of this unit: a grant it holds none of, else a
+                    // denial; and whether its request carried a credential.
+                    let refusal = match project(s, app) {
+                        Err(crate::auth::IdentityRefusal::NoGrant) => {
+                            crate::auth::IdentityRefusal::NoGrant
+                        }
+                        _ => crate::auth::IdentityRefusal::Denied,
+                    };
+                    (
+                        s.head.clone(),
+                        s.fixed() == Some(Fixed::Overloaded),
+                        s.shed,
+                        Some((refusal, s.presented)),
+                    )
+                })
             })
-            .unwrap_or((None, false, false));
+            .unwrap_or((None, false, false, None));
         // A request with no unit is first touched HERE: it takes its admission slot for its own
         // answer, and gives it back once answered.
         let slot = match (unit, table.listener.admission.as_ref()) {
@@ -1720,7 +1749,7 @@ impl Inbound {
             .as_ref()
             .map(Head::path_and_query)
             .unwrap_or_else(|| path.clone());
-        let app = &table.listener.app;
+        let door = table.listener.door_refuser.as_ref();
         let resp = match r.cause {
             // SHED: 1.5.5's outermost cap answered every request past it, whatever its route.
             _ if shed => crate::limits::admission::inbound_overloaded_response(),
@@ -1731,20 +1760,13 @@ impl Inbound {
                 crate::taxonomy::ERR_TYPE_NOT_FOUND,
                 "the requested resource was not found",
             ),
-            REFUSE_METHOD_MISS => crate::router::fallback_error_response(
-                &app.planes,
-                &path,
-                StatusCode::METHOD_NOT_ALLOWED,
-                crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
-                "method not allowed for this resource",
-            ),
-            REFUSE_OVER_GATE => crate::router::fallback_error_response(
-                &app.planes,
-                &path,
-                StatusCode::PAYLOAD_TOO_LARGE,
-                crate::proxy::KIND_REQUEST_TOO_LARGE,
-                "request body exceeds the maximum allowed size",
-            ),
+            // The router's own renders, through the door planes' rendering it answers with.
+            REFUSE_METHOD_MISS => {
+                crate::router::method_miss_refusal_by(door, &app.planes, &path, &target)
+            }
+            REFUSE_OVER_GATE => {
+                crate::router::oversized_refusal_by(door, &app.planes, &path, &target)
+            }
             REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
                 crate::auth::verifier_overloaded_response()
             }
@@ -1755,7 +1777,13 @@ impl Inbound {
                 let door = method
                     .and_then(|m| table.doors.door_refusal(&path, &m).cloned())
                     .map(|refuse| (refuse, target));
-                crate::auth::unauthorized_with_completion_taps(app, &path, door.as_ref())
+                // The data-plane gate's own answer, per cause: on an audience-bound plane its
+                // RFC 6750 challenge, else the path's 401.
+                let (refusal, presented) =
+                    judged.unwrap_or((crate::auth::IdentityRefusal::Denied, None));
+                let presented = presented
+                    .unwrap_or_else(|| head.as_ref().is_some_and(|h| carries_credential(app, h)));
+                crate::auth::data_identity_refusal(app, &path, door.as_ref(), refusal, presented)
             }
             _ => return Err(CAUSE_UNKNOWN),
         };

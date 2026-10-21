@@ -82,6 +82,32 @@ pub(crate) fn kernel_refusal_response(
     kind: &str,
     message: &str,
 ) -> axum::response::Response {
+    kernel_refusal_by(
+        handle.door_refuser(),
+        planes,
+        reason,
+        path,
+        target,
+        status,
+        kind,
+        message,
+    )
+}
+
+/// [`kernel_refusal_response`] through the door planes' rendering `door` (the one an
+/// [`state::AppHandle`] binds), for a caller that holds the rendering and not the handle (the
+/// inbound handle's refusals).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kernel_refusal_by(
+    door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    planes: &crate::plane::PlaneDispatch,
+    reason: busbar_contract::caps::ReasonCode,
+    path: &str,
+    target: &str,
+    status: axum::http::StatusCode,
+    kind: &str,
+    message: &str,
+) -> axum::response::Response {
     use crate::admin::gate::API_ROOT;
     let native_api = path == API_ROOT || path.starts_with(&format!("{API_ROOT}/"));
     if !native_api {
@@ -92,11 +118,31 @@ pub(crate) fn kernel_refusal_response(
             path,
             target,
         };
-        if let Some(rendered) = handle.door_refusal(&refusal) {
+        if let Some(rendered) = door.and_then(|refuse| refuse(&refusal)) {
             return rendered;
         }
     }
     fallback_error_response(planes, path, status, kind, message)
+}
+
+/// THE METHOD-MISS REFUSAL (`REFUSE_METHOD_MISS`) on `path` (requested as `target`), as the
+/// router's 405 handler renders it, through the door planes' rendering `door`.
+pub(crate) fn method_miss_refusal_by(
+    door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    planes: &crate::plane::PlaneDispatch,
+    path: &str,
+    target: &str,
+) -> axum::response::Response {
+    kernel_refusal_by(
+        door,
+        planes,
+        busbar_contract::caps::ReasonCode::MethodNotAllowed,
+        path,
+        target,
+        axum::http::StatusCode::METHOD_NOT_ALLOWED,
+        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+        "method not allowed for this resource",
+    )
 }
 
 /// The request target of `uri` (path and query), as the plane reads its path rule off it.
@@ -115,15 +161,11 @@ pub(crate) async fn method_not_allowed_handler(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
-    kernel_refusal_response(
-        &handle,
+    method_miss_refusal_by(
+        handle.door_refuser(),
         &handle.snapshot().planes,
-        busbar_contract::caps::ReasonCode::MethodNotAllowed,
         uri.path(),
         target_of(&uri),
-        axum::http::StatusCode::METHOD_NOT_ALLOWED,
-        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
-        "method not allowed for this resource",
     )
 }
 
@@ -197,9 +239,27 @@ pub fn oversized_refusal(
     path: &str,
     target: &str,
 ) -> axum::response::Response {
-    kernel_refusal_response(
-        handle,
+    oversized_refusal_by(
+        handle.door_refuser(),
         &handle.snapshot().planes,
+        path,
+        target,
+    )
+}
+
+/// [`oversized_refusal`] through the door planes' rendering `door` (the one an
+/// [`state::AppHandle`] binds), for a caller that holds the rendering and not the handle: the
+/// inbound handle's `REFUSE_OVER_GATE`.
+#[must_use]
+pub fn oversized_refusal_by(
+    door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    planes: &crate::plane::PlaneDispatch,
+    path: &str,
+    target: &str,
+) -> axum::response::Response {
+    kernel_refusal_by(
+        door,
+        planes,
         busbar_contract::caps::ReasonCode::BodyTooLarge,
         path,
         target,

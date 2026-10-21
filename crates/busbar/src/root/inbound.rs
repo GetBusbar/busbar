@@ -203,12 +203,24 @@ fn staged() -> std::sync::MutexGuard<'static, Option<Staged>> {
     STAGED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Stage the data listener's sealed guest list and its door refusals ([`publish`] installs them).
+/// Stage the data listener's sealed guest list and its door refusals ([`publish`] installs them),
+/// and the door planes' rendering of a kernel-shaped refusal (`refuse_by_path`, the one the
+/// router's layers answer through), every listener table rendering through it from then on.
 pub fn stage(
     guests: busbar_kernel::guest::GuestList,
     refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 ) {
+    *door_refuser() = refuse_by_path;
     *staged() = Some((guests, refusals));
+}
+
+/// THE DOOR PLANES' RENDERING the data listener's refusals answer through (staged with the list).
+fn door_refuser(
+) -> std::sync::MutexGuard<'static, Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>> {
+    static REFUSER: Mutex<Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>> =
+        Mutex::new(None);
+    REFUSER.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The last generation published.
@@ -305,7 +317,7 @@ pub fn install_listeners(
             ids,
             signed_ingress: kin::signed_by_dialect(),
             admission: admission(),
-            door_refuser: None,
+            door_refuser: door_refuser().clone(),
         };
         inbound.install(owner, generation, listener)?;
     }
