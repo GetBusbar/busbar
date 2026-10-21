@@ -1137,7 +1137,6 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
 /// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
 /// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
 /// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
     let hook = |module: &str| {
@@ -1176,7 +1175,6 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
 }
 
 /// The linked hook's Statement name, as this test build links it (the ranking double).
-#[cfg(feature = "hooks-ranking")]
 fn linked_hook_name() -> &'static str {
     crate::test_support::ranking_double::NAME
 }
@@ -1187,7 +1185,6 @@ fn linked_hook_name() -> &'static str {
 /// The words are the door's Statement marks, never registry aliases: no registry row spells them.
 /// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
 /// unknown.
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     for name in crate::config::RESERVED_HOOK_NAMES
@@ -1217,7 +1214,6 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
 /// candidates, the same expected order or abstain). Every answer is `Ok`: the call never fails,
 /// times out or reaches `on_error`. Its deadline is the dispatcher's Call class budget, never the
 /// 1 ms gate default.
-#[cfg(feature = "hooks-ranking")]
 #[tokio::test]
 async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
     use crate::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
