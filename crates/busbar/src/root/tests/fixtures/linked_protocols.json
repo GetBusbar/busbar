@@ -12,7 +12,10 @@
     "mandatory_header: [path, [[header, value]], protocol] — a mandatory header beats path ordering.",
     "residual: [path, protocol] — the headerless residual classifier.",
     "residual_live: [path, protocol] — the positive control that proves the residual fold is live.",
-    "residual_none: paths that name no dialect (the paths other planes mount at among them)."
+    "residual_none: paths that name no dialect (the paths other planes mount at among them).",
+    "auth_denial_label: [method, path, label] — the `ingress_protocol` a `rejected_by_auth` response tap",
+    "  is told for that request, verbatim v1.5.5's `proto_for_path(path)` (crates/busbar/src/auth/mod.rs:1167,",
+    "  the table at crates/busbar/src/proto/mod.rs:170-214, at v1.5.5): the path's label whatever the verb."
   ],
   "protocol_order": ["anthropic", "openai", "gemini", "bedrock", "responses", "cohere"],
   "event_content_types": ["application/vnd.amazon.eventstream", "text/event-stream"],
@@ -58,5 +61,23 @@
     ["/v1/models/gemini-pro:countTokens", "gemini"]
   ],
   "residual_live": ["/v1/models/gpt-4o", "openai"],
-  "residual_none": ["/", "/stats", "/tools", "/tools/anything", "/agents", "/totally/unknown/path", "/model/foo/bar"]
+  "residual_none": ["/", "/stats", "/tools", "/tools/anything", "/agents", "/totally/unknown/path", "/model/foo/bar"],
+  "auth_denial_label": [
+    ["GET", "/v1/messages", "anthropic"],
+    ["HEAD", "/v1/messages", "anthropic"],
+    ["PUT", "/v1/messages", "anthropic"],
+    ["PATCH", "/v1/messages", "anthropic"],
+    ["DELETE", "/v1/messages", "anthropic"],
+    ["OPTIONS", "/v1/messages", "anthropic"],
+    ["POST", "/v1/messages", "anthropic"],
+    ["GET", "/v2/chat", "cohere"],
+    ["HEAD", "/v2/chat", "cohere"],
+    ["PUT", "/v2/chat", "cohere"],
+    ["PATCH", "/v2/chat", "cohere"],
+    ["DELETE", "/v2/chat", "cohere"],
+    ["OPTIONS", "/v2/chat", "cohere"],
+    ["POST", "/v2/chat", "cohere"],
+    ["POST", "/v1/models/m:generateContent", "gemini"],
+    ["POST", "/model/x/invoke", "openai"]
+  ]
 }

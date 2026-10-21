@@ -313,10 +313,12 @@ pub struct BookCtx<'a> {
 
 /// THE PROTOCOL AXIS: every entry's body-model arrivals, then each entry's protocol-axis seams. A
 /// dialect whose model rides the URL has no arrival here: its plane's door claims and serves those
-/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). The entries' dialect declarations install nowhere:
-/// a plane resolves its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
+/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). The entries' dialect declarations install nowhere
+/// but as the path dialects an authentication refusal's tap is labelled in ([`path_dialects`]): a
+/// plane resolves its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
 /// hand their units to: every entry on it is handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
+    busbar_kernel::ingress::native::install_path_dialects(path_dialects(linked));
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -345,6 +347,16 @@ pub fn stream_media(linked: &Linked) -> Vec<&'static str> {
     media.sort_unstable();
     media.dedup();
     media
+}
+
+/// THE PATH DIALECTS the linked planes' dialect rows state, as the kernel labels an authentication
+/// refusal's tap off the path alone (`busbar_kernel::ingress::native::PathDialects`).
+pub fn path_dialects(linked: &Linked) -> busbar_kernel::ingress::native::PathDialects {
+    let _ = linked;
+    busbar_kernel::ingress::native::PathDialects {
+        claimed: Arc::new(|_: &str| None),
+        residual: None,
+    }
 }
 
 /// The dialect the linked planes' declarations claim `path` for by its shape alone
