@@ -753,6 +753,8 @@ pub fn judged_host(host: &str) -> Result<String, UrlRefusal> {
 /// and so does this reader: `ldap://bücher.example` reads `b%C3%BCcher.example`. An ASCII host is
 /// read as before under every scheme.
 ///
+/// file: hosts are read opaque; no file: URL is dialled or judged.
+///
 /// # Errors
 ///
 /// [`UrlRefusal`] when the string has no scheme, no authority, no usable host, a malformed bracket
