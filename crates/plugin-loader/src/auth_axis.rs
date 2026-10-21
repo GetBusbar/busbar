@@ -87,8 +87,8 @@ impl AuthRows {
     }
 
     /// Each instance opened to serve declares its needs on the table `conns` answers when it opens
-    /// (the process's one connector): a networked auth door (a directory over `tcp`) dials through
-    /// it.
+    /// (the process's one connector): a networked auth door (a directory over a stream transport)
+    /// dials through it.
     #[must_use]
     pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);

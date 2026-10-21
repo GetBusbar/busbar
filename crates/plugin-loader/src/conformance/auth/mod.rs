@@ -8,7 +8,7 @@
 //!
 //! THE INBOUND AND LOGIN SCRIPT. Ported from the auth both-ways proofs (#439's
 //! `auth_door_conformance_tests`, the predev `auth_verify_conformance_tests`, and the token cases of
-//! `busbar-auth-admin-tokens`' own conformance test), over the one loader and the one dispatcher.
+//! the static-token verifier's own conformance test), over the one loader and the one dispatcher.
 //!
 //! The script drives the INBOUND family, `verify`, the way the host's identity chain calls it
 //! (`busbar_contract::auth_calls::AuthCalls`): ON THE SPOT (ticket-less, on the caller's thread),
