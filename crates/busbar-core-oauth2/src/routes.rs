@@ -568,6 +568,11 @@ fn host_of(redirect_uri: &str) -> String {
     let Ok(parts) = busbar_contract::net::parse_url(redirect_uri) else {
         return String::new();
     };
+    // A host read only as an opaque spelling that decodes to a forbidden code point (a socket
+    // path, `%25`) is no host the browser contacts: the screen names none, as it always has.
+    if busbar_contract::net::target_host(redirect_uri).is_none() {
+        return String::new();
+    }
     let host = if parts.host.contains(':') {
         format!("[{}]", parts.host)
     } else {
