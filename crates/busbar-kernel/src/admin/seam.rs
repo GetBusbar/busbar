@@ -6,7 +6,7 @@
 //! depends on `busbar-core`, never the other way).
 //!
 //! Registered once by the composition root (`crates/busbar`'s `main`), unconditionally — exactly the
-//! discipline `oauth_as::seam`/`plane::registry::install_planes` document. `busbar-admin` is a
+//! discipline `oauth_as::seam`/`plane_driver::doors::install_doors` document. `busbar-admin` is a
 //! MANDATORY, always-linked (non-optional) dependency of the shipped binary, so every real build
 //! registers this. Only busbar-core's OWN test binary (`cargo test -p busbar-core`) never links
 //! `busbar-admin` (linking it would be the forbidden reverse edge) and so never registers the seam;

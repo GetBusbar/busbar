@@ -22,7 +22,7 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-use crate::both_ways::{kind_cdylib, secret_fixture};
+use crate::both_ways::{fixture_cdylib, secret_fixture};
 use crate::hook_door_conformance_tests::hook_door_plugin;
 use secret_fixture::door::door;
 use secret_fixture::NAME;
@@ -112,14 +112,14 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
 #[test]
 fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     environment();
-    let path = kind_cdylib("secret");
+    let path = fixture_cdylib("secret");
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     let candidate = Candidate::from_rendering(
         stated,
         None,
         Origin::Dropped {
-            file: "secret.tar.gz".to_string(),
+            file: format!("{}.tar.gz", crate::both_ways::fixture("secret").0),
             bytes: Arc::new(bytes),
         },
     )

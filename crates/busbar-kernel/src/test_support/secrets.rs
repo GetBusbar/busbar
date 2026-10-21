@@ -24,17 +24,20 @@
 
 use std::sync::Arc;
 
+use busbar_contract::abi::mechanism::door::{
+    REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+};
 use busbar_contract::abi::secret::{
     ERROR_KIND_DENIED, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND, ERROR_KIND_UNAVAILABLE,
 };
 use busbar_contract::redacted::Secret;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::{
-    SecretRef, SECRET_ENV_SETTING_KEY, SECRET_FILE_SETTING_PATH, SECRET_MODULE_ENV,
+    SecretRef, Sugars, SECRET_ENV_SETTING_KEY, SECRET_FILE_SETTING_PATH, SECRET_MODULE_ENV,
     SECRET_MODULE_FILE,
 };
 
-/// The stand-in secret axis a test build installs in place of the root's (`preflight::STAND_IN`).
+/// The stand-in secret axis a test build lends in place of the root's (`RootInstall::STAND_IN`).
 pub struct SecretsStandIn;
 
 /// Which of the two sources a reference names.
@@ -161,7 +164,48 @@ impl SecretCalls for Double {
     }
 }
 
+/// The shorthand each double's source declares in its Statement (env src/door.rs and file
+/// src/door.rs at the revs the workspace root pins): its word, the settings key its value lands
+/// under, what a refusal says the value names (1.5.5's words, v1.5.5
+/// crates/busbar/src/config_validate/mod.rs:1678 and :1682) and its core role. Declared through
+/// the contract's one reader, as the loader declares the real Statements' rewrites.
+fn declared() -> Sugars {
+    let sources = [
+        (
+            SECRET_MODULE_ENV,
+            SECRET_ENV_SETTING_KEY,
+            "the environment variable name",
+            SUGAR_ROLE_FILL,
+        ),
+        (
+            SECRET_MODULE_FILE,
+            SECRET_FILE_SETTING_PATH,
+            "the file to read",
+            SUGAR_ROLE_PATH,
+        ),
+    ];
+    let mut sugars = Sugars::default();
+    for (word, key, names, role) in sources {
+        let fact = |class: u32, to: &str| (class, word.to_string(), to.to_string());
+        sugars
+            .declare(
+                word,
+                &[
+                    fact(REWRITE_SUGAR, key),
+                    fact(REWRITE_SUGAR_NAMES, names),
+                    fact(REWRITE_SUGAR_ROLE, role),
+                ],
+            )
+            .expect("the doubles' shorthand declares");
+    }
+    sugars
+}
+
 impl SecretAxis for SecretsStandIn {
+    fn sugars(&self) -> Sugars {
+        declared()
+    }
+
     fn answers(&self, module: &str) -> bool {
         double(module).is_some()
     }

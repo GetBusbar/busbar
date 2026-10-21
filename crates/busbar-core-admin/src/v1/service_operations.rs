@@ -42,9 +42,9 @@ impl AdminService {
 
     /// The same service, resolving usage against `history` instead of the process's.
     ///
-    /// The process's history is the kernel's rate dater's, installed once — so a test that needs to
-    /// drive the read against a history of its own naming pins it here rather than racing that
-    /// install. Every other caller reads the process's by construction.
+    /// The history is the rate dater's of the governance book the app carries — so a test that
+    /// needs to drive the read against a history of its own naming pins it here rather than lending
+    /// a book a dater of its own. Every other caller reads the app's book's by construction.
     #[cfg(test)]
     pub(crate) fn with_rate_history(mut self, history: Arc<busbar_kernel::cost::History>) -> Self {
         self.rate_history = Some(history);
@@ -58,8 +58,8 @@ impl AdminService {
         // The compiled-in plugin sets reflect the ACTUAL binary: the `keys` builtin and the linked
         // auth rows, plus the ranking hooks. `weighted` is the one baked in
         // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
+        let auth_modules = auth_modules_compiled_in(&self.app.root);
+        let hook_plugins = hook_plugins_compiled_in(&self.app.root);
 
         let view = self.app.engine_tables_view();
         let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
@@ -276,6 +276,8 @@ impl AdminService {
         for (name, entry) in busbar_kernel::config::overlay::unparseable_named_map_entries(
             self.app.overlay_path.as_deref(),
             section,
+            &self.app.root,
+            self.app.legacy,
         ) {
             if !defs.iter().any(|d| d.name == name) {
                 defs.push(unparseable_def_view(&name, &entry));
@@ -314,6 +316,8 @@ impl AdminService {
             busbar_kernel::config::overlay::unparseable_named_map_entries(
                 self.app.overlay_path.as_deref(),
                 section,
+                &self.app.root,
+                self.app.legacy,
             )
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
@@ -371,15 +375,47 @@ impl AdminService {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
         let now = busbar_kernel::store::now();
+        // THE STORE READS RUN OFF THE ASYNC WORKER, all of the group's buckets in one blocking
+        // task (as `get_usage`'s are): a slow store never stalls the worker the admin surface and
+        // the data plane share. One read per bucket, in bucket order.
+        let reads = match self.app.governance.clone() {
+            Some(gov) => {
+                let cost = self.app.cost.clone();
+                let wanted: Vec<(String, String)> = rt
+                    .buckets
+                    .iter()
+                    .map(|b| (b.bucket_id.to_string(), b.window.to_string()))
+                    .collect();
+                tokio::task::spawn_blocking(move || {
+                    wanted
+                        .iter()
+                        // Include the flat per-request fee (`true`) — the group `/usage` read must
+                        // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket,
+                        // groups included). Passing `false` here understated spend and overstated
+                        // remaining budget, so operators saw more headroom than the enforcer
+                        // actually allows.
+                        .map(|(id, window)| {
+                            gov.derived_bucket_usage_priced(&cost, id, window, true, now)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|e| {
+                    busbar_kernel::diagnostics::diag_error!(
+                        busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
+                        group = name, err = %e,
+                        "group usage read failed"
+                    );
+                    AdminError::Internal
+                })?
+            }
+            None => Vec::new(),
+        };
+        let mut reads = reads.into_iter();
         let mut buckets = Vec::with_capacity(rt.buckets.len());
         for b in &rt.buckets {
-            let usage = match &self.app.governance {
-                Some(gov) => gov
-                    // Include the flat per-request fee (`true`) — the group `/usage` read must
-                    // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket, groups
-                    // included). Passing `false` here understated spend and overstated remaining
-                    // budget, so operators saw more headroom than the enforcer actually allows.
-                    .derived_bucket_usage_priced(&self.app.cost, &b.bucket_id, b.window, true, now)
+            let usage = match reads.next() {
+                Some(read) => read
                     .map_err(|e| {
                         busbar_kernel::diagnostics::diag_error!(
                             busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
@@ -405,9 +441,10 @@ impl AdminService {
                 tokens_cache_read_cap: b.class_cap(LimitMetric::TokensCacheRead),
                 tokens_cache_write_cap: b.class_cap(LimitMetric::TokensCacheWrite),
                 budget_cap: b.budget_cap,
+                // The headroom is the ledger's read-time arithmetic (THE DESIGN, Money), never this crate's.
                 budget_remaining_cents: b
                     .budget_cap
-                    .map(|cap| cap.saturating_sub(usage.spend_cents).max(0)),
+                    .map(|cap| busbar_kernel::cost::budget_remaining(cap, usage.spend_cents)),
             });
         }
         Ok(GroupUsageView {
@@ -434,10 +471,10 @@ impl AdminService {
                 // is engine-handled (a flag, not a boxed module), the operator credential lives on the
                 // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
-                for name in auth_modules_compiled_in() {
+                for name in auth_modules_compiled_in(&self.app.root) {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if name == busbar_kernel::config::operator_provider() {
+                    } else if name == self.app.root.operator.provider {
                         // By module: a provider of any name backed by the operator credential.
                         let op = &self.app.admin_modules.operator;
                         self.app.admin_chain.iter().any(|m| op.is(m))
@@ -457,7 +494,7 @@ impl AdminService {
                 // `role_bindings.<module>` keys off) appears in `chain_names()` but is NOT
                 // compiled-in — report each such module as a loaded plugin, always `active` (it is
                 // in the chain by construction).
-                let compiled = auth_modules_compiled_in();
+                let compiled = auth_modules_compiled_in(&self.app.root);
                 for name in &chain {
                     if !compiled.contains(&name.as_str()) {
                         plugins.push(PluginView::basic(
@@ -499,7 +536,7 @@ impl AdminService {
                     None,
                     None,
                 ));
-                for name in hook_plugins_compiled_in() {
+                for name in hook_plugins_compiled_in(&self.app.root) {
                     plugins.push(PluginView::basic(
                         name.to_string(),
                         "hooks",
@@ -607,7 +644,7 @@ impl AdminService {
         // off the root's linked rows; admin names no store. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = linked_store_rows();
+        let mut out = linked_store_rows(&self.app.root);
         let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
             return out;
         };
@@ -844,7 +881,7 @@ impl AdminService {
                 // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
                 // an unparseable `plugins_cfg` (`trust_policy` failing) just above.
-                Ok(linked_store_rows())
+                Ok(linked_store_rows(&self.app.root))
             }
         }
     }
@@ -957,7 +994,9 @@ impl AdminService {
         // plugin at the same version is already served by the linked row, so the install is an
         // accepted no-op (nothing is written); another version is refused now, in the words boot
         // would refuse it with, never published to brick the next boot.
-        match busbar_kernel::preflight::linked().and_then(|r| r.linked_copy(manifest, &file)) {
+        match busbar_kernel::preflight::linked(&self.app.root, self.app.legacy)
+            .and_then(|r| r.linked_copy(manifest, &file))
+        {
             Ok(None) => {}
             Ok(Some(_)) => {
                 return Ok(crate::v1::contract::PluginInstallView {
@@ -1284,8 +1323,11 @@ impl AdminService {
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
         // The running generation's root rules: a dry run judges what an apply would.
         let rules = std::sync::Arc::clone(&self.app.root_rules);
+        // The running generation's install record and legacy table, both the root's: the dry run
+        // resolves under them, as an apply does.
+        let (root, legacy) = (self.app.root, self.app.legacy);
         match tokio::task::spawn_blocking(move || {
-            validate_config_blocking(deploy, &defs, plugins_dir, &rules)
+            validate_config_blocking(root, deploy, &defs, plugins_dir, &rules, legacy)
         })
         .await
         {
@@ -1399,7 +1441,10 @@ impl AdminService {
         // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
         // one response is answered at one snapshot. A card appended while this read is in flight
         // must not price half its rows against one history and half against another.
-        let history = self.rate_history.clone().or_else(dated_rate_history);
+        let history = self
+            .rate_history
+            .clone()
+            .or_else(|| dated_rate_history(&self.app));
         // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
         // state that does not exist is refused rather than quietly answered at some other state —
         // including when governance is off and the read would otherwise return early.
@@ -1485,7 +1530,23 @@ impl AdminService {
             std::collections::BTreeMap::new();
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
+        // When a correction exists, the eras of every (key, lane), grouped once in row order, so
+        // the per-row loop below looks a row's eras up rather than rescanning the bucket for them
+        // (one pass, not quadratic in the rows).
+        let mut eras_of: std::collections::HashMap<(&str, std::borrow::Cow<'_, str>), Vec<u64>> =
+            std::collections::HashMap::new();
+        if !corrections.is_empty() {
+            for r in &rows {
+                eras_of
+                    .entry((r.key_id.as_str(), row_lane(&r.model, &r.provider)))
+                    .or_default()
+                    .push(r.priced_from_ms);
+            }
+        }
         for r in &rows {
+            // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
+            // requests at the plane's own fee, as the budget book charges them (#47).
+            let lane = row_lane(&r.model, &r.provider);
             // Spend derives PER ROW (the model is known here - the per-model rate applies), then
             // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
             // heterogeneous rate card.
@@ -1505,19 +1566,16 @@ impl AdminService {
             // over counts nobody recorded is not one this read may serve.
             let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
             if !corrections.is_empty() {
-                let lane = row_lane(&r.model, &r.provider);
-                let eras: Vec<u64> = rows
-                    .iter()
-                    .filter(|o| o.key_id == r.key_id && row_lane(&o.model, &o.provider) == lane)
-                    .map(|o| o.priced_from_ms)
-                    .collect();
+                let eras = eras_of
+                    .get(&(r.key_id.as_str(), lane.clone()))
+                    .map_or(&[][..], Vec::as_slice);
                 for (class, delta) in row_count_corrections(
                     &corrections,
                     &r.key_id,
                     &lane,
                     (window.start, window.end),
                     r.priced_from_ms,
-                    &eras,
+                    eras,
                 ) {
                     let column = match class.as_str() {
                         busbar_contract::records::UNIT_INPUT => &mut row_view.tokens_input,
@@ -1553,9 +1611,6 @@ impl AdminService {
             // card at the instant below and prices against it. See
             // `derive_spend_micros_row_at_card`.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
-            // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
-            // requests at the plane's own fee, as the budget book charges them (#47).
-            let lane = row_lane(&r.model, &r.provider);
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
@@ -1638,11 +1693,11 @@ impl AdminService {
                     );
                     return Err(AdminError::Internal);
                 }
-                // CHECKED, like the one function it sums (item 28): a rollup past the range is a
-                // refused read, never a figure pinned at the ceiling.
-                b.spend_micros = match b.spend_micros.checked_add(row_spend) {
-                    Some(sum) => sum,
-                    None => {
+                // The ledger's rollup (THE DESIGN, Money), CHECKED like the one function it sums (item 28): a
+                // rollup past the range is a refused read, never a figure pinned at the ceiling.
+                b.spend_micros = match busbar_kernel::cost::sum_spend(b.spend_micros, row_spend) {
+                    Ok(sum) => sum,
+                    Err(_) => {
                         diag_error!(
                             ADMIN_STORE_OPERATION_FAILED,
                             operation = "usage.price",
@@ -1683,7 +1738,7 @@ impl AdminService {
         let by_key_truncated = by_key.len() > BY_KEY_CAP;
         // FinOps completeness: the tail beyond the cap is summed into an `others` bucket, so
         // total == sum(by_key) + others and every unit stays attributable.
-        let others = by_key_truncated.then(|| {
+        let others = if by_key_truncated {
             let mut o = UsageBreakdown::default();
             for row in &by_key[BY_KEY_CAP..] {
                 o.tokens_input = o.tokens_input.saturating_add(row.usage.tokens_input);
@@ -1695,15 +1750,22 @@ impl AdminService {
                     .tokens_cache_creation
                     .saturating_add(row.usage.tokens_cache_creation);
                 o.requests = o.requests.saturating_add(row.usage.requests);
-                o.spend_micros = o.spend_micros.saturating_add(row.usage.spend_micros);
+                // The ledger's rollup (THE DESIGN, Money), CHECKED as the total's is: the tail sums to no more
+                // than the total, which summed, so a refusal here is a figure nothing served.
+                o.spend_micros =
+                    busbar_kernel::cost::sum_spend(o.spend_micros, row.usage.spend_micros)
+                        .map_err(|_| rollup_refused("the others spend rollup left the range"))?;
                 for (class, u) in &row.usage.classes {
                     let e = o.classes.entry(class.clone()).or_default();
                     e.count = e.count.saturating_add(u.count);
-                    e.cost = e.cost.saturating_add(u.cost);
+                    e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost)
+                        .map_err(|_| rollup_refused("the others class cost left the range"))?;
                 }
             }
-            o
-        });
+            Some(o)
+        } else {
+            None
+        };
         by_key.truncate(BY_KEY_CAP);
         Ok(UsageView {
             window,
@@ -1768,9 +1830,9 @@ impl AdminService {
 
 /// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
 /// the root's table order (none a default: a config names its store, Q-STORE = (B)). Read off the
-/// kernel's installed root rows, so admin names no store instance.
-fn linked_store_rows() -> Vec<PluginView> {
-    let stores = busbar_kernel::preflight::root_rows().stores;
+/// install record the root lent the snapshot (`root`), so admin names no store instance.
+fn linked_store_rows(root: &busbar_kernel::preflight::RootInstall) -> Vec<PluginView> {
+    let stores = root.stores;
     let row = |s: &busbar_kernel::preflight::LinkedStore| {
         PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
     };
@@ -1778,7 +1840,7 @@ fn linked_store_rows() -> Vec<PluginView> {
 }
 
 /// Add one row's classes into a rollup's: counts summed saturating like the token columns, costs
-/// CHECKED like `spend_micros` (item 28) — `None` when a cost left the range, so the read refuses
+/// through the ledger's rollup, CHECKED like `spend_micros` (item 28) — `None` when a cost left the range, so the read refuses
 /// rather than serving a figure pinned at the ceiling.
 fn add_classes(
     into: &mut std::collections::BTreeMap<String, ClassUsage>,
@@ -1787,23 +1849,37 @@ fn add_classes(
     for (class, u) in row {
         let e = into.entry(class.clone()).or_default();
         e.count = e.count.saturating_add(u.count);
-        e.cost = e.cost.checked_add(u.cost)?;
+        e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost).ok()?;
     }
     Some(())
+}
+
+/// A usage rollup the ledger refused (it left the range), logged as every usage-read failure is and
+/// answered `internal`: the read serves no figure pinned at the ceiling.
+fn rollup_refused(error: &'static str) -> AdminError {
+    diag_error!(
+        ADMIN_STORE_OPERATION_FAILED,
+        operation = "usage.price",
+        error = error,
+        "admin store operation failed"
+    );
+    AdminError::Internal
 }
 
 /// The dry run itself, on a blocking thread (see [`AdminService::validate_config`]): resolve, the
 /// boot-time semantic validation, then the plugin and secret pre-flight over the running install's
 /// `plugins_dir`.
 fn validate_config_blocking(
+    lent: busbar_kernel::preflight::RootInstall,
     mut deploy: DeployCfg,
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
+    legacy: busbar_kernel::config::Legacy,
 ) -> ConfigValidateView {
     // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
     // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-    let root = match busbar_kernel::config::resolve(&deploy, defs) {
+    let root = match busbar_kernel::config::resolve_in(lent, &deploy, defs, legacy) {
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };

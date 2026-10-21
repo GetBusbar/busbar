@@ -18,7 +18,7 @@
 //! plane can drive the handle as `&mut dyn TestAppSeam`): the generic scratch accessors live on the
 //! blanket [`TestAppSeamExt`] rather than on the object-safe base.
 
-use crate::plane::PlaneAdmission;
+use crate::plane_driver::claims::PlaneAdmission;
 use crate::plane_driver::slots::PlaneSlots;
 use crate::plane_host::EngineHost;
 use std::any::Any;
@@ -120,7 +120,7 @@ pub trait TestAppSeam {
     /// pairs + the section hook list); `build()` resolves them through the SAME resolver production uses
     /// and files the resulting gate map under `plane_key`. KEYED by the plane's decl `key` — the neutral
     /// twin of the generic `plane_gates`/`plane_pools` keying — so one method serves every plane's
-    /// container-gate section (`tools:` for MCP, `agents:` for A2A) naming no plane.
+    /// container-gate section (the section a plane declares its containers under) naming no plane.
     fn set_container_hooks(
         &mut self,
         plane_key: &'static str,
@@ -128,8 +128,8 @@ pub trait TestAppSeam {
         section: Vec<String>,
     );
 
-    /// Set plane `plane_key`'s type-erased named-definition config the built App carries (the `agents:`
-    /// defs the A2A plane erases); core names no plane config type. KEYED like [`Self::set_container_hooks`]
+    /// Set plane `plane_key`'s type-erased named-definition config the built App carries (the section
+    /// defs a plane erases); core names no plane config type. KEYED like [`Self::set_container_hooks`]
     /// so this one method serves any plane's section-defs handle.
     fn set_plane_defs_any(&mut self, plane_key: &'static str, defs: Arc<dyn Any + Send + Sync>);
 }

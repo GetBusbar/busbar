@@ -19,23 +19,25 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
-    let built = process::build(
+    let built = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
-    let second = process::build(
+    let second = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     )
     .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
@@ -89,7 +91,7 @@ fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     }
     yaml.push_str(security);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-    busbar_kernel::config::resolve(&deploy, &defs).expect("resolves")
+    busbar_kernel::config::resolve(&deploy, &defs, crate::root::legacy::table()).expect("resolves")
 }
 
 fn imds() -> Vec<std::net::IpAddr> {
@@ -188,7 +190,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     // Every app build reads the plane registry, so holding it isolated keeps every other test's
     // commit out of this one's window.
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::doors::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
     // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
@@ -320,12 +322,13 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
         .build()
         .expect("a runtime");
     rt.block_on(async {
-        let c = process::build(
+        let c = process::build_with_secrets(
             || entries(doors, &TransportSettings::default()),
             judge(),
             &[],
             Arc::new(|_, _| {}),
             PoolPosture::NONE,
+            busbar_kernel::test_support::resolve_stand_in_secret_at_config,
         )
         .expect("the linked doors build a connector");
         let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({

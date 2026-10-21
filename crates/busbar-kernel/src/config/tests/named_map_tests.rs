@@ -60,6 +60,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "corp-ad",
             &serde_json::json!({"module": "ad", "max_admin_scope": "read-only"}),
+            crate::config::Legacy::stand_in(),
         )
         .expect("a well-formed identity-provider definition is accepted");
     assert_eq!(deploy.identity_providers["corp-ad"].module, "ad");
@@ -75,6 +76,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "metrics",
             &serde_json::json!({"module": "prometheus", "modle": {}}),
+            crate::config::Legacy::stand_in(),
         )
         .expect_err("a typo'd key must be rejected, never silently stored");
     assert!(
@@ -95,14 +97,21 @@ fn referents_finds_every_bare_name_reference_site() {
     );
     let mut auth = crate::config::AuthDeployCfg {
         chain: vec!["keys".into(), "corp-ad".into()],
-        admin_auth: vec![crate::config::operator_provider().into(), "corp-ad".into()],
+        admin_auth: Some(vec![
+            crate::config::operator_provider().into(),
+            "corp-ad".into(),
+        ]),
         ..Default::default()
     };
     auth.role_bindings
         .insert("corp-ad".into(), Default::default());
     deploy.auth = Some(auth);
 
-    let refs = NamedMapSection::IdentityProviders.referents(&deploy, "corp-ad");
+    let refs = NamedMapSection::IdentityProviders.referents(
+        &deploy,
+        &crate::test_support::lent_stand_in(),
+        "corp-ad",
+    );
     assert_eq!(
         refs,
         vec![
@@ -113,13 +122,17 @@ fn referents_finds_every_bare_name_reference_site() {
     );
     assert!(
         NamedMapSection::IdentityProviders
-            .referents(&deploy, "unreferenced")
+            .referents(
+                &deploy,
+                &crate::test_support::lent_stand_in(),
+                "unreferenced"
+            )
             .is_empty(),
         "an unreferenced definition dangles nothing"
     );
     // An exporter is a LEAF in 1.5.3 — nothing references it by name, so nothing can dangle.
     assert!(NamedMapSection::Export
-        .referents(&deploy, "metrics")
+        .referents(&deploy, &crate::test_support::lent_stand_in(), "metrics")
         .is_empty());
 }
 
@@ -137,15 +150,25 @@ fn only_identity_providers_carry_a_trust_ceiling() {
 /// never in a bespoke "compiled without the plane" sentence that names a plane the build lacks.
 #[test]
 fn a_section_no_registered_plane_declares_is_an_unknown_field() {
-    let _isolation = crate::plane::registry::TestRegistryIsolation::empty();
+    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::empty();
     let section = NamedMapSection::Plane("bays");
     let err = section
-        .parse_def("dock", &serde_json::json!({}))
+        .parse_def(
+            "dock",
+            &serde_json::json!({}),
+            &crate::test_support::lent_stand_in(),
+            crate::config::Legacy::stand_in(),
+        )
         .err()
         .expect("a section no plane declares is refused");
     assert_eq!(err, "unknown field `bays`");
     let err = section
-        .insert(&mut base_deploy(), "dock", &serde_json::json!({}))
+        .insert(
+            &mut base_deploy(),
+            "dock",
+            &serde_json::json!({}),
+            crate::config::Legacy::stand_in(),
+        )
         .expect_err("and refused on insert too");
     assert_eq!(err, "unknown field `bays`");
     assert!(!err.contains("compiled without"), "{err}");

@@ -30,10 +30,10 @@ fn a_config_without_a_store_block_is_refused() {
     let errs = validate(&cfg).expect_err("a config with no store: block must be refused");
     assert_eq!(
         errs,
-        vec![config::store_required()],
+        vec![config::store_required(crate::config::Legacy::stand_in())],
         "the absent store is the one refusal"
     );
-    let line = config::store_required();
+    let line = config::store_required(crate::config::Legacy::stand_in());
     for part in [
         "store is required",
         "`store: {module: memory}`",
@@ -50,7 +50,12 @@ fn a_config_without_a_store_block_is_refused() {
 /// fails.
 #[test]
 fn migrate_inserts_the_memory_store_into_a_config_without_one() {
-    let out = config::migrate::migrate_config(NO_STORE).expect("the no-store document migrates");
+    let out = config::migrate::migrate_config(
+        NO_STORE,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("the no-store document migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output is YAML");
     let store = doc.get("store").expect("the migrated config names a store");
     let want: serde_yaml::Value = serde_yaml::from_str("module: memory").expect("yaml");
@@ -71,7 +76,12 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
         "no banner on a migration with nothing to decide"
     );
 
-    let again = config::migrate::migrate_config(&out.yaml).expect("the output migrates");
+    let again = config::migrate::migrate_config(
+        &out.yaml,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("the output migrates");
     assert_eq!(again.yaml, out.yaml, "a migrated config migrates to itself");
     assert!(
         !again.changes.iter().any(|c| c.starts_with("store")),
@@ -92,14 +102,24 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
 #[test]
 fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one() {
     let unnamed = format!("{NO_STORE}store:\n  settings: {{ k: v }}\n");
-    let out = config::migrate::migrate_config(&unnamed).expect("migrates");
+    let out = config::migrate::migrate_config(
+        &unnamed,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("yaml");
     let want: serde_yaml::Value =
         serde_yaml::from_str("settings: { k: v }\nmodule: memory").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));
 
     let named = format!("{NO_STORE}store:\n  module: acme-durable\n");
-    let out = config::migrate::migrate_config(&named).expect("migrates");
+    let out = config::migrate::migrate_config(
+        &named,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("yaml");
     let want: serde_yaml::Value = serde_yaml::from_str("module: acme-durable").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));

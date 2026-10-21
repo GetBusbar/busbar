@@ -54,7 +54,7 @@ pub use busbar_contract::diagnostic::{Banner, Class, Diagnostic, Severity};
 // THE PLANE-CONTRIBUTED CATALOG SEAM. The neutral [`REGISTRY`] carries only the plane-AGNOSTIC
 // built-in diagnostics; each extracted plane crate OWNS its own `Diagnostic` consts and hands them
 // to [`install_diagnostics`] at the composition root, exactly as a plane hands its `&PlaneDecl` to
-// `install_planes`. The runtime catalog an operator sees is [`all`] — `REGISTRY ∪ installed` — so a
+// `install_doors`. The runtime catalog an operator sees is [`all`] — `REGISTRY ∪ installed` — so a
 // plane's codes resolve through [`by_code`] once registered, and a build with a plane compiled out
 // never sees (or renders) that plane's diagnostics. Everything crosses the ABI: the host names no
 // plane const; a plane never edits this file. Numbering/identity is preserved on the move — a plane
@@ -67,7 +67,7 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static Diagnostic]> = std::syn
 
 /// INSTALL PLANE-CONTRIBUTED DIAGNOSTICS — the composition root's one write into the diagnostics
 /// axis, and the seam an extracted plane crate registers its owned consts through. Exactly
-/// `install_planes`' shape and contract on the diagnostics axis. `pub`, not `pub(crate)`: the
+/// `install_doors`' shape and contract on the diagnostics axis. `pub`, not `pub(crate)`: the
 /// `busbar` binary is the composition root and calls this from `main` (`register_diagnostics`),
 /// folding each linked plane's `DIAGNOSTICS` slice in before anything reads the catalog.
 ///
@@ -2214,9 +2214,8 @@ pub const ADMIN_AUTH_CHAIN_EMPTY: Diagnostic = Diagnostic {
     severity: Severity::Actionable,
     summary: "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every \
               admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` \
-              REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned \
-              grant, never full), so this posture can only be entered deliberately via config.yaml \
-              at boot — never flipped open by one unnoticed API call.",
+              applies an empty chain as 1.5.5 did, with this warning, and the open posture is then \
+              live until the chain is set again.",
     action: "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set \
              `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an \
              admin credential entry, or an admin module) before exposing the admin API to any \

@@ -338,6 +338,13 @@ pub struct SkippedPlugin {
     pub kind: crate::sign::RejectKind,
 }
 
+/// Opens one build's AUTH AXIS over a registry, on the process's one dispatcher: the composition
+/// root's opener (it holds the dispatcher), lent on its install record and set on each registry the
+/// kernel builds from that record ([`PluginRegistry::with_auth_axis`]). The loader names neither
+/// the dispatcher nor the rows it opens.
+pub type AuthAxisOpener =
+    fn(std::sync::Arc<PluginRegistry>) -> std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>;
+
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
 /// after all three phases pass; this is the ONLY resolution surface (`governance.store:` etc.), so
 /// nothing outside the validated set can ever be selected.
@@ -354,6 +361,10 @@ pub struct PluginRegistry {
     /// fine).
     by_name: HashMap<String, usize>,
     by_alias: HashMap<String, usize>,
+    /// The auth-axis opener the record this registry was built from lends
+    /// ([`Self::with_auth_axis`]), set once when the registry is built: what opens this registry's
+    /// auth rows. `None`: no auth row answers anything.
+    auth_axis: Option<AuthAxisOpener>,
 }
 
 impl std::fmt::Debug for PluginRegistry {
@@ -392,6 +403,7 @@ impl PluginRegistry {
             copies: Vec::new(),
             by_name: HashMap::new(),
             by_alias: HashMap::new(),
+            auth_axis: None,
         };
         for row in rows {
             registry.admit(row);
@@ -420,6 +432,7 @@ impl PluginRegistry {
     /// registration (`admit`). FAIL-CLOSED: a linked plugin that would not pass is a refusal naming
     /// it, as an invalid tarball is.
     pub fn link(self, linked: Vec<LinkedPlugin>) -> Result<Self, String> {
+        let auth_axis = self.auth_axis;
         let mut rows = Vec::with_capacity(linked.len() + self.rows.len());
         for LinkedPlugin {
             manifest,
@@ -469,7 +482,23 @@ impl PluginRegistry {
         }
         let mut registry = Self::of(kept, n, self.skipped);
         registry.copies = found;
+        registry.auth_axis = auth_axis;
         Ok(registry)
+    }
+
+    /// This registry, its auth rows opened through `open` — the auth-axis opener the install record
+    /// it was built from lends. Set once, where the registry is built from that record.
+    #[must_use]
+    pub fn with_auth_axis(mut self, open: Option<AuthAxisOpener>) -> Self {
+        self.auth_axis = open;
+        self
+    }
+
+    /// The auth-axis opener this registry was built with ([`Self::with_auth_axis`]); `None`: no
+    /// auth row answers anything.
+    #[must_use]
+    pub fn auth_axis(&self) -> Option<AuthAxisOpener> {
+        self.auth_axis
     }
 
     /// The dropped-in tarballs that are copies of plugins this build LINKS, at the same version
@@ -655,12 +684,15 @@ impl PluginRegistry {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
-    /// Open EVERY loadable transport, in scan order, through its memory-ABI door
-    /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
-    /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
-    /// own instance to the host services). A library with no door is refused: the HOT transport lane
-    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
-    /// first that will not load fails the whole set, naming it.
+    /// Open every loadable transport the configuration `uses` (Law 7), in scan order, through its
+    /// memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one
+    /// dispatcher's door validation and bound with `bind`, labelled with its own plugin name (each
+    /// opened door is its own instance to the host services). Select reads the signed manifest's
+    /// Statement and opens nothing ([`crate::boot::Candidate::serves`]): a transport no configured
+    /// scheme selects is never staged, so its library initialisers never run. A manifest that states
+    /// no Statement is refused unopened, and a library with no door is refused: the HOT transport
+    /// lane is deleted (row 84), and no other lane reads it. Each selected image is staged and
+    /// opened once. The first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -668,6 +700,7 @@ impl PluginRegistry {
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
+        uses: &crate::boot::Uses,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
         let mut entries = TransportEntries::default();
@@ -677,12 +710,31 @@ impl PluginRegistry {
             .filter(|p| p.manifest.kind == kind::TRANSPORT)
         {
             let name = &p.manifest.name;
-            let stated = p.manifest.stated_rendering()?;
+            let Some(stated) = p.manifest.stated_rendering()? else {
+                return Err(format!(
+                    "transport plugin '{name}' states no Statement in its signed manifest, so it \
+                     exports no memory-ABI door (`busbar_plugin_door`) this host admits: a \
+                     transport loads only through its door"
+                ));
+            };
+            let selected = crate::boot::Candidate::from_manifest(
+                stated.clone(),
+                &p.manifest,
+                crate::boot::Origin::Dropped {
+                    file: p.file.clone(),
+                    bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                },
+            )
+            .map_err(|e| format!("transport plugin '{name}': {e}"))?
+            .serves(uses);
+            if !selected {
+                continue;
+            }
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
-                stated.as_deref(),
+                Some(stated.as_slice()),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
                     ..bind.clone()

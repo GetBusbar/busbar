@@ -346,7 +346,8 @@ const COMMITTED_OPENAPI_PATH: &str =
 #[cfg(feature = "openapi-schema")]
 fn openapi_doc_seamed() -> serde_json::Value {
     crate::ensure_seam();
-    openapi_doc()
+    let stand_in = busbar_kernel::preflight::RootInstall::STAND_IN;
+    openapi_doc(stand_in.hook_names, stand_in.operator.provider)
 }
 
 /// The string the live handler serves (the inflate of the embedded gz) must be BYTE-IDENTICAL to

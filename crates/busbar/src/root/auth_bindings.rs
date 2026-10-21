@@ -1,81 +1,97 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the admin authenticate step is handed beside the request: the revocation set, and the
-//! operator credential's words off the root legacy table.
+//! The revocation set the admin authenticate step is handed and cannot own.
 //!
-//! The kernel's one chain decides who is calling (`busbar_kernel::auth`; the admin door the step
-//! asks is that chain's verdict). What the step adds after an identification is the NEW-unit
-//! revocation gate, over the one denylist the node keeps — and the denylist lives with the
-//! governance state, which the step cannot name. So it arrives through a port.
+//! `busbar-kernel-identity` names no kernel crate, so the one thing the step needs from the node's
+//! governance state arrives as a trait the root implements: **the revocation set**, the gate that
+//! applies to a NEW unit once its credential has identified ([`RevocationView`]).
+//!
+//! This module is where the root holds it, because the root is the only thing that sees both the
+//! step and the state the answer comes from.
 //!
 //! ## Why there is a port in the middle
 //!
-//! The gate could name the governance state directly. It does not, because the one fact it needs —
-//! is this credential's subject revoked — is a far smaller surface than the state that answers it,
-//! and a root that named the whole state would make every later reader of this file reason about
-//! the whole state. So the shape is: a port with one method ([`VirtualKeyDirectory`]), held by
-//! [`AuthBindings`], and a deployment supplying the one implementor it has. [`GovernanceDirectory`]
-//! is that implementor for a node whose keys are busbar's own.
+//! The view could name the governance state directly. It does not, because the one fact the step
+//! needs — is this credential's subject revoked — is a far smaller surface than the state that
+//! answers it, and a root that named the whole state would make every reader of this file reason
+//! about the whole state. So the shape is: a port with one method ([`VirtualKeyDirectory`]),
+//! an adapter that turns it into the trait the step asks for ([`AuthBindings`]), and a deployment
+//! supplying the one implementor it has. `GovernanceDirectory` is that implementor for a node whose
+//! keys are busbar's own; a deployment whose keys come from somewhere else writes its own and
+//! nothing here changes.
 //!
 //! ## What an unbound node does
 //!
-//! [`AuthBindings::without_directory`] is a real posture and not a placeholder: a node that keeps
-//! no denylist revokes nobody, and the gate that never runs had nothing to refuse.
+//! [`AuthBindings::without_directory`] is a real posture and not a placeholder: a node with no
+//! governance state keeps no revocation set, and a set nothing supplies revokes nothing.
 //!
 //! ## No credential cache
 //!
 //! The kernel holds no verified-credential cache (THE DESIGN 11.11 R3): an auth plugin that caches
 //! its verdicts does so inside itself, and the admin cache flush reaches it through its `refresh`.
 
+use busbar_kernel_identity::RevocationView;
 use std::sync::Arc;
 
-/// The port the root reaches a node's revocation denylist through.
+/// The port the root reaches a node's virtual-key directory through.
 ///
-/// It answers about a PRESENTED credential and hands nothing back that could be presented again,
-/// which is what makes the port safe to hold behind a shared handle: no method on it leaks a secret
-/// and no method mutates the directory.
+/// It answers about a PRESENTED credential and hands back nothing that could be presented again,
+/// which is what makes the port safe to hold behind a shared handle: there is no method on it that
+/// leaks a secret and no method that mutates the directory.
 pub trait VirtualKeyDirectory: Send + Sync {
     /// Whether the subject a credential names is on the revocation denylist.
     ///
     /// This is the gate for a NEW unit and for nothing else — a unit already in flight is never
     /// asked, because revoking mid-unit would tear down work already paid for and observed while
-    /// the next unit is refused a fraction of a second later anyway.
+    /// the very next unit is refused anyway.
     ///
-    /// It is not the place a signed token's revocation is enforced: the kernel's `keys` arm verifies
-    /// a signed token against the same denylist, so a revoked token is already refused before this
-    /// is reached. What this covers is the credential shapes whose subject IS the credential's own
-    /// id, where there is no signature to read a subject out of. An implementor that cannot resolve
-    /// a credential to a subject answers `false` and loses nothing.
+    /// It is not the place a signed token's revocation is enforced: the kernel's signed-key
+    /// verifier consults the same denylist itself, so a revoked token is already refused before
+    /// this is reached. What this covers is the credential shapes whose subject IS the credential's
+    /// own id, where there is no signature to read a subject out of. An implementor that cannot
+    /// resolve a credential to a subject answers `false` and loses nothing.
     fn revoked(&self, credential: &str) -> bool;
 }
 
-/// Everything the admin authenticate step is handed beside the request itself.
+/// The revocation view the step asks for, over one directory.
+struct DirectoryArm(Arc<dyn VirtualKeyDirectory>);
+
+impl RevocationView for DirectoryArm {
+    fn is_revoked(&self, credential: &str) -> bool {
+        self.0.revoked(credential)
+    }
+}
+
+/// Everything the authenticate step is handed beside the request itself.
 ///
 /// Built at boot and borrowed by every unit that authenticates.
 pub struct AuthBindings {
-    directory: Option<Arc<dyn VirtualKeyDirectory>>,
+    directory: Option<DirectoryArm>,
 }
 
 impl AuthBindings {
-    /// Bind a revocation directory.
+    /// Bind a virtual-key directory.
     #[must_use]
     pub fn new(directory: Arc<dyn VirtualKeyDirectory>) -> Self {
         AuthBindings {
-            directory: Some(directory),
+            directory: Some(DirectoryArm(directory)),
         }
     }
 
-    /// Bind nothing — the posture of a node that keeps no denylist: the NEW-unit gate does not run.
+    /// Bind nothing — the posture of a node that keeps no revocation set.
+    ///
+    /// Not a degraded build and not a placeholder: with no revocation view the NEW-unit gate does
+    /// not run, and a set nothing supplies revokes nothing.
     #[must_use]
     pub fn without_directory() -> Self {
         AuthBindings { directory: None }
     }
 
-    /// The revocation directory, when one was bound.
+    /// The revocation view, when a directory was bound.
     #[must_use]
-    pub fn revocations(&self) -> Option<&dyn VirtualKeyDirectory> {
-        self.directory.as_deref()
+    pub fn revocations(&self) -> Option<&dyn RevocationView> {
+        self.directory.as_ref().map(|d| d as &dyn RevocationView)
     }
 }
 
@@ -87,10 +103,11 @@ impl std::fmt::Debug for AuthBindings {
     }
 }
 
-/// The revocation directory a node whose keys are busbar's own has: the governance state.
+/// The virtual-key directory a node whose keys are busbar's own has: the governance state.
 ///
-/// A delegation and nothing more: it forwards to the state's own published answer, so there is no
-/// second denylist here.
+/// A delegation and nothing more. It forwards to the state's own published answer, so there is no
+/// second denylist here, and nothing this type could get wrong that the state has not already
+/// decided.
 pub struct GovernanceDirectory {
     state: Arc<busbar_kernel::governance::GovState>,
 }
@@ -105,9 +122,11 @@ impl GovernanceDirectory {
 
 impl VirtualKeyDirectory for GovernanceDirectory {
     fn revoked(&self, credential: &str) -> bool {
-        // The denylist is keyed by SUBJECT id. A signed token's own revocation was already enforced
-        // inside the kernel's `keys` arm, so what this answers for is a credential that IS its
-        // subject's id. A credential that is neither is not on the denylist and answers `false`.
+        // The denylist is keyed by SUBJECT id. A signed token's own revocation is enforced inside
+        // the state's `verify_token`, so what this answers for is a credential that IS its subject's
+        // id.
+        // A credential that is neither is not on the denylist and answers `false`, which is the same
+        // answer the gate would have reached by any other route.
         self.state.is_revoked(credential)
     }
 }

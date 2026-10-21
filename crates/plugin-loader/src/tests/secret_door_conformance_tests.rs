@@ -26,7 +26,7 @@ use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_NOT_F
 use super::door_both_ways::{
     self as both, close, input, line, open, output, release, same, Loaded,
 };
-use crate::both_ways::{kind_cdylib, secret_fixture};
+use crate::both_ways::{fixture_cdylib, secret_fixture};
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{load_linked, Frame, LinkedRow, Plugin};
@@ -132,7 +132,7 @@ fn linked() -> Loaded<Secret> {
 /// The real secret plugin, DROPPED IN: its built `cdylib`. A missing artifact is a failure, never
 /// a skip: this suite is the kind's finish line.
 fn dropped() -> Loaded<Secret> {
-    let path = kind_cdylib("secret");
+    let path = fixture_cdylib("secret");
     both::dropped_from::<Secret>(secret_fixture::door::door, &path)
 }
 

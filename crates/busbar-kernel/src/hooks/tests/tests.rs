@@ -40,6 +40,7 @@ fn test_env() -> HookEnv {
 /// An empty env (no plugins loaded) — a hook ref resolves to `None` (gate-absent).
 fn empty_env() -> HookEnv {
     HookEnv::new(
+        &crate::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
@@ -188,10 +189,9 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 }
 
 /// Each native `policy:` strategy resolves to a constructed `Policy` whose name round-trips the
-/// native registry name. (No gate; empty hook registry.) Requires the removable `hooks-ranking`
-/// plugin — under `--no-default-features` a non-weighted native policy is a boot error, not a
-/// resolvable policy, so this behavior test only applies when the plugin is compiled in.
-#[cfg(feature = "hooks-ranking")]
+/// native registry name. (No gate; empty hook registry.) Runs in every build: a test build's
+/// stand-in hook rows always link the kernel's ranking double (THE DESIGN l.1443: no
+/// `hooks-ranking` kernel feature; audit Q128 p15#6).
 #[test]
 fn native_policy_resolves_constructed_policy() {
     for (policy, name) in [
@@ -201,7 +201,7 @@ fn native_policy_resolves_constructed_policy() {
         (PoolPolicy::Usage, "usage"),
     ] {
         let cfg = pool_policy(policy);
-        match resolve_policy(&cfg) {
+        match resolve_policy(&crate::preflight::RootInstall::STAND_IN, &cfg) {
             Some(ResolvedPolicy::Policy { policy, .. }) => {
                 assert_eq!(
                     policy.name(),
@@ -311,7 +311,11 @@ fn default_rw_hook_is_not_the_base_ordering() {
 #[test]
 fn weighted_policy_resolves_none_zero_cost() {
     assert!(
-        resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none(),
+        resolve_policy(
+            &crate::preflight::RootInstall::STAND_IN,
+            &pool_policy(PoolPolicy::Weighted)
+        )
+        .is_none(),
         "the weighted native must collapse to the zero-cost default path"
     );
 }
@@ -360,7 +364,11 @@ fn plugin_gate_resolves_constructed_policy() {
 /// The plain default (`policy: weighted`, no hook) stays the zero-cost `None` path.
 #[test]
 fn weighted_default_resolves_none() {
-    assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
+    assert!(resolve_policy(
+        &crate::preflight::RootInstall::STAND_IN,
+        &pool_policy(PoolPolicy::Weighted)
+    )
+    .is_none());
 }
 
 /// `on_error` resolution: a reserved terminal yields an EMPTY chain + that terminal; a gate
@@ -445,7 +453,6 @@ fn on_error_chain_resolves_gates_and_terminals() {
 }
 
 /// `on_error: <ranking strategy>` appends one infallible link and terminates at weighted.
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn on_error_chain_strategy_terminates() {
     let env = test_env();
@@ -540,6 +547,7 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
         let reg = std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty());
         if std::sync::Arc::as_ptr(&reg) as usize == freed {
             let reused = HookEnv::new(
+                &crate::preflight::RootInstall::STAND_IN,
                 reg,
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
             )
@@ -1133,11 +1141,13 @@ fn from_ranked_empty_is_abstain() {
 }
 
 /// A native `policy:` FORCES the payload projections off at resolve (no native policy reads them).
-/// Requires the `hooks-ranking` plugin (a native non-weighted policy exists only when compiled in).
-#[cfg(feature = "hooks-ranking")]
+/// Runs in every build: the stand-in hook rows always link the ranking double (THE DESIGN l.1443).
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
-    match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
+    match resolve_policy(
+        &crate::preflight::RootInstall::STAND_IN,
+        &pool_policy(PoolPolicy::Cheapest),
+    ) {
         Some(ResolvedPolicy::Policy {
             send_prompt,
             send_user,
@@ -2233,8 +2243,10 @@ fn settings_drift_never_compares_a_secret_ref_field() {
 /// the ENGINE is responsible for keeping it off the reactor.
 fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
+        &crate::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
+            crate::preflight::RootInstall::STAND_IN.secret_axis,
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(park);
                 Ok(b"resolved".to_vec())

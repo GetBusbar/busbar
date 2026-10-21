@@ -107,7 +107,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-16", &[
         ("test", "test_flat_fee_charge_and_refund_use_charged_at_window", "the fee is refunded on a non-2xx and kept on a 2xx"),
-        ("test", "a_pre_routing_refusal_leaves_a_prior_charge_intact", "a pre-routing failure refunds nothing extra"),
+        ("test", "the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal", "a pre-routing failure refunds nothing extra"),
         ("test", "crates/busbar/src/root/tests/plane_node_money.rs::a_dispatch_record_is_written_on_the_book_under_its_units_facts", "finish_admitted never refunds an uncharged admit"),
     ]),
     ("PB-18", &[
@@ -157,7 +157,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "a_bedrock_pool_refusal_reads_access_denied", "the pool-ACL 403 arm on bedrock"),
         ("test", "crates/busbar-kernel/src/tests/door_destination_tests.rs::a_reachable_fallback_pool_outside_the_allow_list_is_not_authorized", "fallback_pools_authorized 403"),
         ("test", "test_flat_fee_charge_and_refund_use_charged_at_window", "post-guard exits refund billable on a non-2xx"),
-        ("test", "a_pre_routing_refusal_leaves_a_prior_charge_intact", "a pre-routing failure refunds nothing extra"),
+        ("test", "the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal", "a pre-routing failure refunds nothing extra"),
         ("test", "a_bedrock_non_object_body_is_a_validation_400", "the non-object body 400"),
     ]),
     ("PB-27", &[

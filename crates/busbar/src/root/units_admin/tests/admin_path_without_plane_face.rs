@@ -40,7 +40,7 @@ use super::*;
 #[cfg(feature = "root-admin")]
 const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 
-/// A revocation directory that revokes nobody: the cells here are about the door, not the denylist.
+/// A directory that knows exactly the one credential these cells present, and revokes nobody.
 #[cfg(feature = "root-admin")]
 struct ADirectoryThatMintedIt;
 
@@ -56,11 +56,14 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt 
 /// Closed rather than open on purpose: the open front door grants `Full` to anybody, so a cell that
 /// ran behind it would prove the walk reaches the surface without proving the walk authenticated.
 #[cfg(feature = "root-admin")]
-fn a_door_that_identifies_the_operator() -> crate::root::units_admin::AdminDoorFn {
-    crate::root::units_admin::door_identifying(
-        THE_OPERATORS_CREDENTIAL,
-        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
-    )
+fn identifies_the_operator(candidate: Option<&str>) -> Option<&'static str> {
+    (candidate == Some(THE_OPERATORS_CREDENTIAL))
+        .then_some(crate::root::auth_bindings::ADMIN_PRINCIPAL_ID)
+}
+
+#[cfg(feature = "root-admin")]
+fn a_door_that_identifies_the_operator() -> crate::root::units_admin::Identify {
+    identifies_the_operator
 }
 
 /// What the mounted surface below the wrap saw, and what it answered.
@@ -160,7 +163,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                a_door_that_identifies_the_operator(),
+                crate::root::units_admin::door_of(a_door_that_identifies_the_operator()),
                 held,
                 read,
                 None,
@@ -222,7 +225,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                a_door_that_identifies_the_operator(),
+                crate::root::units_admin::door_of(a_door_that_identifies_the_operator()),
                 held,
                 read,
                 None,
@@ -556,7 +559,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                a_door_that_identifies_the_operator(),
+                crate::root::units_admin::door_of(a_door_that_identifies_the_operator()),
                 held,
                 read,
                 None,
@@ -627,12 +630,13 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 /// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
 ///
 /// The book is the one `root::boot::book` opens over a real App with a governance store, and the
-/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). Each of the
-/// three verbs answers `204` and lands on that store. RED (the defect this
+/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The chain break
+/// and the reseal answer `204` and land on the book's journal and that store; the restore is
+/// refused `503` — the store has no restore operation (row 187). RED (the defect this
 /// replaced): the composition held a refusing stand-in, so each answered the store failure on a
 /// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then restore -> reseal -> replay over the SAME store: a replay slot committed before
-/// the restore survives it and the reseal, and answers its first bytes.
+/// goes red. Then break -> restore -> reseal -> replay over the SAME store: a replay slot committed
+/// before them survives all three, and answers its first bytes.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
@@ -695,23 +699,26 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         },
     );
 
-    for (path, body, verb) in [
-        ("/api/v1/admin/chain-break", "{}", "chain_break"),
+    for (path, body, verb, answered) in [
+        ("/api/v1/admin/chain-break", "{}", "chain_break", 204),
         (
             "/api/v1/admin/store-restore",
             r#"{"backup_ref":"nightly"}"#,
             "store_restore",
+            503,
         ),
         (
             "/api/v1/admin/reseal-epoch-floor",
             "{}",
             "reseal_epoch_floor",
+            204,
         ),
     ] {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
         assert_eq!(
-            status, 204,
-            "{verb} reached the configured store and applied"
+            status, answered,
+            "{verb} reached the configured store: applied, or refused where the store has no such \
+             operation"
         );
     }
 
@@ -719,7 +726,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     assert_eq!(
         store.replay_new_verb(&key).expect("the slot reads"),
         Some(b"first answer".to_vec()),
-        "a committed replay slot survives restore -> reseal"
+        "a committed replay slot survives break -> restore -> reseal"
     );
 }
 
@@ -784,7 +791,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                a_door_that_identifies_the_operator(),
+                crate::root::units_admin::door_of(a_door_that_identifies_the_operator()),
                 held,
                 read,
                 None,
@@ -948,15 +955,15 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
 
 /// A door that identifies ANOTHER principal than the operator: authenticated, and holding no grant.
 #[cfg(feature = "root-admin")]
-fn a_door_that_identifies_a_tenant() -> crate::root::units_admin::AdminDoorFn {
-    crate::root::units_admin::door_identifying(THE_OPERATORS_CREDENTIAL, "a-tenant")
+fn identifies_a_tenant(candidate: Option<&str>) -> Option<&'static str> {
+    (candidate == Some(THE_OPERATORS_CREDENTIAL)).then_some("a-tenant")
 }
 
 /// The node the Q71(2) cells walk: a real surface, a memory-buffered journal, the given door, the
 /// one served plane, and a record sink that keeps what it was handed.
 #[cfg(feature = "root-admin")]
 fn a_q71_node(
-    door: crate::root::units_admin::AdminDoorFn,
+    door: crate::root::units_admin::Identify,
 ) -> (
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
@@ -967,7 +974,7 @@ fn a_q71_node(
 /// [`a_q71_node`], its trust verbs bound to `trust`.
 #[cfg(feature = "root-admin")]
 fn a_q71_node_trusting(
-    door: crate::root::units_admin::AdminDoorFn,
+    door: crate::root::units_admin::Identify,
     trust: crate::root::units_admin::TrustDesk,
 ) -> (
     axum::Router,
@@ -997,7 +1004,11 @@ fn a_q71_node_trusting(
         1 << 20,
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch, door, held, read, None,
+                dispatch,
+                crate::root::units_admin::door_of(door),
+                held,
+                read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -1501,7 +1512,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         );
     }
 
-    let (tenants_node, tenants_kept) = a_q71_node(a_door_that_identifies_a_tenant());
+    let (tenants_node, tenants_kept) = a_q71_node(identifies_a_tenant);
     for (method, path, body) in the_q71_verbs() {
         let needed = if method == "GET" { "read-only" } else { "full" };
         assert_eq!(

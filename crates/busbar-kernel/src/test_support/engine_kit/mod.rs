@@ -32,7 +32,7 @@ use crate::config::groups::GroupCfg;
 use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
 use crate::governance::{DerivedUsage, NewKeySpec};
-use crate::plane::PlaneAdmission;
+use crate::plane_driver::claims::PlaneAdmission;
 use crate::plane_driver::slots::PlaneSlots;
 use crate::plane_host::{EngineHost, LiveHostFactory};
 use crate::store::BreakerState;
@@ -180,8 +180,8 @@ pub trait GovKit: Any + Send + Sync {
     ) -> Result<DerivedUsage, String>;
 }
 
-/// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter, the
-/// stdio session and the subscription streams read through, so a test can swap a second App in
+/// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter, a
+/// line-framed session and the subscription streams read through, so a test can swap a second App in
 /// mid-session exactly as a config apply does. `Any` so it upcasts to the type-erased
 /// `Arc<dyn Any + Send + Sync>` a neutral request context carries the live engine as.
 pub trait EngineHandle: Any + Send + Sync {
@@ -189,7 +189,7 @@ pub trait EngineHandle: Any + Send + Sync {
     /// slot-read paths see a swap that lands after admission).
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost>;
     /// A factory minting a fresh host over the handle per call — the shape a per-frame transport
-    /// (stdio) takes.
+    /// (one host per line-framed request) takes.
     fn live_host_factory(self: Arc<Self>) -> LiveHostFactory;
     /// The current snapshot.
     fn load(&self) -> Arc<dyn EngineApp>;
@@ -229,7 +229,7 @@ pub trait EngineApp: PlaneSlots + Any + Send + Sync {
 
 /// THE TEST-APP BUILDER, object-safe: every engine-side fixture verb a plane's tests drove on the
 /// concrete fixture, as a `&mut self` setter (chaining sugar is on [`TestAppKitExt`]). A
-/// [`TestAppSeam`], so a plane's own test-kit extension (its `.mcp(cfg)`-style builders over the
+/// [`TestAppSeam`], so a plane's own test-kit extension (its section-config builders over the
 /// scratch/finalizer seam) applies to it unchanged.
 pub trait TestAppKit: TestAppSeam {
     /// Attach a governance registry (keys, budgets, metering) to the built App.
@@ -259,7 +259,7 @@ pub trait TestAppKit: TestAppSeam {
 }
 
 /// CHAINING SUGAR over [`TestAppKit`] for the boxed builder, so a test keeps the fluent
-/// `test_app().mcp(&cfg).governance(gov).build()` shape.
+/// `test_app().<plane section>(&cfg).governance(gov).build()` shape.
 pub trait TestAppKitExt: Sized {
     /// Chaining twin of [`TestAppKit::set_governance`].
     fn governance(self, gov: Arc<dyn GovKit>) -> Self;
@@ -371,10 +371,6 @@ impl TestAppSeam for Box<dyn TestAppKit> {
 pub trait EngineTestKit: Send + Sync {
     /// Install the engine's metrics recorder with a test-length retention window (idempotent).
     fn metrics_init(&self);
-    /// Link the operator credential's test registry row (`door`, the memory-ABI door of the auth
-    /// plugin the test binary links for it) onto the engine's auth axis — see
-    /// [`crate::test_support::install_operator_auth_row`]. The first install stands.
-    fn install_operator_auth_row(&self, door: crate::test_support::AuthDoor);
     /// A fresh test-App builder.
     fn new_app(&self) -> Box<dyn TestAppKit>;
     /// A governance registry over `store`, with an optional operator admin token and an optional

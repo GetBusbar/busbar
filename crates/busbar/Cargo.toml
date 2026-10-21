@@ -335,7 +335,7 @@ auth-oauth = ["dep:busbar-auth-oauth"]
 # inbound capability, so `GET /api/v1/admin/info` `build.auth_modules` lists it after 1.5.5's
 # `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
-hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -344,14 +344,14 @@ loom-model = ["busbar-kernel/loom-model"]
 # (src/linked_gen.rs) reads the three tables below and writes `$OUT_DIR/linked.rs`, which main.rs
 # includes: `extern crate <crate> as _;` for every row whose cargo feature is ENABLED, `LINKED` — one
 # table per registration axis over each linked crate's `linked` entry module (the contract
-# PLANE_DECLARATION joined kernel-side to its kernel-typed PLANE_HOOKS, protocol declarations,
+# PLANE_DECLARATION joined kernel-side to its kernel-typed PLANE_HOOKS,
 # arrivals, diagnostics, installers …) — a `linked_*` cfg per root-bound seam an enabled entry drives,
 # and the `ROOT_UNITS` table of each enabled root module's `ROOT_UNIT`. `src/root/linked.rs` folds
 # them into the kernel's registration seams, axis by axis, in table order — the same path an entry
 # adapted from a plugin dropped into `plugins/` feeds.
 #
-# THE ORDER IS THE REGISTRATION ORDER on every axis (protocols, planes, diagnostics, WS arrivals, the
-# root-bound seams): appending a row keeps every existing protocol's index; inserting one renumbers
+# THE ORDER IS THE REGISTRATION ORDER on every axis (planes, diagnostics, WS arrivals, the
+# root-bound seams): appending a row keeps every existing row's index; inserting one renumbers
 # them. `crates/busbar/tests/composition_root_names_no_linked_plugin.rs` refuses a `main.rs` that
 # names any crate or root module listed here.
 [package.metadata.busbar.linked]
@@ -392,11 +392,9 @@ plane-streaming = "busbar-plane-streaming"
 plane-a2a-door = "busbar-plane-a2a"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
-# kernel-side), `protocols`, `body-ingress`, `protocol-seams`, `diagnostics`,
+# kernel-side), `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`.
-# `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
-# `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
@@ -431,10 +429,7 @@ transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 transport-webrtc = "transport transport-door"
 plane-decisions = "plane-door"
-# The fallback plane's door row also fills the protocol axis with the plane's own dialect
-# declarations (its entry's `PROTOCOLS`, contract data; ARCHITECT 2026-10-16 ruling 3): the
-# kernel's registry is seeded from the plane, and names none.
-plane-llm-door = "plane-door protocols"
+plane-llm-door = "plane-door"
 plane-mcp-door = "plane-door"
 plane-streaming = "plane-door"
 plane-a2a-door = "plane-door"
@@ -576,9 +571,8 @@ tokio-rustls = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http = { workspace = true }
-# The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
-# `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
-# is `#[async_trait]`, so its test impl needs the macro.
+# The root's tests implement `#[async_trait]` traits (`root/tests/serve_hook_seats.rs`), so their
+# test impls need the macro.
 async-trait = { workspace = true }
 # The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
 # whatever plane features the build enables.
@@ -601,6 +595,10 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-suppo
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
 # loader's fake-call store harness and oracle-cache locator are `test-support` only.
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
+# THE PINNED DOOR ROOT CELLS' CONNECTOR BUILD (`process::build`, the connector's `test-support`
+# bridge to `build_with_secrets`): the door cells compiled into the bin's tests call it until their
+# pin moves (FINAL-REPIN).
+busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
@@ -732,7 +730,7 @@ required-features = ["auth-admin-tokens"]
 # THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each
 # entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the
 # render to paste.
-# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.
+# build.rs emits it as `LEGACY_ROWS`, which the root lends to the kernel as `config::Legacy`.
 "export_module_streams" = "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
 "export_modules" = "prometheus | request-log-webhook | request-log-file | otlp"
 "export_trace_instance" = "traces"

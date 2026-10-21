@@ -20,6 +20,7 @@
 //! are one cohesive unit — they all rewrite the same section, in sequence.
 
 use super::migrate::{one_line, take, take_mapping, Taken};
+use super::Legacy;
 use busbar_contract::abi::export::ExportStream;
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
@@ -29,8 +30,9 @@ use serde_yaml::{Mapping, Value};
 /// read off the root legacy table's `export_type_keys` row (BUSBAR-1.6.0.md §2: a migration for a
 /// plugin that may not be in the build lives there, frozen 1.5.5 text; the kernel names no export
 /// instance). Shared with the migrator tests so the goldens cannot drift from the rewrite.
-pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static str)> {
-    super::legacy::text("export_type_keys")
+pub(crate) fn export_type_keys(legacy: Legacy) -> Vec<(&'static str, &'static str, &'static str)> {
+    legacy
+        .text("export_type_keys")
         .split(" | ")
         .filter_map(|row| {
             let mut field = row.split(':');
@@ -42,8 +44,9 @@ pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static st
 /// The streams each 1.5.x export module carried — a FROZEN fact about the documents this pass
 /// rewrites (the root legacy table's `export_module_streams` row, `module:stream` per module): the
 /// first-party sink on the export axis that now carries each declares the same streams.
-fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
-    super::legacy::text("export_module_streams")
+fn released_module_streams(legacy: Legacy) -> Vec<(&'static str, Vec<ExportStream>)> {
+    legacy
+        .text("export_module_streams")
         .split(" | ")
         .filter_map(|row| {
             let (module, streams) = row.split_once(':')?;
@@ -86,11 +89,15 @@ pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
 /// 1.5.3: rewrite the TYPE-KEYED `export:` block into the NAMED-DEFINITION map
 /// (`<name>: { module, settings }`). SHAPE-CONVERGENT and IDEMPOTENT: an entry that already names a
 /// `module:` is ALREADY an instance and is left untouched, so a second run is a no-op.
-pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_export_named_map(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    legacy: Legacy,
+) {
     let Some(Value::Mapping(export)) = root.get(Value::from(Kind::Export.root())).cloned() else {
         return;
     };
-    let type_keys = export_type_keys();
+    let type_keys = export_type_keys(legacy);
     // Split: the retired TYPE keys to rewrite vs everything else (already-named instances) to keep.
     let mut kept = Mapping::new();
     let mut to_rewrite: Vec<(String, Value)> = Vec::new();
@@ -159,6 +166,7 @@ pub(super) fn migrate_export_projection(
     root: &mut Mapping,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
+    legacy: Legacy,
 ) {
     let Some(Value::Mapping(mut export)) = root.get(Value::from(Kind::Export.root())).cloned()
     else {
@@ -176,7 +184,7 @@ pub(super) fn migrate_export_projection(
             }
             Taken::Absent => {}
             Taken::Got(mut inst) => {
-                migrate_one_export_projection(&name, &mut inst, changes, todos);
+                migrate_one_export_projection(&name, &mut inst, changes, todos, legacy);
                 out.insert(key.clone(), Value::Mapping(inst));
             }
         }
@@ -191,6 +199,7 @@ fn migrate_one_export_projection(
     inst: &mut Mapping,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
+    legacy: Legacy,
 ) {
     let ctx = format!("export.{name}");
     // ALREADY DECLARED: leave it. The only thing to say is whether it names the retired `audit`.
@@ -215,7 +224,7 @@ fn migrate_one_export_projection(
         ));
         return;
     };
-    let released = released_module_streams();
+    let released = released_module_streams(legacy);
     let released = released.iter().find(|(m, _)| *m == module);
     let Some(streams) = released.map(|(_, s)| s.as_slice()) else {
         todos.push(format!(
@@ -247,7 +256,11 @@ fn migrate_one_export_projection(
 /// `root.remove` always removes the key, so without this arm a malformed block vanished from
 /// the migrated document with no `changes` entry at all, which is exactly the "silently lost operator
 /// config" shape `migrate_auth` refuses.
-pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_observability_block(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    legacy: Legacy,
+) {
     let removed = root.remove(Value::from("observability"));
     let Some(Value::Mapping(mut obs)) = removed else {
         if let Some(other) = removed {
@@ -259,8 +272,8 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
         }
         return;
     };
-    let key = super::legacy::text("observability_trace_key");
-    let key_1_4 = super::legacy::text("observability_trace_key_1_4");
+    let key = legacy.text("observability_trace_key");
+    let key_1_4 = legacy.text("observability_trace_key_1_4");
     let url = [key, key_1_4]
         .into_iter()
         .filter(|k| !k.is_empty())
@@ -270,8 +283,8 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
     let url = url.filter(|v| !v.is_null());
     if let Some(url) = url {
         let export = export_map_mut(root);
-        let module = super::legacy::text("export_trace_module");
-        let name = uniq_export_name(export, super::legacy::text("export_trace_instance"));
+        let module = legacy.text("export_trace_module");
+        let name = uniq_export_name(export, legacy.text("export_trace_instance"));
         let mut settings = Mapping::new();
         settings.insert("url".into(), url);
         let mut inst = Mapping::new();

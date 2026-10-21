@@ -26,7 +26,12 @@ fn private_addresses_are_blocked_by_default() {
     assert!(AdvancedCfg::default().block_private_addresses);
     let omitted: AdvancedCfg = serde_yaml::from_str("rate_sweep_interval: 256\n").expect("parses");
     assert!(omitted.block_private_addresses);
-    let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
+    let cfg = resolve(
+        &base_deploy(),
+        &HashMap::new(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("resolve");
     let d = cfg.destinations();
     assert!(d.block_private_addresses);
     assert!(d.allow.is_empty() && d.legacy_allow.is_empty() && d.blocked.is_empty());
@@ -45,7 +50,8 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
         allow_metadata_hosts: vec!["169.254.169.254".into()],
         allow_all_metadata: true,
     });
-    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    let cfg =
+        resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in()).expect("resolve");
     assert_eq!(
         cfg.destinations(),
         Destinations {

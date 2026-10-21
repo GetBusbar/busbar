@@ -4840,6 +4840,8 @@ fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
         Some(self_serve_signer()),
     )
     .unwrap();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let sub = "oidc:alice";
     let now = 1_700_000_000u64;
 
@@ -6178,19 +6180,4 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
              id's reads must run the same steps"
         );
     }
-}
-
-/// ONE RESERVED LIST: the prefixes governance mints its buckets under (a minted key's `vk_`, a
-/// group's `group:`) are exactly the ones the identity crate reserves, which the auth walk and the
-/// key synthesis both read.
-#[test]
-fn the_reserved_id_list_is_the_one_governance_mints_under() {
-    let mut minted = [
-        crate::governance::VK_ID_PREFIX,
-        crate::cost::GROUP_BUCKET_PREFIX,
-    ];
-    let mut reserved = busbar_kernel_identity::principal::RESERVED_ID_PREFIXES;
-    minted.sort_unstable();
-    reserved.sort_unstable();
-    assert_eq!(minted, reserved);
 }

@@ -19,7 +19,11 @@ fn resolve_errs(yaml: &str) -> Vec<String> {
     crate::export::scrape::tests::installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
+    let _ = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     errors
 }
 
@@ -377,7 +381,11 @@ fn projection_union_is_the_compute_gate() {
     )
     .unwrap();
     let mut errors = Vec::new();
-    let cfg = crate::config::resolve_export(&defs, &mut errors);
+    let cfg = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:#?}");
     let union = cfg.projection_union();
     assert!(union.wants_stream(ExportStream::Logs));
@@ -497,7 +505,8 @@ store:
     // CONTROL: without the export block the same config resolves — so the refusal below is the
     // export stream's, not some other defect in the fixture.
     let control: crate::config::DeployCfg = serde_yaml::from_str(base).expect("fixture parses");
-    if let Err(errors) = crate::config::resolve(&control, &defs) {
+    if let Err(errors) = crate::config::resolve(&control, &defs, crate::config::Legacy::stand_in())
+    {
         panic!("the fixture without `export:` must resolve; errors were: {errors:#?}");
     }
     let yaml = format!(
@@ -505,7 +514,7 @@ store:
          settings:\n      url: https://siem.example.com/l\n"
     );
     let deploy: crate::config::DeployCfg = serde_yaml::from_str(&yaml).expect("fixture parses");
-    let errors = crate::config::resolve(&deploy, &defs)
+    let errors = crate::config::resolve(&deploy, &defs, crate::config::Legacy::stand_in())
         .expect_err("a producerless stream must make the whole config fail to resolve");
     assert_error_mentions(&errors, &["prompts", "NO PRODUCER", "later release"]);
 }

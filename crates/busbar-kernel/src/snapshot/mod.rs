@@ -357,23 +357,6 @@ pub fn refresh_scrape_gauges(app: &App) {
     }
 }
 
-/// THE HOST'S OWN COUNTERS onto the recorder at scrape time: what the composition root installed
-/// ([`crate::preflight::RootInstall::host_counters`]), none when it installed nothing.
-pub fn refresh_host_counters() {
-    if let Some(read) = crate::preflight::root_rows().host_counters {
-        emit_host_counters(&read());
-    }
-}
-
-/// Each of `counters` as one described counter family, set to its cumulative value: the host
-/// holds the count, so a scrape states it ([`metrics::Counter::absolute`]) and never adds to it.
-pub(crate) fn emit_host_counters(counters: &[(&'static str, &'static str, u64)]) {
-    for &(name, help, value) in counters {
-        metrics::describe_counter!(name, help);
-        metrics::counter!(name).absolute(value);
-    }
-}
-
 /// `busbar_lane_state` for ONE breaker cell, read from that cell alone — never folded with any
 /// other pool's cell on the same lane:
 /// * `1` — the cell is HalfOpen: a recovery probe is in flight on THIS cell right now.
@@ -548,10 +531,13 @@ pub fn enabled() -> bool {
 #[path = "../observe.rs"]
 pub mod observe;
 
-pub fn configure(buffer: Option<Duration>) {
+///
+/// `legacy` is the root legacy table the composition root lent: a recorder that will not install
+/// logs its frozen 1.5.5 line (`snapshot_recorder_failed`) off it.
+pub fn configure(buffer: Option<Duration>, legacy: crate::config::Legacy) {
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
-        std::thread::spawn(move || init_with(buffer));
+        std::thread::spawn(move || init_with(buffer, legacy));
     }
 }
 
@@ -817,8 +803,9 @@ pub const POOL_QUEUED: &str = "busbar_pool_queued";
 ///
 /// NOT called unless `observability.metrics` is present. With no recorder installed, every emission
 /// macro and every bank helper is a no-op against the default recorder, so an operator who did not
-/// opt in records nothing and retains nothing.
-pub fn init_with(buffer: Duration) {
+/// opt in records nothing and retains nothing. A recorder that will not install logs the root
+/// legacy table's frozen 1.5.5 line, read off the table the composition root lent (`legacy`).
+pub fn init_with(buffer: Duration, legacy: crate::config::Legacy) {
     // Retention is split across a few rolling buckets so quantiles degrade smoothly as the window
     // slides, instead of the whole window vanishing at once on rollover. The buckets SUM to
     // `buffer`, which is the operator's declared retention.
@@ -835,13 +822,17 @@ pub fn init_with(buffer: Duration) {
     HANDLE.get_or_init(|| {
         let source =
             SOURCE.get_or_init(|| source::Source::new(bucket, SUMMARY_BUCKETS, GAUGE_IDLE_TIMEOUT));
-        install(source, bucket)
+        install(source, bucket, legacy)
     });
 }
 
 /// Make `source` (drained every `bucket`) the process recorder: on success register the taxonomy's
 /// HELP text, pre-touch the one unlabeled 1.5.5 series and start the maintenance drain.
-fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static source::Source> {
+fn install(
+    source: &'static source::Source,
+    bucket: Duration,
+    legacy: crate::config::Legacy,
+) -> Option<&'static source::Source> {
     match metrics::set_global_recorder(source) {
         Ok(()) => {
             describe();
@@ -868,7 +859,7 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
                 "{}: {e}",
-                crate::config::legacy::text("snapshot_recorder_failed")
+                legacy.text("snapshot_recorder_failed")
             );
             None
         }
@@ -903,7 +894,7 @@ pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 #[cfg(any(test, feature = "test-support"))]
 pub fn init() {
     let _ = ENABLED.set(true);
-    init_with(Duration::from_secs(3600));
+    init_with(Duration::from_secs(3600), crate::config::Legacy::stand_in());
 }
 
 // ── SCRAPE-INDEPENDENT MAINTENANCE ───────────────────────────────────────────────────────────────

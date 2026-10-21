@@ -6,9 +6,10 @@
 //! DESTINATION GUARD: one destination check, in the connector, for every outbound connection).
 //! [`dest_judge`] builds the deployment's one destination judge ([`GuardJudge`]: the one
 //! [`Guard`], the system resolver, each egress class's scheme rule); the root hands that same judge
-//! to [`build`] (the connector's dial judge, [`judge`]) and to the kernel (`dest.judge` and the
-//! kernel's own clients), so every dial of every kind is judged by one guard. The root hands in
-//! the deployment's values and holds what it returns; nothing here keeps a second.
+//! to [`build_with_secrets`] (the connector's dial judge, [`judge`]) and to the kernel
+//! (`dest.judge` and the kernel's own clients), so every dial of every kind is judged by one guard.
+//! The root hands in the deployment's values and holds what it returns; nothing here keeps a
+//! second.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -30,8 +31,9 @@ use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 /// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), dialling a framed
 /// connection through the proxy the process's environment names ([`crate::proxy`]), securing a
 /// connection with the default outbound trust where its target asks for it, waking a plugin's
-/// ticket through `wake`, and keeping a dialled connection whose exchange finished whole under the
-/// deployment's `pool` posture ([`crate::pool`]). The trust is built before `entries` is asked for,
+/// ticket through `wake`, keeping a dialled connection whose exchange finished whole under the
+/// deployment's `pool` posture ([`crate::pool`]), and resolving a program's environment references
+/// through `spawn_secrets` at config time ([`crate::spawn_env`]). The trust is built before `entries` is asked for,
 /// so a boot that cannot secure a connection loads no transport door.
 ///
 /// # Errors
@@ -39,12 +41,13 @@ use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 /// The default outbound trust will not build, a proxy variable is set and does not parse,
 /// `entries` refuses, two entries claim one scheme, or
 /// an entry states no claim.
-pub fn build(
+pub fn build_with_secrets(
     entries: impl FnOnce() -> Result<Vec<Entry>, String>,
     dest: Arc<dyn DestJudge>,
     own_ports: &[u16],
     wake: WakeTicket,
     pool: PoolPosture,
+    spawn_secrets: crate::spawn_env::SpawnSecretFn,
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
@@ -55,8 +58,40 @@ pub fn build(
     Ok(Arc::new(
         Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake)
             .pooling(pool)
-            .proxying(proxy),
+            .proxying(proxy)
+            .resolving_spawn_secrets(spawn_secrets),
     ))
+}
+
+// FINAL-REPIN: delete when the pinned door root cells call build_with_secrets
+/// THE PINNED DOOR ROOT CELLS' NAME for [`build_with_secrets`], kept until their pin moves: the
+/// same connector, its program environment references resolved through the linked secret plugins
+/// at config time, as the root's boot resolves them. Never in a shipped build (`test-support`).
+///
+/// # Errors
+///
+/// As [`build_with_secrets`].
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn build(
+    entries: impl FnOnce() -> Result<Vec<Entry>, String>,
+    dest: Arc<dyn DestJudge>,
+    own_ports: &[u16],
+    wake: WakeTicket,
+    pool: PoolPosture,
+) -> Result<Arc<Connector>, String> {
+    build_with_secrets(entries, dest, own_ports, wake, pool, lent_no_secrets)
+}
+
+// FINAL-REPIN: delete with `build`.
+/// The resolver [`build`] hands its connector: the bridge is lent no install record, so no linked
+/// secret plugin answers and every program environment reference is refused (fail-closed).
+#[cfg(feature = "test-support")]
+fn lent_no_secrets(
+    secret: &busbar_kernel::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    busbar_kernel::config::secret::resolve_linked_string_at_config(None, secret, scope)
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.

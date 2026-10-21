@@ -17,6 +17,7 @@
 //! it cost, and this seam carries a price.
 
 use crate::billing::RawTierRates;
+use crate::governance::GovState;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
 ///
@@ -77,15 +78,6 @@ pub trait RateApply: Send + Sync {
     fn rates_withdrawn(&self) {}
 }
 
-/// THE PROCESS-WIDE rate holder, installed once by the composition root ([`install_rate_apply`]).
-static APPLY: std::sync::OnceLock<&'static dyn RateApply> = std::sync::OnceLock::new();
-
-/// Install the process rate holder — the composition root's one write, at boot, before the first
-/// resolution it wants to hear about. Idempotent by `OnceLock`: a second install is a no-op.
-pub fn install_rate_apply(holder: &'static dyn RateApply) {
-    let _ = APPLY.set(holder);
-}
-
 /// **THE READ-SIDE TWIN**: a holder that can DATE a price — for an instant, the `effective_from`
 /// of the dated rate-card entry in force at it.
 ///
@@ -116,52 +108,69 @@ pub trait RateEpoch: Send + Sync {
     }
 }
 
-/// THE PROCESS-WIDE rate DATER, installed once by the composition root ([`install_rate_epoch`]).
-static EPOCH: std::sync::OnceLock<&'static dyn RateEpoch> = std::sync::OnceLock::new();
-
-/// Install the process rate dater — the composition root's one write, at boot, beside
-/// [`install_rate_apply`]. Idempotent by `OnceLock`: a second install is a no-op.
-pub fn install_rate_epoch(holder: &'static dyn RateEpoch) {
-    let _ = EPOCH.set(holder);
+/// THE RATE HOLDER `gov` answers to: the one the composition root lent on its install record
+/// ([`crate::preflight::RootInstall::rate_apply`]), carried by the governance book the build made
+/// from that record ([`GovState::rate_apply`]) — never a static of this module. `None`: the record
+/// lent no holder.
+#[must_use]
+pub fn holder(gov: &GovState) -> Option<&'static dyn RateApply> {
+    gov.rate_apply()
 }
 
-/// The `effective_from` of the entry in force at `at_ms`.
+/// THE RATE DATER `gov` answers to, beside [`holder`]: the one on the install record
+/// ([`crate::preflight::RootInstall::rate_epoch`]) the governance book carries
+/// ([`GovState::rate_epoch`]). `None`: the record lent no dater.
+#[must_use]
+pub fn dater(gov: &GovState) -> Option<&'static dyn RateEpoch> {
+    gov.rate_epoch()
+}
+
+/// The `effective_from` of the entry in force at `at_ms`, by `gov`'s dater.
 ///
-/// `0` in a build that installed no holder — the honest answer for a binary with no root ledger in
-/// it, and the same value the opening entry carries, so a cell dated by it resolves to the card the
+/// `0` when the book carries no dater — the honest answer for a binary with no root ledger in it,
+/// and the same value the opening entry carries, so a cell dated by it resolves to the card the
 /// deployment opened with rather than to whatever is newest.
 #[must_use]
-pub fn effective_from_at(at_ms: u64) -> u64 {
-    EPOCH.get().map_or(0, |h| h.effective_from_at(at_ms))
+pub fn effective_from_at(gov: &GovState, at_ms: u64) -> u64 {
+    dater(gov).map_or(0, |h| h.effective_from_at(at_ms))
 }
 
-/// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].
+/// `gov`'s dater's dated history, if it holds one — see [`RateEpoch::history`].
 #[must_use]
-pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
-    EPOCH.get().and_then(|holder| holder.history())
+pub fn dated_history(
+    gov: &GovState,
+) -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
+    dater(gov).and_then(|holder| holder.history())
 }
 
-/// Stage the rates a config change is about to commit — see [`RateApply::rates_staged`]. `Ok` in
-/// a build that installed no holder: there is no journal to refuse.
+/// Stage the rates a config change is about to commit with the holder of the governance book the
+/// change was built with — see [`RateApply::rates_staged`]. `Ok` when there is no book or it
+/// carries no holder: there is no journal to refuse.
 ///
 /// # Errors
 ///
-/// The installed holder could not make the rates durable; the config change must be refused.
-pub fn rates_staged(rates: &RawRates<'_>) -> Result<(), String> {
-    APPLY.get().map_or(Ok(()), |h| h.rates_staged(rates))
+/// The holder could not make the rates durable; the config change must be refused.
+pub fn rates_staged(gov: Option<&GovState>, rates: &RawRates<'_>) -> Result<(), String> {
+    gov.and_then(holder)
+        .map_or(Ok(()), |h| h.rates_staged(rates))
 }
 
 /// The staged rates' config change did not commit — see [`RateApply::rates_withdrawn`].
-pub fn rates_withdrawn() {
-    APPLY.get().into_iter().for_each(|h| h.rates_withdrawn());
+pub fn rates_withdrawn(gov: Option<&GovState>) {
+    gov.and_then(holder)
+        .into_iter()
+        .for_each(|h| h.rates_withdrawn());
 }
 
-/// Raise the seam: the configured rates are now `rates`.
+/// Raise the seam: the configured rates are now `rates`, to the holder of the governance book the
+/// change was built with.
 ///
-/// A no-op in a build that installed no holder, which is the honest answer for a binary with no root
-/// ledger in it — not a swap quietly dropped.
-pub fn rates_applied(rates: &RawRates<'_>) {
-    APPLY.get().into_iter().for_each(|h| h.rates_applied(rates));
+/// A no-op when there is no book or it carries no holder, which is the honest answer for a binary
+/// with no root ledger in it — not a swap quietly dropped.
+pub fn rates_applied(gov: Option<&GovState>, rates: &RawRates<'_>) {
+    gov.and_then(holder)
+        .into_iter()
+        .for_each(|h| h.rates_applied(rates));
 }
 
 #[cfg(test)]

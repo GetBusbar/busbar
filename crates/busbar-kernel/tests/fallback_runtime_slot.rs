@@ -13,7 +13,7 @@
 //! the fallback plane's runtime replaced a sibling's own under the sibling's key (merge-group run
 //! 37567965022; fixed in #521 by `plane::fallback_decl`, one read for both).
 //!
-//! #521's regression probe hung on the legacy MCP engine's runtime slot, a crate P3 FLIP-MCP deletes.
+//! #521's regression probe hung on a retired plane engine's runtime slot, a crate a door flip deletes.
 //! The fix is the kernel's, so its probe is the kernel's too, over two neutral planes this file
 //! declares: a sibling whose own runtime is installed in its slot, and a fallback plane whose
 //! `build_runtime` answers a different object. The shape is #521's: one App first (so the sibling is
@@ -23,7 +23,9 @@
 //! where the fallback plane was not registered yet, which this binary guarantees (its one test, and
 //! a kernel whose built-in plane list is empty).
 
-use busbar_kernel::plane::registry::{register_test_plane, PlaneDecl, PlaneDeclaration};
+use busbar_kernel::plane_driver::doors::register_test_plane;
+use busbar_kernel::plane_driver::row::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use busbar_kernel::plane_host::runtime_slot_key;
 use busbar_kernel::test_support::TestApp;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -162,7 +164,7 @@ fn an_app_built_while_a_fallback_plane_registers_keeps_each_planes_own_runtime()
     // The precondition the defect needed: no plane declares itself the fallback yet, so the
     // degrading key names the sibling.
     assert_eq!(
-        busbar_kernel::plane::fallback_key(),
+        busbar_kernel::plane_driver::doors::fallback_key(),
         SIBLING.key,
         "this binary must start with no fallback plane registered, or the probe has no window"
     );

@@ -26,8 +26,8 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
-    state, store, telemetry, tls, transport, trust,
+    observability, operation, plugin_routes, profile, proxy, ratelimit, snapshot, state, store,
+    telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -314,6 +314,7 @@ pub fn load_config_from_disk(
     providers_override: Option<&std::path::Path>,
     safe_mode: bool,
     env_mode: config::EnvSubst,
+    legacy: config::Legacy,
 ) -> Result<LoadedConfig, String> {
     let mut unset_env_vars: Vec<String> = Vec::new();
     // 1.5.3: read + parse config.yaml FIRST — it may name the providers catalog (`providers_file:`).
@@ -331,7 +332,7 @@ pub fn load_config_from_disk(
     // a pile of unknown-field messages - and, critically, so nothing from 1.x can half-parse
     // into 1.5.0 semantics (the `allowed_pools: []` all->none flip, vanished budgets).
     if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&interpolated_config) {
-        let markers = config::migrate::detect_legacy_markers(&doc);
+        let markers = config::migrate::detect_legacy_markers(&doc, legacy);
         if !markers.is_empty() {
             return Err(format!(
                 "config.yaml: {}",
@@ -346,7 +347,7 @@ pub fn load_config_from_disk(
         config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
             format!(
                 "config.yaml: invalid YAML: {}",
-                config::augment_config_error(e)
+                config::augment_config_error(e, legacy)
             )
         })?;
 
@@ -482,7 +483,8 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// previous limits are restored.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
-/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
+/// rate-apply seam ([`crate::rate_apply::rates_applied`], to the holder the build's governance book
+/// carries) is raised HERE, at `keep`, and not
 /// during the build: its holder appends the rates to the dated rate-card history and journals them
 /// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
@@ -501,16 +503,18 @@ pub struct InstalledLimits {
     destinations: config::Destinations,
 }
 
-/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
-/// the config change never committed — the holder is told to withdraw them.
+/// The rates one build staged ([`crate::rate_apply::rates_staged`]) with the holder its governance
+/// book carries (`governance`, the build's own). Dropped while still armed — the config change
+/// never committed — that holder is told to withdraw them.
 struct StagedRates {
     armed: bool,
+    governance: Option<Arc<governance::GovState>>,
 }
 
 impl Drop for StagedRates {
     fn drop(&mut self) {
         if self.armed {
-            crate::rate_apply::rates_withdrawn();
+            crate::rate_apply::rates_withdrawn(self.governance.as_deref());
         }
     }
 }
@@ -551,22 +555,16 @@ impl InstalledLimits {
         guard.commit();
         crate::egress::trust::destinations_applied(&destinations);
         staged.armed = false;
-        crate::rate_apply::rates_applied(&rates.raw());
+        crate::rate_apply::rates_applied(staged.governance.as_deref(), &rates.raw());
     }
 }
 
 /// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
 /// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
 /// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
-/// sealed over, and reads the projection back when the generation is swapped in.
+/// sealed over, and reads the projection back when the generation is swapped in. The root hands it
+/// in on its install record ([`crate::preflight::RootInstall::config_projection`]).
 pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
-
-static CONFIG_PROJECTION: std::sync::OnceLock<ConfigProjection> = std::sync::OnceLock::new();
-
-/// Bind the composition root's [`ConfigProjection`], once, before the first build.
-pub fn set_config_projection(project: ConfigProjection) {
-    let _ = CONFIG_PROJECTION.set(project);
-}
 
 /// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
 /// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
@@ -622,11 +620,17 @@ pub fn build_app_from_config(
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
+    // The root legacy table this configuration was resolved under (`config::resolve_in` was lent
+    // it): every reader below, and the generation built here, reads that table.
+    let legacy = cfg.legacy;
+    // The install record the composition root lent this configuration: every root row and axis the
+    // build reads below is read off it, and the snapshot carries it on (`App::root`).
+    let root = cfg.root;
     // The planes this configuration writes that the process did not open at boot: restart-to-apply,
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
     // The root's projection of this configuration, taken before any part of it is consumed.
-    let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
+    let config_projection = root.config_projection.map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -681,7 +685,7 @@ pub fn build_app_from_config(
         }
         // The root fetches and downloads, through the connector (row 130 E6: the kernel dials
         // nothing); the operator's metadata denylist extends the download's SSRF pre-check.
-        let fetch = crate::preflight::root_rows()
+        let fetch = root
             .plugins_fetch
             .ok_or("plugins.fetch failed:\n  - no composition root installed the plugins fetch")?;
         let outcomes = fetch(&dir, &targets, prior.is_none(), &cfg.blocked_metadata_hosts)
@@ -710,12 +714,14 @@ pub fn build_app_from_config(
     // resolver - and the store open below - both draw on the same validated registry. A non-memory
     // store, an unresolvable secret plugin, or any invalid tarball fails boot here.
     let plugin_registry = Arc::new(plugins_preflight(
+        &root,
         cfg.store.as_ref(),
         cfg.auth.as_ref(),
         &cfg.identity_providers,
         &cfg.hooks,
         &plugins_cfg,
         &cfg.export,
+        legacy,
     )?);
 
     // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
@@ -729,6 +735,7 @@ pub fn build_app_from_config(
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
     // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
     let secret_resolver = Arc::new(build_secret_resolver(
+        root.secret_axis,
         plugin_registry.clone(),
         &cfg.secrets,
     )?);
@@ -930,7 +937,7 @@ pub fn build_app_from_config(
         // literal and not a codec list: a build with the plane that declares them compiled out names
         // only what it actually serves, and a build with a new dialect names it. Empty roster is a
         // real answer.
-        let providers = crate::plane::provider_dialects();
+        let providers = crate::plane_driver::doors::provider_dialects();
         let Some(protocol) = providers
             .iter()
             .copied()
@@ -1110,9 +1117,14 @@ pub fn build_app_from_config(
     // aborts the build rather than silently disabling the admin plane.
     // The operator credential's module is opened once its token has resolved (below, beside the
     // governance credentials it has always been resolved with).
-    let mut admin_modules =
-        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
-            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    let mut admin_modules = crate::auth::AdminAuthChain::build(
+        &auth_cfg,
+        &plugin_registry,
+        &secret_resolver,
+        &root,
+        legacy,
+    )
+    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     // HOSTED-LOGIN methods (1.5.2): resolve every `auth.methods:` entry as a login-capable
     // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
@@ -1189,7 +1201,7 @@ pub fn build_app_from_config(
     // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
     // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
     // registry refuses the build here, naming the rebuild.
-    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
+    let hook_env = hooks::HookEnv::new(&root, plugin_registry.clone(), secret_resolver.clone())?;
 
     // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
@@ -1269,13 +1281,17 @@ pub fn build_app_from_config(
         // material), so the live one stands. REMOVING a declaration therefore still needs a restart
         // — documented, and the narrow case; ROTATING one, the operational path that matters and
         // the one that silently did nothing, now works.
+        //
+        // THE RATE HOLDER AND DATER carry forward with the reused book: the new record's
+        // (`root.rate_apply`, `root.rate_epoch`) are ignored, which is exact while there is one root,
+        // and so one record, per process.
         if let Some(gs) = p.governance.clone() {
             let auth = cfg.auth.as_ref();
             let declares_operator = auth.is_some_and(|a| {
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| crate::config::names_operator(&e.module))
+                    .any(|e| crate::config::names_operator(&e.module, &root, legacy))
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
@@ -1284,7 +1300,7 @@ pub fn build_app_from_config(
                     // Declared with no token ref resolves to `None`: the admin API is credential-less
                     // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
                     Some(
-                        resolve_admin_token(auth, &secret_resolver)
+                        resolve_admin_token(auth, &secret_resolver, &root, legacy)
                             .map_err(|e| format!("{e} (nothing was changed)"))?,
                     )
                 } else {
@@ -1320,7 +1336,10 @@ pub fn build_app_from_config(
         // row, or a store PLUGIN (resolved by alias or canonical name from the validated registry —
         // the engine sees only the returned `dyn Store`, exactly like a compiled-in backend). The
         // validation above refused an absent block.
-        let g = cfg.store.clone().ok_or_else(config::store_required)?;
+        let g = cfg
+            .store
+            .clone()
+            .ok_or_else(|| config::store_required(legacy))?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
         // the RAM store drops on restart. "Configured" = any registration in a plane's declared
         // section OR any plane pool. A bare registration (the common case, no failover pool) is just
@@ -1369,7 +1388,7 @@ pub fn build_app_from_config(
         // in, one path.
         let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
         let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
-        let axis = crate::preflight::root_rows()
+        let axis = root
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
         let opened = axis()
@@ -1381,7 +1400,7 @@ pub fn build_app_from_config(
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<busbar_contract::redacted::Secret<String>> =
-            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
+            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver, &root, legacy)?;
         // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
@@ -1395,7 +1414,9 @@ pub fn build_app_from_config(
             signer,
         ) {
             Ok(gs) => {
-                let gs = Arc::new(gs);
+                // The rate holder and dater the record lends ride the book this build makes, before
+                // anything accrues on it or is hydrated into it.
+                let gs = Arc::new(gs.with_rates(root.rate_apply, root.rate_epoch));
                 // The store's typed records, kept for the kernel's host services (plane records
                 // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
                 if let Some(calls) = store_calls {
@@ -1461,8 +1482,14 @@ pub fn build_app_from_config(
     // The operator credential judges the token this build declares, or — when it declares none —
     // the one the governance state holds (that live credential stands, as it does for the rotation).
     let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
-    admin_modules.operator = open_operator(&plugin_registry, digest, &cfg.identity_providers)
-        .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    admin_modules.operator = open_operator(
+        &plugin_registry,
+        digest,
+        &cfg.identity_providers,
+        &root,
+        legacy,
+    )
+    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     let admin_modules = Arc::new(admin_modules);
 
     // Resolve the global rewrite hooks (prompt: rw gates in global_hooks) into priority-ordered
@@ -1549,7 +1576,7 @@ pub fn build_app_from_config(
     let mut plane_gates = std::collections::BTreeMap::new();
     let mut plane_rewrites = std::collections::BTreeMap::new();
     for (section, defs) in &cfg.plane_defs {
-        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) else {
+        let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(section) else {
             continue;
         };
         let g = defs.container_gates();
@@ -1609,7 +1636,7 @@ pub fn build_app_from_config(
     // paths the router actually has, so a config mutation can SAY so instead of
     // reporting success for a route that will keep 404ing.
     let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
-        crate::export::route_decls(&cfg_export),
+        crate::export::route_decls(root.export_axis, &cfg_export),
     )?);
     // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
     // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
@@ -1636,12 +1663,12 @@ pub fn build_app_from_config(
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
         // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
-        crate::plane::registry::plane_decls()
+        crate::plane_driver::doors::plane_decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
             .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
             .filter_map(|decl| {
-                let ctx = crate::plane::registry::BuildCtx {
+                let ctx = crate::plane_driver::row::BuildCtx {
                     // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
                     // config resolution: the `tools:` container plane's endpoint resource (the SAME
                     // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
@@ -1694,7 +1721,7 @@ pub fn build_app_from_config(
         &ts_pools,
         &ts_by_model,
         |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-        crate::plane::fallback_key(),
+        crate::plane_driver::doors::fallback_key(),
     ));
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
@@ -1741,13 +1768,13 @@ pub fn build_app_from_config(
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
     // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
-    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
+    // come from ONE resolved decl ([`crate::plane_driver::doors::fallback_decl`]): keying off `fallback_key()` would
     // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
     // the runtime read from two registry snapshots could name two different planes — the runtime then
     // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
     // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
     // default — byte-identical to the featureless zero-plane boot.
-    let fallback = crate::plane::fallback_decl();
+    let fallback = crate::plane_driver::doors::fallback_decl();
     let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
     if let Some(f) = fallback.and_then(|d| d.build_runtime) {
         let slot = f(
@@ -1800,7 +1827,7 @@ pub fn build_app_from_config(
                 .endpoint_resources
                 .get(crate::config::plane_sections::EndpointSection::OWNER)
                 .and_then(|slot| {
-                    crate::plane::registry::plane_decl_for_config_section(
+                    crate::plane_driver::doors::plane_decl_for_config_section(
                         crate::config::plane_sections::EndpointSection::OWNER,
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
@@ -1836,6 +1863,7 @@ pub fn build_app_from_config(
 
     let app = App {
         root_rules: std::sync::Arc::clone(rules),
+        legacy,
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
@@ -1865,7 +1893,7 @@ pub fn build_app_from_config(
         // is inserted on every build with that container plane compiled in, so the gate reads the
         // DECL keys (config-conditional), never it.
         plane_breakers: {
-            let planes_configured = crate::plane::registry::plane_decls()
+            let planes_configured = crate::plane_driver::doors::plane_decls()
                 .iter()
                 .any(|d| plane_slots.contains_key(d.key))
                 || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
@@ -1903,7 +1931,7 @@ pub fn build_app_from_config(
             .plane_pools
             .iter()
             .filter_map(|(section, pools)| {
-                crate::plane::registry::plane_decl_for_config_section(section)
+                crate::plane_driver::doors::plane_decl_for_config_section(section)
                     .map(|decl| (decl.key, pools.clone()))
             })
             .collect(),
@@ -1985,8 +2013,8 @@ pub fn build_app_from_config(
                     .iter()
                     .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
                     .collect();
-            crate::plane::registry::build_dispatch(
-                crate::plane::registry::plane_decls(),
+            crate::plane_driver::doors::build_dispatch(
+                crate::plane_driver::doors::plane_decls(),
                 &ref_slots,
                 auth_mw.keys_in_chain,
             )?
@@ -2030,7 +2058,8 @@ pub fn build_app_from_config(
         cost,
         plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
         plugins_cfg,
-        plugin_trust: crate::preflight::root_rows().trust_policy,
+        plugin_trust: root.trust_policy,
+        root,
         // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg
@@ -2076,7 +2105,7 @@ pub fn build_app_from_config(
     // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
     // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
     // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::doors::plane_decls() {
         if let Some(retain) = decl.retain_verify_gates {
             retain(&app);
         }
@@ -2087,13 +2116,18 @@ pub fn build_app_from_config(
     // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
     // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
     // withdraws the staged card.
-    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
+    // Staged with the holder this build's governance book carries (lent on the root's record).
+    let book = app.governance.clone();
+    crate::rate_apply::rates_staged(book.as_deref(), &resolved_rates.raw()).map_err(|why| {
         format!(
             "the rate card could not be made durable, so the configuration change was refused \
              and nothing was changed: {why}"
         )
     })?;
-    let staged = StagedRates { armed: true };
+    let staged = StagedRates {
+        armed: true,
+        governance: book,
+    };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it

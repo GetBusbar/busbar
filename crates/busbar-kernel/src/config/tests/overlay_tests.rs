@@ -95,7 +95,8 @@ fn read_absent_or_corrupt_is_none() {
 fn minimal_cfg() -> RootCfg {
     let deploy: super::super::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    super::super::resolve(&deploy, &HashMap::new()).expect("minimal config resolves")
+    super::super::resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in())
+        .expect("minimal config resolves")
 }
 
 /// merge_into adds overlay hooks to the resolved registry + unions global names; an overlay
@@ -680,7 +681,12 @@ fn clear_root_section_only() {
 #[test]
 fn apply_root_to_deploy_noop_and_active() {
     let mut deploy = minimal_deploy();
-    apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
+    apply_root_to_deploy(
+        &mut deploy,
+        &OverlayDoc::default(),
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     assert_eq!(
         deploy.per_request_fee, 0,
         "no root override → base unchanged"
@@ -689,7 +695,12 @@ fn apply_root_to_deploy_noop_and_active() {
         root: Some(sample_root()),
         ..Default::default()
     };
-    apply_root_to_deploy(&mut deploy, &doc);
+    apply_root_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     assert_eq!(deploy.per_request_fee, 7, "root override applied");
 }
 
@@ -763,7 +774,12 @@ fn plugin_versions_pins_lower_the_floors() {
 #[test]
 fn no_pins_leaves_first_party_floor_none() {
     let mut deploy = minimal_deploy();
-    apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
+    apply_root_to_deploy(
+        &mut deploy,
+        &OverlayDoc::default(),
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     assert!(
         deploy.plugins.first_party_floors.is_empty(),
         "with no pins the automatic first-party floor stands"

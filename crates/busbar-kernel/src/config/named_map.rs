@@ -21,7 +21,7 @@
 //! own richer surface (health/schema/status probes, grant immutability, the configure-ack settings
 //! push), and `store:` is singular — there is no map to name into.
 
-use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
+use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg, Legacy};
 use busbar_contract::plugin::Kind;
 
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
@@ -41,7 +41,7 @@ pub enum NamedMapSection {
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
     /// A PLANE-OWNED named-definition map, carrying the owning plane's declared config-section key
-    /// ([`PlaneDeclaration::config_section`](crate::plane::registry::PlaneDeclaration::config_section)) as OPAQUE
+    /// ([`PlaneDeclaration::config_section`](crate::plane_driver::row::PlaneDeclaration::config_section)) as OPAQUE
     /// DATA. `tools:` (server NAME → `{url, pin, tools_allow, …}`) and `agents:`
     /// (agent NAME → `{url, pin, reverify_ttl, …}`) are its two 1.6.0 instances, each declared by a
     /// different registered plane, and a registered plane declaring a `named_def_list` is another. The
@@ -71,7 +71,7 @@ impl NamedMapSection {
     /// [`busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane::registry::plane_decls() {
+        for decl in crate::plane_driver::doors::plane_decls() {
             if decl.named_def_list.is_some() {
                 out.push(NamedMapSection::Plane(decl.config_section));
             }
@@ -99,7 +99,7 @@ impl NamedMapSection {
     /// Singular human noun for messages and audit resources (`identity-provider:corp-ad`).
     ///
     /// The two 1.5.3-native sections carry their noun as a literal; a PLANE section reads it from the
-    /// owning plane's [`PlaneDeclaration::admin_noun`](crate::plane::registry::PlaneDeclaration::admin_noun) via the
+    /// owning plane's [`PlaneDeclaration::admin_noun`](crate::plane_driver::row::PlaneDeclaration::admin_noun) via the
     /// registry, so core stamps a registered plane's audit/error noun without a hard-coded plane
     /// literal. With the owning plane compiled out (no registered decl) `singular` is never reached —
     /// a definition on an absent plane is refused before any noun is stamped — but it still answers
@@ -109,7 +109,7 @@ impl NamedMapSection {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
             NamedMapSection::Plane(_) => {
-                crate::plane::registry::plane_decl_for_config_section(self.key())
+                crate::plane_driver::doors::plane_decl_for_config_section(self.key())
                     .map(|d| d.admin_noun)
                     .unwrap_or_else(|| self.key())
             }
@@ -211,8 +211,11 @@ impl NamedMapSection {
         deploy: &mut DeployCfg,
         name: &str,
         def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
+        legacy: Legacy,
     ) -> Result<(), String> {
-        self.parse_def(name, def)?.install(deploy, name)
+        self.parse_def(name, def, root, legacy)?
+            .install(deploy, name)
     }
 
     /// THE ONE typed parse of a raw definition document — `deny_unknown_fields`, so a typo'd or
@@ -230,7 +233,17 @@ impl NamedMapSection {
     /// including tokens `config_validate` refuses to boot. So the VALUE-level rules that boot
     /// enforces run here too, through the same functions boot calls — see the `max_admin_scope`
     /// check below ([`parse_ceiling`](crate::config::parse::parse_ceiling)).
-    pub fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
+    ///
+    /// `root` is the install record and `legacy` the root legacy table the composition root lent:
+    /// the operator credential's provider and linked rows `root` lends, and the former names
+    /// `legacy` gives it, are read by the token-placement rule exactly as `resolve` reads them.
+    pub fn parse_def(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
+        legacy: Legacy,
+    ) -> Result<NamedDef, String> {
         match self {
             NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
@@ -248,7 +261,13 @@ impl NamedMapSection {
                     // A MISPLACED SECRET, by the rule `resolve_auth` applies — which only ever sees
                     // providers already REFERENCED from a chain, so a definition written through the
                     // API and not yet referenced slipped past it.
-                    super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
+                    super::validate_token_placement(
+                        name,
+                        cfg.module.trim(),
+                        cfg.token.is_some(),
+                        root,
+                        legacy,
+                    )?;
                     Ok(NamedDef::IdentityProvider(cfg))
                 }),
             NamedMapSection::Export => serde_json::from_value(def.clone())
@@ -265,7 +284,7 @@ impl NamedMapSection {
             //
             // With the owning plane compiled out the section is an unknown key ([`unknown_section`]).
             NamedMapSection::Plane(_) => {
-                if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
+                if crate::plane_driver::doors::plane_decl_for_config_section(self.key()).is_none() {
                     return Err(unknown_section(self.key()));
                 }
                 plane_config_validate(self, name, def)?;
@@ -279,8 +298,14 @@ impl NamedMapSection {
 
     /// `Ok(())` iff `def` parses into this section's typed config — the write-path validation twin of
     /// [`NamedMapSection::parse_def`], which it delegates to so there is only ever one grammar.
-    pub fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
-        self.parse_def(name, def).map(|_| ())
+    pub fn validate_def(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
+        legacy: Legacy,
+    ) -> Result<(), String> {
+        self.parse_def(name, def, root, legacy).map(|_| ())
     }
 
     /// Every OTHER config site that still references `name` BY BARE NAME, as human path strings.
@@ -290,8 +315,14 @@ impl NamedMapSection {
     ///
     /// `export:` names are referenced from nowhere in 1.5.3 (an exporter is a leaf), so it returns
     /// empty — the check is not skipped for it, it simply has nothing to find. A plane section that
-    /// gains its own reference sites will add them here.
-    pub fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
+    /// gains its own reference sites will add them here. An absent `auth.admin_auth:` references the
+    /// operator credential's provider the install record `root` lends, as `resolve` reads it.
+    pub fn referents(
+        self,
+        deploy: &DeployCfg,
+        root: &crate::preflight::RootInstall,
+        name: &str,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         match self {
             NamedMapSection::IdentityProviders => {
@@ -301,7 +332,11 @@ impl NamedMapSection {
                 if auth.chain.iter().any(|n| n == name) {
                     out.push("auth.chain".to_string());
                 }
-                if auth.admin_auth.iter().any(|n| n == name) {
+                let admin_auth = auth
+                    .admin_auth
+                    .clone()
+                    .unwrap_or_else(|| crate::config::default_admin_auth_names(root));
+                if admin_auth.iter().any(|n| n == name) {
                     out.push("auth.admin_auth".to_string());
                 }
                 if auth.role_bindings.contains_key(name) {
@@ -340,7 +375,7 @@ impl NamedMapSection {
 }
 
 /// Validate a named-definition write through the OWNING PLANE's
-/// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
+/// [`config_validate`](crate::plane_driver::row::PlaneDecl::config_validate) seam, resolved by config
 /// section — so core routes a plane-section write to the plane's own validator without naming a
 /// plane-specific validate function — after the kernel's own per-registration judgement
 /// ([`crate::config::plane_sections::validate_plane_entry`]). A section whose plane declares no validator (none of
@@ -351,7 +386,8 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section.key()) else {
+    let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(section.key())
+    else {
         return Ok(());
     };
     // The kernel's own judgement of the definition first, exactly as boot runs it on a section

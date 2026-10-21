@@ -32,9 +32,8 @@
 //!
 //! ## REACHABILITY IS PROVEN, NEVER ASSERTED BY PROSE — and this tree is why
 //!
-//! Three doc comments in this very crate (`main.rs`'s `install()` note, `gauntlet_install.rs`,
-//! `gauntlet_kernel.rs`) describe a function as DORMANT and claim it "registers ZERO planes", while
-//! its body unconditionally flips mcp/a2a/llm/streaming onto the unified kernel loop. And
+//! Three doc comments in this very crate once described a function as DORMANT and claimed it
+//! "registers ZERO planes", while its body unconditionally flipped planes onto a kernel loop. And
 //! `root/vocabulary.rs` is the opposite failure: a module nothing reaches, whose doc reads as live
 //! infrastructure. **A gate that trusts a comment inherits the lie**, so every verdict here is
 //! computed from comment-stripped, test-stripped code and a graph walk from `fn main()`. Nothing in
@@ -52,15 +51,10 @@
 //!   the manifest's own rows. A plane named in a doc comment is not a plane that is served.
 //! * `reachability:unit-path:<plane>` — the plane's LIVE UNIT PATH is CONSTRUCTED IN A FUNCTION
 //!   REACHED FROM `fn main()` (R1, 2026-09-25). A plane's unit path is one of two things, both
-//!   derived, never listed:
-//!   - **the kernel-loop runner registered for its capability key** — the #28 rider: a runner
-//!     handed to `register_gauntlet_runner`/`register_session_runner` (directly, or by the function
-//!     that wraps the call) that arrives at a construction of a type the crate writes `impl … Units
-//!     for` for (`GauntletKernelUnit`, built in `run_gauntlet_via_kernel`/`open_gauntlet_via_kernel`),
-//!     with this plane's key — spelled through its linked crate (`busbar_mcp::PLANE_KEY`), or flipped
-//!     by a fold over `LINKED` whose `linked-axes` row carries the gauntlet axis — routed onto it by a
-//!     non-test line in a function reached from `fn main()` (`gauntlet_install::install()`);
-//!   - **or a `Units` impl its linked entry exports** — a type the entry module (the `linked-entry`
+//!   derived, never listed (the #28 kernel-loop rider, a runner table keyed by capability, is deleted:
+//!   no linked row ever put a plane on it, and the kernel holds no plane-keyed table; status row 82,
+//!   D2):
+//!   - **a `Units` impl its linked entry exports** — a type the entry module (the `linked-entry`
 //!     row's `crate::root::<module>`, else the plugin crate's `linked` module) declares and builds
 //!     in an item its `linked-axes` row puts in the generated table, or one that item reaches.
 //!   - **or, for a DOOR plane, its served door** (ARCHITECT Q-SO10; spec K5: "production
@@ -71,16 +65,15 @@
 //!     served data route). Any one alone is red: a driver with no data route is not a unit path.
 //!
 //!   `root/units_<plane>.rs` IS NOT THE TEST. That module predates the unification; three of the
-//!   four were rustc-dead while the rider served their planes, so a row
+//!   four were rustc-dead while their planes were served elsewhere, so a row
 //!   that asked about the module was asking about the wrong code. A green row still names a
 //!   superseded module beside the live path when one is on disk, so green never reads as a statement
 //!   about it. **A plane with neither is RED** (item 180), however many modules it has.
 //! * `reachability:root-reach:<plane>` — a MODULE `fn main()` reaches, over the module graph,
-//!   routes the plane onto its unit path: it carries a non-test flip of the plane's key, or it is
-//!   the plane's linked entry and declares a `Units` impl. Kept separate from the row above for a
-//!   reason: a flip in a reached module can sit in a function nothing calls, or be flipped onto a
-//!   runner that builds no unit — root-reach PASSES and unit-path FAILS. The two rows together say
-//!   the exact true thing.
+//!   routes the plane onto its unit path: it is the plane's linked entry and declares a `Units`
+//!   impl, or it is the one composition serving the plane's door. Kept separate from the row above
+//!   for a reason: a reached entry can declare a `Units` impl that nothing it exports builds —
+//!   root-reach PASSES and unit-path FAILS. The two rows together say the exact true thing.
 //!
 //! and five rows that keep the gate honest and stop it going stale:
 //!
@@ -260,9 +253,8 @@ struct Plane {
     /// superseded while it is still on disk. Checked for existence, never assumed.
     module: &'static str,
     /// The plugin crate whose row in the manifest's linked table registers this plane (folded by
-    /// `register_planes()` over the generated `LINKED` table). Its crate path is how a flip spells
-    /// this plane's capability key (`busbar_mcp::PLANE_KEY`), and its entry module is where a
-    /// `Units` export is looked for.
+    /// `register_planes()` over the generated `LINKED` table). Its entry module is where a `Units`
+    /// export is looked for, and its door row is read off the same manifest.
     linked_crate: &'static str,
     /// Any one of these, in the body of `plane_claims()`, IS the registration. Each is a type the
     /// root can only name in order to install it.
@@ -709,8 +701,8 @@ fn span_end(lines: &[ScopeLine], start: usize) -> usize {
 }
 
 /// ONE IDENTIFIER ON A LINE, with the one fact about its spelling the call graph resolves by: the
-/// path segment written in front of it (`root::gauntlet_install::install` is `install` qualified by
-/// `gauntlet_install`), or that it is a method (`.drive(`). `end` is the byte offset just past it.
+/// path segment written in front of it (`root::serve::compose_planes` is `compose_planes` qualified
+/// by `serve`), or that it is a method (`.drive(`). `end` is the byte offset just past it.
 struct Token {
     word: String,
     qual: Option<String>,
@@ -881,8 +873,8 @@ impl<'a> Graph<'a> {
 }
 
 /// What the `use` statements of one file import from modules of this crate: `name → the files of
-/// the module it is imported from`. `use crate::root::gauntlet_kernel::{open_gauntlet_via_kernel,
-/// run_gauntlet_via_kernel};` imports both names from `gauntlet_kernel.rs`. A brace list is read
+/// the module it is imported from`. `use crate::root::serve::{compose_planes, door_routes};`
+/// imports both names from `serve.rs`. A brace list is read
 /// whole (nested lists included) — a module name read as an imported item resolves to no item and
 /// draws no edge.
 fn use_imports(f: &Scanned, stems: &BTreeMap<&str, Vec<usize>>) -> BTreeMap<String, Vec<usize>> {
@@ -1282,134 +1274,8 @@ fn is_word_char(c: char) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE LIVE UNIT PATH — the kernel-loop runner registered for a plane's key, or a `Units`
-// impl its linked entry exports
+// THE LIVE UNIT PATH — a `Units` impl a plane's linked entry exports, or its served door
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// The kernel's two runner registrations (`busbar_kernel::plane_host`), each with the
-/// `linked-axes` axis a fold over the linked table flips a plane onto it by. These are the names of
-/// the kernel API a runner is registered THROUGH — the one place this gate names an API rather than
-/// deriving it, exactly as it names the `Units` trait.
-const RUNNER_REGISTRATIONS: &[(&str, &str)] = &[
-    ("register_gauntlet_runner", "gauntlet-one-shot"),
-    ("register_session_runner", "gauntlet-session"),
-];
-
-/// One call into a runner registration, and the `Units` constructions the runner it registers
-/// arrives at over the precise graph.
-struct Registration {
-    rel: String,
-    line: usize,
-    /// The innermost item the call is written in.
-    item: Option<usize>,
-    gated: bool,
-    api: &'static str,
-    axis: &'static str,
-    runner: String,
-    builds: Vec<(String, Site)>,
-}
-
-/// One place a capability key is routed onto a registration: the registration itself when its key
-/// argument names a plane crate, or a call of the function that wraps it
-/// (`flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY)`).
-struct Flip {
-    rel: String,
-    line: usize,
-    file: usize,
-    item: Option<usize>,
-    gated: bool,
-    reg: usize,
-    /// The crate paths the key argument is spelled through (`busbar_mcp` for
-    /// `busbar_mcp::PLANE_KEY`).
-    quals: Vec<String>,
-    /// The key is not spelled at all, and the function the call is written in folds `LINKED`: the
-    /// planes it flips are the linked rows whose axes carry the registration's axis.
-    fold: bool,
-}
-
-/// The text between the parentheses of the call whose name ends at byte `from` of line `li` — across
-/// lines, because this tree writes long argument lists one per line. `None` when no `(` follows.
-fn call_args(lines: &[ScopeLine], li: usize, from: usize) -> Option<String> {
-    let first = &lines[li].counted;
-    let rest = first.get(from..)?.trim_start();
-    if !rest.starts_with('(') {
-        return None;
-    }
-    let mut out = String::new();
-    let mut depth = 0i32;
-    let mut text: Vec<&str> = vec![rest];
-    text.extend(
-        lines
-            .iter()
-            .skip(li + 1)
-            .take(16)
-            .map(|l| l.counted.as_str()),
-    );
-    for chunk in text {
-        for c in chunk.chars() {
-            match c {
-                '(' | '[' | '{' => {
-                    depth += 1;
-                    if depth == 1 && c == '(' {
-                        continue;
-                    }
-                }
-                ')' | ']' | '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(out);
-                    }
-                }
-                _ => {}
-            }
-            out.push(c);
-        }
-        out.push(' ');
-    }
-    None
-}
-
-/// `a, f(b, c), d` → `["a", "f(b, c)", "d"]`.
-fn split_top(args: &str) -> Vec<String> {
-    let mut out = vec![String::new()];
-    let mut depth = 0i32;
-    for c in args.chars() {
-        match c {
-            '(' | '[' | '{' | '<' => depth += 1,
-            ')' | ']' | '}' | '>' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(String::new());
-                continue;
-            }
-            _ => {}
-        }
-        if let Some(last) = out.last_mut() {
-            last.push(c);
-        }
-    }
-    out.into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// The crate paths an expression spells (`busbar_llm::PLANE_DECLARATION.key` → `busbar_llm`).
-fn path_quals(expr: &str) -> Vec<String> {
-    tokens(expr).into_iter().filter_map(|t| t.qual).collect()
-}
-
-/// Every `Units` type declared in the non-test code of `files`.
-fn all_unit_types(files: &[Scanned]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for f in files.iter().filter(|f| !f.whole_file_is_test()) {
-        for t in unit_types(f) {
-            if !out.contains(&t) {
-                out.push(t);
-            }
-        }
-    }
-    out
-}
 
 /// The live `Units` constructions `from` arrives at.
 fn builds_from(
@@ -1425,136 +1291,6 @@ fn builds_from(
         for s in construction_sites(files, items, &closure, t) {
             if s.why == SiteKind::Live {
                 out.push((t.clone(), s));
-            }
-        }
-    }
-    out
-}
-
-/// Every call into a runner registration under the crate's `src/`.
-fn registrations(
-    files: &[Scanned],
-    items: &[Item],
-    graph: &Graph<'_>,
-    units: &[String],
-) -> Vec<Registration> {
-    let mut out = Vec::new();
-    for (fi, f) in files.iter().enumerate() {
-        if f.whole_file_is_test() {
-            continue;
-        }
-        for (li, l) in f.lines.iter().enumerate() {
-            if is_fn_decl(&l.code) {
-                continue;
-            }
-            for t in tokens(&l.counted) {
-                let Some((api, axis)) = RUNNER_REGISTRATIONS
-                    .iter()
-                    .find(|(a, _)| *a == t.word && !t.method)
-                else {
-                    continue;
-                };
-                let Some(args) = call_args(&f.lines, li, t.end) else {
-                    continue;
-                };
-                let parts = split_top(&args);
-                let Some(runner) = parts.last().filter(|_| parts.len() >= 2) else {
-                    continue;
-                };
-                let runner_items: Vec<usize> = tokens(runner)
-                    .last()
-                    .map(|rt| graph.resolve(fi, rt))
-                    .unwrap_or_default();
-                out.push(Registration {
-                    rel: f.rel.clone(),
-                    line: l.no,
-                    item: enclosing_item(items, fi, li),
-                    gated: f.is_test_line(li),
-                    api,
-                    axis,
-                    runner: runner.clone(),
-                    builds: builds_from(files, items, graph, units, runner_items),
-                });
-            }
-        }
-    }
-    out
-}
-
-/// Every place a key is routed onto a registration — the registration itself when its key names a
-/// crate path, else each call of the function it is written in.
-fn flips(files: &[Scanned], items: &[Item], graph: &Graph<'_>, regs: &[Registration]) -> Vec<Flip> {
-    let mut out = Vec::new();
-    for (ri, r) in regs.iter().enumerate() {
-        // The registration's own key argument, re-read from its line.
-        let Some((fi, f)) = files.iter().enumerate().find(|(_, f)| f.rel == r.rel) else {
-            continue;
-        };
-        let Some(li) = f.lines.iter().position(|l| l.no == r.line) else {
-            continue;
-        };
-        let key = tokens(&f.lines[li].counted)
-            .into_iter()
-            .find(|t| t.word == r.api)
-            .and_then(|t| call_args(&f.lines, li, t.end))
-            .and_then(|a| split_top(&a).into_iter().next())
-            .unwrap_or_default();
-        let quals = path_quals(&key);
-        if !quals.is_empty() {
-            out.push(Flip {
-                rel: r.rel.clone(),
-                line: r.line,
-                file: fi,
-                item: r.item,
-                gated: r.gated,
-                reg: ri,
-                quals,
-                fold: false,
-            });
-            continue;
-        }
-        let Some(wrapper) = r.item else {
-            continue;
-        };
-        let wname = items[wrapper].name.as_str();
-        for (fi2, f2) in files.iter().enumerate() {
-            if f2.whole_file_is_test() || !f2.lines.iter().any(|l| word_hit(&l.counted, wname)) {
-                continue;
-            }
-            for (li2, l2) in f2.lines.iter().enumerate() {
-                if is_fn_decl(&l2.code) {
-                    continue;
-                }
-                for t in tokens(&l2.counted) {
-                    if t.word != wname || !graph.resolve(fi2, &t).contains(&wrapper) {
-                        continue;
-                    }
-                    let Some(args) = call_args(&f2.lines, li2, t.end) else {
-                        continue;
-                    };
-                    let first = split_top(&args).into_iter().next().unwrap_or_default();
-                    let quals = path_quals(&first);
-                    let item = enclosing_item(items, fi2, li2);
-                    let fold = quals.is_empty()
-                        && item.is_some_and(|h| {
-                            f2.lines[items[h].start..=items[h].end]
-                                .iter()
-                                .any(|l| !l.gated && word_hit(&l.counted, "LINKED"))
-                        });
-                    if quals.is_empty() && !fold {
-                        continue;
-                    }
-                    out.push(Flip {
-                        rel: f2.rel.clone(),
-                        line: l2.no,
-                        file: fi2,
-                        item,
-                        gated: f2.is_test_line(li2),
-                        reg: ri,
-                        quals,
-                        fold,
-                    });
-                }
             }
         }
     }
@@ -1772,8 +1508,6 @@ fn manifest_table(manifest: &str, table: &str) -> Vec<(String, String)> {
 /// `crates/busbar/src/linked_gen.rs` generates `LINKED` from (the plane axis is its two items).
 const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("plane", &["PLANE_DECLARATION", "PLANE_HOOKS"]),
-    ("protocols", &["PROTOCOLS"]),
-    ("body-ingress", &["BODY_INGRESS"]),
     ("protocol-seams", &["install_protocol_seams"]),
     ("diagnostics", &["DIAGNOSTICS"]),
     ("on-host", &["on_host"]),
@@ -2184,12 +1918,6 @@ impl Gate for ReachabilityGate {
         let all_items = items(&files);
         let graph = Graph::new(&files, &all_items);
         let reached = reached_items(&files, &graph, &generated);
-        // THE LIVE UNIT PATH'S RAW FACTS, once for every plane: every `Units` type the crate
-        // declares, every runner registration and the constructions its runner arrives at, and
-        // every place a key is routed onto one.
-        let units = all_unit_types(&files);
-        let regs = registrations(&files, &all_items, &graph, &units);
-        let flips = flips(&files, &all_items, &graph, &regs);
         // THE DOOR PLANES' ONE COMPOSITION AND SERVE PATH (Q-SO10), once for every plane.
         let door = door_serve(&files, &all_items, &reached);
         // `register_planes()` folds the generated `LINKED` table — the one write into the plane axis.
@@ -2272,37 +2000,14 @@ impl Gate for ReachabilityGate {
 
             // 2. THE UNIT PATH — THE LIVE ONE (R1, 2026-09-25).
             //
-            // A plane's unit path is the kernel-loop runner registered for its capability key —
-            // `GauntletKernelUnit`, built in `run_gauntlet_via_kernel`/`open_gauntlet_via_kernel` and
-            // flipped per key by `gauntlet_install::install()` from `fn main()` (the #28 rider) — or a
-            // `Units` impl its linked entry exports. `root/units_<plane>.rs` is not the test: it
-            // predates the unification, and three of the four were rustc-dead while the rider served
-            // their planes. Every link is read off CONSTRUCTION SITES and the precise graph
-            // — never off simple names — and an absent unit path is still a finding (item 180).
-            let ident = p.linked_crate.replace('-', "_");
+            // A plane's unit path is a `Units` impl its linked entry exports, or its served door.
+            // (The #28 kernel-loop rider is deleted with its per-capability-keyed runner table,
+            // status row 82, D2: no linked row ever put a plane on it.) `root/units_<plane>.rs` is
+            // not the test: it predates the unification. Every link is read off CONSTRUCTION SITES
+            // and the precise graph — never off simple names — and an absent unit path is still a
+            // finding (item 180).
             let axes = axes_of(&manifest, p.linked_crate);
             let export = linked_export(cx, &manifest, &files, &all_items, &graph, p.linked_crate);
-            // The key is spelled through the plane's linked crate (`busbar_mcp::PLANE_KEY`), or
-            // through its entry module when that module is in the root
-            // (`plane_decisions::PLANE_DECLARATION.key`).
-            let spells_key = |q: &String| *q == ident || export.in_root.as_ref() == Some(q);
-            let mine: Vec<&Flip> = flips
-                .iter()
-                .filter(|f| {
-                    f.quals.iter().any(spells_key)
-                        || (f.fold && axes.iter().any(|a| a == regs[f.reg].axis))
-                })
-                .collect();
-            let flip_live = |f: &Flip| {
-                let r = &regs[f.reg];
-                !f.gated
-                    && !r.gated
-                    && f.item.is_some_and(|i| reached.contains(&i))
-                    && !r.builds.is_empty()
-            };
-            let item_name = |i: Option<usize>| {
-                i.map_or_else(|| "(no item)".to_string(), |i| all_items[i].name.clone())
-            };
             let describe_build = |(t, s): &(String, Site)| {
                 format!(
                     "`{t}` at {}:{} (in `{}`)",
@@ -2311,29 +2016,7 @@ impl Gate for ReachabilityGate {
                     s.item.as_deref().unwrap_or("?")
                 )
             };
-            let mut live_paths: Vec<String> = mine
-                .iter()
-                .filter(|f| flip_live(f))
-                .map(|f| {
-                    let r = &regs[f.reg];
-                    format!(
-                        "the kernel-loop runner `{}` ({} at {}:{}) builds {}, and this plane's key \
-                         is flipped onto it at {}:{} (in `{}`, reached from fn main())",
-                        r.runner,
-                        r.api,
-                        r.rel,
-                        r.line,
-                        r.builds
-                            .iter()
-                            .map(describe_build)
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        f.rel,
-                        f.line,
-                        item_name(f.item)
-                    )
-                })
-                .collect();
+            let mut live_paths: Vec<String> = Vec::new();
             if !export.builds.is_empty() {
                 live_paths.push(format!(
                     "its linked entry `{}` exports {} through {:?}",
@@ -2347,36 +2030,6 @@ impl Gate for ReachabilityGate {
                     export.exported
                 ));
             }
-            let rider_why = if mine.is_empty() {
-                format!(
-                    "no non-test line routes a `{ident}::…` key into {} (directly, or through the \
-                     function that calls one), and no fold over `LINKED` flips it by a `linked-axes` \
-                     axis",
-                    RUNNER_REGISTRATIONS
-                        .iter()
-                        .map(|(a, _)| format!("`{a}`"))
-                        .collect::<Vec<_>>()
-                        .join("/")
-                )
-            } else {
-                mine.iter()
-                    .map(|f| {
-                        let r = &regs[f.reg];
-                        let why = if f.gated || r.gated {
-                            "test scope".to_string()
-                        } else if !f.item.is_some_and(|i| reached.contains(&i)) {
-                            format!(
-                                "`{}` is reached by nothing from fn main()",
-                                item_name(f.item)
-                            )
-                        } else {
-                            format!("its runner `{}` builds no `Units` type", r.runner)
-                        };
-                        format!("flip at {}:{} [{why}]", f.rel, f.line)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
             let export_why = if !export.exists {
                 format!("`{}` is not in the tree", export.rel)
             } else if export.units.is_empty() {
@@ -2414,9 +2067,8 @@ impl Gate for ReachabilityGate {
             }
             let unit_path = if live_paths.is_empty() {
                 Err(format!(
-                    "NO LIVE UNIT PATH: roster plane `{}` has no kernel-loop runner registered for its \
-                     capability key, no `Units` impl its linked entry exports and no served door, so \
-                     nothing `fn main()` reaches drives its ten steps. Rider: {rider_why}. Linked \
+                    "NO LIVE UNIT PATH: roster plane `{}` has no `Units` impl its linked entry exports \
+                     and no served door, so nothing `fn main()` reaches drives its ten steps. Linked \
                      entry: {export_why}. Door: {door_why}. Give it a unit path, or declare it in \
                      {DECLARATIONS} with the reason and the switch. The evidence is written up in \
                      {EVIDENCE}.",
@@ -2443,20 +2095,9 @@ impl Gate for ReachabilityGate {
 
             // 3. ROOT REACH — the MODULE that routes the plane onto its unit path, from `fn main()`,
             // over the module graph. Kept apart from the row above for the reason it always was:
-            // the module can be reached while nothing in it drives a unit (a flip in a function
-            // nothing calls, a runner that builds no `Units` type), and the two rows together say
-            // the exact true thing.
-            let mut reach_hits: Vec<String> = mine
-                .iter()
-                .filter(|f| !f.gated && mods.contains(&files[f.file].stem))
-                .map(|f| {
-                    format!(
-                        "`{}` routes this plane's key onto a kernel-loop runner ({}:{}) and is \
-                         reached from {MAIN_RS}",
-                        f.rel, f.rel, f.line
-                    )
-                })
-                .collect();
+            // the entry can be reached while nothing it exports drives a unit, and the two rows
+            // together say the exact true thing.
+            let mut reach_hits: Vec<String> = Vec::new();
             let entry_reached = match &export.in_root {
                 Some(stem) => mods.contains(stem),
                 None => linked_rows.iter().any(|(_, k)| k == p.linked_crate),
@@ -2472,9 +2113,8 @@ impl Gate for ReachabilityGate {
             }
             let root_reach = if reach_hits.is_empty() {
                 Err(format!(
-                    "NO UNIT PATH REACHED: no module a chain from {MAIN_RS} arrives at routes plane \
-                     `{}`'s capability key onto a kernel-loop runner, its linked entry exports no \
-                     `Units` impl, and no served door carries it. Rider: {rider_why}. Linked entry: \
+                    "NO UNIT PATH REACHED: plane `{}`'s linked entry exports no `Units` impl a \
+                     chain from {MAIN_RS} arrives at, and no served door carries it. Linked entry: \
                      {export_why}. Door: {door_why}.",
                     p.key
                 ))
@@ -2739,10 +2379,9 @@ impl Gate for ReachabilityGate {
         // stops every RED below from being a gate that is simply red about everything.
         //
         // THE REAL RED-BEFORE-GREEN PROOF IS NOT HERE — it is `cargo xtask gate reachability` over
-        // this repository, where the gate reds on the decisions plane (no runner flipped for its key,
-        // a linked entry that exports no unit) and on `money_book.rs`/`vocabulary.rs`, and passes
-        // the four planes the rider serves. The fixtures exist so the rules can be proven RED-able
-        // hermetically and cheaply; the tree is what proves they are about something.
+        // this repository, where every roster plane is served through its door. The fixtures exist so
+        // the rules can be proven RED-able hermetically and cheaply; the tree is what proves they are
+        // about something.
         const FIX_RED: &str = "xtask/fixtures/reachability";
         const FIX_GREEN: &str = "xtask/fixtures/reachability-green";
         const FIX_EMPTY: &str = "xtask/fixtures/reachability-empty";
@@ -2764,7 +2403,7 @@ impl Gate for ReachabilityGate {
                 cx,
                 self,
                 format!(
-                    "`{}` with no runner flipped for its key and no linked Units export reds its unit-path row",
+                    "`{}` with no linked Units export and no served door reds its unit-path row",
                     p.key
                 ),
                 &[&row_unit_path(p.key)],
@@ -2775,7 +2414,7 @@ impl Gate for ReachabilityGate {
                 cx,
                 self,
                 format!(
-                    "`{}` routed onto no runner by any module fn main() reaches reds its reach row",
+                    "`{}` routed onto no unit path by any module fn main() reaches reds its reach row",
                     p.key
                 ),
                 &[&row_root_reach(p.key)],
@@ -2784,114 +2423,69 @@ impl Gate for ReachabilityGate {
             ));
         }
 
-        // ── THE LIVE UNIT PATH: each link of the rider, and the linked export, planted away ─────────
+        // ── THE LIVE UNIT PATH: each link of the linked export and the door, planted away ───────────
         //
         // Every case below is the GREEN fixture — where all five planes have a live unit path — with
         // ONE link broken, so the transition is the plant's.
 
-        // A PLANE WHOSE KEY IS NEVER FLIPPED. The runner is registered and builds its unit; the
-        // install just never routes this plane's key onto it.
+        // A PLANE WHOSE LINKED ENTRY IS GONE. Nothing exports a unit for it and no door serves it.
         report.push(red_over(
             self,
             cx,
             FIX_GREEN,
-            "a plane whose key is never flipped reds its unit-path and root-reach rows",
+            "a plane whose linked entry is gone reds its unit-path and root-reach rows",
             &[row_unit_path("a2a"), row_root_reach("a2a")],
             {
                 let mut ov = Overlay::new();
-                ov.set(INSTALL_RS, FIXTURE_GREEN_INSTALL.replace(A2A_FLIP_LINE, ""));
+                ov.remove(A2A_ENTRY_RS);
                 ov
             },
-            "no non-test line routes a `busbar_plane_a2a::…` key",
+            "is not in the tree",
         ));
-        // A PLANE WITH NEITHER A RIDER NOR A UNITS EXPORT — the real tree's decisions plane: a linked
-        // entry that is declaration only.
+        // A PLANE WITH NEITHER A UNITS EXPORT NOR A SERVED DOOR — the real tree's decisions plane
+        // before its door: a linked entry that is declaration only.
         report.push(red_over(
             self,
             cx,
             FIX_GREEN,
-            "a plane with neither a rider nor a Units export reds its unit-path and root-reach rows",
+            "a plane with neither a Units export nor a served door reds its unit-path and root-reach rows",
             &[row_unit_path("decision"), row_root_reach("decision")],
             decision_without_unit_path(),
             "declares no `impl … Units for`",
         ));
-        // THE FLIP IS TEST SCOPE. A flip only a test performs is no flip in the shipped binary.
+        // A PLUGIN ENTRY WHOSE TYPE IS NO `Units` IMPL: the unit is built and exported, and it is
+        // not a unit.
         report.push(red_over(
             self,
             cx,
             FIX_GREEN,
-            "a key flipped only under #[cfg(test)] reds its unit-path and root-reach rows",
-            &[row_unit_path("a2a"), row_root_reach("a2a")],
+            "a plugin entry whose built type is no Units impl reds its unit-path and root-reach rows",
+            &[row_unit_path("llm"), row_root_reach("llm")],
             {
                 let mut ov = Overlay::new();
                 ov.set(
-                    INSTALL_RS,
-                    FIXTURE_GREEN_INSTALL
-                        .replace(A2A_FLIP_LINE, &format!("    #[cfg(test)]\n{A2A_FLIP_LINE}")),
-                );
-                ov
-            },
-            "test scope",
-        ));
-        // THE RUNNER BUILDS NO UNIT. The key is flipped, the module is reached, and the runner the
-        // key is flipped onto constructs no `Units` type — so the unit-path row reds while the
-        // root-reach row (module level) stays green; the unit test below holds the green half.
-        report.push(red_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "a key flipped onto a runner that builds no Units type reds its unit-path row",
-            &[row_unit_path("llm")],
-            runner_builds_no_unit(),
-            "builds no `Units` type",
-        ));
-        // THE INSTALL IS NEVER CALLED. Every flip is written, in a module no chain reaches.
-        report.push(red_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "flips in a module fn main() never reaches red the unit-path and root-reach rows",
-            &[row_unit_path("mcp"), row_root_reach("mcp")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(MAIN_RS, FIXTURE_GREEN_MAIN.replace(INSTALL_CALL_LINE, ""));
-                ov
-            },
-            "is reached by nothing from fn main()",
-        ));
-        // THE SIMPLE-NAME COLLISION, PROVEN NOT TO CREDIT A UNIT PATH. The flips move into a
-        // function called `answer` that nothing calls — while `main.rs` calls five OTHER functions
-        // called `answer`. The graph this gate used to read keyed on simple names and called that
-        // function reached; the precise graph does not.
-        report.push(red_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "flips in a function nothing calls, whose NAME collides with a reached one, red the unit-path row",
-            &[row_unit_path("mcp")],
-            flips_in_a_colliding_uncalled_fn(),
-            "`answer` is reached by nothing from fn main()",
-        ));
-        // A KEY SPELLED THROUGH THE PLANE'S IN-ROOT ENTRY MODULE is this plane's key: the decision
-        // plane with no Units export, flipped onto the runner by `plane_decisions::PLANE_DECLARATION.key`.
-        report.push(green_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "a plane flipped by the key its in-root linked entry declares is green",
-            evidenced({
-                let mut ov = decision_without_unit_path();
-                ov.set(
-                    INSTALL_RS,
-                    FIXTURE_GREEN_INSTALL.replace(
-                        A2A_FLIP_LINE,
-                        &format!(
-                            "{A2A_FLIP_LINE}    flip_one_shot_to_kernel(crate::root::plane_decisions::PLANE_DECLARATION.key);\n"
-                        ),
+                    LLM_ENTRY_RS,
+                    FIXTURE_GREEN_LLM_ENTRY.replace(
+                        "impl busbar_kernel::teller::Units for LlmLinkedUnit {",
+                        "impl LlmLinkedUnit {",
                     ),
                 );
                 ov
-            }),
+            },
+            "declares no `impl … Units for`",
+        ));
+        // THE PLANTED UNREACHABLE ROW: the entry is reached and declares its `Units` impl, and the
+        // only function building it is one nothing the generated table names reaches — so the
+        // unit-path row reds while the root-reach row (module level) stays green; the unit test
+        // below holds the green half.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plugin entry building its Units impl in nothing it exports reds its unit-path row",
+            &[row_unit_path("mcp")],
+            mcp_entry_building_nothing_it_exports(),
+            "builds none of them",
         ));
         // A UNITS IMPL THE ENTRY DECLARES BUT DOES NOT EXPORT. The type is there; nothing the
         // generated table names builds it.
@@ -2914,7 +2508,7 @@ impl Gate for ReachabilityGate {
             },
             "builds none of them",
         ));
-        // A DOOR PLANE (ARCHITECT Q-SO10; spec K5): the decisions plane with no rider and no Units
+        // A DOOR PLANE (ARCHITECT Q-SO10; spec K5): the decisions plane with no Units
         // export, its unit path the one composition's driver AND that driver driven AND its door
         // row. Green with all three; each one missing reds both rows.
         report.push(green_over(
@@ -2970,50 +2564,13 @@ impl Gate for ReachabilityGate {
             decision_door(true, true, true),
             "spec K5 composes the door planes in ONE",
         ));
-        // A PLUGIN CRATE'S OWN ENTRY MODULE, both ways: mcp's flip removed, and its `linked`
-        // module exporting a Units impl — built in an exported item (green), or not (red).
-        report.push(green_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "a plane served by a Units impl its plugin crate's linked entry exports is green",
-            evidenced(mcp_by_linked_export(true)),
-        ));
-        report.push(red_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "the same plugin entry building its Units impl in nothing it exports reds its unit-path row",
-            &[row_unit_path("mcp")],
-            mcp_by_linked_export(false),
-            "builds none of them",
-        ));
-        // THE FOLD (K2d's shape): the install folds the linked table and flips each row whose
-        // `linked-axes` carry a gauntlet axis. Green when every plane's row carries its axis; the
-        // plane whose row does not is red.
-        report.push(green_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "flips folded over the linked table by gauntlet axis are green",
-            evidenced(folded_install(true)),
-        ));
-        report.push(red_over(
-            self,
-            cx,
-            FIX_GREEN,
-            "a plane whose linked-axes row carries no gauntlet axis is not flipped by the fold",
-            &[row_unit_path("a2a"), row_root_reach("a2a")],
-            folded_install(false),
-            "no fold over `LINKED` flips it",
-        ));
         // AN ABSENT `root/units_<plane>.rs` IS NOT THE TEST. The superseded module deleted, the
         // live unit path untouched: the whole gate stays green.
         report.push(green_over(
             self,
             cx,
             FIX_GREEN,
-            "a plane with no root/units_<plane>.rs and a live rider is green",
+            "a plane with no root/units_<plane>.rs and a live linked export is green",
             evidenced({
                 let mut ov = Overlay::new();
                 ov.remove("crates/busbar/src/root/units_mcp.rs");
@@ -3405,23 +2962,24 @@ const FIXTURE_LINKED_MANIFEST: &str =
 const FIXTURE_GREEN_MAIN: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/main.rs");
 
-/// The green fixture's rider, runner and decision entry, verbatim (the planted variants edit a copy).
-const INSTALL_RS: &str = "crates/busbar/src/root/gauntlet_install.rs";
-const KERNEL_RS: &str = "crates/busbar/src/root/gauntlet_kernel.rs";
+/// The green fixture's linked entries, verbatim (the planted variants edit a copy).
+// qa-names: crates/busbar-plane-llm/src/linked.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the plane's linked entry it carries; the real tree's plane is a door plane with no such entry module
+const LLM_ENTRY_RS: &str = "crates/busbar-plane-llm/src/linked.rs";
+// qa-names: crates/busbar-plane-mcp/src/linked.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the plane's linked entry it carries; the real tree's plane is a door plane with no such entry module
+const MCP_ENTRY_RS: &str = "crates/busbar-plane-mcp/src/linked.rs";
+// qa-names: crates/busbar-plane-a2a/src/linked.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the plane's linked entry it carries; the real tree's plane is a door plane with no such entry module
+const A2A_ENTRY_RS: &str = "crates/busbar-plane-a2a/src/linked.rs";
 // qa-names: crates/busbar/src/root/plane_decisions.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the decision entry it carries; the real tree has no such file since FLIP-DECISIONS served the decisions plane through its door
 const DECISION_ENTRY_RS: &str = "crates/busbar/src/root/plane_decisions.rs";
-const FIXTURE_GREEN_INSTALL: &str =
-    include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_install.rs");
-const FIXTURE_GREEN_KERNEL: &str =
-    include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_kernel.rs");
+const FIXTURE_GREEN_LLM_ENTRY: &str =
+    include_str!("../../fixtures/reachability-green/crates/busbar-plane-llm/src/linked.rs");
 const FIXTURE_GREEN_DECISION: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
-const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_a2a::PLANE_KEY);\n";
-const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_mcp::PLANE_KEY);\n";
-const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";
+/// The green fixture's `main.rs` line the planted variants insert their calls after.
+const REGISTER_CALL_LINE: &str = "    register_planes();\n";
 
 /// The decisions plane's entry as it is on the real tree: a declaration and hooks, no `Units` impl —
-/// and no key flipped onto a runner either. Neither kind of unit path.
+/// and no door either. Neither kind of unit path.
 fn decision_without_unit_path() -> Overlay {
     let mut ov = Overlay::new();
     ov.set(
@@ -3433,7 +2991,7 @@ fn decision_without_unit_path() -> Overlay {
 
 const SERVE_RS: &str = "crates/busbar/src/root/serve.rs";
 
-/// The decisions plane as a DOOR plane: no rider and no `Units` export ([`decision_without_unit_path`]),
+/// The decisions plane as a DOOR plane: no `Units` export ([`decision_without_unit_path`]),
 /// and a `root/serve.rs` that `fn main()` reaches, whose `compose_planes` builds a `PlaneDriver`.
 /// `door_row`: the plane's `linked-axes` row carries `plane-door`. `driven`: a reached `serve` in the
 /// same module runs a unit through the driver. `twice`: a second reached function also builds one.
@@ -3472,7 +3030,7 @@ fn decision_door(door_row: bool, driven: bool, twice: bool) -> Overlay {
     ov.set(SERVE_RS, serve);
     ov.set(
         MAIN_RS,
-        FIXTURE_GREEN_MAIN.replace(INSTALL_CALL_LINE, &format!("{INSTALL_CALL_LINE}{calls}")),
+        FIXTURE_GREEN_MAIN.replace(REGISTER_CALL_LINE, &format!("{REGISTER_CALL_LINE}{calls}")),
     );
     ov
 }
@@ -3522,9 +3080,9 @@ fn door_shaped_decision(door_row: bool) -> Overlay {
     ov.set(
         MAIN_RS,
         FIXTURE_GREEN_MAIN.replace(
-            INSTALL_CALL_LINE,
+            REGISTER_CALL_LINE,
             &format!(
-                "{INSTALL_CALL_LINE}    let planes = root::serve::compose_planes();\n    let _ = \
+                "{REGISTER_CALL_LINE}    let planes = root::serve::compose_planes();\n    let _ = \
                  root::serve::serve(&planes);\n    let _ = root::plane_decisions::PLANE_HOOKS;\n"
             ),
         ),
@@ -3538,84 +3096,18 @@ fn door_shaped_decision(door_row: bool) -> Overlay {
     ov
 }
 
-/// The runner the keys are flipped onto, with its type no longer a `Units` impl.
-fn runner_builds_no_unit() -> Overlay {
+/// mcp's linked entry with its `Units` impl built only in a function nothing exported calls: the
+/// entry is reached (through the generated table) and declares the impl, and no exported item
+/// builds it.
+fn mcp_entry_building_nothing_it_exports() -> Overlay {
     let mut ov = Overlay::new();
     ov.set(
-        KERNEL_RS,
-        FIXTURE_GREEN_KERNEL.replace(
-            "impl busbar_kernel::teller::Units for GauntletKernelUnit {",
-            "impl GauntletKernelUnit {",
-        ),
+        MCP_ENTRY_RS,
+        "pub struct McpLinkedUnit {\n    n: u64,\n}\n\n\
+         impl busbar_kernel::teller::Units for McpLinkedUnit {\n    fn drive(&self) -> u64 {\n        self.n\n    }\n}\n\n\
+         fn serve_mcp() -> u64 {\n    let unit = McpLinkedUnit { n: 1 };\n    unit.drive()\n}\n\n\
+         pub const PLANE_DECLARATION: &str = \"mcp\";\n\npub const PLANE_HOOKS: u64 = 0;\n",
     );
-    ov
-}
-
-/// `install()` emptied, and the flips moved into a function called `answer` that nothing calls —
-/// the name `main.rs` reaches five times over in the `units_*` modules.
-fn flips_in_a_colliding_uncalled_fn() -> Overlay {
-    let mut ov = Overlay::new();
-    ov.set(
-        INSTALL_RS,
-        FIXTURE_GREEN_INSTALL.replace(
-            "pub fn install() {\n",
-            "pub fn install() {}\n\npub fn answer() {\n",
-        ),
-    );
-    ov
-}
-
-/// mcp's flip removed, and `crates/busbar-plane-mcp/src/linked.rs` exporting a `Units` impl — built in its
-/// `PLANE_HOOKS` (on mcp's plane axis) when `built`, in a function nothing exported calls otherwise.
-fn mcp_by_linked_export(built: bool) -> Overlay {
-    let hooks = if built {
-        "pub const PLANE_HOOKS: fn() -> u64 = serve_mcp;\n"
-    } else {
-        "pub const PLANE_HOOKS: u64 = 0;\n"
-    };
-    let mut ov = Overlay::new();
-    ov.set(INSTALL_RS, FIXTURE_GREEN_INSTALL.replace(MCP_FLIP_LINE, ""));
-    ov.set(
-        "crates/busbar-plane-mcp/src/linked.rs",
-        format!(
-            "pub struct McpLinkedUnit {{\n    n: u64,\n}}\n\n\
-             impl busbar_kernel::teller::Units for McpLinkedUnit {{\n    fn drive(&self) -> u64 {{\n        self.n\n    }}\n}}\n\n\
-             fn serve_mcp() -> u64 {{\n    let unit = McpLinkedUnit {{ n: 1 }};\n    unit.drive()\n}}\n\n\
-             pub const PLANE_DECLARATION: &str = \"mcp\";\n\n{hooks}"
-        ),
-    );
-    ov
-}
-
-/// K2d's shape: `install()` folds the linked table and flips each row by its gauntlet axis. With
-/// `all`, every rider plane's `linked-axes` row carries its axis; without, the streaming row does not.
-fn folded_install(all: bool) -> Overlay {
-    let install = FIXTURE_GREEN_INSTALL
-        .split("pub fn install() {\n")
-        .next()
-        .unwrap_or_default()
-        .to_string()
-        + "pub fn install() {\n    for row in LINKED {\n        if row.one_shot {\n            \
-           flip_one_shot_to_kernel(row.key);\n        } else {\n            \
-           flip_session_to_kernel(row.key);\n        }\n    }\n}\n";
-    let mut manifest = FIXTURE_LINKED_MANIFEST
-        .replace(
-            "plane-llm = \"plane protocols\"",
-            "plane-llm = \"plane protocols gauntlet-one-shot\"",
-        )
-        .replace(
-            "plane-mcp = \"plane protocols diagnostics\"",
-            "plane-mcp = \"plane protocols diagnostics gauntlet-one-shot\"",
-        );
-    if all {
-        manifest = manifest.replace(
-            "plane-a2a = \"plane diagnostics\"",
-            "plane-a2a = \"plane diagnostics gauntlet-one-shot\"",
-        );
-    }
-    let mut ov = Overlay::new();
-    ov.set(INSTALL_RS, &install);
-    ov.set(CRATE_MANIFEST, &manifest);
     ov
 }
 
@@ -3629,7 +3121,7 @@ fn folded_install(all: bool) -> Overlay {
 /// backward over both controls.
 const FIXTURE_EVIDENCE: &str = "# Reachability evidence (self-test fixture)\n\n\
 ## `crates/busbar/src/root/plane_decisions.rs`\n\n\
-The decision plane's linked entry exports no `Units` impl and no runner is flipped for its key.\n";
+The decision plane's linked entry exports no `Units` impl and no door serves it.\n";
 
 /// The same document with no module written up at all: every module the run cites is owed and
 /// absent.
@@ -3874,7 +3366,7 @@ mod tests {
 
     /// ITEM 180, RE-SCOPED TO THE LIVE PATH: A ROSTER PLANE WITH NO UNIT PATH IS RED ON BOTH ROWS
     /// ABOUT IT, NOT GREEN. The real tree's decisions plane has a linked entry that is declaration
-    /// only and no key flipped onto a runner; both rows must be RED naming that, and the evidence row
+    /// only and no served door; both rows must be RED naming that, and the evidence row
     /// must stay green, because the evidence writes the entry module up.
     #[test]
     fn a_plane_with_no_live_unit_path_reds_both_of_its_rows() {
@@ -3893,40 +3385,34 @@ mod tests {
         );
     }
 
-    /// THE TWO RIDER ROWS SAY DIFFERENT THINGS. A key flipped, in a reached module, onto a runner that
-    /// builds no `Units` type: the unit-path row is RED and the root-reach row (module level) GREEN.
-    /// And the simple-name collision: flips in an uncalled `answer` red unit-path while the module
-    /// stays reached.
+    /// THE TWO ROWS SAY DIFFERENT THINGS. A linked entry reached through the generated table that
+    /// declares its `Units` impl and builds it in nothing it exports: the unit-path row is RED and
+    /// the root-reach row (module level) GREEN.
     #[test]
-    fn unit_path_and_root_reach_split_where_the_module_is_reached_and_no_unit_is_built() {
-        for plant in [runner_builds_no_unit(), flips_in_a_colliding_uncalled_fn()] {
-            let rows = run_green_with(evidenced(plant));
-            let (st, detail) = &rows[&row_unit_path("mcp")];
-            assert!(*st != Status::Pass, "unit-path must be RED: {detail}");
-            let (st, detail) = &rows[&row_root_reach("mcp")];
-            assert!(*st == Status::Pass, "root-reach must stay GREEN: {detail}");
-        }
+    fn unit_path_and_root_reach_split_where_the_entry_is_reached_and_no_unit_is_built() {
+        let rows = run_green_with(evidenced(mcp_entry_building_nothing_it_exports()));
+        let (st, detail) = &rows[&row_unit_path("mcp")];
+        assert!(*st != Status::Pass, "unit-path must be RED: {detail}");
+        let (st, detail) = &rows[&row_root_reach("mcp")];
+        assert!(*st == Status::Pass, "root-reach must stay GREEN: {detail}");
     }
 
     /// The precise graph resolves `stem::name` into that module only, and a bare name through the
     /// file's `use` of it — never by name alone across files.
     #[test]
     fn the_precise_graph_resolves_paths_and_imports_not_names() {
-        let t = tokens("root::gauntlet_install::install(); x.drive(); busbar_mcp::PLANE_KEY");
-        let install = t.iter().find(|t| t.word == "install").expect("install");
-        assert_eq!(install.qual.as_deref(), Some("gauntlet_install"));
+        let t = tokens("root::serve::compose_planes(); x.drive(); busbar_mcp::PLANE_KEY");
+        let compose = t
+            .iter()
+            .find(|t| t.word == "compose_planes")
+            .expect("compose_planes");
+        assert_eq!(compose.qual.as_deref(), Some("serve"));
         assert!(t
             .iter()
             .find(|t| t.word == "drive")
             .is_some_and(|t| t.method));
-        assert_eq!(
-            path_quals("busbar_llm::PLANE_DECLARATION.key"),
-            vec!["busbar_llm"]
-        );
-        assert_eq!(
-            split_top("capability_key, kernel_one_shot"),
-            vec!["capability_key", "kernel_one_shot"]
-        );
+        let key = t.iter().find(|t| t.word == "PLANE_KEY").expect("PLANE_KEY");
+        assert_eq!(key.qual.as_deref(), Some("busbar_mcp"));
         assert_eq!(
             resolve_rel("crates/busbar/../busbar-mcp"),
             "crates/busbar-mcp"

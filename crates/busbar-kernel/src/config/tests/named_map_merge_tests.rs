@@ -55,7 +55,12 @@ fn an_overlay_patch_merges_onto_the_base_entry_it_names() {
         "corp",
         serde_json::json!({ "max_admin_scope": "full" }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
 
     let corp = deploy
         .identity_providers
@@ -85,7 +90,12 @@ fn a_nested_patch_reaches_one_key_of_the_settings_bag() {
         "corp",
         serde_json::json!({ "settings": { "client_id": "rotated" } }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
 
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(
@@ -110,7 +120,12 @@ fn a_null_patch_unsets_a_field_the_base_config_set() {
         "corp",
         serde_json::json!({ "max_admin_scope": null }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
 
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(
@@ -137,7 +152,12 @@ fn a_full_document_for_an_unshadowed_name_lands_exactly_as_it_used_to() {
             "settings": { "issuer": "https://other.example.com" }
         }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
 
     let added = deploy
         .identity_providers
@@ -160,7 +180,12 @@ fn a_patch_with_an_unknown_field_is_refused_and_the_base_entry_survives() {
         "corp",
         serde_json::json!({ "max_admin_scop": "full" }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
 
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(
@@ -184,7 +209,12 @@ fn a_patch_that_breaks_a_value_level_rule_is_refused() {
         "corp",
         serde_json::json!({ "max_admin_scope": "superuser" }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(
+        &mut deploy,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
 
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("read-only"));
@@ -202,10 +232,25 @@ fn replaying_a_patch_is_idempotent() {
         serde_json::json!({ "settings": { "client_id": "rotated" } }),
     );
     let mut once = deploy_with_a_base_provider();
-    apply_named_maps_to_deploy(&mut once, &doc);
+    apply_named_maps_to_deploy(
+        &mut once,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     let mut twice = deploy_with_a_base_provider();
-    apply_named_maps_to_deploy(&mut twice, &doc);
-    apply_named_maps_to_deploy(&mut twice, &doc);
+    apply_named_maps_to_deploy(
+        &mut twice,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
+    apply_named_maps_to_deploy(
+        &mut twice,
+        &doc,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     assert_eq!(
         once.identity_providers.get("corp"),
         twice.identity_providers.get("corp")

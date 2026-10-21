@@ -16,8 +16,9 @@
 
 mod linked;
 
+use busbar_kernel::config::plane_refs::PlaneSections;
+use busbar_kernel::config::plane_refs::RefError;
 use busbar_kernel::config::plane_sections::{config_sections, refuse_cross_plane_reference};
-use busbar_kernel::plane::{PlaneSections, RefError};
 
 /// Register every test-linked plane in the process registry — idempotent (first-wins), so every
 /// test can call it unconditionally regardless of run order.
@@ -35,9 +36,13 @@ fn refusal_for(section: &str, hook: &str) -> String {
     );
     let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(&yaml) {
         Err(e) => vec![e.to_string()],
-        Ok(deploy) => busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
-            .err()
-            .unwrap_or_default(),
+        Ok(deploy) => busbar_kernel::config::resolve(
+            &deploy,
+            &std::collections::HashMap::new(),
+            busbar_kernel::config::Legacy::stand_in(),
+        )
+        .err()
+        .unwrap_or_default(),
     };
     errors
         .into_iter()

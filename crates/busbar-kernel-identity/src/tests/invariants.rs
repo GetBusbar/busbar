@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The crate's structural invariants: what it no longer holds stays gone.
+//! The crate's source invariants: one authenticate path (the kernel's), and nothing installed into
+//! a process-wide static here.
 
 // ---------------------------------------------------------------------------------------------
 // One authenticate path.
@@ -30,10 +31,8 @@ fn is_ident(c: Option<char>) -> bool {
 ///
 /// `Auth::resolve` and its satellites — the new-unit revocation walk, the bounded challenge, the
 /// admin-grant lattice, the browser exchange dispatch — had no production caller, and the root's
-/// `ProductionUnits` only built an `Auth` nobody read. This crate's own chain walk (`AuthChain`, its
-/// module trait and answer, the signed-key verifier seam) followed: only a test door and a test of
-/// the root's bindings ever ran it, while the kernel's walk served every request. A second
-/// authenticate implementation that never runs still ships, and drifts from the one that does.
+/// `ProductionUnits` only built an `Auth` nobody read. A second authenticate implementation that
+/// never runs still ships, and drifts from the one that does.
 #[test]
 fn the_unreached_authenticate_unit_is_gone() {
     const GONE: &[&str] = &[
@@ -45,22 +44,20 @@ fn the_unreached_authenticate_unit_is_gone() {
         "pub mod exchange",
         "Auth::new(",
         "with_auth_chain",
-        "pub mod chain",
-        "pub mod module",
+        // The crate's own chain walk, its key-verifier binding and its module/principal twins of
+        // the contract's: the kernel's chain is the walk that serves, so a second one only drifts.
         "pub struct AuthChain",
+        "fn run_chain_with(",
+        "pub trait KeyVerifier",
+        "pub struct ResolvedKey",
         "pub trait AuthModule",
         "pub enum AuthOutcome",
-        "pub trait KeyVerifier",
-        "pub trait RevocationView",
-        "pub struct ResolvedKey",
-        "fn door_of_chain",
+        "fn id_is_reserved(",
     ];
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     non_test_sources(&crate_dir.join("src"), &mut files);
     files.push(crate_dir.join("../busbar/src/root/kernel.rs"));
-    files.push(crate_dir.join("../busbar/src/root/auth_bindings.rs"));
-    files.push(crate_dir.join("../busbar/src/root/units_admin/mod.rs"));
     files.sort();
 
     let mut hits = Vec::new();
@@ -86,6 +83,49 @@ fn the_unreached_authenticate_unit_is_gone() {
     assert!(
         hits.is_empty(),
         "the unreached authenticate unit is still in non-test source:\n{}",
+        hits.join("\n")
+    );
+}
+
+/// No process-wide static in this crate (BUSBAR-1.6.0.md THE DESIGN §11.11 R6: the kernel holds
+/// exactly two `OnceLock` seams, `oauth_as/seam.rs` and `admin/seam.rs`). The composition root's
+/// linked auth rows each carry a plugin's door function, so a static holding them is a function
+/// pointer seam installed into a kernel crate; the rows and the operator words reach the kernel on
+/// the root's install record instead, and every function here takes what it reads as an argument.
+#[test]
+fn nothing_is_installed_into_a_static_of_this_crate() {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    non_test_sources(&crate_dir.join("src"), &mut files);
+    files.sort();
+    let mut hits = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("source reads");
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            for needle in [
+                "static ",
+                "OnceLock",
+                "OnceCell",
+                "LazyLock",
+                "thread_local!",
+            ] {
+                for (at, _) in code.match_indices(needle) {
+                    // `&'static str` is a lifetime, not an item.
+                    if needle == "static " && code[..at].ends_with('\'') {
+                        continue;
+                    }
+                    if is_ident(code[..at].chars().next_back()) {
+                        continue;
+                    }
+                    hits.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "a process-wide static in busbar-kernel-identity:\n{}",
         hits.join("\n")
     );
 }

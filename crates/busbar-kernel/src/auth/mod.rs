@@ -618,19 +618,22 @@ pub use busbar_kernel_identity::{
 };
 
 /// Open the operator credential from `registry` through this build's auth axis: the row answering
-/// [`crate::config::operator_provider`], opened on its door over the operator token's SHA-256 hex
-/// `digest` (the plaintext never crosses the seam), answering for every provider the effective
-/// `providers` back with its module ([`Operator::backed`]).
+/// the operator credential's provider the install record `root` lends, opened on its door over the
+/// operator token's SHA-256 hex `digest` (the plaintext never crosses the seam), answering for every
+/// provider the effective `providers` back with its module ([`Operator::backed`]), by any name the
+/// root legacy table the composition root lent (`legacy`) gives it.
 pub fn open_operator(
     registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
     digest: Option<String>,
     providers: &crate::config::IdentityProviders,
+    root: &crate::preflight::RootInstall,
+    legacy: crate::config::Legacy,
 ) -> Result<Operator, String> {
-    let op = crate::config::operator_provider();
+    let op = root.operator.provider;
     let axis = crate::preflight::auth_axis(registry.clone());
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    let is_op = |m: &str| crate::config::names_operator(m);
+    let is_op = |m: &str| crate::config::names_operator(m, root, legacy);
     // The operator row's carriers, read from its Statement whether or not a token opens it: the
     // admin lines are stripped and read where the style says, never where the kernel says.
     let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
@@ -686,11 +689,13 @@ impl AdminAuthChain {
         cfg: &AuthCfg,
         registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
+        root: &crate::preflight::RootInstall,
+        legacy: crate::config::Legacy,
     ) -> Result<Self, String> {
         let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
-        let op = crate::config::operator_provider();
-        let is_op = |m: &str| crate::config::names_operator(m);
+        let op = root.operator.provider;
+        let is_op = |m: &str| crate::config::names_operator(m, root, legacy);
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
@@ -917,10 +922,21 @@ impl AuthMiddleware {
                 .unwrap_or_default(),
         };
 
-        let issued = readers.iter().find_map(|r| {
-            let kind = r.kinds.first()?.clone();
-            r.issued.clone().map(|shape| (kind, shape))
-        });
+        // THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the build's fact, read from the
+        // linked rows' Statements whatever the chain names (status row 186: 1.5.5 minted the
+        // `issue_aws_credential` pair on the flag alone, `auth.chain` or not). An opened verifier
+        // states the same shape its Statement does, so with `keys` in the chain it answers first.
+        let issued = readers
+            .iter()
+            .find_map(|r| {
+                let kind = r.kinds.first()?.clone();
+                r.issued.clone().map(|shape| (kind, shape))
+            })
+            .or_else(|| match &axis {
+                Some(axis) => axis.issued_credential(),
+                None => crate::preflight::auth_axis(registry.clone())
+                    .and_then(|axis| axis.issued_credential()),
+            });
         Ok(Self {
             keys_in_chain,
             chain,
@@ -936,9 +952,13 @@ impl AuthMiddleware {
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
+        // The empty registry a test build's record would build, its auth rows opened through the
+        // opener that record lends.
+        let registry = busbar_plugin_loader::PluginRegistry::empty()
+            .with_auth_axis(crate::test_support::lent_stand_in().auth_axis);
         let mut mw = Self::new(
             cfg,
-            &std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+            &std::sync::Arc::new(registry),
             &crate::config::secret::SecretResolver::builtins_only(),
         )
         .expect("builtin-only auth chain never fails to construct");
@@ -1072,11 +1092,6 @@ impl AuthMiddleware {
             strips.extend(judged.strips);
             match judged.verdict {
                 AuthVerdict::Identify(principal) => {
-                    // A position may not name a group or a minted key: the identification is
-                    // refused, and the walk stops as it does on a reject.
-                    if refused_as_reserved(&principal) {
-                        return Ok(ChainVerdict::Denied);
-                    }
                     // The replay claim travels with the verdict and is won here, before admitting.
                     if let Some(replay) = judged.replay.as_deref() {
                         if !replay_claimed(gov, &entry.provider, replay, now) {
@@ -1217,8 +1232,9 @@ impl AuthMiddleware {
 
     /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
     /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
-    /// Statement states an issued shape, as its first credential kind and that shape. `None` when no
-    /// verifier states one: the host then issues none. Kind and shape are the verifier's words.
+    /// Statement states an issued shape, as its first credential kind and that shape, whether or not
+    /// `auth.chain` names `keys` (a linked row's fact, not the chain's). `None` when no linked row
+    /// states one: the host then issues none. Kind and shape are the verifier's words.
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
         self.issued.clone()
     }
@@ -1239,17 +1255,6 @@ impl AuthMiddleware {
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
     }
-}
-
-/// THE RESERVED-ID REFUSAL, on both walks that admit a module's identification (the data-plane
-/// chain's positions and the admin chain's modules): a module that identified a caller as an id in
-/// governance's reserved space (`group:`, `vk_`;
-/// [`busbar_kernel_identity::principal::id_is_reserved`]) is minting an identity the governance
-/// tables alone issue, so the identification is refused, never trusted. The engine arms that
-/// resolve a minted key (`keys`, the signed-ingress pre-step) are not modules and are not judged
-/// here: a minted key's own id is `vk_` by construction.
-fn refused_as_reserved(principal: &Principal) -> bool {
-    busbar_kernel_identity::principal::id_is_reserved(&principal.id)
 }
 
 /// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says; an
@@ -1345,104 +1350,102 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
 /// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
 /// signals available for shaping a native 401 envelope.
 ///
-/// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
+/// A THIN delegation to the CANONICAL `crate::plane_driver::claims::PlaneDispatch::ingress_of`, which is the ONE
 /// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
 /// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
 /// in one dialect and another handler shapes it in a different dialect — or where auth answers a
 /// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
-fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
+fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::claims::Ingress {
     app.planes.ingress_of(path)
 }
 
-/// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
-/// CANONICAL `crate::proto::vendor_auth_failure_message` so the auth path and any other site that
-/// shapes a native bad-credential body cannot drift on the protocol's own copy. The string lands
-/// verbatim in the native error body — the exact field it lands in (and any wrapping shape) is a
-/// registry-resolved per-protocol writer's concern, not core's — so it MUST read like the copy the
-/// REAL protocol returns for a bad/missing credential and carry NO busbar-internal vocabulary
-/// ("virtual key", "client token", "allowlist", "disabled", "passthrough", …). The wording is chosen
-/// PURELY from the inferred protocol and is deliberately independent of WHY auth failed (missing
-/// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
-/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
-fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+/// THE DOOR ROUTE A REQUEST MATCHES, as the auth middleware words a `401` on it: the route's plane
+/// rendering and the request target it renders for (spec Part 3 section 12, "Refusals").
+struct DoorRefusal {
+    /// The route's plane rendering.
+    refuse: busbar_kernel::plane_routes::PlaneRefuseFn,
+    /// The request target (path and query) it renders for.
+    target: String,
 }
 
-/// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
-/// inferred ingress protocol. The pair is chosen to MATCH what the genuine protocol returns for a
-/// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
-/// deterministic protocol tells a native SDK keys its typed exception off — a native SDK's
-/// typed-exception match is often keyed off the exact status/error-shape pairing, so a mismatched
-/// pair (e.g. the right status with the wrong error code) is itself a deterministic proxy tell.
-///
-/// This function holds NO protocol-specific knowledge itself; the default (401,
-/// "authentication_error") is what an unknown or standard protocol gets. A registry-resolved
-/// per-protocol writer may override that default to match its own genuine failure shape (a
-/// different status code, a different `kind`, or both) — that mapping lives entirely in the writer
-/// vtable, outside this crate, so a new protocol is onboarded there without touching this agnostic
-/// function.
-///
-/// Not a disposition/breaker match, so an unknown future proto falls back to the standard
-/// 401 authentication_error, keeping the request path panic-free.
-///
-/// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
-/// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
-// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
-// historical path are unchanged.
-pub use busbar_kernel::proxy::auth_failure_status_and_kind;
-
-/// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
-/// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
-/// hitting busbar in `token`/governance mode with a bad credential gets that protocol's own JSON
-/// error shape (`application/json`) instead of a bare `text/plain` 401 — removing a deterministic
-/// proxy tell. Falls back to the generic envelope for an unknown path.
-///
-/// The wire `message` comes from `vendor_auth_failure_message(proto)` — protocol-plausible copy
-/// keyed solely off the inferred protocol — NOT from the call site. Callers must never thread a
-/// busbar-internal reason ("invalid or disabled virtual key", "unauthorized", "admin unauthorized")
-/// onto the wire: that vocabulary is a protocol tell and an auth-model disclosure, and the
-/// invalid-vs-disabled / missing-vs-wrong distinction is itself an oracle. A caller may still log
-/// the real reason server-side; it just never reaches the client body.
-///
-/// Status and the writer `kind` are protocol-shaped too (see `auth_failure_status_and_kind`): a
-/// registry-resolved per-protocol writer may override the default (401, "authentication_error") to
-/// match that protocol's own genuine failure status/headers/shape — for example, a protocol
-/// whose auth is inbound AWS SigV4 request-signing genuinely rejects with HTTP 403 and carries its
-/// own error-type/request-id headers, not the generic 401 pair. That per-protocol knowledge lives
-/// entirely in the writer, not in this crate.
-///
-/// No unwrap / expect / panic on this request path: `ingress_error` degrades a serialization failure
-/// to a generic JSON object internally.
-///
-/// The envelope is built by `crate::ingress::native::native_error`, the single source of truth for
-/// shaping an answer from a resolved ingress: on the residual it selects the protocol writer, sets
-/// `application/json` and attaches any protocol-specific error headers via the
-/// `ProtocolWriter::attach_error_response_headers` vtable method; on a MOUNTED, audience-bound plane
-/// it answers in that plane's own dialect instead of handing a JSON-RPC client the residual plane's
-/// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
-/// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
-/// status, and any header attach it needs consistent with each other, all outside this crate.
-fn unauthorized_response(
+/// THE DIALECT AN AUTHENTICATION REFUSAL IS TAPPED UNDER (the `ingress_protocol` a `response` tap
+/// is told): the dialect the door plane states for the refusals of the route the request's path
+/// matches (`CoreRouteTable::refusal_dialect`), else a mounted plane's own first wire format, else
+/// none. The kernel reads it off the plane's statement and
+/// never off the path's shape (spec Part 1, Law 5: dialects are internal to their plane), so the
+/// tap and the answer the plane rendered name one dialect.
+fn denial_dialect(
     app: &crate::state::App,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    dialect: Option<&'static str>,
+) -> &'static str {
+    match dialect {
+        Some(dialect) => dialect,
+        None => ingress_for_path(app, path)
+            .shaping_wire_format()
+            .unwrap_or(""),
+    }
+}
+
+/// The words the kernel hands a plane with an authentication refusal, and its own answer's message
+/// when no plane renders one. A plane words a bad credential in its own dialect's vendor sentence,
+/// status and kind (spec §1: refusal texts that name instances are rendered from the plugins' rows,
+/// byte-identical to 1.5.5); these words carry no busbar-internal vocabulary ("virtual key",
+/// "allowlist", "disabled", …) and no reason the credential failed, because surfacing that
+/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
+const AUTH_REFUSED: &str = "authentication failed";
+
+/// THE DATA PLANE'S 401: the refusal the auth chain decided, worded by the plane that owns the
+/// path, through its `refusal` (spec Part 3 section 12, "Refusals"). The kernel words no dialect.
+///
+/// - A DOOR ROUTE's own plane renders it, unit-less, in the route's refusal dialect for the request
+///   target (`door`).
+/// - A path no door route takes at this verb is a kernel-shaped refusal (`KernelRefusal`): the
+///   plane whose line the guest list matches for the path, else the fallback plane (the catch-all
+///   every unclaimed path is), renders it by its own path rule, as 1.5.5's residual answered it.
+/// - No plane renders it (no plane served, or a failed render): the kernel's own neutral envelope.
+///
+/// A caller may still log the real reason server-side; it never reaches the client body.
+///
+/// No unwrap / expect / panic on this request path.
+fn unauthorized_response(
+    app: &crate::state::App,
+    core_routes: &crate::core_routes::CoreRouteTable,
+    path: &str,
+    door: Option<&DoorRefusal>,
 ) -> Response {
-    // A DOOR ROUTE'S 401 (spec Part 3 section 12, "Refusals"): the kernel decided it, exactly as on
-    // any data-plane path; the route's plane renders it, unit-less, in the route's refusal dialect
-    // for the request target. Every other path keeps the residual data plane's envelope.
-    if let Some((refuse, target)) = door {
-        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    if let Some(door) = door {
+        return (door.refuse)(
+            busbar_contract::caps::ReasonCode::Unauthenticated,
+            &door.target,
+        );
     }
     let ingress = ingress_for_path(app, path);
-    // The dialect names the PROTOCOL whose bad-credential status, `kind` and copy a client expects.
-    // A mounted, audience-bound plane names its own wire format, which has no registered protocol
-    // writer, so both lookups take their neutral defaults (401 + `authentication_error`) and the
-    // body is that plane's own — the same two facts a plane-specific 401 would have had to restate.
-    let dialect = crate::ingress::native::envelope_dialect(ingress);
-    let message = vendor_auth_failure_message(dialect);
-    let (status, kind) = auth_failure_status_and_kind(dialect);
-    crate::ingress::native::native_error(ingress, status, kind, message)
+    if let crate::plane_driver::claims::Ingress::Mounted(_) = ingress {
+        return crate::ingress::native::native_error(
+            ingress,
+            StatusCode::UNAUTHORIZED,
+            busbar_kernel::proxy::KIND_AUTHENTICATION,
+            AUTH_REFUSED,
+        );
+    }
+    // The plane reads its path rule off the path; the query names no dialect.
+    let refusal = busbar_kernel::plane_routes::KernelRefusal {
+        reason: busbar_contract::caps::ReasonCode::Unauthenticated,
+        status: StatusCode::UNAUTHORIZED.as_u16(),
+        text: AUTH_REFUSED,
+        path,
+        target: path,
+        // A mounted plane's path answered above.
+        mounted: false,
+    };
+    core_routes.kernel_refusal(&refusal).unwrap_or_else(|| {
+        crate::ingress::native::kernel_refusal(
+            StatusCode::UNAUTHORIZED,
+            busbar_kernel::proxy::KIND_AUTHENTICATION,
+            AUTH_REFUSED,
+        )
+    })
 }
 
 /// THE CREDENTIAL A STYLE'S CARRIERS YIELD on `headers`: the first carrier line, in `carriers`'
@@ -1627,10 +1630,6 @@ async fn run_admin_chain(
         carried.strips.extend(outcome.strips);
         match outcome.verdict {
             AuthVerdict::Identify(principal) => {
-                // A module may not name a group or a minted key here either.
-                if refused_as_reserved(&principal) {
-                    return (ChainVerdict::Denied, None);
-                }
                 // The replay claim travels with the verdict, out to the door that claims it.
                 carried.replay = outcome.replay.map(|r| (name.clone(), r));
                 // Carry the identifying MODULE out (role_bindings are nested by module) plus the
@@ -1922,7 +1921,7 @@ fn admin_scope_for(
         // `Grants::default()`. Only the operator credential mints the operator identity, so only
         // it confers operator authority.
         let op = &app.admin_modules.operator;
-        if op.mints(module, &p.id, crate::config::operator_principal_id()) {
+        if op.mints(module, &p.id, app.root.operator.principal_id) {
             return Grants::of(Scope::Full);
         }
         return Grants::default();
@@ -2055,21 +2054,19 @@ fn rate_limited_response() -> Response {
 /// Fire the synthetic `rejected_by_auth` response taps (fire-and-forget) and return the auth
 /// denial — so audit taps see auth denials, not just served traffic. The
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
-/// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
-/// PROTOCOL-NATIVE for an auth failure — the default is 401, but a registry-resolved per-protocol
-/// writer may override it to match that protocol's own genuine failure status (see
-/// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
-/// those overriding protocols contradict the response the client actually got.
+/// path-inferred protocol. The tap's `status` IS the client-visible HTTP status: the status of the
+/// answer [`unauthorized_response`] built, which the plane that words the refusal states (a
+/// dialect's own bad-credential status need not be 401). Hardcoding 401 made a tap watching an
+/// ingress denial on one of those dialects contradict the response the client actually got.
 fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
+    core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&DoorRefusal>,
+    tap_dialect: Option<&'static str>,
 ) -> Response {
-    // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
-    // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
-    // dialect its path happens to resemble; a residual path that names none is labelled with the
-    // dialect its answer is shaped in, so the tap and the response can never disagree.
-    let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
+    let refused = unauthorized_response(app, core_routes, path, door);
+    let proto = denial_dialect(app, path, tap_dialect);
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
@@ -2082,7 +2079,7 @@ fn unauthorized_with_completion_taps(
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
         let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
-        let status = auth_failure_status_and_kind(proto).0.as_u16();
+        let status = refused.status().as_u16();
         // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
         // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
         // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
@@ -2111,7 +2108,7 @@ fn unauthorized_with_completion_taps(
             &host,
         );
     }
-    unauthorized_response(app, path, door)
+    refused
 }
 
 /// THE DATA PLANE'S ANSWER TO AN OVERLOADED VERIFIER (owner ruling Q134, 2026-10-07; THE DESIGN
@@ -2163,15 +2160,18 @@ pub(crate) async fn auth_middleware(
     // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
     // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
     // on every residual data-plane path, which keeps its envelope byte for byte.
-    // `(the route's plane rendering, the request target it renders for)`.
-    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
-        core_routes.door_refusal(&path, req.method()).map(|refuse| {
-            let target = req
-                .uri()
-                .path_and_query()
-                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-            (refuse.clone(), target)
-        });
+    let door: Option<DoorRefusal> =
+        core_routes
+            .door_refusal(&path, req.method())
+            .map(|spec| DoorRefusal {
+                refuse: spec.refuse.clone(),
+                target: req
+                    .uri()
+                    .path_and_query()
+                    .map_or_else(|| path.clone(), |t| t.as_str().to_owned()),
+            });
+    // The dialect an authentication refusal here is tapped under, read off the door routes.
+    let tap_dialect = core_routes.refusal_dialect(&path, req.method());
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -2264,7 +2264,7 @@ pub(crate) async fn auth_middleware(
                          did not verify.",
                         None,
                     ),
-                    None => unauthorized_response(&app, &path, door.as_ref()),
+                    None => unauthorized_response(&app, core_routes, &path, door.as_ref()),
                 });
             }
         }
@@ -2496,7 +2496,12 @@ pub(crate) async fn auth_middleware(
             let Ok(body_bytes) =
                 axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
             else {
-                return Err(unauthorized_response(&app, &path, door.as_ref()));
+                return Err(unauthorized_response(
+                    &app,
+                    core_routes,
+                    &path,
+                    door.as_ref(),
+                ));
             };
             let request = signed_request(&parts, &body_bytes);
             req = Request::from_parts(parts, Body::from(body_bytes));
@@ -2522,7 +2527,12 @@ pub(crate) async fn auth_middleware(
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
                     {
-                        return Err(unauthorized_response(&app, &path, door.as_ref()));
+                        return Err(unauthorized_response(
+                            &app,
+                            core_routes,
+                            &path,
+                            door.as_ref(),
+                        ));
                     }
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
@@ -2530,14 +2540,26 @@ pub(crate) async fn auth_middleware(
                             principal: principal_from_vkey(&key),
                             resolved: Some(std::sync::Arc::new(key)),
                         }),
-                        None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+                        None => {
+                            return Err(unauthorized_response(
+                                &app,
+                                core_routes,
+                                &path,
+                                door.as_ref(),
+                            ))
+                        }
                     }
                 }
                 // EVERY failure (malformed signature, unknown identifier, expired date, a body whose
                 // bytes don't match the signed hash, a verifier that did not answer) maps to the
                 // identical native auth error: there is no oracle.
                 Verified::Reject | Verified::Failed => {
-                    return Err(unauthorized_response(&app, &path, door.as_ref()))
+                    return Err(unauthorized_response(
+                        &app,
+                        core_routes,
+                        &path,
+                        door.as_ref(),
+                    ))
                 }
                 // The verifier's `max_inflight` is full: nothing was judged, so this is no answer
                 // about the credential. 503 with `Retry-After` (owner ruling Q134, 2026-10-07).
@@ -2636,8 +2658,10 @@ pub(crate) async fn auth_middleware(
             }
             return Err(unauthorized_with_completion_taps(
                 &app,
+                core_routes,
                 &path,
                 door.as_ref(),
+                tap_dialect,
             ));
         }
         Err(IdentityRefusal::NoGrant) => {
@@ -2651,8 +2675,10 @@ pub(crate) async fn auth_middleware(
             }
             return Err(unauthorized_with_completion_taps(
                 &app,
+                core_routes,
                 &path,
                 door.as_ref(),
+                tap_dialect,
             ));
         }
     }
@@ -2676,15 +2702,11 @@ pub use busbar_contract::auth::IdentityRefusal;
 ///   a group-carrying principal is re-keyed through `role_bindings` via
 ///   [`crate::governance::synthesize_principal_key`]. A DISABLED vkey never reaches here as
 ///   `Identified` (the keys arm denies it), so it can never be re-admitted through synth.
-/// - FAIL-CLOSED for ANY identified principal that earned NO enforcement key — whatever roles it
-///   carries and whether or not its module has a `role_bindings` table. `key: None` downstream means
-///   no pool ACL, no budget, and spend booked to the `anonymous` actor rather than to the principal
-///   that spent it, so an identified caller admitted without a key is both an authorization
-///   fail-open and a mis-attributed book. The guard is the one condition — no key, refuse — and
-///   nothing narrows it: 1.5.5 (and this function until 1.6.0 item 144) also required the principal
-///   to carry roles AND its module to have a bindings table, which admitted a ROLELESS principal, or
-///   any principal under an unbound module, ungoverned. `Open` (the explicit `chain: []` posture)
-///   is the only anonymous admission. Pinned by `auth::tests::a_principal_without_a_governance_key_is_refused`.
+/// - An identified principal that earned NO enforcement key is judged by [`admits_ungoverned`]:
+///   as 1.5.5 judged it, a principal carrying roles under a module that HAS a `role_bindings`
+///   table is refused `NoGrant` (its roles were to define its access and defined none), and a
+///   ROLELESS principal, or any principal of a module with no table, is admitted ungoverned
+///   (`key: None`). Pinned by `auth::tests::an_ungoverned_principal_is_judged_as_1_5_5_judged_it`.
 pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
@@ -2703,6 +2725,12 @@ pub fn resolve_data_plane_identity(
                 crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
             });
             let Some(key) = gov_key else {
+                if admits_ungoverned(&module, &principal, &app.role_bindings) {
+                    return Ok((
+                        AuthPrincipal(Some(principal)),
+                        crate::governance::GovCtx { key: None },
+                    ));
+                }
                 return Err(IdentityRefusal::NoGrant);
             };
             Ok((
@@ -2711,6 +2739,43 @@ pub fn resolve_data_plane_identity(
             ))
         }
     }
+}
+
+/// Whether an identified principal that earned NO governance key is refused whatever its roles and
+/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None` such a principal
+/// meets no pool ACL and no budget, and its spend is booked to the `anonymous` actor. `false` is
+/// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
+/// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
+/// one line.
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+
+/// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
+/// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].
+fn admits_ungoverned(
+    module: &str,
+    principal: &busbar_contract::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> bool {
+    admits_ungoverned_under(
+        REFUSE_EVERY_UNGOVERNED_PRINCIPAL,
+        module,
+        principal,
+        role_bindings,
+    )
+}
+
+/// [`admits_ungoverned`] under a stated `refuse_every`. Without it, 1.5.5's guard (v1.5.5
+/// crates/busbar/src/auth/mod.rs:1543, `gov_key.is_none() && !principal.roles.is_empty() &&
+/// bindings.is_some()` refuses): a ROLELESS principal, or any principal of a module with no
+/// `role_bindings` table, is admitted; a principal with roles under a module that has a table is
+/// refused. With it, no keyless principal is admitted.
+fn admits_ungoverned_under(
+    refuse_every: bool,
+    module: &str,
+    principal: &busbar_contract::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> bool {
+    !refuse_every && (principal.roles.is_empty() || !role_bindings.contains_key(module))
 }
 
 /// The one `verify` request for a signed ingress, at `HeadBody`: every field line as presented, the
@@ -2756,11 +2821,12 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
 /// links no auth plugin at all).
 #[cfg(any(test, feature = "test-support"))]
 fn test_inbound_style() -> Vec<HeaderName> {
-    if crate::preflight::linked_auth_names().is_empty() {
+    let root = crate::test_support::lent_stand_in();
+    if root.auths.is_empty() {
         return header_names(&crate::test_support::outbound_auth::double_inbound_style());
     }
     header_names(
-        &crate::preflight::linked_auth_axis()
+        &crate::preflight::linked_auth_axis(&root, crate::config::Legacy::stand_in())
             .and_then(|axis| axis.default_inbound_style().ok())
             .unwrap_or_default(),
     )

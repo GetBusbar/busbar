@@ -11,9 +11,8 @@
 //! requires the two rows and the two transcripts to be byte-identical.
 //!
 //! Each kind's fixture comes from the tables `build.rs` generates out of `Cargo.toml`'s
-//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`kind_cdylib`], [`export_row`]): the
-//! tests reach a fixture by its KIND, and no test source names a plugin instance. Every table's cdylib column is
-//! the dropped-in door's crate as built; a test uses it as it stands.
+//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`fixture`], [`fixture_cdylib`]): the
+//! tests reach a fixture by its ROW, and no test source names a plugin instance.
 //!
 //! What is compared is the plugin's STATEMENT (its manifest, every field but the two that describe
 //! a tarball — `sha256` and `signature`) and its BEHAVIOUR. What is not compared is provenance —
@@ -26,8 +25,7 @@ use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
 
-/// The both-ways fixture of `row` whose linked door is its logic crate's `door::door`: its
-/// `cdylib`'s crate name and that linked door.
+/// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
 pub(crate) fn door_fixture(
     row: &str,
 ) -> (&'static str, busbar_contract::abi::mechanism::door::DoorFn) {
@@ -40,26 +38,21 @@ pub(crate) fn door_fixture(
         })
 }
 
-/// The export both-ways fixture of `row` (`export` or `export-<proof>`): its logic crate's name —
-/// the target its log records carry — and its `-plugin` crate's `cdylib` name.
-pub(crate) fn export_row(row: &str) -> (&'static str, &'static str) {
-    BOTH_WAYS_ROWS
+/// The packaged both-ways fixture of `row`: its logic crate's name (the linked door, and the
+/// target its log records carry) and its `-plugin` crate's `cdylib` name (the dropped-in door).
+pub(crate) fn fixture(row: &str) -> (&'static str, &'static str) {
+    FIXTURES
         .iter()
         .find(|(k, ..)| *k == row)
         .map(|&(_, logic, cdylib)| (logic, cdylib))
         .unwrap_or_else(|| {
-            panic!("no `{row}` export row in Cargo.toml's [package.metadata.busbar.both-ways]")
+            panic!("no `{row}` row in Cargo.toml's [package.metadata.busbar.both-ways]")
         })
 }
 
-/// The built `cdylib` of the `kind` row whose linked door is a module of its logic crate, by the
-/// table's cdylib crate name.
-pub(crate) fn kind_cdylib(kind: &str) -> PathBuf {
-    let (_, krate) = KIND_FIXTURES
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .unwrap_or_else(|| panic!("no `{kind}` row in the both-ways table"));
-    cdylib(krate)
+/// The built `cdylib` of `row`'s packaged fixture, by the table's cdylib crate name.
+pub(crate) fn fixture_cdylib(row: &str) -> PathBuf {
+    cdylib(fixture(row).1)
 }
 
 /// The manifest both doors state for the plugin: a first-party `name`/`alias` of `kind` at payload

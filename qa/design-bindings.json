@@ -805,7 +805,7 @@
     },
     {
      "kind": "test",
-     "ref": "a_pre_routing_refusal_leaves_a_prior_charge_intact",
+     "ref": "the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal",
      "proves": "a pre-routing failure refunds nothing extra",
      "source": "curated",
      "status": "mapped"
@@ -819,7 +819,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:a_pre_routing_refusal_leaves_a_prior_charge_intact, test:crates/busbar/src/root/tests/plane_node_money.rs::a_dispatch_record_is_written_on_the_book_under_its_units_facts"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal, test:crates/busbar/src/root/tests/plane_node_money.rs::a_dispatch_record_is_written_on_the_book_under_its_units_facts"
   },
   {
    "id": "PB-17",
@@ -1231,7 +1231,7 @@
     },
     {
      "kind": "test",
-     "ref": "a_pre_routing_refusal_leaves_a_prior_charge_intact",
+     "ref": "the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal",
      "proves": "a pre-routing failure refunds nothing extra",
      "source": "curated",
      "status": "mapped"
@@ -1245,7 +1245,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:an_unconfigured_unpriced_name_has_no_rate_and_the_acl_is_asked_first, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:an_openai_pool_refusal_reads_permission_error, test:a_bedrock_pool_refusal_reads_access_denied, test:crates/busbar-kernel/src/tests/door_destination_tests.rs::a_reachable_fallback_pool_outside_the_allow_list_is_not_authorized, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:a_pre_routing_refusal_leaves_a_prior_charge_intact, test:a_bedrock_non_object_body_is_a_validation_400"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:an_unconfigured_unpriced_name_has_no_rate_and_the_acl_is_asked_first, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:an_openai_pool_refusal_reads_permission_error, test:a_bedrock_pool_refusal_reads_access_denied, test:crates/busbar-kernel/src/tests/door_destination_tests.rs::a_reachable_fallback_pool_outside_the_allow_list_is_not_authorized, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal, test:a_bedrock_non_object_body_is_a_validation_400"
   },
   {
    "id": "PB-27",

@@ -9,10 +9,12 @@
 //! row answers the provider key, over the token's digest, and hands the result here.
 //!
 //! The provider key and the principal id are frozen configuration text naming a module no crate in
-//! the kernel declares. They sit in the composition root's legacy table, and the root hands them in
-//! with its linked auth rows as [`OperatorWords`] (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
-//! BUSBAR-1.6.0.md:173, "sit in the root legacy table"). The kernel hands the provider on as `op`,
-//! so neither this module nor the kernel names an instance.
+//! the kernel declares. They sit in the composition root's legacy table, and the root hands them to
+//! the kernel as [`OperatorWords`], beside its linked auth rows, on its one install record
+//! (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173, "sit in the root legacy
+//! table"). This module holds neither: every function here takes the rows or the provider it reads
+//! as an argument, and the kernel hands the provider on as `op`, so neither this module nor the
+//! kernel names an instance.
 
 use std::sync::Arc;
 
@@ -41,118 +43,38 @@ pub struct OperatorWords {
     pub principal_id: &'static str,
 }
 
-/// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
-/// credential's words the root hands in beside them, installed once before the first resolution.
-static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords)> = std::sync::OnceLock::new();
-
-/// Install this build's linked auth rows and the operator credential's words.
-///
-/// ONE WRITER. The operator credential is the one credential that is full by definition, so its
-/// words and its rows have exactly one source for the process's lifetime. Installing the very same
-/// table and words again (a test binary's helpers each hand in the root's table) changes nothing
-/// and answers `Ok`; a second install that differs in either is refused, never silently dropped,
-/// because whichever install came first would otherwise decide the operator's provider, id and
-/// door unseen.
-///
-/// # Errors
-/// A table or words were already installed, and these are not the same ones.
-pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) -> Result<(), String> {
-    let (held_rows, held_words) = *LINKED.get_or_init(|| (rows, words));
-    if std::ptr::addr_eq(held_rows, rows) && held_rows.len() == rows.len() && held_words == words {
-        return Ok(());
-    }
-    Err(format!(
-        "the operator credential's words and linked auth rows were already installed (provider \
-         '{}', principal '{}', {} row(s)); a second install (provider '{}', principal '{}', {} \
-         row(s)) is refused: they have exactly one writer, the composition root",
-        held_words.provider,
-        held_words.principal_id,
-        held_rows.len(),
-        words.provider,
-        words.principal_id,
-        rows.len(),
-    ))
-}
-
-/// This build's linked auth rows, in registration order.
-pub fn linked() -> &'static [LinkedAuth] {
-    LINKED.get().map(|l| l.0).unwrap_or_default()
-}
-
-/// The operator credential's provider key, as configuration spells it: the root's word once handed
-/// in. With no words (a shipped build no root handed any to) it is the empty string, which no
-/// configuration spells and which [`Operator`] answers for nothing.
-pub fn provider() -> &'static str {
-    words().map_or("", |w| w.provider)
-}
-
-/// The fixed principal id the operator credential identifies the operator as; the empty string,
-/// which [`Operator::mints`] never matches, when no words were handed in.
-pub fn principal_id() -> &'static str {
-    words().map_or("", |w| w.principal_id)
-}
-
-/// The operator credential's words: the ones a root (or a test binary) handed in; before any
-/// hand-in, a TEST build's [`STAND_IN`], and in a shipped build none at all.
-pub fn words() -> Option<OperatorWords> {
-    LINKED.get().map(|l| l.1).or(BEFORE_HAND_IN)
-}
-
-/// The words before any hand-in. A TEST build (`stand-in`) has no root and answers to a
-/// kind-neutral double (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"); its
+/// The words a build carries when no composition root hands any in. A build no root handed words to
+/// links no operator credential: no words. A TEST build (`stand-in`) has no root and answers to a
+/// kind-neutral double instead (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"); its
 /// principal is the id the operator auth plugin a test binary links identifies as.
 #[cfg(feature = "stand-in")]
 pub const STAND_IN: OperatorWords = OperatorWords {
     provider: "test-operator-double",
     principal_id: "admin",
 };
-
-/// The words before any hand-in: a TEST build's stand-in; a shipped build links no operator
-/// credential until its root hands words in, so it has none.
-#[cfg(feature = "stand-in")]
-const BEFORE_HAND_IN: Option<OperatorWords> = Some(STAND_IN);
+/// The words a build carries when no root hands any in, in a shipped build: none (see the
+/// `stand-in` twin above).
 #[cfg(not(feature = "stand-in"))]
-const BEFORE_HAND_IN: Option<OperatorWords> = None;
+pub const STAND_IN: OperatorWords = OperatorWords {
+    provider: "",
+    principal_id: "",
+};
 
-/// The names of this build's linked auth rows, in registration order.
-pub fn linked_names() -> Vec<&'static str> {
-    linked().iter().map(|r| r.0).collect()
-}
-
-/// Whether a linked auth row answers the operator credential's provider `op`.
-pub fn answered(op: &str) -> bool {
-    linked()
-        .iter()
+/// Whether a row of `rows` (a build's linked auth rows) answers the operator credential's provider
+/// `op`.
+pub fn answered(rows: &[LinkedAuth], op: &str) -> bool {
+    rows.iter()
         .any(|&(key, canonical, _)| key == op || canonical == op)
 }
 
-/// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
+/// Whether `module` names the plugin of the row of `rows` keyed `op` by its identity, not its
 /// spelling: the key itself or the row's canonical name (ARCHITECT C': one plugin, one identity,
 /// whichever name config gives it). The kernel adds the names its legacy table gives the key.
-pub fn names(op: &str, module: &str) -> bool {
+pub fn names(rows: &[LinkedAuth], op: &str, module: &str) -> bool {
     module == op
-        || linked()
+        || rows
             .iter()
             .any(|&(key, canonical, _)| key == op && canonical == module)
-}
-
-/// A TEST REGISTRY ROW: link `door` (the door of the auth plugin a test binary links for the
-/// operator credential), under the provider key of `words`, as the composition root links its row.
-/// Test builds only (`stand-in`). The row is built once per process, so a later call re-installs
-/// that same row (its own `door` unused); a later call under OTHER words is a test binary with two
-/// operator credentials, refused as [`install_linked`] refuses it, loudly.
-///
-/// # Panics
-/// Words other than the ones this process already installed.
-#[cfg(feature = "stand-in")]
-pub fn install_row(words: OperatorWords, door: AuthDoor) {
-    static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
-    if let Err(e) = install_linked(
-        ROW.get_or_init(|| [(words.provider, words.provider, door)]),
-        words,
-    ) {
-        panic!("{e}");
-    }
 }
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
@@ -350,10 +272,8 @@ pub struct Operator {
 
 impl Operator {
     /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
-    /// with nothing opened yet.
-    ///
-    /// An empty `op` (no words were handed in) answers for no provider at all, so nothing is the
-    /// operator credential on its say-so.
+    /// with nothing opened yet. An empty `op` (a record that lends no words) answers for no
+    /// provider at all, so nothing is the operator credential on its say-so.
     pub fn new(op: &str) -> Self {
         Self {
             cred: OperatorCredential::Unanswered,
@@ -428,7 +348,7 @@ impl Operator {
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the
     /// provider is the operator credential and `id` is the principal id it mints (`principal_id`).
-    /// An empty principal id (no words were handed in) is minted by nobody.
+    /// An empty principal id (a record that lends no words) is minted by nobody.
     pub fn mints(&self, name: Option<&str>, id: &str, principal_id: &str) -> bool {
         !principal_id.is_empty() && name.is_some_and(|n| self.is(n)) && id == principal_id
     }
