@@ -97,14 +97,63 @@ impl EgressTrust {
     }
 }
 
+/// THE TAG of a key pin's canonical spelling: `sha256/<standard base64>`, the spelling an operator
+/// is shown and writes in the operator docs, the same one `openssl ... | base64` gives
+/// after it and the one the kernel's egress pin renders.
+pub const KEY_PIN_TAG: &str = "sha256/";
+
 /// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
-/// DER, tag and length included), in standard base64 with padding. What an operator writes as a
-/// registration's peer-key pin, what the connector compares the far end's key against and what it
-/// reports as observed are this one rendering, so a pin and an observation compare as strings.
+/// DER, tag and length included), as `sha256/<standard base64 with padding>`. What the connector
+/// reports as observed and what every written pin is read to ([`canonical_key_pin`]), so a pin and
+/// an observation compare as the digest they spell.
 #[must_use]
 pub fn key_pin(subject_public_key_info: &[u8]) -> String {
     use sha2::Digest as _;
-    crate::media::base64_encode(&sha2::Sha256::digest(subject_public_key_info))
+    render_key_pin(&sha2::Sha256::digest(subject_public_key_info))
+}
+
+/// A digest in the canonical spelling.
+fn render_key_pin(digest: &[u8]) -> String {
+    format!("{KEY_PIN_TAG}{}", crate::media::base64_encode(digest))
+}
+
+/// A written key pin that names no SHA-256 digest: why, never the value itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadKeyPin(pub &'static str);
+
+impl std::fmt::Display for BadKeyPin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the key pin is not a SHA-256 SubjectPublicKeyInfo digest: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for BadKeyPin {}
+
+/// THE ONE READER OF A WRITTEN KEY PIN, to its canonical spelling ([`key_pin`]): the canonical
+/// `sha256/<base64>`, or the plain `<base64>` alias, surrounding whitespace ignored. The base64 is
+/// standard with its padding, and must decode to exactly one SHA-256 digest (32 bytes).
+///
+/// # Errors
+///
+/// Anything else: another tag, a malformed or unpadded base64, or a digest of another length.
+pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
+    use base64::Engine as _;
+    let written = written.trim();
+    let encoded = written.strip_prefix(KEY_PIN_TAG).unwrap_or(written);
+    if encoded.is_empty() {
+        return Err(BadKeyPin("it is empty"));
+    }
+    let digest = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| BadKeyPin("it is not `sha256/` and standard, padded base64"))?;
+    if digest.len() != 32 {
+        return Err(BadKeyPin("it does not decode to 32 bytes"));
+    }
+    Ok(render_key_pin(&digest))
 }
 
 /// THE TRUST ANCHORS OF ONE DESTINATION a need reaches (the transport pin, ARCHITECT 2026-10-03): the
@@ -158,3 +207,7 @@ impl core::fmt::Debug for Anchors {
 #[cfg(test)]
 #[path = "tests/redaction_tests.rs"]
 mod redaction_tests;
+
+#[cfg(test)]
+#[path = "tests/key_pin_tests.rs"]
+mod key_pin_tests;
