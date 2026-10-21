@@ -247,6 +247,12 @@ pub struct Connection {
     /// the framing's `begin` ([`Framing::begin_lent`]); `None` on a dial, and on a listener that
     /// lends none.
     lent: Option<Arc<crate::framer::GuestLines>>,
+    /// THE LISTENER'S PROTOCOL OFFER ([`Accept::alpn`], the framer's accepting offer), in order:
+    /// what the framer's stated agreed position names; empty on a dial.
+    offer: Vec<Vec<u8>>,
+    /// The 1-based position in `offer` the framer last stated it agreed (`FramerYield::agreed`);
+    /// `0` = not stated.
+    agreed: u32,
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
@@ -773,6 +779,8 @@ impl Connection {
             tunnel: None,
             alpn_offer: Vec::new(),
             lent: None,
+            offer: Vec::new(),
+            agreed: 0,
         })
     }
 }
@@ -831,6 +839,8 @@ impl Connection {
             tunnel: None,
             alpn_offer: Vec::new(),
             lent: None,
+            offer: Vec::new(),
+            agreed: 0,
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -991,6 +1001,8 @@ impl Connection {
             tunnel: None,
             alpn_offer,
             lent: accept.guests.as_ref().and_then(|book| book()),
+            offer: accept.alpn.clone(),
+            agreed: 0,
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1011,6 +1023,16 @@ impl Connection {
     #[must_use]
     pub fn framing_id(&self) -> Option<u64> {
         self.framing.as_ref().and_then(Framing::framing_id)
+    }
+
+    /// THE PROTOCOL THE CONNECTION AGREED, as its framer last stated it on an accepted connection
+    /// (`FramerYield::agreed`, a position in its accepting offer), resolved against the offer the
+    /// listener made: the protocol's bytes, opaque to the host. `None` = not stated (and on every
+    /// dial).
+    #[must_use]
+    pub fn agreed(&self) -> Option<&[u8]> {
+        let at = usize::try_from(self.agreed).ok()?.checked_sub(1)?;
+        self.offer.get(at).map(Vec::as_slice)
     }
 
     /// Whether an op is parked on the framing's ticket, waiting for its wake.
@@ -1986,6 +2008,17 @@ impl Connection {
                 }
                 None => self.queue(&y.wire, false),
             }
+        }
+        if y.agreed != 0 {
+            // A position past the listener's offer (or any on a dial) is the framer's fault.
+            busbar_contract::abi::transport::check::check_agreed(y.agreed, self.offer.len() as u64)
+                .map_err(|f| {
+                    Failure::Failed(format!(
+                        "the framer's agreed protocol breaks {:?} at {}",
+                        f.rule, f.field
+                    ))
+                })?;
+            self.agreed = y.agreed;
         }
         self.inbox.extend(y.pieces);
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);
