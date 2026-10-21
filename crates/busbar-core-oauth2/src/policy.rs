@@ -49,9 +49,16 @@
 use crate::config::AsIdentity;
 use oauth_as::registration::{RegistrationAttempt, RegistrationDecision, RegistrationPolicy};
 
-/// How long a SELF-REGISTERED client may hold nothing before the sweep reclaims it: a day, so a
-/// client that registered and has not yet logged in, or whose grant just lapsed, keeps its
-/// identifier through any ordinary pause, while one nobody uses goes.
+/// How long a SELF-REGISTERED client may hold nothing before the sweep reclaims it.
+///
+/// Why a day: the clock starts when the client last held a record (a code, token, refresh token,
+/// pushed request, device grant or consent), so a client in use is never reclaimed, and a
+/// day is far longer than any pause a real client makes between registering and logging in, or
+/// between a grant lapsing and its next login. It is also short enough that the registrations an
+/// unauthenticated caller can make inside the throttle (60 a minute per process) are bounded: at
+/// most a day's worth are held at once, and the per-minute sweep reads no more buckets than that.
+/// A client reclaimed after a day away is told `invalid_client` and registers again, which RFC
+/// 7591 clients do.
 pub(crate) const REGISTERED_CLIENT_IDLE: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
 
