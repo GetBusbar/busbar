@@ -9,7 +9,8 @@
 //!
 //! * `clock.now` — the kernel's clock: wall time, and monotonic time from an origin fixed when the
 //!   services are built.
-//! * `dest.judge` — the ONE destination judge, the connector's (`busbar-core-connector`'s `guard`): the
+//! * `dest.judge` — the ONE destination judge, the connector's destination guard
+//!   (`busbar-core-connector` `guard.rs`, installed as a [`DestJudge`]): the
 //!   metadata denylist, then the refusals the name decides,
 //!   answered at once and before any resolution, as 1.5.5 answered them. Asked to resolve
 //!   (`DEST_RESOLVE`), a name is resolved off the caller's thread, the call pends, and the address
