@@ -35,7 +35,7 @@ macro_rules! door_root {
                     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramingIn, IngestIn,
                     IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn,
                     TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAME_PIECE_SIZE, FRAMING_STREAM,
-                    ROLE_CARRIER, UNIT0_FIRST_BYTES,
+                    ROLE_CARRIER, ROLE_FRAMER, UNIT0_FIRST_BYTES,
                 };
                 use busbar_contract::abi::mechanism::call::OutHead;
 
@@ -66,7 +66,9 @@ macro_rules! door_root {
                         size: std::mem::size_of::<TransportTail>() as u32,
                         _reserved: 0,
                     },
-                    role: ROLE_CARRIER,
+                    // A carrier composes over nothing (transport check_tail): a row that states a
+                    // layer is a framer.
+                    role: if LAYERS.is_empty() { ROLE_CARRIER } else { ROLE_FRAMER },
                     framing: FRAMING_STREAM,
                     facts: 0,
                     handshake_max_steps: 0,
