@@ -394,7 +394,7 @@ plane-a2a-door = "busbar-plane-a2a"
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
-# module — and the root-bound seams it drives: `egress`, `plane-sections`.
+# module — and the root-bound seam it drives: `egress`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).

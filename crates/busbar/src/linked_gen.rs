@@ -174,7 +174,6 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 /// the seam under (the kernel compiles some of them only when a plane that drives them is linked).
 pub(crate) const SEAMS: &[(&str, &str)] = &[
     ("egress", "linked_egress"),
-    ("plane-sections", "linked_plane_sections"),
 ];
 
 /// THE SWAPS TABLE (BUSBAR-1.6.0.md Part 3 section 12, "The switch"): `<row feature> = "<switch>"`,
