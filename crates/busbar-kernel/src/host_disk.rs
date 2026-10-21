@@ -20,8 +20,8 @@
 //!   [`DiskRotate`] for it says (from the manifest's per-destination `keep`, or the host's default).
 //!   [`DiskRotate::Truncate`] is 1.5.5's request-log rollover (`crates/busbar/src/export/file.rs`
 //!   at v1.5.5): the live file is TRUNCATED IN PLACE — same inode, no rename, no archive, nothing
-//!   else written — and reported as no rotation: 1.5.5 reported nothing of it (v1.5.5
-//!   `crates/busbar/src/export/file.rs:96-108`; no log line, metric or record).
+//!   else written — and reported as no rotation: 1.5.5 reported nothing of it (lines 96-108 of
+//!   that module; no log line, metric or record).
 //!   [`DiskRotate::Rename`] rotates BY RENAME: the oldest archive is dropped, the rest shift up one
 //!   slot, the live file becomes `<path>.1`. Each failed rename step is reported and the rest still run; a failed final rename
 //!   leaves the live file to keep growing.

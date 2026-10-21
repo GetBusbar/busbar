@@ -370,7 +370,8 @@ pub struct DiskReport {
     /// `0` = the bytes landed; else the failed step (`DISK_OPEN_FAILED` / `DISK_APPEND_FAILED`).
     pub step: u64,
     /// Whether the file was renamed to its first archive before the append. A truncation in place
-    /// is not reported, as 1.5.5 reported none (v1.5.5 `crates/busbar/src/export/file.rs:96-108`).
+    /// is not reported: 1.5.5's request-log sink reported none (lines 96-108 of the sink's module
+    /// at v1.5.5).
     pub rotated: bool,
     /// The rotation steps that failed (`DISK_RETENTION_FAILED` | ...).
     pub faults: u8,
