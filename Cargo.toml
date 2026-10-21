@@ -145,8 +145,8 @@ busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-stre
 # plane's door row (`plane-llm-door`, `busbar_plane_llm::plane_door::door`), whose own root cells and
 # driver proofs (`tests/on_driver`, run by the root's `hook_parity_driver`) it states under its
 # `links` name. Its dropped-in cdylib twin (`busbar-plane-llm-plugin`) and its gates live in that
-# repo's plugin CI. At GetBusbar/busbar-plane-llm#28's head (dev's #1255 changes, on #24's dev merge).
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "ba5a3daf36be4b3d2a964100fb867f4ffebd6c77" }
+# repo's plugin CI. At GetBusbar/busbar-plane-llm#29's head (dev's #1207/#1347/D2 row 82 changes, on #28).
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "b8bc687c82d4a5367c84ff33c5594e1957b6e978" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
