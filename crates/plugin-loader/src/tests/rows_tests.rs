@@ -92,6 +92,9 @@ fn the_root_gets_its_registry_back() {
         fn secret_refusal(&self, _: &str) -> String {
             String::new()
         }
+        fn kind_refusal(&self, _: &str, _: &str, _: &str) -> String {
+            String::new()
+        }
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }

@@ -70,6 +70,10 @@ pub struct Row {
     /// The tarball filename (diagnostics only; identity is the manifest). A linked row's is
     /// `(linked)`.
     pub file: String,
+    /// The word the row is registered under: its alias for a row keyed by its alias, its canonical
+    /// name otherwise. What a refusal names the row by, and the one key a secret module's open
+    /// settings are filed under.
+    pub key: String,
     /// The plugin's canonical name.
     pub name: String,
     /// The alias configuration may name it by.
@@ -136,6 +140,12 @@ pub trait PluginRows: Send + Sync {
 
     /// Why no secret plugin answers `name_or_alias` on the secret axis, in the registry's words.
     fn secret_refusal(&self, name_or_alias: &str) -> String;
+
+    /// Why no `kind` plugin answers `name_or_alias` on that kind's axis, in the registry's words:
+    /// no row of `kind` resolves to it (`purpose` saying what the row could not do), or the row
+    /// resolves and states no door of `kind` (a 1.5.5 JSON-contract plugin, refused naming the
+    /// rebuild).
+    fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String;
 
     /// The rows as the composition root's own type, for the root's per-kind axes over them.
     fn as_any(&self) -> &dyn Any;
