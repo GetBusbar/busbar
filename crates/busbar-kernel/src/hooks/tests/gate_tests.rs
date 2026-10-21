@@ -403,19 +403,28 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
 }
 
 /// The verdict. A `reject` stops the request and carries the hook's own message and name; the
-/// status is re-clamped to the 4xx band at the seam that ACTS on it, not merely at the one that
-/// parsed it.
+/// status is re-clamped at the seam that ACTS on it, not merely at the one that parsed it, by the
+/// ONE shared rule 1.5.5's `map_decision` applied (outside 400..=499 is 403), and the message is
+/// re-sanitized by the one shared sanitizer (audit Q128 p15#5; THE DESIGN §11.7 l.1357-1358).
+/// RED before: a saturating clamp answered 400 for a 200 and 499 for a 5xx, and the message
+/// reached the caller with its control characters.
 #[tokio::test]
-async fn a_reject_stops_the_request_with_a_clamped_status() {
+async fn a_reject_stops_the_request_with_the_shared_clamp_and_sanitizer() {
     let facts = tool_call();
     // The out-of-band values a hook can send are bounded by the wire's own `u16`, so the interesting
     // pair is a success status and a 5xx — the two a gate must not be able to mint through a reject.
-    for (replied, expected) in [(403u16, 403u16), (200, 400), (503, 499), (65_535, 499)] {
+    for (replied, expected) in [
+        (403u16, 403u16),
+        (451, 451),
+        (200, 403),
+        (503, 403),
+        (65_535, 403),
+    ] {
         let gates = gate(
             Arc::new(Spy {
                 reply: RoutingDecision::Reject {
                     status: replied,
-                    message: "screened".to_string(),
+                    message: "scr\r\neened".to_string(),
                 },
                 seen: Mutex::new(None),
             }),
@@ -444,7 +453,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
                 hook,
             } => {
                 assert_eq!(status, expected, "a hook replied {replied}");
-                assert_eq!(message, "screened");
+                assert_eq!(message, "screened", "the shared sanitizer strips the CR LF");
                 assert_eq!(hook, "spy", "the verdict names which control refused");
             }
             GateVerdict::Proceed => panic!("a reject must stop the request"),
@@ -859,7 +868,7 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
 
 // ── The door path: the session the plane's `project` names (ARCHITECT RULING 2026-10-03) ──────
 
-use crate::hooks::gate::{decide_door, DoorSubject, ScanSubstrate};
+use crate::hooks::gate::{decide_door, DoorShape, DoorSubject, ScanSubstrate};
 
 /// A gate that abstains and records the session each call's request view named.
 #[derive(Default)]
@@ -919,7 +928,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
         let store = &store;
         async move {
             let door = DoorSubject {
-                projected: PROJECTED,
+                projected: Some(PROJECTED),
                 container: "entry",
                 dialect: "door-dialect",
                 request_id: 1,
@@ -931,6 +940,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
                     now_ms: 0,
                 }),
                 reads: &no_reads,
+                plane: DoorShape::default(),
             };
             matches!(decide_door(gates, &door).await, GateVerdict::Proceed)
         }
@@ -1074,4 +1084,298 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
         messages.as_array().is_none_or(|m| m.is_empty()),
         "21 bytes of arguments reached a gate whose ceiling is 8: {messages}"
     );
+}
+
+// ── The on_error chain, the container-bound clearance and the plane's projection (audit Q128 p15) ──
+
+/// A spy answering `reply`.
+fn spying(reply: RoutingDecision) -> Arc<Spy> {
+    Arc::new(Spy {
+        reply,
+        seen: Mutex::new(None),
+    })
+}
+
+/// A spy that abstains.
+fn abstaining() -> Arc<Spy> {
+    spying(RoutingDecision::Abstain)
+}
+
+/// One `on_error` fallback link around `policy`, with the grants a test wants.
+fn link(
+    policy: Arc<dyn RoutingPolicy>,
+    send_prompt: bool,
+    send_user: bool,
+) -> crate::hooks::FallbackHook {
+    crate::hooks::FallbackHook {
+        policy,
+        timeout: std::time::Duration::from_secs(5),
+        send_prompt,
+        send_user,
+        on_empty: crate::config::PolicyOnError::Reject,
+    }
+}
+
+/// [`gate`] with an `on_error` fallback chain in front of its terminal.
+fn chained(
+    policy: Arc<dyn RoutingPolicy>,
+    chain: Vec<crate::hooks::FallbackHook>,
+    terminal: crate::config::PolicyOnError,
+    send_prompt: bool,
+    send_user: bool,
+) -> Vec<(u16, ResolvedPolicy)> {
+    vec![(
+        0,
+        ResolvedPolicy::Policy {
+            policy,
+            on_error: terminal,
+            on_error_chain: chain,
+            timeout: std::time::Duration::from_secs(5),
+            send_prompt,
+            send_user,
+            on_empty: crate::config::PolicyOnError::Reject,
+        },
+    )]
+}
+
+fn subject_on<'a>(facts: &'a InvokeReq, container: &'a str) -> GateSubject<'a> {
+    GateSubject {
+        facts,
+        container,
+        ingress_protocol: "example-protocol",
+        request_id: 1,
+        key: None,
+        session: None,
+        incremental: None,
+        reads: &no_reads,
+    }
+}
+
+/// A FAILED GATE WALKS ITS `on_error` CHAIN BEFORE ITS TERMINAL, as 1.5.5's `run_on_error_chain`
+/// did (v1.5.5 `crates/busbar/src/proxy/hooks.rs:1119-1180`; THE DESIGN §11.7 l.1357-1358, audit
+/// Q128 p15#1). `a: on_error: b`, `b: on_error: weighted`: a broken `a` asks `b`, and `b`'s reject
+/// stops the request under `b`'s name. RED before: the door gate applied the terminal alone, so the
+/// request proceeded without `b` ever being asked.
+#[tokio::test]
+async fn a_failed_gate_asks_its_fallback_and_the_fallbacks_reject_stops_the_request() {
+    let facts = tool_call();
+    let fallback = spying(RoutingDecision::Reject {
+        status: 403,
+        message: "fallback screened".to_string(),
+    });
+    let gates = chained(
+        Arc::new(Broken),
+        vec![link(fallback.clone(), true, true)],
+        crate::config::PolicyOnError::Weighted,
+        false,
+        false,
+    );
+    match decide(&gates, &subject_on(&facts, "filesystem")).await {
+        GateVerdict::Reject {
+            status,
+            message,
+            hook,
+        } => {
+            assert_eq!((status, message.as_str()), (403, "fallback screened"));
+            assert_eq!(hook, "spy", "the link that answered is the one named");
+        }
+        GateVerdict::Proceed => panic!("the fallback gate was skipped: the chain was not walked"),
+    }
+    let seen = fallback
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the fallback was asked");
+    assert!(
+        seen["request"].get("messages").is_none() && seen["request"].get("user").is_none(),
+        "a link sees at most what the failed gate was granted (1.5.5): {seen}"
+    );
+}
+
+/// The first link that ANSWERS decides: a broken link is passed over, and a link that abstains
+/// lets the request proceed even under a `reject` terminal. RED before: the terminal alone answered
+/// the shared 503 although a fallback would have answered.
+#[tokio::test]
+async fn the_first_link_that_answers_decides_before_the_terminal() {
+    let facts = tool_call();
+    let abstains = abstaining();
+    let gates = chained(
+        Arc::new(Broken),
+        vec![
+            link(Arc::new(Broken), false, false),
+            link(abstains.clone(), false, false),
+        ],
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    assert!(
+        matches!(
+            decide(&gates, &subject_on(&facts, "filesystem")).await,
+            GateVerdict::Proceed
+        ),
+        "the second link answered: the terminal does not decide"
+    );
+    assert!(
+        abstains.seen.lock().unwrap().is_some(),
+        "the second link was asked"
+    );
+
+    // Every link failing lands on the terminal: the shared refusal.
+    let gates = chained(
+        Arc::new(Broken),
+        vec![link(Arc::new(Broken), false, false)],
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    match decide(&gates, &subject_on(&facts, "filesystem")).await {
+        GateVerdict::Reject { status, .. } => {
+            assert_eq!(status, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
+        }
+        GateVerdict::Proceed => panic!("every link failed: the reject terminal refuses"),
+    }
+}
+
+/// A CLEARANCE IS BOUND TO THE CONTAINER (audit Q128 p15#2): a piece one hook cleared for the
+/// caller's session on container A is screened again when the same caller sends it to container B,
+/// which the same hook guards (its verdict may read `pool`); on A it is still skipped. RED before:
+/// the cleared set was keyed by the hook alone, so B's call was skipped unscreened.
+#[tokio::test]
+async fn a_piece_cleared_on_one_container_is_screened_again_on_another() {
+    let store = SessionStore::new(64, None);
+    let session = SessionKey(4242);
+    let facts = tool_call();
+    let spy = abstaining();
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        false,
+    );
+    let on = |container: &'static str| GateSubject {
+        incremental: Some(IncrementalScan {
+            store: &store,
+            session,
+            now_ms: 0,
+        }),
+        ..subject_on(&facts, container)
+    };
+    let fired = || spy.seen.lock().unwrap().take().is_some();
+
+    assert!(matches!(
+        decide(&gates, &on("server-a")).await,
+        GateVerdict::Proceed
+    ));
+    assert!(fired(), "a new piece is screened on A");
+    assert!(matches!(
+        decide(&gates, &on("server-a")).await,
+        GateVerdict::Proceed
+    ));
+    assert!(!fired(), "cleared on A: not screened again on A");
+    assert!(matches!(
+        decide(&gates, &on("server-b")).await,
+        GateVerdict::Proceed
+    ));
+    assert!(fired(), "a clearance on A is not a clearance on B");
+}
+
+/// One door request over `projected`, the plane's own fields `plane`.
+fn door_on<'a>(projected: Option<&'a [u8]>, plane: DoorShape<'a>) -> DoorSubject<'a> {
+    DoorSubject {
+        projected,
+        container: "entry",
+        dialect: "door-dialect",
+        request_id: 1,
+        key: None,
+        session: None,
+        scan: None,
+        plane,
+        reads: &no_reads,
+    }
+}
+
+/// A DOOR BODY THE GATE CANNOT READ IS NOT EMPTY CONTENT (audit Q128 p15#3; THE DESIGN Appendix
+/// B.9 l.5436-5437). A plane that states no body, or one that is not JSON, gives a content-granted
+/// gate nothing to screen: it is a gate that could not answer, and its `on_error` decides (here
+/// `reject`, the shared refusal), never a gate shown `null` that abstains. A shape-only gate reads
+/// no content and still fires. RED before: both bodies were screened as an unnamed call with
+/// `null` arguments, the spy abstained, and the unit proceeded.
+#[tokio::test]
+async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
+    for body in [None, Some(&b"\xff not json"[..])] {
+        let spy = abstaining();
+        let gates = gate(
+            spy.clone(),
+            crate::config::PolicyOnError::Reject,
+            true,
+            false,
+        );
+        match decide_door(&gates, &door_on(body, DoorShape::default())).await {
+            GateVerdict::Reject { status, .. } => {
+                assert_eq!(status, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
+            }
+            GateVerdict::Proceed => panic!("a content gate passed a body it never saw: {body:?}"),
+        }
+        assert!(
+            spy.seen.lock().unwrap().is_none(),
+            "the gate was not shown empty content"
+        );
+
+        let shape_only = abstaining();
+        let gates = gate(
+            shape_only.clone(),
+            crate::config::PolicyOnError::Reject,
+            false,
+            false,
+        );
+        assert!(matches!(
+            decide_door(&gates, &door_on(body, DoorShape::default())).await,
+            GateVerdict::Proceed
+        ));
+        assert!(
+            shape_only.seen.lock().unwrap().is_some(),
+            "a shape-only gate fires"
+        );
+    }
+}
+
+/// A door body that is JSON but not the invoke document is screened WHOLE, never as `null`; and
+/// the plane's own `max_tokens`, stream flag and end user reach the hook's view (THE DESIGN
+/// Appendix B.9 l.5436-5437). RED before: the content was `null` and the plane's fields were
+/// dropped for the kernel's own reading.
+#[tokio::test]
+async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
+    let spy = abstaining();
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Reject,
+        true,
+        true,
+    );
+    let plane = DoorShape {
+        max_tokens: Some(64),
+        stream: true,
+        end_user: Some("end-user-1"),
+    };
+    let body = br#"{"message":{"text":"the secret"}}"#;
+    assert!(matches!(
+        decide_door(&gates, &door_on(Some(&body[..]), plane)).await,
+        GateVerdict::Proceed
+    ));
+    let seen = spy
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the gate was fired");
+    let request = &seen["request"];
+    assert!(
+        request["messages"].to_string().contains("the secret"),
+        "the plane's document is screened whole: {seen}"
+    );
+    assert_eq!(request["max_tokens"], 64, "{seen}");
+    assert_eq!(request["stream"], true, "{seen}");
+    assert_eq!(request["user"]["user"], "end-user-1", "{seen}");
 }
