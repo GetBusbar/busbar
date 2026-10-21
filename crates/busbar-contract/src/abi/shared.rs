@@ -14,10 +14,23 @@
 #[derive(Debug, Clone, Copy)]
 pub struct DeclStr {
     /// Borrowed UTF-8 bytes (NOT owned); NULL = absent.
-    pub ptr: *const u8,
+    pub(crate) ptr: *const u8,
     /// Length of the range.
-    pub len: usize,
+    pub(crate) len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `DeclStr`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`DeclStr::LAYOUT`].
+impl DeclStr {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        DeclStr, size 16;
+        ptr = 0, len = 8,
+    };
+}
+const _: &[(&str, usize)] = DeclStr::LAYOUT;
 
 impl DeclStr {
     /// The absent value: a NULL range.

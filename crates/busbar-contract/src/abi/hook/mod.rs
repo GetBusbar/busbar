@@ -899,14 +899,29 @@ pub struct Tail {
     pub _reserved: [u8; 3],
     /// The [`signal`] ids this instance wants reported on [`RequestView::signals`] /
     /// [`CandidateDynamic::signals`].
-    pub requested_signals: *const u32,
+    pub(crate) requested_signals: *const u32,
     /// How many.
-    pub requested_signals_len: usize,
+    pub(crate) requested_signals_len: usize,
     /// The HTTP routes this instance serves via `serve`, confined to `/hooks/<name>/*`.
-    pub routes: *const Route,
+    pub(crate) routes: *const Route,
     /// How many.
-    pub routes_len: usize,
+    pub(crate) routes_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `Tail`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`Tail::LAYOUT`].
+impl Tail {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        Tail, size 56;
+        head = 0, kind_class = 8, prompt_access = 12, user_access = 16, infallible = 20,
+        _reserved = 21, requested_signals = 24, requested_signals_len = 32, routes = 40,
+        routes_len = 48,
+    };
+}
+const _: &[(&str, usize)] = Tail::LAYOUT;
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
 ///

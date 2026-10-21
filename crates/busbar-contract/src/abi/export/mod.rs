@@ -859,15 +859,28 @@ pub struct Tail {
     /// The head.
     pub head: KindTailHead,
     /// This instance's declared streams, as [`ExportStream`] bytes.
-    pub streams: *const u8,
+    pub(crate) streams: *const u8,
     /// How many.
-    pub streams_len: usize,
+    pub(crate) streams_len: usize,
     /// The HTTP routes this instance serves via `serve` (ARCHITECT review ruling: 1.5.5 asked
     /// each instance at load, e.g. the `Routes` op; here it is a Statement fact).
-    pub routes: *const Route,
+    pub(crate) routes: *const Route,
     /// How many.
-    pub routes_len: usize,
+    pub(crate) routes_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `Tail`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`Tail::LAYOUT`].
+impl Tail {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        Tail, size 40;
+        head = 0, streams = 8, streams_len = 16, routes = 24, routes_len = 32,
+    };
+}
+const _: &[(&str, usize)] = Tail::LAYOUT;
 
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
 ///

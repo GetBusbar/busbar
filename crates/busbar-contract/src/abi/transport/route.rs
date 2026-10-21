@@ -80,15 +80,29 @@ pub struct RouteMatch {
     /// The path, in its form's spelling.
     pub path: AbiStr,
     /// Its field predicates, all of which hold for a match.
-    pub fields: *const FieldPredicate,
+    pub(crate) fields: *const FieldPredicate,
     /// How many.
-    pub fields_len: usize,
+    pub(crate) fields_len: usize,
     /// The claimant's own order: among ONE claimant's lines of equal precedence, the lower rung is
     /// tried first (a plane's 1.5.5 dispatch ladder, reproduced). It never orders two claimants.
     pub rung: u32,
     /// Alignment padding.
     pub _reserved: u32,
 }
+
+// THE LAYOUT, PINNED (status row 194): `RouteMatch`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`RouteMatch::LAYOUT`].
+impl RouteMatch {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        RouteMatch, size 48;
+        methods = 0, path_form = 4, path = 8, fields = 24, fields_len = 32, rung = 40,
+        _reserved = 44,
+    };
+}
+const _: &[(&str, usize)] = RouteMatch::LAYOUT;
 
 /// A [`RouteMatch`] read into Rust: what the kernel orders and matches, and what
 /// [`crate::abi::transport::check::check_route_view`] judges.

@@ -128,6 +128,19 @@ macro_rules! record {
     }};
 }
 
+/// As [`record!`], for a struct whose pointer and length fields are private to the contract (status
+/// row 194): its offsets are read from the table the contract asserts them in (`LAYOUT`), in
+/// declaration order, the order every other struct here is listed in.
+macro_rules! record_pinned {
+    ($out:expr, $t:ty) => {{
+        for (field, at) in <$t>::LAYOUT {
+            writeln!($out, "{}.{}={}", stringify!($t), field, at).unwrap();
+        }
+        writeln!($out, "{}.__size={}", stringify!($t), std::mem::size_of::<$t>()).unwrap();
+        writeln!($out, "{}.__align={}", stringify!($t), std::mem::align_of::<$t>()).unwrap();
+    }};
+}
+
 fn compute_layout() -> String {
     let mut s = String::new();
 
@@ -135,7 +148,7 @@ fn compute_layout() -> String {
 
     // The borrowed string, the connection facts and the borrowed field the connection table
     // carries (`abi::shared`).
-    record!(s, DeclStr, [ptr, len]);
+    record_pinned!(s, DeclStr);
     record!(
         s,
         WireConnFacts,
@@ -201,8 +214,8 @@ fn compute_layout() -> String {
     // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
     // tables. This golden is the ONE layout pin (`abi-audit` F2).
     record!(s, MechRawOutcome, []);
-    record!(s, MechStr, [ptr, len]);
-    record!(s, MechBlob, [ptr, len, fmt, flags]);
+    record_pinned!(s, MechStr);
+    record_pinned!(s, MechBlob);
     record!(s, MechSpan, [offset, len]);
     record!(s, MechField, [name, value]);
     record!(
@@ -255,55 +268,8 @@ fn compute_layout() -> String {
             ready
         ]
     );
-    record!(
-        s,
-        MechMetricFamily,
-        [
-            name,
-            help,
-            unit,
-            label_keys,
-            label_keys_len,
-            kind,
-            _reserved
-        ]
-    );
-    record!(
-        s,
-        MechStatement,
-        [
-            size,
-            kind,
-            kind_abi,
-            max_inflight,
-            name,
-            version,
-            families,
-            families_len,
-            diag_ids,
-            diag_ids_len,
-            kind_tail,
-            extensions,
-            secret_refs,
-            secret_refs_len,
-            settings_schema,
-            marks,
-            mark_words,
-            mark_words_len,
-            rewrites,
-            rewrites_len,
-            sections,
-            sections_len,
-            needs,
-            needs_len,
-            target_from,
-            trust_from,
-            answers,
-            answers_len,
-            claims,
-            claims_len
-        ]
-    );
+    record_pinned!(s, MechMetricFamily);
+    record_pinned!(s, MechStatement);
     record!(s, MechMarkWord, [class, _reserved, word]);
     record!(s, MechRewrite, [class, _reserved, from, to]);
     record!(s, MechSection, [name, flags, _reserved]);
@@ -539,22 +505,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, AuthStyleDecl, [name, flags, points]);
-    record!(
-        s,
-        AuthTail,
-        [
-            head,
-            caps,
-            facts,
-            login_kind,
-            inbound_points,
-            styles,
-            styles_len,
-            operator_principal,
-            credential_kinds,
-            credential_kinds_len
-        ]
-    );
+    record_pinned!(s, AuthTail);
     record!(s, AuthNamedValue, [name, value]);
     record!(
         s,
@@ -695,22 +646,7 @@ fn compute_layout() -> String {
             emit, encode, refuse, finish, detach, adopt, timer
         ]
     );
-    record!(
-        s,
-        tkind::Claim,
-        [
-            selector_forms,
-            egress_selector_forms,
-            facts,
-            facts_len,
-            status_namespace,
-            session,
-            session_bound,
-            unit0_trigger,
-            status_at,
-            _reserved
-        ]
-    );
+    record_pinned!(s, tkind::Claim);
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);
     record!(s, tkind::FaultRow, [claim, lo, hi, fault]);
     record!(
@@ -718,41 +654,9 @@ fn compute_layout() -> String {
         tkind::route::FieldPredicate,
         [op, _reserved, name, value]
     );
-    record!(
-        s,
-        tkind::route::RouteMatch,
-        [methods, path_form, path, fields, fields_len, rung, _reserved]
-    );
+    record_pinned!(s, tkind::route::RouteMatch);
     record!(s, tkind::SettingDecl, [path, kind, _reserved, default]);
-    record!(
-        s,
-        tkind::TransportTail,
-        [
-            head,
-            role,
-            framing,
-            facts,
-            handshake_max_steps,
-            composes_over,
-            composes_over_len,
-            claim_rows,
-            claim_rows_len,
-            upgrades_to,
-            upgrades_to_len,
-            handoff_from,
-            handoff_to,
-            handoff_binding_fact,
-            handshake_frame_kind,
-            status_rows,
-            status_rows_len,
-            settings,
-            settings_len,
-            fault_rows,
-            fault_rows_len,
-            frame_piece_size,
-            _reserved
-        ]
-    );
+    record_pinned!(s, tkind::TransportTail);
     record!(
         s,
         tkind::Destination,
@@ -987,66 +891,13 @@ fn compute_layout() -> String {
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
     record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
     record!(s, pkind::PinMechanism, [token, flags, _reserved]);
-    record!(
-        s,
-        pkind::TrustKey,
-        [key, role, flags, default, mechanisms, mechanisms_len]
-    );
+    record_pinned!(s, pkind::TrustKey);
     record!(
         s,
         pkind::RefusalStatus,
         [dialect, reason, status, _reserved]
     );
-    record!(
-        s,
-        pkind::PlaneTail,
-        [
-            head,
-            flags,
-            ingress,
-            dispatch_shape,
-            answer_layout,
-            scope,
-            label,
-            subject_noun,
-            admin_noun,
-            audit_kind,
-            signing_domain,
-            signing_kid_prefix,
-            cli_help,
-            dialects,
-            dialects_len,
-            dialect_auth,
-            dialect_auth_len,
-            scope_kinds,
-            scope_kinds_len,
-            op_classes,
-            op_classes_len,
-            billable_classes,
-            billable_classes_len,
-            route_cost,
-            route_cost_len,
-            fee_units,
-            fee_units_len,
-            record_kinds,
-            record_kinds_len,
-            egress_targets,
-            egress_targets_len,
-            record_chains,
-            record_chains_len,
-            trust_keys,
-            trust_keys_len,
-            refusal_statuses,
-            refusal_statuses_len,
-            caller_credential_refusal,
-            admin_routes,
-            admin_routes_len,
-            admin_openapi,
-            stream_ceiling_secs,
-            metric_lanes,
-            metric_lanes_len
-        ]
-    );
+    record_pinned!(s, pkind::PlaneTail);
     record!(
         s,
         pkind::Claim,
@@ -1352,26 +1203,7 @@ fn compute_layout() -> String {
             _reserved2
         ]
     );
-    record!(
-        s,
-        hconn::Need,
-        [
-            direction,
-            egress_class,
-            transport,
-            auth,
-            target_from,
-            trust_from,
-            details,
-            keep_response_headers,
-            keep_response_headers_len,
-            timeout_ms,
-            keep_mode,
-            _reserved,
-            deny_response_headers,
-            deny_response_headers_len
-        ]
-    );
+    record_pinned!(s, hconn::Need);
     record!(
         s,
         hconn::EstablishIn,
@@ -1778,22 +1610,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, HookRoute, [path, method, auth, _reserved]);
-    record!(
-        s,
-        HookTail,
-        [
-            head,
-            kind_class,
-            prompt_access,
-            user_access,
-            infallible,
-            _reserved,
-            requested_signals,
-            requested_signals_len,
-            routes,
-            routes_len
-        ]
-    );
+    record_pinned!(s, HookTail);
 
     // M3-SHAPES (abi-v2-perkind.md B.5): the export kind's deliver/scrape/status/check/serve and
     // its Statement tail.
@@ -1834,11 +1651,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, ExportRoute, [path, method, auth, _reserved]);
-    record!(
-        s,
-        ExportTail,
-        [head, streams, streams_len, routes, routes_len]
-    );
+    record_pinned!(s, ExportTail);
     s
 }
 

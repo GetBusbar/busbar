@@ -81,14 +81,28 @@ pub struct MetricFamily {
     /// Its unit; absent = none.
     pub unit: AbiStr,
     /// Its label keys, in order.
-    pub label_keys: *const AbiStr,
+    pub(crate) label_keys: *const AbiStr,
     /// How many.
-    pub label_keys_len: usize,
+    pub(crate) label_keys_len: usize,
     /// [`FAMILY_COUNTER`] | [`FAMILY_GAUGE`] | [`FAMILY_HISTOGRAM`].
     pub kind: u8,
     /// Alignment padding.
     pub _reserved: [u8; 7],
 }
+
+// THE LAYOUT, PINNED (status row 194): `MetricFamily`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`MetricFamily::LAYOUT`].
+impl MetricFamily {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        MetricFamily, size 72;
+        name = 0, help = 16, unit = 32, label_keys = 48, label_keys_len = 56, kind = 64,
+        _reserved = 65,
+    };
+}
+const _: &[(&str, usize)] = MetricFamily::LAYOUT;
 
 /// THE STATEMENT: what a plugin states about itself, as plain `'static` data. Leads with `size`.
 ///
@@ -110,45 +124,45 @@ pub struct Statement {
     /// The plugin's version.
     pub version: AbiStr,
     /// The metric families every per-call envelope indexes into.
-    pub families: *const MetricFamily,
+    pub(crate) families: *const MetricFamily,
     /// How many.
-    pub families_len: usize,
+    pub(crate) families_len: usize,
     /// The diagnostic ids every per-call envelope indexes into.
-    pub diag_ids: *const AbiStr,
+    pub(crate) diag_ids: *const AbiStr,
     /// How many.
-    pub diag_ids_len: usize,
+    pub(crate) diag_ids_len: usize,
     /// The kind's own Statement tail (`abi/<kind>/`), leading with a [`KindTailHead`]; NULL = none.
-    pub kind_tail: *const KindTailHead,
+    pub(crate) kind_tail: *const KindTailHead,
     /// The Statement's extensions.
     pub extensions: Blob,
     /// The settings keys whose values are secret references. The kernel resolves them, in this
     /// order, into [`super::lifecycle::OpenIn::secrets`]. Every kind uses it (auth, store, export and
     /// secret-service credentials).
-    pub secret_refs: *const AbiStr,
+    pub(crate) secret_refs: *const AbiStr,
     /// How many.
-    pub secret_refs_len: usize,
+    pub(crate) secret_refs_len: usize,
     /// The settings schema every kind validates settings against (JSON, off-path).
     pub settings_schema: Blob,
     /// The flag marks (`MARK_*`): `one_instance`, `ephemeral`, `catalog`, `blocks`.
     pub marks: u64,
     /// The word marks, each a [`MarkWord`]: the hook words it claims (exclusive) and the carrier
     /// classes it consumes (shared).
-    pub mark_words: *const MarkWord,
+    pub(crate) mark_words: *const MarkWord,
     /// How many.
-    pub mark_words_len: usize,
+    pub(crate) mark_words_len: usize,
     /// Its live rewrites, each a [`Rewrite`]: the other names config may call it by, the reference
     /// sugar that names it, and the setting keys it moves.
-    pub rewrites: *const Rewrite,
+    pub(crate) rewrites: *const Rewrite,
     /// How many.
-    pub rewrites_len: usize,
+    pub(crate) rewrites_len: usize,
     /// The top-level config sections it owns or reads.
-    pub sections: *const Section,
+    pub(crate) sections: *const Section,
     /// How many.
-    pub sections_len: usize,
+    pub(crate) sections_len: usize,
     /// Its connection needs, `(transport, auth)` per direction.
-    pub needs: *const Need,
+    pub(crate) needs: *const Need,
     /// How many.
-    pub needs_len: usize,
+    pub(crate) needs_len: usize,
     /// The settings path its connection target comes from; absent = the plugin names it. A
     /// member-target path (`settings.*.<key>`, [`crate::section::MEMBER_TARGET_PREFIX`]) names each
     /// registration's own target instead: each member route is sealed at it.
@@ -157,15 +171,33 @@ pub struct Statement {
     pub trust_from: AbiStr,
     /// The structured answers it declares (the `declares` answers beside the metric families
     /// and diagnostic ids).
-    pub answers: *const AbiStr,
+    pub(crate) answers: *const AbiStr,
     /// How many.
-    pub answers_len: usize,
+    pub(crate) answers_len: usize,
     /// The URL schemes it claims (a transport's claims; every other kind states none). Select reads
     /// them off the signed rendering, so a dropped transport is chosen without being opened.
-    pub claims: *const AbiStr,
+    pub(crate) claims: *const AbiStr,
     /// How many.
-    pub claims_len: usize,
+    pub(crate) claims_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `Statement`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`Statement::LAYOUT`].
+impl Statement {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        Statement, size 288;
+        size = 0, kind = 4, kind_abi = 8, max_inflight = 12, name = 16, version = 32, families = 48,
+        families_len = 56, diag_ids = 64, diag_ids_len = 72, kind_tail = 80, extensions = 88,
+        secret_refs = 112, secret_refs_len = 120, settings_schema = 128, marks = 152,
+        mark_words = 160, mark_words_len = 168, rewrites = 176, rewrites_len = 184, sections = 192,
+        sections_len = 200, needs = 208, needs_len = 216, target_from = 224, trust_from = 240,
+        answers = 256, answers_len = 264, claims = 272, claims_len = 280,
+    };
+}
+const _: &[(&str, usize)] = Statement::LAYOUT;
 
 // ── THE MARKS, REWRITES AND SECTIONS a Statement carries ────────────────────────────────────────
 //

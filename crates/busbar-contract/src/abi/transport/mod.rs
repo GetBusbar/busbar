@@ -526,9 +526,9 @@ pub struct Claim {
     /// Its outbound selector forms, one code byte each.
     pub egress_selector_forms: AbiStr,
     /// Its transport fact keys.
-    pub facts: *const AbiStr,
+    pub(crate) facts: *const AbiStr,
     /// How many.
-    pub facts_len: usize,
+    pub(crate) facts_len: usize,
     /// Its status numbering (absent = none).
     pub status_namespace: AbiStr,
     /// `1` = it carries sessions.
@@ -542,6 +542,21 @@ pub struct Claim {
     /// Alignment padding.
     pub _reserved: u32,
 }
+
+// THE LAYOUT, PINNED (status row 194): `Claim`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`Claim::LAYOUT`].
+impl Claim {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        Claim, size 72;
+        selector_forms = 0, egress_selector_forms = 16, facts = 32, facts_len = 40,
+        status_namespace = 48, session = 64, session_bound = 65, unit0_trigger = 66, status_at = 67,
+        _reserved = 68,
+    };
+}
+const _: &[(&str, usize)] = Claim::LAYOUT;
 
 /// One status-table row: a code range of a claim's numbering and the class it means. The breaker
 /// reads classes only, never a code band (the design's connections section).
@@ -609,18 +624,18 @@ pub struct TransportTail {
     pub handshake_max_steps: u32,
     /// The claims a framer composes over (empty = directly over the host's socket); empty for a
     /// carrier.
-    pub composes_over: *const AbiStr,
+    pub(crate) composes_over: *const AbiStr,
     /// How many.
-    pub composes_over_len: usize,
+    pub(crate) composes_over_len: usize,
     /// Each claimed scheme's row: row `i` describes the Statement's `claims[i]`, the ONE place the
     /// scheme names are stated (signed, and byte-compared at admit).
-    pub claim_rows: *const Claim,
+    pub(crate) claim_rows: *const Claim,
     /// How many (at least one; exactly the Statement's `claims_len`).
-    pub claim_rows_len: usize,
+    pub(crate) claim_rows_len: usize,
     /// The claims a connection may upgrade to.
-    pub upgrades_to: *const AbiStr,
+    pub(crate) upgrades_to: *const AbiStr,
     /// How many.
-    pub upgrades_to_len: usize,
+    pub(crate) upgrades_to_len: usize,
     /// The handoff's source claim (absent = no handoff).
     pub handoff_from: AbiStr,
     /// The handoff's target claim.
@@ -630,17 +645,17 @@ pub struct TransportTail {
     /// The frame kind that triggers the handshake (absent = none).
     pub handshake_frame_kind: AbiStr,
     /// The status table.
-    pub status_rows: *const StatusRow,
+    pub(crate) status_rows: *const StatusRow,
     /// How many.
-    pub status_rows_len: usize,
+    pub(crate) status_rows_len: usize,
     /// The customer settings it reads.
-    pub settings: *const SettingDecl,
+    pub(crate) settings: *const SettingDecl,
     /// How many.
-    pub settings_len: usize,
+    pub(crate) settings_len: usize,
     /// The fault table (appended: a tail that predates it reads NULL/`0`, no fault table).
-    pub fault_rows: *const FaultRow,
+    pub(crate) fault_rows: *const FaultRow,
     /// How many.
-    pub fault_rows_len: usize,
+    pub(crate) fault_rows_len: usize,
     /// [`FRAME_PIECE_SIZE`] as the plugin was built: the stride it writes [`FramerSink::pieces`]
     /// at. The loader refuses a transport whose number is not the host's (a tail that predates the
     /// word states `0`), naming the rebuild.
@@ -648,6 +663,24 @@ pub struct TransportTail {
     /// Alignment padding.
     pub _reserved: u32,
 }
+
+// THE LAYOUT, PINNED (status row 194): `TransportTail`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`TransportTail::LAYOUT`].
+impl TransportTail {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        TransportTail, size 192;
+        head = 0, role = 8, framing = 12, facts = 16, handshake_max_steps = 20, composes_over = 24,
+        composes_over_len = 32, claim_rows = 40, claim_rows_len = 48, upgrades_to = 56,
+        upgrades_to_len = 64, handoff_from = 72, handoff_to = 88, handoff_binding_fact = 104,
+        handshake_frame_kind = 120, status_rows = 136, status_rows_len = 144, settings = 152,
+        settings_len = 160, fault_rows = 168, fault_rows_len = 176, frame_piece_size = 184,
+        _reserved = 188,
+    };
+}
+const _: &[(&str, usize)] = TransportTail::LAYOUT;
 
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
 

@@ -272,9 +272,9 @@ pub struct AuthTail {
     /// [`VerifyIn::body`].
     pub inbound_points: u32,
     /// The outbound styles served ([`CAP_OUTBOUND`]).
-    pub styles: *const StyleDecl,
+    pub(crate) styles: *const StyleDecl,
     /// How many.
-    pub styles_len: usize,
+    pub(crate) styles_len: usize,
     /// With [`FACT_OPERATOR`]: the principal id the operator credential identifies; empty
     /// otherwise. APPENDED after the tail froze at [`AUTH_TAIL_FROZEN`] bytes: a tail of that size
     /// reads it empty.
@@ -282,10 +282,24 @@ pub struct AuthTail {
     /// With [`FACT_READS_CREDENTIALS`]: the credential kinds `verify` reads through
     /// `records.secret`; none otherwise. APPENDED after [`AuthTail::operator_principal`]: an older
     /// tail reads none.
-    pub credential_kinds: *const AbiStr,
+    pub(crate) credential_kinds: *const AbiStr,
     /// How many.
-    pub credential_kinds_len: usize,
+    pub(crate) credential_kinds_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `AuthTail`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`AuthTail::LAYOUT`].
+impl AuthTail {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        AuthTail, size 72;
+        head = 0, caps = 8, facts = 12, login_kind = 16, inbound_points = 20, styles = 24,
+        styles_len = 32, operator_principal = 40, credential_kinds = 56, credential_kinds_len = 64,
+    };
+}
+const _: &[(&str, usize)] = AuthTail::LAYOUT;
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
 /// smallest auth tail a host reads (THE KIND TAIL GROWTH RULE, `mechanism::door::tail_read_len`).

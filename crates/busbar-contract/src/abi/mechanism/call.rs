@@ -173,10 +173,23 @@ impl DeadlineClass {
 #[derive(Debug, Clone, Copy)]
 pub struct AbiStr {
     /// The bytes; NULL = absent.
-    pub ptr: *const u8,
+    pub(crate) ptr: *const u8,
     /// Their length.
-    pub len: usize,
+    pub(crate) len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `AbiStr`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`AbiStr::LAYOUT`].
+impl AbiStr {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        AbiStr, size 16;
+        ptr = 0, len = 8,
+    };
+}
+const _: &[(&str, usize)] = AbiStr::LAYOUT;
 
 impl AbiStr {
     /// `bytes`, borrowed for the call they cross in.
@@ -228,14 +241,27 @@ pub const BLOB_SECRET: u32 = 1;
 #[derive(Debug, Clone, Copy)]
 pub struct Blob {
     /// The bytes; NULL = absent.
-    pub ptr: *const u8,
+    pub(crate) ptr: *const u8,
     /// Their length.
-    pub len: usize,
+    pub(crate) len: usize,
     /// [`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] | [`BLOB_OCTETS`].
     pub fmt: u32,
     /// [`BLOB_SECRET`].
     pub flags: u32,
 }
+
+// THE LAYOUT, PINNED (status row 194): `Blob`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`Blob::LAYOUT`].
+impl Blob {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        Blob, size 24;
+        ptr = 0, len = 8, fmt = 16, flags = 20,
+    };
+}
+const _: &[(&str, usize)] = Blob::LAYOUT;
 
 impl Blob {
     /// No payload.

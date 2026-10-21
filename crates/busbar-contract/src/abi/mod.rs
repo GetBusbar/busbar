@@ -80,6 +80,31 @@ macro_rules! slot_table {
     };
 }
 
+/// THE LAYOUT OF A STRUCT WHOSE POINTER AND LENGTH FIELDS ARE PRIVATE (status row 194): every
+/// field's byte offset, in declaration order, as the table the layout golden
+/// (`tests/layout_golden.rs`) reads where it cannot name the field, and each offset and the size
+/// asserted at compile time against the value stated here. The private fields change who may
+/// write the struct, never its `#[repr(C)]` layout, so there is no ABI version bump; a field that
+/// moves is a compile error. The values hold on the 64-bit targets busbar ships (the golden's own
+/// premise), so the assertions are made there.
+macro_rules! layout {
+    ($t:ident, size $size:literal; $($field:ident = $at:literal),+ $(,)?) => {{
+        if cfg!(target_pointer_width = "64") {
+            assert!(
+                ::core::mem::size_of::<$t>() == $size,
+                concat!(stringify!($t), ": its size moved")
+            );
+            $(
+                assert!(
+                    ::core::mem::offset_of!($t, $field) == $at,
+                    concat!(stringify!($t), ".", stringify!($field), ": its offset moved")
+                );
+            )+
+        }
+        &[$((stringify!($field), ::core::mem::offset_of!($t, $field))),+]
+    }};
+}
+
 pub mod host;
 pub mod sdk;
 

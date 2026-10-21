@@ -103,9 +103,9 @@ pub struct Need {
     /// the plugin; no other response header ever crosses. Validated at boot: at most
     /// [`KEEP_RESPONSE_HEADERS_MAX`] names, each a lower-case token, none hop-by-hop or
     /// credential-bearing ([`NEVER_KEPT`]). Empty under [`KEEP_ALL_EXCEPT_DENIED`].
-    pub keep_response_headers: *const AbiStr,
+    pub(crate) keep_response_headers: *const AbiStr,
     /// How many.
-    pub keep_response_headers_len: usize,
+    pub(crate) keep_response_headers_len: usize,
     /// How long establishing a stream, and each wait for a reply on it, may take, milliseconds;
     /// `0` = the host's default. The host clamps a larger value to the deadline class.
     pub timeout_ms: u64,
@@ -118,10 +118,26 @@ pub struct Need {
     /// Under [`KEEP_ALL_EXCEPT_DENIED`]: the response head fields the plugin never reads beyond
     /// [`ALWAYS_DENIED`] (lower-case names, e.g. a far end's echo of the operator's tenant):
     /// at most [`KEEP_RESPONSE_HEADERS_MAX`]. Empty under [`KEEP_NAMED`].
-    pub deny_response_headers: *const AbiStr,
+    pub(crate) deny_response_headers: *const AbiStr,
     /// How many.
-    pub deny_response_headers_len: usize,
+    pub(crate) deny_response_headers_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `Need`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`Need::LAYOUT`].
+impl Need {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        Need, size 144;
+        direction = 0, egress_class = 4, transport = 8, auth = 24, target_from = 40,
+        trust_from = 56, details = 72, keep_response_headers = 96, keep_response_headers_len = 104,
+        timeout_ms = 112, keep_mode = 120, _reserved = 124, deny_response_headers = 128,
+        deny_response_headers_len = 136,
+    };
+}
+const _: &[(&str, usize)] = Need::LAYOUT;
 
 /// [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross.
 pub const KEEP_NAMED: u32 = 0;

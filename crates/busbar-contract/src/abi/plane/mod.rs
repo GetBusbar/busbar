@@ -1368,10 +1368,23 @@ pub struct TrustKey {
     /// [`TRUST_ITEM_APPROVALS`] key: the field of each item's object holding its approved digest.
     pub default: AbiStr,
     /// A pin's mechanisms; empty for a duration key.
-    pub mechanisms: *const PinMechanism,
+    pub(crate) mechanisms: *const PinMechanism,
     /// How many.
-    pub mechanisms_len: usize,
+    pub(crate) mechanisms_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `TrustKey`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`TrustKey::LAYOUT`].
+impl TrustKey {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        TrustKey, size 56;
+        key = 0, role = 16, flags = 20, default = 24, mechanisms = 40, mechanisms_len = 48,
+    };
+}
+const _: &[(&str, usize)] = TrustKey::LAYOUT;
 
 /// THE GRAMMAR OF [`PlaneTail::cli_help`]: the plane's rows of the host's command-line help, each
 /// filling one slot of it. A row opens with [`MARK`], the slot's name and [`NAME_END`], and runs to
@@ -1436,54 +1449,54 @@ pub struct PlaneTail {
     /// The plane's command-line help text, in the [`cli_help`] grammar.
     pub cli_help: AbiStr,
     /// Its dialects; per-call `dialect` indexes them.
-    pub dialects: *const AbiStr,
+    pub(crate) dialects: *const AbiStr,
     /// How many.
-    pub dialects_len: usize,
+    pub(crate) dialects_len: usize,
     /// The dialects' default auth styles.
-    pub dialect_auth: *const DialectAuth,
+    pub(crate) dialect_auth: *const DialectAuth,
     /// How many.
-    pub dialect_auth_len: usize,
+    pub(crate) dialect_auth_len: usize,
     /// The grant kinds that admit traffic, `scope`'s first.
-    pub scope_kinds: *const AbiStr,
+    pub(crate) scope_kinds: *const AbiStr,
     /// How many.
-    pub scope_kinds_len: usize,
+    pub(crate) scope_kinds_len: usize,
     /// The operation classes it serves.
-    pub op_classes: *const OpClass,
+    pub(crate) op_classes: *const OpClass,
     /// How many.
-    pub op_classes_len: usize,
+    pub(crate) op_classes_len: usize,
     /// Its billable classes; [`UnitCount::class`] indexes them.
-    pub billable_classes: *const BillableClass,
+    pub(crate) billable_classes: *const BillableClass,
     /// How many.
-    pub billable_classes_len: usize,
+    pub(crate) billable_classes_len: usize,
     /// Its route cost.
-    pub route_cost: *const RouteCost,
+    pub(crate) route_cost: *const RouteCost,
     /// How many.
-    pub route_cost_len: usize,
+    pub(crate) route_cost_len: usize,
     /// The fee units it counts.
-    pub fee_units: *const AbiStr,
+    pub(crate) fee_units: *const AbiStr,
     /// How many.
-    pub fee_units_len: usize,
+    pub(crate) fee_units_len: usize,
     /// The record kinds it keeps; [`RecordWrite::kind`] indexes them.
-    pub record_kinds: *const AbiStr,
+    pub(crate) record_kinds: *const AbiStr,
     /// How many.
-    pub record_kinds_len: usize,
+    pub(crate) record_kinds_len: usize,
     /// The config paths, inside its sections, that name its egress targets.
-    pub egress_targets: *const AbiStr,
+    pub(crate) egress_targets: *const AbiStr,
     /// How many.
-    pub egress_targets_len: usize,
+    pub(crate) egress_targets_len: usize,
     /// Its chained record kinds, each with its framing; at most one entry per kind.
-    pub record_chains: *const RecordChain,
+    pub(crate) record_chains: *const RecordChain,
     /// How many.
-    pub record_chains_len: usize,
+    pub(crate) record_chains_len: usize,
     /// The per-registration keys the kernel parses for the trust lifecycle.
-    pub trust_keys: *const TrustKey,
+    pub(crate) trust_keys: *const TrustKey,
     /// How many.
-    pub trust_keys_len: usize,
+    pub(crate) trust_keys_len: usize,
     /// The statuses its refusals wear where they are not the kernel's defaults; at most one entry
     /// per `(dialect, reason)`.
-    pub refusal_statuses: *const RefusalStatus,
+    pub(crate) refusal_statuses: *const RefusalStatus,
     /// How many.
-    pub refusal_statuses_len: usize,
+    pub(crate) refusal_statuses_len: usize,
     /// The plane's own sentence refusing the reserved `upstream_credentials: passthrough` section
     /// default, emitted by the kernel verbatim; NULL when forwarding the caller's credential is
     /// legitimate on this plane.
@@ -1492,9 +1505,9 @@ pub struct PlaneTail {
     /// row reads a door plane's admin verbs from its Statement): each verb, target relative to the
     /// admin mount, flags and audit word, as its snapshots publish them. NULL/0 = none. A tail
     /// addition.
-    pub admin_routes: *const AdminRoute,
+    pub(crate) admin_routes: *const AdminRoute,
     /// How many.
-    pub admin_routes_len: usize,
+    pub(crate) admin_routes_len: usize,
     /// THE OPENAPI PATH FRAGMENT of those admin routes: a JSON object keyed by each target relative
     /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
     /// absent = none. A tail addition.
@@ -1512,10 +1525,33 @@ pub struct PlaneTail {
     /// operator's entry names, the only other words [`OnPieceOut::metric_lane`] may carry): a
     /// closed vocabulary of its own, so a plane can never mint a time series per distinct string.
     /// At most [`MAX_METRIC_LANES`] words, each named, none twice. NULL/0 = none. A tail addition.
-    pub metric_lanes: *const AbiStr,
+    pub(crate) metric_lanes: *const AbiStr,
     /// How many.
-    pub metric_lanes_len: usize,
+    pub(crate) metric_lanes_len: usize,
 }
+
+// THE LAYOUT, PINNED (status row 194): `PlaneTail`'s pointer and length fields are private to the
+// contract, so its offsets are asserted here against their values today and read by the
+// layout golden through [`PlaneTail::LAYOUT`].
+impl PlaneTail {
+    /// Every field's byte offset, in declaration order, each asserted at compile time.
+    #[doc(hidden)]
+    pub const LAYOUT: &'static [(&'static str, usize)] = layout! {
+        PlaneTail, size 424;
+        head = 0, flags = 8, ingress = 12, dispatch_shape = 16, answer_layout = 20, scope = 24,
+        label = 40, subject_noun = 56, admin_noun = 72, audit_kind = 88, signing_domain = 104,
+        signing_kid_prefix = 120, cli_help = 136, dialects = 152, dialects_len = 160,
+        dialect_auth = 168, dialect_auth_len = 176, scope_kinds = 184, scope_kinds_len = 192,
+        op_classes = 200, op_classes_len = 208, billable_classes = 216, billable_classes_len = 224,
+        route_cost = 232, route_cost_len = 240, fee_units = 248, fee_units_len = 256,
+        record_kinds = 264, record_kinds_len = 272, egress_targets = 280, egress_targets_len = 288,
+        record_chains = 296, record_chains_len = 304, trust_keys = 312, trust_keys_len = 320,
+        refusal_statuses = 328, refusal_statuses_len = 336, caller_credential_refusal = 344,
+        admin_routes = 360, admin_routes_len = 368, admin_openapi = 376, stream_ceiling_secs = 400,
+        metric_lanes = 408, metric_lanes_len = 416,
+    };
+}
+const _: &[(&str, usize)] = PlaneTail::LAYOUT;
 
 /// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
 pub const MAX_METRIC_LANES: usize = 16;
