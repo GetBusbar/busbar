@@ -441,19 +441,23 @@ for p in json.load(sys.stdin)["packages"]:
   cargo locate-project --workspace --message-format plain --manifest-path "$manifest"
 }
 
-# `pinned_plane_cargo_test cargo test -p <pinned package> <args…>`: the cargo argv as it would read
-# in this workspace, run as `cargo test --workspace <args…>` in that package's pinned checkout. The
-# `-p` names the pinned git row (a package this tree's Cargo.lock resolves, so the package-selectors
-# gate still reads every pinned selector as live); the whole plane workspace runs, because a plane's
-# pins can sit in its cdylib twin (mcp's door witness is in busbar-plane-mcp-plugin).
+# `pinned_plane_cargo_test cargo test -p <pinned package> [--with-twin] <args…>`: the cargo argv as
+# it would read in this workspace, run in that package's pinned checkout. The `-p` names the pinned
+# git row (a package this tree's Cargo.lock resolves, so the package-selectors gate reads every
+# pinned selector as live) and selects the same package there. `--with-twin` adds the plane's cdylib
+# twin, `<package>-plugin`, for a pin that lives in it (mcp's door witness is in
+# busbar-plane-mcp-plugin); the twin is selected only where a pin is, so a twin's own suite never
+# decides a step about the plane.
 pinned_plane_cargo_test() {
   if [ "${1:-}" != cargo ] || [ "${2:-}" != test ] || [ "${3:-}" != -p ] || [ -z "${4:-}" ]; then
     printf 'pinned_plane_cargo_test: expected `cargo test -p <pinned package> …`, got: %s\n' "$*" >&2
     return 2
   fi
-  local pkg="$4" ws; shift 4
+  local pkg="$4" ws sel; shift 4
+  sel=(-p "$pkg")
+  if [ "${1:-}" = --with-twin ]; then sel+=(-p "$pkg-plugin"); shift; fi
   ws="$(pinned_plane_workspace "$pkg")" || return 1
-  cargo test --manifest-path "$ws" --workspace --locked --target-dir target/pinned-planes "$@"
+  cargo test --manifest-path "$ws" "${sel[@]}" --locked --target-dir target/pinned-planes "$@"
 }
 
 # Several cargo test runs as ONE filtered step: every run's output in order, the first failure's
@@ -1976,7 +1980,7 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # xtask 3) plus one per pinned plane (mcp's door witness, a2a, streaming).
 step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo_test_runs \
   cargo test -p busbar-contract -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse :: \
-  pinned_plane_cargo_test cargo test -p busbar-plane-mcp       --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test cargo test -p busbar-plane-mcp --with-twin --quiet p_item_refusal_reason_collapse :: \
   pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_refusal_reason_collapse :: \
   pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_refusal_reason_collapse
 step "unary/empty terminality"                               filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_unary_empty_terminality
