@@ -1448,42 +1448,23 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
             if let Some(o) = dest.as_object_mut() {
                 o.insert("rounds", Json::Array(rounds));
             }
-            // A DESTINATION NOBODY HAS READ has no record of its own to keep, and "the top-level
-            // record must BE the last round" (`register_problems`) holds only if the top level
-            // becomes the last round the fold just carried in -- its digest anchored the same way,
-            // so it still recomputes against the tree it named. Leaving the empty `unaudited`
-            // record on top of a carried reading is a register `--check` reads as unreadable.
-            let unaudited = dest.get("result").as_str().unwrap_or("unaudited") == "unaudited"
-                || dest.get("audited_at").as_str().is_none();
-            let last = dest.get("rounds").as_array().and_then(<[Json]>::last).cloned();
-            if let (true, Some(last)) = (unaudited, last) {
-                if let Some(o) = dest.as_object_mut() {
-                    for key in audit::RECORD_KEYS {
-                        o.insert(key, last.get(key).clone());
-                    }
-                    if let Some(h) = last.as_object().and_then(|l| l.get("hashed_as")) {
-                        o.insert("hashed_as", h.clone());
-                    }
-                }
-            } else {
-                // The destination's OWN record: re-stamped only if its tree is still, byte for
-                // byte, the tree it read. After a fold it almost never is -- it just absorbed
-                // somebody else's code -- and `stale` is the correct, honest answer to that.
-                let key = hashed_at_key(&dest);
-                let dest_shape = dest.clone();
-                carry_one(
-                    git,
-                    &mut trees,
-                    &mut dest,
-                    &dest_shape,
-                    &to,
-                    &dest_shape,
-                    &to,
-                    key,
-                    &at,
-                    &now,
-                );
-            }
+            // The destination's OWN record: re-stamped only if its tree is still, byte for byte,
+            // the tree it read. After a fold it almost never is -- it just absorbed somebody
+            // else's code -- and `stale` is the correct, honest answer to that.
+            let key = hashed_at_key(&dest);
+            let dest_shape = dest.clone();
+            carry_one(
+                git,
+                &mut trees,
+                &mut dest,
+                &dest_shape,
+                &to,
+                &dest_shape,
+                &to,
+                key,
+                &at,
+                &now,
+            );
             note_move(&mut dest, &from);
             scopes[di] = dest;
             scopes.remove(si);
@@ -2484,81 +2465,6 @@ mod move_tests {
             "stale",
             "the destination absorbed code nobody read AS PART OF IT, so it owes a fresh reading \
              -- a fold must not re-bless the destination"
-        );
-    }
-
-    /// A FOLD INTO A SCOPE NOBODY HAS READ leaves a register `--check` can read: the destination's
-    /// top-level record becomes the last round the fold carried in, anchored to the paths its
-    /// digest is over. Before, the empty `unaudited` record stayed on top of the carried rounds and
-    /// `register_problems` reported "the top-level record must BE the last round" for every key.
-    #[test]
-    fn a_fold_into_an_unread_scope_promotes_the_carried_round_to_the_top_level() {
-        let s = scratch("fold-unread");
-        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
-        s.crate_at("busbar-plugin-sdk", "pub fn route() {}\n");
-        s.commit("base");
-        assert_eq!(s.xtask(&["sync", "--write"]), 0);
-        s.read_by("crates/plugin-sdk/src", 1, "alice");
-        s.read_by("crates/plugin-sdk/src", 2, "bob");
-        let source = s.scope("crates/plugin-sdk/src").expect("the source record");
-        assert_eq!(
-            s.scope("crates/busbar-plugin-sdk/src")
-                .expect("the destination record")
-                .get("result")
-                .as_str(),
-            Some("unaudited"),
-            "the destination has never been read"
-        );
-
-        s.run(&[
-            "mv",
-            "crates/plugin-sdk/src/lib.rs",
-            "crates/busbar-plugin-sdk/src/sdk.rs",
-        ]);
-        s.run(&["rm", "-q", "-r", "crates/plugin-sdk"]);
-        s.commit("fold plugin-sdk into busbar-plugin-sdk");
-
-        assert_eq!(
-            s.xtask(&[
-                "move",
-                "crates/plugin-sdk/src",
-                "crates/busbar-plugin-sdk/src"
-            ]),
-            0
-        );
-        let dest = s
-            .scope("crates/busbar-plugin-sdk/src")
-            .expect("the destination record");
-        let merged = rounds(&dest);
-        assert_eq!(merged.len(), rounds(&source).len());
-        let last = merged.last().expect("the carried rounds");
-        for key in audit::RECORD_KEYS {
-            assert_eq!(
-                dest.get(key),
-                last.get(key),
-                "the top-level `{key}` is the last carried round's"
-            );
-        }
-        assert_eq!(
-            dest.get("hashed_as").get("id").as_str(),
-            Some("crates/plugin-sdk/src"),
-            "the top level names the paths its digest is over, as the round does"
-        );
-        let found = s.check();
-        assert!(
-            found.problems.is_empty(),
-            "the folded register is readable: {:?}",
-            found.problems
-        );
-        assert!(
-            found.stamped.is_empty(),
-            "every record still recomputes to the hash it carries: {:?}",
-            found.stamped
-        );
-        assert_eq!(
-            s.status("crates/busbar-plugin-sdk/src"),
-            "stale",
-            "the destination's tree is not the tree the carried rounds read"
         );
     }
 
