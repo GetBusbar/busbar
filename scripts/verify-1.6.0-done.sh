@@ -418,6 +418,52 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
   printf '%s test(s) passed, exactly the expected set.\n' "$got"
 }
 
+# A PLANE THAT LEFT FOR ITS OWN REPO IS TESTED IN ITS PINNED CHECKOUT. busbar-plane-{mcp,a2a,
+# streaming,decisions} are git rows in the root Cargo.toml, so they are no workspace member and
+# `cargo test -p busbar-plane-a2a` here is "did not match any packages" / "not a member of the
+# workspace": a P-item pin that lives in one of them cannot be reached from this workspace at all.
+# Its tests run where they now live, the plane repo's own workspace, at exactly the rev this tree's
+# Cargo.lock pins: cargo metadata names the checkout cargo fetched for that rev, and the run uses that
+# checkout's own Cargo.lock (--locked), into a target dir of this tree. A pinned plane cargo does not
+# resolve is RED, naming it, never a skip.
+pinned_plane_workspace() {  # $1 = the pinned package (busbar-plane-<key>) → its checkout's workspace manifest
+  local manifest
+  manifest="$(cargo metadata --format-version 1 --locked 2>/dev/null | python3 -I -c '
+import json, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["name"] == sys.argv[1] and (p.get("source") or "").startswith("git+"):
+        print(p["manifest_path"]); break
+' "$1")" || true
+  if [ -z "$manifest" ]; then
+    printf 'PINNED PLANE UNRESOLVED: %s is not a pinned git package cargo metadata resolves\n' "$1" >&2
+    return 1
+  fi
+  cargo locate-project --workspace --message-format plain --manifest-path "$manifest"
+}
+
+# `cargo test --workspace` in a pinned plane's checkout, with the rest of the argv (the name filter).
+pinned_plane_cargo_test() {  # $1 = the pinned package ; rest = cargo test args (e.g. --quiet <filter>)
+  local pkg="$1" ws; shift
+  ws="$(pinned_plane_workspace "$pkg")" || return 1
+  cargo test --manifest-path "$ws" --workspace --locked --target-dir target/pinned-planes "$@"
+}
+
+# Several cargo test runs as ONE filtered step: every run's output in order, the first failure's
+# exit code. `filtered_cargo_test` sums every `test result: ok. N passed` line, so a P-item whose pins
+# sit in this workspace AND in pinned planes keeps one declared count over all of them.
+cargo_test_runs() {  # args: runs separated by a lone `::`
+  local rc=0 run=() a
+  for a in "$@" ::; do
+    if [ "$a" = "::" ]; then
+      [ "${#run[@]}" -gt 0 ] && { "${run[@]}" 2>&1 || { rc=$?; break; }; }
+      run=()
+    else
+      run+=("$a")
+    fi
+  done
+  return "$rc"
+}
+
 # Assert the money-path bless/regen env vars are EMPTY — otherwise a byte-identity "check" silently
 # REGENERATES the golden instead of comparing against it (a green that proves nothing).
 #
@@ -1917,11 +1963,18 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
 # behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
 # away is RED (VACUITY), never a green that ran nothing.
-step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse
-step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
-step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
-step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
-step "voice tool-args"                                       filtered_cargo_test 2  cargo test -p busbar-plane-streaming --quiet p_item_voice_tool_args
+# The mcp, a2a and streaming planes are pinned git rows (see pinned_plane_cargo_test): their pins
+# run in the plane's pinned checkout. The refusal-collapse count is 8 here (contract 4, plane-llm 1,
+# xtask 3) plus one per pinned plane (mcp's door witness, a2a, streaming).
+step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo_test_runs \
+  cargo test -p busbar-contract -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test busbar-plane-mcp       --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test busbar-plane-a2a       --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test busbar-plane-streaming --quiet p_item_refusal_reason_collapse
+step "unary/empty terminality"                               filtered_cargo_test 1  pinned_plane_cargo_test busbar-plane-a2a       --quiet p_item_unary_empty_terminality
+step "empty reply"                                           filtered_cargo_test 1  pinned_plane_cargo_test busbar-plane-mcp       --quiet p_item_empty_reply
+step "wrong-provider attribution"                            filtered_cargo_test 1  pinned_plane_cargo_test busbar-plane-streaming --quiet p_item_wrong_provider_attribution
+step "voice tool-args"                                       filtered_cargo_test 2  pinned_plane_cargo_test busbar-plane-streaming --quiet p_item_voice_tool_args
 end_group
 
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
