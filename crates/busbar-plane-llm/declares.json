@@ -281,6 +281,15 @@
       "summary": "A compliance restrict re-applied against a fallback pool left no eligible lane, so busbar fails closed (503) rather than spill to an ineligible upstream. Fail-closed is the correct behavior for a compliance restriction.",
       "action": "None — self-heals per request. If the fallback pool should serve this traffic, ensure its members carry the tags the restrict requires.",
       "since": "1.6.0"
+    },
+    {
+      "code": 3022,
+      "slug": "config-error-map-class-unrecognized",
+      "title": "error_map maps an error to an unrecognized status class (the mapping is ignored)",
+      "severity": "actionable",
+      "summary": "A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its upstream status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.",
+      "action": "Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in status classification is what you want.",
+      "since": "1.6.0"
     }
   ]
 }

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use busbar_contract::operation::OpVerb;
 use busbar_contract::upstream::{Disposition, RawUpstreamError, StatusClass};
+use busbar_plane_llm::codec::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED;
 use busbar_plane_llm::exchange::reply::failure::{
     auth_failure, judge, normalize, relay_verbatim, FarError,
 };
@@ -137,6 +138,21 @@ fn a_far_end_error_is_placed_in_its_class() {
     }
     let sig = normalize(400, &raw(400, Some("1302"), None), &em);
     assert_eq!(sig.provider_signal.as_deref(), Some("1302"));
+    // A mapped structured type with no provider code states the type as the signal.
+    let sig = normalize(400, &raw(400, None, Some("overloaded_error")), &em);
+    assert_eq!(sig.class, StatusClass::Overloaded);
+    assert_eq!(sig.provider_signal.as_deref(), Some("overloaded_error"));
+    // The built-in context-length code states itself as the signal.
+    let sig = normalize(
+        400,
+        &raw(400, Some("context_length_exceeded"), None),
+        &HashMap::new(),
+    );
+    assert_eq!(sig.class, StatusClass::ContextLength);
+    assert_eq!(
+        sig.provider_signal.as_deref(),
+        Some("context_length_exceeded")
+    );
 }
 
 const JSON_HEAD: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
@@ -4724,4 +4740,80 @@ fn an_openai_whole_answer_reads_as_an_anthropic_message_naming_the_serving_model
     assert_eq!(got["stop_reason"], "end_turn", "{got}");
     assert_eq!(got["model"], "glm-4.5", "the serving model survives: {got}");
     assert!(got.get("choices").is_none(), "no raw openai body: {got}");
+}
+
+/// A banner and the `error_map_value` it carried, per event.
+type Banners = Vec<(String, Option<String>)>;
+
+/// Every `diag` banner (and its `error_map_value` field) a closure's tracing events carried.
+fn banners_of(f: impl FnOnce()) -> Banners {
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+
+    #[derive(Default)]
+    struct Fields {
+        diag: Option<String>,
+        value: Option<String>,
+    }
+    impl Visit for Fields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            match field.name() {
+                "diag" => self.diag = Some(format!("{value:?}")),
+                "error_map_value" => self.value = Some(format!("{value:?}")),
+                _ => {}
+            }
+        }
+    }
+    struct Capture(Arc<Mutex<Banners>>);
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            if let Some(diag) = fields.diag {
+                self.0.lock().unwrap().push((diag, fields.value));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(Capture(seen.clone()), f);
+    let mut seen = seen.lock().unwrap();
+    std::mem::take(&mut *seen)
+}
+
+/// A provider `error_map` entry that names no status class is ignored, and the operator is told so
+/// (BUSBAR-3022), once per distinct value for the life of the process, whichever of the two keys
+/// (a provider code or a structured type) the entry sits under. A recognized entry says nothing.
+#[test]
+fn an_error_map_class_that_names_no_class_is_reported_once() {
+    let em = map(&[
+        ("1302", "rate_limt_by_code"),
+        ("overloaded_error", "overloaded_by_type"),
+        ("quota", "billing"),
+    ]);
+    let code = CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner().to_string();
+    let seen = banners_of(|| {
+        // The typo'd code mapping is ignored: the status places the error.
+        let sig = normalize(400, &raw(400, Some("1302"), None), &em);
+        assert_eq!(sig.class, StatusClass::ClientError);
+        // The same value again, and the typo'd structured-type mapping.
+        let _ = normalize(400, &raw(400, Some("1302"), None), &em);
+        let _ = normalize(500, &raw(500, None, Some("overloaded_error")), &em);
+        // A recognized mapping reports nothing.
+        let _ = normalize(402, &raw(402, Some("quota"), None), &em);
+    });
+    let want: Banners = vec![
+        (code.clone(), Some("\"rate_limt_by_code\"".to_string())),
+        (code, Some("\"overloaded_by_type\"".to_string())),
+    ];
+    assert_eq!(seen, want);
 }

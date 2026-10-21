@@ -68,6 +68,17 @@ pub fn raw_error(far: &str, operation: OpVerb, status: u16, body: &[u8]) -> RawU
 /// The non-standard overload status a provider sends as its overloaded signal.
 const OVERLOADED_STATUS: u16 = 529;
 
+/// The class an operator's `error_map` entry names. An entry that names no class is ignored, and
+/// the operator is told (BUSBAR-3022, [`crate::codec::diagnostics::warn_error_map_class_unrecognized`]):
+/// a typo'd entry (`rate_limt`) does not silently never take effect.
+fn mapped_class(value: &str) -> Option<StatusClass> {
+    let class = StatusClass::parse(value);
+    if class.is_none() {
+        crate::codec::diagnostics::warn_error_map_class_unrecognized(value);
+    }
+    class
+}
+
 /// THE CLASS of a far-end error of `status` (the status the far end answered, which its dialect's
 /// reading carries) under the provider's `error_map`: a mapped provider code first,
 /// then the built-in context-length code on a request-size status, then a mapped structured type,
@@ -88,7 +99,7 @@ pub fn normalize(
         |class: StatusClass| class == StatusClass::ContextLength && (500..600).contains(&status);
     let provider_signal = match &raw.provider_code {
         Some(code) => {
-            let mapped = error_map.get(code).and_then(|m| StatusClass::parse(m));
+            let mapped = error_map.get(code).and_then(|m| mapped_class(m));
             if let Some(class) = mapped.filter(|c| !masks_outage(*c)) {
                 return signal(class, Some(code.clone()));
             }
@@ -100,7 +111,7 @@ pub fn normalize(
         None => None,
     };
     if let Some(ty) = &raw.structured_type {
-        let mapped = error_map.get(ty).and_then(|m| StatusClass::parse(m));
+        let mapped = error_map.get(ty).and_then(|m| mapped_class(m));
         if let Some(class) = mapped.filter(|c| !masks_outage(*c)) {
             return signal(class, provider_signal.or_else(|| Some(ty.clone())));
         }

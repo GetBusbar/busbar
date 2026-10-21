@@ -10,7 +10,11 @@
 use super::DIAGNOSTICS;
 
 fn published() -> Vec<serde_json::Value> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
+    let path =
+        std::path::PathBuf::from(std::env::var_os("BUSBAR_CHECKOUT").expect(
+            "BUSBAR_CHECKOUT is unset: busbar's tree at .busbar-ref (plugin CI exports it)",
+        ))
+        .join("docs/diagnostics.json");
     let text = std::fs::read_to_string(path).expect("docs/diagnostics.json is readable");
     serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array")
 }
@@ -45,11 +49,11 @@ fn every_plane_code_is_the_catalog_entry_of_its_number() {
 }
 
 #[test]
-fn the_plane_declares_thirty_one_distinct_codes() {
+fn the_plane_declares_thirty_two_distinct_codes() {
     let mut codes: Vec<u16> = DIAGNOSTICS.iter().map(|d| d.code).collect();
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 31, "a plane code is listed twice or missing");
+    assert_eq!(codes.len(), 32, "a plane code is listed twice or missing");
 }
 
 /// THE DOOR'S `declares.json` IS THE PLANE'S CATALOG: the declared section the host folds this plane's

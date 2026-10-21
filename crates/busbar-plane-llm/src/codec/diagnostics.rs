@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LLM PLANE'S OWN CODED DIAGNOSTICS (#83a O4): the thirty-one codes only this plane's code
+//! THE LLM PLANE'S OWN CODED DIAGNOSTICS (#83a O4): the thirty-two codes only this plane's code
 //! emits — the nine cross-protocol IR normalizations, the two usage-tap faults a same-protocol tap
 //! reads before it decodes, the three event-stream framing guards, the dropped provider-metadata
-//! report, and the sixteen lane-engine codes (the usage-tap reassembly cap, the two upstream
+//! report, the unrecognized-`error_map`-class warning, and the sixteen lane-engine codes (the usage-tap reassembly cap, the two upstream
 //! transport interruptions, the lane breaker trip, the six cross-protocol response faults, the
 //! three rewrite-pass refusals, the two per-attempt timeouts and the restrict fallback with no
 //! eligible lane). The plane owns its constants exactly as every other plane does, and hands them
@@ -544,6 +544,50 @@ pub const FALLBACK_RESTRICT_NO_ELIGIBLE_LANE: Diagnostic = Diagnostic {
     since: "1.6.0",
     retired: false,
 };
+/// A provider `error_map` entry names a status class busbar does not recognize; the mapping is
+/// ignored and classification falls through to the upstream status.
+pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
+    code: 3022,
+    class: Class::Config,
+    slug: "config-error-map-class-unrecognized",
+    title: "error_map maps an error to an unrecognized status class (the mapping is ignored)",
+    severity: Severity::Actionable,
+    summary: "A provider's `error_map` maps an upstream error code or structured type to a string \
+              that is not one of busbar's status classes (rate_limit, overloaded, server_error, \
+              timeout, network, auth, billing, client_error, context_length). The mapping is \
+              IGNORED and the error is classified from its upstream status instead, so a typo'd entry \
+              (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized \
+              value for the life of the process, on the first error that reaches it — never at \
+              boot, so a deployment whose providers never fail never sees this line.",
+    action: "Correct the named `error_map` value to one of the nine status classes, or remove the \
+             entry if the built-in status classification is what you want.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Report an operator `error_map` value that names no status class, once per distinct value for the
+/// life of the process (BUSBAR-3022): the misconfiguration sits on the hot error path, so it logs
+/// once and never per request. The set only dedupes this line; no answer the plane gives depends on
+/// it, which is why it sits here with the codec's other scratch state and not in the exchange.
+pub fn warn_error_map_class_unrecognized(value: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    // Poisoning is harmless here (the set only dedupes a warning); recover the guard either way.
+    let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.insert(value.to_string()) {
+        busbar_contract::diag_warn!(
+            CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
+            error_map_value = value,
+            "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
+             classification falls through to the upstream status. Valid classes: rate_limit, \
+             overloaded, server_error, timeout, network, auth, billing, client_error, \
+             context_length"
+        );
+    }
+}
+
 /// Every code this plane defines, in catalog order, for the composition root's
 /// `install_diagnostics`.
 pub static DIAGNOSTICS: &[&Diagnostic] = &[
@@ -578,6 +622,7 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &ATTEMPT_TIMEOUT_FAILOVER,
     &ATTEMPT_TIMEOUT_DEGRADED,
     &FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
+    &CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
 ];
 
 #[cfg(test)]
