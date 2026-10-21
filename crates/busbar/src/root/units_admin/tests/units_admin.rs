@@ -2285,6 +2285,13 @@ impl busbar_kernel_ledger::legacy::LegacyRows for CountingRows {
             .push(posting.clone());
         Ok(())
     }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.written
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
+    }
 }
 
 #[cfg(feature = "root-admin")]
@@ -2531,6 +2538,13 @@ impl busbar_kernel_ledger::legacy::LegacyRows for RowsThatLose {
                 .push(posting.clone());
         }
         Ok(())
+    }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.kept
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
     }
 }
 
@@ -4857,7 +4871,6 @@ fn a_booked_line(
         fee_count,
         tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived_ms,
-        origin: busbar_kernel_ledger::PostingOrigin::Client,
     }
 }
 

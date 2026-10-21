@@ -287,9 +287,9 @@ pub struct Durability {
     /// and answers the same set either side of a restart.
     ///
     /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
-    /// The book retires no window today — `Book::retain_from` has no production caller, and the
-    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
-    /// counted units this node's chain holds, as the chain itself does.
+    /// Each seal retires the windows the last kept checkpoint holds once 1.5.5's thirty-one-day
+    /// horizon has passed them, and their lines with them (`seal.rs`); the boot rebuilds every
+    /// window the chain carries, and the first seals after it bound them again.
     counted: Vec<CountedLine>,
     /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
     /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
@@ -1491,8 +1491,9 @@ pub struct CountedLine {
 impl CountedLine {
     /// The line as the ledger's booked line, written by `node`. `None` for a line no booked line
     /// can carry: a class nobody declared, or one this image's vocabulary does not hold. The tier
-    /// is the standard one and the origin a client, which is what every counted posting is priced
-    /// at when it settles ([`price_counts`]), so the read prices the same quantities the same way.
+    /// is the standard one and the fee count the line's own, which is what every counted posting is
+    /// priced at when it settles ([`price_counts`]), so the read prices the same quantities the
+    /// same way.
     #[must_use]
     pub fn booked(&self, node: u64) -> Option<busbar_kernel_ledger::Posting> {
         if self.undeclared {
@@ -1519,7 +1520,6 @@ impl CountedLine {
             fee_count: self.counts.fee_count,
             tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
             arrived_ms: self.arrived_ms,
-            origin: busbar_kernel_ledger::PostingOrigin::Client,
         })
     }
 }

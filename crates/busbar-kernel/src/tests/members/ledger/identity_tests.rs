@@ -82,8 +82,9 @@ fn a_hand_corrupted_priced_amount_breaks_the_identity() {
     assert!(residual(&opening, &ledger.book().get(&k, window)).holds());
 
     // One figure, edited in place, the way a tamper would.
-    ledger.book_mut().entry(k.clone(), window).settled += 1;
-    let r = residual(&opening, &ledger.book().get(&k, window));
+    let mut tampered = ledger.book().get(&k, window);
+    tampered.settled += 1;
+    let r = residual(&opening, &tampered);
     assert!(!r.holds(), "an edited settled amount went undetected");
     assert_eq!(
         r.amount(),
@@ -92,11 +93,8 @@ fn a_hand_corrupted_priced_amount_breaks_the_identity() {
     );
 
     // And the other direction.
-    ledger.book_mut().entry(k.clone(), window).settled -= 2;
-    assert_eq!(
-        residual(&opening, &ledger.book().get(&k, window)).amount(),
-        -1
-    );
+    tampered.settled -= 2;
+    assert_eq!(residual(&opening, &tampered).amount(), -1);
 }
 
 #[test]
@@ -173,7 +171,6 @@ fn a_replayed_posting_moves_the_book_exactly_as_the_live_one_did() {
             busbar_kernel_ledger::settle::Figures {
                 reserved: posted.reserved(),
                 settled: posted.settled(),
-                overdraft: posted.overdraft(),
                 fee_count: 0,
             },
         );
@@ -188,4 +185,38 @@ fn a_replayed_posting_moves_the_book_exactly_as_the_live_one_did() {
             "the dual write is fed on replay as it was live"
         );
     }
+}
+
+/// **A POSTING CLOSES THE IDENTITY BY CONSTRUCTION, WHATEVER OVERDRAFT ITS HOLD COUNTED.**
+///
+/// A hold that counted an overdraft while it ran and then settled at or inside its reservation
+/// comes out of `Posted::settle` carrying the counter, not the comparison. The ledger used to book
+/// that figure as handed in, so the posting released the unused reservation AND carried an overdraft
+/// out, and the identity was out by the counter. The ledger now reckons the overdraft from the
+/// posting's own two figures — `settled - reserved`, floored at zero — and takes no other, so the
+/// books balance and no overdraft is carried for a posting its reservation covered.
+#[test]
+fn a_hold_that_counted_an_overdraft_and_settled_inside_its_reservation_still_balances() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("counted-then-covered");
+    let window = 1;
+    let opening = Totals::zero();
+
+    ledger.record_draw(&k, window, 800);
+    ledger.record_hold_opened(&k, window, 800);
+    ledger.record_slice_spent(&k, window, 800);
+    let mut h = hold("p", 800);
+    h.record_overdraft(300);
+    let settlement = ledger.settle_recording(&k, window, h, 500, &usage("tokens", 500), &token);
+
+    let after = ledger.book().get(&k, window);
+    assert!(
+        residual(&opening, &after).holds(),
+        "the books are out by the hold's counter: {}",
+        residual(&opening, &after)
+    );
+    assert_eq!(after.overdraft_carried_out, 0, "the reservation covered it");
+    assert_eq!(settlement.released, 300);
+    assert!(settlement.overdraft.is_none());
 }

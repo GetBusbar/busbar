@@ -122,6 +122,8 @@ fn a_legacy_row_that_will_not_write_does_not_fail_the_settlement() {
                 "under test".into(),
             ))
         }
+
+        fn retire(&mut self, _windows: &std::collections::BTreeSet<u64>) {}
     }
     let mut ledger = Ledger::dual_writing(Box::new(Refuses));
     let token = ledger_token();
@@ -276,9 +278,9 @@ fn a_settled_column_at_the_ceiling_pins_rather_than_wrapping() {
     let token = ledger_token();
     let k = key("at-the-ceiling");
 
-    // Drive the settled column to the top directly: no production verb moves it there in one step
-    // (the adjustment verb that used to is deleted), so the test writes the figure itself.
-    ledger.book_mut().entry(k.clone(), 1).settled = i128::MAX;
+    // Drive the settled column to the top in one step: an unconfirmed posting moves out of
+    // `settled` by its amount, so an amount of `-i128::MAX` moves the column up to the ceiling.
+    ledger.record_unreconciled(&k, 1, -i128::MAX);
     assert_eq!(ledger.book().get(&k, 1).settled, i128::MAX);
 
     ledger.record_hold_opened(&k, 1, u64::MAX);

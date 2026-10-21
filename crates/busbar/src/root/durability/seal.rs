@@ -26,6 +26,15 @@
 //! records rather than once per tick; the interval half is checked by the root's tick as well, so
 //! an idle node's last postings are sealed within one interval.
 //!
+//! ## Every seal bounds the book
+//!
+//! Before it seals, the book lets go of every window the last kept checkpoint already holds at the
+//! book's own figures once 1.5.5's thirty-one-day horizon has passed it
+//! ([`busbar_kernel_ledger::settle::Ledger::retire_sealed`]), and the dual-write rows, the counted
+//! lines, the refused rows and the uncounted balances of those windows go with it. So the new seal
+//! holds only what the book still keeps, every window that left is in the seal before it, and the
+//! book, the rows and the read-time lines stay bounded by the windows a budget can still name.
+//!
 //! ## Armed, never implied
 //!
 //! A book seals on cadence only after [`Durability::arm_checkpoints`]. The boot arms the process's
@@ -237,6 +246,7 @@ impl Durability {
         });
         let checkpoint_seq = cadence.next_checkpoint_seq;
         cadence.next_checkpoint_seq = checkpoint_seq.saturating_add(1);
+        self.retire_sealed_windows(now);
         // The journal numbers from one, so its last record is one below the next; a chain still at
         // genesis (an all-zero head) has no record and cross-links nothing.
         let high_water = self.journal.next_seq().saturating_sub(1);
@@ -289,6 +299,30 @@ impl Durability {
         cadence.sealed_at = now;
         self.cadence = Some(cadence);
         outcome
+    }
+
+    /// RETIRE WHAT THE LAST KEPT SEAL HOLDS AND THE HORIZON HAS PASSED (see the module doc): from
+    /// the book and the dual-write rows through the ledger's one verb, then the counted lines, the
+    /// refused rows and the uncounted balances of the same windows, whose bound is the book's.
+    ///
+    /// Nothing goes while a settled figure still waits on the log's confirmation: its move back
+    /// into `settled` would land on a window the book had let go. No kept seal, nothing goes — a
+    /// restarted node keeps every window until it has sealed once.
+    fn retire_sealed_windows(&mut self, now: u64) {
+        if !self.unconfirmed.is_empty() {
+            return;
+        }
+        let Some(sealed) = self.checkpoints.last() else {
+            return;
+        };
+        let retired = self.ledger.retire_sealed(sealed, now);
+        if retired.is_empty() {
+            return;
+        }
+        self.counted.retain(|line| !retired.contains(&line.window));
+        self.refused.retain(|row| !retired.contains(&row.window));
+        self.uncounted
+            .retain(|(_, window)| !retired.contains(window));
     }
 
     /// Seal a checkpoint if the armed cadence says one is due at `now` (wall seconds). `None` when

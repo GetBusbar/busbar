@@ -1331,8 +1331,26 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
     assert_eq!(restarted.recovered_holds, 0, "every hold was closed");
     assert_eq!(restarted.incarnation, 2, "the second boot of this journal");
 
-    // A book that lost a row.
-    restarted.ledger.book_mut().retain_from(86_401);
+    // A book that lost a row: its window let go past the horizon, which the chain still carries.
+    let sealed = Checkpoint::seal(
+        1,
+        7,
+        1_700_000_000,
+        Vec::new(),
+        restarted.ledger.book().snapshot(),
+        0,
+        0,
+        None,
+    )
+    .expect("an unsigned checkpoint seals");
+    assert_eq!(
+        restarted
+            .ledger
+            .retire_sealed(&sealed, u64::MAX)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![86_400]
+    );
     let findings = restarted.reconcile_with_journal();
     assert_eq!(
         findings.len(),
@@ -1352,18 +1370,15 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
         .contains("the journal rebuilds settled"));
 }
 
-/// And a single figure edited in memory, with no record behind it, is named too.
+/// And a single figure moved in memory, with no record behind it, is named too.
 #[test]
 fn the_reconciliation_names_a_figure_the_book_moved_without_a_record() {
     let mut durability = memory_node();
     let key = totals_key("vk_edit");
     settle_one(&mut durability, &key, 1_000, 900, 3);
     assert!(durability.reconcile_with_journal().is_empty());
-    durability
-        .ledger
-        .book_mut()
-        .entry(key.clone(), 86_400)
-        .settled += 1;
+    // A draw the ledger booked and the journal never recorded.
+    durability.ledger.record_draw(&key, 86_400, 1);
     assert_eq!(durability.reconcile_with_journal().len(), 1);
 }
 
