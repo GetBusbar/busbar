@@ -474,6 +474,10 @@ jobs:
           "$PLUGIN_GATES" plugin-gates imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
           rm -rf plugin/target/release
           exit $rc
+      - name: busbar-contract's dev-only features (alloc-counter) are off in the shipped build (the release graph, normal and build edges)
+        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
+        run: |
+          "$PLUGIN_GATES" plugin-gates devfeatures --tree "$RUNNER_TEMP/tree.txt"
       - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
