@@ -159,6 +159,18 @@ pub(crate) async fn observe(
     resp
 }
 
+/// ONE REQUEST'S FINISH AT THE INGRESS BOUNDARY (row 192 C). RED: answers that it emitted,
+/// whatever the path.
+pub fn finish(
+    app: &crate::state::App,
+    path: &str,
+    status: u16,
+    elapsed: std::time::Duration,
+) -> bool {
+    let _ = (app, path, status, elapsed);
+    true
+}
+
 /// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
 ///
 /// It carries nothing, and carrying nothing is the point: this is not a channel for the handler to

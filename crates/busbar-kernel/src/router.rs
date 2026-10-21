@@ -21,7 +21,7 @@ pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 /// (admin / health / early error). `server_timing_dur_ms` treats this as "report the full request
 /// time" rather than subtracting a nonexistent RTT. Only this exact u64::MAX meaning is replaced
 /// with the const; overflow/conversion fallbacks that happen to produce u64::MAX are NOT this.
-pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
+pub const NO_UPSTREAM_RTT: u64 = u64::MAX;
 
 /// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
 /// dialect the path is spoken in — attaching the `x-amzn-*` headers when that dialect is Bedrock,
@@ -213,7 +213,7 @@ pub static REQUEST_ACTIVITY_TICKS: std::sync::atomic::AtomicU64 =
 /// time = total request wall-clock minus the upstream round-trip. `upstream_us == u64::MAX` means
 /// "no upstream hop" (admin/health/early error), so the full time is reported. Saturating, so clock
 /// skew (upstream measured slightly larger than total) can never underflow into a huge value.
-pub(crate) fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
+pub fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
     let internal_us = if upstream_us == NO_UPSTREAM_RTT {
         total_us
     } else {
@@ -234,6 +234,46 @@ pub(crate) async fn request_activity_tick(
 ) -> axum::response::Response {
     REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     next.run(req).await
+}
+
+/// ONE REQUEST'S ACTIVITY TICK (row 192 C). RED: ticks nothing.
+pub fn request_activity() {}
+
+/// THE `Server-Timing` VALUE (row 192 C). RED: none.
+#[must_use]
+pub fn server_timing_value(total_us: u64, upstream_us: u64) -> String {
+    let _ = (total_us, upstream_us);
+    String::new()
+}
+
+/// THE `Server-Timing` FIELD (row 192 C). RED: none.
+#[must_use]
+pub fn server_timing_field(
+    start: std::time::Instant,
+    upstream_us: u64,
+) -> Option<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    let _ = (start, upstream_us);
+    None
+}
+
+/// The upstream round-trip slot around `fut` (row 192 C). RED: no slot.
+pub async fn with_upstream_rtt<F: std::future::Future>(fut: F) -> (F::Output, u64) {
+    (fut.await, NO_UPSTREAM_RTT)
+}
+
+/// THE PANIC BOUNDARY AROUND ONE REQUEST (row 192 C). RED: catches nothing.
+///
+/// # Errors
+///
+/// The panic's payload.
+pub async fn catch_request_panic<F, M>(
+    start: M,
+) -> Result<F::Output, Box<dyn std::any::Any + Send + 'static>>
+where
+    M: FnOnce() -> F,
+    F: std::future::Future,
+{
+    Ok(start().await)
 }
 
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
@@ -1139,7 +1179,7 @@ fn take_panic_seen() -> Option<PanicSeen> {
 /// itself, so the panic is reported once, as a structured `tracing` event, rather than once by the
 /// boundary and again as a bare stderr line by the default hook. Outside a request scope — every
 /// other thread and task — it defers to whatever hook was installed before it, unchanged.
-pub(crate) fn install_request_panic_hook() {
+pub fn install_request_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
@@ -1356,3 +1396,7 @@ mod router_door_tests;
 #[cfg(all(test, feature = "duplex-ws"))]
 #[path = "tests/router_session_tests.rs"]
 mod router_session_tests;
+
+#[cfg(test)]
+#[path = "tests/router_policy_tests.rs"]
+mod router_policy_tests;

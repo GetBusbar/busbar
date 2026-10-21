@@ -17,6 +17,7 @@
 //! This module is only for the sites without such a path.
 
 pub(crate) mod admission;
+pub mod body;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
