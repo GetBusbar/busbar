@@ -355,9 +355,6 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
 /// config's own (v1.5.5's client offered two protocols, its listener one).
 #[test]
 fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
-    use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
-    const OWNER: InstanceId = InstanceId(1);
-    crate::tls::install_crypto_provider();
     let door = TestDoor::new(
         "sec",
         &["sec"],
@@ -379,14 +376,59 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
         vec![b"x-one".to_vec()],
         "the accept offer is the entry's own, and not its dial offer"
     );
+    // The entry's own accept offer wins over the transport's registered list.
+    assert_eq!(
+        agreed_on_the_listener(door, vec![b"x-two".to_vec()]).as_deref(),
+        Some(&b"x-one"[..]),
+        "the listener agreed off the entry's accept offer"
+    );
+}
+
+/// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
+/// LISTENS WITH THE TRANSPORT'S REGISTERED PROTOCOL LIST (the registry's `Entry::alpn`, the
+/// operator's settings dealt at boot), as a dial whose `locate` answers no offer dials with it
+/// (`compose`, "the registration's stands only for an entry that answers none"). A TLS gRPC
+/// listener whose entry answers no accepting offer still agrees `h2` off its registration: gRPC
+/// clients refuse a TLS connection on which no protocol was negotiated. RED before the fix: the
+/// bind took the entry's accept offer alone (`accept_offer(..).unwrap_or_default()`), so the
+/// listener offered nothing and the handshake agreed no protocol.
+#[test]
+fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
+    let door = TestDoor::new(
+        "sec",
+        &["sec"],
+        &[],
+        crate::support::Knobs {
+            secure_name: Some("localhost"),
+            ..crate::support::Knobs::default()
+        },
+    );
+    assert_eq!(
+        crate::framer::accept_offer(&door).unwrap(),
+        Vec::<Vec<u8>>::new(),
+        "the entry states no accept offer"
+    );
+    assert_eq!(
+        agreed_on_the_listener(door, vec![b"x-one".to_vec()]).as_deref(),
+        Some(&b"x-one"[..]),
+        "the listener agreed off the transport's registered list"
+    );
+}
+
+/// What a TLS client offering `x-two, x-one` agrees with the listener the connector binds for an
+/// inbound need declared over `door`'s scheme (`sec`), the entry registered with the protocol list
+/// `registered`. The entry is a FRAMER (it names a secure layer), so its listener rides the address
+/// carrier the view holds beside it, as every connector does (`Connector::listen`).
+fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Vec<u8>> {
+    use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
+    const OWNER: InstanceId = InstanceId(1);
+    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        // The entry is a FRAMER (it names a secure layer and an offer), so its listener rides the
-        // address carrier the view holds beside it, as every connector does (`Connector::listen`).
         let view = crate::registry::Transports::new(vec![
             crate::registry::Entry {
                 door: Arc::new(door),
-                alpn: Vec::new(),
+                alpn: registered,
             },
             crate::registry::Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
@@ -447,11 +489,6 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
             }
         }
         c.close(OWNER, id).unwrap();
-        let agreed = client.await.unwrap();
-        assert_eq!(
-            agreed.as_deref(),
-            Some(&b"x-one"[..]),
-            "the listener agreed off the entry's accept offer"
-        );
-    });
+        client.await.unwrap()
+    })
 }
