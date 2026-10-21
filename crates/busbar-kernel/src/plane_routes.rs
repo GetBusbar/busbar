@@ -96,10 +96,6 @@ pub struct PlaneRefusalSpec {
     pub route: DoorRouteId,
     /// Its plane's rendering.
     pub refuse: PlaneRefuseFn,
-    /// THE DIALECT THE REFUSAL IS WORDED IN: the name of the claim's refusal dialect, as the plane's
-    /// door states its dialects (`abi::plane::Claim::refusal_dialect` into the tail's dialects).
-    /// The label a hook tap of the refusal is told; the kernel reads it, never derives it.
-    pub dialect: &'static str,
     /// THE SIGNED PATHS of its plane (ARCHITECT ruling 2026-10-16, 3b A): the raw-affix target
     /// (`<prefix>*<suffix>`, `abi::plane::CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17) of every
     /// claim the plane flags `abi::plane::CLAIM_SIGNED_INGRESS`, whatever this route's own path and

@@ -58,8 +58,11 @@ pub fn labelled_dialect(
     path: &str,
     by_path: Option<&PathDialects>,
 ) -> Option<&'static str> {
-    let _ = (ingress, path, by_path);
-    None
+    match ingress {
+        Ingress::Mounted(_) => ingress.shaping_wire_format(),
+        Ingress::Fallback => by_path.and_then(|d| (d.claimed)(path)),
+    }
+    .or_else(|| by_path.and_then(|d| d.residual))
 }
 
 /// THE KERNEL'S OWN REFUSAL: the answer when no plane renders one (no plane's line and no fallback

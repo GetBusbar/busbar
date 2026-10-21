@@ -2797,22 +2797,11 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
-            // The claim's refusal dialect, by the name the plane's tail states for it: the label a
-            // hook tap of the `401` is told.
-            let served = &routes.served.planes[plane];
-            let dialect = served
-                .snapshot
-                .claims
-                .get(claim as usize)
-                .and_then(|c| served.dialects.get(usize::from(c.refusal_dialect)))
-                .copied()
-                .unwrap_or("");
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
-                dialect,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];

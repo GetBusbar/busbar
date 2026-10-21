@@ -351,12 +351,35 @@ pub fn stream_media(linked: &Linked) -> Vec<&'static str> {
 
 /// THE PATH DIALECTS the linked planes' dialect rows state, as the kernel labels an authentication
 /// refusal's tap off the path alone (`busbar_kernel::ingress::native::PathDialects`).
+/// Every declaration's own path claim (`ProtocolDecl::residual_claims`) in the linked order, the
+/// tightest claim kept and a tie broken by that order; the first declaration that states itself the
+/// residual default (`ProtocolDecl::residual_default`) for a path none claims. The fold the deleted
+/// kernel registry ran over the same rows (`residual_protocol_for_path` and
+/// `residual_default_protocol`), so the label is byte for byte the one dev gave.
 pub fn path_dialects(linked: &Linked) -> busbar_kernel::ingress::native::PathDialects {
-    let _ = linked;
+    let protocols = linked.protocols;
     busbar_kernel::ingress::native::PathDialects {
-        claimed: Arc::new(|_: &str| None),
-        residual: None,
+        claimed: Arc::new(move |path: &str| claimed_dialect(protocols, path)),
+        residual: protocols
+            .iter()
+            .flat_map(|decls| decls.iter())
+            .find(|d| d.residual_default)
+            .map(|d| d.name),
     }
+}
+
+/// The dialect `protocols` claim `path` for by its shape alone (`ProtocolDecl::residual_claims`),
+/// the tightest claim kept, a tie broken by the linked order.
+fn claimed_dialect(
+    protocols: &[&[&'static busbar_contract::protocol::ProtocolDecl]],
+    path: &str,
+) -> Option<&'static str> {
+    protocols
+        .iter()
+        .flat_map(|decls| decls.iter())
+        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
 }
 
 /// The dialect the linked planes' declarations claim `path` for by its shape alone
@@ -364,13 +387,7 @@ pub fn path_dialects(linked: &Linked) -> busbar_kernel::ingress::native::PathDia
 /// linked plane states without spelling one.
 #[cfg(test)]
 pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
-    linked
-        .protocols
-        .iter()
-        .flat_map(|decls| decls.iter())
-        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
-        .min_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, name)| name)
+    claimed_dialect(linked.protocols, path)
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,

@@ -35,7 +35,6 @@ fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
         },
         refuse: Arc::new(|_: busbar_contract::caps::ReasonCode, _: &str| PlaneResponse::default()),
         signed_ingress: signed,
-        dialect: "",
     }]);
     assert!(table.signed_ingress("/door/x/sign"));
     assert!(table.signed_ingress("/door/arn:a:b/c:0/sign"));
@@ -54,37 +53,30 @@ fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
 /// THE AUTH-DENIAL TAP LABEL, WHATEVER THE VERB. v1.5.5 labelled a `rejected_by_auth` response tap
 /// with the dialect it read off the PATH alone (`crates/busbar/src/auth/mod.rs:1166-1167` at
 /// v1.5.5: `unauthorized_with_completion_taps` takes `proto_for_path(path)`), so an OPTIONS or HEAD
-/// at a dialect's path was tapped under that dialect, exactly as its POST was. The door routes
-/// state the dialect per claim; a verb no route at the path takes reads the dialect of the most
-/// specific route the path matches, method aside. RED arms: the wildcard tail's dialect for a path
-/// an exact route names, and none for a path a route matches.
+/// at a dialect's path was tapped under that dialect, exactly as its POST was. The label is computed
+/// with no verb and no door route in hand ([`crate::ingress::native::labelled_dialect`]), so the
+/// request's verb (the closure's second argument) cannot reach it. RED arm (the door-route label
+/// this replaces): HEAD was read as GET, and took a wildcard `GET` route's dialect for a path a
+/// `POST` route names.
 #[test]
 fn an_auth_denial_is_tapped_under_the_paths_dialect_whatever_the_verb() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
-    use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec, PlaneResponse};
+    use crate::ingress::native::{labelled_dialect, PathDialects};
+    use crate::plane::Ingress;
     use std::sync::Arc;
-    let spec = |path: &str, method: RouteMethod, dialect: &'static str| PlaneRefusalSpec {
-        route: DoorRouteId {
-            path: path.to_string(),
-            method,
-        },
-        refuse: Arc::new(|_: busbar_contract::caps::ReasonCode, _: &str| PlaneResponse::default()),
-        signed_ingress: Arc::from(Vec::<String>::new()),
-        dialect,
+    let dialects = PathDialects {
+        claimed: Arc::new(|path: &str| (path == "/v1/messages").then_some("messages")),
+        residual: Some("residual"),
     };
-    let table = super::CoreRouteTable::default().with_door_refusals(vec![
-        spec("/{*rest}", RouteMethod::Get, "residual"),
-        spec("/{*rest}", RouteMethod::Post, "residual"),
-        spec("/v1/messages", RouteMethod::Post, "messages"),
-    ]);
-    let at = |path: &str, method: axum::http::Method| table.refusal_dialect(path, &method);
-    // The verbs a route takes: the route's own dialect.
+    let at = |path: &str, _method: axum::http::Method| {
+        labelled_dialect(Ingress::Fallback, path, Some(&dialects))
+    };
+    // The verbs a door route takes: the path's own dialect.
     assert_eq!(
         at("/v1/messages", axum::http::Method::POST),
         Some("messages")
     );
     assert_eq!(at("/elsewhere", axum::http::Method::GET), Some("residual"));
-    // The verbs no route takes: the most specific route the path matches, method aside.
+    // The verbs no door route takes: still the path's own dialect.
     for method in [axum::http::Method::OPTIONS, axum::http::Method::HEAD] {
         assert_eq!(
             at("/v1/messages", method.clone()),
@@ -97,10 +89,9 @@ fn an_auth_denial_is_tapped_under_the_paths_dialect_whatever_the_verb() {
             "{method}"
         );
     }
-    // No door route at all: no dialect.
+    // No path dialects installed: no dialect.
     assert_eq!(
-        super::CoreRouteTable::default()
-            .refusal_dialect("/v1/messages", &axum::http::Method::OPTIONS),
+        labelled_dialect(Ingress::Fallback, "/v1/messages", None),
         None
     );
 }
