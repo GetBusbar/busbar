@@ -11,7 +11,8 @@
 //! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
-//!    the chain is kept, so a record still queued at exit is a settled unit the store never saw.
+//!    the chain is kept, so a record still queued at exit is a settled unit the store never saw;
+//! 4. the node's lease on its host name, released, so the host's next boot resumes its chain.
 //!
 //! Two tails were two lists, and the line-serve one had lost steps 2 and 3 (audit busbar-src #1).
 //! One function is one list.
@@ -63,6 +64,9 @@ pub async fn tail(
             tracing::warn!("journal records were still queued for the store at shutdown");
         }
     }
+    // THE NODE'S LEASE ON ITS HOST NAME, released once its chain reached the store, so the next
+    // boot of this host resumes it at once (Q128). Off the runtime: it waits on the store.
+    let _released = tokio::task::spawn_blocking(crate::root::durability::release_held_lease).await;
 }
 
 #[cfg(test)]

@@ -145,7 +145,7 @@ fn each_finish_door_is_one_terminal() {
     assert_eq!(terminals(proto) - before, 2, "the charged door");
 }
 
-/// F25 row 702: rehomed from crates/busbar-llm/src/unit/tests/chain.rs::the_refused_terminal_labels_a_configured_pool_with_its_name.
+/// F25 row 702: rehomed from the retired engine crate's src/unit/tests/chain.rs::the_refused_terminal_labels_a_configured_pool_with_its_name.
 /// Pins: the live pre-admission guard's refusal (403) against a CONFIGURED pool ends its unit on a
 /// terminal labelled with that pool's own name, and a refusal against a name no deployment
 /// configured is labelled with the reserved `unresolved` label — the bound is unchanged.

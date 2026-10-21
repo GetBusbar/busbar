@@ -77,10 +77,11 @@ fn build_with_hook_makes_a_plane_attach_live() {
             // A plane served through its door builds its slot through its own `build`, the slot
             // its `reresolve_gates` re-reads the registry off.
             None => {
+                let defs =
+                    std::collections::BTreeMap::from([(tools.config_section, cfg.clone_box())]);
                 let ctx = busbar_kernel::plane::registry::BuildCtx {
                     endpoint_slot: None,
-                    agent_defs: &(),
-                    tool_defs: cfg.as_any(),
+                    plane_defs: &defs,
                     public_url: None,
                     prior: None,
                     providers: None,

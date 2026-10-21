@@ -5,7 +5,7 @@
 # verified set in the pick order, ONE stepper that answers the next member or the pool's exhaustion
 # terminal for every attempt the far end runs; and it bounds each attempt's wait for its first
 # answer by what the walk has left. The pick order, the hop count, the deadline rule and the
-# terminal bodies are the ones 1.5.5 shipped (`busbar-llm`'s `engine/select.rs`'s `pick_among`,
+# terminal bodies are the ones 1.5.5 shipped (the retired engine crate's `engine/select.rs`'s `pick_among`,
 # `engine/exhaustion/**` and the failover loop in `engine/pipeline.rs`), moved rather than
 # rewritten. The attempt's I/O is the far end's, in the kernel.
 #
