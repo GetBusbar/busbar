@@ -236,7 +236,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -247,6 +247,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("the connector builds");
 
@@ -907,7 +908,7 @@ pub(super) mod session_door {
             ..Default::default()
         })
         .expect("the guard");
-        busbar_core_connector::process::build(
+        busbar_core_connector::process::build_with_secrets(
             || {
                 crate::root::connector::entries(
                     crate::LINKED_TRANSPORT_DOORS,
@@ -918,6 +919,7 @@ pub(super) mod session_door {
             &[],
             Arc::new(|_, _| {}),
             busbar_core_connector::pool::PoolPosture::NONE,
+            busbar_kernel::config::secret::resolve_linked_string_at_config,
         )
         .expect("the connector builds")
     }
@@ -2056,6 +2058,108 @@ pub(super) mod session_door {
                 "the turns arrive in order: {kind}, carried: {carried}"
             );
         }
+    }
+
+    /// MONEY (Q128 arch u64; THE DESIGN section 7, "the plane reports the units it did"), at the
+    /// session door's root leg: a caller's GA `session.update` sets the uplink to µ-law through
+    /// `session.audio.input.format`, the provider reads 8 bytes a millisecond from then on, and the
+    /// session's one sealed line bills what it read: six seconds of µ-law (48 000 bytes) are 6
+    /// `audio_seconds_in`. A session holds nothing on the book's chain (no hold, no settlement:
+    /// `Node::open_borrowed`), so its one line is the record its end seals with the counts the
+    /// plane reported (`Node::seal_session`, THE DESIGN section 7: "the session's end writes ONE
+    /// sealed line"), and that record is what this cell reads. RED ARM: the plane read only the
+    /// legacy `input_audio_format`, counted the 48 000 bytes at PCM16's 48 a millisecond, and the
+    /// line billed 1 second of the 6 served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_bills_a_ga_mulaw_uplink_at_mulaw() {
+        use base64::Engine as _;
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_socket().await;
+        let mut s = session_with(
+            "serve-door-session-ga-format",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+
+        let route = SIDEBAND.replace("{call_id}", "call-ga-format");
+        let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
+        let open = format!(
+            "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {plain}\r\n\r\n"
+        );
+        caller.write_all(open.as_bytes()).await.expect("the open");
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), read_head(&mut caller))
+            .await
+            .expect("the door answers the open")
+            .expect("a head");
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the session opens: {head}"
+        );
+
+        let update = r#"{"type":"session.update","session":{"type":"realtime","audio":{"input":{"format":{"type":"audio/pcmu"}}}}}"#;
+        caller
+            .write_all(&client_text(update))
+            .await
+            .expect("the caller's GA update");
+        // One second of µ-law (8 000 bytes) a frame, six frames.
+        let second = base64::engine::general_purpose::STANDARD.encode(vec![0x7f_u8; 8_000]);
+        let append = format!(r#"{{"type":"input_audio_buffer.append","audio":"{second}"}}"#);
+        for n in 0..6 {
+            caller
+                .write_all(&client_text(&append))
+                .await
+                .expect("a second of audio");
+            let carried = next_heard(&mut s.heard)
+                .await
+                .unwrap_or_else(|| panic!("second {n} reaches the provider"));
+            assert!(carried.contains("input_audio_buffer.append"), "{carried}");
+        }
+        // The caller closes: the session ends and its one line is sealed.
+        caller
+            .write_all(&[0x88, 0x80, 0x37, 0xFA, 0x21, 0x3D])
+            .await
+            .expect("the caller's close");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (billed, sealed) = loop {
+            let records = s.audit_records();
+            let seconds = records.iter().find_map(|r| {
+                r.usage
+                    .lines
+                    .iter()
+                    .find(|l| l.class.as_str() == AUDIO_CLASS)
+                    .map(|l| l.quantity)
+            });
+            if seconds.is_some() || std::time::Instant::now() > deadline {
+                // What the session's end sealed, so a red names whether its line was never sealed
+                // or was sealed without the audio the provider read.
+                let sealed: Vec<String> = records
+                    .iter()
+                    .map(|r| format!("{:?} {:?}", r.outcome.unit_end, r.usage.lines))
+                    .collect();
+                break (seconds, sealed);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert_eq!(
+            billed,
+            Some(6),
+            "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
+        );
     }
 }
 
@@ -3918,7 +4022,7 @@ async fn serve_configured(
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -3929,6 +4033,7 @@ async fn serve_configured(
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -7095,20 +7200,28 @@ fn streamed_chat() -> serde_json::Value {
 
 /// THE STREAM CEILING, NOT THE POOL'S TIMEOUT, bounds a streamed answer (the plane states
 /// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
-/// outlives its pool's one-second failover timeout is delivered whole. Before the plane stated the
+/// outlives its pool's two-second failover timeout is delivered whole. Before the plane stated the
 /// stream, the door cut it at the pool's timeout.
+///
+/// The pool's timeout is two seconds, not one, because the walk's deadline is whole wall-clock
+/// seconds (`RequestCtx::expired`, as 1.5.5's): a one-second budget whose walk starts late in a
+/// wall second is spent at the next second boundary, so the first pick could find it expired (a
+/// 503 request-timeout shed before anything is dialled) whenever that boundary fell between the
+/// walk's start and its pick. Two seconds leaves the pick at least one whole second; the far end's
+/// three-second pause still outlives the whole budget, so a door that bounded the stream by it
+/// would cut the answer.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-outlives-timeout";
     let _published = Withdrawn(instance);
-    let far = far_end_scripted(stream_pausing(2_000)).await;
+    let far = far_end_scripted(stream_pausing(3_000)).await;
     let rig = rig(
         instance,
         RigOpts {
             members: &[(far.port, 1)],
-            failover_timeout_secs: Some(1),
+            failover_timeout_secs: Some(2),
             ..RigOpts::default()
         },
     )
@@ -8160,18 +8273,14 @@ mod pools_door_money {
         );
     }
 
-    /// A STREAM ITS FAR END CUT BILLS NO TOKENS AND KEEPS ITS FEE (F25 row 720; legacy
-    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`,
-    /// corrected to BUSBAR-1.6.0.md, Budgets, l.1014-1019, status row 183): a streamed answer whose
-    /// far end reports its usage (11 in, 7 out) and then cuts the stream before its end bills NO
-    /// tokens, as 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: the
-    /// transport error sets `stream_failed` (:283) and the drop-time gate bills no tokens (:642);
-    /// oracle cell `route.failover|fo|primary-cut-stream`, golden usage `{"requests":1}`, tokens
-    /// 0). It keeps its one request and its one fee (billable 1: the 200 that went out is not
-    /// reversed, v1.5.5 `crates/busbar/src/ingress/mod.rs:574-575`), and its sealed record is
-    /// Partial with no token line. A stream the CALLER left is the other case: it bills what the far
-    /// end had reported (`:633-660`). RED: the cut stream's reported tokens billed, or the fee
-    /// reversed.
+    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
+    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`; owner
+    /// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."):
+    /// a streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
+    /// end bills those 18 tokens, as its plane ledgered them; it keeps its one request and its one
+    /// fee (billable 1, the 200 that went out is not reversed), and its sealed record reports one
+    /// line per streamed tier: input 11, output 7. RED: the streamed tokens dropped, the fee
+    /// reversed, or the tiers merged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8202,17 +8311,22 @@ mod pools_door_money {
         let (requests, _, _, billable) = rig.ledger_after(1).await;
         assert_eq!(requests, 1, "the request unit still counts");
         assert_eq!(billable, 1, "the fee it earned is kept");
-        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
         assert_eq!(
             rig.tokens_after().await,
-            0,
-            "a stream its far end cut bills no tokens"
+            18,
+            "the streamed tokens are the charge"
         );
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let mut lines = token_lines(&record);
+        lines.retain(|(_, quantity)| *quantity > 0);
+        lines.sort();
         assert_eq!(
-            reported(&record),
-            0,
-            "its record reports no token either: {:?}",
-            token_lines(&record)
+            lines,
+            vec![
+                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
+                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
+            ],
+            "one line per streamed tier"
         );
     }
 
