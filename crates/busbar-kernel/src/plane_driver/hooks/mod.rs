@@ -1204,6 +1204,19 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 i.arena_buf = bufs.arena.as_mut_ptr();
                 i.arena_cap = bufs.arena.len();
             });
+        // FAULT on a project that carried a rewrite: always the shared 500, whatever the hook's
+        // `on_error` says, and the body is never forwarded (`abi::plane::project_faults`).
+        if busbar_contract::abi::plane::project_faults(outcome, rewrite.is_some()) {
+            tracing::error!(
+                "the plane could not apply a request rewrite it must not leave unapplied; \
+                 rejecting rather than forwarding the body un-rewritten"
+            );
+            return Err(Stopped::Veto(Veto {
+                status: u32::from(busbar_contract::abi::plane::PROJECT_FAULT_STATUS),
+                text: busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE.to_string(),
+                hook: None,
+            }));
+        }
         if outcome != AbiOutcome::Ready {
             return Err(Stopped::Unreadable);
         }
@@ -1414,6 +1427,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         }
                         // The plane refused the rewrite: the hook's failure, by its `on_error`;
                         // otherwise the unit goes on as it stood before that rewrite.
+                        Err(fault @ Stopped::Veto(_)) => {
+                            // A FAULT project: the shared 500, never the hook's `on_error`.
+                            self.lock().hooked = Some((hooks, view));
+                            return Err(fault);
+                        }
                         Err(_) => {
                             if let Some((status, message)) = gated::refused_rewrite(&**hook, &pool)
                             {

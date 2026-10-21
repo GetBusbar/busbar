@@ -207,12 +207,18 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let Ok(next) = self.project(Some(&bytes)) else {
-                        // The plane refused the rewrite: the hook's failure, by its `on_error`.
-                        if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
-                            return Err(veto_by(status, message, hook.name()));
+                    let next = match self.project(Some(&bytes)) {
+                        Ok(next) => next,
+                        // A FAULT project: the shared 500, never the hook's `on_error`.
+                        Err(fault @ Stopped::Veto(_)) => return Err(fault),
+                        Err(_) => {
+                            // The plane refused the rewrite: the hook's failure, by its
+                            // `on_error`.
+                            if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
+                                return Err(veto_by(status, message, hook.name()));
+                            }
+                            continue;
                         }
-                        continue;
                     };
                     // The re-projection is held to the same bound entry.
                     if next.pool != entry {

@@ -578,3 +578,82 @@ async fn a_gate_first_rewrite_the_plane_refuses_is_answered_by_the_hooks_on_erro
     );
     assert!(far.sent().is_empty(), "nothing reached the far end");
 }
+
+/// RED (row 159, B1): a plane that answers FAULT to a `project` carrying a request-stage hook's
+/// rewrite (a redaction it cannot apply) is answered with the shared 500 and its words under EVERY
+/// `on_error`, never the hook's disposition, and the far end is never dialled.
+#[tokio::test]
+async fn a_faulted_rewrite_project_is_always_the_shared_500_under_every_on_error() {
+    let words = format!(
+        "refused:500:{}",
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+    )
+    .into_bytes();
+    for on_error in ["weighted", "first", "reject"] {
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(resolved_rewrite(on_error), Vec::new())),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/faults-rewrite", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+            "on_error: {on_error}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the plane rendered the 500");
+        assert_eq!(rendered.status, 500, "on_error: {on_error}");
+        assert_eq!(rendered.body, words, "on_error: {on_error}");
+        assert!(far.sent().is_empty(), "on_error: {on_error}: never dialled");
+    }
+}
+
+/// The gate-first twin of the above: the entry's rewrite whose project FAULTs is the shared 500
+/// under every `on_error`, nothing sent.
+#[tokio::test]
+async fn a_gate_first_faulted_rewrite_project_is_always_the_shared_500() {
+    let words = format!(
+        "refused:500:{}",
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+    )
+    .into_bytes();
+    for on_error in ["weighted", "first", "reject"] {
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+            rewrites: resolved_rewrite(on_error),
+        }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/faults-rewrite", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+            "on_error: {on_error}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the 500 is rendered");
+        assert_eq!(rendered.status, 500, "on_error: {on_error}");
+        assert_eq!(rendered.body, words, "on_error: {on_error}");
+        assert!(far.sent().is_empty(), "on_error: {on_error}: never dialled");
+    }
+}
