@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936#175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=722a2fcecd61082efa19378052598f109ed11d19#722a2fcecd61082efa19378052598f109ed11d19"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
