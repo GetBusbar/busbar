@@ -839,5 +839,61 @@ fn red_an_uncapped_secured_bind_admits_past_the_default_cap() {
             .expect("closed at once")
             .unwrap_or(0);
         assert_eq!(n, 0, "not a byte written");
+
+/// RED (/status row 192 B, the agreed protocol): the protocol an accepting framer states it agreed
+/// (`FramerYield::agreed`, a 1-based position in its accepting offer) is read back by the
+/// connector, resolved against the offer the listener made ([`Connection::agreed`]); a framer that
+/// states `0` agreed nothing the host knows of; and a position past the offer is the framer's
+/// fault, refusing the connection.
+#[test]
+fn red_an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer() {
+    use crate::support::Knobs;
+    let offer = vec![b"proto-a".to_vec(), b"proto-b".to_vec()];
+    let listener = |agreed: Option<u32>| {
+        let door = Arc::new(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                agreed,
+                ..Knobs::default()
+            },
+        ));
+        Listening::bind(
+            Some(door),
+            &crate::support::via(),
+            "127.0.0.1:0",
+            None,
+            offer.clone(),
+            AcceptLimits::default(),
+        )
+        .expect("binds")
+    };
+    worker().block_on(async {
+        for (stated, want) in [
+            (Some(2), Some(&b"proto-b"[..])),
+            (Some(1), Some(&b"proto-a"[..])),
+            (Some(0), None),
+            (None, None),
+        ] {
+            let mut l = listener(stated);
+            let addr = l.local_addr();
+            let client = tokio::spawn(async move { Client::connect(addr).await.unwrap() });
+            let a = accept(&mut l).await;
+            let held = client.await.unwrap();
+            assert_eq!(a.conn.agreed(), want, "stated {stated:?}");
+            drop((a, held));
+        }
+        let mut l = listener(Some(3));
+        let addr = l.local_addr();
+        let client = tokio::spawn(async move { Client::connect(addr).await.unwrap() });
+        let got = futures::future::poll_fn(|cx| l.poll_accept(cx)).await;
+        let held = client.await.unwrap();
+        match got {
+            Err(Failure::Failed(e)) => assert!(e.contains("agreed"), "{e}"),
+            Err(other) => panic!("refused for another reason: {other:?}"),
+            Ok(a) => panic!("a position past the offer was taken: {:?}", a.conn.agreed()),
+        }
+        drop(held);
     });
 }

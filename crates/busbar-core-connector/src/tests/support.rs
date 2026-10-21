@@ -69,6 +69,9 @@ pub struct Knobs {
     /// kept, then whatever it still holds: as an http framer hands up an upgrade request's head
     /// (and the bytes that followed it) unanswered for the framer that adopts the connection.
     pub holds: bool,
+    /// An accepting `begin` states this agreed protocol (`FramerYield::agreed`, a 1-based position
+    /// in the accepting offer).
+    pub agreed: Option<u32>,
 }
 
 #[derive(Default)]
@@ -456,6 +459,13 @@ impl FramerDoor for TestDoor {
                     }
                     o.yielded.frame_len = bytes.len() as u64;
                     o.yielded.heads_len = 1;
+                }
+                if let Some(n) = self
+                    .knobs
+                    .agreed
+                    .filter(|_| i.side != busbar_contract::abi::transport::SIDE_DIAL)
+                {
+                    o.yielded.agreed = n;
                 }
                 framings.insert(token, st);
                 o.framing = token;
