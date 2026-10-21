@@ -25,11 +25,11 @@
 //
 // * `BOTH_WAYS_ROWS`: `(row, logic crate, cdylib crate)` of every row;
 // * `KIND_FIXTURES`: `(kind, cdylib crate)` of each row of a kind whose linked door is a module of
-//   its logic crate (`MODULE_KINDS`);
+//   its logic crate (`CRATE_DOOR_KINDS`);
 // * `DOOR_FIXTURES`: `(row, cdylib crate, linked door)` of each row of a kind whose linked door is
 //   its logic crate's `door::door` (`DOOR_KINDS`);
 // * the per-row alias `<row>_fixture`, the logic crate itself, and for a row naming its twin in a
-//   `MODULE_KINDS` kind, the logic crate's `linked` module as `<kind>_linked`.
+//   `CRATE_DOOR_KINDS` kind, the logic crate's `linked` module as `<kind>_linked`.
 //
 // The `store` row (`STORE_KINDS`) is also written to `$OUT_DIR/store_fixture.rs` (its crate alias and
 // cdylib stem) and `$OUT_DIR/store_door.rs` (the store door example's one `export_door!` line), for
@@ -42,7 +42,7 @@ use std::path::PathBuf;
 
 /// The kinds whose fixture's linked door is a module of its logic crate (a plane's `#[repr(C)]` decl,
 /// a transport's `linked` module, the secret source's `door`), reached through the crate alias.
-const MODULE_KINDS: &[&str] = &["plane", "transport", "secret"];
+const CRATE_DOOR_KINDS: &[&str] = &["plane", "transport", "secret"];
 
 /// The kinds whose fixture's linked door is its logic crate's `door::door` (THE DESIGN,
 /// compiled-in = dropped-in: the same door its dropped-in build exports).
@@ -140,7 +140,7 @@ fn main() {
         };
         twins.push(format!("{logic}_plugin"));
         rows.push_str(&format!("    (\"{key}\", \"{logic}\", \"{cdylib}\"),\n"));
-        if MODULE_KINDS.contains(&kind) {
+        if CRATE_DOOR_KINDS.contains(&kind) {
             modules.push_str(&format!("    (\"{kind}\", \"{cdylib}\"),\n"));
             if named_twin {
                 // The row named the twin: its logic crate's `linked` module is the linked door.
@@ -170,7 +170,7 @@ fn main() {
         } else {
             panic!(
                 "Cargo.toml: both-ways row `{key}` ({krate}) is of kind `{kind}`, which has no \
-                 linked door here: add the kind to MODULE_KINDS, DOOR_KINDS or STORE_KINDS"
+                 linked door here: add the kind to CRATE_DOOR_KINDS, DOOR_KINDS or STORE_KINDS"
             );
         }
         crates.push_str(&format!(
