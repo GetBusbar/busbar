@@ -90,12 +90,15 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 - **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
   1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect from a public host to a private or loopback address, and any such redirect to a cloud metadata or IPv6 link-local host.
-  1.5.5 followed up to 10 https redirects with no address check. The refusal reads
-  `request to {next URL} failed: a redirect to a private or loopback address is not allowed` or
-  `request to {next URL} failed: a redirect to a cloud metadata address is not allowed`. An identity
-  provider on a private address may still redirect within private addresses, a public-to-public
-  https redirect is still followed, and every other error text is 1.5.5's (owner-approved
-  2026-10-21).
+  1.5.5 followed up to 10 https redirects with no address check. The refusal names the URL that was
+  asked: `request to {asked URL} failed: a redirect to a private or loopback address is not allowed`
+  or `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed`. The
+  check reads the literal hosts only, with no DNS lookup. An identity provider addressed by a private
+  IP may still redirect to a private IP. One reached by a DNS name (e.g. `keycloak.corp`) counts as
+  public, so its redirect to a private IP literal is now refused where 1.5.5 followed it. A redirect
+  to a DNS name that resolves to a private or metadata address is followed, and the dial guard judges
+  it. A public-to-public https redirect is still followed, and every other error text is 1.5.5's
+  (owner-approved 2026-10-21).
 
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
