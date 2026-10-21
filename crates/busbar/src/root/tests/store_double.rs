@@ -3,8 +3,9 @@
 //! built over one `RecordSlots` are one deployment restarted over one store. It counts the puts it
 //! took and can be told to REFUSE them, which is how a store that has the slots but will not take a
 //! write is posed. It keeps the single-use claims `redeem_plane_token` takes (the one atomic step a
-//! minting boot races on), and a test can redeem one first as another node would. Every other slot
-//! answers FAILED: the journal must not reach them.
+//! minting boot races on), and a test can redeem one first as another node would. It can be told to
+//! FAIL its scans, which is how a store that stops reading the journal back is posed. Every other
+//! slot answers FAILED: the journal must not reach them.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -30,6 +31,7 @@ pub(crate) struct RecordSlots {
     rows: Arc<Mutex<Rows>>,
     claims: Arc<Mutex<Claims>>,
     refusing: Arc<AtomicBool>,
+    unreadable: Arc<AtomicBool>,
     /// `0`: no budget. `n + 1`: take `n` more puts, then refuse every one after.
     budget: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
@@ -50,6 +52,12 @@ impl RecordSlots {
     pub(crate) fn refuse(&self, refusing: bool) {
         self.budget.store(0, Ordering::Release);
         self.refusing.store(refusing, Ordering::Release);
+    }
+
+    /// From now on, fail (`true`) or answer (`false`) every scan: the store stops reading the
+    /// journal back, as a remote store failing over does.
+    pub(crate) fn fail_reads(&self, failing: bool) {
+        self.unreadable.store(failing, Ordering::Release);
     }
 
     /// Take the next `n` puts, then refuse every one after until [`Self::refuse`] says otherwise:
@@ -213,6 +221,13 @@ impl StoreCalls for RecordSlots {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+        if self.unreadable.load(Ordering::Acquire) {
+            return Box::pin(async {
+                Err(StoreFailure::Failed(
+                    "the test store will not read".to_string(),
+                ))
+            });
+        }
         let rows: Vec<(Vec<u8>, RecordBytes)> = self
             .rows
             .lock()

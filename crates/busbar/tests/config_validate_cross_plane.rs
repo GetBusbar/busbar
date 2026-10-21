@@ -12,8 +12,8 @@ use busbar_kernel::config;
 use std::collections::HashMap;
 
 /// THE `tools:` SECTION'S SECRET REFERENCES ARE ENUMERATED, so `--validate` and boot resolve each one
-/// (P3 DEL-MCP: the section is a door plane's, carried as written). Its owning plane's declaration
-/// names where references live — busbar's own RFC 8693 subject token, and a stdio child's
+/// (P3: the section is a door plane's, carried as written). Its owning plane's declaration
+/// names where references live — busbar's own RFC 8693 subject token, and a child process's
 /// environment values — and the section the registry lifted answers every reference at those paths,
 /// with its full config path, and nothing that is not a reference.
 #[test]
