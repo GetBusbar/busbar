@@ -2053,7 +2053,7 @@ impl TestApp {
 /// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
 /// no root, and no loader: BUSBAR-1.6.0.md THE DESIGN l.322). The hook rows a test build links,
 /// answered IN PROCESS: the ranking double's words ([`ranking_double::RankingAxis`], under the
-/// `hooks-ranking` feature, as the root links its ranking row). A `kind: hook` row `registry`
+/// build's ranking feature, as the root links its ranking row). A `kind: hook` row `registry`
 /// admits from a plugins directory has no in-process implementation (a test's rows double carries
 /// no image): it does not answer here, and its open is refused naming the module. A test that drives dropped-in hooks hands its `HookEnv` the hook double's axis
 /// ([`test_hook_env`], [`hook_double::HookAxisDouble`]). How the root's axis binds and crosses a

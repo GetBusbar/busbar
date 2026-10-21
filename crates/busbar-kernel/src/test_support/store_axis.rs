@@ -49,7 +49,7 @@ use busbar_contract::store_calls::{
     OpIdMint, OpenedStore, StoreAxis, StoreCall, StoreCalls, StoreDoor, StoreFailure,
 };
 
-use super::store_double::{self, MemoryStore};
+use super::store_double::{self, MemoryStore as Double};
 
 /// A test build's store axis (it has no composition root): the store double's door, opened in
 /// process.
@@ -65,7 +65,7 @@ impl StoreAxis for StandIn {
     fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String> {
         match door {
             StoreDoor::Linked(door) if is_store_double(door) => {
-                let store = Arc::new(SlotStore::<MemoryStore>::open(
+                let store = Arc::new(SlotStore::<Double>::open(
                     store_double::NAME,
                     settings,
                     crate::door::op_id,
