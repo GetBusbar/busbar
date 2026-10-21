@@ -189,12 +189,6 @@ count = 1
 [[finding]]
 rule = "door-cells-rig:root-path"
 file = "crates/busbar-plane-a2a/tests/root/mod.rs"
-item = "crate::root::loader::sign::{..}"
-count = 1
-
-[[finding]]
-rule = "door-cells-rig:root-path"
-file = "crates/busbar-plane-a2a/tests/root/mod.rs"
 item = "crate::root::loader::store_v3::DoorStoreAxis"
 count = 1
 
