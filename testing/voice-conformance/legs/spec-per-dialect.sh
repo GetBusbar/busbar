@@ -7,17 +7,16 @@
 # LEG: spec-per-dialect — the voice conformance spec, run once PER DIALECT (openai, gemini, twilio).
 #
 # Every captured fixture in `testing/voice-conformance/fixtures/$dialect/`:
-#   * CODEC: wire JSON → IR → wire JSON → IR through the dialect's codec in the plane crate
-#     (`OpenAiRealtimeCodec` / `GeminiLiveCodec`), stable at the level the codec guarantees
-#     (IR-fixpoint, or the correlation fingerprint for an atomic Gemini toolCall); a fixture that
-#     decodes to nothing passes only as a documented drop;
+#   * WIRE: the fixture is read by the dialect's published format (`harness/src/wire.rs`: OpenAI
+#     Realtime's client/server events, Gemini Live's messages), never by the plane's code; a fixture
+#     that reads as nothing passes only as a documented drop;
 #   * DOOR: pushed through a live session on the dialect's door (the caller's frames as caller pieces,
 #     the far end's as far-end pieces), linked AND dropped; the door must relay it by the session rules
-#     (a documented drop on no wire at all), every far frame on the dialect's socket need, the far end's
+#     (a documented drop reads as nothing on either side), every far frame on the dialect's socket need, the far end's
 #     tokens reported as units. RED arm per fixture: a door reporting a token never sent fails.
 #   * TWILIO (`fixtures/twilio/`, Twilio's published Media Streams messages, one file per message in
-#     each direction, `from-twilio.*` and `to-twilio.*`): the codec half is the plane's Twilio envelope
-#     (`TwilioEnvelope`, `event`-tagged); the door half pushes Twilio's frames as caller pieces and the
+#     each direction, `from-twilio.*` and `to-twilio.*`): the wire half reads each by Twilio's published
+#     message formats (`event`-tagged; the harness's own reader); the door half pushes Twilio's frames as caller pieces and the
 #     far-end event that makes the door write a Twilio frame as far-end pieces, and holds the door to
 #     Twilio's shapes (media to the far end as caller audio, the far end's audio as `media`, its end as
 #     `mark`, a barge-in as `clear`); `transcript.jsonl` is one whole call. RED arm: a door handing the

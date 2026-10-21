@@ -9,8 +9,10 @@
 # conformance harness the legs shell out to: the `voice_conform` binary of the testkit crate
 # `testing/voice-conformance/harness`, which drives the streaming plane's DOOR both ways through the loader — the linked door and
 # the plane's cdylib twin (`busbar-plane-streaming-plugin`, built from the pinned plane's own
-# workspace), dlopened (ARCHITECT Q6). The legs reuse the plane's own door
-# and codecs through this harness; they never reimplement a codec — or a door — in shell.
+# workspace), dlopened (ARCHITECT Q6). The harness names nothing of the plane but its door
+# (`busbar_plane_streaming::door`, the crate's one public item): the plane's facts are read off the
+# door's Statement, and every expectation is the harness's own reading of the published wire
+# formats. The legs never reimplement a wire reader — or a door — in shell.
 
 # Resolved from THIS file's location (testing/voice-conformance/lib/): the battery dir, repo root,
 # fixtures, and the cross-dialect map. Computed once at source time.

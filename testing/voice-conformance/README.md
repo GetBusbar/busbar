@@ -6,12 +6,13 @@ batteries. It is the streaming plane's conformance MUST-set (DEV-GREEN exit #4).
 
 ## What a leg drives: the plane's DOOR, both ways
 
-The plane is served only through its memory-ABI door (`busbar_plane_streaming::door`). Every leg
+The plane is served only through its memory-ABI door, `busbar_plane_streaming::door`, the plane
+crate's one public item (`BUSBAR-1.6.0.md` l.3567; the `door-only` gate, l.3875). Every leg
 shells out to one dev-only harness, the `voice_conform` binary of the testkit crate
 `voice-conformance-harness` (`testing/voice-conformance/harness/`), which loads the door through
 `busbar-plugin-loader` **both ways** (ARCHITECT Q6):
 
-- **linked** — `busbar_plane_streaming::door::door`, through `load_linked`;
+- **linked** — `busbar_plane_streaming::door`, through `load_linked`;
 - **dropped** — the plane's cdylib twin (`busbar-plane-streaming-plugin`), dlopened through
   `load_dropped` against the linked row's own Statement.
 
@@ -23,6 +24,13 @@ Each assertion drives a fresh instance of each door with one script and is PASS 
 3. **the RED arm bit**: the leg's planted wrong answer (the wrong door, restated as the answer it
    would give) is refused by the same check. `VOICE_CONFORM_RED=1` makes the planted answers the
    subject; every conformance leg must then go RED.
+
+The harness names nothing of the plane but its door. What the plane states of itself (its needs,
+dialects, billable classes, fee unit, audit kind) is read off the door's Statement through the
+loader's plane facts; what a door claims is read off the snapshot its `open` publishes; and every
+expectation is computed by the harness from the wire, by the dialects' published formats
+(`harness/src/wire.rs`: OpenAI Realtime's and Gemini Live's events, Twilio's Media Streams
+messages, the session lock), never by the plane's own code.
 
 `lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
 voice_conform`, and the cdylib twin from the workspace this checkout's lock pins the plane at:
@@ -39,9 +47,9 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 
 | leg | slices | what it judges at the door |
 |---|---|---|
-| `spec-per-dialect` | `openai`, `gemini`, `twilio` | every fixture: codec round trip, and the door's relay of it by the session rules; the `twilio` slice also replays `transcript.jsonl`, one whole call |
-| `replay` | `default` | each captured transcript through one session: codec skeleton; the door's relay and skeleton |
-| `cross-parity` | `oo og go gg` | the codec bridge per the cross-dialect map; the bridged wire through the destination door |
+| `spec-per-dialect` | `openai`, `gemini`, `twilio` | every fixture: read by the dialect's published format, and the door's relay of it by the session rules; the `twilio` slice also replays `transcript.jsonl`, one whole call |
+| `replay` | `default` | each captured transcript through one session: its concept skeleton read off the wire; the door's relay and skeleton |
+| `cross-parity` | `oo og go gg` | the harness's bridge per the cross-dialect map; the bridged wire through the destination door; each asymmetry row on what that door relays |
 | `provider-credential` | 1 | every far request rides a declared outbound need; none carries a credential |
 | `metering-lease` | 1 | a session's units, reported per declared class, once per turn; the fee once answered |
 | `session-scope` | 1 | the `session` grant kind; every door asks for a principal; 404 off the guest list |
@@ -52,17 +60,18 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 | `audit-record` | 1 | the audit kind and operation the kernel's one row is written under; no door row |
 | `exit-terminal` | 1 | one session, one end; an ended stream is refused on every side |
 | `tool-reply` | 1 | a tool call is relayed to the caller and never answered by busbar (Law 11) |
-| `twilio-route` | 1 | the Twilio claim: ws transport, one-level `/twilio` prefix, `webhook-signature` the only alternative, a principal asked for; the session opens on the `event`-tagged `start` frame |
+| `twilio-route` | 1 | the Twilio claim: ws transport, one path segment under `/twilio` as the host reads the snapshot's claim, the only door arriving in Twilio's dialect, beside the Statement's inbound `webhook-signature` need, a principal asked for; the session opens on the `event`-tagged `start` frame |
 | `twilio-media` | 1 | inbound `media` is the caller's audio; the far end's audio is written back as `media` on the call's `streamSid`, its end as `mark`, a barge-in as `clear`; `stop` ends the session once |
 | `twilio-metering` | 1 | a Twilio session's units, reported per declared class once per turn, the open turn settled when `stop` arrives mid-turn |
 | `governance` | 5 checkpoints | the 5 vision checkpoints — **NOT a conformance result** |
 
-**The session rules** the fixture legs hold the door to (`session_pump`): a caller frame reaches the
-far end as sent, except that the caller's session configuration is replaced by the locked one; a
-far-end frame reaches the caller as sent, except that usage and rate-limit reports are consumed (usage
-becomes reported units), a far-end tool result is never relayed, and a barge-in also cancels and
-truncates the far end's response at the audio the caller heard. The expectation is computed from the
-wire by the codec, never by the door.
+**The session rules** the fixture legs hold the door to (Law 5's same-dialect relay; Part 2 #45's
+browser trust boundary): a caller frame reaches the far end as sent, except that a frame configuring
+the session or asking for a response has the caller's instructions and tools cut and the locked keys
+put in their place, and a frame authoring an instructing item, or configuring an uplink format the
+session cannot count, goes nowhere; a far-end frame reaches the caller as sent, a usage report also
+becoming reported units; nothing reaches the far end on the caller's behalf (Law 11). The
+expectation is computed from the wire by the harness (`harness/src/wire.rs`), never by the door.
 
 ### The Twilio legs
 

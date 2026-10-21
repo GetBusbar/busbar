@@ -3985,7 +3985,6 @@ dependencies = [
  "busbar-contract",
  "busbar-plane-streaming",
  "busbar-plugin-loader",
- "bytes",
  "serde_json",
 ]
 

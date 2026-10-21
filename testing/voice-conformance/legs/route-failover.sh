@@ -10,7 +10,8 @@
 #
 # THE DOOR'S HALF (judged, linked AND dropped door, the mint door): it names the session model's DIRECT
 # route (and none with no model configured); each ATTEMPT is answered afresh with the same request on
-# the declared pass need (door::RIDES_REALTIME_PASS) — the host connector dials it; a failing far end
+# the declared pass need (the outbound http need the door's Statement declares under OpenAI's `bearer`
+# style) — the host connector dials it; a failing far end
 # reaches the caller with nothing before its last piece, so the walk may still fail over; the next
 # attempt's answer is the caller's whole answer, free of the failed one; and a last attempt that fails
 # is the served plane's 502. The plane opens no socket and holds no breaker or guard. RED arm: a retry

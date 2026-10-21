@@ -26,29 +26,50 @@ use std::path::Path;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::plane::check::claim_selector;
 use busbar_contract::abi::plane::{
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PRINCIPAL_REQUIRED, ROUTE_DIRECT,
+    CLAIM_PATTERN, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PRINCIPAL_REQUIRED,
+    ROUTE_DIRECT,
 };
-use busbar_contract::grammar::Selector;
+use busbar_contract::grammar::{one_level_under, pattern_matches, PathSeg, Selector};
 use busbar_contract::media::{base64_decode, base64_encode};
-use busbar_plane_streaming::claims::{dialect_for, Dialect, DIALECT_CLAIMS, WS_TRANSPORT};
-use busbar_plane_streaming::codec::topology::twilio::{
-    assert_g711_ulaw, TwilioEnvelope, TwilioEvent,
-};
-use busbar_plane_streaming::door::{ROUTES, SIGNATURE_AUTH};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use serde_json::{json, Value};
 
 use crate::composition::{units_of, usage_units, USAGE_DONE};
 use crate::door::{
-    arrive, judge, open, piece, result, session, Answer, Arrived, Emission, Opened, Piece, Rig,
-    Session, MODEL, PUBLIC, SESSION,
+    arrive, judge, open, piece, result, session, Answer, Arrived, Claimed, Emission, Opened, Piece,
+    Rig, Session, MODEL, PUBLIC, SESSION,
 };
+use crate::wire::{SIGNATURE_AUTH, TWILIO_MEDIA_STREAMS, WS_TRANSPORT};
 
 /// The door claim that opens a Twilio session: the fifth line of the snapshot (the telephony
 /// socket), after the mint, the SDP offer, the sideband and the Gemini socket.
 const CLAIM: u32 = 4;
+
+/// One path segment under `/twilio`: the Twilio door's claim as the host reads it.
+const TWILIO_PATTERN: &[PathSeg] = &[PathSeg::Lit("twilio"), PathSeg::Var];
+
+/// The host's reading of a snapshot claim as a claim-grammar selector (the contract's
+/// `claim_selector`: exact, pattern or one-level prefix); `None` for a claim it refuses.
+fn selector_of(c: &Claimed) -> Option<Selector> {
+    let target: &'static str = Box::leak(c.target.clone().into_boxed_str());
+    claim_selector(target, c.flags, |segs| -> &'static [PathSeg] {
+        Box::leak(segs.into_boxed_slice())
+    })
+    .ok()
+}
+
+/// Whether `path` arrives on `sel`, matched as the contract's grammar matches it.
+fn arrives_on(sel: &Selector, path: &str) -> bool {
+    match sel {
+        Selector::ExactPath(p) => *p == path,
+        Selector::PathPattern(segs) => pattern_matches(segs, path),
+        Selector::PrefixOneLevel(prefix) => one_level_under(prefix, path),
+        _ => false,
+    }
+}
 
 /// The `streamSid` of the second call the media leg opens, to show the outbound frames carry
 /// their own call's identity and not the first call's.
@@ -258,9 +279,106 @@ pub fn run(rig: &Rig, slice: &str, dir: &Path) -> i32 {
 // spec-per-dialect, the twilio slice
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-/// The CODEC half of one fixture: the plane's Twilio envelope reads it as Twilio's format says,
-/// and what it writes back reads the same.
-fn codec_half(name: &str, v: &Value) -> Result<String, String> {
+/// One Twilio Media Streams message, read by Twilio's published formats
+/// (<https://www.twilio.com/docs/voice/media-streams/websocket-messages>).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TwilioMsg {
+    /// `connected`: the WebSocket is up (`protocol`, `version`).
+    Connected,
+    /// `start`: the stream's identity and its media format.
+    Start {
+        stream_sid: String,
+        call_sid: String,
+        media_format: Value,
+    },
+    /// `media`: base64 µ-law audio on the call's stream.
+    Media {
+        stream_sid: String,
+        payload: Vec<u8>,
+    },
+    /// `mark`: a named point in the audio.
+    Mark { stream_sid: String, name: String },
+    /// `dtmf`: a key the caller pressed.
+    Dtmf { stream_sid: String, digit: String },
+    /// `stop`: the stream ended.
+    Stop,
+    /// `clear`: busbar asks Twilio to drop the audio it holds.
+    Clear { stream_sid: String },
+}
+
+fn text_at(v: &Value, ptr: &str) -> Result<String, String> {
+    v.pointer(ptr)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("names no {ptr}"))
+}
+
+/// Read one Twilio Media Streams frame by Twilio's published message formats.
+fn read_twilio(frame: &[u8]) -> Result<TwilioMsg, String> {
+    let v: Value = serde_json::from_slice(frame).map_err(|e| format!("not JSON: {e}"))?;
+    let event = v["event"].as_str().ok_or("names no `event`")?;
+    Ok(match event {
+        "connected" => {
+            text_at(&v, "/protocol")?;
+            text_at(&v, "/version")?;
+            TwilioMsg::Connected
+        }
+        "start" => TwilioMsg::Start {
+            stream_sid: text_at(&v, "/start/streamSid")?,
+            call_sid: text_at(&v, "/start/callSid")?,
+            media_format: v
+                .pointer("/start/mediaFormat")
+                .cloned()
+                .ok_or("names no /start/mediaFormat")?,
+        },
+        "media" => TwilioMsg::Media {
+            stream_sid: text_at(&v, "/streamSid")?,
+            payload: base64_decode(&text_at(&v, "/media/payload")?)
+                .map(|b| b.to_vec())
+                .filter(|b| !b.is_empty())
+                .ok_or("its media.payload is not base64 audio")?,
+        },
+        "mark" => TwilioMsg::Mark {
+            stream_sid: text_at(&v, "/streamSid")?,
+            name: text_at(&v, "/mark/name")?,
+        },
+        "dtmf" => TwilioMsg::Dtmf {
+            stream_sid: text_at(&v, "/streamSid")?,
+            digit: text_at(&v, "/dtmf/digit")?,
+        },
+        "stop" => TwilioMsg::Stop,
+        "clear" => TwilioMsg::Clear {
+            stream_sid: text_at(&v, "/streamSid")?,
+        },
+        other => return Err(format!("`{other}` is not a Twilio Media Streams message")),
+    })
+}
+
+/// The media format a Twilio stream carries: µ-law, 8000 Hz, mono (Twilio's `start.mediaFormat`,
+/// `{"encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1}`).
+fn is_g711_ulaw(format: &Value) -> Result<(), String> {
+    if format["encoding"] == "audio/x-mulaw"
+        && format["sampleRate"] == 8000
+        && format["channels"] == 1
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "the media format is {format}, not audio/x-mulaw 8000 Hz mono"
+        ))
+    }
+}
+
+/// Twilio's published outbound `media` message: the call's `streamSid` and the base64 payload.
+fn media_out(stream_sid: &str, payload: &[u8]) -> Value {
+    json!({"event": "media", "streamSid": stream_sid,
+        "media": {"payload": base64_encode(payload)}})
+}
+
+/// The WIRE half of one fixture: it reads as Twilio's published format says, and an outbound
+/// media frame is exactly Twilio's published shape.
+fn wire_half(name: &str, v: &Value) -> Result<String, String> {
     let frame = bytes_of(v);
     let event = name
         .strip_prefix("from-twilio.")
@@ -280,16 +398,22 @@ fn codec_half(name: &str, v: &Value) -> Result<String, String> {
         return Err("the frame names no streamSid".to_string());
     }
     match (name.starts_with("to-twilio."), event) {
-        (_, "connected") => match TwilioEnvelope::decode(&frame) {
-            Ok(TwilioEvent::Connected) => Ok("connected read as Connected".to_string()),
+        (_, "connected") => match read_twilio(&frame) {
+            Ok(TwilioMsg::Connected) => Ok("connected read as Connected".to_string()),
             other => Err(format!("connected read as {other:?}")),
         },
-        (false, "start") => match TwilioEnvelope::decode(&frame) {
-            Ok(TwilioEvent::Start(s)) => {
-                if s.stream_sid != v["start"]["streamSid"] || s.call_sid != v["start"]["callSid"] {
-                    return Err(format!("start read its identity as {s:?}"));
+        (false, "start") => match read_twilio(&frame) {
+            Ok(TwilioMsg::Start {
+                stream_sid,
+                call_sid,
+                media_format,
+            }) => {
+                if stream_sid != v["start"]["streamSid"] || call_sid != v["start"]["callSid"] {
+                    return Err(format!(
+                        "start read its identity as {stream_sid} {call_sid}"
+                    ));
                 }
-                assert_g711_ulaw(&s.media_format).map_err(|e| e.to_string())?;
+                is_g711_ulaw(&media_format)?;
                 Ok(
                     "start read with its identity and the audio/x-mulaw 8000 Hz mono format"
                         .to_string(),
@@ -300,25 +424,25 @@ fn codec_half(name: &str, v: &Value) -> Result<String, String> {
         (dir_out, "media") => {
             let sid = v["streamSid"].as_str().unwrap_or_default();
             let want = unb64(&payload_of(v));
-            let Ok(TwilioEvent::Media {
+            let Ok(TwilioMsg::Media {
                 stream_sid,
                 payload,
-            }) = TwilioEnvelope::decode(&frame)
+            }) = read_twilio(&frame)
             else {
                 return Err("media was not read as Media".to_string());
             };
             if stream_sid != sid || payload != want || want.is_empty() {
                 return Err(format!("media read as {stream_sid} {payload:?}"));
             }
-            let again = TwilioEnvelope::encode_media(sid, &payload);
-            match TwilioEnvelope::decode(&again) {
-                Ok(TwilioEvent::Media {
+            let again = media_out(sid, &payload);
+            match read_twilio(&bytes_of(&again)) {
+                Ok(TwilioMsg::Media {
                     stream_sid: s2,
                     payload: p2,
                 }) if s2 == sid && p2 == payload => {}
                 other => return Err(format!("media did not round-trip: {other:?}")),
             }
-            if dir_out && serde_json::from_slice::<Value>(&again).ok().as_ref() != Some(v) {
+            if dir_out && again != *v {
                 return Err("the outbound media envelope is not Twilio's published shape".into());
             }
             Ok(format!(
@@ -326,29 +450,33 @@ fn codec_half(name: &str, v: &Value) -> Result<String, String> {
                 payload.len()
             ))
         }
-        (_, "mark") => match TwilioEnvelope::decode(&frame) {
-            Ok(TwilioEvent::Mark {
+        (_, "mark") => match read_twilio(&frame) {
+            Ok(TwilioMsg::Mark {
                 stream_sid,
                 name: mark,
-            }) if !mark.is_empty() => Ok(format!("mark `{mark}` read on {stream_sid}")),
+            }) => Ok(format!("mark `{mark}` read on {stream_sid}")),
             other => Err(format!("mark read as {other:?}")),
         },
-        (false, "dtmf") => match TwilioEnvelope::decode(&frame) {
-            Ok(TwilioEvent::Dtmf { digit, .. }) if !digit.is_empty() => {
-                Ok(format!("dtmf digit {digit} read"))
+        (false, "dtmf") => match read_twilio(&frame) {
+            Ok(TwilioMsg::Dtmf { stream_sid, digit }) => {
+                Ok(format!("dtmf digit {digit} read on {stream_sid}"))
             }
             other => Err(format!("dtmf read as {other:?}")),
         },
-        (false, "stop") => match TwilioEnvelope::decode(&frame) {
-            Ok(TwilioEvent::Stop) => Ok("stop read as Stop".to_string()),
+        (false, "stop") => match read_twilio(&frame) {
+            Ok(TwilioMsg::Stop) => Ok("stop read as Stop".to_string()),
             other => Err(format!("stop read as {other:?}")),
         },
         (true, "clear") => {
             let keys = v.as_object().map_or(0, serde_json::Map::len);
-            if keys == 2 {
-                Ok("clear is exactly {event, streamSid}".to_string())
-            } else {
-                Err(format!("clear carries {keys} members, Twilio's has two"))
+            match read_twilio(&frame) {
+                Ok(TwilioMsg::Clear { stream_sid }) if keys == 2 => Ok(format!(
+                    "clear on {stream_sid} is exactly {{event, streamSid}}"
+                )),
+                Ok(TwilioMsg::Clear { .. }) => {
+                    Err(format!("clear carries {keys} members, Twilio's has two"))
+                }
+                other => Err(format!("clear read as {other:?}")),
             }
         }
         (_, other) => Err(format!(
@@ -410,7 +538,7 @@ fn fixture_steps(fx: &Fixtures, name: &str, v: &Value) -> Result<Vec<Step>, Stri
     })
 }
 
-/// One finished assertion over `steps`: both doors, the codec half folded in, the planted door
+/// One finished assertion over `steps`: both doors, the wire half folded in, the planted door
 /// (one that hands the far end audio nobody sent) refused by the same check.
 fn judge_steps(
     rig: &Rig,
@@ -418,7 +546,7 @@ fn judge_steps(
     what: &str,
     steps: &[Step],
     ends: u32,
-    codec: &Result<String, String>,
+    read: &Result<String, String>,
 ) -> bool {
     let want = wanted(steps);
     let seen = rig.both(|p| fresh(p, 77, steps));
@@ -427,7 +555,7 @@ fn judge_steps(
         what,
         &seen,
         &|run: &Run| {
-            let codec = codec.clone()?;
+            let read = read.clone()?;
             if !run.anomalies.is_empty() {
                 return Err(format!("not answered READY: {:?}", run.anomalies));
             }
@@ -438,7 +566,7 @@ fn judge_steps(
                 return Err(format!("{} end(s); want {ends}", run.done));
             }
             Ok(format!(
-                "codec: {codec}; door: {}",
+                "wire: {read}; door: {}",
                 run.lines.last().cloned().unwrap_or_default()
             ))
         },
@@ -452,7 +580,7 @@ fn judge_steps(
     )
 }
 
-/// `spec twilio <dir>`: every fixture (codec round trip, and the door's relay of it by the session
+/// `spec twilio <dir>`: every fixture (read by Twilio's published formats, and the door's relay of it by the session
 /// rules), then the transcript.
 pub fn spec(rig: &Rig, dir: &Path) -> i32 {
     let slice = "twilio";
@@ -494,7 +622,7 @@ pub fn spec(rig: &Rig, dir: &Path) -> i32 {
             }
         };
         let ends = u32::from(name == "from-twilio.stop.json");
-        if !judge_steps(rig, slice, name, &steps, ends, &codec_half(name, &v)) {
+        if !judge_steps(rig, slice, name, &steps, ends, &wire_half(name, &v)) {
             fails += 1;
         }
     }
@@ -524,7 +652,7 @@ fn transcript_steps(fx: &Fixtures) -> Result<(Vec<Step>, u32, String), String> {
                         .unwrap_or_default()
                         .to_string();
                 }
-                TwilioEnvelope::decode(&bytes_of(ev)).map_err(|e| format!("{event}: {e}"))?;
+                read_twilio(&bytes_of(ev)).map_err(|e| format!("{event}: {e}"))?;
                 read.push(event.clone());
                 ends += u32::from(event == "stop");
                 let audio: Vec<String> = (event == "media")
@@ -563,7 +691,7 @@ fn transcript_steps(fx: &Fixtures) -> Result<(Vec<Step>, u32, String), String> {
 fn transcript(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
     let what = "transcript.jsonl";
     match transcript_steps(fx) {
-        Ok((steps, ends, codec)) => judge_steps(rig, slice, what, &steps, ends, &Ok(codec)),
+        Ok((steps, ends, read)) => judge_steps(rig, slice, what, &steps, ends, &Ok(read)),
         Err(e) => {
             result(slice, false, what, &e);
             false
@@ -608,38 +736,48 @@ fn route_script(p: &Plugin<Plane>, fx: &Fixtures) -> RouteObs {
         .filter(|((direction, _), _)| *direction == DIRECTION_INBOUND)
         .map(|((_, auth), transport)| format!("{transport} {auth}"))
         .collect();
-    let route = ROUTES
-        .iter()
-        .find(|r| r.target.starts_with("/twilio"))
-        .map_or_else(
-            || "no /twilio door".to_string(),
-            |r| {
-                format!(
-                    "{} {} {} upgrade={} auth={}",
-                    r.verb, r.target, r.carrier, r.upgrade, r.auth
-                )
-            },
-        );
-    let signature_doors = ROUTES
-        .iter()
-        .filter(|r| r.auth == SIGNATURE_AUTH)
-        .map(|r| r.target.to_string())
+    let name_of = |claim: u32| {
+        served
+            .dialects
+            .get(arrive(p, claim).dialect as usize)
+            .copied()
+    };
+    let twilio_claim = opened.claims.get(CLAIM as usize);
+    let route = twilio_claim.map_or_else(
+        || "no claim at the Twilio door's index".to_string(),
+        |c| format!("{} pattern={}", c.line, c.flags & CLAIM_PATTERN != 0),
+    );
+    let signature_doors = (0_u32..)
+        .zip(&opened.claims)
+        .filter(|(i, _)| name_of(*i) == Some(TWILIO_MEDIA_STREAMS))
+        .map(|(_, c)| c.target.clone())
         .collect();
-    let claim = DIALECT_CLAIMS
-        .iter()
-        .find(|c| c.dialect == Dialect::TwilioMediaStreams)
-        .map_or_else(
-            || "no Twilio claim".to_string(),
-            |c| {
-                format!(
-                    "{} {:?} alts={:?}",
-                    c.claim.transport, c.claim.selector, c.claim.scheme_alternatives
-                )
-            },
-        );
+    let claim = twilio_claim.map_or_else(
+        || "no Twilio claim".to_string(),
+        |c| {
+            let carrier = c.line.split_whitespace().nth(2).unwrap_or_default();
+            let signature: Vec<String> = served
+                .need_auths
+                .iter()
+                .zip(&served.need_transports)
+                .filter(|((direction, auth), transport)| {
+                    *direction == DIRECTION_INBOUND
+                        && *auth == SIGNATURE_AUTH
+                        && **transport == carrier
+                })
+                .map(|((_, auth), transport)| format!("{transport} {auth}"))
+                .collect();
+            format!("{carrier} {:?} signature={signature:?}", selector_of(c))
+        },
+    );
     let selectors = ["/twilio/call_0001", "/twilio", "/twilio/a/b", "/twiliofoo"]
         .iter()
-        .map(|path| format!("{path}={:?}", dialect_for(path)))
+        .map(|path| {
+            let on = (0_u32..)
+                .zip(&opened.claims)
+                .find(|(_, c)| selector_of(c).is_some_and(|s| arrives_on(&s, path)));
+            format!("{path}={:?}", on.and_then(|(i, _)| name_of(i)))
+        })
         .collect();
     let nothing: &[String] = &[];
     let (start, sid) = (fx.get("from-twilio.start.json"), fx.sid());
@@ -719,22 +857,23 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
         ));
     }
     let want_claim = format!(
-        "{WS_TRANSPORT} {:?} alts={:?}",
-        Selector::PrefixOneLevel("/twilio"),
-        ["webhook-signature"]
+        "{WS_TRANSPORT} {:?} signature={:?}",
+        Some(Selector::PathPattern(TWILIO_PATTERN)),
+        [format!("{WS_TRANSPORT} {SIGNATURE_AUTH}")]
     );
     if o.claim != want_claim {
         return Err(format!(
-            "the Twilio claim is `{}`; want `{want_claim}` (the ws transport, the one-level \
-             /twilio prefix, the webhook-signature alternative alone)",
+            "the Twilio claim is `{}`; want `{want_claim}` (the ws transport, one path segment \
+             under /twilio as the host reads the claim, the Statement's one inbound ws need \
+             under the webhook-signature auth)",
             o.claim
         ));
     }
     let want_selectors = [
-        "/twilio/call_0001=Some(TwilioMediaStreams)",
-        "/twilio=None",
-        "/twilio/a/b=None",
-        "/twiliofoo=None",
+        format!("/twilio/call_0001=Some({TWILIO_MEDIA_STREAMS:?})"),
+        "/twilio=None".to_string(),
+        "/twilio/a/b=None".to_string(),
+        "/twiliofoo=None".to_string(),
     ];
     if o.selectors != want_selectors {
         return Err(format!(
@@ -742,16 +881,17 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
             o.selectors
         ));
     }
-    if o.route != "GET /twilio/{call_id} ws upgrade=true auth=webhook-signature"
+    if o.route != "GET /twilio/{call_id} ws pattern=true"
         || o.signature_doors != ["/twilio/{call_id}"]
         || !o
             .inbound_ws_auths
             .iter()
-            .any(|a| a == "ws webhook-signature")
+            .any(|a| *a == format!("{WS_TRANSPORT} {SIGNATURE_AUTH}"))
     {
         return Err(format!(
-            "the Twilio door is `{}` (signature doors {:?}, inbound needs {:?}): an upgrade on \
-             the ws transport under the webhook-signature auth, which no other door shares",
+            "the Twilio door is `{}` (doors arriving in Twilio's dialect {:?}, inbound needs \
+             {:?}): a credentialed pattern claim on the ws transport, the only door arriving in \
+             Twilio's dialect, beside an inbound ws need under the webhook-signature auth",
             o.route, o.signature_doors, o.inbound_ws_auths
         ));
     }
@@ -759,7 +899,7 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
     if a.outcome != Outcome::Ready
         || a.principal != PRINCIPAL_REQUIRED
         || a.route != (ROUTE_DIRECT, MODEL.to_string())
-        || o.dialect != Dialect::TwilioMediaStreams.name()
+        || o.dialect != TWILIO_MEDIA_STREAMS
     {
         return Err(format!(
             "the Twilio door arrived as {a:?} in dialect {}: it must ask for a principal",
@@ -794,8 +934,9 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
         ));
     }
     Ok(
-        "the Twilio claim is on the ws transport at the one-level /twilio prefix with the \
-         webhook-signature alternative alone (an upgrade line no other door shares), arrives for \
+        "the Twilio claim is on the ws transport, one path segment under /twilio as the host \
+         reads it, the only door arriving in Twilio's dialect, beside the Statement's one inbound \
+         ws need under the webhook-signature auth; it arrives for \
          a principal on the session model's DIRECT route, and the session opens on the \
          event-tagged start frame: no audio before it, audio after it, none for another call's \
          streamSid, none from a type-tagged frame. Refusing a missing signature 401, the \

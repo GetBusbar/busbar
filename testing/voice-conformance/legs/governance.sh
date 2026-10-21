@@ -15,7 +15,8 @@
 #   V3-metering-lease-settled   a turn's usage settles exactly once (a short answer's re-call reports
 #                               the same cumulative units; the end adds nothing settled).
 #   V4-dialect-downscope        an OpenAI-only semantic_vad/g711 concept is down-scoped toward Gemini
-#                               (codec), and the caller's session.update never reaches the far end:
+#                               (the Gemini door's relay of the map's bridge), and the caller's
+#                               session.update never reaches the far end as written:
 #                               the locked session params do (door).
 #   D2-hard-close-on-exhaustion once a session has ended no far-end audio reaches the caller and the cut
 #                               renders in the dialect's error shape; reading the chain dry and cutting

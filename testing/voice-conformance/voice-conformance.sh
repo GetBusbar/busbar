@@ -41,11 +41,11 @@
 # `VOICE_CONFORM_RED=1` makes the planted answers the subject, and every leg must then go RED). Each
 # leg judges the DOOR'S half of its seam and names the half that is the kernel's (lib/conform-bin.sh):
 #
-#   spec-per-dialect   every fixture, per dialect (MATRIX: openai, gemini, twilio): codec round trip, and the
-#                      door's relay of it by the session rules.
-#   replay             each captured transcript through one session: codec skeleton, and the door's
-#                      relay and skeleton in emitted order.
-#   cross-parity       the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg): the codec bridge per the
+#   spec-per-dialect   every fixture, per dialect (MATRIX: openai, gemini, twilio): read by the dialect's
+#                      published format, and the door's relay of it by the session rules.
+#   replay             each captured transcript through one session: the skeleton read off the wire, and
+#                      the door's relay and skeleton in emitted order.
+#   cross-parity       the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg): the harness's bridge per the
 #                      cross-dialect map, and the bridged wire through the destination dialect's door.
 #   provider-credential every far request rides a declared outbound need; none carries a credential.
 #   metering-lease     a session's units, reported per declared class, once per turn; fee once answered.

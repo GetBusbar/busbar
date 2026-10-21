@@ -14,23 +14,19 @@ use busbar_contract::abi::plane::{
     PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_POOL,
 };
 use busbar_contract::media::base64_encode;
-use busbar_plane_streaming::claims::{HTTP_TRANSPORT, WS_TRANSPORT};
-use busbar_plane_streaming::door::{
-    refusal_body, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR, RIDES_LIVE_SOCKET,
-    RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
-};
-use busbar_plane_streaming::driven::{
-    mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, REALTIME_SOCKET_PATH, SESSION_OPEN_ACTION,
-};
-use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use serde_json::{json, Value};
 
 use crate::codec_legs::{caller_norms, far_norms, fingerprint, frame, usage_tokens, Dialect, Norm};
 use crate::door::{
-    arrive, attempt, drive, judge, open, piece, refusal, request, result, session, Answer, Arrived,
-    Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL, PUBLIC, SESSION,
+    arrive, attempt, drive, facts, judge, open, piece, refusal, request, result, session, Answer,
+    Arrived, Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL, PUBLIC,
+    SESSION,
+};
+use crate::wire::{
+    openai_error, GEMINI_LIVE, GEMINI_SOCKET_PATH, HTTP_TRANSPORT, LIVE_STYLE, OPENAI_REALTIME,
+    REALTIME_SOCKET_PATH, REALTIME_STYLE, WS_TRANSPORT,
 };
 
 // ── the frames the legs push ────────────────────────────────────────────────────────────────────
@@ -67,8 +63,29 @@ pub fn downlink(bytes: usize) -> Vec<u8> {
         "delta": base64_encode(&vec![0_u8; bytes])}))
 }
 
-/// The OpenAI Realtime mint's far-end answer.
+/// The OpenAI Realtime mint's far-end answer (OpenAI's published `client_secrets` response: the
+/// `ek_` secret and its `expires_at`).
 const MINTED: &[u8] = br#"{"value":"ek_oracle_0001","expires_at":1767225600}"#;
+
+/// The caller's answer to [`MINTED`]: the secret and its expiry, and nothing else (the served
+/// plane's mint answer, as this leg holds the door to it).
+fn minted_answer() -> Vec<u8> {
+    serde_json::to_vec(&json!({"value": "ek_oracle_0001", "expires_at_unix": 1_767_225_600_u64}))
+        .unwrap_or_default()
+}
+
+/// The status the served plane answers a failed mint with: a 502, as this leg holds the door to it.
+const MINT_FAILED_STATUS: u32 = 502;
+
+/// The refusal code the door arrives an unpublished claim with: `1`, no door of the plane serves
+/// it, as this leg holds the door to it.
+const NO_DOOR_REFUSAL: u32 = 1;
+
+/// The audit kind a session is recorded under, as this leg holds the door's Statement to it.
+const AUDIT_KIND: &str = "streaming_session";
+
+/// The one operation every door's unit is, as this leg holds the door's Statement to it.
+const SESSION_OPEN_ACTION: &str = "streaming.session.open";
 
 /// One `answer` as a line: the step, the outcome and the cumulative units.
 pub fn units_of(what: &str, a: &Answer) -> String {
@@ -458,7 +475,7 @@ fn scope_check(o: &ScopeObs) -> Result<String, String> {
         let ok = if door {
             a.outcome == Outcome::Ready && a.principal == PRINCIPAL_REQUIRED && a.op_class == 0
         } else {
-            a.outcome == Outcome::Refused && a.refusal == (REFUSAL_NO_DOOR, 404)
+            a.outcome == Outcome::Refused && a.refusal == (NO_DOOR_REFUSAL, 404)
         };
         if !ok {
             return Err(format!("claim {claim} arrived as {a:?}"));
@@ -571,7 +588,7 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
     let far: Vec<&Emission> = h.emissions.iter().filter(|e| e.to_far).collect();
     let near: Vec<&Emission> = h.emissions.iter().filter(|e| !e.to_far).collect();
     if far.len() != 1
-        || far[0].need != RIDES_LIVE_SOCKET
+        || far[0].need != facts().live_socket
         || far[0].verb != "GET"
         || far[0].target != GEMINI_SOCKET_PATH
     {
@@ -691,14 +708,14 @@ fn dial_check(o: &DialObs) -> Result<String, String> {
         Dialect::OpenAi,
         &o.openai,
         USAGE_DONE,
-        RIDES_REALTIME_SOCKET,
+        facts().realtime_socket,
         REALTIME_SOCKET_PATH,
     )?;
     let b = dial_one(
         Dialect::Gemini,
         &o.gemini,
         GEMINI_USAGE,
-        RIDES_LIVE_SOCKET,
+        facts().live_socket,
         GEMINI_SOCKET_PATH,
     )?;
     Ok(format!(
@@ -717,7 +734,7 @@ fn provider_dial(rig: &Rig, slice: &str) -> bool {
         &|o: &DialObs| {
             let mut planted = o.clone();
             if let Some(e) = planted.openai.emissions.iter_mut().find(|e| e.to_far) {
-                e.need = RIDES_REALTIME_PASS;
+                e.need = facts().realtime_pass;
             }
             planted
         },
@@ -769,8 +786,7 @@ fn admit_script(p: &Plugin<Plane>) -> AdmitObs {
 
 fn admit_check(o: &AdmitObs) -> Result<String, String> {
     for ((status, r), (_, words, kind)) in o.rendered.iter().zip(REFUSALS) {
-        let body: Value =
-            serde_json::from_slice(&refusal_body(*status, words)).unwrap_or(Value::Null);
+        let body = openai_error(*status, words);
         let (k, w) = error_of(r);
         if r.outcome != Outcome::Ready
             || k != kind
@@ -796,7 +812,7 @@ fn admit_check(o: &AdmitObs) -> Result<String, String> {
         ));
     }
     let c = &o.control;
-    if c.outcome != Outcome::Ready || !c.to_far || c.need != RIDES_REALTIME_SOCKET {
+    if c.outcome != Outcome::Ready || !c.to_far || c.need != facts().realtime_socket {
         return Err(format!(
             "the admitted control did not reach the far end: {c:?}"
         ));
@@ -819,8 +835,7 @@ fn admit_refusal(rig: &Rig, slice: &str) -> bool {
         &admit_check,
         &|o: &AdmitObs| {
             let mut planted = o.clone();
-            planted.rendered[0].1.body =
-                String::from_utf8_lossy(&refusal_body(500, "x")).into_owned();
+            planted.rendered[0].1.body = openai_error(500, "x").to_string();
             planted
         },
     )
@@ -904,7 +919,7 @@ fn fail_check(o: &FailObs) -> Result<String, String> {
         || !f.to_far
         || f.verb != "POST"
         || f.target != "/v1/realtime/client_secrets"
-        || f.need != RIDES_REALTIME_PASS
+        || f.need != facts().realtime_pass
         || f.emitted.is_empty()
     {
         return Err(format!("attempt 1 sent {f:?}"));
@@ -929,11 +944,7 @@ fn fail_check(o: &FailObs) -> Result<String, String> {
         ));
     }
     let a = &o.answered;
-    if a.outcome != Outcome::Ready
-        || !a.done
-        || a.status != 200
-        || a.emitted != mint_reply(200, MINTED).body
-    {
+    if a.outcome != Outcome::Ready || !a.done || a.status != 200 || a.emitted != minted_answer() {
         return Err(format!(
             "attempt 2's answer was not the caller's whole answer, free of attempt 1: {a:?}"
         ));
@@ -941,7 +952,7 @@ fn fail_check(o: &FailObs) -> Result<String, String> {
     let t = &o.terminal;
     if t.outcome != Outcome::Ready
         || !t.done
-        || t.status != u32::from(MINT_FAILED_STATUS)
+        || t.status != MINT_FAILED_STATUS
         || !String::from_utf8_lossy(&t.emitted)
             .contains("client-secret endpoint returned 503 Service Unavailable")
     {

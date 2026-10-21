@@ -7,18 +7,17 @@
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::plane::{FROM_CALLER, FROM_FAR_END, PIECE_LAST};
-use busbar_plane_streaming::session_door::CEILING_TICK_NS;
-use busbar_plane_streaming::session_pump::SESSION_CEILING_REASON;
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use serde_json::json;
 
-use crate::codec_legs::{caller_norms, downscope_bridge, far_norms, frame, Dialect, Norm};
+use crate::codec_legs::{bridged_to_gemini, caller_norms, far_norms, frame, Dialect, Dir, Norm};
 use crate::composition::{downlink, uplink, usage_units, USAGE_DONE};
 use crate::door::{
     drive, judge, open, piece, refusal, result, session, tick, Emission, Log, Piece, Rendered, Rig,
     Session, PUBLIC, SESSION,
 };
+use crate::wire::SESSION_EXPIRED_CODE;
 
 /// `governance <checkpoint>`: one observation; always exit 0.
 pub fn run(rig: &Rig, checkpoint: &str) -> i32 {
@@ -93,6 +92,11 @@ fn barge_in(rig: &Rig, checkpoint: &str) {
 
 const CEILING: &[u8] = br#"{"session":{"model":"m-cap"},"session_max_secs":1}"#;
 
+/// How often the door is held to asking for a tick while a generation configures a ceiling: once
+/// a second, so a ceiling of [`CEILING`]'s one second is enforced at most one tick late (this
+/// checkpoint's own expectation).
+const CEILING_TICK_NS: u64 = 1_000_000_000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CeilingObs {
     next: u64,
@@ -125,7 +129,7 @@ fn ceiling_check(o: &CeilingObs) -> Result<String, String> {
         return Err(format!("drive named {:?} once the ceiling passed", o.owed));
     }
     let told = caller_norms(Dialect::OpenAi, &o.log);
-    let said = matches!(told.as_slice(), [Norm::Error(code, _)] if code == SESSION_CEILING_REASON);
+    let said = matches!(told.as_slice(), [Norm::Error(code, _)] if code == SESSION_EXPIRED_CODE);
     if !o.log.anomalies.is_empty() || !said || o.log.done != 1 {
         return Err(format!(
             "past its ceiling the session told the caller {told:?} and ended {} time(s)",
@@ -133,7 +137,7 @@ fn ceiling_check(o: &CeilingObs) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "a session past `streams.session_max_secs` is told why ({SESSION_CEILING_REASON}) and \
+        "a session past `streams.session_max_secs` is told why ({SESSION_EXPIRED_CODE}) and \
          ended once, on the kernel's tick clock; a money cut is the kernel's, rendered through \
          `refusal`"
     ))
@@ -223,11 +227,31 @@ fn widened(text: &str) -> bool {
     text.contains("semantic") || text.contains("g711")
 }
 
-fn downscope_script(p: &Plugin<Plane>) -> Log {
+/// What the down-scope checkpoint saw: the OpenAI door's relay of the caller's update, and the
+/// Gemini door's relay of that update bridged toward Gemini by the cross-dialect map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DownObs {
+    openai: Log,
+    gemini: Log,
+}
+
+fn downscope_script(p: &Plugin<Plane>) -> DownObs {
     let _ = open(p, SESSION, Some(PUBLIC));
+    let update = frame(&downscope_update());
     let mut s = Session::open(p, 140, 2);
-    s.push(FROM_CALLER, 0, &frame(&downscope_update()));
-    s.log
+    s.push(FROM_CALLER, 0, &update);
+    let mut g = Session::open(p, 141, 3);
+    for w in bridged_to_gemini(&update) {
+        let from = match w.dir {
+            Dir::Up => FROM_CALLER,
+            Dir::Down => FROM_FAR_END,
+        };
+        g.push(from, 0, &w.bytes);
+    }
+    DownObs {
+        openai: s.log,
+        gemini: g.log,
+    }
 }
 
 fn downscope_update() -> serde_json::Value {
@@ -236,11 +260,18 @@ fn downscope_update() -> serde_json::Value {
         "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw"}})
 }
 
-fn downscope_check(log: &Log) -> Result<String, String> {
-    let bridged = downscope_bridge(&downscope_update());
+fn downscope_check(o: &DownObs) -> Result<String, String> {
+    if !o.gemini.anomalies.is_empty() {
+        return Err(format!(
+            "the Gemini door did not answer the bridged setup READY: {:?}",
+            o.gemini.anomalies
+        ));
+    }
+    let bridged = format!("{:?}", far_norms(Dialect::Gemini, &o.gemini));
     if !bridged.contains("Config") || widened(&bridged) {
         return Err(format!("the bridge toward Gemini widened: {bridged}"));
     }
+    let log = &o.openai;
     let far: Vec<&Emission> = log.emissions.iter().filter(|e| e.to_far).collect();
     let sent: Vec<serde_json::Value> = far
         .iter()
@@ -256,9 +287,10 @@ fn downscope_check(log: &Log) -> Result<String, String> {
         ));
     }
     Ok(
-        "an OpenAI-only semantic_vad/g711 concept is down-scoped, never widened, toward Gemini; \
-         and at the door the caller's session.update reaches the far end with the locked keys \
-         spliced in (the locked model, no caller instructions) and its own keys kept"
+        "an OpenAI-only semantic_vad/g711 concept is down-scoped, never widened, toward Gemini \
+         (the Gemini door relays the bridged setup as a config carrying neither); and at the door \
+         the caller's session.update reaches the far end with the locked keys spliced in (the \
+         locked model, no caller instructions) and its own keys kept"
             .to_string(),
     )
 }
@@ -269,9 +301,9 @@ fn downscope(rig: &Rig, checkpoint: &str) {
         "down-scope",
         &rig.both(downscope_script),
         &downscope_check,
-        &|l: &Log| {
-            let mut planted = l.clone();
-            for e in &mut planted.emissions {
+        &|o: &DownObs| {
+            let mut planted = o.clone();
+            for e in &mut planted.openai.emissions {
                 if e.to_far {
                     e.frame = frame(&downscope_update());
                 }

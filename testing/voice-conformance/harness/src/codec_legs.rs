@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FIXTURE LEGS — `spec-per-dialect`, `replay`, `cross-parity` — over the plane's own codecs
-//! (`busbar_plane_streaming::codec`, the module the door's sessions run) AND through the door's
-//! session pieces.
+//! THE FIXTURE LEGS — `spec-per-dialect`, `replay`, `cross-parity` — over the dialects' published
+//! wires, read by this harness ([`crate::wire`]), AND through the door's session pieces.
 //!
-//! Each fixture is judged twice. The CODEC half is the old leg, unchanged: wire → IR → wire → IR
-//! must be stable (spec), a captured transcript must re-derive its concept skeleton (replay), a
-//! concept bridged A → IR → B → IR must keep its load-bearing fields (cross). The DOOR half pushes
-//! the same wire bytes (for cross: the bridged B wire) through a live session on the door that
-//! speaks the dialect — the caller's frames as caller pieces, the far end's as far-end pieces — on
-//! the linked and the dropped door, and holds what the door relays to the SESSION RULES the plane
-//! states (`session_pump`, Law 5's relay): a caller frame reaches the far end as it arrived,
-//! except that a frame configuring the session or asking for a response takes the session's
-//! locked keys (the plane's governed splice, `busbar_plane_streaming::splice`); a far-end frame
-//! reaches the caller as it arrived, every one of them (a usage report also becomes reported
-//! units), and nothing goes to the far end on the caller's behalf (Law 11). Compared on the
-//! correlation fingerprint, the same rule the codec half uses. The expectation is computed from the
-//! wire by the codec and the splice, never by the door.
+//! Each fixture is judged twice. The WIRE half reads the fixture by the dialect's published format:
+//! it must read as concepts (or be one of the map's documented drops) (spec), a captured transcript
+//! must show its concept skeleton in order (replay), a concept bridged A → B by the cross-dialect
+//! map must read back with its load-bearing fields (cross). The DOOR half pushes the same wire
+//! bytes (for cross: the bridged B wire) through a live session on the door that speaks the
+//! dialect — the caller's frames as caller pieces, the far end's as far-end pieces — on the linked
+//! and the dropped door, and holds what the door relays to the SESSION RULES the spec states
+//! (Law 5's relay, Part 2 #45's lock): a caller frame reaches the far end as it arrived, except
+//! that a frame configuring the session or asking for a response takes the session's locked keys
+//! (the governed splice, [`crate::wire::governed`]); a far-end frame reaches the caller as it
+//! arrived, every one of them (a usage report also becomes reported units), and nothing goes to the
+//! far end on the caller's behalf (Law 11). Compared on the correlation fingerprint. The
+//! expectation is computed from the wire by this harness, never by the plane: the plane's only
+//! public item is its door.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -25,20 +25,12 @@ use std::path::Path;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::plane::{FROM_CALLER, FROM_FAR_END, UNITS_REPORTED};
-use busbar_plane_streaming::codec::ir::{
-    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
-    IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, SessionConfig, WireEvent,
-};
-use busbar_plane_streaming::door::{read_settings, RIDES_LIVE_SOCKET, RIDES_REALTIME_SOCKET};
-use busbar_plane_streaming::driven::{GEMINI_SOCKET_PATH, REALTIME_SOCKET_PATH};
-use busbar_plane_streaming::session_door::PER_SESSION_CLASS;
-use busbar_plane_streaming::splice::{splice, LockedKeys};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
-use bytes::Bytes;
 use serde_json::Value;
 
-use crate::door::{judge, open, result, Log, Rig, Session, PUBLIC, SESSION};
+use crate::door::{facts, judge, open, result, Log, Rig, Session, PUBLIC, SESSION};
+use crate::wire::{self, Bridge, GEMINI_SOCKET_PATH, REALTIME_SOCKET_PATH};
 
 // ── the two dialects ────────────────────────────────────────────────────────────────────────────
 
@@ -77,15 +69,16 @@ impl Dialect {
         }
     }
 
-    /// The declared need its far frames ride.
-    pub const fn ride(self) -> u32 {
+    /// The declared need its far frames ride: the outbound socket need the door's Statement
+    /// declares under the dialect's credential style ([`crate::door::Facts`]).
+    pub fn ride(self) -> u32 {
         match self {
-            Dialect::OpenAi => RIDES_REALTIME_SOCKET,
-            Dialect::Gemini => RIDES_LIVE_SOCKET,
+            Dialect::OpenAi => facts().realtime_socket,
+            Dialect::Gemini => facts().live_socket,
         }
     }
 
-    /// The far end's socket, under the member's base URL.
+    /// The far end's socket, under the member's base URL (the dialect's published endpoint).
     pub const fn socket(self) -> &'static str {
         match self {
             Dialect::OpenAi => REALTIME_SOCKET_PATH,
@@ -93,48 +86,24 @@ impl Dialect {
         }
     }
 
-    /// Read a caller frame.
-    pub fn read_up(self, frame: &[u8], st: &mut DecodeState) -> Vec<IrClientEvent> {
-        let w = WireEvent(Bytes::copy_from_slice(frame));
-        match self {
-            Dialect::OpenAi => OpenAiRealtimeCodec.read_up(w, st),
-            Dialect::Gemini => GeminiLiveCodec.read_up(w, st),
-        }
+    /// A caller frame's concepts, read by the harness.
+    pub fn read_up(self, frame: &[u8]) -> Vec<Norm> {
+        wire::read_up(self, frame)
     }
 
-    /// Read a far-end frame.
-    pub fn read_down(self, frame: &[u8], st: &mut DecodeState) -> Vec<IrServerEvent> {
-        let w = WireEvent(Bytes::copy_from_slice(frame));
-        match self {
-            Dialect::OpenAi => OpenAiRealtimeCodec.read_down(w, st),
-            Dialect::Gemini => GeminiLiveCodec.read_down(w, st),
-        }
-    }
-
-    /// Frame a caller event; `None` when the dialect has no verb for it.
-    pub fn write_up(self, ev: IrClientEvent, st: &mut DecodeState) -> Option<WireEvent> {
-        match self {
-            Dialect::OpenAi => OpenAiRealtimeCodec.write_up(ev, st),
-            Dialect::Gemini => GeminiLiveCodec.write_up(ev, st),
-        }
-    }
-
-    /// Frame a far-end event; `None` when it is not a frame on its own.
-    pub fn write_down(self, ev: IrServerEvent, st: &mut DecodeState) -> Option<WireEvent> {
-        match self {
-            Dialect::OpenAi => OpenAiRealtimeCodec.write_down(ev, st),
-            Dialect::Gemini => GeminiLiveCodec.write_down(ev, st),
-        }
+    /// A far-end frame's concepts, read by the harness.
+    pub fn read_down(self, frame: &[u8]) -> Vec<Norm> {
+        wire::read_down(self, frame)
     }
 }
 
 fn bytes_of(v: &Value) -> Vec<u8> {
-    serde_json::to_vec(v).expect("serialize wire value")
+    wire::bytes(v)
 }
 
-// ── the shared normal form (the old harness's, verbatim in meaning) ─────────────────────────────
+// ── the shared normal form ──────────────────────────────────────────────────────────────────────
 
-/// Both direction-split IR enums collapsed onto one list, so concepts compare uniformly.
+/// Both dialects' concepts, in one dialect-neutral list, so concepts compare uniformly.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Norm {
     /// Config essentials only: instructions|voice|tools|max (the survivable fields).
@@ -149,7 +118,7 @@ pub enum Norm {
     AudioDown(Vec<u8>),
     /// An item's audio is done.
     AudioDone,
-    /// A conversation item.
+    /// A conversation item: a message as its role and text parts, any other item as written.
     Item(Value),
     /// Speech began.
     SpeechStart,
@@ -183,94 +152,11 @@ pub enum Norm {
     ToolResult(String, Value),
 }
 
-fn cfg_essentials(config: &SessionConfig) -> Norm {
-    Norm::Config(format!(
-        "{:?}|{:?}|{}|{:?}",
-        config.instructions,
-        config.voice,
-        config.tools.len(),
-        config.max_output_tokens
-    ))
-}
-
-fn norm_tool(t: &IrDuplexTool) -> Norm {
-    match t {
-        IrDuplexTool::CallOpen { call_id, name, .. } => {
-            Norm::ToolOpen(call_id.clone(), name.clone())
-        }
-        IrDuplexTool::CallArgs {
-            call_id,
-            json_delta,
-            ..
-        } => Norm::ToolArgs(
-            call_id.clone(),
-            serde_json::from_slice(json_delta).unwrap_or(Value::Null),
-        ),
-        IrDuplexTool::CallClose { call_id, .. } => Norm::ToolClose(call_id.clone()),
-        IrDuplexTool::CallResult {
-            call_id, output, ..
-        } => Norm::ToolResult(
-            call_id.clone(),
-            serde_json::from_slice(output).unwrap_or(Value::Null),
-        ),
-    }
-}
-
-/// Caller events, normalized.
-pub fn norm_up(evs: &[IrClientEvent]) -> Vec<Norm> {
-    let mut out = Vec::new();
-    for e in evs {
-        match e {
-            IrClientEvent::AudioFrame(f) => out.push(Norm::AudioUp(f.media.to_vec())),
-            IrClientEvent::Tool(t) => out.push(norm_tool(t)),
-            IrClientEvent::Control(c) => match c {
-                IrDuplexControl::SessionConfigure { config } => {
-                    out.push(cfg_essentials(config));
-                    out.push(Norm::ConfigModalities(config.modalities.clone()));
-                }
-                IrDuplexControl::ItemCreate { item } => out.push(Norm::Item(item.clone())),
-                IrDuplexControl::ItemTruncate {
-                    audio_played_ms, ..
-                } => out.push(Norm::Truncate(*audio_played_ms)),
-                IrDuplexControl::InputAudioCommit => out.push(Norm::Commit),
-                IrDuplexControl::InputAudioClear => out.push(Norm::Clear),
-                IrDuplexControl::ResponseCreate { .. } => out.push(Norm::ResponseCreate),
-                IrDuplexControl::ResponseCancel => out.push(Norm::ResponseCancel),
-                IrDuplexControl::ItemDelete { .. } => out.push(Norm::ItemDelete),
-            },
-        }
-    }
-    out
-}
-
-/// Far-end events, normalized.
-pub fn norm_down(evs: &[IrServerEvent]) -> Vec<Norm> {
-    let mut out = Vec::new();
-    for e in evs {
-        match e {
-            IrServerEvent::SessionCreated { .. } => out.push(Norm::Connect),
-            IrServerEvent::Tool(t) => out.push(norm_tool(t)),
-            IrServerEvent::SpeechStarted { .. } => out.push(Norm::SpeechStart),
-            IrServerEvent::SpeechStopped { .. } => out.push(Norm::SpeechStop),
-            IrServerEvent::AudioFrame(f) => out.push(Norm::AudioDown(f.media.to_vec())),
-            IrServerEvent::AudioDone { .. } => out.push(Norm::AudioDone),
-            IrServerEvent::Usage(u) => {
-                out.push(Norm::Usage(u.audio_in, u.audio_out, u.text_in, u.text_out));
-            }
-            IrServerEvent::RateLimits => out.push(Norm::RateLimits),
-            IrServerEvent::Error { code, message } => {
-                out.push(Norm::Error(code.clone(), message.clone()));
-            }
-        }
-    }
-    out
-}
-
 /// One correlated tool call, keyed by call id: `(name, args, result)`.
 type CallEntry = (Option<String>, Option<Value>, Option<Value>);
 
-/// A call-collapsed fingerprint: tool events merged by call id (an atomic Gemini `toolCall`
-/// decodes to a streamed triple and the stateless writer re-frames per event, so arity differs
+/// A call-collapsed fingerprint: tool events merged by call id (an atomic Gemini `toolCall` reads
+/// as a streamed triple and OpenAI's done event repeats the whole arguments, so arity differs
 /// legitimately; the correlation must survive). Everything else compared verbatim, in order.
 #[derive(Debug, Default, PartialEq)]
 pub struct Fingerprint {
@@ -399,44 +285,11 @@ pub struct Expected {
     answered: bool,
 }
 
-/// The caller frame `bytes` as the session's lock leaves it: a frame configuring the session, or
-/// asking for a response, takes the locked keys; any other frame is as it arrived. `None` for a
-/// governed frame that cannot be read as one object (it goes nowhere).
-fn governed(dialect: Dialect, locked: &SessionConfig, bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut st = DecodeState::default();
-    let evs = dialect.read_up(bytes, &mut st);
-    let configures = evs.iter().any(|e| {
-        matches!(
-            e,
-            IrClientEvent::Control(IrDuplexControl::SessionConfigure { .. })
-        )
-    });
-    let responds = evs.iter().any(|e| {
-        matches!(
-            e,
-            IrClientEvent::Control(IrDuplexControl::ResponseCreate { .. })
-        )
-    });
-    let rule = match (dialect, configures, responds) {
-        (Dialect::OpenAi, true, _) => Some(OpenAiRealtimeCodec.configure_rule(locked)),
-        (Dialect::Gemini, true, _) => Some(GeminiLiveCodec.configure_rule(locked)),
-        (Dialect::OpenAi, false, true) => OpenAiRealtimeCodec.response_rule(),
-        (Dialect::Gemini, false, true) => GeminiLiveCodec.response_rule(),
-        _ => None,
-    };
-    match rule {
-        None => Some(bytes.to_vec()),
-        Some(rule) => splice(bytes, &rule),
-    }
-}
-
-/// The session rules over `wires`, read by the codec (never by the door).
+/// The session rules over `wires`, read by the harness (never by the door): each caller frame as
+/// the session's lock (the section the legs open under, [`SESSION`]) leaves it, each far-end frame
+/// as it arrived, and the far end's token reports summed per class.
 pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
-    let locked = read_settings(SESSION)
-        .expect("the leg's section reads")
-        .session;
-    let mut st = DecodeState::default();
-    let mut sent = DecodeState::default();
+    let locked = wire::locked_session(SESSION);
     let mut x = Expected {
         far: Vec::new(),
         caller: Vec::new(),
@@ -447,24 +300,21 @@ pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
     for w in wires {
         match w.dir {
             Dir::Up => {
-                if let Some(bytes) = governed(dialect, &locked, &w.bytes) {
-                    x.far.extend(norm_up(&dialect.read_up(&bytes, &mut sent)));
+                if let Some(sent) = wire::governed(dialect, &locked, &w.bytes) {
+                    x.far.extend(dialect.read_up(&bytes_of(&sent)));
                 }
             }
             Dir::Down => {
                 x.answered = true;
-                let evs = dialect.read_down(&w.bytes, &mut st);
-                for ev in &evs {
-                    if let IrServerEvent::Usage(u) = ev {
-                        for (sum, n) in
-                            sums.iter_mut()
-                                .zip([u.audio_in, u.audio_out, u.text_in, u.text_out])
-                        {
-                            *sum = sum.saturating_add(n);
+                let norms = dialect.read_down(&w.bytes);
+                for n in &norms {
+                    if let Norm::Usage(ai, ao, ti, to) = n {
+                        for (sum, k) in sums.iter_mut().zip([*ai, *ao, *ti, *to]) {
+                            *sum = sum.saturating_add(k);
                         }
                     }
                 }
-                x.caller.extend(norm_down(&evs));
+                x.caller.extend(norms);
             }
         }
     }
@@ -472,7 +322,7 @@ pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
     x
 }
 
-/// What the door relayed, read back by the codec: the far end's frames, the caller's, and every
+/// What the door relayed, read back by the harness: the far end's frames, the caller's, and every
 /// concept's tag in the order the door emitted it.
 pub struct Relayed {
     far: Vec<Norm>,
@@ -482,7 +332,6 @@ pub struct Relayed {
 
 /// Read `log`'s frames back under `dialect`.
 pub fn decode_relay(dialect: Dialect, log: &Log) -> Relayed {
-    let (mut su, mut sd) = (DecodeState::default(), DecodeState::default());
     let mut r = Relayed {
         far: Vec::new(),
         caller: Vec::new(),
@@ -490,9 +339,9 @@ pub fn decode_relay(dialect: Dialect, log: &Log) -> Relayed {
     };
     for e in &log.emissions {
         let n = if e.to_far {
-            norm_up(&dialect.read_up(&e.frame, &mut su))
+            dialect.read_up(&e.frame)
         } else {
-            norm_down(&dialect.read_down(&e.frame, &mut sd))
+            dialect.read_down(&e.frame)
         };
         r.tags.extend(n.iter().map(tag));
         if e.to_far {
@@ -563,7 +412,7 @@ pub fn relay_check(dialect: Dialect, log: &Log, x: &Expected) -> Result<String, 
     let fee = log
         .units
         .iter()
-        .any(|u| u.0 == PER_SESSION_CLASS && u.2 == 1);
+        .any(|u| u.0 == facts().fee_class && u.2 == 1);
     if fee != x.answered {
         return Err(format!(
             "the session fee unit reported {fee}, the far end answered {}",
@@ -586,14 +435,14 @@ pub fn plant_units(log: &Log) -> Log {
     planted
 }
 
-/// Judge one relay of `wires` on both doors, with `codec` (the codec half's verdict) folded in.
+/// Judge one relay of `wires` on both doors, with `read` (the wire half's verdict) folded in.
 fn judge_relay(
     rig: &Rig,
     slice: &str,
     what: &str,
     dialect: Dialect,
     wires: &[Wire],
-    codec: &Result<String, String>,
+    read: &Result<String, String>,
 ) -> bool {
     let x = expect(dialect, wires);
     let seen = rig.both(|p| relay(p, dialect, wires));
@@ -602,9 +451,9 @@ fn judge_relay(
         what,
         &seen,
         &|log: &Log| {
-            let codec = codec.clone()?;
+            let read = read.clone()?;
             let door = relay_check(dialect, log, &x)?;
-            Ok(format!("codec: {codec}; door: {door}"))
+            Ok(format!("wire: {read}; door: {door}"))
         },
         &plant_units,
     )
@@ -614,7 +463,8 @@ fn judge_relay(
 // spec-per-dialect
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-/// Fixtures that legitimately decode to NOTHING, with the reason (the codec's documented drops).
+/// Fixtures that legitimately read as NOTHING, with the reason (the map's documented drops: a
+/// concept with no shared home in the other dialect).
 fn drop_reason(dialect: Dialect, fixture: &str) -> Option<&'static str> {
     match (dialect, fixture) {
         (Dialect::Gemini, "goAway.json") => {
@@ -624,88 +474,52 @@ fn drop_reason(dialect: Dialect, fixture: &str) -> Option<&'static str> {
             Some("gemini_tool_call_cancellation: no OpenAI server-driven cancel (drop+warn)")
         }
         (Dialect::Gemini, "serverContent.inputTranscription.json") => {
-            Some("input transcription side-channel: no shared IR home (drop+warn)")
+            Some("input transcription side-channel: no shared concept home (drop+warn)")
         }
         (Dialect::Gemini, "serverContent.outputTranscription.json") => {
-            Some("output transcription side-channel: no shared IR home (drop+warn)")
+            Some("output transcription side-channel: no shared concept home (drop+warn)")
         }
         _ => None,
     }
 }
 
-/// A decoded fixture: the direction the codec recognized it in, and its IR.
-enum Decoded {
-    Up(Vec<IrClientEvent>),
-    Down(Vec<IrServerEvent>),
-    Empty,
-}
-
-fn decode(dialect: Dialect, frame: &[u8]) -> Decoded {
-    let up = dialect.read_up(frame, &mut DecodeState::default());
+/// The wire half of one fixture, and the direction its frame is pushed from: a client message is
+/// the caller's, a server message the far end's.
+fn spec_read(dialect: Dialect, fixture: &str, frame: &[u8]) -> (Result<String, String>, Dir) {
+    let up = dialect.read_up(frame);
     if !up.is_empty() {
-        return Decoded::Up(up);
+        let tags: Vec<&str> = up.iter().map(tag).collect();
+        return (
+            Ok(format!(
+                "read as the client message {tags:?} by {}'s published format",
+                dialect.name()
+            )),
+            Dir::Up,
+        );
     }
-    let down = dialect.read_down(frame, &mut DecodeState::default());
+    let down = dialect.read_down(frame);
     if !down.is_empty() {
-        return Decoded::Down(down);
+        let tags: Vec<&str> = down.iter().map(tag).collect();
+        return (
+            Ok(format!(
+                "read as the server message {tags:?} by {}'s published format",
+                dialect.name()
+            )),
+            Dir::Down,
+        );
     }
-    Decoded::Empty
-}
-
-fn spec_verdict(n1: &[Norm], n2: &[Norm], arity: usize) -> Result<String, String> {
-    if n1 == n2 {
-        return Ok(format!("IR-fixpoint stable ({arity} IR event(s))"));
-    }
-    if fingerprint(n1) == fingerprint(n2) {
-        return Ok(format!(
-            "IR-fixpoint stable by correlation fingerprint (atomic expansion, {arity} event(s))"
-        ));
-    }
-    Err(format!("round-trip diverged: {n1:?} != {n2:?}"))
-}
-
-/// The codec half of one fixture, and the direction its frame is pushed from.
-fn spec_codec(dialect: Dialect, fixture: &str, frame: &[u8]) -> (Result<String, String>, Dir) {
-    match decode(dialect, frame) {
-        Decoded::Up(ir1) => {
-            let (mut w, mut r) = (DecodeState::default(), DecodeState::default());
-            let mut ir2 = Vec::new();
-            for e in &ir1 {
-                if let Some(wire) = dialect.write_up(e.clone(), &mut w) {
-                    ir2.extend(dialect.read_up(&wire.0, &mut r));
-                }
-            }
-            (
-                spec_verdict(&norm_up(&ir1), &norm_up(&ir2), ir1.len()),
-                Dir::Up,
-            )
-        }
-        Decoded::Down(ir1) => {
-            let (mut w, mut r) = (DecodeState::default(), DecodeState::default());
-            let mut ir2 = Vec::new();
-            for e in &ir1 {
-                if let Some(wire) = dialect.write_down(e.clone(), &mut w) {
-                    ir2.extend(dialect.read_down(&wire.0, &mut r));
-                }
-            }
-            (
-                spec_verdict(&norm_down(&ir1), &norm_down(&ir2), ir1.len()),
-                Dir::Down,
-            )
-        }
-        // A documented drop is a far-end concept with no shared home: pushed from the far end, the
-        // door must carry it on no wire at all.
-        Decoded::Empty => match drop_reason(dialect, fixture) {
-            Some(reason) => (Ok(format!("documented drop — {reason}")), Dir::Down),
-            None => (
-                Err("decoded to NO IR events and is not a documented drop".to_string()),
-                Dir::Down,
-            ),
-        },
+    // A documented drop is a far-end concept with no shared home: pushed from the far end, the
+    // door relays it as it arrived, and it reads as nothing on either side.
+    match drop_reason(dialect, fixture) {
+        Some(reason) => (Ok(format!("documented drop — {reason}")), Dir::Down),
+        None => (
+            Err("read as NO concept and is not a documented drop".to_string()),
+            Dir::Down,
+        ),
     }
 }
 
-/// `spec <dialect> <dir>`: every fixture, codec half and door half.
+/// `spec <dialect> <dir>`: every fixture, wire half and door half.
 pub fn spec(rig: &Rig, dialect_name: &str, dir: &Path) -> i32 {
     let Some(dialect) = Dialect::of(dialect_name) else {
         result(dialect_name, false, "dialect", "unknown dialect");
@@ -753,12 +567,12 @@ pub fn spec(rig: &Rig, dialect_name: &str, dir: &Path) -> i32 {
                 continue;
             }
         };
-        let (codec, side) = spec_codec(dialect, f, &frame);
+        let (read, side) = spec_read(dialect, f, &frame);
         let wires = [Wire {
             dir: side,
             bytes: frame,
         }];
-        if !judge_relay(rig, dialect.name(), f, dialect, &wires, &codec) {
+        if !judge_relay(rig, dialect.name(), f, dialect, &wires, &read) {
             fails += 1;
         }
     }
@@ -796,43 +610,28 @@ fn transcript_wires(lines: &[Value]) -> Vec<Wire> {
         .collect()
 }
 
-/// The codec half of a replay: one session state, every frame decoded in order, every decoded
-/// event re-framed to valid wire JSON, and the skeleton in order.
-fn replay_codec(dialect: Dialect, wires: &[Wire], skeleton: &[&str]) -> Result<String, String> {
-    let (mut st, mut wst) = (DecodeState::default(), DecodeState::default());
-    let (mut tags, mut decoded, mut reencoded) = (Vec::new(), 0_usize, 0_usize);
-    let valid = |w: Option<WireEvent>| {
-        w.is_some_and(|w| serde_json::from_slice::<Value>(&w.0).is_ok_and(|v| !v.is_null()))
-    };
+/// The wire half of a replay: every frame read in order by the dialect's published format, and
+/// the skeleton in order.
+fn replay_read(dialect: Dialect, wires: &[Wire], skeleton: &[&str]) -> Result<String, String> {
+    let (mut tags, mut read, mut frames) = (Vec::new(), 0_usize, 0_usize);
     for w in wires {
-        match w.dir {
-            Dir::Up => {
-                let irs = dialect.read_up(&w.bytes, &mut st);
-                for ir in &irs {
-                    decoded += 1;
-                    reencoded += usize::from(valid(dialect.write_up(ir.clone(), &mut wst)));
-                }
-                tags.extend(norm_up(&irs).iter().map(tag));
-            }
-            Dir::Down => {
-                let irs = dialect.read_down(&w.bytes, &mut st);
-                for ir in &irs {
-                    decoded += 1;
-                    reencoded += usize::from(valid(dialect.write_down(ir.clone(), &mut wst)));
-                }
-                tags.extend(norm_down(&irs).iter().map(tag));
-            }
-        }
+        let norms = match w.dir {
+            Dir::Up => dialect.read_up(&w.bytes),
+            Dir::Down => dialect.read_down(&w.bytes),
+        };
+        frames += usize::from(!norms.is_empty());
+        read += norms.len();
+        tags.extend(norms.iter().map(tag));
     }
     ordered_subsequence(&tags, skeleton)?;
     Ok(format!(
-        "{decoded} IR events, {reencoded} re-framed, skeleton {skeleton:?} in order"
+        "{read} concept(s) read from {frames} frame(s), skeleton {skeleton:?} in order"
     ))
 }
 
-/// `replay <root>`: each dialect's captured transcript, codec half and door half.
+/// `replay <root>`: each dialect's captured transcript, wire half and door half.
 pub fn replay(rig: &Rig, root: &Path) -> i32 {
-    // The skeletons the codec re-derives; the door's relay must show the same concepts in the
+    // The skeletons the transcript reads as; the door's relay must show the same concepts in the
     // order it emitted them, less the far end's usage, which a session consumes into units.
     let cases: [(Dialect, &[&str], &[&str]); 2] = [
         (
@@ -892,7 +691,7 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
         ),
     ];
     let mut fails = 0;
-    for (dialect, codec_skeleton, door_skeleton) in cases {
+    for (dialect, wire_skeleton, door_skeleton) in cases {
         let what = format!("{}-transcript", dialect.name());
         let lines = match read_jsonl(&root.join(dialect.name()).join("transcript.jsonl")) {
             Ok(lines) => lines,
@@ -903,7 +702,7 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
             }
         };
         let wires = transcript_wires(&lines);
-        let codec = replay_codec(dialect, &wires, codec_skeleton);
+        let read = replay_read(dialect, &wires, wire_skeleton);
         let x = expect(dialect, &wires);
         let seen = rig.both(|p| relay(p, dialect, &wires));
         let pass = judge(
@@ -911,11 +710,11 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
             &what,
             &seen,
             &|log: &Log| {
-                let codec = codec.clone()?;
+                let read = read.clone()?;
                 let door = relay_check(dialect, log, &x)?;
                 ordered_subsequence(&decode_relay(dialect, log).tags, door_skeleton)?;
                 Ok(format!(
-                    "codec: {codec}; door: {door}, skeleton {door_skeleton:?} in emitted order"
+                    "wire: {read}; door: {door}, skeleton {door_skeleton:?} in emitted order"
                 ))
             },
             &plant_units,
@@ -931,54 +730,82 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
 // cross-parity
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-/// One bridge: the source's norms, the bridged-and-re-read norms, and the bridged wires (the B
-/// dialect's frames, pushed through B's door).
+/// One bridge: the source's concepts, the bridged frames' concepts read back, and the bridged
+/// wires (the B dialect's frames, pushed through B's door).
 struct Bridged {
     n1: Vec<Norm>,
     n2: Vec<Norm>,
     wires: Vec<Wire>,
 }
 
-/// Bridge the frames `vals` FROM `a` TO `b` as one exchange (one source session, one destination).
+/// Bridge the frames `vals` FROM `a` TO `b` as one exchange, by the cross-dialect map
+/// ([`crate::wire::Bridge`]): within one dialect a frame is carried as it is (Law 5's relay);
+/// across dialects each concept becomes `b`'s published frame for it, or nothing where `b` has
+/// none.
 fn bridge(a: Dialect, b: Dialect, vals: &[Vec<u8>]) -> Bridged {
-    let (mut rst, mut wst, mut bst) = (
-        DecodeState::default(),
-        DecodeState::default(),
-        DecodeState::default(),
-    );
+    let mut map = Bridge::default();
     let mut out = Bridged {
         n1: Vec::new(),
         n2: Vec::new(),
         wires: Vec::new(),
     };
+    let carry = |dir: Dir, bytes: Vec<u8>, out: &mut Bridged| {
+        out.n2.extend(match dir {
+            Dir::Up => b.read_up(&bytes),
+            Dir::Down => b.read_down(&bytes),
+        });
+        out.wires.push(Wire { dir, bytes });
+    };
     for v in vals {
-        let up = a.read_up(v, &mut rst);
+        let up = a.read_up(v);
         if !up.is_empty() {
-            out.n1.extend(norm_up(&up));
-            for e in up {
-                if let Some(w) = b.write_up(e, &mut wst) {
-                    out.n2.extend(norm_up(&b.read_up(&w.0, &mut bst)));
-                    out.wires.push(Wire {
-                        dir: Dir::Up,
-                        bytes: w.0.to_vec(),
-                    });
-                }
+            let frames: Vec<Vec<u8>> = if a == b {
+                vec![v.clone()]
+            } else if up.iter().any(|n| matches!(n, Norm::Config(_))) {
+                wire::bridge_config(a, b, v).iter().map(bytes_of).collect()
+            } else {
+                up.iter()
+                    .filter_map(|n| map.up(b, n))
+                    .map(|f| bytes_of(&f))
+                    .collect()
+            };
+            out.n1.extend(up);
+            for f in frames {
+                carry(Dir::Up, f, &mut out);
             }
             continue;
         }
-        let down = a.read_down(v, &mut rst);
-        out.n1.extend(norm_down(&down));
-        for e in down {
-            if let Some(w) = b.write_down(e, &mut wst) {
-                out.n2.extend(norm_down(&b.read_down(&w.0, &mut bst)));
-                out.wires.push(Wire {
-                    dir: Dir::Down,
-                    bytes: w.0.to_vec(),
-                });
-            }
+        let down = a.read_down(v);
+        let frames: Vec<Vec<u8>> = if down.is_empty() {
+            Vec::new()
+        } else if a == b {
+            vec![v.clone()]
+        } else {
+            down.iter()
+                .filter_map(|n| map.down(b, n))
+                .map(|f| bytes_of(&f))
+                .collect()
+        };
+        out.n1.extend(down);
+        for f in frames {
+            carry(Dir::Down, f, &mut out);
         }
     }
     out
+}
+
+/// The concepts a log's frames carry, both sides, in the order the door emitted them.
+pub fn relayed_norms(dialect: Dialect, log: &Log) -> Vec<Norm> {
+    log.emissions
+        .iter()
+        .flat_map(|e| {
+            if e.to_far {
+                dialect.read_up(&e.frame)
+            } else {
+                dialect.read_down(&e.frame)
+            }
+        })
+        .collect()
 }
 
 fn pair_slice(a: Dialect, b: Dialect) -> &'static str {
@@ -994,7 +821,7 @@ fn pair_slice(a: Dialect, b: Dialect) -> &'static str {
 fn none_reason(concept: &str, from: Dialect) -> &'static str {
     match (concept, from) {
         ("input turn commit / end-of-audio", Dialect::Gemini) => {
-            "documented drop — gemini audioStreamEnd is dropped by the codec"
+            "documented drop — gemini audioStreamEnd has no reading on the source side"
         }
         ("server-side VAD speech boundary", Dialect::Gemini) => {
             "dialect-only concept — Gemini has no explicit server-VAD boundary fixture; exercised \
@@ -1129,8 +956,9 @@ fn read_fixture(path: &Path) -> Option<Vec<u8>> {
     Some(bytes_of(&v))
 }
 
-/// `cross <pair> <openai dir> <gemini dir> <map>`: every shared concept, codec half and door half
-/// (the bridged wire through the destination dialect's door), then every asymmetry row.
+/// `cross <pair> <openai dir> <gemini dir> <map>`: every shared concept, bridge half and door half
+/// (the bridged wire through the destination dialect's door), then every asymmetry row, judged on
+/// what the destination dialect's door relays of the bridged wire.
 pub fn cross(rig: &Rig, pair: &str, oa: &Path, ge: &Path, map: &Value) -> i32 {
     let (a, b) = match pair {
         "oo" => (Dialect::OpenAi, Dialect::OpenAi),
@@ -1185,9 +1013,9 @@ pub fn cross(rig: &Rig, pair: &str, oa: &Path, ge: &Path, map: &Value) -> i32 {
                 none_reason(concept, a)
             ),
             Some((name, br)) => {
-                let codec = survives(concept, &br.n1, &br.n2, a, b);
+                let bridged = survives(concept, &br.n1, &br.n2, a, b);
                 let what = format!("shared:{name}");
-                if !judge_relay(rig, slice, &what, b, &br.wires, &codec) {
+                if !judge_relay(rig, slice, &what, b, &br.wires, &bridged) {
                     fails += 1;
                 }
             }
@@ -1228,8 +1056,19 @@ pub fn cross(rig: &Rig, pair: &str, oa: &Path, ge: &Path, map: &Value) -> i32 {
             fails += 1;
             continue;
         };
+        // The bridged wire through B's door, both ways: the row holds for what the door relays.
         let br = bridge(a, b, std::slice::from_ref(&v));
-        match asym_drop(id, &br.n1, &br.n2) {
+        let (linked, dropped) = rig.both(|p| relay(p, b, &br.wires));
+        let verdict = match &dropped {
+            Err(e) => Err(e.clone()),
+            Ok(d) if *d != linked => Err(format!(
+                "the linked and dropped {} doors relayed the bridged wire differently",
+                b.name()
+            )),
+            Ok(_) => asym_drop(id, &br.n1, &relayed_norms(b, &linked))
+                .map(|d| format!("{d}; through the {} door, linked == dropped", b.name())),
+        };
+        match verdict {
             Ok(d) => result(slice, true, &what, &d),
             Err(d) => {
                 result(slice, false, &what, &d);
@@ -1240,13 +1079,10 @@ pub fn cross(rig: &Rig, pair: &str, oa: &Path, ge: &Path, map: &Value) -> i32 {
     i32::from(fails > 0)
 }
 
-/// The codec half of the V4 governance checkpoint: an OpenAI-only concept bridged toward Gemini
-/// is down-scoped, never widened. Answers the bridged norms' text.
-pub fn downscope_bridge(update: &Value) -> String {
-    format!(
-        "{:?}",
-        bridge(Dialect::OpenAi, Dialect::Gemini, &[bytes_of(update)]).n2
-    )
+/// An OpenAI Realtime frame bridged toward Gemini Live by the cross-dialect map: the wires a
+/// Gemini door is handed for it.
+pub fn bridged_to_gemini(frame: &[u8]) -> Vec<Wire> {
+    bridge(Dialect::OpenAi, Dialect::Gemini, &[frame.to_vec()]).wires
 }
 
 /// The frame bytes of a JSON value.
@@ -1254,17 +1090,17 @@ pub fn frame(v: &Value) -> Vec<u8> {
     bytes_of(v)
 }
 
-/// The far-end concepts a log's frames carry toward the caller, decoded under `dialect`.
+/// The far-end concepts a log's frames carry toward the caller, read under `dialect`.
 pub fn caller_norms(dialect: Dialect, log: &Log) -> Vec<Norm> {
     decode_relay(dialect, log).caller
 }
 
-/// The concepts a log's frames carry toward the far end, decoded under `dialect`.
+/// The concepts a log's frames carry toward the far end, read under `dialect`.
 pub fn far_norms(dialect: Dialect, log: &Log) -> Vec<Norm> {
     decode_relay(dialect, log).far
 }
 
-/// The token units a usage frame reports, read by the codec: `(class, amount)`, zeros left out.
+/// The token units a usage frame reports, read by the harness: `(class, amount)`, zeros left out.
 pub fn usage_tokens(dialect: Dialect, usage_frame: &[u8]) -> Vec<(u32, u64)> {
     expect(
         dialect,

@@ -9,7 +9,8 @@
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): a session's far frames name the dialect's socket
 # under the member's base URL (`GET /v1/realtime`, the Gemini BidiGenerateContent path) on the declared
-# need they ride (door::RIDES_REALTIME_SOCKET / RIDES_LIVE_SOCKET), and the usage the far end sends over
+# need they ride (the outbound ws need the door's Statement declares under the dialect's credential
+# style: `bearer` for OpenAI Realtime, `x-goog-api-key` for Gemini Live), and the usage the far end sends over
 # that socket is reported as units. The plane opens no socket and holds no guard (its closure is
 # contract + codecs: tests/purity.rs); the net guard, TLS and the upgrade are the connector's. RED arm:
 # a socket frame that names the one-shot pass need fails.

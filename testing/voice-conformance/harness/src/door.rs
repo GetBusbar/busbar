@@ -4,9 +4,11 @@
 //! THE DOOR, BOTH WAYS: the plumbing every leg drives the streaming plane through.
 //!
 //! The same door is loaded twice through the ONE loader: compiled in
-//! (`busbar_plane_streaming::door::door`, [`load_linked`]) and dropped in (the plane's cdylib twin,
-//! `busbar-plane-streaming-plugin`, beside this harness, [`load_dropped`] against the linked row's
-//! own Statement).
+//! (`busbar_plane_streaming::door`, the plane's one public item, [`load_linked`]) and dropped in
+//! (the plane's cdylib twin, `busbar-plane-streaming-plugin`, beside this harness, [`load_dropped`]
+//! against the linked row's own Statement). What the plane states of itself (its needs, its billable
+//! classes) is read off that Statement through the loader's plane facts ([`Facts`]); nothing else
+//! of the plane's is named here.
 //! Every leg builds a fresh instance of each, drives both with one script, and [`judge`]s the pair:
 //! the two observations must be equal, the observation must pass the leg's check, and the leg's
 //! PLANTED WRONG ANSWER must be refused by the same check (the RED arm, run in the same process on
@@ -15,8 +17,9 @@
 use std::cell::Cell;
 use std::fmt::Debug;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_JSON, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, TickIn, TickOut};
 use busbar_contract::abi::plane::{
@@ -24,12 +27,13 @@ use busbar_contract::abi::plane::{
     PlaneOpenIn, PlaneOpenOut, RecordWrite, RefusalIn, RefusalOut, UnitCount, CLAIM_EXACT,
     CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_KERNEL, REFUSAL_KERNEL,
 };
-use busbar_plane_streaming::door;
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame,
     LinkedRow, NoSink, Plugin,
 };
+
+use crate::wire::{HTTP_TRANSPORT, LIVE_STYLE, REALTIME_STYLE, WS_TRANSPORT};
 
 /// The environment variable naming the dropped-in door's library, when it is not beside the
 /// harness.
@@ -125,6 +129,63 @@ pub fn red_mode() -> bool {
     std::env::var_os(RED_ENV).is_some()
 }
 
+// ── what the door states of itself ──────────────────────────────────────────────────────────────
+
+/// What the door's Statement states that a leg holds an answer to, read once at boot through the
+/// loader's plane facts of the linked door (the dropped door is admitted against the same
+/// Statement). A fact the Statement does not state reads as a value no answer carries (`0` for a
+/// need, `u32::MAX` for a class), so the legs that hold the door to it FAIL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Facts {
+    /// The need an OpenAI Realtime far frame rides (`OnPieceOut::need`, a need's index plus one):
+    /// the outbound `ws` need under OpenAI's credential style.
+    pub realtime_socket: u32,
+    /// The need OpenAI Realtime's one-request passes (the mint, the SDP offer) ride: the outbound
+    /// `http` need under OpenAI's credential style.
+    pub realtime_pass: u32,
+    /// The need a Gemini Live far frame rides: the outbound `ws` need under Gemini's style.
+    pub live_socket: u32,
+    /// The billable class index of the session's fee unit (the tail's first fee unit).
+    pub fee_class: u32,
+}
+
+static FACTS: OnceLock<Facts> = OnceLock::new();
+
+/// The facts [`Rig::boot`] read off the door's Statement.
+pub fn facts() -> &'static Facts {
+    FACTS
+        .get()
+        .expect("the rig reads the door's Statement at boot")
+}
+
+impl Facts {
+    /// The facts `p`'s Statement states.
+    fn of(p: &Plugin<Plane>) -> Self {
+        let served = p.served();
+        let need = |transport: &str, style: &str| {
+            served
+                .need_auths
+                .iter()
+                .zip(&served.need_transports)
+                .position(|((direction, auth), t)| {
+                    *direction == DIRECTION_OUTBOUND && *auth == style && *t == transport
+                })
+                .map_or(0, |i| i as u32 + 1)
+        };
+        let fee_class = served
+            .fee_units
+            .first()
+            .and_then(|fee| served.billable_classes.iter().position(|c| c == fee))
+            .map_or(u32::MAX, |i| i as u32);
+        Facts {
+            realtime_socket: need(WS_TRANSPORT, REALTIME_STYLE),
+            realtime_pass: need(HTTP_TRANSPORT, REALTIME_STYLE),
+            live_socket: need(WS_TRANSPORT, LIVE_STYLE),
+            fee_class,
+        }
+    }
+}
+
 // ── the two doors ───────────────────────────────────────────────────────────────────────────────
 
 /// The harness's one dispatcher and the two ways it reaches the door.
@@ -170,15 +231,20 @@ fn dropped_path() -> Result<PathBuf, String> {
 }
 
 impl Rig {
-    /// The dispatcher, the linked row's Statement, and where the dropped-in door lives.
+    /// The dispatcher, the linked row's Statement, where the dropped-in door lives, and the
+    /// [`Facts`] the Statement states.
     pub fn boot() -> Self {
-        let row = LinkedRow::of(door::door).expect("the streaming door states itself");
-        Rig {
+        let row =
+            LinkedRow::of(busbar_plane_streaming::door).expect("the streaming door states itself");
+        let rig = Rig {
             dispatcher: Dispatcher::new(DispatchConfig::default()),
             count: Cell::new(0),
             dropped_at: dropped_path(),
             stated: row.statement,
-        }
+        };
+        let stated = Facts::of(&rig.linked());
+        FACTS.get_or_init(|| stated);
+        rig
     }
 
     /// The bind for one fresh instance (two instances never share a label).
@@ -198,7 +264,8 @@ impl Rig {
 
     /// A fresh instance of the LINKED door.
     pub fn linked(&self) -> Plugin<Plane> {
-        let row = LinkedRow::of(door::door).expect("the streaming door states itself");
+        let row =
+            LinkedRow::of(busbar_plane_streaming::door).expect("the streaming door states itself");
         load_linked::<Plane>(&row, self.bind("linked")).expect("the linked streaming door loads")
     }
 
@@ -301,6 +368,10 @@ pub fn judge<T: Clone + PartialEq + Debug>(
 pub struct Claimed {
     /// `VERB TARGET CARRIER[ exact][ open]`.
     pub line: String,
+    /// The target as claimed.
+    pub target: String,
+    /// The claim's flags (`CLAIM_*`).
+    pub flags: u32,
     /// The dialect a refusal on it is rendered in.
     pub refusal_dialect: u16,
 }
@@ -359,6 +430,8 @@ pub fn open(
             ""
         };
         opened.claims.push(Claimed {
+            target: read(c.target),
+            flags: c.flags,
             line: format!(
                 "{} {} {}{exact}{open}",
                 read(c.verb),
