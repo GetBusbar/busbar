@@ -125,8 +125,9 @@ pub const ROW_RIG: &str = "teller-steps:rig-cells";
 pub const ROW_ROOT_COLUMN: &str = "teller-steps:root-column";
 pub const ROW_ROOT_LEGS: &str = "teller-steps:root-legs";
 pub const ROW_GATING: &str = "teller-steps:gating-gaps";
-/// The capability-equality ledger's root column, judged by the same run rule as this matrix's
-/// (Law 10, status row 178): its enforcing cargo test (`crates/busbar/tests/capability_equality.rs`)
+/// The capability-equality ledger's two columns, judged by the same run rule as this matrix's
+/// (Law 10, status row 178): its root column, and each cell's own test wherever it cites the
+/// composition root's build. Its enforcing cargo test (`crates/busbar/tests/capability_equality.rs`)
 /// reads only the source, so whether CI's build compiles a cited cell is asked here, where the
 /// module tree is read.
 pub const ROW_EQUALITY_CELLS: &str = "teller-steps:equality-root-cells";
@@ -792,11 +793,136 @@ impl CiView {
 
     /// `Ok` when `file::func` is a test CI's build compiles and runs; else why not.
     fn runs(&self, file: &str, func: &str) -> Result<(), String> {
+        self.runs_in(&self.tree, file, func)
+    }
+
+    /// [`Self::runs`] over `tree`: the composition root's binary, or one of the crate's own
+    /// integration-test targets (`crates/busbar/tests/<name>.rs`), which the same build compiles
+    /// with the same features and build.rs cfgs.
+    fn runs_in(
+        &self,
+        tree: &crate::libtest_path::ModuleTree,
+        file: &str,
+        func: &str,
+    ) -> Result<(), String> {
         let ci = self.ci.as_ref().map_err(|e| {
             format!("CI's test build could not be derived, so no cell is shown to run ({e})")
         })?;
-        crate::libtest_path::resolve_cell(&self.tree, file, func).and_then(|c| ci.runs(&c))
+        crate::libtest_path::resolve_cell(tree, file, func).and_then(|c| ci.runs(&c))
     }
+
+    /// Whether `file` is compiled by the build this view models: a file the composition root's
+    /// module tree reaches (door cells included), any file under its `src/` (one no `mod` reaches
+    /// is refused by [`Self::runs`], never skipped), or one of its integration-test targets. A
+    /// citation elsewhere (another workspace crate, a pinned plane's own repo) is judged by that
+    /// crate's own build and the cargo gate, not by this model of the composition root's.
+    fn judges(&self, file: &str) -> bool {
+        self.tree.paths.contains_key(file)
+            || file.starts_with(BUSBAR_SRC)
+            || integration_target(file).is_some()
+    }
+
+    /// [`Self::runs`] for a file [`Self::judges`]: an integration-test target is resolved over its
+    /// own module tree, everything else over the composition root's.
+    fn judged_runs(&self, cx: &Ctx, file: &str, func: &str) -> Result<(), String> {
+        match integration_target(file) {
+            Some(target) if !self.tree.paths.contains_key(file) => {
+                // A `[[test]]` target cargo builds only under its `required-features` is skipped
+                // whole by a build that lacks one: no cfg inside the file says so.
+                let ci = self.ci.as_ref().map_err(|e| {
+                    format!(
+                        "CI's test build could not be derived, so no cell is shown to run ({e})"
+                    )
+                })?;
+                let manifest = cx.read(MANIFEST_REL).unwrap_or_default();
+                let off: Vec<String> = required_features(&manifest, target)
+                    .into_iter()
+                    .filter(|f| !ci.features.contains(f))
+                    .collect();
+                if !off.is_empty() {
+                    return Err(format!(
+                        "its test target {target} requires feature(s) {} ({MANIFEST_REL} \
+                         `required-features`), which {} does not enable, so cargo never builds it",
+                        py_list(off.iter().map(String::as_str)),
+                        crate::ci_cfg::CI_TEST_BUILD
+                    ));
+                }
+                let tree = crate::libtest_path::module_tree(&|rel: &str| cx.read(rel).ok(), target);
+                self.runs_in(&tree, file, func)
+            }
+            _ => self.runs(file, func),
+        }
+    }
+}
+
+/// The composition root's own sources: every test under here is compiled, if at all, by the build
+/// [`CiView`] models.
+const BUSBAR_SRC: &str = "crates/busbar/src/";
+/// The composition root's integration-test targets, one per `<name>.rs` directly under here.
+const BUSBAR_TESTS: &str = "crates/busbar/tests/";
+
+/// `file` itself when it is one of the composition root's integration-test targets
+/// (`crates/busbar/tests/<name>.rs`, the file cargo compiles as its own test crate).
+fn integration_target(file: &str) -> Option<&str> {
+    let name = file.strip_prefix(BUSBAR_TESTS)?;
+    (!name.contains('/') && name.ends_with(".rs")).then_some(file)
+}
+
+/// Points the first `proven` cell of a capability-equality document at `cited` in its own column;
+/// `false` when no cell is proven.
+fn plant_own_test(eq: &mut Json, cited: &str) -> bool {
+    let Some(Json::Array(cells)) = eq.as_object_mut().and_then(|d| d.get_mut("cells")) else {
+        return false;
+    };
+    for c in cells.iter_mut() {
+        if c.str_or("state", "") != "proven" {
+            continue;
+        }
+        if let Some(o) = c.as_object_mut() {
+            o.insert("test", Json::Str(cited.to_string()));
+            return true;
+        }
+    }
+    false
+}
+
+/// The `required-features` of the `[[test]]` table in `manifest` whose `path` is `target`
+/// (`crates/busbar/tests/x.rs` is stated relative to the crate, `tests/x.rs`); empty when no such
+/// table states any. One `key = value` per line, as the manifest writes them.
+fn required_features(manifest: &str, target: &str) -> Vec<String> {
+    let rel = target.strip_prefix("crates/busbar/").unwrap_or(target);
+    let mut out = Vec::new();
+    for table in manifest.split("\n[").skip(1) {
+        let mut lines = table.lines();
+        if lines.next().map(str::trim) != Some("[test]]") {
+            continue;
+        }
+        let mut path = None;
+        let mut required = Vec::new();
+        for line in lines {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match key.trim() {
+                "path" => path = Some(value.trim().trim_matches('"').to_string()),
+                "required-features" => {
+                    required = value
+                        .trim()
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .split(',')
+                        .map(|f| f.trim().trim_matches('"').to_string())
+                        .filter(|f| !f.is_empty())
+                        .collect();
+                }
+                _ => {}
+            }
+        }
+        if path.as_deref() == Some(rel) {
+            out.extend(required);
+        }
+    }
+    out
 }
 
 fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
@@ -983,10 +1109,13 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
     p
 }
 
-/// THE CAPABILITY-EQUALITY LEDGER'S ROOT COLUMN, BY THE SAME RUN RULE: every `proven` root cell of
-/// [`EQUALITY_REL`] names a test CI's build compiles and runs. Its shape, ownership and existence
-/// are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is the
-/// question a source read there cannot answer, whether the cited fn is in the build that runs.
+/// THE CAPABILITY-EQUALITY LEDGER, BY THE SAME RUN RULE: every `proven` cell of [`EQUALITY_REL`]
+/// names a test CI's build compiles and runs, in BOTH its columns. The root column always lives in
+/// the composition root; the cell's own column is judged wherever it cites a file of the build
+/// [`CiView`] models ([`CiView::judges`]): `audit-chain`x`llm` once cited a node-axis cell there
+/// that compiles under `cfg(linked_axis_node)`, which no CI build enables. Shape, ownership and
+/// existence are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is
+/// the question a source read there cannot answer, whether the cited fn is in the build that runs.
 pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
     let doc = match cx.read(EQUALITY_REL).and_then(|t| json_lite::parse(&t)) {
         Ok(d) => d,
@@ -994,17 +1123,34 @@ pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
     };
     let mut out = Vec::new();
     let mut proven = 0usize;
+    let mut judged_own = 0usize;
     for cell in doc.get("cells").as_array().unwrap_or(&[]) {
-        let r = cell.get("root");
-        if r.str_or("state", "") != "proven" {
-            continue;
-        }
-        proven += 1;
         let id = format!(
             "{}x{}",
             cell.str_or("capability", "?"),
             cell.str_or("plane", "?")
         );
+        // The cell's own column.
+        if cell.str_or("state", "") == "proven" {
+            let test = cell.str_or("test", "");
+            if let Some((file, func)) = test.split_once("::") {
+                if view.judges(file) {
+                    judged_own += 1;
+                    if let Err(why) = view.judged_runs(cx, file, func) {
+                        out.push(format!(
+                            "{EQUALITY_REL}: cell {id} is proven by {test}, which no CI step \
+                             runs: {why}. A proof may not point at a test that never runs"
+                        ));
+                    }
+                }
+            }
+        }
+        // The root column.
+        let r = cell.get("root");
+        if r.str_or("state", "") != "proven" {
+            continue;
+        }
+        proven += 1;
         let test = r.str_or("test", "");
         let Some((file, func)) = test.split_once("::") else {
             out.push(format!(
@@ -1026,6 +1172,13 @@ pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
         out.push(format!(
             "{EQUALITY_REL}: no root cell is proven, so there is nothing to show runs -- an empty \
              column is not a column that passed"
+        ));
+    }
+    if judged_own == 0 {
+        out.push(format!(
+            "{EQUALITY_REL}: no proven cell's own test is in the composition root's build, so \
+             nothing in that column is shown to run -- a column judged over nothing is not a \
+             column that passed"
         ));
     }
     out
@@ -2194,6 +2347,70 @@ impl Gate for TellerStepsGate {
             Err(e) => report.note_infra_failure(format!("{EQUALITY_REL}: {e}")),
         }
 
+        // THE SAME RULE OVER THE CAPABILITY-EQUALITY LEDGER'S OWN COLUMN: a proven cell's own
+        // `test` pointed at a cell under a cfg no CI build enables (the shape `audit-chain`x`llm`
+        // once had, a node-axis cell), and at a cell in an integration-test target cargo builds
+        // only under a feature CI's test build lacks.
+        let manifest = base_cx.read(MANIFEST_REL).unwrap_or_default();
+        let target = format!("{BUSBAR_TESTS}a_target_no_ci_build_has.rs");
+        let own_plants: [(&str, String, Vec<(String, String)>, &str); 2] = [
+            (
+                "a capability-equality cell's own test under a cfg no CI build enables",
+                format!("{llm_leg_file}::a_cell_no_ci_build_compiles"),
+                vec![(
+                    llm_leg_file.clone(),
+                    format!("{leg_body}{}", run_plants[0].1),
+                )],
+                "linked_axis_node",
+            ),
+            (
+                "a capability-equality cell's own test in a target CI's build never builds",
+                format!("{target}::a_cell_in_a_target_no_build_has"),
+                vec![
+                    (
+                        target.clone(),
+                        "#[test]\nfn a_cell_in_a_target_no_build_has() {}\n".to_string(),
+                    ),
+                    (
+                        MANIFEST_REL.to_string(),
+                        format!(
+                            "{manifest}\n[[test]]\nname = \"a_target_no_ci_build_has\"\n\
+                             path = \"tests/a_target_no_ci_build_has.rs\"\n\
+                             required-features = [\"a-feature-ci-never-enables\"]\n"
+                        ),
+                    ),
+                ],
+                "required-features",
+            ),
+        ];
+        for (label, cited, files, naming) in own_plants {
+            let eq = base_cx
+                .read(EQUALITY_REL)
+                .and_then(|t| json_lite::parse(&t))
+                .map(|mut eq| (plant_own_test(&mut eq, &cited), eq));
+            match eq {
+                Ok((true, eq)) => {
+                    let mut ov = Overlay::new();
+                    for (rel, text) in files {
+                        ov.set(rel, text);
+                    }
+                    ov.set(EQUALITY_REL, format!("{}\n", json_lite::dump_python(&eq)));
+                    report.push(prove_red(
+                        &base_cx,
+                        self,
+                        label,
+                        &[ROW_EQUALITY_CELLS],
+                        base.layered(&ov),
+                        &["is proven by", naming],
+                    ));
+                }
+                Ok((false, _)) => report.note_infra_failure(format!(
+                    "{EQUALITY_REL}: no proven cell to plant the run rule's RED on ({label})"
+                )),
+                Err(e) => report.note_infra_failure(format!("{EQUALITY_REL}: {e}")),
+            }
+        }
+
         // THE TREE'S SIDE OF THE ROSTER: plants in the declarations the roster is derived from,
         // with the committed matrix untouched. A gate that read its roster off the matrix again
         // would stay green under every one of them.
@@ -2674,5 +2891,42 @@ mod cell_owner_tests {
                 "plant {i}: no id resolved, so nothing was compared"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod equality_target_tests {
+    use super::*;
+
+    const MANIFEST: &str = "[package]\nname = \"busbar\"\n\n[[test]]\nname = \"gated\"\n\
+                            path = \"tests/gated.rs\"\nrequired-features = [\"a\", \"b\"]\n\n\
+                            [[test]]\nname = \"free\"\npath = \"tests/free.rs\"\n\n\
+                            [features]\ndefault = []\n";
+
+    #[test]
+    fn a_target_states_its_required_features_and_only_its_own() {
+        assert_eq!(
+            required_features(MANIFEST, "crates/busbar/tests/gated.rs"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(required_features(MANIFEST, "crates/busbar/tests/free.rs").is_empty());
+        assert!(required_features(MANIFEST, "crates/busbar/tests/absent.rs").is_empty());
+    }
+
+    #[test]
+    fn only_a_file_directly_under_the_crates_tests_is_a_target() {
+        assert_eq!(
+            integration_target("crates/busbar/tests/plane_integration.rs"),
+            Some("crates/busbar/tests/plane_integration.rs")
+        );
+        assert_eq!(
+            integration_target("crates/busbar/tests/linked/mod.rs"),
+            None
+        );
+        assert_eq!(integration_target("crates/busbar-kernel/tests/x.rs"), None);
+        assert_eq!(
+            integration_target("crates/busbar/src/root/tests/x.rs"),
+            None
+        );
     }
 }
