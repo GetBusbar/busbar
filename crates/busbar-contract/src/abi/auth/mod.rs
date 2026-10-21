@@ -428,10 +428,12 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 /// the 1.5.5 bytes win); marking them is a behaviour change taken only with the owner. Set or not,
 /// the whole field buffer is never logged and is zeroised after encode.
 pub const FIELD_SENSITIVE: u32 = 1;
-/// [`FieldSpan::flags`]: the field asks to be a QUERY PARAMETER rather than a header. Reserved:
-/// the host reads no such bit and presents every auth field as a header field, as 1.5.5 presented
-/// every upstream credential (it carried none on the request target). A style that presents only
-/// headers never sets it.
+/// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
+/// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
+/// after any query the target already has, in the order written) and never sends it as a header.
+/// The plane never sees it, and every target the host logs, reports in an error or labels a metric
+/// with has its value redacted (the egress seam's `query_auth`). Optional: a style that presents
+/// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
 pub const FIELD_QUERY: u32 = 2;
 
 /// [`LoginField::kind`]: plain text.
