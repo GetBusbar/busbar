@@ -19,8 +19,8 @@
 //! `const`-initialized thread-local has no lazy init, no destructor and no heap, so touching it from
 //! inside the allocator never re-enters it.
 //!
-//! THE FREED-KEY WITNESS rides the same allocator (a zeroise gate, e.g. transport-webrtc's "keys
-//! are zeroised", BUSBAR-1.6.0.md l.753): a test builds a marked key with [`marked_key`], which
+//! THE FREED-KEY WITNESS rides the same allocator (a zeroise gate, "keys are zeroised",
+//! BUSBAR-1.6.0.md l.753): a test builds a marked key with [`marked_key`], which
 //! arms the witness, and [`freed_unzeroed`] reports how many freed blocks still held that key.
 //! Unarmed (every binary that never calls [`marked_key`]) it costs one atomic load per free.
 //!
