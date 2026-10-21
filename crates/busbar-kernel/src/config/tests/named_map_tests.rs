@@ -140,7 +140,11 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
     let _isolation = crate::plane_driver::doors::TestRegistryIsolation::empty();
     let section = NamedMapSection::Plane("bays");
     let err = section
-        .parse_def("dock", &serde_json::json!({}))
+        .parse_def(
+            "dock",
+            &serde_json::json!({}),
+            crate::config::Legacy::stand_in(),
+        )
         .err()
         .expect("a section no plane declares is refused");
     assert_eq!(err, "unknown field `bays`");

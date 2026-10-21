@@ -1504,13 +1504,16 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # sees that a composition root fills with rows keyed by plugin identity are DEBT, not end state.
 # Each drain is the same: the compose owns the table and lends it to what reads it (the #1425/#1426
 # holder plus hand-in pattern), so the kernel holds no root-installed static.
+# DRAINED 4 -> 3 (status row 82, D2): config/legacy.rs::ROWS leaves. The root owns its legacy table
+# (`root::legacy::table`) and lends it as a `config::Legacy` value to the config load, the overlay's
+# typed parse, `resolve` (kept on `RootCfg::legacy` and `App::legacy` for the build, validation, the
+# login page and every apply), `--migrate-config`, the registry link and the metrics recorder.
 debt_stores = [
-  "crates/busbar-kernel/src/config/legacy.rs::ROWS -- the root legacy table, looked up by plugin identity (`former.<alias>`, `retired.<kind>.<word>`); drain: the compose owns the rows and lends them to the config parse, migrate and registry-link paths",
   "crates/busbar-kernel/src/plane_driver/door.rs::DOORS -- the root-folded door registrations, found by plane key (`fold`, `is_door`, `provider_keys`); drain: `fold` answers the folded row to the compose, which owns the set and lends it with the door set",
   "crates/busbar-kernel/src/plane_driver/doors.rs::INSTALLED -- the root-installed PlaneDecl table, looked up by plane key (`plane_decl_for`); drain: the compose owns the decl table and lends it to every reader (D2, the next PR of this stack)",
   "crates/busbar-kernel/src/preflight.rs::ROOT_ROWS -- the root's linked store rows (by store key and canonical name) and hook names; drain: the compose owns its RootInstall and lends it to the build and the registry link",
 ]
-max_debt = 4
+max_debt = 3
 # Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
 # fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
 # re-measure added are stores the narrower row did not see, not new ones.

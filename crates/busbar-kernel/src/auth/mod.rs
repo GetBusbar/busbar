@@ -620,17 +620,19 @@ pub use busbar_kernel_identity::{
 /// Open the operator credential from `registry` through this build's auth axis: the row answering
 /// [`crate::config::operator_provider`], opened on its door over the operator token's SHA-256 hex
 /// `digest` (the plaintext never crosses the seam), answering for every provider the effective
-/// `providers` back with its module ([`Operator::backed`]).
+/// `providers` back with its module ([`Operator::backed`]), by any name the root legacy table the
+/// composition root lent (`legacy`) gives it.
 pub fn open_operator(
     registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
     digest: Option<String>,
     providers: &crate::config::IdentityProviders,
+    legacy: crate::config::Legacy,
 ) -> Result<Operator, String> {
     let op = crate::config::operator_provider();
     let axis = crate::preflight::auth_axis(registry.clone());
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    let is_op = |m: &str| crate::config::names_operator(m);
+    let is_op = |m: &str| crate::config::names_operator(m, legacy);
     // The operator row's carriers, read from its Statement whether or not a token opens it: the
     // admin lines are stripped and read where the style says, never where the kernel says.
     let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
@@ -686,11 +688,12 @@ impl AdminAuthChain {
         cfg: &AuthCfg,
         registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
+        legacy: crate::config::Legacy,
     ) -> Result<Self, String> {
         let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
         let op = crate::config::operator_provider();
-        let is_op = |m: &str| crate::config::names_operator(m);
+        let is_op = |m: &str| crate::config::names_operator(m, legacy);
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
@@ -2765,7 +2768,7 @@ fn test_inbound_style() -> Vec<HeaderName> {
         return header_names(&crate::test_support::outbound_auth::double_inbound_style());
     }
     header_names(
-        &crate::preflight::linked_auth_axis()
+        &crate::preflight::linked_auth_axis(crate::config::Legacy::stand_in())
             .and_then(|axis| axis.default_inbound_style().ok())
             .unwrap_or_default(),
     )

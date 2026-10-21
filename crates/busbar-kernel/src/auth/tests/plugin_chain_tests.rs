@@ -206,6 +206,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         &Default::default(),
         &strict,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(
@@ -261,6 +262,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(
@@ -317,6 +319,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
@@ -345,6 +348,7 @@ fn keys_module_is_not_a_plugin_ref() {
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("keys needs no plugin");
     let registry = std::sync::Arc::new(registry);

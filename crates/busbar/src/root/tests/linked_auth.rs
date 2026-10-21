@@ -155,7 +155,10 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 #[test]
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
-    let linked = Arc::new(busbar_kernel::preflight::linked().expect("the linked registry"));
+    let linked = Arc::new(
+        busbar_kernel::preflight::linked(crate::root::legacy::table())
+            .expect("the linked registry"),
+    );
     let axis = crate::root::dispatch::auth_axis(linked);
     assert_eq!(
         axis.default_inbound_style(),
@@ -327,6 +330,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
         &HashMap::new(),
         &config::PluginsCfg::default(),
         &config::ExportCfg::default(),
+        crate::root::legacy::table(),
     )
     .expect_err("an unregistered auth module is refused");
     assert_eq!(err, golden_refusal("boot.refusal__BOOT-133__boot.json"));
@@ -645,7 +649,10 @@ async fn the_operator_module_named_by_its_canonical_name_is_the_operator_credent
         .find(|row| row.0 == op)
         .expect("the root links the operator credential's row");
     assert_ne!(canonical, op, "the row's canonical name is not its key");
-    assert!(config::names_operator(canonical) && config::names_operator(op));
+    assert!(
+        config::names_operator(canonical, crate::root::legacy::table())
+            && config::names_operator(op, crate::root::legacy::table())
+    );
     renamed_provider_is_the_operator_credential(canonical).await;
 }
 
@@ -711,7 +718,7 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
     let named_op = || {
         let base = app(&[op], Vec::new());
         let defs = [(op, AnyCredential.name())].into_iter();
-        let is_op = |m: &str| config::names_operator(m);
+        let is_op = |m: &str| config::names_operator(m, crate::root::legacy::table());
         // The operator row's carriers, as the build opened them: the admin lines the candidate
         // the configured module is lent is read from.
         let operator = Operator::open(op, defs, &is_op, false, None, |_| unreachable!())
@@ -957,6 +964,7 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
             &HashMap::new(),
             &config::PluginsCfg::default(),
             &config::ExportCfg::default(),
+            crate::root::legacy::table(),
         )
         .expect("the linked rows"),
     );

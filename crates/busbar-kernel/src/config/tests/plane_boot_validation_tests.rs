@@ -183,7 +183,7 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         ),
     ] {
         let err = section
-            .parse_def("dock", &def)
+            .parse_def("dock", &def, crate::config::Legacy::stand_in())
             .err()
             .expect("the write path must refuse it");
         assert_eq!(err, sentence);
@@ -192,6 +192,7 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         .parse_def(
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "open" }, "hooks": ["siem"] }),
+            crate::config::Legacy::stand_in(),
         )
         .expect("a well-formed definition is accepted");
 }
@@ -207,6 +208,7 @@ fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
         .parse_def(
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
+            crate::config::Legacy::stand_in(),
         )
         .err()
         .expect("a drifted token must be refused on the write path");

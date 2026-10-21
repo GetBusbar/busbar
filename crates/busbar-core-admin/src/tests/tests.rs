@@ -3630,9 +3630,12 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     // "Restart": merge the overlay onto a fresh RESOLVED base config → the hook is restored.
     let fresh_deploy: busbar_kernel::config::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    let mut fresh =
-        busbar_kernel::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
-            .expect("minimal config resolves");
+    let mut fresh = busbar_kernel::config::resolve(
+        &fresh_deploy,
+        &std::collections::HashMap::new(),
+        busbar_kernel::config::Legacy::stand_in(),
+    )
+    .expect("minimal config resolves");
     busbar_kernel::config::overlay::merge_into(&mut fresh, doc);
     assert!(
         fresh.hooks.contains_key("persisted_gate"),
@@ -10093,6 +10096,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             Some(&providers_path),
             false,
             busbar_kernel::config::EnvSubst::Strict,
+            busbar_kernel::config::Legacy::stand_in(),
         )
         .expect("disk reload");
         // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
@@ -10102,7 +10106,11 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             "base config.yaml has no fee (the override lives only in the overlay)"
         );
         if let Some(doc) = loaded.overlay_doc.as_ref() {
-            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+            busbar_kernel::config::overlay::apply_root_to_deploy(
+                &mut loaded.deploy,
+                doc,
+                busbar_kernel::config::Legacy::stand_in(),
+            );
         }
         assert_eq!(
             loaded.deploy.per_request_fee, 7,
@@ -10181,6 +10189,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("fresh boot disk-load");
     assert_eq!(

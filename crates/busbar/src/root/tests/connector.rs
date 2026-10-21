@@ -89,7 +89,7 @@ fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     }
     yaml.push_str(security);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-    busbar_kernel::config::resolve(&deploy, &defs).expect("resolves")
+    busbar_kernel::config::resolve(&deploy, &defs, crate::root::legacy::table()).expect("resolves")
 }
 
 fn imds() -> Vec<std::net::IpAddr> {

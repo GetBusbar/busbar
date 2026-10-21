@@ -64,6 +64,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         oauth_as: None,
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        // A test build has no root: the frozen 1.5.5 rows stand in for its legacy table.
+        legacy: crate::config::Legacy::stand_in(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         public_url: None,

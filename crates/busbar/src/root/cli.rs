@@ -279,12 +279,16 @@ fn validate_config_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
+    // The root legacy table, lent to the load, the overlay's typed parse and `resolve`, as boot
+    // lends it.
+    let legacy = crate::root::legacy::table();
 
     let mut loaded = match load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Lenient,
+        legacy,
     ) {
         Ok(l) => l,
         Err(e) => {
@@ -303,9 +307,9 @@ fn validate_config_command() -> i32 {
     // boot-guard over the merged shape), not just the base file. The hooks/groups sections merge
     // POST-resolve below.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc, legacy);
     }
-    let mut cfg = match config::resolve(&loaded.deploy, &loaded.defs) {
+    let mut cfg = match config::resolve(&loaded.deploy, &loaded.defs, legacy) {
         Ok(c) => c,
         Err(errs) => {
             eprintln!(
@@ -444,6 +448,7 @@ fn list_plugins_command() -> i32 {
         providers_override.as_deref(),
         false,
         config::EnvSubst::Lenient,
+        crate::root::legacy::table(),
     ) {
         Ok(l) => {
             let store = l.deploy.store.as_ref().map(|g| g.module.clone());
@@ -537,7 +542,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
             return 1;
         }
     };
-    match config::migrate::migrate_config(&raw) {
+    match config::migrate::migrate_config(&raw, crate::root::legacy::table()) {
         Ok(out) => {
             print!("{}", out.yaml);
             eprintln!("migrated '{path}' to the 1.5.0 config shape.");

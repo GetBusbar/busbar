@@ -143,8 +143,12 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
         let validated = |text: String| {
             let deploy = config::deploy_from_yaml_str(&text)
                 .unwrap_or_else(|e| panic!("{}: the document parses: {e}\n{text}", d.key));
-            let cfg = config::resolve(&deploy, &HashMap::new())
-                .unwrap_or_else(|e| panic!("{}: the document resolves: {e:?}\n{text}", d.key));
+            let cfg = config::resolve(
+                &deploy,
+                &HashMap::new(),
+                busbar_kernel::config::Legacy::stand_in(),
+            )
+            .unwrap_or_else(|e| panic!("{}: the document resolves: {e:?}\n{text}", d.key));
             busbar_kernel::config_validate::validate(&cfg)
         };
 

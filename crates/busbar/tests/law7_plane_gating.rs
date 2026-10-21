@@ -179,7 +179,7 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
             serde_yaml::from_str("protocol: anthropic\nbase_url: https://api.example.com\n")
                 .expect("provider def"),
         );
-        busbar_kernel::config::resolve(&deploy, &defs)
+        busbar_kernel::config::resolve(&deploy, &defs, busbar_kernel::config::Legacy::stand_in())
             .expect("resolve")
             .plane_sections
             .into_iter()

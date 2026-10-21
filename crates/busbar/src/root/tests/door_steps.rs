@@ -7084,7 +7084,12 @@ done
 fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
         let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg = busbar_kernel::config::resolve(
+            &deploy,
+            &Default::default(),
+            crate::root::legacy::table(),
+        )
+        .expect("resolves");
         super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
     };
     assert_eq!(
@@ -8407,7 +8412,8 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
     )
     .expect("parses");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs, crate::root::legacy::table())
+        .expect("resolves");
     let sections = super::kernel_sections(&cfg);
     let models = sections
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
@@ -8487,8 +8493,12 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
     )
     .expect("parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
-        .expect("resolves");
+    let mut cfg = busbar_kernel::config::resolve(
+        &deploy,
+        &std::collections::HashMap::new(),
+        crate::root::legacy::table(),
+    )
+    .expect("resolves");
     let rules = super::Rules::default();
     assert!(
         rules.planes_awaiting_restart(&cfg).is_empty(),
@@ -8543,7 +8553,9 @@ fn a_required_section_written_empty_hands_the_plane_its_sections() {
     let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
         .expect("a deployment");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let cfg =
+        busbar_kernel::config::resolve(&deploy, &Default::default(), crate::root::legacy::table())
+            .expect("resolves");
     let sections = super::kernel_sections(&cfg);
     assert_eq!(
         sections.get(RESERVED_MODELS_KEY),

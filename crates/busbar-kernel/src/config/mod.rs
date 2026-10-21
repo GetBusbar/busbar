@@ -14,8 +14,9 @@ pub mod filled;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
-/// The root legacy table the composition root hands in, and the one rewrite over it.
+/// The root legacy table the composition root lends, and the one rewrite over it.
 pub mod legacy;
+pub use legacy::Legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;
@@ -554,6 +555,10 @@ pub struct RootCfg {
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.
     pub plane_sections: std::collections::BTreeSet<&'static str>,
+    /// THE ROOT LEGACY TABLE this configuration was resolved under: the one [`resolve`] was lent,
+    /// kept so every reader of the resolved configuration (validation, the build, the generation it
+    /// builds) reads the composition root's table and no static holds it ([`legacy::Legacy`]).
+    pub legacy: Legacy,
 }
 
 impl RootCfg {
@@ -631,8 +636,13 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// resolved chain, so a provider defined through the admin API and not yet referenced escaped it
 /// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
 /// once something named the provider.
-pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
-    if has_token && !names_operator(module) {
+pub fn validate_token_placement(
+    name: &str,
+    module: &str,
+    has_token: bool,
+    legacy: Legacy,
+) -> Result<(), String> {
+    if has_token && !names_operator(module, legacy) {
         let op = operator_provider();
         return Err(busbar_kernel_identity::operator::misplaced_definition_token(op, name, module));
     }
@@ -643,6 +653,7 @@ pub fn resolve_auth(
     auth: &AuthDeployCfg,
     providers: &IdentityProviders,
     errors: &mut Vec<String>,
+    legacy: Legacy,
 ) -> AuthCfg {
     let mut resolve_one = |plane: &str, name: &String| -> AuthChainEntry {
         match providers.get(name) {
@@ -653,11 +664,12 @@ pub fn resolve_auth(
                         "identity-providers.{name}.module must be a non-empty module name"
                     ));
                 }
-                if let Err(e) = validate_token_placement(name, &module, def.token.is_some()) {
+                if let Err(e) = validate_token_placement(name, &module, def.token.is_some(), legacy)
+                {
                     errors.push(e);
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
-                    (!names_operator(&module)).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
+                    (!names_operator(&module, legacy)).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
                 });
                 AuthChainEntry {
                     name: name.clone(),
@@ -700,7 +712,7 @@ pub fn resolve_auth(
     // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
     let methods: AuthMethods = providers
         .iter()
-        .filter(|(_, def)| !is_builtin_identity_module(def.module.trim()))
+        .filter(|(_, def)| !is_builtin_identity_module(def.module.trim(), legacy))
         .map(|(name, def)| {
             (
                 name.clone(),
@@ -729,7 +741,7 @@ pub fn resolve_auth(
 /// actionable guidance instead of serde's bare "unknown field `mode`, expected one of …". Additive:
 /// any other error is returned verbatim. (1.4.0 config compatibility — the key was renamed to
 /// `auth.chain:` / `auth.upstream_credentials:` but the failure gave no upgrade breadcrumb.)
-pub fn augment_config_error(err: impl std::fmt::Display) -> String {
+pub fn augment_config_error(err: impl std::fmt::Display, legacy: Legacy) -> String {
     let msg = err.to_string();
     if msg.contains("unknown field `mode`") {
         format!(
@@ -749,7 +761,7 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
             "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
              `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
         )
-    } else if let Some((old, new)) = retired_observability_keys()
+    } else if let Some((old, new)) = retired_observability_keys(legacy)
         .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
@@ -761,7 +773,7 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
              built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
              field yourself"
         )
-    } else if let Some((old, new)) = retired_config_keys_1_5_3()
+    } else if let Some((old, new)) = retired_config_keys_1_5_3(legacy)
         .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
@@ -786,15 +798,15 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 /// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
 /// block's home and the trace URL keys that folded into one) are the root legacy table's frozen
 /// 1.5.5 text ([`legacy`]): the kernel names no export instance.
-pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
+pub fn retired_config_keys_1_5_3(legacy: Legacy) -> Vec<(&'static str, String)> {
     let trace_home = format!(
         "an `export:` instance with `module: {}` and `settings.url`",
-        legacy::text("export_trace_module")
+        legacy.text("export_trace_module")
     );
     [
         // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
         // retired leaves reports the block-level move (the leaves have nowhere left to live).
-        ("observability", legacy::text("observability_home").to_string()),
+        ("observability", legacy.text("observability_home").to_string()),
         // Inverted so the SAFE posture is the default.
         ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
         // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
@@ -802,8 +814,8 @@ pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
         // The IdP is DEFINED once and REFERENCED by name.
         ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
         // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
-        (legacy::text("observability_trace_key"), trace_home.clone()),
-        (legacy::text("observability_trace_key_1_4"), trace_home),
+        (legacy.text("observability_trace_key"), trace_home.clone()),
+        (legacy.text("observability_trace_key_1_4"), trace_home),
     ]
     .into_iter()
     .filter(|(old, _)| !old.is_empty())
@@ -824,9 +836,10 @@ pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
 /// The leaves, the request-log type key they fold under and the metrics type key are the root
 /// legacy table's frozen 1.5.5 rows ([`legacy`]); the top-level `metrics:` block is listed last.
-pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
-    let log = legacy::text("observability_log_type_key");
-    let mut out: Vec<(&'static str, String)> = legacy::pairs("observability_log_keys")
+pub fn retired_observability_keys(legacy: Legacy) -> Vec<(&'static str, String)> {
+    let log = legacy.text("observability_log_type_key");
+    let mut out: Vec<(&'static str, String)> = legacy
+        .pairs("observability_log_keys")
         .into_iter()
         .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
         .collect();
@@ -834,7 +847,7 @@ pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
         "metrics",
         format!(
             "export.{}.settings (buffer_seconds / key_gauge_limit)",
-            legacy::text("metrics_type_key")
+            legacy.text("metrics_type_key")
         ),
     ));
     out
@@ -1985,6 +1998,7 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
 pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
+    legacy: Legacy,
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
 
@@ -2337,7 +2351,7 @@ pub fn resolve(
     let resolved_auth = deploy
         .auth
         .as_ref()
-        .map(|a| resolve_auth(a, &deploy.identity_providers, &mut errors));
+        .map(|a| resolve_auth(a, &deploy.identity_providers, &mut errors, legacy));
     let admin_auth_names: Vec<String> = resolved_auth.as_ref().map_or_else(
         || {
             default_admin_auth()
@@ -2475,6 +2489,7 @@ pub fn resolve(
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
             plane_sections,
+            legacy,
         })
     } else {
         Err(errors)

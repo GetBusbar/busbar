@@ -1898,6 +1898,7 @@ impl TestApp {
             // plane is registered), read when that plane contributes no runtime of its own.
             config_tables,
             root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
+            legacy: crate::config::Legacy::stand_in(),
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
@@ -1953,10 +1954,13 @@ impl TestApp {
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-                let reg =
-                    std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
-                chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
-                    .expect("the linked operator credential opens");
+                let legacy = crate::config::Legacy::stand_in();
+                let reg = std::sync::Arc::new(
+                    crate::preflight::linked(legacy).expect("the linked registry"),
+                );
+                chain.operator =
+                    crate::auth::open_operator(&reg, digest, &self.identity_providers, legacy)
+                        .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
             },
             login_methods: std::sync::Arc::new(

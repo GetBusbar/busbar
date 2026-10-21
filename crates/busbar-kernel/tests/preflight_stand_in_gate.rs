@@ -43,6 +43,7 @@ fn a_test_support_build_accepts_the_identity_provider_stand_ins_its_auth_chain_r
             &Default::default(),
             &Default::default(),
             &Default::default(),
+            busbar_kernel::config::Legacy::stand_in(),
         ) {
             panic!(
                 "identity-providers.dev (module '{module}') is registered in this build and was \
@@ -74,6 +75,7 @@ fn a_real_plugin_module_is_still_refused_with_plugins_off() {
         &Default::default(),
         &Default::default(),
         &Default::default(),
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect_err("a plugin module with plugins disabled is refused");
     assert!(

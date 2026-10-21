@@ -454,12 +454,12 @@ impl AuthCfg {
     }
 
     /// The operator-credential secret reference (the `token:` of the first entry backed by the
-    /// [`operator_provider`]), if configured.
-    pub fn admin_token_ref(&self) -> Option<&SecretRef> {
+    /// [`operator_provider`], by any name `legacy` gives it), if configured.
+    pub fn admin_token_ref(&self, legacy: super::Legacy) -> Option<&SecretRef> {
         self.admin_auth
             .iter()
             .chain(self.chain.iter())
-            .find(|e| names_operator(&e.module))
+            .find(|e| names_operator(&e.module, legacy))
             .and_then(|e| e.token.as_ref())
     }
 
@@ -475,12 +475,12 @@ impl AuthCfg {
     ///
     /// Does NOT resolve the token or consult `role_bindings` (neither is available here); a ceiling of
     /// `full` is the operator's explicit structural declaration that minting is reachable.
-    pub fn usable_mint_path(&self) -> bool {
+    pub fn usable_mint_path(&self, legacy: super::Legacy) -> bool {
         if self.admin_auth.is_empty() {
             return true;
         }
         self.admin_auth.iter().any(|e| {
-            let operator = names_operator(&e.module);
+            let operator = names_operator(&e.module, legacy);
             (operator && e.token.is_some())
                 || (!operator && matches!(e.max_admin_scope.as_deref(), Some("full")))
         })
@@ -504,14 +504,12 @@ pub use busbar_kernel_identity::operator::{
 
 /// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
 /// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
-/// former name the root legacy table gives that key — every name the registry resolves to that row.
-pub fn names_operator(module: &str) -> bool {
+/// former name the root legacy table the composition root lent (`legacy`) gives that key — every
+/// name the registry resolves to that row.
+pub fn names_operator(module: &str, legacy: super::Legacy) -> bool {
     let op = operator_provider();
     busbar_kernel_identity::operator::names(op, module)
-        || (!op.is_empty()
-            && crate::config::legacy::former_names(op)
-                .iter()
-                .any(|f| f == module))
+        || (!op.is_empty() && legacy.former_names(op).iter().any(|f| f == module))
 }
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
@@ -524,8 +522,8 @@ pub fn builtin_identity_providers() -> [&'static str; 2] {
 
 /// Whether a provider's `module:` names a BUILT-IN: one of [`builtin_identity_providers`], or the
 /// operator credential's plugin by any other name it answers to ([`names_operator`]).
-pub fn is_builtin_identity_module(module: &str) -> bool {
-    builtin_identity_providers().contains(&module) || names_operator(module)
+pub fn is_builtin_identity_module(module: &str, legacy: super::Legacy) -> bool {
+    builtin_identity_providers().contains(&module) || names_operator(module, legacy)
 }
 
 /// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits

@@ -86,6 +86,11 @@ pub struct App {
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
+    /// THE ROOT LEGACY TABLE this generation's configuration was resolved under
+    /// ([`crate::config::RootCfg::legacy`]): the composition root lent it to the config load, and
+    /// what this generation reads of it (the login page's button brands) and every apply, rebuild
+    /// and dry run after it (which load and resolve the next configuration) read the same table.
+    pub legacy: crate::config::Legacy,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,

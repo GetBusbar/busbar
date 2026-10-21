@@ -1496,6 +1496,7 @@ pub(crate) async fn reset_overlay_section(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.legacy,
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -1552,10 +1553,15 @@ pub(crate) async fn reset_overlay_section(
                 // Pre-resolve half: apply the (post-clear) root overrides onto the base DeployCfg,
                 // so the limits projection + admin-mTLS boot-guard re-derive over the merged shape.
                 if let Some(doc) = cleared_doc.as_ref() {
-                    busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+                    busbar_kernel::config::overlay::apply_root_to_deploy(
+                        &mut loaded.deploy,
+                        doc,
+                        snapshot.legacy,
+                    );
                 }
-                let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let mut cfg =
+                    busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, snapshot.legacy)
+                        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
@@ -2231,15 +2237,20 @@ pub(crate) fn rebuild_app_from_disk(
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        current.legacy,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
     // projection + admin-mTLS boot-guard + the plugin trust FLOORS re-derive over the merged shape —
     // exactly as boot does. The hooks/groups sections merge POST-resolve below.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+        busbar_kernel::config::overlay::apply_root_to_deploy(
+            &mut loaded.deploy,
+            doc,
+            current.legacy,
+        );
     }
-    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
+    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, current.legacy)
         .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
     // Base hook + group names = the config-defined registry, pre-overlay (the admin API refuses
     // to PUT-replace / DELETE one); then merge the persisted overlay onto the resolved registry.
@@ -2499,12 +2510,16 @@ pub(crate) async fn apply_config(
                 .and_then(busbar_kernel::config::overlay::read);
             let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
-                busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
+                busbar_kernel::config::overlay::apply_root_to_deploy(
+                    &mut deploy,
+                    doc,
+                    snapshot.legacy,
+                );
                 // Without this an apply re-validates against the BASE floors and silently reverts a
                 // live audited plugin rollback until the next restart re-applies the pin.
                 busbar_kernel::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
-            let next = busbar_kernel::config::resolve(&deploy, &providers)
+            let next = busbar_kernel::config::resolve(&deploy, &providers, snapshot.legacy)
                 .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
                 .and_then(|mut cfg| {
                     // Base names are the APPLIED config's own registry, taken pre-merge so an
@@ -3035,6 +3050,7 @@ pub(crate) async fn put_config_settings(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.legacy,
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -3047,10 +3063,12 @@ pub(crate) async fn put_config_settings(
                     busbar_kernel::config::overlay::apply_pre_resolve_sections(
                         &mut loaded.deploy,
                         doc,
+                        snapshot.legacy,
                     );
                 }
-                let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let mut cfg =
+                    busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs, snapshot.legacy)
+                        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
