@@ -47,15 +47,13 @@ pub(super) fn set_gauge(gauge: metrics::Gauge, value: impl Into<i128>) {
     gauge.set(exact as f64);
 }
 
-/// A key's mint-time labels as its metric series carry them: every operator label, without the
-/// self-serve provider record ([`crate::governance::SELF_KEY_PROVIDER_LABEL`]), which is the
-/// binding's own bookkeeping and never a series dimension.
+/// A key's mint-time labels as its metric series carry them: every operator label. A self-serve
+/// binding's minting provider is not a label (it rides the kernel-only
+/// [`busbar_contract::records::VirtualKey::idp_provider`]), so no series dimension carries it.
 fn metric_labels(
     key: &busbar_contract::records::VirtualKey,
 ) -> impl Iterator<Item = (&String, &String)> {
-    key.labels
-        .iter()
-        .filter(|(k, _)| k.as_str() != crate::governance::SELF_KEY_PROVIDER_LABEL)
+    key.labels.iter()
 }
 
 /// Refresh every money gauge for this scrape. No-op when governance is disabled. `now` is the

@@ -20,7 +20,8 @@ use std::sync::Arc;
 use busbar_contract::records::{MeteringDelta, RecordStore};
 use busbar_kernel::cost::{CostModel, History, RateCard, TierRates};
 use busbar_kernel::governance::{GovState, MemoryStore, METERING_BUCKET_SECS};
-use busbar_kernel::rate_apply::{install_rate_epoch, RateEpoch};
+use busbar_kernel::rate_apply::RateEpoch;
+use busbar_kernel::test_support::rate_holders::install_rate_epoch;
 
 /// The one priced lane: a metering row's `model` and the card's lane, spelled once.
 const LANE: &str = "m-dated-read";
