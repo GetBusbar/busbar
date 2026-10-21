@@ -1469,7 +1469,12 @@ fn real_ops() -> Option<auth::Ops> {
 }
 
 /// `fields`, then ONE byte of the first value written flipped.
-extern "C" fn fields_one_byte_off(
+///
+/// # Safety
+///
+/// [`Op`](busbar_contract::abi::mechanism::call::Op)'s contract: it forwards its arguments to
+/// the real slot unchanged.
+unsafe extern "C" fn fields_one_byte_off(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
@@ -1477,7 +1482,9 @@ extern "C" fn fields_one_byte_off(
     let Some(real) = real_ops().and_then(|o| o.fields) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this planted slot's own caller holds `Op`'s contract for these arguments, and
+    // `real` is the subject's real slot of the same type.
+    let answered = unsafe { real(instance, input, out) };
     if answered.outcome() == Outcome::Ready {
         // SAFETY: the host hands `fields` a `FieldsIn` and a `FieldsOut`; the plugin answered
         // READY, so its first span (when it wrote one) lies inside the host's field buffer.
@@ -1496,7 +1503,12 @@ extern "C" fn fields_one_byte_off(
 }
 
 /// `fields`, then the fields it wrote taken back: READY with none written.
-extern "C" fn fields_writing_nothing(
+///
+/// # Safety
+///
+/// [`Op`](busbar_contract::abi::mechanism::call::Op)'s contract: it forwards its arguments to
+/// the real slot unchanged.
+unsafe extern "C" fn fields_writing_nothing(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
@@ -1504,7 +1516,9 @@ extern "C" fn fields_writing_nothing(
     let Some(real) = real_ops().and_then(|o| o.fields) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this planted slot's own caller holds `Op`'s contract for these arguments, and
+    // `real` is the subject's real slot of the same type.
+    let answered = unsafe { real(instance, input, out) };
     if answered.outcome() == Outcome::Ready {
         // SAFETY: the host hands `fields` a `FieldsOut` it owns for the call.
         unsafe {
@@ -1516,7 +1530,12 @@ extern "C" fn fields_writing_nothing(
 
 /// `open_outbound`, then a SECOND binding over the same style and credential under settings one
 /// byte longer: a second token cell, so the plugin's mint fetches the token twice.
-extern "C" fn open_outbound_twice(
+///
+/// # Safety
+///
+/// [`Op`](busbar_contract::abi::mechanism::call::Op)'s contract: it forwards its arguments to
+/// the real slot unchanged.
+unsafe extern "C" fn open_outbound_twice(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
@@ -1524,7 +1543,9 @@ extern "C" fn open_outbound_twice(
     let Some(real) = real_ops().and_then(|o| o.open_outbound) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this planted slot's own caller holds `Op`'s contract for these arguments, and
+    // `real` is the subject's real slot of the same type.
+    let answered = unsafe { real(instance, input, out) };
     // SAFETY: the host hands `open_outbound` an `OpenOutboundIn`; its settings blob is the
     // host's for the call. The second call's `in` and `out` are this frame's own.
     unsafe {
@@ -1548,7 +1569,12 @@ extern "C" fn open_outbound_twice(
 
 /// `fields`, and when it WAITS (an on-demand cell armed) the same call again under the scope one
 /// byte longer: a second cell armed for the same waiting request, so the waiting calls fetch twice.
-extern "C" fn fields_arming_twice(
+///
+/// # Safety
+///
+/// [`Op`](busbar_contract::abi::mechanism::call::Op)'s contract: it forwards its arguments to
+/// the real slot unchanged.
+unsafe extern "C" fn fields_arming_twice(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
@@ -1556,7 +1582,9 @@ extern "C" fn fields_arming_twice(
     let Some(real) = real_ops().and_then(|o| o.fields) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this planted slot's own caller holds `Op`'s contract for these arguments, and
+    // `real` is the subject's real slot of the same type.
+    let answered = unsafe { real(instance, input, out) };
     if answered.outcome() == Outcome::Pending {
         // SAFETY: the host hands `fields` a `FieldsIn`; its extensions blob is the host's for the
         // call. The second call's `in` and `out` are this frame's own.

@@ -806,7 +806,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         input: Lent<'_, OpenIn>,
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
-        let host = input.host().map(|h| Host::of(&h));
+        let host = input.host().map(Host::of);
         let ticket = instance.ticket();
         // THE RESUME of a pended open: the retained instance box carries the opened store, and
         // what its connect step parked is read back on this ticket. A RESUME with no instance or
@@ -1501,7 +1501,7 @@ slot!(
 );
 
 /// THE STORE DOOR MACRO: `store_door!(MyStore, "my-store", "1.0.0", 64);` in a store's logic crate
-/// expands to its `pub extern "C" fn door()` over the store v3 table, every slot a
+/// expands to its `pub unsafe extern "C" fn door()` over the store v3 table, every slot a
 /// [`Safe`](crate::abi::sdk::Safe) slot over `MyStore: StoreSlots`. The Statement names the
 /// store, declares [`DIAG_IDS`], carries the store's tail ([`tail`]) and states its marks
 /// ([`marks`]).

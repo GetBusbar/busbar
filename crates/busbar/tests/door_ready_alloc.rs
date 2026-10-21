@@ -136,7 +136,16 @@ fn inner() -> &'static Ops {
 
 macro_rules! disarmed {
     ($name:ident, $field:ident) => {
-        extern "C" fn $name(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+        /// # Safety
+        ///
+        /// `Op`'s contract (status row 159). The body is an unsafe context (edition 2021), so
+        /// the real slot below is entered under this wrapper's own contract: it forwards its
+        /// caller's arguments unchanged.
+        unsafe extern "C" fn $name(
+            i: *mut c_void,
+            input: *const c_void,
+            out: *mut c_void,
+        ) -> RawOutcome {
             let op = inner()
                 .$field
                 .expect(concat!("the test plane answers ", stringify!($field)));

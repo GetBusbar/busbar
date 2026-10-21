@@ -157,7 +157,9 @@ fn assert_zero_alloc_pod_batch() {
     ALLOC_COUNT.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
     for _ in 0..100_000u32 {
-        let answered = clock_now(null, black_box(input), black_box(out));
+        // SAFETY: the bench's own `host_clock_now` behind the table, over the bench's live
+        // `in`/`out`; it reads no context.
+        let answered = unsafe { clock_now(null, black_box(input), black_box(out)) };
         sink = sink.wrapping_add(u64::from(answered.0));
         if inject {
             // The RED shape: an allocation inside the isolated batch, which the budget forbids.
@@ -185,7 +187,12 @@ fn hot_path_alloc(c: &mut Criterion) {
     let clock_now = vt.clock_now.expect("clock_now slot is armed");
 
     c.bench_function("POD_HOST_CALL_BATCH", |b| {
-        b.iter(|| u64::from(black_box(clock_now(null, black_box(input), black_box(out))).0));
+        b.iter(|| {
+            // SAFETY: the bench's own `host_clock_now` behind the table, over the bench's live
+            // `in`/`out`; it reads no context.
+            let answered = unsafe { clock_now(null, black_box(input), black_box(out)) };
+            u64::from(black_box(answered).0)
+        });
     });
 
     // The gating assertion runs once per invocation: any allocation in the armed window takes the

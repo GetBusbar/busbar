@@ -42,7 +42,25 @@ pub struct Door {
 }
 
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
-pub type DoorFn = extern "C" fn() -> *const Door;
+///
+/// **`unsafe` (status row 159):** it is foreign code answering a pointer the caller then reads, so
+/// it is entered only under a stated contract, like every slot its door leads to.
+///
+/// # Safety
+///
+/// The caller guarantees the image defining the door is loaded (a dropped image's library is open
+/// for as long as the call and every read of its answer), and that the pointer is a busbar door:
+/// read from [`super::DOOR_SYMBOL`] (typed `DoorFn` by the mechanism) or a linked row's door item.
+///
+/// RED (status row 159): safe code cannot enter a door.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+/// fn open(door: DoorFn) -> *const Door {
+///     door()
+/// }
+/// ```
+pub type DoorFn = unsafe extern "C" fn() -> *const Door;
 
 /// [`MetricFamily::kind`]: a counter.
 pub const FAMILY_COUNTER: u8 = 0;

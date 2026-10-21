@@ -132,7 +132,8 @@ fn services(t: &HostSlots) -> Services {
         services: t,
         io: std::ptr::null(),
     };
-    Services::of(&tables).expect("a table was handed")
+    // SAFETY: test tables: their context and every table they name outlive each use of the value.
+    unsafe { Services::from_raw(&tables) }.expect("a table was handed")
 }
 
 fn handle() -> CompletionHandle {
@@ -175,7 +176,11 @@ fn no_table_is_no_services() {
         services: std::ptr::null(),
         io: std::ptr::null(),
     };
-    assert!(Services::of(&tables).is_none());
+    assert!(
+        // SAFETY: test tables: their context and every table they name outlive each use of the
+        // value.
+        unsafe { Services::from_raw(&tables) }.is_none()
+    );
 }
 
 #[test]
@@ -1224,7 +1229,8 @@ fn the_nest_wrapper_reads_the_childs_status_body_and_fields() {
 
 /// A verify cache: key `hit` is cached (`cached`), key `follow` follows (`led`), any other leads.
 extern "C" fn caches(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    // SAFETY: the wrapper hands a `VerifyLookupIn` naming its live key and buffers, and a live `out`.
+    // SAFETY: the wrapper hands a `VerifyLookupIn` naming its live key and buffers, and a live
+    // `out`.
     unsafe {
         let i = input.cast::<VerifyLookupIn>().read_unaligned();
         let key = std::slice::from_raw_parts(i.key.ptr, i.key.len);

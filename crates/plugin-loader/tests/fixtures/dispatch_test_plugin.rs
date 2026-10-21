@@ -282,7 +282,9 @@ unsafe impl Send for Waker {}
 
 impl Waker {
     fn wake(self, t: Ticket) {
-        (self.wake)(self.ctx, t);
+        // SAFETY: `wake` and `ctx` are the host's own, from the tables its `open` lent (the
+        // instance's life).
+        unsafe { (self.wake)(self.ctx, t) };
     }
 }
 

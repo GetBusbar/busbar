@@ -658,7 +658,9 @@ pub(crate) fn distinct(door: DoorFn, path: &Path) -> Result<(), String> {
     let (dropped, ops) = crate::dispatch::load::door_addresses_of_library(path)
         .map_err(|e| format!("the dropped image {path:?} does not load: {e}"))?
         .ok_or_else(|| format!("the dropped image {path:?} exports no door"))?;
-    let linked = door();
+    // SAFETY: `door` is the subject's linked door item, loaded for the process's life; a door takes
+    // no argument.
+    let linked = unsafe { door() };
     if linked.is_null() {
         return Err("the door function answered NULL".into());
     }
@@ -1583,7 +1585,9 @@ extern "C" fn ready_fails(
 
 /// The subject's door, read.
 fn real_door(s: &Subject) -> Door {
-    let p = (s.door)();
+    // SAFETY: the subject's door is a linked door item, loaded for the process's life; a door takes
+    // no argument.
+    let p = unsafe { (s.door)() };
     assert!(!p.is_null(), "the door function answered NULL");
     // SAFETY: a door function answers a `'static` door at least its stated size; the whole
     // struct is read only when its size covers it (a door ending before `ready` reads `None`).

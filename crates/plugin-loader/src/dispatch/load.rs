@@ -112,7 +112,9 @@ impl LinkedRow {
 ///
 /// The refusal the door or its Statement earns.
 pub(crate) fn statement_of(door_fn: DoorFn) -> Result<Statement, LoadError> {
-    let (door, _) = read_door(door_fn(), None)?;
+    // SAFETY: a compiled-in door item (the transport kind's linked rows), loaded for the process's
+    // life; a door takes no argument.
+    let (door, _) = read_door(unsafe { door_fn() }, None)?;
     statement(&door)
 }
 
@@ -139,7 +141,11 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
 pub(crate) fn enter_door(door_fn: DoorFn) -> *const Door {
     let call = || {
         crate::ffi_thread::debug_assert_permanent("the door function");
-        door_fn()
+        // SAFETY: THE ONE DOOR CALL (status row 159). A door takes no argument; `DoorFn`'s
+        // contract is that its image is loaded and it is a busbar door. Every `DoorFn` the loader
+        // holds is a linked row's door item (loaded for the process's life) or read from
+        // `DOOR_SYMBOL` of a library the caller keeps open across this call and its reads.
+        unsafe { door_fn() }
     };
     if crate::ffi_thread::on_permanent_worker() {
         return call();
@@ -183,7 +189,8 @@ pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, us
         Ok(door) => door,
         Err(_) => return Ok(None),
     };
-    let at = door();
+    // SAFETY: `door` was read from `DOOR_SYMBOL` of `lib`, open until the drop below.
+    let at = unsafe { door() };
     let ops = if at.is_null() {
         0
     } else {

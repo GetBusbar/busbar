@@ -118,13 +118,16 @@ fn lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers() {
 
     /// `a_slot` entered as lifecycle slot `open`, on the calling thread.
     fn enter_a_slot() -> RawOutcome {
-        enter_lifecycle(
-            "open",
-            a_slot,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null_mut(),
-        )
+        // SAFETY: `a_slot` reads none of its arguments.
+        unsafe {
+            enter_lifecycle(
+                "open",
+                a_slot,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            )
+        }
     }
     let off = std::thread::spawn(enter_a_slot)
         .join()

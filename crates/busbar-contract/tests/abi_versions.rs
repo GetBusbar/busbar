@@ -100,9 +100,9 @@ fn an_unwritten_out_reads_as_a_fault() {
     assert!(Ticket::NONE.is_none());
 }
 
-// THE SLOT TYPES ARE `extern "C"`. Each item below is a plain `extern "C" fn`; it coerces to the
-// slot type only if the slot type is `extern "C"` too — an `extern "C-unwind"` slot type would not
-// compile here.
+// THE SLOT TYPES ARE `unsafe extern "C"` (status row 159). Each item below is a plain safe
+// `extern "C" fn`; it coerces to the slot type only if the slot type is `extern "C"` too — an
+// `extern "C-unwind"` slot type would not compile here.
 extern "C" fn an_op(_i: *mut c_void, _in: *const c_void, _out: *mut c_void) -> RawOutcome {
     RawOutcome::of(Outcome::Ready)
 }
@@ -116,10 +116,13 @@ fn every_slot_type_is_extern_c() {
     let op: Op = an_op;
     let door: DoorFn = a_door;
     let wake: WakeFn = a_wake;
-    assert_eq!(
-        op(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut()).outcome(),
-        Outcome::Ready
-    );
-    assert!(door().is_null());
-    wake(HostCtx::NONE, Ticket::NONE);
+    // SAFETY: `an_op`, `a_door` and `a_wake` read none of their arguments.
+    unsafe {
+        assert_eq!(
+            op(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut()).outcome(),
+            Outcome::Ready
+        );
+        assert!(door().is_null());
+        wake(HostCtx::NONE, Ticket::NONE);
+    }
 }

@@ -120,11 +120,15 @@ fn call_b(mode: &'static [u8]) {
     let instance = std::ptr::NonNull::<u8>::dangling()
         .as_ptr()
         .cast::<c_void>();
-    let _ = tick(
-        instance,
-        std::ptr::from_ref(&input).cast(),
-        std::ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: plugin `b`'s own `tick` (the SDK trampoline, which never reads its instance) over
+    // local `in`/`out` of its types.
+    let _ = unsafe {
+        tick(
+            instance,
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+    };
 }
 
 macro_rules! ready {

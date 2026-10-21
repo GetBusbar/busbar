@@ -66,8 +66,74 @@ impl RawOutcome {
 /// that escapes a slot body aborts the process (Rust's `extern "C"` guarantee). The SDK's door
 /// macro catches every panic first and answers [`Outcome::Fault`]; the abort is the floor under a
 /// hand-written slot that did not.
-pub type Op =
-    extern "C" fn(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome;
+///
+/// **`unsafe` (status row 159).** A slot dereferences the raw pointers it is handed, so the type
+/// is an `unsafe extern "C" fn`: no safe code can enter a slot with a dangling pointer. The repr is
+/// that of the safe type (a fn pointer, `Option<Op>` NULL-niched), so this is no ABI change and
+/// no version moves. A safe `extern "C" fn` still coerces into an `Op` slot (a safe fn is
+/// trivially callable under the stronger contract); an `Op` never coerces back to a safe fn.
+///
+/// # Safety
+///
+/// The caller of an `Op` guarantees: `instance` is the pointer the same plugin's `open` answered
+/// for this instance (or NULL where the slot is `validate`/`open`); `input`, when non-NULL, points
+/// at a readable `in` of this slot's type leading with an [`InHead`] whose `size` bytes are
+/// readable; `out`, when non-NULL, points at a writable `out` of this slot's type leading with an
+/// [`OutHead`] whose `size` bytes are writable; neither is touched by anyone else for the call's
+/// length; the image the slot lives in is loaded; and the host tables lent at this instance's
+/// `open` (`OpenIn::host`) are still live. An instance keeps the tables pointer it was opened
+/// with, so every later call on it is the caller's promise that those tables outlive it: a host
+/// that frees its tables first must not call the instance again.
+///
+/// RED (status row 159): safe code cannot enter a slot, whether it holds the `Op` or reads it
+/// out of a table.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::call::{Op, RawOutcome};
+/// fn enter(op: Op) -> RawOutcome {
+///     op(core::ptr::null_mut(), core::ptr::null(), core::ptr::null_mut())
+/// }
+/// ```
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::lifecycle::OpsHead;
+/// fn close(head: &OpsHead) {
+///     if let Some(close) = head.close {
+///         let _ = close(core::ptr::null_mut(), core::ptr::null(), core::ptr::null_mut());
+///     }
+/// }
+/// ```
+///
+/// RED: an `Op` never becomes a safe fn pointer again.
+///
+/// ```compile_fail,E0308
+/// use busbar_contract::abi::mechanism::call::{Op, RawOutcome};
+/// use core::ffi::c_void;
+/// fn launder(op: Op) -> extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> RawOutcome {
+///     op
+/// }
+/// ```
+///
+/// A safe `extern "C" fn` still coerces INTO a slot (sound: its caller asks nothing of the
+/// caller), so a plugin's existing safe slot bodies keep building; entering the slot is what
+/// takes `unsafe`:
+///
+/// ```
+/// use busbar_contract::abi::mechanism::call::{Op, Outcome, RawOutcome};
+/// use core::ffi::c_void;
+/// extern "C" fn answers(_: *mut c_void, _: *const c_void, _: *mut c_void) -> RawOutcome {
+///     RawOutcome::of(Outcome::Ready)
+/// }
+/// let op: Op = answers;
+/// // SAFETY: `answers` reads none of its pointers.
+/// let raw = unsafe { op(core::ptr::null_mut(), core::ptr::null(), core::ptr::null_mut()) };
+/// assert_eq!(raw.outcome(), Outcome::Ready);
+/// ```
+pub type Op = unsafe extern "C" fn(
+    instance: *mut c_void,
+    input: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome;
 
 /// [`InHead::flags`]: this call RESUMES a call that answered [`Outcome::Pending`], with the same
 /// ticket and the same `in`/`out`.

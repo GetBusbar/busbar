@@ -82,7 +82,27 @@ impl HostCtx {
 
 /// `host.wake(ctx, ticket)`: callable from any thread, never blocks, never fails. A wake for a
 /// stale generation is dropped. `extern "C"`: a panic escaping it aborts.
-pub type WakeFn = extern "C" fn(ctx: HostCtx, ticket: Ticket);
+///
+/// **`unsafe` (status row 159):** the host resolves `ctx` to its own state, so no safe code may
+/// call it with a forged context.
+///
+/// # Safety
+///
+/// The caller guarantees `ctx` is the [`HostCtx`] the host handed (in [`HostTables::ctx`]) beside
+/// this wake, or [`HostCtx::NONE`], that the host image is loaded, and that the tables it was
+/// lent in (at the instance's `open`) are still live.
+///
+/// RED (status row 159): safe code cannot wake through the host's slot with a context of its own.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
+/// fn wake(tables: &HostTables) {
+///     if let Some(wake) = tables.wake {
+///         wake(HostCtx::NONE, Ticket::NONE);
+///     }
+/// }
+/// ```
+pub type WakeFn = unsafe extern "C" fn(ctx: HostCtx, ticket: Ticket);
 
 /// The host tables handed to `open`: the mechanism's own services and the shared host tables
 /// (`abi/host/`).

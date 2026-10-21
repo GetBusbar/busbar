@@ -41,6 +41,7 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
+use crate::abi::sdk::lent::Lent;
 
 /// Why a service call has no value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,8 +232,40 @@ unsafe impl Sync for Wake {}
 
 impl Wake {
     /// The wake in the tables `open` handed the instance; `None` when the host handed none.
+    ///
+    /// SEALED (status row 159): the tables arrive as a [`Lent`], which only the SDK makes from the
+    /// `in` a real host lent the call, so safe code cannot hand a forged context or wake here.
+    ///
+    /// ```compile_fail,E0308
+    /// use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
+    /// use busbar_contract::abi::sdk::services::Wake;
+    /// unsafe extern "C" fn forged(_: HostCtx, _: Ticket) {}
+    /// let tables = HostTables {
+    ///     size: core::mem::size_of::<HostTables>() as u32,
+    ///     _reserved: 0,
+    ///     ctx: HostCtx::NONE,
+    ///     wake: Some(forged),
+    ///     conns: core::ptr::null(),
+    ///     services: core::ptr::null(),
+    ///     io: core::ptr::null(),
+    /// };
+    /// let _ = Wake::of(&tables); // a hand-built table is no `Lent`
+    /// ```
     #[must_use]
-    pub fn of(tables: &HostTables) -> Option<Self> {
+    pub fn of(tables: Lent<'_, HostTables>) -> Option<Self> {
+        // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
+        // and the mechanism's host-table rule keeps them valid for the instance's life.
+        unsafe { Self::from_raw(tables.get()) }
+    }
+
+    /// The wake in `tables`, for a host or harness that holds them raw.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open` (its `ctx` the host's own
+    /// for that instance, its `wake` the host's), valid for every use of the value.
+    #[must_use]
+    pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
         tables.wake.map(|wake| Self {
             ctx: tables.ctx,
             wake,
@@ -241,7 +274,9 @@ impl Wake {
 
     /// Wake `ticket`.
     pub fn wake(&self, ticket: Ticket) {
-        (self.wake)(self.ctx, ticket);
+        // SAFETY: `WakeFn`'s contract: `ctx` and `wake` came together from host-lent tables
+        // (`Wake::of`, or `Wake::from_raw`'s caller vouched for them).
+        unsafe { (self.wake)(self.ctx, ticket) };
     }
 }
 
@@ -260,8 +295,40 @@ unsafe impl Sync for Services {}
 
 impl Services {
     /// The services in the tables `open` handed the instance; `None` when the host offers none.
+    ///
+    /// SEALED (status row 159): the tables arrive as a [`Lent`], which only the SDK makes from the
+    /// `in` a real host lent the call, so safe code cannot point this at a forged table.
+    ///
+    /// ```compile_fail,E0308
+    /// use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables};
+    /// use busbar_contract::abi::sdk::services::Services;
+    /// let tables = HostTables {
+    ///     size: core::mem::size_of::<HostTables>() as u32,
+    ///     _reserved: 0,
+    ///     ctx: HostCtx::NONE,
+    ///     wake: None,
+    ///     conns: core::ptr::null(),
+    ///     services: core::ptr::NonNull::dangling().as_ptr(),
+    ///     io: core::ptr::null(),
+    /// };
+    /// let _ = Services::of(&tables); // a hand-built table is no `Lent`
+    /// ```
     #[must_use]
-    pub fn of(tables: &HostTables) -> Option<Self> {
+    pub fn of(tables: Lent<'_, HostTables>) -> Option<Self> {
+        // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
+        // and the mechanism's host-table rule keeps them valid for the instance's life.
+        unsafe { Self::from_raw(tables.get()) }
+    }
+
+    /// The services in `tables`, for a host or harness that holds them raw.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `services` NULL or the
+    /// host's live services table, `ctx` the host's own for that instance, both valid for every use
+    /// of the value.
+    #[must_use]
+    pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
         (!tables.services.is_null()).then_some(Self {
             ctx: tables.ctx,
             table: tables.services,
@@ -1225,11 +1292,17 @@ impl Services {
     ) -> Result<(Outcome, ServiceOut, Filled), ServiceError> {
         let slot = self.slot(service, pick)?;
         let mut out = blank_out();
-        let ret = slot(
-            self.ctx,
-            std::ptr::from_ref(input).cast::<c_void>(),
-            &mut out,
-        );
+        // SAFETY: `ServiceFn`'s contract: `slot` and `ctx` came together from host-lent tables
+        // (`Services::of`, or `Services::from_raw`'s caller vouched for them); `input` is the
+        // caller's `in` of this service's type, its head stamped by `head`, and every buffer it
+        // names borrows the caller for this call; `out` is a local `ServiceOut`.
+        let ret = unsafe {
+            slot(
+                self.ctx,
+                std::ptr::from_ref(input).cast::<c_void>(),
+                &mut out,
+            )
+        };
         let filled = check(input, ret, &out).map_err(|_| ServiceError::Broken)?;
         Ok((ret.outcome(), out, filled))
     }

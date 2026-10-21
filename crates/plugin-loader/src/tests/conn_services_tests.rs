@@ -331,7 +331,9 @@ fn establish_as(
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
-    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    // SAFETY: the host's own static ESTABLISH slot on `p`'s live context; `i` (lending `target`)
+    // and `out` are locals of the service's types.
+    let _: RawOutcome = unsafe { slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out) };
     out
 }
 
@@ -1118,7 +1120,9 @@ fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut 
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     let _: RawOutcome =
-        f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
+        // SAFETY: every caller hands the host's own static connector slot and the `in` of that
+        // slot's type, on `p`'s live context; `out` is a local `ServiceOut`.
+        unsafe { f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out) };
     out
 }
 
@@ -1554,7 +1558,9 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
-    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    // SAFETY: the host's own static connector slot on `p`'s live context; `i` and `out` are locals
+    // of the service's types.
+    let _: RawOutcome = unsafe { slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out) };
     out.outcome.outcome()
 }
 
@@ -1585,15 +1591,19 @@ fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
 /// The instance's host tables as `open` hands them: its context and the connector slots.
 fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
     use busbar_contract::abi::mechanism::ticket::HostTables;
-    busbar_contract::abi::sdk::conn::Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: p.inner.ctx(),
-        wake: None,
-        conns: &CONN_SLOTS,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    })
+    // SAFETY: the plugin's own host context and the host's static connection table, both live for
+    // every use of the value.
+    unsafe {
+        busbar_contract::abi::sdk::conn::Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: p.inner.ctx(),
+            wake: None,
+            conns: &CONN_SLOTS,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 /// RED (Q-FC3): the plugin-facing path. Through the SDK's `Connector`, an op establishes a raw

@@ -330,7 +330,8 @@ pub const fn host_slots() -> ConnSlots {
 fn hosted(ctx: ConnCtx, body: impl FnOnce(&HostState) -> Result<(), ConnError>) -> RawConnOutcome {
     RawConnOutcome::of(
         crate::abi::sdk::boundary::caught(|| {
-            // SAFETY: a non-null context is the `HostState` of the `ConnHost` the host minted it from
+            // SAFETY: a non-null context is the `HostState` of the `ConnHost` the host minted it
+            // from
             // (`ConnHost::ctx`),
             // alive for the call.
             let host = unsafe { ctx.ptr.cast::<HostState>().as_ref() }.ok_or(ConnError::Fault)?;
@@ -390,7 +391,11 @@ fn range(s: &str) -> DeclStr {
     }
 }
 
-extern "C" fn host_open(
+/// # Safety
+///
+/// The slot type's contract (`ConnSlots`, status row 159): `ctx` is a context `ConnHost::ctx`
+/// minted and every pointer is valid for the reads or writes the slot's doc states.
+unsafe extern "C" fn host_open(
     ctx: ConnCtx,
     need: u32,
     desc: *const WireOpenDesc,
@@ -446,7 +451,11 @@ extern "C" fn host_open(
     })
 }
 
-extern "C" fn host_write(
+/// # Safety
+///
+/// The slot type's contract (`ConnSlots`, status row 159): `ctx` is a context `ConnHost::ctx`
+/// minted and every pointer is valid for the reads or writes the slot's doc states.
+unsafe extern "C" fn host_write(
     ctx: ConnCtx,
     conn: u64,
     buf: *const u8,
@@ -469,7 +478,11 @@ extern "C" fn host_write(
     })
 }
 
-extern "C" fn host_read(
+/// # Safety
+///
+/// The slot type's contract (`ConnSlots`, status row 159): `ctx` is a context `ConnHost::ctx`
+/// minted and every pointer is valid for the reads or writes the slot's doc states.
+unsafe extern "C" fn host_read(
     ctx: ConnCtx,
     conn: u64,
     ticket: u64,
@@ -543,7 +556,11 @@ extern "C" fn host_read(
     })
 }
 
-extern "C" fn host_wait(
+/// # Safety
+///
+/// The slot type's contract (`ConnSlots`, status row 159): `ctx` is a context `ConnHost::ctx`
+/// minted and every pointer is valid for the reads or writes the slot's doc states.
+unsafe extern "C" fn host_wait(
     ctx: ConnCtx,
     set_ptr: *const u64,
     set_len: usize,
@@ -564,7 +581,15 @@ extern "C" fn host_wait(
     })
 }
 
-extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
+/// # Safety
+///
+/// The slot type's contract (`ConnSlots`, status row 159): `ctx` is a context `ConnHost::ctx`
+/// minted and every pointer is valid for the reads or writes the slot's doc states.
+unsafe extern "C" fn host_facts(
+    ctx: ConnCtx,
+    conn: u64,
+    out_facts: *mut WireConnFacts,
+) -> RawConnOutcome {
     hosted(ctx, |host| {
         let facts = host.conns.facts(host.instance, ConnId(conn))?;
         let mut held = host.held();
@@ -591,7 +616,11 @@ extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts)
     })
 }
 
-extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
+/// # Safety
+///
+/// The slot type's contract (`ConnSlots`, status row 159): `ctx` is a context `ConnHost::ctx`
+/// minted and every pointer is valid for the reads or writes the slot's doc states.
+unsafe extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
     hosted(ctx, |host| {
         host.conns.close(host.instance, ConnId(conn))?;
         host.held().remove(&ConnId(conn));
@@ -682,7 +711,10 @@ impl HostConns {
             },
         };
         let mut conn = 0_u64;
-        f(self.ctx, need.0, &wire, &mut conn).result()?;
+        // SAFETY: `HostConns::new`'s contract: `slots` is the host's table and `ctx` the context it
+        // minted for this instance, both live; every pointer below borrows a local or `self`'s
+        // argument for the call.
+        unsafe { f(self.ctx, need.0, &wire, &mut conn) }.result()?;
         Ok(ConnId(conn))
     }
 
@@ -700,14 +732,19 @@ impl HostConns {
     ) -> Result<usize, ConnError> {
         let f = self.slots.write.ok_or(ConnError::Fault)?;
         let mut n = 0_usize;
-        f(
-            self.ctx,
-            conn.0,
-            bytes.as_ptr(),
-            bytes.len(),
-            u8::from(end) | if text { WRITE_TEXT } else { 0 },
-            &mut n,
-        )
+        // SAFETY: `HostConns::new`'s contract: `slots` is the host's table and `ctx` the context it
+        // minted for this instance, both live; every pointer below borrows a local or `self`'s
+        // argument for the call.
+        unsafe {
+            f(
+                self.ctx,
+                conn.0,
+                bytes.as_ptr(),
+                bytes.len(),
+                u8::from(end) | if text { WRITE_TEXT } else { 0 },
+                &mut n,
+            )
+        }
         .result()?;
         Ok(n)
     }
@@ -720,14 +757,19 @@ impl HostConns {
     pub fn read(&self, conn: ConnId, ticket: Ticket, buf: &mut [u8]) -> Result<Piece, ConnError> {
         let f = self.slots.read.ok_or(ConnError::Fault)?;
         let mut p = core::mem::MaybeUninit::<WirePiece>::zeroed();
-        f(
-            self.ctx,
-            conn.0,
-            ticket,
-            buf.as_mut_ptr(),
-            buf.len(),
-            p.as_mut_ptr(),
-        )
+        // SAFETY: `HostConns::new`'s contract: `slots` is the host's table and `ctx` the context it
+        // minted for this instance, both live; every pointer below borrows a local or `self`'s
+        // argument for the call.
+        unsafe {
+            f(
+                self.ctx,
+                conn.0,
+                ticket,
+                buf.as_mut_ptr(),
+                buf.len(),
+                p.as_mut_ptr(),
+            )
+        }
         .result()?;
         // SAFETY: an `Ok` answer wrote the piece; every field is valid zeroed besides.
         let p = unsafe { p.assume_init() };
@@ -770,7 +812,10 @@ impl HostConns {
         let f = self.slots.wait.ok_or(ConnError::Fault)?;
         let ids: Vec<u64> = set.iter().map(|c| c.0).collect();
         let mut ready = 0_usize;
-        f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready).result()?;
+        // SAFETY: `HostConns::new`'s contract: `slots` is the host's table and `ctx` the context it
+        // minted for this instance, both live; every pointer below borrows a local or `self`'s
+        // argument for the call.
+        unsafe { f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready) }.result()?;
         Ok(ready)
     }
 
@@ -782,7 +827,10 @@ impl HostConns {
     pub fn facts(&self, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let f = self.slots.facts.ok_or(ConnError::Fault)?;
         let mut w = core::mem::MaybeUninit::<WireConnFacts>::zeroed();
-        f(self.ctx, conn.0, w.as_mut_ptr()).result()?;
+        // SAFETY: `HostConns::new`'s contract: `slots` is the host's table and `ctx` the context it
+        // minted for this instance, both live; every pointer below borrows a local or `self`'s
+        // argument for the call.
+        unsafe { f(self.ctx, conn.0, w.as_mut_ptr()) }.result()?;
         // SAFETY: an `Ok` answer wrote the facts; every range borrows the host until close, and is
         // copied out now.
         unsafe {
@@ -815,7 +863,10 @@ impl HostConns {
     /// As [`Conns::close`].
     pub fn close(&self, conn: ConnId) -> Result<(), ConnError> {
         let f = self.slots.close.ok_or(ConnError::Fault)?;
-        f(self.ctx, conn.0).result()
+        // SAFETY: `HostConns::new`'s contract: `slots` is the host's table and `ctx` the context it
+        // minted for this instance, both live; every pointer below borrows a local or `self`'s
+        // argument for the call.
+        unsafe { f(self.ctx, conn.0) }.result()
     }
 }
 

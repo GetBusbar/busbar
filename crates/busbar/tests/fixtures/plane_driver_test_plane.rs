@@ -525,9 +525,12 @@ impl Inst {
         self.count(Stat::HostCalls);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(ms));
-            // SAFETY: the host's wake, with the context it handed `open`.
-            let wake: WakeFn = unsafe { std::mem::transmute::<usize, WakeFn>(wake) };
-            wake(ctx, t);
+            // SAFETY: the host's wake, with the context it handed `open`, entered under `WakeFn`'s
+            // contract (the host outlives the instance's ops).
+            unsafe {
+                let wake: WakeFn = std::mem::transmute::<usize, WakeFn>(wake);
+                wake(ctx, t);
+            }
         });
     }
 }

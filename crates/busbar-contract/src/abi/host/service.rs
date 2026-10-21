@@ -36,8 +36,32 @@ use crate::abi::mechanism::check::{self, fault, Dim, Fault, Filled, Rule, MAX_BY
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx};
 
 /// A host service: `svc(ctx, in, out)`. `extern "C"`: a panic escaping it aborts.
+///
+/// **`unsafe` (status row 159):** the host dereferences `input` and `out`, so no safe code may
+/// call a service; the repr is the safe type's, so no ABI version moves.
+///
+/// # Safety
+///
+/// The caller guarantees: `ctx` is the [`HostCtx`] the host handed this instance (or
+/// [`HostCtx::NONE`]); `input`, when non-NULL, points at a readable `in` of this service's type
+/// leading with a [`ServiceHead`] whose `size` bytes are readable, and every buffer it names is
+/// valid for its stated length; `out`, when non-NULL, points at a writable [`ServiceOut`];
+/// neither is touched by anyone else for the call's length; and the host tables this slot was
+/// read from (lent at the instance's `open`) are still live.
+///
+/// RED (status row 159): safe code cannot call a host service out of the table.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::host::service::HostSlots;
+/// use busbar_contract::abi::mechanism::ticket::HostCtx;
+/// fn now(table: &HostSlots) {
+///     if let Some(clock_now) = table.clock_now {
+///         let _ = clock_now(HostCtx::NONE, core::ptr::null(), core::ptr::null_mut());
+///     }
+/// }
+/// ```
 pub type ServiceFn =
-    extern "C" fn(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome;
+    unsafe extern "C" fn(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome;
 
 /// The head of every service `in`, in either table.
 #[repr(C)]

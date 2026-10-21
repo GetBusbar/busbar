@@ -1028,8 +1028,8 @@ hook_op!(
     }
 );
 
-/// THE HOOK DOOR: a hook plugin's `pub extern "C" fn door()`, every slot the SDK's own (on the
-/// safe layer) over the plugin's [`HookOpen`]. Invoked once in the plugin's logic crate.
+/// THE HOOK DOOR: a hook plugin's `pub unsafe extern "C" fn door()`, every slot the SDK's own (on
+/// the safe layer) over the plugin's [`HookOpen`]. Invoked once in the plugin's logic crate.
 ///
 /// ```ignore
 /// busbar_contract::hook_door! {

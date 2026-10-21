@@ -217,11 +217,15 @@ fn prefilled_head(size: usize) -> OutHead {
 
 fn call<I, O>(op: Option<Op>, input: &I, out: &mut O) -> Outcome {
     let op = op.expect("the macro fills every slot");
-    op(
-        ptr::null_mut(),
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: the macro door's slot, entered with no instance (validate and every head-check path
+    // read none) and the caller's `in`/`out` borrowed for the call.
+    unsafe {
+        op(
+            ptr::null_mut(),
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 
@@ -457,20 +461,28 @@ fn an_out_too_small_for_its_head_is_fault_with_nothing_written() {
     bytes[..4].copy_from_slice(&((size_of::<OutHead>() - 1) as u32).to_ne_bytes());
     let before = bytes;
     let op = table().head.validate.unwrap();
-    let got = op(
-        ptr::null_mut(),
-        ptr::from_ref(&validate_in(0, slot::VALIDATE)).cast(),
-        bytes.as_mut_ptr().cast(),
-    );
+    // SAFETY: the macro door's validate slot over a local `in` and a local `out` buffer whose head
+    // states its own (short) size; the slot checks that size before writing.
+    let got = unsafe {
+        op(
+            ptr::null_mut(),
+            ptr::from_ref(&validate_in(0, slot::VALIDATE)).cast(),
+            bytes.as_mut_ptr().cast(),
+        )
+    };
     assert_eq!(got.outcome(), Outcome::Fault);
     assert_eq!(bytes, before);
 
     // NULL `out`.
-    let got = op(
-        ptr::null_mut(),
-        ptr::from_ref(&validate_in(0, slot::VALIDATE)).cast(),
-        ptr::null_mut(),
-    );
+    // SAFETY: the macro door's validate slot over a local `in` and a NULL `out`, which `Op`'s
+    // contract admits and the slot refuses.
+    let got = unsafe {
+        op(
+            ptr::null_mut(),
+            ptr::from_ref(&validate_in(0, slot::VALIDATE)).cast(),
+            ptr::null_mut(),
+        )
+    };
     assert_eq!(got.outcome(), Outcome::Fault);
 }
 
@@ -480,7 +492,9 @@ fn a_bad_in_head_is_fault() {
     // NULL `in`.
     let mut out = prefilled_head(size_of::<OutHead>());
     out.outcome = RawOutcome::of(Outcome::Ready);
-    let raw = op.unwrap()(ptr::null_mut(), ptr::null(), ptr::from_mut(&mut out).cast());
+    // SAFETY: the macro door's validate slot over a NULL `in` (admitted by `Op`'s contract) and a
+    // local `out`.
+    let raw = unsafe { op.unwrap()(ptr::null_mut(), ptr::null(), ptr::from_mut(&mut out).cast()) };
     assert_eq!(raw.outcome(), Outcome::Fault);
     assert_eq!(out.outcome.outcome(), Outcome::Fault);
 
@@ -572,11 +586,15 @@ fn every_slot_is_the_trampoline_at_its_own_index() {
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(call(head.close, &input, &mut out), Outcome::Failed);
     let mut out = prefilled_head(size_of::<OutHead>());
-    let raw = head.close.unwrap()(
-        ptr::NonNull::<u8>::dangling().as_ptr().cast(),
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: the test door's `close` never reads its instance (only that it is forwarded is under
+    // test); `in`/`out` are locals of its types.
+    let raw = unsafe {
+        head.close.unwrap()(
+            ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut out).cast(),
+        )
+    };
     assert_eq!(raw.outcome(), Outcome::Ready);
 }
 

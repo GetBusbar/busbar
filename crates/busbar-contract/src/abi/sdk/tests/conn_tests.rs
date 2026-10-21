@@ -122,15 +122,18 @@ fn services() -> &'static crate::abi::host::service::HostSlots {
 }
 
 fn host(conns: *const ConnectorSlots) -> Host {
-    Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: HostCtx::NONE,
-        wake: None,
-        conns,
-        services: services(),
-        io: std::ptr::null(),
-    })
+    // SAFETY: test tables: their context and every table they name outlive each use of the value.
+    unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns,
+            services: services(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 const TICKET: Ticket = Ticket {
@@ -237,15 +240,18 @@ fn open_learns_the_hosts_verdict_on_a_need() {
     );
     assert_eq!(c.issued(), 0, "no handle drawn");
     // An instance handed no services table cannot ask.
-    let bare = Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: HostCtx::NONE,
-        wake: None,
-        conns: &SLOTS,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    });
+    // SAFETY: test tables: their context and every table they name outlive each use of the value.
+    let bare = unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: &SLOTS,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    };
     assert_eq!(bare.connector(TICKET).admit(0), Err(ConnFailure::Unarmed));
 }
 

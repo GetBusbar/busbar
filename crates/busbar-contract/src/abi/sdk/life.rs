@@ -492,7 +492,7 @@ life_slot!(
         let settings = input.field(|i| &i.settings).bytes();
         match L::open(settings, &secrets(input.secrets()), input.generation) {
             Ok(life) => {
-                let host = input.host().map(|h| Host::of(&h));
+                let host = input.host().map(Host::of);
                 instance.open(Held::new(life, host));
                 Outcome::Ready
             }
@@ -534,7 +534,7 @@ life_slot!(
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let Some(host) = input.host().map(|t| Host::of(&t)) else {
+        let Some(host) = input.host().map(Host::of) else {
             return Outcome::Fault;
         };
         match h.life.ready(&host, instance.ticket()) {
