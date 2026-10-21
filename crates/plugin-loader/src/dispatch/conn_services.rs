@@ -44,7 +44,8 @@
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
 //! second run (a `READ_REPLY`'s with its piece and its bytes, written again into what the replay
 //! lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
-//! ticket's when its next tick starts, and any other ticket's when a new op (not a short answer's
+//! ticket's when its next tick starts with nothing held on it (a held exchange keeps its
+//! answers), and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
 
 use std::collections::{HashMap, HashSet};

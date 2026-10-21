@@ -7,7 +7,8 @@
 //! * **Stored once, redeemed on the handle.** A ticketed call runs its service once under its
 //!   [`CompletionHandle`] and stores the result. A re-issued handle (a resume, or the re-call a short
 //!   answer earns) reads the stored result; nothing runs twice. The store forgets a ticket's results
-//!   when the ticket is recycled, a driver ticket's when its next tick starts, and any other
+//!   when the ticket is recycled, a driver ticket's when its next tick starts with nothing held
+//!   on it (a held exchange keeps its results, `dispatch::worker`), and any other
 //!   ticket's when a new op (not a short answer's re-call) starts on it. Each op's results live
 //!   under an epoch of their own, so a pended service of an op that is over completes into
 //!   nothing: never the next op's same-numbered handle, never a wake for it.

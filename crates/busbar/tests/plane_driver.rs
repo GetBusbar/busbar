@@ -120,9 +120,20 @@ fn load_open(
     sink: Arc<dyn EnvelopeSink>,
     conns: ConnTable,
 ) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
+    load_open_capped(way, dispatcher, sink, conns, 64)
+}
+
+/// [`load_open`], the host clamping the plane's `max_inflight` to `cap`.
+fn load_open_capped(
+    way: Way,
+    dispatcher: &Dispatcher,
+    sink: Arc<dyn EnvelopeSink>,
+    conns: ConnTable,
+    cap: u32,
+) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
     let bind = Bind {
         instance: Arc::from("the-instance"),
-        max_inflight_cap: 64,
+        max_inflight_cap: cap,
         sink,
         dispatcher: dispatcher.adopter(),
         conns,
@@ -563,14 +574,19 @@ async fn a_wake_of_the_driver_ticket_runs_drive_then_ticks_again() {
     }
 }
 
-/// A connection table whose read pends (interest under the caller's ticket) until bytes are put.
+/// A connection table whose read pends (interest under the caller's ticket) until bytes are put:
+/// for that one connection (`ready`), or for whichever reads next (`bytes`).
 #[derive(Default)]
 struct Far {
     slab: ConnSlab<()>,
     bytes: Mutex<Option<Vec<u8>>>,
+    /// Bytes for one connection's next read.
+    ready: Mutex<std::collections::HashMap<ConnId, Vec<u8>>>,
     waiting: Mutex<Vec<u64>>,
     /// Connections opened (each ESTABLISH that ran).
     opened: Mutex<u32>,
+    /// Each connection opened, in order.
+    ids: Mutex<Vec<ConnId>>,
 }
 
 impl DeclaredConns for Far {
@@ -603,7 +619,9 @@ impl Conns for Far {
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
         *self.opened.lock().unwrap() += 1;
-        self.slab.insert(caller, need, ())
+        let id = self.slab.insert(caller, need, ())?;
+        self.ids.lock().unwrap().push(id);
+        Ok(id)
     }
     fn write(
         &self,
@@ -617,7 +635,8 @@ impl Conns for Far {
     }
     fn read(&self, c: InstanceId, id: ConnId, t: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
         self.slab.get(c, id)?;
-        let Some(bytes) = self.bytes.lock().unwrap().take() else {
+        let mine = self.ready.lock().unwrap().remove(&id);
+        let Some(bytes) = mine.or_else(|| self.bytes.lock().unwrap().take()) else {
             self.waiting.lock().unwrap().push(t);
             return Err(ConnError::Pending);
         };
@@ -689,7 +708,8 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
     }
 }
 
-/// EACH TICK STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)): the services'
+/// EACH TICK WITH NOTHING HELD STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)):
+/// once the `drive` that read the first tick's stream answered READY (nothing held), the services'
 /// kept answers under the driver ticket are forgotten when the next tick starts, so the second
 /// tick's ESTABLISH (handle 1 again) runs afresh instead of answering the first tick's stream; the
 /// cycle's kept count reaches the dispatcher's high-water gauge. RED before: the driver ticket is
@@ -702,9 +722,16 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
         let far = Arc::new(Far::default());
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         let driver = driver_of(&plugin, dispatcher.clone());
-        for _ in 0..2 {
+        for round in 1..=2 {
             arrive_at(&plugin, "/tick-read");
             parks_after_one_tick(&driver).await;
+            // The far end answers and `drive` reads it: nothing is held on the driver ticket.
+            *far.bytes.lock().unwrap() = Some(vec![b'x'; round]);
+            let ticket = ticked(&plugin)[plane::Ticked::Ticket as usize];
+            wake(&plugin, ticket_of(ticket));
+            until("drive read the bytes", || {
+                ticked(&plugin)[plane::Ticked::DriveRead as usize] == round as u64
+            });
         }
         assert_eq!(
             *far.opened.lock().unwrap(),
@@ -715,6 +742,160 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
             dispatcher.stats().driver_kept_high >= 1,
             "{way:?}: the first cycle's kept ESTABLISH answer is counted"
         );
+    }
+}
+
+/// Wait up to 5 s for `done`, without parking the runtime's thread (the schedule runs beside it).
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// `script` beside the plane's tick schedule, which must outlast it.
+async fn beside_ticks(
+    way: Way,
+    driver: &PlaneDriver,
+    script: impl std::future::Future<Output = ()>,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            () = driver.ticks() => panic!("{way:?}: the schedule ended"),
+            () = script => {}
+        }
+    })
+    .await
+    .expect("the script finished");
+}
+
+/// TWO EXCHANGES HELD SIDE BY SIDE ON ONE DRIVER TICKET (THE DESIGN: every call is Ready or
+/// Pending(wake), `BUSBAR-1.6.0.md` :1282, and a Pending is honoured; R-PUSH, the `tick` row of
+/// `bb_ops_head`, :3614): the first tick's exchange pends; a wake runs `drive`, which carries it on
+/// (still PENDING), and then the re-polled tick starts a second exchange beside it. The second's
+/// far end answers first: it completes while the first stays pending, and the first, still held,
+/// then completes on its own connection when its far end answers. Each exchange dialled ONCE: a
+/// tick kept the held exchange's ESTABLISH answer, so its replay through `drive` answered its
+/// stream again. RED before: a `drive` that answered PENDING re-polled no `tick` (the second never
+/// started), and a tick's start forgot every kept answer under the driver ticket, so the held
+/// exchange's replay dialled again and its first connection's answer reached no one.
+#[tokio::test]
+async fn a_tick_keeps_every_held_exchange_and_the_second_completes_while_the_first_pends() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
+        let opened = || *far.opened.lock().unwrap();
+        arrive_at(&plugin, "/tick-hold");
+        let script = async {
+            eventually("the first exchange pends inside the first tick", || {
+                t(plane::Ticked::HoldStarted) == 1 && !far.waiting.lock().unwrap().is_empty()
+            })
+            .await;
+            let ticket = ticket_of(t(plane::Ticked::Ticket));
+            arrive_at(&plugin, "/tick-hold");
+            wake(&plugin, ticket);
+            eventually(
+                "the re-polled tick starts a second exchange beside the first",
+                || t(plane::Ticked::HoldStarted) == 2 && opened() == 2,
+            )
+            .await;
+            let (first, second) = {
+                let ids = far.ids.lock().unwrap();
+                (ids[0], ids[1])
+            };
+            far.ready.lock().unwrap().insert(second, b"second".to_vec());
+            wake(&plugin, ticket);
+            eventually("the second exchange completes", || {
+                t(plane::Ticked::HoldDone) & 0b10 != 0
+            })
+            .await;
+            assert_eq!(
+                t(plane::Ticked::HoldDone),
+                0b10,
+                "{way:?}: the second completed while the first stays pending"
+            );
+            far.ready.lock().unwrap().insert(first, b"first".to_vec());
+            wake(&plugin, ticket);
+            eventually("the first exchange, still held, completes", || {
+                t(plane::Ticked::HoldDone) == 0b11
+            })
+            .await;
+            assert_eq!(
+                opened(),
+                2,
+                "{way:?}: each exchange dialled once; the held one's kept answer survived the ticks"
+            );
+        };
+        beside_ticks(way, &driver, script).await;
+    }
+}
+
+/// THE HELD SET IS BOUNDED BY THE INSTANCE'S `max_inflight` (`BUSBAR-1.6.0.md` A.4.1, :3627, the
+/// per-instance capacity; no new figure): with the host clamping it to 2, two exchanges are held on
+/// the driver ticket and the tick that would start a third is not crossed (the host answers it
+/// PENDING, no tick named); once a `drive` answers that nothing is held, the re-polled tick crosses
+/// and the third starts on a new cycle.
+#[tokio::test]
+async fn the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let conns: Arc<dyn DeclaredConns> = far.clone();
+        let (plugin, _) = load_open_capped(
+            way,
+            &dispatcher,
+            Arc::new(NoSink),
+            ConnTable::Host(conns),
+            2,
+        );
+        assert_eq!(plugin.max_inflight(), 2, "{way:?}: the host's clamp");
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
+        let drives = || stats(&plugin)[cases::stat::DRIVES];
+        for _ in 0..3 {
+            arrive_at(&plugin, "/tick-hold");
+        }
+        let script = async {
+            eventually("the first exchange is held", || {
+                t(plane::Ticked::HoldStarted) == 1
+            })
+            .await;
+            let ticket = ticket_of(t(plane::Ticked::Ticket));
+            wake(&plugin, ticket);
+            eventually("a second exchange is held beside it", || {
+                t(plane::Ticked::HoldStarted) == 2
+            })
+            .await;
+            let ticks = t(plane::Ticked::Ticks);
+            let seen = drives();
+            wake(&plugin, ticket);
+            eventually("the wake's drive ran", || drives() > seen).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                (t(plane::Ticked::HoldStarted), t(plane::Ticked::Ticks)),
+                (2, ticks),
+                "{way:?}: at the cap the tick is not crossed and no third exchange starts"
+            );
+            assert_eq!(t(plane::Ticked::HoldDone), 0, "{way:?}: both still held");
+            let ids = far.ids.lock().unwrap().clone();
+            for id in &ids {
+                far.ready.lock().unwrap().insert(*id, b"done".to_vec());
+            }
+            wake(&plugin, ticket);
+            eventually("the held set drains and the third exchange starts", || {
+                t(plane::Ticked::HoldDone) & 0b11 == 0b11 && t(plane::Ticked::HoldStarted) == 3
+            })
+            .await;
+            assert!(
+                t(plane::Ticked::Ticks) > ticks,
+                "{way:?}: the tick crossed again once nothing was held"
+            );
+        };
+        beside_ticks(way, &driver, script).await;
     }
 }
 

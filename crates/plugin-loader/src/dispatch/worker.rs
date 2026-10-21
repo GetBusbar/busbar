@@ -19,10 +19,20 @@
 //!   `max_inflight`. A wake on one calls `drive`; a PENDING drive resumes like any op. The one op
 //!   submitted on a driver ticket is `tick` ([`Dispatcher::tick`]): it holds no `max_inflight`
 //!   unit, a wake during it is owed to `drive` once it ends, and its PENDING answer ends it, since
-//!   what pended inside it goes on through `drive`. A driver ticket is never recycled, so a tick's
-//!   start is its cycle's boundary: what the services kept under it since the last tick (the conn
-//!   answers and the stored service results the drives between redeemed by handle) is forgotten
-//!   then, the most ever kept counted ([`DispatchStats::driver_kept_high`]).
+//!   what pended inside it goes on through `drive`. Every `drive` that ran is followed by a `tick`
+//!   (R-PUSH), PENDING or not: the new cycle's work runs alongside what is held.
+//! * HELD WORK ON A DRIVER TICKET. A PENDING is honoured: a `tick` that answered PENDING holds what
+//!   pended, and a `drive` that answered PENDING holds what still waits, until a `drive` answers
+//!   anything else. While anything is held, a tick's start keeps what the services kept under the
+//!   ticket (the conn answers and the stored service results the held work redeems by handle, its
+//!   pended services still able to complete and wake it), so each held exchange resumes when its
+//!   wake fires while the next tick starts more; the work held side by side on one driver ticket
+//!   counts its handles on, never reusing one a held exchange issued. The held set (the ticks that
+//!   answered PENDING) is bounded by the instance's `max_inflight`: a tick past it is answered
+//!   PENDING by the host without a crossing (`next_tick_ns` 0), and the `drive` that next runs
+//!   re-polls it. With nothing held, a tick's start is its cycle's boundary: what the services
+//!   kept under the ticket since the last tick is forgotten then, the most ever kept counted
+//!   ([`DispatchStats::driver_kept_high`]).
 //! * DEADLINE CLASSES. Call, Stream and Connection: when `deadline_ns` passes with the op pending,
 //!   the host calls `cancel` (ticket-less: it may not pend) and answers the kind's timeout outcome;
 //!   a client drop does the same. WriteBehind is NEVER cancelled — not by its deadline, a client
@@ -712,6 +722,11 @@ pub(crate) struct Driver {
     frame: Option<Box<dyn DriveFrame>>,
     pending: bool,
     wake_at_ns: u64,
+    /// THE HELD SET: the ticks that answered PENDING since the last `drive` that answered anything
+    /// else. While it is not empty, or the last `drive` answered PENDING (`pending`), a tick's
+    /// start keeps the services' answers under the ticket; it never passes the instance's
+    /// `max_inflight`.
+    held: u32,
 }
 
 impl Drop for Driver {
@@ -1271,14 +1286,23 @@ impl Worker {
                 let Some((meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
                 };
-                if e.driver.is_some() {
-                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers (and
-                    // their epoch) go.
-                    let kept = env.services.forget(ticket)
-                        + super::conn_services::forget(meta.instance.instance, ticket);
-                    env.stats
-                        .driver_kept_high
-                        .fetch_max(kept as u64, Ordering::Relaxed);
+                // A tick on a driver ticket whose held set is full waits for it to drain.
+                let mut full = false;
+                if let Some(d) = e.driver.as_ref() {
+                    if d.held == 0 && !d.pending {
+                        // Nothing is held: the tick starts the driver ticket's next cycle, and the
+                        // last cycle's kept answers (and their epoch) go.
+                        let kept = env.services.forget(ticket)
+                            + super::conn_services::forget(meta.instance.instance, ticket);
+                        env.stats
+                            .driver_kept_high
+                            .fetch_max(kept as u64, Ordering::Relaxed);
+                    } else {
+                        // A PENDING is honoured: what is held keeps its answers and its epoch,
+                        // and resumes through `drive` when its wake fires. The held set is bounded
+                        // by the instance's `max_inflight`.
+                        full = d.held >= meta.instance.cap;
+                    }
                 } else if e.short_slot != Some(meta.slot) {
                     // A NEW op starts on the ticket (not the one re-call a short answer earns):
                     // its handles count from 0 again (the replay rule, `abi::sdk::conn`), and a
@@ -1298,6 +1322,10 @@ impl Worker {
                     Some(Outcome::Fault)
                 } else if expired {
                     Some(inst.timeout)
+                } else if full {
+                    // Not crossed: PENDING with no tick named, so the `drive` that next runs
+                    // re-polls it (R-PUSH).
+                    Some(Outcome::Pending)
                 } else {
                     None
                 };
@@ -1428,20 +1456,25 @@ impl Worker {
                     inst.driven.name(frame.named());
                 }
                 inst.driven.answer(c.outcome);
-                if c.outcome != Outcome::Pending {
-                    inst.driven.drove();
-                }
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
                         d.frame = Some(frame);
                         d.pending = c.outcome == Outcome::Pending;
                         d.wake_at_ns = c.wake_at_ns;
+                        // `drive` carries every held exchange on: PENDING while one still waits,
+                        // anything else once none does.
+                        if !d.pending {
+                            d.held = 0;
+                        }
                         if d.pending && std::mem::take(&mut e.latched) {
                             Self::schedule(&mut st, idx, Action::Drive);
                         }
                     }
                 }
+                // A wake's `drive` ran: the host re-polls `tick` (R-PUSH), PENDING or not, so the
+                // new cycle's work runs alongside what is still held.
+                inst.driven.drove();
                 Some(st)
             }
         }
@@ -1472,6 +1505,11 @@ impl Worker {
                 Self::schedule(&mut st, idx, Action::Resume);
             }
         } else {
+            // A tick on a driver ticket that answered PENDING ends; what pended inside it is held
+            // and goes on through `drive`.
+            if let Some(d) = e.driver.as_mut().filter(|_| c.outcome == Outcome::Pending) {
+                d.held = d.held.saturating_add(1);
+            }
             self.end(&mut st, idx, c, env);
         }
         Some(st)
@@ -2002,6 +2040,7 @@ impl Dispatcher {
             frame: Some(K::drive_frame()),
             pending: false,
             wake_at_ns: 0,
+            held: 0,
         }))
     }
 
