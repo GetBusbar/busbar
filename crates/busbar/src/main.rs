@@ -1135,7 +1135,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                     reach: &reach,
                     journal: std::sync::Arc::clone(&post)
                         as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
-                    clock: std::sync::Arc::new(root::egress_ports::NodeClock::new()),
                 },
             );
         }));

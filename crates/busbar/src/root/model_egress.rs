@@ -625,7 +625,8 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
 /// destination the model's lane index, its name the model's), a pool per configured pool with its
 /// own bounds and terminal, a pool per model a route may name directly, the kernel's breaker cells
 /// under each pool's ladder, each model's concurrency cap, the node's counters, `journal` and
-/// `clock`, the walk's clock ([`crate::root::serve::DoorEgress::clock`]): the cooldown a failure
+/// `clock`, the walk's clock the plane was composed on (the node's,
+/// [`crate::root::egress_ports::NodeClock`]): the cooldown a failure
 /// arms is recorded at the walk's reading of it, so the wait a shed advertises is measured on the
 /// same clock.
 ///

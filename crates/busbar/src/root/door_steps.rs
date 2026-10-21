@@ -1391,7 +1391,7 @@ pub fn label_bound(
 /// named pool of its section (its members, its fallback pool) and a pool per entry its direct
 /// routes walk, the breaker under every pool's default ladder, the members' permits, the node's
 /// counters, `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)) and `clock`, the
-/// walk's clock ([`crate::root::serve::DoorEgress::clock`]).
+/// walk's clock the plane was composed on (the node's, [`crate::root::egress_ports::NodeClock`]).
 ///
 /// # Errors
 ///

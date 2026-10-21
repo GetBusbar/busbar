@@ -37,7 +37,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress, HookStage};
+use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -543,8 +543,8 @@ pub(crate) struct RigOpts<'a> {
     /// The card history a unit is pinned to at its door, which the node's book prices its line
     /// against (`None`: the rig's own priceless card).
     pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
-    /// The door egress's clock, which its walk reads (`None`: the node's own,
-    /// [`crate::root::egress_ports::NodeClock`]).
+    /// The walk's clock the door plane is composed on, which every generation's walk reads (`None`:
+    /// the node's own, [`crate::root::egress_ports::NodeClock`]).
     pub clock: Option<&'a Arc<dyn busbar_kernel_egress::ports::Clock>>,
 }
 
@@ -1187,7 +1187,9 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         gov: Arc::clone(&gov),
     };
     let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
-    let served = compose_planes(
+    // As [`compose_planes`] composes, on the rig's walk clock.
+    let served = compose_planes_over(
+        &crate::LINKED,
         &[(instance.to_string(), plane)],
         &dispatcher,
         &services,
@@ -1197,9 +1199,10 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-            clock: Arc::clone(&clock),
         }),
         Some(&stage),
+        &clock,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     );
     let _ = std::fs::remove_file(&key_file);
     let mut served = served?;
@@ -1209,7 +1212,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     // lanes, the door's egress resealed over the providers with their secrets resolved anew.
     let reapply: Arc<dyn Fn() + Send + Sync> = {
         let (appliers, app, post) = (appliers.clone(), Arc::clone(&app), Arc::clone(&post));
-        let clock = Arc::clone(&clock);
         let (connector, auths) = (Arc::clone(&connector), Arc::clone(&auths));
         let lanes = opts.members.len();
         let stream_ceiling_secs = opts.stream_ceiling_secs.unwrap_or(600);
@@ -1240,7 +1242,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 &DoorEgress {
                     reach: &reach,
                     journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-                    clock: Arc::clone(&clock),
                 },
             );
         })

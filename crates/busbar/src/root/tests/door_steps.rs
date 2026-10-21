@@ -2596,7 +2596,6 @@ pub(crate) mod tool_door {
             let egress = crate::root::serve::DoorEgress {
                 reach: &reach,
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-                clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
             };
             let doors = [(instance.to_string(), plane)];
             // THE KERNEL'S HOOK STAGE over this rig's generation (the App built below): the plane's

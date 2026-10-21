@@ -363,7 +363,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-            clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         }),
         None,
     )
@@ -1167,7 +1166,6 @@ pub(super) mod session_door {
             Some(&DoorEgress {
                 reach: &reach,
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-                clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
             }),
             stage.as_ref(),
         ) {
@@ -4062,9 +4060,10 @@ async fn serve_configured(
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-            clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         }),
         None,
+        &(Arc::new(crate::root::egress_ports::NodeClock::new())
+            as Arc<dyn busbar_kernel_egress::ports::Clock>),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )?;
     let live = Arc::clone(&served.planes[0].live);
