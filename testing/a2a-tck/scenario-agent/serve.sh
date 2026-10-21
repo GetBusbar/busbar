@@ -6,11 +6,11 @@
 #
 # THE PIN, and why it is this one. The scenario agent implements the TCK's published SUT behaviour
 # contract on top of the A2A project's own Python SDK, so the SDK version decides every byte on the
-# wire that is not a scenario decision. It is pinned to the SAME version this repository already
-# pins as the a2a-python CONTROL in `testing/a2a-harness/scripts/install-control.sh`, so the tree
-# holds ONE opinion about which a2a-python it talks about rather than two that can drift apart. If
-# that file's pin moves, this one moves with it and the check below is what makes the disagreement
-# loud instead of silent.
+# wire that is not a scenario decision. It is the SAME version this repository already pins as the
+# a2a-python CONTROL in `testing/a2a-harness/scripts/install-control.sh`, and it is READ from that
+# file rather than spelled here, so the tree holds ONE opinion about which a2a-python it talks
+# about. There is no fallback: if that file is gone or no longer states its pin in the form read
+# below, this refuses to serve rather than guess.
 #
 # usage: serve.sh <port> [--public-url URL]
 set -euo pipefail
@@ -18,19 +18,17 @@ cd "$(dirname "$0")"
 
 PORT="${1:?usage: serve.sh <port> [--public-url URL]}"; shift || true
 
-CONTROL_PY_VERSION="1.1.2"          # PyPI a2a-sdk
-
-# The harness pins the same peer. One pin, stated twice, is a pin that will disagree with itself;
-# so it is READ from there and refused if the two spellings have drifted.
 harness_pin_file="../../a2a-harness/scripts/install-control.sh"
-if [ -f "$harness_pin_file" ]; then
-  harness_pin="$(sed -n 's/^CONTROL_PY_VERSION="\([^"]*\)".*/\1/p' "$harness_pin_file" | head -1)"
-  if [ -n "$harness_pin" ] && [ "$harness_pin" != "$CONTROL_PY_VERSION" ]; then
-    echo "a2a-sdk pin disagreement: scenario-agent wants $CONTROL_PY_VERSION, \
-testing/a2a-harness pins $harness_pin. Two pins for one peer is how a control and a subject stop \
-talking about the same thing -- reconcile them before running." >&2
-    exit 2
-  fi
+if [ ! -f "$harness_pin_file" ]; then
+  echo "the a2a-sdk pin is read from testing/a2a-harness/scripts/install-control.sh, and that \
+file is not there -- refusing to serve" >&2
+  exit 2
+fi
+CONTROL_PY_VERSION="$(sed -n 's/^CONTROL_PY_VERSION="\([^"]*\)".*/\1/p' "$harness_pin_file" | head -1)"
+if [ -z "$CONTROL_PY_VERSION" ]; then
+  echo "testing/a2a-harness/scripts/install-control.sh states no CONTROL_PY_VERSION=\"...\" line; \
+the a2a-sdk pin cannot be read -- refusing to serve" >&2
+  exit 2
 fi
 
 WORK="${A2A_SCENARIO_AGENT_WORK:-${TMPDIR:-/tmp}/a2a-scenario-agent}"
