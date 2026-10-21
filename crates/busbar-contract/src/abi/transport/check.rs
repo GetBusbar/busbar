@@ -893,7 +893,7 @@ pub fn check_route(r: &super::route::RouteMatch) -> Result<(), Fault> {
 /// # Errors
 ///
 /// [`Rule::IndexOutOfRange`] for a position past the offer.
-pub const fn check_agreed(agreed: u32, offer_len: u64) -> Result<(), Fault> {
+pub const fn check_agreed_position(agreed: u32, offer_len: u64) -> Result<(), Fault> {
     if agreed as u64 > offer_len {
         return Err(fault(Rule::IndexOutOfRange, "framer.agreed"));
     }
