@@ -507,7 +507,9 @@ pub fn resolve_pool_rewrites(
 /// `decide` is NOT intercepted: the read-only seat resolves `on_error` itself, and richer — it
 /// walks the configured FALLBACK CHAIN before it reaches a terminal. Both seats bottom out on the
 /// SAME rule (`busbar_kernel::hooks::failed_call_refuses`), which is what keeps them from
-/// drifting. Every other trait method is a transparent delegate.
+/// drifting. `refuses_failed_rewrite` answers the same rule for a rewrite the plane then refuses to
+/// apply, which every firing site that hands a rewrite back to a plane consults. Every other trait
+/// method is a transparent delegate.
 struct RewriteOnError {
     inner: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
@@ -560,6 +562,12 @@ impl RoutingPolicy for RewriteOnError {
             }
             other => other,
         }
+    }
+
+    /// A rewrite the plane refuses to apply is this hook's failure: the same disposition, by the
+    /// same rule, as a failed call.
+    fn refuses_failed_rewrite(&self) -> bool {
+        busbar_kernel::hooks::failed_call_refuses(&self.on_error)
     }
 
     async fn configure(

@@ -207,7 +207,13 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let next = self.project(Some(&bytes))?;
+                    let Ok(next) = self.project(Some(&bytes)) else {
+                        // The plane refused the rewrite: the hook's failure, by its `on_error`.
+                        if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
+                            return Err(veto_by(status, message, hook.name()));
+                        }
+                        continue;
+                    };
                     // The re-projection is held to the same bound entry.
                     if next.pool != entry {
                         return Err(Stopped::Unreadable);
@@ -274,6 +280,40 @@ fn bound_entry<'v>(
     std::str::from_utf8(recorded)
         .map(Some)
         .map_err(|_| Stopped::Unreadable)
+}
+
+/// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the
+/// rewriting hook's failure, never the unit's, answered by that hook's own `on_error` (coordinator
+/// ruling, row 159). A load-bearing hook (`on_error: reject`) refuses the unit with the refusal a
+/// failed call of the same hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words
+/// (`Some`); any other disposition proceeds with the body and view the unit had before that rewrite
+/// (`None`), as 1.5.5 left a request it could not rewrite unmodified. Never a silent switch to what
+/// the rewrite named.
+///
+/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+pub(super) fn refused_rewrite(
+    hook: &dyn busbar_contract::hooks::RoutingPolicy,
+    entry: &str,
+) -> Option<(u16, String)> {
+    use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
+    if hook.refuses_failed_rewrite() {
+        tracing::warn!(
+            hook = hook.name(),
+            entry = %entry,
+            "the plane refused a rewrite hook's rewrite and the hook is declared load-bearing \
+             (on_error: reject); refusing the request"
+        );
+        return Some(rewrite_refusal(
+            REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        ));
+    }
+    tracing::warn!(
+        hook = hook.name(),
+        entry = %entry,
+        "the plane refused a rewrite hook's rewrite; proceeding with the request unmodified"
+    );
+    None
 }
 
 /// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook

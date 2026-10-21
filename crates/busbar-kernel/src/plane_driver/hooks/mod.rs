@@ -1412,9 +1412,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                             }
                             view = next;
                         }
-                        Err(stopped) => {
-                            self.lock().hooked = Some((hooks, view));
-                            return Err(stopped);
+                        // The plane refused the rewrite: the hook's failure, by its `on_error`;
+                        // otherwise the unit goes on as it stood before that rewrite.
+                        Err(_) => {
+                            if let Some((status, message)) = gated::refused_rewrite(&**hook, &pool)
+                            {
+                                self.lock().hooked = Some((hooks, view));
+                                return Err(veto(status, message));
+                            }
                         }
                     }
                 }

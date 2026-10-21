@@ -363,6 +363,17 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         TransformOutcome::Abstain
     }
 
+    /// Whether a REWRITE this hook answered that the plane then refuses to apply (one naming a
+    /// model other than the routed one, say) refuses the unit: the hook's own failure, answered by
+    /// its own `on_error`, as a failed `transform` call of the same hook is. `true` = the operator
+    /// declared the hook load-bearing (`on_error: reject`) and the unit is refused with the shared
+    /// required-hook answer; `false` = the request proceeds as it stood before that rewrite.
+    /// DEFAULT `false`: only the host's `on_error` decorator over a resolved rewrite knows the
+    /// disposition, and it overrides this.
+    fn refuses_failed_rewrite(&self) -> bool {
+        false
+    }
+
     /// PUSH a settings map to the hook (`PATCH /admin/v1/hooks/{name}/settings`): send the
     /// `configure` message and wait for the ack, bounded by `budget`. `Ok(())` = the hook
     /// acknowledged (the caller commits); any error/nack/timeout = NOT committed. Default: this
