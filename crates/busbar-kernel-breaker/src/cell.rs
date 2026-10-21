@@ -241,6 +241,45 @@ pub struct CellSnapshot {
     pub err: u64,
 }
 
+impl CellSnapshot {
+    /// The verdict a cell [`BreakerCell::restore`]d from this snapshot would give at `now`, read
+    /// without building one. A snapshot taken mid-probe reads as Open, as `restore` stores it.
+    pub fn verdict(&self, now: u64) -> BreakerVerdict {
+        let state = if self.state == ST_HALF_OPEN {
+            ST_OPEN
+        } else {
+            self.state
+        };
+        decode(state, self.cooldown_until, now)
+    }
+}
+
+/// A cell's verdict from its state and cooldown, the one decoding [`BreakerCell::verdict`] and
+/// [`CellSnapshot::verdict`] share.
+fn decode(state: u64, until: u64, now: u64) -> BreakerVerdict {
+    match state {
+        ST_CLOSED => {
+            if now >= until {
+                BreakerVerdict::Ready
+            } else {
+                BreakerVerdict::Open { until }
+            }
+        }
+        ST_OPEN => {
+            if now >= until {
+                BreakerVerdict::ProbeWinnable
+            } else {
+                BreakerVerdict::Open { until }
+            }
+        }
+        ST_HALF_OPEN => BreakerVerdict::HalfOpen,
+        // Fails SAFE: an unrecognized encoding is never reachable under the atomic-sentinel
+        // invariant this module maintains, but a never-elapsing Open denies admission rather
+        // than panicking the caller.
+        _ => BreakerVerdict::Open { until: u64::MAX },
+    }
+}
+
 /// Public FSM state, independent of any pending soft cooldown detail beyond `until`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakerState {
@@ -344,27 +383,7 @@ impl BreakerCell {
         // so the cooldown read that follows is at least as fresh as the state.
         let state = self.breaker_state.load(Ordering::Acquire);
         let until = self.cooldown_until.load(Ordering::Acquire);
-        match state {
-            ST_CLOSED => {
-                if now >= until {
-                    BreakerVerdict::Ready
-                } else {
-                    BreakerVerdict::Open { until }
-                }
-            }
-            ST_OPEN => {
-                if now >= until {
-                    BreakerVerdict::ProbeWinnable
-                } else {
-                    BreakerVerdict::Open { until }
-                }
-            }
-            ST_HALF_OPEN => BreakerVerdict::HalfOpen,
-            // Fails SAFE: an unrecognized encoding is never reachable under the atomic-sentinel
-            // invariant this module maintains, but a never-elapsing Open denies admission rather
-            // than panicking the caller.
-            _ => BreakerVerdict::Open { until: u64::MAX },
-        }
+        decode(state, until, now)
     }
 
     /// Side-effect-free readiness: would this cell admit a request right now, without stealing the

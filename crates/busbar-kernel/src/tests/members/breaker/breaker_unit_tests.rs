@@ -232,11 +232,10 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
     assert!(!fresh_again);
 }
 
-/// A readiness read registers the pool it asked about, so a hard-down reaches it.
+/// A pool a walk has only read readiness in is parked by a bad key seen through another pool.
 ///
-/// `state` changes no cell's state, but the first read of a `(pool, destination)` creates its cell
-/// and registers the pool for the destination. A pool a walk has only considered the destination
-/// in, without admitting through it, is then parked by a bad key seen through another pool.
+/// The read creates no cell. The pool reads the hard-down through the destination's default cell,
+/// which every hard-down parks, as the cell its first touch would create.
 #[test]
 fn a_pool_that_only_read_readiness_is_parked_by_a_hard_down_through_another() {
     let unit = BreakerUnit::new();
@@ -255,6 +254,72 @@ fn a_pool_that_only_read_readiness_is_parked_by_a_hard_down_through_another() {
             LaneState::Suppressed { .. }
         ),
         "a hard-down left a pool serving that a walk had already read the destination in"
+    );
+}
+
+/// A readiness read leaves nothing behind (audit kernel-breaker: "the readiness read creates
+/// cells while documented as side-effect-free").
+///
+/// The read used to create the pool's cell Closed. A pool asked about before its destination's
+/// default cell tripped then kept that Closed cell: it read Ready, and admitted, through a trip
+/// any pool not yet asked about would carry. Read-only, the earlier read changes nothing, and the
+/// two pools read alike.
+#[test]
+fn a_readiness_read_creates_no_cell_that_a_later_trip_would_miss() {
+    let unit = BreakerUnit::new();
+    let cfg = consecutive_cfg(100, 10_000);
+    let destination = DestinationId::new(11);
+    let now = 1_000;
+
+    assert_eq!(
+        unit.state("asked", destination, now, &route_token()),
+        LaneState::Ready
+    );
+    // The default cell trips on its own, without a hard-down's fan-out.
+    assert!(unit.observe(
+        "",
+        destination,
+        Outcome::Transient { retry_after: None },
+        &cfg,
+        now,
+        &route_token(),
+    ));
+
+    for pool in ["asked", "never-asked"] {
+        assert!(
+            matches!(
+                unit.state(pool, destination, now, &route_token()),
+                LaneState::Suppressed { until } if until > now
+            ),
+            "pool {pool:?} must read the destination's trip"
+        );
+        assert!(
+            matches!(
+                unit.try_admit(pool, destination, now),
+                Err(LaneState::Suppressed { .. })
+            ),
+            "pool {pool:?} must not admit through the destination's trip"
+        );
+    }
+}
+
+/// A pool whose first touch comes after a hard-down is parked by it (1.5.5 parity: a new pool cell
+/// inherits the lane's known health, v1.5.5 `crates/busbar/src/store/in_memory/mod.rs` `cell`).
+#[test]
+fn a_pool_first_touched_after_a_hard_down_is_parked_by_it() {
+    let unit = BreakerUnit::new();
+    let destination = DestinationId::new(12);
+    let now = 1_000;
+
+    assert!(unit.hard_down_all(destination, now));
+
+    let LaneState::Suppressed { until } = unit.state("late", destination, now, &route_token())
+    else {
+        panic!("a pool first read after a hard-down must read it");
+    };
+    assert_eq!(
+        unit.try_admit("late", destination, now),
+        Err(LaneState::Suppressed { until })
     );
 }
 

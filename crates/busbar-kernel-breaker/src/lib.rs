@@ -48,7 +48,9 @@ use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
 use busbar_contract::caps::{Pass, Route};
-use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
+use cell::{
+    BreakerCell, BreakerState as CellState, BreakerVerdict, CellSnapshot, DeniedBy, ProbeAdmit,
+};
 use cfg::BreakerCfg;
 
 /// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
@@ -155,12 +157,10 @@ pub trait Breaker: sealed::Sealed {
     /// lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination is excluded
     /// regardless of what its breaker cell reads).
     ///
-    /// Changes no cell's state, but it is not free of effects: the first read of a
-    /// `(pool, destination)` creates its cell Closed and registers the pool for the destination, as
-    /// [`BreakerUnit::cell`] does. That registration is what lets a hard-down fan-out
-    /// ([`BreakerUnit::hard_down_all`]) reach every pool a walk has considered the destination in,
-    /// not only the pools that have admitted through it. Every read after the first takes only the
-    /// cell map's read lock.
+    /// Read-only: it creates no cell and registers no pool, and takes only the cell map's read
+    /// lock. A `(pool, destination)` with no cell yet reads as the cell its first touch would
+    /// create: a named pool's inherits the destination's default cell (see [`BreakerUnit::cell`]),
+    /// so a pool no walk has touched still reads a hard-down trip.
     fn state(
         &self,
         pool: &str,
@@ -303,10 +303,19 @@ impl BreakerUnit {
         }
     }
 
-    /// The `(pool, destination)` cell, created Closed on first touch and registered for the
-    /// destination's hard-down fan-out ([`Self::hard_down_all`]) before anything can reach it.
+    /// The `(pool, destination)` cell, registered for the destination's hard-down fan-out
+    /// ([`Self::hard_down_all`]) before anything can reach it. A named pool's cell is created
+    /// carrying the destination's default cell's known health, as 1.5.5's
+    /// `crates/busbar/src/store/in_memory/mod.rs` `cell` created it: its state (a probe in flight
+    /// read as Open), cooldown and streak, so a pool whose first touch comes while the destination
+    /// is parked respects it. With no default cell yet, and for the default cell itself, it is
+    /// created Closed.
     pub fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
-        self.cell_seeded(pool, destination, |_| {})
+        self.cell_with(pool, destination, |fresh, default| {
+            if let Some(default) = default {
+                fresh.restore(inherited(default));
+            }
+        })
     }
 
     /// [`Self::cell`], with `seed` run on the cell exactly when THIS call creates it, before any
@@ -318,18 +327,45 @@ impl BreakerUnit {
         destination: DestinationId,
         seed: impl FnOnce(&BreakerCell),
     ) -> Arc<BreakerCell> {
-        // The hit path — every admission and every observation of an already-touched member —
-        // borrows the whole key from the caller's own arguments and allocates nothing.
-        if let Some(c) = self
-            .cells
+        self.cell_with(pool, destination, |fresh, _| seed(fresh))
+    }
+
+    /// The `(pool, destination)` cell if it exists, creating nothing.
+    fn existing(&self, pool: &str, destination: DestinationId) -> Option<Arc<BreakerCell>> {
+        self.cells
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(pool)
             .and_then(|by_destination| by_destination.get(&destination))
-        {
-            return c.clone();
+            .cloned()
+    }
+
+    /// The one creation path. `seed` runs on the cell exactly when THIS call creates it, under the
+    /// cell map's write lock, with the destination's default cell when one exists and `pool` is a
+    /// named pool. Read under that lock, the default cell's health is the one a concurrent
+    /// [`Self::hard_down_all`] either already parked or has yet to fan out from: that walk tripped
+    /// the default cell before it reads the registered pools, and registration happens here, under
+    /// the same lock, before the seed runs.
+    fn cell_with(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        seed: impl FnOnce(&BreakerCell, Option<&BreakerCell>),
+    ) -> Arc<BreakerCell> {
+        // The hit path — every admission and every observation of an already-touched member —
+        // borrows the whole key from the caller's own arguments and allocates nothing.
+        if let Some(c) = self.existing(pool, destination) {
+            return c;
         }
         let mut cells = self.cells.write().unwrap_or_else(|e| e.into_inner());
+        let default = if pool.is_empty() {
+            None
+        } else {
+            cells
+                .get("")
+                .and_then(|by_destination| by_destination.get(&destination))
+                .cloned()
+        };
         // The pool name is registered against the destination BEFORE the cell is published, and
         // both happen under the cell map's write lock. Publishing first left a window in which the
         // cell was fully reachable — admissions ran through it — while `hard_down_all`, which walks
@@ -352,7 +388,7 @@ impl BreakerUnit {
             .entry(destination)
             .or_insert_with(|| {
                 let cell = BreakerCell::new();
-                seed(&cell);
+                seed(&cell, default.as_deref());
                 Arc::new(cell)
             })
             .clone()
@@ -375,7 +411,9 @@ impl BreakerUnit {
     /// cell and every named pool's cell), each with the SAME sticky cooldown — a hard-down fault
     /// (bad key, billing exhausted) is a property of the shared destination, not of the one pool
     /// the failing attempt happened to run through. Returns `true` IFF the default cell's trip was
-    /// fresh (it was Closed beforehand), for a trip-count metric.
+    /// fresh (it was Closed beforehand), for a trip-count metric. A pool with no cell yet is reached
+    /// through the default cell: its cell is created carrying the default cell's trip
+    /// ([`Self::cell`]), and until then [`Breaker::state`] reads it so.
     pub fn hard_down_all(&self, destination: DestinationId, now: u64) -> bool {
         let default_cell = self.cell("", destination);
         let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs);
@@ -496,6 +534,15 @@ impl BreakerUnit {
     }
 }
 
+/// What a named pool's cell is created carrying from the destination's default cell: its state,
+/// cooldown and streak, and no lifetime errors of its own (the error count is the cell's own).
+fn inherited(default: &BreakerCell) -> CellSnapshot {
+    CellSnapshot {
+        err: 0,
+        ..default.snapshot()
+    }
+}
+
 /// Whether `cell` is suppressed at `now` (not Closed, or Closed inside a pending soft cooldown),
 /// and if so the cooldown it was read under. The cooldown is read FIRST, so a peer that arms a
 /// stricter one afterwards is seen by [`BreakerCell::close_if_recoverable`]'s re-check.
@@ -543,7 +590,16 @@ impl Breaker for BreakerUnit {
         if self.budget_exhausted(destination) {
             return LaneState::BudgetExhausted;
         }
-        lane_state_from_verdict(self.cell(pool, destination).verdict(now))
+        if let Some(cell) = self.existing(pool, destination) {
+            return lane_state_from_verdict(cell.verdict(now));
+        }
+        // No cell yet: what the first touch would create. A named pool's inherits the default
+        // cell, and the default cell itself, or a pool with no default cell, starts Closed.
+        let unborn = match (pool.is_empty(), self.existing("", destination)) {
+            (false, Some(default)) => inherited(&default),
+            _ => CellSnapshot::default(),
+        };
+        lane_state_from_verdict(unborn.verdict(now))
     }
 }
 
