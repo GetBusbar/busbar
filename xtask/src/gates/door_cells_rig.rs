@@ -65,6 +65,7 @@ const ROOT_FILE: &str = "crates/busbar/src/main.rs";
 const RIG: &str = "door_rig";
 
 /// Where a plane crate's cells live, relative to its crate directory.
+// qa-names: tests/root/mod.rs -- xtask/src/gates/door_cells_rig.rs -- CRATE-RELATIVE, not a repo path: it is joined to each door plane crate's directory (crates/<crate>/tests/root/mod.rs), so there is no such file at the repo root by design
 const CELLS_REL: &str = "tests/root/mod.rs";
 
 /// THE ONE STATEMENT a plane crate's `build.rs` states its cells with, blanks removed.
@@ -450,16 +451,76 @@ pub fn cell_findings(src: &str) -> Vec<(usize, &'static str, String)> {
     out
 }
 
-/// What is wrong with the cells path a plane crate's `build.rs` states, if anything: its code
-/// (comments stripped, blanks removed) holds [`CELLS_STATEMENT`] exactly once and names `cells`
-/// nowhere else.
+/// What is wrong with the cells path a plane crate's `build.rs` states, if anything. Its code
+/// (comments stripped, blanks removed) holds [`CELLS_STATEMENT`] exactly once, as a top-level
+/// statement of `fn main` (`runs_in_main`); names `cells` nowhere else (no second or legacy
+/// `cargo:cells=` line); and sets no `cargo:` key it builds at run time (`cargo_key_unreadable`).
 pub fn stated_cells_problem(build: &str) -> Option<String> {
     let code: String = crate::scan::production_lines(build)
         .into_iter()
         .flat_map(|(_, l)| l.chars().filter(|c| !c.is_whitespace()).collect::<Vec<_>>())
         .collect();
-    (code.matches(CELLS_STATEMENT).count() != 1 || code.matches("cells").count() != 1)
+    let stated: Vec<usize> = code
+        .match_indices(CELLS_STATEMENT)
+        .map(|(at, _)| at)
+        .collect();
+    let canonical = matches!(stated.as_slice(), [at] if runs_in_main(&code, *at));
+    (!canonical || code.matches("cells").count() != 1 || cargo_key_unreadable(&code))
         .then(|| ANOTHER_CELLS_PATH.to_string())
+}
+
+/// Does the statement at `at` run as a top-level statement of `fn main`: inside its body at depth
+/// one (not in an `if`, a closure or a block), right after a statement boundary (`{`, `;` or `}`,
+/// so no attribute or expression stands before it)? `code` is blank-free, its comments stripped;
+/// braces inside string literals are not counted.
+fn runs_in_main(code: &str, at: usize) -> bool {
+    let Some(open) = code
+        .find("fnmain(")
+        .and_then(|main| code[main..].find('{').map(|o| main + o))
+    else {
+        return false;
+    };
+    if at <= open {
+        return false;
+    }
+    let b = code.as_bytes();
+    let (mut depth, mut in_str, mut escaped) = (0i32, false, false);
+    for &c in &b[open..at] {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 1 && matches!(b[at - 1], b'{' | b';' | b'}')
+}
+
+/// Does any `cargo:` directive set a key the gate cannot read: one built by a format argument
+/// (`"cargo:{}=…"`), or a directive with no literal key at all?
+fn cargo_key_unreadable(code: &str) -> bool {
+    code.match_indices("\"cargo:").any(|(at, _)| {
+        let rest = &code[at + 7..];
+        let rest = rest.strip_prefix(':').unwrap_or(rest);
+        let rest = rest.strip_prefix("metadata=").unwrap_or(rest);
+        let key = rest.split('=').next().unwrap_or("");
+        key.contains('{') || key.contains('"')
+    })
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
@@ -658,6 +719,12 @@ impl Gate for DoorCellsRigGate {
             ),
             (
                 ROW_UNSEEN,
+                "mod r#helpers; (a raw-identifier file-backed mod) is RED",
+                "mod r#helpers;\n",
+                "mod (unreadable)",
+            ),
+            (
+                ROW_UNSEEN,
                 "a mod whose name a macro pastes in is RED: the gate does not read it",
                 "planted_m! { mod $planted; }\n",
                 "mod (unreadable)",
@@ -678,6 +745,18 @@ impl Gate for DoorCellsRigGate {
                 ROW_UNSEEN,
                 "include under an alias is RED (use core::include as …)",
                 "use core::include as planted_inc;\nplanted_inc!(\"elsewhere.rs\");\n",
+                "include",
+            ),
+            (
+                ROW_UNSEEN,
+                "include aliased from std is RED (use std::include as …)",
+                "use std::include as planted_std_inc;\nplanted_std_inc!(\"elsewhere.rs\");\n",
+                "include",
+            ),
+            (
+                ROW_UNSEEN,
+                "include imported under its own name is RED (use core::include;)",
+                "use core::include;\n",
                 "include",
             ),
             (
@@ -736,6 +815,32 @@ impl Gate for DoorCellsRigGate {
             rebuild(format!(
                 "{build_text}\nfn planted_legacy() {{\n    println!(\"cargo:cells=/elsewhere.rs\");\n}}\n"
             )),
+            vec![build, "another cells path"],
+        ));
+        plants.push((
+            ROW_CELLS_PATH,
+            "a format suffix on the canonical cells statement is RED",
+            rebuild(build_text.replace("cells={}\"", "cells={}.bak\"")),
+            vec![build, "another cells path"],
+        ));
+        // The canonical statement, unchanged, inside `if false { }`: it never runs.
+        let never_runs = build_text
+            .find("\"cargo::metadata=cells=")
+            .and_then(|lit| {
+                let start = build_text[..lit].rfind("println!")?;
+                let end = lit + build_text[lit..].find(");")? + 2;
+                Some(format!(
+                    "{}if false {{ {} }}{}",
+                    &build_text[..start],
+                    &build_text[start..end],
+                    &build_text[end..]
+                ))
+            })
+            .unwrap_or_else(|| build_text.clone());
+        plants.push((
+            ROW_CELLS_PATH,
+            "the canonical cells statement inside `if false {}` is RED: it never runs",
+            rebuild(never_runs),
             vec![build, "another cells path"],
         ));
         let mut report = one_abi::selftest(cx, self, &SPEC, plants);
