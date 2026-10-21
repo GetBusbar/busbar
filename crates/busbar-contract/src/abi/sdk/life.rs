@@ -521,9 +521,9 @@ life_slot!(
     /// `open`: [`Life::open`]; the SDK holds the state it answers.
     Open(OpenIn => OpenOut) |instance, input, out| {
         let settings = input.field(|i| &i.settings).bytes();
-        match L::open(settings, &secrets(input.secrets()), input.generation) {
+        match L::open(settings, &secrets(input.secrets()), input.generation()) {
             Ok(life) => {
-                let host = input.host().map(Host::of);
+                let host = input.host().map(|h| Host::of(&h));
                 instance.open(Held::new(life, host));
                 Outcome::Ready
             }
@@ -539,7 +539,7 @@ life_slot!(
             return Outcome::Fault;
         };
         let settings = input.field(|i| &i.settings).bytes();
-        match h.life.refresh(settings, &secrets(input.secrets()), input.generation) {
+        match h.life.refresh(settings, &secrets(input.secrets()), input.generation()) {
             Ok(Refreshed { counted: Some(c) }) => {
                 let mut held = h
                     .reported
@@ -565,7 +565,7 @@ life_slot!(
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let Some(host) = input.host().map(Host::of) else {
+        let Some(host) = input.host().map(|h| Host::of(&h)) else {
             return Outcome::Fault;
         };
         match h.life.ready(&host, instance.ticket()) {
@@ -580,7 +580,7 @@ life_slot!(
     /// `retire`: [`Life::retire`].
     Retire(GenIn => OutHead) |instance, input, _out| {
         if let Some(h) = instance.get() {
-            h.life.retire(input.generation);
+            h.life.retire(input.generation());
         }
         Outcome::Ready
     }
@@ -589,7 +589,7 @@ life_slot!(
 life_slot!(
     /// `tick`: [`Life::tick`].
     Tick(TickIn => TickOut) |instance, input, out| {
-        let next = instance.get().map_or(0, |h| h.life.tick(input.now_ns));
+        let next = instance.get().map_or(0, |h| h.life.tick(input.now_ns()));
         out.set(|o| &o.next_tick_ns, next);
         Outcome::Ready
     }
@@ -614,7 +614,7 @@ life_slot!(
     Release(ReleaseIn => OutHead) |instance, input, _out| {
         instance
             .get()
-            .map_or(Outcome::Refused, |h| h.leases.release(input.lease))
+            .map_or(Outcome::Refused, |h| h.leases.release(input.lease()))
     }
 );
 

@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::export::{ExportStream, CHECK_PHASE_INSTANCES};
-use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::export_calls::parse_families;
 
 use super::*;
@@ -29,7 +29,7 @@ fn manifest(name: &str) -> Manifest {
 /// The two registries a sink is reached through: its `door` LINKED, and its `-plugin` crate's
 /// `cdylib` (`crate_snake`) DROPPED IN with its Statement rendering. A `cdylib` not built is a hard
 /// failure naming the command that builds it, never a skip.
-fn both(name: &str, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
+fn both(name: &str, door: MacroDoor, crate_snake: &str) -> [PluginRegistry; 2] {
     let lib = std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib");
     let linked = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(name), door)])
@@ -71,7 +71,7 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
     let row = "export-scrape";
     let doors = both(
         row,
-        both_ways::export_scrape_fixture::door::door,
+        both_ways::export_scrape_fixture::door::MACRO_DOOR,
         both_ways::export_row(row).1,
     );
     let transcripts = doors.map(|registry| {
@@ -120,7 +120,7 @@ fn the_trace_sink_answers_the_same_through_either_door() {
     let row = "export-trace";
     let doors = both(
         row,
-        both_ways::export_trace_fixture::door::door,
+        both_ways::export_trace_fixture::door::MACRO_DOOR,
         both_ways::export_row(row).1,
     );
     let transcripts = doors.map(|registry| {
@@ -155,7 +155,7 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
     let row = "export-carried";
     let doors = both(
         row,
-        both_ways::export_carried_fixture::door,
+        both_ways::export_carried_fixture::MACRO_DOOR,
         both_ways::export_row(row).1,
     );
     let transcripts = doors.map(|registry| {
@@ -203,10 +203,10 @@ fn a_module_no_row_answers_is_not_on_the_axis() {
 /// `check` opens to judge a configuration (it has no connector) is never asked.
 #[test]
 fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
-    use crate::dispatch::ready::ready_plugins::export::{door, NAME, READIES};
+    use crate::dispatch::ready::ready_plugins::export::{MACRO_DOOR, NAME, READIES};
     use std::sync::atomic::Ordering;
     let registry = PluginRegistry::empty()
-        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), MACRO_DOOR)])
         .expect("the linked witness admits");
     let rows =
         ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
@@ -248,10 +248,10 @@ fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
 /// declares a concurrency of 4).
 #[test]
 fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
-    use crate::dispatch::ready::ready_plugins::export::{door, NAME};
+    use crate::dispatch::ready::ready_plugins::export::{MACRO_DOOR, NAME};
     const DECLARED: u32 = 4;
     let registry = PluginRegistry::empty()
-        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), MACRO_DOOR)])
         .expect("the linked witness admits");
     let rows =
         ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));

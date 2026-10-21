@@ -124,12 +124,12 @@ mod suite_conns {
 
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
     use busbar_contract::abi::sdk::door::abi_str;
     use busbar_contract::conn::{NeedId, OpenDesc};
 
     use super::super::{bind, dispatcher, Subject};
-    use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NO_BLOB};
+    use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, LoadedDoor, NO_BLOB};
     use crate::dispatch_test_plugin as plug;
     use crate::dispatch_tests::TestKind;
 
@@ -187,14 +187,22 @@ mod suite_conns {
         MIXED_DOOR.load(Ordering::SeqCst)
     }
 
-    fn subject(door: DoorFn) -> Subject {
-        Subject::new(door, "unused", "{}")
+    // SAFETY: a test's restated door: it answers the `'static` door it laid out over the test
+    // plugin's real one.
+    const TCP_LOADED: LoadedDoor = unsafe { LoadedDoor::from_raw(tcp_door) };
+    // SAFETY: as `TCP_LOADED`.
+    const HTTP_LOADED: LoadedDoor = unsafe { LoadedDoor::from_raw(http_door) };
+    // SAFETY: as `TCP_LOADED`.
+    const MIXED_LOADED: LoadedDoor = unsafe { LoadedDoor::from_raw(mixed_door) };
+
+    fn subject(door: LoadedDoor) -> Subject {
+        Subject::of_loaded(door, "unused", "{}")
     }
 
     #[test]
     fn a_door_with_no_need_is_bound_with_no_table_as_before() {
         let d = dispatcher();
-        let s = subject(plug::busbar_plugin_door);
+        let s = subject(crate::dispatch_tests::PLUG_DOOR);
         assert!(s.needs().is_empty());
         assert!(s.conns(&d).is_none());
         assert!(matches!(s.bind(&d, "plain").conns, ConnTable::NoNeeds));
@@ -203,7 +211,7 @@ mod suite_conns {
     #[test]
     fn a_need_the_table_does_not_serve_keeps_the_bind_with_no_table() {
         let d = dispatcher();
-        for door in [http_door as DoorFn, mixed_door] {
+        for door in [HTTP_LOADED, MIXED_LOADED] {
             let s = subject(door);
             assert!(!s.needs().is_empty());
             assert!(s.conns(&d).is_none(), "{:?}", s.needs());
@@ -230,12 +238,12 @@ mod suite_conns {
     #[test]
     fn a_host_connector_handed_in_serves_every_need_and_takes_the_anchors() {
         let d = dispatcher();
-        let s = subject(http_door).with_host(a_host).with_anchors("PEM");
+        let s = subject(HTTP_LOADED).with_host(a_host).with_anchors("PEM");
         assert!(matches!(s.bind(&d, "hosted").conns, ConnTable::Host(_)));
         assert_eq!(HOSTED.with(std::cell::Cell::take).as_deref(), Some("PEM"));
-        let plain = subject(http_door);
+        let plain = subject(HTTP_LOADED);
         assert!(matches!(plain.bind(&d, "plain").conns, ConnTable::Probe));
-        let unhosted = subject(tcp_door).with_anchors("PEM");
+        let unhosted = subject(TCP_LOADED).with_anchors("PEM");
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             unhosted.conns(&d).is_some()
         }))
@@ -253,12 +261,12 @@ mod suite_conns {
     #[test]
     fn a_tcp_need_is_bound_to_a_table_that_dials_a_real_endpoint() {
         let d = dispatcher();
-        let s = subject(tcp_door);
+        let s = subject(TCP_LOADED);
         assert_eq!(s.needs().len(), 1);
         assert!(matches!(s.bind(&d, "a").conns, ConnTable::Host(_)));
         let table = s.conns(&d).expect("a tcp need is handed a table");
         let p = load_linked::<TestKind>(
-            &LinkedRow::of(tcp_door).expect("the restated door states its Statement"),
+            &LinkedRow::of_loaded(TCP_LOADED).expect("the restated door states its Statement"),
             Bind {
                 conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
                 ..bind(&d, "networked")
@@ -342,7 +350,7 @@ mod resumed_open {
 
     use super::super::{bind, crossings, dispatcher, open, open_resumed};
     use crate::dispatch::load_linked;
-    use crate::dispatch::LinkedRow;
+    use crate::dispatch::{LinkedRow, LoadedDoor};
     use crate::dispatch_test_plugin as plug;
     use crate::dispatch_tests::TestKind;
 
@@ -372,7 +380,9 @@ mod resumed_open {
         // SAFETY: stored from the real door's `open` below.
         let real: busbar_contract::abi::mechanism::call::Op =
             unsafe { std::mem::transmute(REAL_OPEN.load(Ordering::SeqCst)) };
-        if real(instance, input, out) != RawOutcome::of(Outcome::Ready) {
+        // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+        // unchanged, to the test plugin's real slot of the same type.
+        if unsafe { real(instance, input, out) } != RawOutcome::of(Outcome::Ready) {
             return unsafe { (*out.cast::<OutHead>()).outcome };
         }
         // SAFETY: the host hands `open` an `OpenIn` and an `OpenOut`.
@@ -410,13 +420,18 @@ mod resumed_open {
         door
     }
 
+    /// [`pending_open_door`] as the loader enters it.
+    // SAFETY: a test's restated door: it answers the `'static` door it laid out over the test
+    // plugin's real one.
+    const PENDING_OPEN_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(pending_open_door) };
+
     /// RED: an `open` that pends (a store connecting in its connect step) cannot be opened by one
     /// raw, ticket-less crossing (its PENDING is a FAULT there); opened as the kernel opens it, on a ticket, it is RESUMED and answers READY:
     /// one first invocation and one resume.
     #[test]
     fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
         let d = dispatcher();
-        let row = LinkedRow::of(pending_open_door).expect("the restated door states itself");
+        let row = LinkedRow::of_loaded(PENDING_OPEN_DOOR).expect("the restated door states itself");
         let raw = load_linked::<TestKind>(&row, bind(&d, "raw")).expect("it loads");
         PENDED.store(false, Ordering::SeqCst);
         // A ticket-less crossing may not pend: the host FAULTs the raw open's PENDING.
@@ -457,10 +472,11 @@ mod fold_namespace {
     use super::super::{fold_namespace, Leg, Subject, FOLD};
 
     fn subject(settings: &str) -> Subject {
-        extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
-            std::ptr::null()
-        }
-        Subject::new(no_door, "unused", &format!(r#"{{"settings": {settings}}}"#))
+        Subject::of_loaded(
+            crate::dispatch_tests::NULL_DOOR,
+            "unused",
+            &format!(r#"{{"settings": {settings}}}"#),
+        )
     }
 
     /// Settings that name no placeholder are exactly the plugin's.
@@ -562,11 +578,8 @@ mod namespace_hooks {
     }
 
     fn subject() -> Subject {
-        extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
-            std::ptr::null()
-        }
-        Subject::new(
-            no_door,
+        Subject::of_loaded(
+            crate::dispatch_tests::NULL_DOOR,
             "unused",
             r#"{"settings": {"options": "-c search_path={fold}"}}"#,
         )
@@ -636,10 +649,11 @@ mod namespace_hooks {
     /// Without hooks, nothing is called and the settings are filled as before.
     #[test]
     fn without_hooks_a_fold_is_filled_and_nothing_is_called() {
-        extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
-            std::ptr::null()
-        }
-        let s = Subject::new(no_door, "unused", r#"{"settings": {"schema": "{fold}"}}"#);
+        let s = Subject::of_loaded(
+            crate::dispatch_tests::NULL_DOOR,
+            "unused",
+            r#"{"settings": {"schema": "{fold}"}}"#,
+        );
         let f = Leg::Linked.settings(&s);
         let ns = f.namespace().to_owned();
         assert_eq!(&*f, format!(r#"{{"schema":"{ns}"}}"#).as_bytes());
@@ -748,12 +762,11 @@ fn panic_text(run: impl FnOnce()) -> String {
 /// where it used to print and pass; given one stating the Statement's needs, it passes.
 #[test]
 fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
-    use crate::dispatch_test_plugin as plug;
     let root = std::env::temp_dir().join(format!("declares-none-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("plugin");
     std::fs::create_dir_all(&dir).unwrap();
-    let s = super::Subject::new(plug::busbar_plugin_door, "unused", "{}");
+    let s = super::Subject::of_loaded(crate::dispatch_tests::PLUG_DOOR, "unused", "{}");
     let at = dir.to_str().unwrap();
     let why = panic_text(|| super::needs_declared(&s, at));
     assert!(why.contains("no declares.json for the plugin at"), "{why}");
@@ -769,16 +782,13 @@ fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
 #[test]
 fn red_an_outbound_arm_over_a_door_without_the_family_never_passes_unrun() {
     use super::{outbound_plant, Subject};
-    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::PLUG_DOOR;
     fn must_not_run(_: &Subject) {
         panic!("an outbound arm ran over a door that states no outbound family");
     }
-    outbound_plant(
-        &Subject::new(plug::busbar_plugin_door, "unused", "{}"),
-        must_not_run,
-    );
-    let driven = Subject::new(
-        plug::busbar_plugin_door,
+    outbound_plant(&Subject::of_loaded(PLUG_DOOR, "unused", "{}"), must_not_run);
+    let driven = Subject::of_loaded(
+        PLUG_DOOR,
         "unused",
         r#"{"auth": {"outbound": [{"style": "bearer"}]}}"#,
     );
@@ -848,7 +858,7 @@ fn regex_lite_meter(script: &str) -> Vec<String> {
 mod red_arms {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    use busbar_contract::abi::mechanism::door::DoorFn;
+    use busbar_contract::abi::sdk::door::MacroDoor;
 
     use super::super::{
         red_cross_instance_conn, red_statement, red_undeclared_need, red_wrong_kind, Subject,
@@ -856,14 +866,11 @@ mod red_arms {
 
     /// The fixtures of two kinds: the plane door and the hook door, each its linked door and the
     /// example `cdylib` that is its dropped-in image.
-    fn fixtures() -> Vec<(DoorFn, &'static str)> {
+    fn fixtures() -> Vec<(MacroDoor, &'static str)> {
         vec![
+            (crate::plane_door_plugin::MACRO_DOOR, "plane_door_plugin"),
             (
-                crate::plane_door_plugin::door as DoorFn,
-                "plane_door_plugin",
-            ),
-            (
-                crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+                crate::hook_door_conformance_tests::hook_door_plugin::conforming::MACRO_DOOR,
                 "hook_door",
             ),
         ]
@@ -899,7 +906,7 @@ mod red_arms {
     fn red_a_plugin_whose_library_is_not_its_door_fails_the_arms() {
         crate::both_ways::example_cdylib("plane_door_plugin");
         crate::both_ways::example_cdylib("hook_door");
-        let s = Subject::new(crate::plane_door_plugin::door, "hook_door", "{}");
+        let s = Subject::new(crate::plane_door_plugin::MACRO_DOOR, "hook_door", "{}");
         let text = panics(|| red_statement(&s));
         assert!(text.contains("honest library"), "{text}");
         let text = panics(|| red_wrong_kind(&s));
@@ -924,7 +931,6 @@ mod lent_ops {
         in_head, load_linked, now_ns, out_head, Budgets, DispatchConfig, Dispatcher, Frame,
         LinkedRow,
     };
-    use crate::dispatch_test_plugin as plug;
     use crate::dispatch_tests::TestKind;
 
     /// A `tick` frame whose extensions blob names the test plugin's op.
@@ -959,7 +965,8 @@ mod lent_ops {
             watchdog_period: Duration::from_millis(20),
             ..DispatchConfig::default()
         });
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_loaded(crate::dispatch_tests::PLUG_DOOR)
+            .expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let lent: Arc<Vec<u8>> = Arc::new(b"the memory the op is lent".to_vec());
@@ -1015,7 +1022,7 @@ mod hook_on_tickets {
     use busbar_contract::abi::mechanism::door::Door;
 
     use super::super::hook::{ask, Request};
-    use super::super::{bind, crossings, open, test_door, test_op, TestDoor, TestOp};
+    use super::super::{bind, crossings, open, test_loaded, test_op, TestDoor, TestOp};
     use crate::dispatch::kinds::hook::Hook;
     use crate::dispatch::ticket::host_wake;
     use crate::dispatch::{load_linked, LinkedRow};
@@ -1086,7 +1093,8 @@ mod hook_on_tickets {
     #[test]
     fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
         let d = super::super::dispatcher();
-        let row = LinkedRow::of(test_door::<PendingDoor>).expect("the restated door states itself");
+        let row = LinkedRow::of_loaded(test_loaded::<PendingDoor>())
+            .expect("the restated door states itself");
         let p = load_linked::<Hook>(&row, bind(&d, "hook")).expect("it loads");
         assert_eq!(
             open(&p, br#"{"reject_over_messages": 5}"#).outcome,
@@ -1145,7 +1153,8 @@ mod deadline_without_wake {
     fn a_wait_that_is_woken_passes() {
         let _ = woken();
         let d = dispatcher();
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_loaded(crate::dispatch_tests::PLUG_DOOR)
+            .expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "woken")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let c = on_ticket(
@@ -1167,7 +1176,8 @@ mod deadline_without_wake {
     fn red_a_wait_a_deadline_ended_is_refused() {
         let _ = woken();
         let d = dispatcher();
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_loaded(crate::dispatch_tests::PLUG_DOOR)
+            .expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "unwoken")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let c = on_ticket(
@@ -1193,7 +1203,7 @@ mod dropped_image {
 
     use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 
-    use super::super::{cdylib_of, choose_cdylib_by, distinct, test_door, TestDoor, CDYLIB_ENV};
+    use super::super::{cdylib_of, choose_cdylib_by, distinct, test_loaded, TestDoor, CDYLIB_ENV};
 
     /// The fake images below export the door unless their bytes say they were built without it.
     fn choose_cdylib(profile: &Path, krate: &str) -> Result<PathBuf, String> {
@@ -1341,7 +1351,8 @@ mod dropped_image {
         // Absent, the example cdylib fails the test naming its build command; never a skip.
         crate::both_ways::example_cdylib("plane_door_plugin");
         let path = cdylib_of("plane_door_plugin");
-        distinct(crate::plane_door_plugin::door, &path).unwrap_or_else(|e| panic!("{e}"));
+        distinct(crate::plane_door_plugin::MACRO_DOOR.into(), &path)
+            .unwrap_or_else(|e| panic!("{e}"));
         // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
         let lib = unsafe { libloading::Library::new(&path) }.expect("the image loads");
         let door: DoorFn = *unsafe { lib.get::<DoorFn>(b"busbar_plugin_door\0") }
@@ -1349,7 +1360,8 @@ mod dropped_image {
         std::mem::forget(lib);
         // SAFETY: `door` was read from the fixture image, held open (leaked) above.
         DROPPED_DOOR.store(unsafe { door() }.cast_mut(), Ordering::SeqCst);
-        let e = distinct(test_door::<TheDroppedImagesDoor>, &path).expect_err("one image twice");
+        let e =
+            distinct(test_loaded::<TheDroppedImagesDoor>(), &path).expect_err("one image twice");
         assert!(e.contains("answers the LINKED door"), "{e}");
     }
 }
@@ -1392,23 +1404,11 @@ mod no_shared_state {
     fn red_the_environment_is_set_once_and_another_is_refused() {
         const VAR: &str = "BBCONF_SUITE_ENV_PROBE";
         let named = |v: &str| format!(r#"{{ "env": {{ "{VAR}": "{v}" }} }}"#);
-        let _first = Subject::new(
-            crate::dispatch_test_plugin::busbar_plugin_door,
-            "unused",
-            &named("one"),
-        );
+        let _first = Subject::of_loaded(crate::dispatch_tests::PLUG_DOOR, "unused", &named("one"));
         assert_eq!(std::env::var(VAR).as_deref(), Ok("one"));
-        let _again = Subject::new(
-            crate::dispatch_test_plugin::busbar_plugin_door,
-            "unused",
-            &named("one"),
-        );
+        let _again = Subject::of_loaded(crate::dispatch_tests::PLUG_DOOR, "unused", &named("one"));
         let refused = std::panic::catch_unwind(|| {
-            Subject::new(
-                crate::dispatch_test_plugin::busbar_plugin_door,
-                "unused",
-                &named("two"),
-            )
+            Subject::of_loaded(crate::dispatch_tests::PLUG_DOOR, "unused", &named("two"))
         });
         assert!(refused.is_err(), "a second environment was accepted");
         assert_eq!(std::env::var(VAR).as_deref(), Ok("one"), "and never set");
@@ -1439,7 +1439,7 @@ mod hook_far_ends {
             "far_ends": [{ "url": FAR, "cert_pem": null, "status": 200, "body": BODY }]
         })
         .to_string();
-        let s = Subject::new(conforming::door, "hook_door", &inputs);
+        let s = Subject::new(conforming::MACRO_DOOR, "hook_door", &inputs);
         let d = dispatcher();
         let ConnTable::Host(table) = hook::bind_for(&d, &s).conns else {
             panic!(

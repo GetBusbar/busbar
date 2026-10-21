@@ -99,7 +99,9 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, RawOutcome, Span, BLOB_OCTETS,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::Door;
+
+use crate::dispatch::load::LoadedDoor;
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -646,7 +648,7 @@ const NO_STR: AbiStr = AbiStr::ABSENT;
 fn load_leg(
     s: &Subject,
     leg: Leg,
-    door: DoorFn,
+    door: LoadedDoor,
     d: &Dispatcher,
     instance: &str,
     conns: Option<Arc<dyn DeclaredConns>>,
@@ -662,7 +664,8 @@ fn load_leg(
     };
     match leg {
         Leg::Linked => load_linked::<Auth>(
-            &LinkedRow::of(door).unwrap_or_else(|e| panic!("the linked door is refused: {e}")),
+            &LinkedRow::of_loaded(door)
+                .unwrap_or_else(|e| panic!("the linked door is refused: {e}")),
             b,
         ),
         Leg::Dropped => load_dropped::<Auth>(&s.cdylib(), &s.stated(), b),
@@ -952,7 +955,7 @@ fn point_of(st: &Stated, style: &str) -> (u32, u32) {
 }
 
 /// THE OUTBOUND SCRIPT over `door` (the subject's, or a RED arm's restated one), reached by `leg`.
-pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
+pub(super) fn fold(s: &Subject, leg: Leg, door: LoadedDoor, st: &Stated) -> Fold {
     let k = s.kind_inputs("auth");
     let styles: Vec<Style> = k["outbound"]
         .as_array()
@@ -1443,6 +1446,15 @@ extern "C" fn plant_nothing_door() -> *const Door {
     PLANT_NOTHING.get()
 }
 
+// SAFETY (each of the three below): a planted door answers NULL or the `'static` door the suite
+// laid out over the subject's real one (`Restated`), loaded for the process's life.
+/// [`plant_byte_door`], as a door the loader may enter.
+const PLANT_BYTE_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(plant_byte_door) };
+/// [`plant_fetch_door`], as a door the loader may enter.
+const PLANT_FETCH_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(plant_fetch_door) };
+/// [`plant_nothing_door`], as a door the loader may enter.
+const PLANT_NOTHING_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(plant_nothing_door) };
+
 fn real_ops() -> Option<auth::Ops> {
     *REAL_OPS.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -1641,7 +1653,7 @@ pub fn red_outbound_wrong_byte(s: &Subject) {
     };
     plant(s, &PLANT_BYTE, |o| o.fields = Some(fields_one_byte_off));
     let why = failed(|| {
-        fold(s, Leg::Linked, plant_byte_door, &st);
+        fold(s, Leg::Linked, PLANT_BYTE_DOOR, &st);
     })
     .expect("RED: a door writing one wrong field byte passed the outbound script");
     assert!(
@@ -1668,7 +1680,7 @@ pub fn red_outbound_writes_nothing(s: &Subject) {
         o.fields = Some(fields_writing_nothing)
     });
     let why = failed(|| {
-        fold(s, Leg::Linked, plant_nothing_door, &st);
+        fold(s, Leg::Linked, PLANT_NOTHING_DOOR, &st);
     })
     .expect("RED: an outbound door writing no field passed the outbound script");
     assert!(
@@ -1706,7 +1718,7 @@ pub fn red_outbound_double_fetch(s: &Subject) {
         o.fields = Some(fields_arming_twice);
     });
     let why = failed(|| {
-        fold(s, Leg::Linked, plant_fetch_door, &st);
+        fold(s, Leg::Linked, PLANT_FETCH_DOOR, &st);
     })
     .expect("RED: a door fetching the token twice passed the outbound script");
     assert!(

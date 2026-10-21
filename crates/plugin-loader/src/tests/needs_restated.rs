@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A real door RESTATED with one outbound `tcp` need, the way the conformance suite's RED arms
-//! restate a door (`red_ready`): no plugin of its own, the door's own table and Statement with only
-//! its needs moved. The bind tests below read what the loader does with a door that declares a need.
-
-use std::sync::atomic::{AtomicPtr, Ordering};
+//! One outbound `tcp` need a test's door declares in its Statement (a door the macro builds, so the
+//! loader enters no restated door), and a connection table that opens none. The bind tests read what
+//! the loader does with a door that declares a need.
 
 use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
 use busbar_contract::abi::sdk::door::abi_str;
 
 use crate::dispatch::NO_BLOB;
@@ -32,44 +29,6 @@ pub(crate) const fn need(transport: AbiStr) -> Need {
 
 /// One `tcp` need.
 pub(crate) const TCP: [Need; 1] = [need(abi_str("tcp"))];
-
-/// `real`'s door with its Statement declaring `needs`, stored in `slot` (once) and answered.
-pub(crate) fn restate(slot: &AtomicPtr<Door>, real: DoorFn, needs: &'static [Need]) -> *const Door {
-    let have = slot.load(Ordering::SeqCst);
-    if !have.is_null() {
-        return have;
-    }
-    // SAFETY: a door function answers a `'static` door with a `'static` Statement.
-    let door: Door = unsafe { real().read_unaligned() };
-    let st: Statement = unsafe { door.statement.read_unaligned() };
-    let st: &'static Statement = Box::leak(Box::new(st.with_needs(needs)));
-    let door = Box::into_raw(Box::new(Door {
-        statement: st,
-        ..door
-    }));
-    match slot.compare_exchange(
-        std::ptr::null_mut(),
-        door,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    ) {
-        Ok(_) => door,
-        Err(won) => won,
-    }
-}
-
-/// `$name`: a door function answering `$real` restated with one `tcp` need.
-macro_rules! tcp_restated {
-    ($name:ident, $real:path) => {
-        extern "C" fn $name() -> *const ::busbar_contract::abi::mechanism::door::Door {
-            static SLOT: ::std::sync::atomic::AtomicPtr<
-                ::busbar_contract::abi::mechanism::door::Door,
-            > = ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut());
-            $crate::needs_restated::restate(&SLOT, $real, &$crate::needs_restated::TCP)
-        }
-    };
-}
-pub(crate) use tcp_restated;
 
 /// A connection table that DECLARES every need over any scheme and OPENS none: what a test that
 /// serves a networked door it never lets dial binds over (the bind needs a table; nothing reaches it).

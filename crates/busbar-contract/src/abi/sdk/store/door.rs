@@ -806,7 +806,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         input: Lent<'_, OpenIn>,
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
-        let host = input.host().map(Host::of);
+        let host = input.host().map(|h| Host::of(&h));
         let ticket = instance.ticket();
         // THE RESUME of a pended open: the retained instance box carries the opened store, and
         // what its connect step parked is read back on this ticket. A RESUME with no instance or

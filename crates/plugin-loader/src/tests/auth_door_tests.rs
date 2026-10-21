@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail, METRIC_CACHE_FLUSHED};
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, FAMILY_COUNTER};
+use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, Statement, FAMILY_COUNTER};
 use busbar_contract::abi::sdk::auth_door::{
     carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifyPlugin, VerifyView,
 };
@@ -120,7 +120,7 @@ mod judge {
     use super::*;
 
     const CARRIERS: &[MarkWord] = &[carrier("X-Alt")];
-    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+    pub(super) const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
     const FAMILIES: &[MetricFamily] = &[MetricFamily::new(
         abi_str(METRIC_CACHE_FLUSHED),
         abi_str("inbound cache entries dropped by refresh"),
@@ -128,15 +128,12 @@ mod judge {
         FAMILY_COUNTER,
     )];
 
-    busbar_contract::auth_verify_door!(
-        Judge,
-        with_tail(
-            statement("judge", "1.0.0", 8)
-                .with_families(FAMILIES)
-                .with_mark_words(CARRIERS),
-            TAIL
-        )
-    );
+    /// The judge's Statement, before its tail.
+    pub(super) const STATEMENT: Statement = statement("judge", "1.0.0", 8)
+        .with_families(FAMILIES)
+        .with_mark_words(CARRIERS);
+
+    busbar_contract::auth_verify_door!(Judge, with_tail(STATEMENT, TAIL));
 }
 
 fn dispatcher() -> Arc<Dispatcher> {
@@ -150,7 +147,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 fn rows() -> AuthRows {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("judge", judge::door)])
+        .link(vec![LinkedPlugin::auth_door("judge", judge::MACRO_DOOR)])
         .expect("the linked door registers");
     AuthRows::new(Arc::new(registry), dispatcher())
 }
@@ -328,7 +325,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
             dispatcher: d.adopter(),
             conns: crate::dispatch::ConnTable::NoNeeds,
         };
-        let row = LinkedRow::of(judge::door).unwrap();
+        let row = LinkedRow::of(judge::MACRO_DOOR).unwrap();
         let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
         AuthInstance::open(p, sink, d.clone(), label, b"\"ok\"", Vec::new()).unwrap()
     };
@@ -401,7 +398,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
         dispatcher: d.adopter(),
         conns: crate::dispatch::ConnTable::NoNeeds,
     };
-    let row = LinkedRow::of(judge::door).unwrap();
+    let row = LinkedRow::of(judge::MACRO_DOOR).unwrap();
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
     let a = AuthInstance::open(p, sink, d.clone(), "judge-1", b"\"ok\"", Vec::new()).unwrap();
     assert_eq!(a.plugin().max_inflight(), 1);
@@ -471,7 +468,7 @@ mod keyed {
 #[test]
 fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("keyed", keyed::door)])
+        .link(vec![LinkedPlugin::auth_door("keyed", keyed::MACRO_DOOR)])
         .unwrap();
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let settings = serde_json::json!({ "token": "s3cret", "other": 1 });
@@ -502,7 +499,7 @@ fn an_instance_debug_never_shows_its_settings_or_secrets() {
         dispatcher: d.adopter(),
         conns: crate::dispatch::ConnTable::NoNeeds,
     };
-    let row = LinkedRow::of(keyed::door).unwrap();
+    let row = LinkedRow::of(keyed::MACRO_DOOR).unwrap();
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
     let a = AuthInstance::open(
         p,
@@ -554,7 +551,10 @@ mod aliased {
 #[test]
 fn an_auth_row_answers_to_its_statements_alias_rewrite() {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("aliased", aliased::door)])
+        .link(vec![LinkedPlugin::auth_door(
+            "aliased",
+            aliased::MACRO_DOOR,
+        )])
         .unwrap();
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     assert!(rows.answers("aliased"));
@@ -607,9 +607,9 @@ mod readers {
 fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
     let registry = PluginRegistry::empty()
         .link(vec![
-            LinkedPlugin::auth_door("reader-a", readers::a::door),
-            LinkedPlugin::auth_door("reader-b", readers::b::door),
-            LinkedPlugin::auth_door("reader-c", readers::c::door),
+            LinkedPlugin::auth_door("reader-a", readers::a::MACRO_DOOR),
+            LinkedPlugin::auth_door("reader-b", readers::b::MACRO_DOOR),
+            LinkedPlugin::auth_door("reader-c", readers::c::MACRO_DOOR),
         ])
         .expect("the linked doors register");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
@@ -627,7 +627,10 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .is_ok());
 
     let alone = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("reader-a", readers::a::door)])
+        .link(vec![LinkedPlugin::auth_door(
+            "reader-a",
+            readers::a::MACRO_DOOR,
+        )])
         .expect("the linked door registers");
     let rows = AuthRows::new(Arc::new(alone), dispatcher());
     assert!(rows
@@ -643,11 +646,13 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
 fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
         .link(vec![
-            LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::door),
+            LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::MACRO_DOOR),
+            // A door the auth kind does not load: the macro's own door of another kind (a linked
+            // row's door is a `MacroDoor`, so a NULL door is no row).
             LinkedPlugin::auth_door_named(
                 "busbar-auth-broken",
                 "broken",
-                crate::dispatch_tests::null_door,
+                crate::dispatch::ready::ready_plugins::without_ready::MACRO_DOOR,
             ),
         ])
         .expect("the linked doors register");
@@ -664,7 +669,7 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     );
     for word in ["busbar-auth-broken", "broken"] {
         let Err(refused) = rows.open(word, word, &serde_json::json!("ok")) else {
-            panic!("{word}: a door that states nothing does not open");
+            panic!("{word}: a door the auth kind does not load does not open");
         };
         assert!(
             refused.starts_with("auth plugin 'broken': "),
@@ -675,12 +680,32 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
 
 // ── THE AUTH AXIS'S CONNECTION TABLE (Q-P4-3): a networked auth door opened to serve ──
 
-crate::needs_restated::tcp_restated!(networked_judge, judge::door);
+/// The judge's door with its Statement declaring one `tcp` need (a directory it dials).
+mod networked_judge {
+    use super::*;
 
-/// The judge restated with a `tcp` need (a directory it dials), linked as `judge`.
+    const NEEDS: &[busbar_contract::abi::host::conn::connector::Need] = &crate::needs_restated::TCP;
+
+    busbar_contract::auth_verify_door!(
+        Judge,
+        with_tail(
+            Statement {
+                needs: NEEDS.as_ptr(),
+                needs_len: NEEDS.len(),
+                ..super::judge::STATEMENT
+            },
+            super::judge::TAIL
+        )
+    );
+}
+
+/// The judge with a `tcp` need, linked as `judge`.
 fn networked_rows() -> AuthRows {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("judge", networked_judge)])
+        .link(vec![LinkedPlugin::auth_door(
+            "judge",
+            networked_judge::MACRO_DOOR,
+        )])
         .expect("the linked door registers");
     AuthRows::new(Arc::new(registry), dispatcher())
 }
@@ -831,7 +856,7 @@ mod outbound {
     #[test]
     fn an_outbound_kit_door_answers_its_field_through_the_auth_rows() {
         let registry = PluginRegistry::empty()
-            .link(vec![LinkedPlugin::auth_door("echo", echo::door)])
+            .link(vec![LinkedPlugin::auth_door("echo", echo::MACRO_DOOR)])
             .expect("the linked door registers");
         let auth_rows = AuthRows::new(Arc::new(registry), dispatcher());
         let serving = auth_rows
@@ -892,7 +917,7 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
 #[test]
 fn an_auth_instance_logs_to_its_own_plugin_log_file() {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("judge", judge::door)])
+        .link(vec![LinkedPlugin::auth_door("judge", judge::MACRO_DOOR)])
         .expect("the linked door registers");
     let a = AuthRows::new(Arc::new(registry), dispatcher())
         .with_logs(log_config)

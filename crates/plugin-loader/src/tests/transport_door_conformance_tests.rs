@@ -54,7 +54,7 @@ fn subject() -> Subject {
         .iter()
         .find(|(k, _)| *k == "transport")
         .expect("the both-ways table has a transport row");
-    Subject::new(shipped::door, krate, INPUTS)
+    Subject::new(shipped::MACRO_DOOR, krate, INPUTS)
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn a_miscount_is_seen() {
 /// door's own kind) and dropped in (by the stated kind, before the library is opened).
 #[test]
 fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
-    let door = shipped::door;
+    let door = shipped::MACRO_DOOR;
     let want = (KindCode::Transport, KindCode::Hook);
     let row = LinkedRow::of(door).expect("the door states itself");
     let linked = both::linked::<Transport>(door);

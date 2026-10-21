@@ -115,7 +115,7 @@ fn script(s: &LoadedStore) -> Vec<String> {
 
 #[test]
 fn a_linked_and_a_dropped_in_store_answer_get_and_put_identically() {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::both_ways::store_fixture::MACRO_DOOR;
     let linked = script(&store(both::linked::<Store>(door)));
     let dropped = both::dropped::<Store>(door, "store_v3_door");
     let dropped = script(&store(dropped));
@@ -134,14 +134,16 @@ fn a_linked_and_a_dropped_in_store_answer_get_and_put_identically() {
 /// `reserve` within the contract.
 #[test]
 fn a_store_that_grants_part_of_a_cell_is_refused_through_both_doors() {
-    let broken = store_broken_plugin::door;
+    let broken = store_broken_plugin::MACRO_DOOR;
     let linked = reserved(&store(both::linked::<Store>(broken)), 4);
     assert!(
         matches!(linked, Err(StoreFailure::Fault(_))),
         "the linked broken store's partial grant is FAULT: {linked:?}"
     );
     let conforming = reserved(
-        &store(both::linked::<Store>(crate::both_ways::store_fixture::door)),
+        &store(both::linked::<Store>(
+            crate::both_ways::store_fixture::MACRO_DOOR,
+        )),
         4,
     );
     assert!(

@@ -28,7 +28,7 @@ include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
 /// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
 pub(crate) fn door_fixture(
     row: &str,
-) -> (&'static str, busbar_contract::abi::mechanism::door::DoorFn) {
+) -> (&'static str, busbar_contract::abi::sdk::door::MacroDoor) {
     DOOR_FIXTURES
         .iter()
         .find(|(k, ..)| *k == row)

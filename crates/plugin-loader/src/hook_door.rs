@@ -39,7 +39,7 @@ use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON,
 };
-use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
+use busbar_contract::abi::mechanism::door::MARK_WORD_HOOK;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
@@ -853,7 +853,7 @@ impl HookRows {
     /// Statement speaks the 1.5.5 JSON contract: it is REFUSED, naming the rebuild (one version per
     /// kind; C21's hook half).
     pub fn new(
-        linked: &[DoorFn],
+        linked: &[busbar_contract::abi::sdk::door::MacroDoor],
         registry: Option<&PluginRegistry>,
         dispatcher: Arc<Dispatcher>,
     ) -> Result<Self, String> {

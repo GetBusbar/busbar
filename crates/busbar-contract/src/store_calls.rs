@@ -178,7 +178,7 @@ pub trait StoreCalls: Send + Sync {
 /// library bytes with the Statement rendering its signed manifest states.
 pub enum StoreDoor {
     /// A compiled-in row's door.
-    Linked(crate::abi::mechanism::door::DoorFn),
+    Linked(crate::abi::sdk::door::MacroDoor),
     /// A dropped-in plugin.
     Dropped {
         /// Its tarball's file name (diagnostics).

@@ -24,7 +24,7 @@ use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
 use crate::both_ways::{secret_fixture, HOT_FIXTURES};
 use crate::hook_door_conformance_tests::hook_door_plugin;
-use secret_fixture::door::door;
+use secret_fixture::door::MACRO_DOOR;
 use secret_fixture::NAME;
 
 /// The material the hit's variable holds.
@@ -84,7 +84,7 @@ fn transcript(axis: &dyn SecretAxis) -> Vec<String> {
 fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
     environment();
     let mut rows = SecretRows::new(dispatcher, || None);
-    rows.link(door).expect("the env source's door links");
+    rows.link(MACRO_DOOR).expect("the env source's door links");
     assert!(rows.answers(NAME) && rows.linked(NAME));
     assert!(!rows.answers("absent") && !rows.linked("absent"));
     let t = transcript(&rows);
@@ -118,7 +118,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
         .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
     // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
     let path = crate::both_ways::cdylib(&format!("{logic}_plugin"));
-    let stated = rendering_of(door).expect("the door renders its Statement");
+    let stated = rendering_of(MACRO_DOOR).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     let candidate = Candidate::from_rendering(
         stated,
@@ -139,7 +139,9 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     );
 
     let mut linked = SecretRows::new(dispatcher, || None);
-    linked.link(door).expect("the env source's door links");
+    linked
+        .link(MACRO_DOOR)
+        .expect("the env source's door links");
     assert_eq!(
         transcript(&rows),
         transcript(&linked),
@@ -156,7 +158,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
 fn a_door_of_another_kind_is_refused() {
     let mut rows = SecretRows::new(dispatcher, || None);
     let err = rows
-        .link(hook_door_plugin::conforming::door)
+        .link(hook_door_plugin::conforming::MACRO_DOOR)
         .expect_err("a hook door is not a secret one");
     assert!(err.contains("not a secret one"), "{err}");
 }
@@ -188,7 +190,7 @@ fn gated_dispatcher() -> Arc<Dispatcher> {
 fn a_wedged_shared_open_holds_no_other_caller() {
     environment();
     let mut rows = SecretRows::new(gated_dispatcher, || None);
-    rows.link(door).expect("the env source's door links");
+    rows.link(MACRO_DOOR).expect("the env source's door links");
     let rows = Arc::new(rows);
     let wedged = {
         let rows = Arc::clone(&rows);
@@ -251,7 +253,7 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
         .set(dir.clone())
         .expect("the one test sets the directory");
     let mut rows = SecretRows::new(dispatcher, || None).with_logs(log_config);
-    rows.link(door).expect("the env source's door links");
+    rows.link(MACRO_DOOR).expect("the env source's door links");
     rows.with_former_names(|w| {
         if w == NAME {
             vec!["env-second".to_string()]
@@ -290,7 +292,7 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     use crate::dispatch::{load_linked, Bind, LinkedRow, NoSink};
     let material = [super::SecretValue::new(MATERIAL.as_bytes().to_vec())];
     let open = |d: Arc<Dispatcher>| {
-        let row = LinkedRow::of(door).expect("the env source states its Statement");
+        let row = LinkedRow::of(MACRO_DOOR).expect("the env source states its Statement");
         let plugin = load_linked::<crate::dispatch::kinds::secret::Secret>(
             &row,
             Bind {

@@ -180,7 +180,7 @@ fn open() -> LoadedStore {
         watchdog_period: Duration::from_millis(10),
         ..DispatchConfig::default()
     }));
-    let row = LinkedRow::of(wedged::door).expect("the wedged door states its Statement");
+    let row = LinkedRow::of(wedged::MACRO_DOOR).expect("the wedged door states its Statement");
     let p = load_linked::<Store>(
         &row,
         Bind {

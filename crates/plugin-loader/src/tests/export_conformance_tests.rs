@@ -76,6 +76,7 @@ use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::DOOR_SYMBOL;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
     PieceKind,
@@ -90,7 +91,7 @@ use crate::both_ways;
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{
     load_dropped_bytes, load_linked, rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher,
-    Dropped, EnvelopeSink, LinkedRow, Metric, Plugin,
+    Dropped, EnvelopeSink, LinkedRow, LoadedDoor, Metric, Plugin,
 };
 use crate::export_axis::ExportRows;
 use crate::export_door::ExportInstance;
@@ -100,19 +101,19 @@ use crate::sign::{Declares, Manifest};
 
 /// The request-log FILE sink's door, LINKED (its logic crate's `door`): the both-ways table's
 /// `export` row.
-const FILE_DOOR: DoorFn = both_ways::export_fixture::door;
+const FILE_DOOR: MacroDoor = both_ways::export_fixture::MACRO_DOOR;
 /// The FILE sink's `-plugin` crate, whose `cdylib` exports the same door: the DROPPED-IN build.
 fn file_cdylib() -> &'static str {
     both_ways::export_row("export").1
 }
 /// The request-log WEBHOOK sink's door, LINKED: the both-ways table's `export-carried` row.
-const WEBHOOK_DOOR: DoorFn = both_ways::export_carried_fixture::door;
+const WEBHOOK_DOOR: MacroDoor = both_ways::export_carried_fixture::MACRO_DOOR;
 /// The WEBHOOK sink's `-plugin` crate's `cdylib`: the DROPPED-IN build.
 fn webhook_cdylib() -> &'static str {
     both_ways::export_row("export-carried").1
 }
 /// The span collector's door, LINKED: the both-ways table's `export-trace` row.
-const TRACE_DOOR: DoorFn = both_ways::export_trace_fixture::door::door;
+const TRACE_DOOR: MacroDoor = both_ways::export_trace_fixture::door::MACRO_DOOR;
 /// The span collector's `-plugin` crate's `cdylib`: the DROPPED-IN build.
 fn trace_cdylib() -> &'static str {
     both_ways::export_row("export-trace").1
@@ -164,7 +165,7 @@ fn manifest(name: &str, declares: Declares) -> Manifest {
 
 /// `m` stating `door`'s Statement rendering, as the pack tool signs it into a dropped plugin's
 /// manifest and as the linked row states it.
-fn stating(mut m: Manifest, door: DoorFn) -> Manifest {
+fn stating(mut m: Manifest, door: MacroDoor) -> Manifest {
     m.statement = Some(hex::encode(
         rendering_of(door).expect("the door renders its Statement"),
     ));
@@ -180,7 +181,7 @@ fn cdylib_bytes(crate_snake: &str) -> Vec<u8> {
 /// THE TWO DOORS through registration: `m` with `door` registered LINKED (through
 /// [`PluginRegistry::link`]) and `crate_snake`'s `cdylib` signed first-party into `plugins/` and
 /// scanned (the DROPPED-IN door) — both stating the door's Statement.
-fn both(m: Manifest, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
+fn both(m: Manifest, door: MacroDoor, crate_snake: &str) -> [PluginRegistry; 2] {
     let lib = cdylib_bytes(crate_snake);
     let m = stating(m, door);
     let linked = PluginRegistry::empty()
@@ -556,7 +557,7 @@ fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const
     &cell
         .get_or_init(|| {
             // SAFETY: the linked door answers its `'static` Door; its table is the export kind's.
-            let door = unsafe { *FILE_DOOR() };
+            let door = unsafe { *FILE_DOOR.door_fn()() };
             // SAFETY: as above.
             let mut ops = unsafe { *door.ops.cast::<Ops>() };
             strip(&mut ops);
@@ -575,16 +576,27 @@ extern "C" fn door_without_validate() -> *const Door {
     older(&NO_VALIDATE, |ops| ops.head.validate = None)
 }
 
+/// [`door_without_validate`] as the loader enters it.
+// SAFETY: a test's restated door: it answers the `'static` door it laid out over the FILE sink's
+// real one.
+const DOOR_WITHOUT_VALIDATE: LoadedDoor = unsafe { LoadedDoor::from_raw(door_without_validate) };
+
 /// The FILE sink's door from before `check`.
 extern "C" fn door_without_check() -> *const Door {
     older(&NO_CHECK, |ops| ops.check = None)
 }
 
+/// [`door_without_check`] as the loader enters it.
+// SAFETY: as `DOOR_WITHOUT_VALIDATE`.
+const DOOR_WITHOUT_CHECK: LoadedDoor = unsafe { LoadedDoor::from_raw(door_without_check) };
+
 /// Why the one load refuses `door`.
-fn refused_at_load(door: DoorFn) -> String {
+fn refused_at_load(door: LoadedDoor) -> String {
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    match LinkedRow::of(door).and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d))) {
+    match LinkedRow::of_loaded(door)
+        .and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d)))
+    {
         Ok(_) => panic!("a door that predates an op was bound"),
         Err(e) => e.to_string(),
     }
@@ -944,7 +956,9 @@ macro_rules! pre_envelope_ops {
             extern "C" fn $name(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
                 let real = PRE_ENVELOPE_REAL.get().expect("the RED arm sets the table first");
                 let op = real.0.$($field).+.expect("a forwarding op wraps a present op");
-                let answered = op(i, input, out);
+                // SAFETY: this forwarding op hands the host's own arguments for this crossing,
+                // unchanged, to the real image's op of the same slot (the image is leaked).
+                let answered = unsafe { op(i, input, out) };
                 // SAFETY: every op's `out` leads with its `OutHead`, written by the op just now.
                 unsafe { keep_plugin_local(out) };
                 answered
@@ -1048,7 +1062,10 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         .clear();
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    let row = LinkedRow::of(pre_envelope_door).expect("the image's Statement renders");
+    // SAFETY: a test's restated door: it answers the `'static` shim it laid out over the staged
+    // image's real door, and the image is leaked above (held open for the process's life).
+    let pre_envelope = unsafe { LoadedDoor::from_raw(pre_envelope_door) };
+    let row = LinkedRow::of_loaded(pre_envelope).expect("the image's Statement renders");
     assert_eq!(
         row.statement,
         rendering_of(FILE_DOOR).expect("renders"),
@@ -1263,7 +1280,7 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
     // so a door without `validate` is refused at the load, naming the slot — it never reaches a
     // configuration to judge.
     assert_eq!(
-        refused_at_load(door_without_validate),
+        refused_at_load(DOOR_WITHOUT_VALIDATE),
         format!(
             "ops slot {} is NULL",
             busbar_contract::abi::mechanism::lifecycle::slot::VALIDATE
@@ -1539,7 +1556,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     // RED ARM: a sink whose table predates `check`. On the cold wire the host took UNSUPPORTED for
     // "no lines"; on the memory ABI such a door is refused at the load, naming the slot.
     assert_eq!(
-        refused_at_load(door_without_check),
+        refused_at_load(DOOR_WITHOUT_CHECK),
         format!(
             "ops slot {} is NULL",
             busbar_contract::abi::export::slot::CHECK
@@ -1714,7 +1731,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
 /// while the webhook sink, whose need is in the open web, is admitted from the same third party.
 #[test]
 fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
-    let collector: DoorFn = TRACE_DOOR;
+    let collector: MacroDoor = TRACE_DOOR;
     let settings = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
     let doors = both(
         manifest("k9e2-otlp", Declares::default()),
@@ -1921,7 +1938,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
 /// the both-doors identity of span delivery is held here, where the release key is the test's.)
 #[test]
 fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
-    let collector: DoorFn = TRACE_DOOR;
+    let collector: MacroDoor = TRACE_DOOR;
     let name = "s7-otlp";
     let doors = both(
         manifest(name, Declares::default()),

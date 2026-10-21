@@ -18,8 +18,8 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{Blob, InHead, OutHead, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ReleaseIn};
+use busbar_contract::abi::sdk::door::MacroDoor;
 
 use crate::dispatch::{
     in_head, load_dropped, load_linked, out_head, rendering_of, Bind, Called, DispatchConfig,
@@ -46,7 +46,7 @@ pub(crate) fn bind(d: &Dispatcher) -> Bind {
 }
 
 /// `door` LINKED, through [`load_linked`] on a fresh dispatcher.
-pub(crate) fn linked<K: Kind>(door: DoorFn) -> Loaded<K> {
+pub(crate) fn linked<K: Kind>(door: MacroDoor) -> Loaded<K> {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(door).expect("the door states its Statement");
     let plugin = load_linked::<K>(&row, bind(&dispatcher)).expect("the linked door loads");
@@ -56,14 +56,14 @@ pub(crate) fn linked<K: Kind>(door: DoorFn) -> Loaded<K> {
 /// The example `cdylib` `example` exporting the same `door`, DROPPED IN through [`load_dropped`]
 /// against the rendering `door` states. Not built, a hard failure naming the command that builds
 /// it (`both_ways::example_cdylib`), never a skip.
-pub(crate) fn dropped<K: Kind>(door: DoorFn, example: &str) -> Loaded<K> {
+pub(crate) fn dropped<K: Kind>(door: MacroDoor, example: &str) -> Loaded<K> {
     let path = crate::both_ways::example_cdylib(example);
     dropped_from(door, &path)
 }
 
 /// The `cdylib` at `path` exporting the same `door`, DROPPED IN through [`load_dropped`] against
 /// the rendering `door` states: the real plugin's pinned build, found by `both_ways::cdylib`.
-pub(crate) fn dropped_from<K: Kind>(door: DoorFn, path: &std::path::Path) -> Loaded<K> {
+pub(crate) fn dropped_from<K: Kind>(door: MacroDoor, path: &std::path::Path) -> Loaded<K> {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let stated = rendering_of(door).expect("the door renders its Statement");
     let plugin =

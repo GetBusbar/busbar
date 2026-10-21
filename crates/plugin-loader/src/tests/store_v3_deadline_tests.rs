@@ -125,7 +125,7 @@ mod hung {
 
 fn open() -> (LoadedStore, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(hung::door).expect("the hung door states its Statement");
+    let row = LinkedRow::of(hung::MACRO_DOOR).expect("the hung door states its Statement");
     let p = load_linked::<Store>(
         &row,
         Bind {

@@ -307,7 +307,11 @@ unsafe fn read_establish(input: *const c_void) -> EstablishIn {
     i
 }
 
-extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn establish(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -386,7 +390,7 @@ fn addresses(within: &[u8]) -> Option<Vec<IpAddr>> {
         .collect()
 }
 
-extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -419,7 +423,7 @@ extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
     )
 }
 
-extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -446,7 +450,7 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
     )
 }
 
-extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -490,7 +494,7 @@ unsafe fn optional_text<'a>(s: AbiStr) -> Result<Option<&'a str>, ()> {
     std::str::from_utf8(b).map(Some).map_err(|_| ())
 }
 
-extern "C" fn upgrade_secure(
+unsafe extern "C" fn upgrade_secure(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -597,7 +601,7 @@ fn held_text(all: &mut HeldFacts, key: (InstanceId, u64), text: Option<&str>) ->
     super::lend_str(k.as_bytes())
 }
 
-extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -957,7 +961,7 @@ fn spanned(bytes: &[u8], span: FrameSpan) -> Option<&[u8]> {
     bytes.get(at..at.checked_add(len)?)
 }
 
-extern "C" fn write_request(
+unsafe extern "C" fn write_request(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -1294,7 +1298,11 @@ fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
     })))
 }
 
-extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn read_reply(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -1522,7 +1530,11 @@ fn abi(s: &'static str) -> AbiStr {
     }
 }
 
-extern "C" fn identity(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn identity(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,

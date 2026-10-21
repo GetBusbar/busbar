@@ -252,7 +252,7 @@ impl Wake {
     /// let _ = Wake::of(&tables); // a hand-built table is no `Lent`
     /// ```
     #[must_use]
-    pub fn of(tables: Lent<'_, HostTables>) -> Option<Self> {
+    pub fn of(tables: &Lent<'_, HostTables>) -> Option<Self> {
         // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
         // and the mechanism's host-table rule keeps them valid for the instance's life.
         unsafe { Self::from_raw(tables.get()) }
@@ -314,7 +314,7 @@ impl Services {
     /// let _ = Services::of(&tables); // a hand-built table is no `Lent`
     /// ```
     #[must_use]
-    pub fn of(tables: Lent<'_, HostTables>) -> Option<Self> {
+    pub fn of(tables: &Lent<'_, HostTables>) -> Option<Self> {
         // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
         // and the mechanism's host-table rule keeps them valid for the instance's life.
         unsafe { Self::from_raw(tables.get()) }

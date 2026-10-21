@@ -24,9 +24,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::abi::secret::{
     slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
 };
@@ -467,7 +467,7 @@ impl SecretRows {
     /// # Errors
     /// The door does not state itself, no linked row is that door's plugin, or `json` is not a
     /// `declares` section.
-    pub fn declare_linked(&mut self, door: DoorFn, json: &str) -> Result<&mut Self, String> {
+    pub fn declare_linked(&mut self, door: MacroDoor, json: &str) -> Result<&mut Self, String> {
         let name = Candidate::linked(door)?.name;
         let declares = crate::sign::Declares::from_declares_json(json.as_bytes())
             .map_err(|e| format!("linked secret '{name}': its declares section: {e}"))?;
@@ -508,7 +508,7 @@ impl SecretRows {
     ///
     /// # Errors
     /// The door's refusal, or a door of another kind.
-    pub fn link(&mut self, door: DoorFn) -> Result<&mut Self, String> {
+    pub fn link(&mut self, door: MacroDoor) -> Result<&mut Self, String> {
         let c = Candidate::linked(door)?;
         if c.kind != KindCode::Secret {
             return Err(format!(

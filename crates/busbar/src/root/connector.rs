@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::FramerDoor;
 use busbar_core_connector::pool::PoolPosture;
@@ -85,7 +85,7 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
 ///
 /// The first door that would not load or open.
 pub fn entries(
-    doors: &[(&str, DoorFn)],
+    doors: &[(&str, MacroDoor)],
     settings: &TransportSettings,
 ) -> Result<Vec<Entry>, String> {
     doors
@@ -192,7 +192,7 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
 /// the same settings' pool posture, and install it. A connector that cannot be built refuses the
 /// boot, as an unsealed composition does.
 pub fn boot(
-    doors: &[(&str, DoorFn)],
+    doors: &[(&str, MacroDoor)],
     settings: &TransportSettings,
     dest: Arc<dyn DestJudge>,
     listens: &[&str],

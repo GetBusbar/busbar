@@ -61,7 +61,7 @@ fn mint() -> OpId {
 fn load() -> (Plugin<Store>, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
-        &LinkedRow::of(picky::door).expect("the store states its Statement"),
+        &LinkedRow::of(picky::MACRO_DOOR).expect("the store states its Statement"),
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,

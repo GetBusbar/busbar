@@ -135,7 +135,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 /// `door` linked, bound to `d` and OPENED as the inbound open path opens it (`AuthRows::open`).
 fn opened(
     d: &Arc<Dispatcher>,
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
     label: &str,
 ) -> AuthInstance {
     let sink = AuthSink::new(label);
@@ -166,7 +166,7 @@ async fn until(done: impl Fn() -> bool) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_inbound_instance_is_ticked_at_each_next_tick_ns_until_it_answers_zero() {
     let d = dispatcher();
-    let a = opened(&d, twice::door, "ticked-twice");
+    let a = opened(&d, twice::MACRO_DOOR, "ticked-twice");
     let ticked = || TWICE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     until(|| ticked().len() >= 3).await;
     // Past the third tick's answer of `0`, no other comes.
@@ -192,7 +192,7 @@ async fn an_inbound_instance_is_ticked_at_each_next_tick_ns_until_it_answers_zer
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_inbound_instance_is_ticked_no_more() {
     let d = dispatcher();
-    let a = opened(&d, forever::door, "ticked-forever");
+    let a = opened(&d, forever::MACRO_DOOR, "ticked-forever");
     until(|| FOREVER.load(Ordering::SeqCst) >= 2).await;
     assert!(
         FOREVER.load(Ordering::SeqCst) >= 2,

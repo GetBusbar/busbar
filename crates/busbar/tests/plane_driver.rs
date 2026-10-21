@@ -15,6 +15,14 @@ mod common;
 #[allow(dead_code)]
 mod plane;
 
+/// The test plane's hand-laid door (`tests/fixtures/plane_driver_test_plane.rs`), as a door the
+/// loader may enter (status row 159: it is no `plugin_door!` door, so it is no `MacroDoor`).
+fn plane_door() -> busbar_plugin_loader::dispatch::LoadedDoor {
+    // SAFETY: the fixture's `door` answers its `'static`, fully initialised door, compiled into
+    // this test binary.
+    unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(plane::door) }
+}
+
 #[path = "../../busbar-kernel/tests/support/plane_driver_cases.rs"]
 mod cases;
 
@@ -47,8 +55,8 @@ use busbar_plugin_loader::dispatch::{
     kinds::plane::{OwnedSnapshot, Plane},
     load_dropped, load_linked, now_ns as dispatch_now, out_head,
     plane_calls::PlaneInstance,
-    rendering_of, Bind, ConnTable, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink,
-    Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
+    Bind, ConnTable, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame,
+    LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
 
 /// The dispatcher's clock, the one a unit's deadline is on.
@@ -129,11 +137,12 @@ fn load_open(
     };
     let plugin = match way {
         Way::Linked => {
-            let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
+            let row = LinkedRow::of_loaded(plane_door()).expect("the plane states its Statement");
             load_linked::<Plane>(&row, bind).expect("the linked door loads")
         }
         Way::Dropped => {
-            let stated = rendering_of(plane::door).expect("the plane renders its Statement");
+            let stated = busbar_plugin_loader::dispatch::rendering_of_loaded(plane_door())
+                .expect("the plane renders its Statement");
             let path = dropped_path();
             load_dropped::<Plane>(&path, &stated, bind).expect("the dropped door loads")
         }

@@ -59,7 +59,7 @@ const LINES: (&str, &str) = ("authorization", "x-admin-token");
 
 /// The manifest both doors state, carrying the Statement rendering the linked `door` states (a
 /// dropped-in plugin's signed manifest carries its rendering: the design's One Statement).
-fn stated(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::sign::Manifest {
+fn stated(door: busbar_contract::abi::sdk::door::MacroDoor) -> crate::sign::Manifest {
     let rendering = crate::dispatch::LinkedRow::of(door)
         .expect("the door states itself")
         .statement;

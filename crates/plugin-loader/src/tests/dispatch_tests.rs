@@ -33,10 +33,15 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Budgets, Diagnostic,
-    DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LinkedRow, LoadError,
-    ManifestFacts, Metric, Plugin, NO_BLOB,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of_loaded, Bind, Budgets,
+    Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LinkedRow,
+    LoadError, LoadedDoor, ManifestFacts, Metric, Plugin, NO_BLOB,
 };
+
+/// The test plugin's door as the loader enters it.
+// SAFETY: the test plugin's hand-laid door: it answers its `'static`, fully initialised `DOOR`,
+// whose Statement lists point at their stated counts of `'static` entries.
+pub(crate) const PLUG_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(plug::busbar_plugin_door) };
 
 /// The test kind's context: the Statement's `max_inflight`, as bound.
 #[derive(Debug, PartialEq, Eq)]
@@ -150,7 +155,7 @@ fn facts() -> ManifestFacts {
 /// The plugin's Statement rendering, as its signed manifest states it: rendered from the linked
 /// `rlib`'s door, the same crate the `cdylib` is built from.
 fn stated() -> Vec<u8> {
-    rendering_of(plug::busbar_plugin_door).expect("the door renders its Statement")
+    rendering_of_loaded(PLUG_DOOR).expect("the door renders its Statement")
 }
 
 /// [`stated`] with its head facts replaced by `f`.
@@ -184,7 +189,7 @@ fn a_plugin_handle_is_not_clone() {
 }
 
 fn row() -> LinkedRow {
-    LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
+    LinkedRow::of_loaded(PLUG_DOOR).expect("the linked row states its Statement")
 }
 
 fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
@@ -746,10 +751,14 @@ mod open_faults_on_its_resume {
         bind, close_frame, config, crossings, frame, open_frame, plug, quiet, until, TestKind,
         TICK, WAIT,
     };
-    use crate::dispatch::{load_linked, Dispatcher, LinkedRow};
+    use crate::dispatch::{load_linked, Dispatcher, LinkedRow, LoadedDoor};
 
     static REAL: Mutex<Option<OpsHead>> = Mutex::new(None);
     static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    /// [`door`] as the loader enters it.
+    // SAFETY: a test's restated door: it answers the `'static` door it laid out over the test
+    // plugin's real one.
+    const DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(door) };
     /// The box the resumed `open` freed.
     static FREED: AtomicUsize = AtomicUsize::new(0);
     /// Crossings that were handed the freed box.
@@ -856,7 +865,7 @@ mod open_faults_on_its_resume {
     #[test]
     fn red_an_open_that_faults_on_its_resume_leaves_no_instance() {
         let d = Dispatcher::new(config());
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_loaded(DOOR).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
 
         let t = d.mint(0).expect("a ticket");
@@ -945,13 +954,17 @@ mod open_left_live_is_closed {
     use busbar_contract::abi::mechanism::ticket::Ticket;
 
     use super::{bind, close_frame, config, open_frame, plug, quiet, until, TestKind, WAIT};
-    use crate::dispatch::{load_linked, now_ns, Dispatcher, LinkedRow, Plugin};
+    use crate::dispatch::{load_linked, now_ns, Dispatcher, LinkedRow, LoadedDoor, Plugin};
 
     /// One test at a time over the shared counts.
     static SERIAL: Mutex<()> = Mutex::new(());
 
     static REAL: Mutex<Option<OpsHead>> = Mutex::new(None);
     static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    /// [`door`] as the loader enters it.
+    // SAFETY: a test's restated door: it answers the `'static` door it laid out over the test
+    // plugin's real one.
+    const DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(door) };
     /// The boxes the plugin minted and has not closed.
     static LIVE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
     /// `close`s handed a box that is not live (closed twice, or never minted).
@@ -1044,7 +1057,7 @@ mod open_left_live_is_closed {
     fn red_an_open_the_host_judged_fault_is_closed_never_leaked() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let d = Dispatcher::new(config());
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_loaded(DOOR).expect("the restated door states itself");
 
         // A ticket-less `open` that answers PENDING: the host FAULTs it.
         MODE.store(PEND, Ordering::SeqCst);
@@ -1092,7 +1105,7 @@ mod open_left_live_is_closed {
     /// A ticketed `open` that pends (no wake comes), ended by the host: `cancel` then `close`.
     fn pended(d: &Dispatcher) -> (Plugin<TestKind>, Ticket) {
         MODE.store(PEND, Ordering::SeqCst);
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_loaded(DOOR).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
         let t = d.mint(0).expect("a ticket");
         (p, t)
@@ -1486,21 +1499,28 @@ fn red_every_door_refusal() {
 }
 
 /// A door that states nothing: a linked row whose load fails (`LoadError::NullDoor`).
-pub(crate) extern "C" fn null_door() -> *const Door {
+extern "C" fn null_door() -> *const Door {
     std::ptr::null()
 }
+
+/// [`null_door`] as the loader enters it.
+// SAFETY: it answers NULL.
+pub(crate) const NULL_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(null_door) };
 
 #[test]
 fn red_both_origins_refuse_the_same_way() {
     let null_row = LinkedRow {
         statement: stated(),
-        door: null_door,
+        door: NULL_DOOR,
     };
     assert_eq!(
         load_linked::<TestKind>(&null_row, bind(quiet())).err(),
         Some(LoadError::NullDoor)
     );
-    assert_eq!(LinkedRow::of(null_door).err(), Some(LoadError::NullDoor));
+    assert_eq!(
+        LinkedRow::of_loaded(NULL_DOOR).err(),
+        Some(LoadError::NullDoor)
+    );
     // The manifest's mechanism is checked BEFORE dlopen: a path that does not exist is never opened.
     let nowhere = std::path::Path::new("/nonexistent/libnothing.so");
     for v in [MECHANISM_VERSION - 1, MECHANISM_VERSION + 1] {
@@ -1567,7 +1587,7 @@ fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
     lying[last] ^= 1;
     let lying_row = LinkedRow {
         statement: lying.clone(),
-        door: plug::busbar_plugin_door,
+        door: PLUG_DOOR,
     };
     assert_eq!(
         load_linked::<TestKind>(&lying_row, bind(quiet())).err(),
@@ -1577,7 +1597,7 @@ fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
     short.pop();
     let short_row = LinkedRow {
         statement: short,
-        door: plug::busbar_plugin_door,
+        door: PLUG_DOOR,
     };
     assert_eq!(
         load_linked::<TestKind>(&short_row, bind(quiet())).err(),

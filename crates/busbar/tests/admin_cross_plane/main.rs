@@ -79,7 +79,7 @@ pub(crate) fn build_router(app: std::sync::Arc<busbar_kernel::state::App>) -> ax
 /// path the moved tests spell).
 mod test_seams {
     pub(crate) fn linked_doors(
-    ) -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {
+    ) -> &'static [(&'static str, busbar_contract::abi::sdk::door::MacroDoor)] {
         crate::linked::doors()
     }
 }

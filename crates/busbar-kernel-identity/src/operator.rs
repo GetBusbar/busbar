@@ -27,7 +27,7 @@ use busbar_contract::auth_calls::{
 /// dropped-in build exports (THE DESIGN: compiled-in = dropped-in).
 pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
-pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
+pub type AuthDoor = busbar_contract::abi::sdk::door::MacroDoor;
 
 /// THE OPERATOR CREDENTIAL'S FROZEN WORDS, as the composition root's legacy table spells them: the
 /// provider configuration names it by (the `auth.admin_auth:` default, the one `module:` whose

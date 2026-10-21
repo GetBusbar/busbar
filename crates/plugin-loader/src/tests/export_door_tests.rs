@@ -15,8 +15,8 @@ use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
 
 /// The real scrape sink's door, LINKED, reached by the both-ways table's `export-scrape` row: the
 /// one place the loader's export tests take it (`conformance::export`'s unjudged test restates it).
-pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn =
-    crate::both_ways::export_scrape_fixture::door::door;
+pub(crate) const SCRAPE_DOOR: busbar_contract::abi::sdk::door::MacroDoor =
+    crate::both_ways::export_scrape_fixture::door::MACRO_DOOR;
 
 fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));

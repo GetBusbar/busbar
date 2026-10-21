@@ -27,6 +27,14 @@
 #[allow(dead_code)]
 mod plane;
 
+/// The test plane's hand-laid door (`tests/fixtures/plane_driver_test_plane.rs`), as a door the
+/// loader may enter (status row 159: it is no `plugin_door!` door, so it is no `MacroDoor`).
+fn plane_door() -> busbar_plugin_loader::dispatch::LoadedDoor {
+    // SAFETY: the fixture's `door` answers its `'static`, fully initialised door, compiled into
+    // this test binary.
+    unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(plane::door) }
+}
+
 // This crate's one plugin fixture: the panic a missing `cdylib` raises.
 #[path = "common/plugins.rs"]
 mod fixture_plugins;
@@ -43,8 +51,8 @@ use busbar_contract::services::HostServices;
 use busbar_kernel::host_services::KernelServices;
 
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, rendering_of, Bind,
-    DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink, Plugin, NO_BLOB,
+    in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, Bind, DispatchConfig,
+    Dispatcher, Frame, LinkedRow, NoSink, Plugin, NO_BLOB,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,11 +98,12 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
     };
     let plugin = match way {
         Way::Linked => {
-            let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
+            let row = LinkedRow::of_loaded(plane_door()).expect("the plane states its Statement");
             load_linked::<Plane>(&row, bind).expect("the linked door loads")
         }
         Way::Dropped => {
-            let stated = rendering_of(plane::door).expect("the plane renders its Statement");
+            let stated = busbar_plugin_loader::dispatch::rendering_of_loaded(plane_door())
+                .expect("the plane renders its Statement");
             let path = dropped_path();
             load_dropped::<Plane>(&path, &stated, bind).expect("the dropped door loads")
         }

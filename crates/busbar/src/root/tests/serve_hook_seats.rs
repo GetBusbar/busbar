@@ -66,7 +66,7 @@ pub(super) fn word(key: &str) -> &'static str {
 /// THE LINKED DOOR THAT SERVES THE `pools` MAP, found by what its Statement declares (the composition
 /// root names no plane): every linked plane door bound on a probe dispatcher of its own, the one
 /// whose declaring section is `pools` kept.
-pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
+pub(super) fn pools_door() -> busbar_contract::abi::sdk::door::MacroDoor {
     crate::LINKED
         .plane_doors
         .iter()

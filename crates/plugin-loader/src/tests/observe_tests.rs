@@ -206,7 +206,7 @@ impl crate::dispatch::EnvelopeSink for Binder {
 /// binder's sink still receives both. RED before the ruling: every binder but export's bound
 /// `NoSink` downstream of the log sink, and the observer received nothing.
 fn observed_through_its_bind<K: crate::dispatch::Kind>(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
     kind: &str,
 ) {
     let guard = exclusive();
@@ -267,7 +267,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
 #[test]
 fn a_plane_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::plane::Plane>(
-        crate::plane_door_plugin::door,
+        crate::plane_door_plugin::MACRO_DOOR,
         busbar_contract::abi::mechanism::kind::PLANE,
     );
 }
@@ -285,7 +285,7 @@ fn an_auth_envelope_reaches_the_host_observer() {
 #[test]
 fn a_store_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::store::Store>(
-        crate::both_ways::store_fixture::door,
+        crate::both_ways::store_fixture::MACRO_DOOR,
         busbar_contract::abi::mechanism::kind::STORE,
     );
 }
@@ -294,7 +294,7 @@ fn a_store_envelope_reaches_the_host_observer() {
 #[test]
 fn a_hook_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::hook::Hook>(
-        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+        crate::hook_door_conformance_tests::hook_door_plugin::conforming::MACRO_DOOR,
         busbar_contract::abi::mechanism::kind::HOOK,
     );
 }
@@ -303,7 +303,7 @@ fn a_hook_envelope_reaches_the_host_observer() {
 #[test]
 fn a_secret_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
-        crate::both_ways::secret_fixture::door::door,
+        crate::both_ways::secret_fixture::door::MACRO_DOOR,
         busbar_contract::abi::mechanism::kind::SECRET,
     );
 }
@@ -312,7 +312,7 @@ fn a_secret_envelope_reaches_the_host_observer() {
 #[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
-        crate::both_ways::transport_linked::door,
+        crate::both_ways::transport_linked::MACRO_DOOR,
         busbar_contract::abi::mechanism::kind::TRANSPORT,
     );
 }
@@ -321,7 +321,7 @@ fn a_transport_envelope_reaches_the_host_observer() {
 #[test]
 fn an_export_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
-        crate::both_ways::export_fixture::door,
+        crate::both_ways::export_fixture::MACRO_DOOR,
         busbar_contract::abi::mechanism::kind::EXPORT,
     );
 }

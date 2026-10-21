@@ -72,7 +72,7 @@ fn script(p: &Plugin<Hook>) -> Vec<String> {
 
 #[test]
 fn a_linked_and_a_dropped_in_hook_decide_identically() {
-    let door = hook_door_plugin::conforming::door;
+    let door = hook_door_plugin::conforming::MACRO_DOOR;
     let linked = script(&both::linked::<Hook>(door).plugin);
     let dropped = both::dropped::<Hook>(door, "hook_door");
     same(&linked, &script(&dropped.plugin));
@@ -98,12 +98,12 @@ fn a_linked_and_a_dropped_in_hook_decide_identically() {
 /// (exactly one verb). Through either door the dispatcher answers FAULT, never the verdict.
 #[test]
 fn a_hook_that_answers_two_verbs_is_refused_through_both_doors() {
-    let broken = hook_door_plugin::broken::door;
+    let broken = hook_door_plugin::broken::MACRO_DOOR;
     let run = |p: &Plugin<Hook>| vec![line("open", &open(p, SETTINGS)), decide(p, 2)];
     let linked = run(&both::linked::<Hook>(broken).plugin);
     assert!(linked[0].contains("Ready"), "{}", linked[0]);
     assert!(linked[1].contains("Fault"), "{}", linked[1]);
-    let conforming = run(&both::linked::<Hook>(hook_door_plugin::conforming::door).plugin);
+    let conforming = run(&both::linked::<Hook>(hook_door_plugin::conforming::MACRO_DOOR).plugin);
     assert!(conforming[1].contains("Ready"), "{}", conforming[1]);
     let dropped = both::dropped::<Hook>(broken, "hook_broken_door");
     same(&linked, &run(&dropped.plugin));

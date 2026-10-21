@@ -1395,7 +1395,7 @@ slot!(
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation(), Arc::new(shaping))])),
             units: Mutex::new(UnitBook::default()),
-            services: open.host().and_then(Services::of),
+            services: open.host().and_then(|h| Services::of(&h)),
             webhooks,
         };
         let snapshot = snapshot(door.webhooks);

@@ -94,12 +94,12 @@ fn sink(dir: &Path, level: LogLevel) -> Arc<PluginLogSink> {
 }
 
 fn linked(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
-    let row = LinkedRow::of(witness::a::door).expect("the witness states its Statement");
+    let row = LinkedRow::of(witness::a::MACRO_DOOR).expect("the witness states its Statement");
     load_linked::<WitnessKind>(&row, bind(sink)).expect("the linked witness loads")
 }
 
 fn linked_b(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
-    let row = LinkedRow::of(witness::b::door).expect("the witness B states its Statement");
+    let row = LinkedRow::of(witness::b::MACRO_DOOR).expect("the witness B states its Statement");
     load_linked::<WitnessKind>(&row, bind(sink)).expect("the linked witness B loads")
 }
 
@@ -111,7 +111,7 @@ fn dropped_path() -> PathBuf {
 
 fn dropped(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
     // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
-    let stated = rendering_of(witness::a::door).expect("the witness renders its Statement");
+    let stated = rendering_of(witness::a::MACRO_DOOR).expect("the witness renders its Statement");
     load_dropped::<WitnessKind>(&dropped_path(), &stated, bind(sink))
         .expect("the dropped witness loads")
 }

@@ -110,7 +110,7 @@ impl Gate {
 fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
     let gate = Arc::new(Gate::default());
     let parks = Arc::clone(&gate);
-    let inner = linked_probe(crate::plane_door_plugin::door, "the-probe");
+    let inner = linked_probe(crate::plane_door_plugin::MACRO_DOOR, "the-probe");
     let bind: ProbeBind = Arc::new(move || {
         parks.park();
         inner()

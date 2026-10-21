@@ -580,10 +580,7 @@ pub type ProbeBind = Arc<dyn Fn() -> Result<crate::dispatch::Plugin<Plane>, Stri
 /// A [`ProbeBind`] over a LINKED door: each bind loads `door` through the one load
 /// ([`crate::dispatch::load_linked`]) as `instance`, on a probe dispatcher the process keeps for its
 /// life (a probe it adopted is refreshed through it at every generation).
-pub fn linked_probe(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-    instance: &str,
-) -> ProbeBind {
+pub fn linked_probe(door: busbar_contract::abi::sdk::door::MacroDoor, instance: &str) -> ProbeBind {
     static PROBE: std::sync::OnceLock<crate::dispatch::Dispatcher> = std::sync::OnceLock::new();
     let instance: Arc<str> = Arc::from(instance);
     Arc::new(move || {
@@ -613,10 +610,10 @@ pub fn linked_probe(
 ///
 /// The door, its Statement or its tail is not one this host reads.
 pub fn linked_cli_help(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
 ) -> Result<Option<&'static str>, String> {
     let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(door),
+        crate::dispatch::load::enter_door(door.into()),
         Some(KindCode::Plane),
     )
     .map_err(|e| format!("{e:?}"))?;
@@ -638,10 +635,10 @@ pub fn linked_cli_help(
 ///
 /// The door will not load or its Statement breaks the section rules.
 pub fn linked_declaring_section(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
 ) -> Result<Option<&'static str>, String> {
     let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(door),
+        crate::dispatch::load::enter_door(door.into()),
         Some(KindCode::Plane),
     )
     .map_err(|e| format!("{e:?}"))?;

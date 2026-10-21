@@ -498,7 +498,11 @@ fn framed(
     RawOutcome::of(a.outcome)
 }
 
-extern "C" fn clock_now(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn clock_now(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -526,7 +530,11 @@ extern "C" fn clock_now(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn dest_judge(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -614,7 +622,11 @@ unsafe fn pended(
     }
 }
 
-extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn records_get(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -652,7 +664,7 @@ fn credential_kinds(ctx: HostCtx) -> &'static [String] {
     wake.credential_kinds.get().map_or(&[], Vec::as_slice)
 }
 
-extern "C" fn records_secret(
+unsafe extern "C" fn records_secret(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -714,7 +726,11 @@ fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::Dis
 /// unbound) is never opened: it answers FAILED at the [`svc::DISK_OPEN_FAILED`] step, in the host's
 /// words ([`NO_DESTINATION`]), before anything is written, so the sink reports it as the one line it
 /// reports a file it could not open with, as 1.5.5's file sink did (its BUSBAR-7074).
-extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn disk_append(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -788,7 +804,11 @@ extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn records_list(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -825,7 +845,7 @@ extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-extern "C" fn records_claim(
+unsafe extern "C" fn records_claim(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -859,7 +879,7 @@ extern "C" fn records_claim(
     )
 }
 
-extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -886,7 +906,11 @@ extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
     )
 }
 
-extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn trust_sight(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -926,7 +950,7 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-extern "C" fn trust_sight_item(
+unsafe extern "C" fn trust_sight_item(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -958,7 +982,11 @@ extern "C" fn trust_sight_item(
     )
 }
 
-extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn trust_serves(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -993,7 +1021,11 @@ extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn trust_decide(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1032,7 +1064,11 @@ extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn trust_state(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1059,7 +1095,11 @@ extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn trust_due(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1083,7 +1123,11 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn trust_verify(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1139,7 +1183,7 @@ pub(crate) fn serving_unit() -> Option<u64> {
     SERVING.with(std::cell::Cell::get)
 }
 
-extern "C" fn entitlement_check(
+unsafe extern "C" fn entitlement_check(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -1168,7 +1212,11 @@ extern "C" fn entitlement_check(
     )
 }
 
-extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn session_emit(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1198,7 +1246,11 @@ extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut Service
 /// `session.emit`'s refusal of a write that names no session or no bytes.
 const EMIT_NOTHING: &str = "session.emit names an open session and something to write";
 
-extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn random_fill(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     slot(
         ctx,
         input,
@@ -1225,7 +1277,11 @@ extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn unit_nest(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1262,7 +1318,11 @@ extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
 /// opened or settled.
 pub const WORK_RECORD_TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
 
-extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn work_open(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1296,7 +1356,11 @@ extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn work_find(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1324,7 +1388,11 @@ extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn work_settle(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1353,7 +1421,11 @@ extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-extern "C" fn work_resume(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn work_resume(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1389,7 +1461,7 @@ pub const HOOK_GATE_RESUMED: &str = "a gate is never resumed";
 /// The refusal of a `hook.call` with no prompt view.
 pub const HOOK_NO_PROMPT: &str = "a hook call states its prompt view";
 
-extern "C" fn verify_lookup(
+unsafe extern "C" fn verify_lookup(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
@@ -1423,7 +1495,11 @@ extern "C" fn verify_lookup(
     )
 }
 
-extern "C" fn verify_store(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn verify_store(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1453,7 +1529,11 @@ extern "C" fn verify_store(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-extern "C" fn content_scan(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn content_scan(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1511,7 +1591,11 @@ unsafe fn prompt_of(prompt: *const busbar_contract::abi::hook::PromptView) -> Op
     Some((system, messages))
 }
 
-extern "C" fn hook_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn hook_call(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     scoped(
         ctx,
         input,
@@ -1563,7 +1647,11 @@ extern "C" fn hook_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
 /// admitted; REFUSED, in the table's words, when it was refused or never declared. Never pends. The
 /// verdict binds fail-closed whether or not the plugin asks: every establish on a refused need is
 /// refused by the table.
-extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+unsafe extern "C" fn need_admit(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
     framed(
         input,
         out,
@@ -1588,7 +1676,7 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 #[path = "../tests/host_services_tests.rs"]
 mod tests;
 
-extern "C" fn snapshot_read(
+unsafe extern "C" fn snapshot_read(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,

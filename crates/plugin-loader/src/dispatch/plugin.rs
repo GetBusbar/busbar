@@ -1075,10 +1075,9 @@ impl Instance {
                 let _unit = super::services::serving(unit);
                 with_crossing(Some(self), || {
                     // SAFETY: THE ONE CROSSING (status row 159): `op` is a slot of the door this
-                    // plugin
-                    // loaded, its image held open by `self`; `instance` is what its `open`
-                    // answered (NULL before one); `input`/`output` are the host's own frame of the
-                    // slot's types, `out` zeroed and sized above, alive across the call.
+                    // plugin loaded, its image held open by `self`; `instance` is what its `open`
+                    // answered (NULL before one); `input`/`output` are the host's own frame of
+                    // the slot's types, `out` zeroed and sized above, alive across the call.
                     unsafe { enter_lifecycle((self.op_name)(s), op, instance, input, output) }
                 })
             });

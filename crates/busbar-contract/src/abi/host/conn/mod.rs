@@ -331,9 +331,7 @@ fn hosted(ctx: ConnCtx, body: impl FnOnce(&HostState) -> Result<(), ConnError>) 
     RawConnOutcome::of(
         crate::abi::sdk::boundary::caught(|| {
             // SAFETY: a non-null context is the `HostState` of the `ConnHost` the host minted it
-            // from
-            // (`ConnHost::ctx`),
-            // alive for the call.
+            // from (`ConnHost::ctx`), alive for the call.
             let host = unsafe { ctx.ptr.cast::<HostState>().as_ref() }.ok_or(ConnError::Fault)?;
             body(host)
         })

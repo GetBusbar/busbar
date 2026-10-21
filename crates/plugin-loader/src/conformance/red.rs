@@ -33,7 +33,7 @@ use std::sync::Arc;
 use busbar_contract::abi::host::conn::connector::{service, EstablishIn, IoIn, StreamIn};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
+use busbar_contract::abi::mechanism::door::{Door, Statement};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
@@ -41,22 +41,23 @@ use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
 use super::{
-    bind, connection_fixture, dispatcher, load, real_door, restated_door, with_an_outbound_need,
-    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, LAID, PIECED,
+    bind, connection_fixture, dispatcher, load, real_door, restated, with_an_outbound_need, Auth,
+    Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, LAID, PIECED,
     VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
+use crate::dispatch::load::{rendering_of_loaded, LoadedDoor};
 use crate::dispatch::{
-    load_dropped, load_linked, rendering_of, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
+    load_dropped, load_linked, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
 };
 
 /// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
-const VERSIONED_DOOR: DoorFn = restated_door::<1>;
-const CONNECTED_DOOR: DoorFn = restated_door::<2>;
+const VERSIONED_DOOR: LoadedDoor = restated::<1>();
+const CONNECTED_DOOR: LoadedDoor = restated::<2>();
 /// The door function of [`PIECED`].
-const PIECED_DOOR: DoorFn = restated_door::<3>;
+const PIECED_DOOR: LoadedDoor = restated::<3>();
 /// The door function of [`LAID`].
-const LAID_DOOR: DoorFn = restated_door::<4>;
+const LAID_DOOR: LoadedDoor = restated::<4>();
 
 /// Every kind the host has.
 const KINDS: [KindCode; 7] = [
@@ -161,7 +162,7 @@ pub fn red_frame_piece(s: &Subject) {
         .expect("the honest library loads dropped in");
     let _held = PIECED.hold(with_another_piece(real_door(s), stated));
     let refused =
-        rendering_of(PIECED_DOOR).expect_err("the pack tool signs no door at another piece");
+        rendering_of_loaded(PIECED_DOOR).expect_err("the pack tool signs no door at another piece");
     let LoadError::FramePieceSize {
         stated: said,
         host: read,
@@ -177,7 +178,7 @@ pub fn red_frame_piece(s: &Subject) {
             .contains("rebuild against this busbar-contract"),
         "{refused}"
     );
-    let linked = LinkedRow::of(PIECED_DOOR)
+    let linked = LinkedRow::of_loaded(PIECED_DOOR)
         .and_then(|row| load_linked::<Transport>(&row, s.bind(&d, "red-piece")).map(|_| ()))
         .expect_err("a linked transport at another piece is refused");
     assert_eq!(linked, refused, "the same refusal, linked");
@@ -235,7 +236,7 @@ pub fn red_plane_layout(s: &Subject) {
         .expect("the honest library loads dropped in");
     let _held = LAID.hold(with_another_layout(real_door(s), stated));
     let refused =
-        rendering_of(LAID_DOOR).expect_err("the pack tool signs no door at another layout");
+        rendering_of_loaded(LAID_DOOR).expect_err("the pack tool signs no door at another layout");
     let LoadError::PlaneLayout {
         stated: said,
         host: read,
@@ -251,7 +252,7 @@ pub fn red_plane_layout(s: &Subject) {
             .contains("rebuild against this busbar-contract"),
         "{refused}"
     );
-    let linked = LinkedRow::of(LAID_DOOR)
+    let linked = LinkedRow::of_loaded(LAID_DOOR)
         .and_then(|row| load_linked::<Plane>(&row, s.bind(&d, "red-layout")).map(|_| ()))
         .expect_err("a linked plane at another layout is refused");
     assert_eq!(linked, refused, "the same refusal, linked");
@@ -400,7 +401,7 @@ fn close_stream<K: Kind>(p: &Plugin<K>, stream: u64) -> (Outcome, u64, String) {
 /// The door restated with one outbound need, bound linked as `instance` over `table`.
 fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<K> {
     let d = dispatcher();
-    let row = LinkedRow::of(CONNECTED_DOOR).expect("the restated door states its Statement");
+    let row = LinkedRow::of_loaded(CONNECTED_DOOR).expect("the restated door states its Statement");
     load_linked::<K>(
         &row,
         Bind {

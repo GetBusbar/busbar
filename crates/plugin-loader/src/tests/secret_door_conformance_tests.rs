@@ -122,7 +122,7 @@ fn script(p: &Plugin<Secret>) -> Vec<String> {
 
 /// The real secret plugin, LINKED: its door, through the one dispatcher.
 fn linked() -> Loaded<Secret> {
-    both::linked::<Secret>(secret_fixture::door::door)
+    both::linked::<Secret>(secret_fixture::door::MACRO_DOOR)
 }
 
 /// The real secret plugin, DROPPED IN: its built `cdylib`. A missing artifact is a failure, never
@@ -135,7 +135,7 @@ fn dropped() -> Loaded<Secret> {
     // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
     let krate = format!("{logic}_plugin");
     let path = crate::both_ways::cdylib(&krate);
-    both::dropped_from::<Secret>(secret_fixture::door::door, &path)
+    both::dropped_from::<Secret>(secret_fixture::door::MACRO_DOOR, &path)
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn a_linked_and_a_dropped_in_secret_plugin_resolve_identically() {
 /// kind's contract. Through either door the dispatcher answers FAULT, never the answer.
 #[test]
 fn a_secret_plugin_that_breaks_resolve_is_refused_through_both_doors() {
-    let broken = secret_door_plugin::broken::door;
+    let broken = secret_door_plugin::broken::MACRO_DOOR;
     let run = |p: &Plugin<Secret>| {
         let opened = line("open", &open(p, b"{}"));
         let (resolved, _) = resolve(p, b"{}");
@@ -202,7 +202,7 @@ fn the_secret_door_is_not_another_kinds_door() {
     let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
         crate::dispatch::DispatchConfig::default(),
     ));
-    let row = LinkedRow::of(secret_fixture::door::door).expect("the linked row states");
+    let row = LinkedRow::of(secret_fixture::door::MACRO_DOOR).expect("the linked row states");
     let err = load_linked::<Export>(&row, both::bind(&dispatcher))
         .expect_err("a secret door is not an export door");
     let said = format!("{err:?}");

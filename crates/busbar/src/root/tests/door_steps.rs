@@ -1401,7 +1401,8 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     // The row's canonical name is its key.
     let name = "busbar-auth-oauth";
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] =
+        [(name, name, busbar_auth_oauth::MACRO_DOOR)];
     super::OutboundAuths::new(
         dispatcher,
         &linked,
@@ -2028,7 +2029,7 @@ pub(crate) mod tool_door {
     use std::sync::Arc;
 
     use axum::http::StatusCode;
-    use busbar_contract::abi::mechanism::door::DoorFn;
+    use busbar_contract::abi::sdk::door::MacroDoor;
     use busbar_contract::caps::ReasonCode;
     use busbar_contract::conn::{DeclaredConns, PollConns};
     use busbar_kernel::cost::CostModel;
@@ -2105,8 +2106,8 @@ pub(crate) mod tool_door {
 
     /// THE TOOL DOOR: of the linked plane doors, the one whose Statement owns the endpoint section
     /// the fixture names (found by binding each, once).
-    pub(crate) fn line_door() -> DoorFn {
-        static DOOR: std::sync::OnceLock<DoorFn> = std::sync::OnceLock::new();
+    pub(crate) fn line_door() -> MacroDoor {
+        static DOOR: std::sync::OnceLock<MacroDoor> = std::sync::OnceLock::new();
         *DOOR.get_or_init(|| {
             let section = endpoint_section();
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -2564,7 +2565,7 @@ pub(crate) mod tool_door {
             // the authorization server.
             let mut linked = crate::LINKED.auths.to_vec();
             let name = "busbar-auth-oauth";
-            linked.push((name, name, busbar_auth_oauth::door));
+            linked.push((name, name, busbar_auth_oauth::MACRO_DOOR));
             let tokens = Arc::new(super::TokenEndpoint {
                 answer: Some(|body: &str| {
                     let scope = body

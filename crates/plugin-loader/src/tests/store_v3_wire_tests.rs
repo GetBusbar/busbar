@@ -289,7 +289,7 @@ macro_rules! wire_store {
 
 /// `door` loaded and opened over `conns`, with `workers` dispatcher workers.
 fn open_over(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
+    door: busbar_contract::abi::sdk::door::MacroDoor,
     conns: impl FnOnce(&Dispatcher) -> Arc<dyn busbar_contract::conn::DeclaredConns>,
 ) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
@@ -337,7 +337,7 @@ wire_store!(KeptOne, kept_one, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 fn a_stores_connection_is_kept_across_ops() {
     let (addr, accepted) = tcp_backend(Behaviour::default());
     *KeptOne::target().lock().expect("target") = addr;
-    let s = open_over(kept_one::door, plain);
+    let s = open_over(kept_one::MACRO_DOOR, plain);
     for _ in 0..3 {
         assert_eq!(
             ping_of(&s).expect("the op answers"),
@@ -363,7 +363,7 @@ fn concurrent_ops_beyond_the_bound_wait_for_a_kept_connection() {
         ..Behaviour::default()
     });
     *KeptBounded::target().lock().expect("target") = addr;
-    let s = Arc::new(open_over(kept_bounded::door, plain));
+    let s = Arc::new(open_over(kept_bounded::MACRO_DOOR, plain));
     let ops: Vec<_> = (0..6)
         .map(|_| {
             let s = s.clone();
@@ -392,7 +392,7 @@ fn a_dropped_kept_connection_fails_its_op_and_the_next_dials_fresh() {
         ..Behaviour::default()
     });
     *NoRetry::target().lock().expect("target") = addr;
-    let s = open_over(no_retry::door, plain);
+    let s = open_over(no_retry::MACRO_DOOR, plain);
     assert_eq!(ping_of(&s).expect("first"), vec!["echo ping".to_string()]);
     std::thread::sleep(Duration::from_millis(20));
     assert!(
@@ -416,7 +416,7 @@ fn a_read_on_a_dropped_kept_connection_is_retried_on_a_fresh_one() {
         ..Behaviour::default()
     });
     *Retries::target().lock().expect("target") = addr;
-    let s = open_over(retries::door, plain);
+    let s = open_over(retries::MACRO_DOOR, plain);
     for _ in 0..3 {
         assert_eq!(ping_of(&s).expect("answers"), vec!["echo ping".to_string()]);
         std::thread::sleep(Duration::from_millis(20));
@@ -439,7 +439,7 @@ fn the_stores_dial_timeout_reaches_the_hosts_table() {
     *Timed::target().lock().expect("target") = addr;
     let table = Arc::new(Mutex::new(None::<Arc<TcpConns>>));
     let keep = table.clone();
-    let s = open_over(timed::door, move |d| {
+    let s = open_over(timed::MACRO_DOOR, move |d| {
         let t = Arc::new(TcpConns::new(d.conn_waker()));
         *keep.lock().expect("table") = Some(t.clone());
         t
@@ -469,7 +469,7 @@ fn a_unix_target_is_a_unix_domain_stream() {
         }
     });
     *OverUnix::target().lock().expect("target") = format!("unix:{}", path.display());
-    let s = open_over(over_unix::door, plain);
+    let s = open_over(over_unix::MACRO_DOOR, plain);
     assert_eq!(ping_of(&s).expect("answers"), vec!["echo ping".to_string()]);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -541,7 +541,7 @@ fn a_rejected_first_host_is_closed_and_the_op_lands_on_the_next() {
     });
     let (primary, primary_seen) = tcp_backend(Behaviour::default());
     *Listed::targets().lock().expect("targets") = vec![standby, primary];
-    let s = open_over(listed::door, plain);
+    let s = open_over(listed::MACRO_DOOR, plain);
     assert_eq!(
         ping_of(&s).expect("the op lands on the second host"),
         vec!["echo ping".to_string()]
@@ -582,7 +582,7 @@ fn a_store_reads_the_os_user_off_the_hosts_identity_service() {
     let want = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_default();
-    let s = open_over(who::door, plain);
+    let s = open_over(who::MACRO_DOOR, plain);
     assert_eq!(ping_of(&s).expect("the identity answers"), vec![want]);
 }
 
@@ -600,7 +600,7 @@ fn a_tls_secured_stream_carries_the_stores_ops() {
     *OverTls::target().lock().expect("target") = format!("localhost:{port}");
     let tls = Arc::new(TlsDouble::default());
     let table_tls = Arc::clone(&tls);
-    let s = open_over(over_tls::door, secured_by(table_tls));
+    let s = open_over(over_tls::MACRO_DOOR, secured_by(table_tls));
     for _ in 0..2 {
         assert_eq!(
             ping_of(&s).expect("answers over TLS"),
@@ -627,7 +627,7 @@ fn a_tls_upgrade_without_trust_is_refused() {
     let (addr, _) = tcp_backend(Behaviour::default());
     // The plain table refuses every upgrade.
     *Untrusted::target().lock().expect("target") = addr;
-    let s = open_over(untrusted::door, plain);
+    let s = open_over(untrusted::MACRO_DOOR, plain);
     let e = ping_of(&s).expect_err("no TLS without trust");
     assert!(e.0.contains("wire-store: "), "{e:?}");
 }
@@ -683,7 +683,7 @@ fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
     });
     let tls = Arc::new(TlsDouble::default());
     let table_tls = Arc::clone(&tls);
-    let s = open_over(start_tls::door, secured_by(table_tls));
+    let s = open_over(start_tls::MACRO_DOOR, secured_by(table_tls));
     let answered = ping_of(&s);
     assert!(
         answered
@@ -765,7 +765,7 @@ fn a_bound_covers_the_handshake_after_the_dial() {
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
         Arc::new(TcpConns::new(d.conn_waker()));
     let p = load_linked::<Store>(
-        &LinkedRow::of(bounded_handshake::door).expect("the store states its Statement"),
+        &LinkedRow::of(bounded_handshake::MACRO_DOOR).expect("the store states its Statement"),
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
@@ -822,7 +822,7 @@ fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() 
     let target = format!("localhost:{port}");
 
     *SelfSignedVerified::target().lock().expect("target") = target.clone();
-    let s = open_over(self_signed_verified::door, move |d| {
+    let s = open_over(self_signed_verified::MACRO_DOOR, move |d| {
         Arc::new(TcpConns::with_tls(d.conn_waker(), self_signed_tls()))
     });
     assert!(
@@ -831,7 +831,7 @@ fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() 
     );
 
     *SelfSignedInsecure::target().lock().expect("target") = target.clone();
-    let s = open_over(self_signed_insecure::door, move |d| {
+    let s = open_over(self_signed_insecure::MACRO_DOOR, move |d| {
         Arc::new(TcpConns::with_tls(d.conn_waker(), self_signed_tls()))
     });
     assert_eq!(
@@ -840,7 +840,7 @@ fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() 
     );
 
     *InsecureOtherClass::target().lock().expect("target") = target;
-    let s = open_over(insecure_other_class::door, plain);
+    let s = open_over(insecure_other_class::MACRO_DOOR, plain);
     let e = ping_of(&s).expect_err("verify-off is an operator-infrastructure need's only");
     assert!(e.0.contains("wire-store: "), "{e:?}");
 }

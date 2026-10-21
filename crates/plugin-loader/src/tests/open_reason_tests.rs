@@ -18,9 +18,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::sdk::door::{blank_in, blank_out, MacroDoor};
 
 use super::open_reason_plugins as witness;
 use super::OPEN_REASON_CAP;
@@ -54,7 +53,7 @@ fn dropped_path(example: &str) -> PathBuf {
 /// both must agree.
 fn store_text(settings: &[u8]) -> String {
     let d = dispatcher();
-    let door: DoorFn = witness::store::door;
+    let door: MacroDoor = witness::store::MACRO_DOOR;
     let row = LinkedRow::of(door).expect("the store door states its Statement");
     let linked = load_linked::<Store>(&row, bind(&d)).expect("the linked store door loads");
     let text = LoadedStore::open(linked, d.clone(), settings, mint).expect_err("it never opens");
@@ -116,7 +115,7 @@ fn octets(b: &'static [u8]) -> Blob {
 #[test]
 fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers() {
     let d = dispatcher();
-    let door: DoorFn = witness::life::door;
+    let door: MacroDoor = witness::life::MACRO_DOOR;
     let row = LinkedRow::of(door).expect("the life door states its Statement");
     let p = load_linked::<Secret>(&row, bind(&d)).expect("the linked life door loads");
 

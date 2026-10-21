@@ -217,7 +217,7 @@ async fn call(rig: &Rig) -> (StatusCode, HeaderMap, Vec<u8>) {
 }
 
 /// The Statement name a linked door states.
-fn statement_name(door: busbar_contract::abi::mechanism::door::DoorFn) -> String {
+fn statement_name(door: busbar_contract::abi::sdk::door::MacroDoor) -> String {
     let row = crate::root::loader::dispatch::LinkedRow::of(door).expect("the door states itself");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
         .expect("its Statement reads")

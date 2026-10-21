@@ -15,11 +15,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
-use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
-};
+use busbar_contract::abi::mechanism::door::{REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::plugin::Kind;
 
 use crate::dispatch::kinds::{
@@ -309,8 +308,19 @@ impl Candidate {
     /// # Errors
     ///
     /// As [`Candidate::from_rendering`].
-    pub fn linked(door: DoorFn) -> Result<Self, String> {
+    pub fn linked(door: MacroDoor) -> Result<Self, String> {
         let row = LinkedRow::of(door).map_err(|e| e.to_string())?;
+        Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
+    }
+
+    /// [`Candidate::linked`] over a door the loader may enter: a test's restated door.
+    ///
+    /// # Errors
+    ///
+    /// As [`Candidate::linked`].
+    #[cfg(test)]
+    pub(crate) fn linked_loaded(door: crate::dispatch::LoadedDoor) -> Result<Self, String> {
+        let row = LinkedRow::of_loaded(door).map_err(|e| e.to_string())?;
         Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
     }
 

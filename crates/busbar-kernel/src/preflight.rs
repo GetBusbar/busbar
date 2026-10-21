@@ -49,7 +49,7 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 pub type LinkedStore = (
     &'static str,
     bool,
-    busbar_contract::abi::mechanism::door::DoorFn,
+    busbar_contract::abi::sdk::door::MacroDoor,
     &'static str,
 );
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
@@ -186,8 +186,8 @@ const STAND_IN: RootInstall = RootInstall {
 /// [`crate::test_support::hook_axis_stand_in`]): the ranking double, in every test build (THE
 /// DESIGN l.1443: the kernel has no `hooks-ranking` feature to switch it on).
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] =
-    &[crate::test_support::ranking_double::door];
+pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::sdk::door::MacroDoor] =
+    &[crate::test_support::ranking_double::MACRO_DOOR];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
 /// compiled in, its ranking hooks) and its registry build, installed once before the first

@@ -64,7 +64,7 @@ macro_rules! boot {
 fn open(db: &str, mint: OpIdMint) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
-        &LinkedRow::of(shared::door).expect("the store states its Statement"),
+        &LinkedRow::of(shared::MACRO_DOOR).expect("the store states its Statement"),
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
