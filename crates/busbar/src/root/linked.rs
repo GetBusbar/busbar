@@ -409,6 +409,15 @@ pub fn path_dialects(
 ) -> Result<busbar_kernel::ingress::native::PathDialects, String> {
     let mut rules: Vec<(crate::root::loader::sign::PathMatch, &'static str)> = Vec::new();
     let mut residual: Option<&'static str> = None;
+    let mut names = busbar_kernel::Registration::new();
+    let mut label_of = |row: &str, label: &str| {
+        names.key(label).ok_or_else(|| {
+            format!(
+                "plugin '{row}' states the `auth_labels` label `{label}`, which the vocabulary \
+                 cannot take (boot is over, or it is full)"
+            )
+        })
+    };
     for (row, _, json) in linked.plane_door_declares {
         let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
             .map_err(|e| {
@@ -425,10 +434,14 @@ pub fn path_dialects(
                     rule.methods
                 ));
             }
-            rules.push((rule.path, leak_label(rule.label)));
+            rules.push((rule.path, label_of(row, &rule.label)?));
         }
         if residual.is_none() {
-            residual = labels.default.map(leak_label);
+            residual = labels
+                .default
+                .as_deref()
+                .map(|label| label_of(row, label))
+                .transpose()?;
         }
     }
     Ok(busbar_kernel::ingress::native::PathDialects {
@@ -440,12 +453,6 @@ pub fn path_dialects(
         }),
         residual,
     })
-}
-
-/// A declared label as the `&'static str` the kernel's labels are: read once, at link time, and
-/// kept for the process.
-fn leak_label(label: String) -> &'static str {
-    Box::leak(label.into_boxed_str())
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
