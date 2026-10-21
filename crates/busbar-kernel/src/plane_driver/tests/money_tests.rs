@@ -1302,9 +1302,8 @@ fn a_unit_with_no_new_counts_writes_nothing() {
 /// EVERY VERIFIED PRINCIPAL IS LENT A STABLE, NON-EMPTY CALLER REFERENCE (row 159 H2): a book with
 /// no signing material (an OIDC or plugin-auth chain names no `auth.signing_key`) lends one keyed by
 /// the deployment keyset it binds, through the live slot every plane driver holds, so two principals
-/// get two references and one principal gets one reference on every node of the deployment. RED:
-/// with the slot read before the keyset is bound (or never bound), every principal is lent nothing,
-/// which the plane reads as the one ungoverned owner.
+/// get two references and one principal gets one reference on every node of the deployment. Before
+/// the keyset is bound (or when none is), the node's per-boot key lends them, never nothing.
 #[test]
 fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     let node = |material: Option<[u8; 32]>| {
@@ -1323,8 +1322,11 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
         };
         (lent("oidc:alice"), lent("oidc:bob"))
     };
-    // The RED shape: nothing bound, nothing lent, and the two principals are indistinguishable.
-    assert_eq!(node(None), (String::new(), String::new()));
+    // Nothing bound: the per-boot key still lends two principals two non-empty references, and
+    // they are not the deployment keyset's.
+    let (boot_alice, boot_bob) = node(None);
+    assert!(!boot_alice.is_empty() && !boot_bob.is_empty());
+    assert_ne!(boot_alice, boot_bob);
     let keyset = [7u8; 32];
     let (alice, bob) = node(Some(keyset));
     assert!(
@@ -1336,6 +1338,7 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     assert_eq!(node(Some(keyset)), (alice.clone(), bob));
     // Another deployment's keyset gives another reference.
     assert_ne!(node(Some([8u8; 32])).0, alice);
+    assert_ne!(boot_alice, alice, "the keyset, once bound, keys the reference");
 }
 
 /// A NODE WITH NO SIGNING KEY AND A NON-SIGNING AUDIT CHAIN STILL LENDS EVERY VERIFIED PRINCIPAL ITS

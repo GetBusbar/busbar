@@ -1518,7 +1518,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    /// key (its signing material, the deployment keyset, or its per-boot key: never none); the
+    /// principal itself never enters a plane input.
     fn verify(
         &self,
         token: &Pass<Verify>,
