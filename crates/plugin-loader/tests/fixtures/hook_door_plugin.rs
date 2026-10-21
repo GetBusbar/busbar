@@ -12,6 +12,8 @@
 //!   refuse, ABSTAIN otherwise.
 //! * [`broken`] (`hook_broken_door`) — the same plugin whose `decide` answers two verbs at once
 //!   (PREFER and REJECT), which `check_decide` refuses: the host must answer FAULT.
+//! * [`ordering`] (linked only) — the conforming plugin whose `decide` answers PREFER, for the
+//!   proof that a hook which declared `hook.orders: false` is refused when it orders.
 //! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
 //!   the host refuses at load (ARCHITECT Q-SO8).
 //! * [`panicking`] (linked only) — the same plugin whose `decide` PANICS: the SDK's door catches
@@ -42,6 +44,8 @@ pub const TAIL: &Tail = &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMP
 pub const NAME: &str = "both-ways-hook";
 /// The broken door's Statement name.
 pub const BROKEN_NAME: &str = "both-ways-hook-broken";
+/// The ordering door's Statement name.
+pub const ORDERING_NAME: &str = "both-ways-hook-ordering";
 /// The untailed door's Statement name.
 pub const UNTAILED_NAME: &str = "both-ways-hook-untailed";
 /// The panicking door's Statement name.
@@ -141,6 +145,25 @@ impl SafeSlot for DecideBroken {
     }
 }
 
+/// `decide`, ORDERING: PREFER (a hook that ranks), the verb a hook declaring `orders: false` never
+/// answers.
+pub struct DecideOrders;
+
+impl SafeSlot for DecideOrders {
+    type In = DecideIn;
+    type Out = DecideOut;
+    type State = Held<Gate>;
+
+    fn call(
+        _: Instance<'_, Held<Gate>>,
+        _: Lent<'_, DecideIn>,
+        mut out: Out<'_, DecideOut>,
+    ) -> Outcome {
+        out.set(|o| &o.verbs, VERB_PREFER);
+        Outcome::Ready
+    }
+}
+
 /// `decide`, PANICKING: the slot body panics before it answers.
 pub struct DecidePanics;
 
@@ -223,6 +246,11 @@ pub mod conforming {
 /// The broken hook plugin's door.
 pub mod broken {
     hook_door!(super::BROKEN_NAME, super::DecideBroken);
+}
+
+/// The conforming plugin whose `decide` answers an order.
+pub mod ordering {
+    hook_door!(super::ORDERING_NAME, super::DecideOrders);
 }
 
 /// The conforming plugin with NO hook tail: refused at load.
