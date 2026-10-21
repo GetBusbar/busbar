@@ -95,8 +95,10 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// it stacks on (#1276: `ingress/arrival_host.rs`, `ingress/tests/terminal_tests.rs`), against the
 /// files dev landed meanwhile. Lowered 1215 -> 1213 merging dev after GetBusbar/busbar#1299
 /// (`busbar-kernel/src/failover/mod.rs` and `failover/tests/failover_tests.rs` deleted), the
-/// gate's measure on 5989f0e117.
-pub const MIN_FILES: usize = 1213;
+/// gate's measure on 5989f0e117. Lowered 1213 -> 1210 by GetBusbar/busbar#1408 (row 82 D2): the root's
+/// kernel-loop rider (`root/gauntlet_install.rs`, `root/gauntlet_kernel.rs`) is deleted with its
+/// tests and the root tests gated on axes no linked row sets, the gate's measure on 5948c3ecf6.
+pub const MIN_FILES: usize = 1210;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
