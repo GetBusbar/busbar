@@ -25,7 +25,7 @@ use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, oauth_as,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
     observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
     state, store, telemetry, tls, transport, trust,
 };

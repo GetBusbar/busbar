@@ -1177,14 +1177,20 @@ impl HookStage {
     }
 
     /// The GATE-FIRST binder of the plane registered under `plane_key` (its tail states
-    /// `abi::plane::TAIL_HOOKS_GATED`): the gates and rewrites the deployment attached to the
-    /// entry the plane's projection names, filed under the plane's registry key.
-    fn gated(&self, plane_key: &str) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+    /// `abi::plane::TAIL_HOOKS_GATED`) whose dialects are `dialects`: the gates and rewrites the
+    /// deployment attached to the entry the plane's projection names, filed under the plane's
+    /// registry key.
+    fn gated(
+        &self,
+        plane_key: &str,
+        dialects: &[&str],
+    ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
         let gov = Arc::clone(&self.gov);
         Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
             host: Arc::clone(&self.host),
             plane_key: plane_key.to_string(),
             keys: Arc::new(move |principal: &str| gov.lookup_by_sub(principal)),
+            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
         })
     }
 }
@@ -1559,7 +1565,7 @@ pub(crate) fn compose_planes_over(
             Some(stage)
                 if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
             {
-                driver.with_hooks(stage.gated(plugin.name()))
+                driver.with_hooks(stage.gated(plugin.name(), &served_facts.dialects))
             }
             // Every other plane runs the routed order (U22): the deployment's global and per-pool
             // hooks, bound per unit off the live generation, reach its request stage and its

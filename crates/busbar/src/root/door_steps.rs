@@ -937,6 +937,13 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    fn pool_holds(&self, pool: &[u8], member: &str) -> bool {
+        std::str::from_utf8(pool)
+            .ok()
+            .and_then(|pool| self.pools.pools().get(pool))
+            .is_some_and(|members| members.iter().any(|m| m == member))
+    }
+
     fn decoded(&self, _ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
         let mut u = self.lock();
         u.op = Some(op);
