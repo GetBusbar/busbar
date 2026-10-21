@@ -660,7 +660,8 @@ impl DoorApply {
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
-        let pools = DoorPools::of(&table);
+        let pools =
+            DoorPools::of(&table).map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -1728,7 +1729,7 @@ pub(crate) fn compose_planes_over(
             // The route table: the section, with the catalog model its `session.model` names
             // folded in.
             let table = routes_of(section, egress.reach.catalog);
-            let pools = DoorPools::of(&table);
+            let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
             let routes = crate::root::door_steps::member_routes(
                 &table,
                 &pools,
@@ -1912,7 +1913,7 @@ fn seal_live(
     // The route table: the section, with the catalog model its `session.model` names folded in
     // ([`catalog_routes`]).
     let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
-    let pools = DoorPools::of(&table);
+    let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(

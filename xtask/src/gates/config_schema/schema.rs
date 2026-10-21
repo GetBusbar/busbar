@@ -196,8 +196,8 @@ fn package_name(text: &str) -> Option<String> {
     let mut in_package = false;
     for line in text.lines() {
         let t = line.trim();
-        if t.starts_with('[') {
-            in_package = t == "[package]";
+        if let Some(is_package) = crate::manifest::package_header(t) {
+            in_package = is_package;
             continue;
         }
         if !in_package {
@@ -1648,5 +1648,19 @@ mod reading_memo_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod package_header_tests {
+    /// `[ package ]` IS `[package]`: a header spelled with spaces names its crate. RED before the
+    /// shared header reading: the crate had no name and its grammar root was never read.
+    #[test]
+    fn a_spaced_package_header_names_its_crate() {
+        assert_eq!(
+            super::package_name("[ package ]\nname = \"busbar-core-spaced\"\n").as_deref(),
+            Some("busbar-core-spaced")
+        );
+        assert_eq!(super::package_name("[[bin]]\nname = \"tool\"\n"), None);
     }
 }
