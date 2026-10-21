@@ -1522,9 +1522,11 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     ///
     /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
     /// unit, so a driver whose book lends references never lends an empty one to a governed
-    /// caller (any principal but the anonymous one, which holds no key). Such a caller is refused
-    /// here, before the plane is lent the unit, when it names no one or when the book holds no key
-    /// to derive its reference under; it is never lent the empty reference instead.
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
     fn verify(
         &self,
         token: &Pass<Verify>,
