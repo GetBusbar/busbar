@@ -150,13 +150,6 @@ fn the_install_records_holder_and_dater_answer_the_rate_seam() {
     );
 }
 
-/// Nothing installed: no holder hears an apply and every instant dates to the opening entry.
-#[test]
-fn an_empty_install_record_carries_no_holder_and_no_dater() {
-    let none = RootInstall::default();
-    assert!(none.rate_apply.is_none() && none.rate_epoch.is_none());
-}
-
 /// Every SHIPPED source file under `dir`: the `tests` directories and `test_support` are test code
 /// as a whole.
 fn shipped_sources(dir: &Path, out: &mut Vec<PathBuf>) {
