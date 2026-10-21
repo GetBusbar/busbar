@@ -28,6 +28,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints};
 use busbar_contract::abi::mechanism::check::Fault;
+use busbar_contract::abi::transport::check::check_route_view;
 use busbar_contract::abi::transport::route::{
     Interner, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
     PATH_SUFFIX,
@@ -239,6 +240,11 @@ impl GuestList {
     /// [`GuestRefusal::EqualPrecedence`], naming both lines; [`GuestRefusal::PeerMix`], naming
     /// the lines on each side; [`GuestRefusal::PointNotOffered`], naming the line.
     pub fn seal(mut lines: Vec<Line>) -> Result<Self, GuestRefusal> {
+        for line in &lines {
+            if let Err(fault) = check_route_view(&line.route.view()) {
+                return Err(GuestRefusal::Malformed(Box::new((line.clone(), fault))));
+            }
+        }
         // Stable: equal keys keep the declared order, and a claimant's rung orders its own lines.
         lines.sort_by(|a, b| {
             b.route

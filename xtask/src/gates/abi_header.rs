@@ -16,8 +16,9 @@
 //! * a construct the generator cannot map FAILS the run and names the item. Nothing is skipped
 //!   silently;
 //! * the committed layout golden (`crates/busbar-contract/tests/golden/abi-layout.golden`) is the
-//!   ONE layout pin: for every emitted struct it records, the header carries `_Static_assert`s for
-//!   its size, alignment and field offsets, so a C compiler refuses a header that disagrees.
+//!   ONE layout pin: every emitted struct is recorded there (one that is not FAILS the run, naming
+//!   it), and the header carries `_Static_assert`s for its size, alignment and field offsets, so a C
+//!   compiler refuses a header that disagrees.
 //!
 //! NAMING. Each source is a kind: `mech`, `store`, `secret`, `auth`, `hook`, `export`, `plane`,
 //! `transport`, `hconn` (the connector table), `hsvc` (the service table) and `hio` (the host I/O
@@ -62,6 +63,10 @@ const SOURCES: &[(&str, &str, &str, bool)] = &[
     ("hsvc", "hsvc::", "host/service.rs", false),
     ("hio", "hio::", "host/io.rs", false),
 ];
+
+/// `(kind, Rust name, golden key)`: a struct the layout golden records under an alias of its own,
+/// neither `<prefix><Name>` nor `<prefix><module>::<Name>`.
+const GOLDEN_ALIASES: &[(&str, &str, &str)] = &[("mech", "AbiStr", "MechStr")];
 
 /// One source file handed to [`render_sources`].
 pub struct Src<'a> {
@@ -1101,17 +1106,29 @@ fn comment(doc: &Option<String>) -> String {
     }
 }
 
-/// [`render_sources`], every emitted struct held to the golden (RED: not yet held).
+/// Render the header from source texts and the layout golden. The pure core of the gate. A struct
+/// the golden does not record is emitted without its assertions: a synthetic fragment's golden may
+/// pin only what it tests. The real tree's render ([`render`]) holds every struct to the golden
+/// ([`render_sources_pinned`]).
 ///
 /// # Errors
 ///
-/// As [`render_sources`].
-pub fn render_sources_pinned(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
-    render_sources(srcs, golden)
+/// A construct with no C mapping, or a golden that disagrees with its struct.
+pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
+    render_with(srcs, golden, false)
 }
 
-/// Render the header from source texts and the layout golden. The pure core of the gate.
-pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
+/// [`render_sources`], and every emitted struct is pinned by the golden: one it does not record
+/// fails the render, naming it (audit contract-include #1).
+///
+/// # Errors
+///
+/// As [`render_sources`], and every struct the golden does not record.
+pub fn render_sources_pinned(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
+    render_with(srcs, golden, true)
+}
+
+fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<String, String> {
     let mut col = Collected::default();
     for s in srcs {
         if !SOURCES.iter().any(|(k, ..)| *k == s.kind) {
@@ -1359,14 +1376,44 @@ pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> 
         if s.name.starts_with(&cap) {
             keys.push(s.name.clone());
         }
+        // A struct recorded by its inline-module path (`tkind::route::RouteMatch`) or under the
+        // golden's own alias ([`GOLDEN_ALIASES`]) is the same struct.
+        let mut submodule: Vec<&String> = gold
+            .keys()
+            .filter(|k| {
+                k.strip_prefix(prefix)
+                    .and_then(|rest| rest.rsplit_once("::"))
+                    .is_some_and(|(_, name)| *name == s.name)
+            })
+            .collect();
+        submodule.sort();
+        keys.extend(submodule.into_iter().cloned());
+        keys.extend(
+            GOLDEN_ALIASES
+                .iter()
+                .filter(|(kind, name, _)| *kind == s.kind && *name == s.name)
+                .map(|(_, _, alias)| (*alias).to_string()),
+        );
+        let t = cname(&s.kind, &s.name);
+        // THE ONE LAYOUT PIN HOLDS FOR EVERY EMITTED STRUCT of the real tree: one the golden does
+        // not record is a header a C compiler cannot hold to the Rust layout, so the run fails and
+        // names it.
         let Some((key, entries)) = keys.iter().find_map(|k| {
             gold.get(k)
                 .filter(|e| e.iter().any(|(f, _)| f == "__size"))
                 .map(|e| (k, e))
         }) else {
+            if !every_pinned {
+                continue;
+            }
+            errs.push(format!(
+                "`{t}` (`{}`) is not pinned: the layout golden records none of {} with a __size; \
+                 record it in crates/busbar-contract/tests/layout_golden.rs",
+                s.name,
+                keys.join(", ")
+            ));
             continue;
         };
-        let t = cname(&s.kind, &s.name);
         let get = |f: &str| entries.iter().find(|(n, _)| n == f).map(|(_, v)| *v);
         let (Some(size), Some(align)) = (get("__size"), get("__align")) else {
             errs.push(format!("golden `{key}` has no __size and __align"));
@@ -1545,7 +1592,7 @@ pub fn render(cx: &Ctx) -> Result<String, String> {
             text: t,
         })
         .collect();
-    render_sources(&srcs, &golden)
+    render_sources_pinned(&srcs, &golden)
 }
 
 /// The first line where `committed` and `rendered` differ, or `None`.
@@ -1645,12 +1692,18 @@ impl Gate for AbiHeaderGate {
             &[HEADER, "drifted at line", "BB_PERTURBED_"],
         ));
 
-        // A shape added to a kind folder without regenerating.
+        // A shape added to a kind folder (and pinned by the golden) without regenerating.
         let planted_rs = format!("{ABI}/store/planted_header_shape.rs");
+        let planted = "#[repr(C)]\npub struct PlantedHeaderShape {\n    pub a: u64,\n}\n";
+        let golden = cx.read(GOLDEN).unwrap_or_default();
         let mut grown = Overlay::new();
+        grown.set(planted_rs.clone(), planted.to_string());
         grown.set(
-            planted_rs,
-            "#[repr(C)]\npub struct PlantedHeaderShape {\n    pub a: u64,\n}\n".to_string(),
+            GOLDEN,
+            format!(
+                "{golden}StorePlantedHeaderShape.a=0\nStorePlantedHeaderShape.__size=8\n\
+                 StorePlantedHeaderShape.__align=8\n"
+            ),
         );
         report.push(prove_red(
             cx,
@@ -1659,6 +1712,19 @@ impl Gate for AbiHeaderGate {
             &[ROW_DRIFT],
             grown,
             &["drifted at line"],
+        ));
+
+        // A shape the layout golden does not record (audit contract-include #1: four structs went
+        // unpinned and the header said so only in a count).
+        let mut unpinned = Overlay::new();
+        unpinned.set(planted_rs, planted.to_string());
+        report.push(prove_red(
+            cx,
+            self,
+            "a C-layout struct the layout golden does not record fails, naming it",
+            &[ROW_DRIFT],
+            unpinned,
+            &["bb_store_PlantedHeaderShape", "is not pinned"],
         ));
 
         // A construct with no C mapping.
@@ -1677,7 +1743,6 @@ impl Gate for AbiHeaderGate {
         ));
 
         // A golden that records a field the struct does not have.
-        let golden = cx.read(GOLDEN).unwrap_or_default();
         let mut skew = Overlay::new();
         skew.set(GOLDEN, format!("{golden}StoreReserveIn.planted_field=3\n"));
         report.push(prove_red(
