@@ -3,8 +3,8 @@
 
 //! A ROUTED-ORDER PLANE'S OWN SECTION ATTACH BINDS (THE DESIGN section 1: "Every plane gets every
 //! capability ... the hook tap and gate ... apply to every plane the same way"). A plane whose
-//! units name no container (a decisions unit routes directly over a model) still carries the
-//! section-level `hooks:` the operator wrote (`decisions.hooks: [...]`): the generation resolves it
+//! units name no container (a unit routed directly over a model entry) still carries the
+//! section-level `hooks:` the operator wrote (`<section>.hooks: [...]`): the generation resolves it
 //! under the plane's registry key at [`crate::hooks::SECTION_SCOPE`], and the routed binder binds it
 //! to every unit of that plane beside the deployment's global hooks. RED: the binder bound the
 //! globals and the pool's alone, so a section's attach was accepted, validated and never fired.
@@ -12,6 +12,9 @@
 use std::sync::Arc;
 
 use super::*;
+
+/// The registry key of the plane whose section attaches the hooks.
+const ATTACHED: &str = "plane-a";
 
 /// What the hooks know of a caller: nothing (no principal is verified here).
 struct NoCaller;
@@ -52,11 +55,11 @@ fn gate(prompt: &str) -> crate::config::HookCfg {
 }
 
 /// The routed binder of the plane registered as `plane_key`, over a generation whose plane
-/// `decision` attaches `closed` (a gate) and `redact` (a rewrite) at its section level.
+/// [`ATTACHED`] attaches `closed` (a gate) and `redact` (a rewrite) at its section level.
 fn binder(plane_key: &str) -> HostHooks {
     let mut app = crate::test_support::TestApp::new();
     app.set_container_hooks(
-        "decision",
+        ATTACHED,
         Vec::new(),
         vec!["closed".to_string(), "redact".to_string()],
     );
@@ -74,7 +77,7 @@ fn binder(plane_key: &str) -> HostHooks {
     HostHooks {
         host: crate::plane_host::engine_host(&app),
         caller: Arc::new(NoCaller),
-        dialects: vec!["jev".to_string()],
+        dialects: vec!["dialect-a".to_string()],
         plane_key: plane_key.to_string(),
     }
 }
@@ -82,17 +85,17 @@ fn binder(plane_key: &str) -> HostHooks {
 #[tokio::test]
 async fn a_routed_planes_section_attach_binds_to_its_units() {
     let unit = Bind {
-        pool: "decision/m",
+        pool: "plane-a/m",
         principal: None,
         dialect: 0,
     };
-    let bound = binder("decision")
+    let bound = binder(ATTACHED)
         .bind(&unit)
         .expect("the section's attach binds to the plane's unit");
     assert_eq!(bound.gates.len(), 1, "the section's gate");
     assert_eq!(bound.rewrites.len(), 1, "the section's rewrite");
     // Another plane's units bind none of it, and a binder that names no plane binds none.
-    assert!(binder("mcp").bind(&unit).is_none());
+    assert!(binder("plane-b").bind(&unit).is_none());
     assert!(binder("").bind(&unit).is_none());
 }
 
