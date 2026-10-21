@@ -395,7 +395,11 @@ fn registry_selftest<'a>(
     ));
 
     // THE CENSUS FLOOR. A census that finds almost nothing recognises almost everything, so the
-    // floor is a rule and not a sanity check — and a rule owes a plant.
+    // floor is a rule and not a sanity check — and a rule owes a plant. The floor is no longer a
+    // count: the census is held to `[workspace.members]` exactly ([`super::missed_members`],
+    // ARCHITECT 2026-10-02), so the refusal names each member the census did not read as
+    // `missed-member`. The case asked for the word `floor`, which that refusal never says; it went
+    // green only while some other finding of the planted run happened to carry the word.
     let mut ov = Overlay::new();
     let mut removed = 0usize;
     if let Ok(dir) = std::fs::read_dir(cx.root().join("crates")) {
@@ -419,7 +423,7 @@ fn registry_selftest<'a>(
             "a census that collapsed below its floor recognises almost everything, and is refused",
             &[super::ROW_REGISTRY],
             ov,
-            &["floor"],
+            &["missed-member", "crates/busbar-kernel"],
         ));
     } else {
         report.note_infra_failure(
