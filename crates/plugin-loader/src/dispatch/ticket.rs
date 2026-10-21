@@ -78,6 +78,13 @@ pub(crate) trait WakeRoute: Send + Sync {
         let _ = t;
         None
     }
+
+    /// THE FRAMING an op on ticket `t` was made for, as every auth-handle call names it: the
+    /// framing a ticket minted for one of its ops works for (`super::inline::InlineTickets::
+    /// framing_of`), else `t`'s own reading.
+    fn framing_of(&self, t: Ticket) -> u64 {
+        t.framing()
+    }
 }
 
 /// What an instance's `HostCtx` names (through [`super::handle`], never by address): the dispatcher its tickets live in, and who the instance

@@ -863,6 +863,9 @@ pub struct PendingDoor {
     pub begun: Mutex<Vec<(u32, busbar_contract::abi::host::service::AuthRef)>>,
     /// The ticket every crossing on a ticket ran on, with whether it was a resume, in order.
     pub on: Mutex<Vec<(&'static str, Ticket, bool)>>,
+    /// Each ticket asked for an op of a framing ([`FramerDoor::framing_side_of`]) and that
+    /// framing's begin ticket, as the host ties them.
+    pub tied: Mutex<HashMap<Ticket, Ticket>>,
 }
 
 impl PendingDoor {
@@ -877,7 +880,20 @@ impl PendingDoor {
             emitted: Mutex::new(Vec::new()),
             begun: Mutex::new(Vec::new()),
             on: Mutex::new(Vec::new()),
+            tied: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The framing an auth-handle call made on `t` names, as the host's loader names it: the
+    /// framing `t` is tied to, else `t`'s own.
+    pub fn named(&self, t: Ticket) -> u64 {
+        self.tied
+            .lock()
+            .unwrap()
+            .get(&t)
+            .copied()
+            .unwrap_or(t)
+            .framing()
     }
 }
 
@@ -905,6 +921,12 @@ impl FramerDoor for PendingDoor {
             },
             host: Arc::clone(&self.host),
         }))
+    }
+
+    fn framing_side_of(&self, framing: Ticket) -> Option<Box<dyn Side>> {
+        let side = self.framing_side()?;
+        self.tied.lock().unwrap().insert(side.ticket(), framing);
+        Some(side)
     }
 
     fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {

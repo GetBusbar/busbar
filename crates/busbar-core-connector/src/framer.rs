@@ -125,6 +125,17 @@ pub trait FramerDoor: Send + Sync {
     fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
         None
     }
+    /// A NEW TICKET for a ticketed op of the framing whose begin crossed on `framing`, taken
+    /// while another of its ops holds a parked ticket: the host ties it to that framing, so every
+    /// auth-handle call made on it names the framing's identity ([`Framing::framing_id`]), never
+    /// the new ticket's own. The default: [`FramerDoor::framing_side`], tied to nothing.
+    fn framing_side_of(
+        &self,
+        framing: busbar_contract::abi::mechanism::ticket::Ticket,
+    ) -> Option<Box<dyn crate::carrier::Side>> {
+        let _ = framing;
+        self.framing_side()
+    }
     /// One crossing of a TICKETED framer op on `side`'s ticket (a RESUME of the op that pended on
     /// it when `resume`: the same op, re-issued on the same ticket, so every service it calls
     /// answers its stored result). Any other op crosses as [`FramerDoor::cross`] does.
@@ -1465,6 +1476,7 @@ impl Framing {
                 error: format!("more than {MAX_PARKED} ops are parked on the framing"),
             });
         }
+        // RED: the new ticket is tied to no framing.
         self.door.framing_side().map(Some).ok_or_else(|| Refused {
             outcome: Outcome::Fault,
             error: "no ticket is left for the framing's op".into(),
