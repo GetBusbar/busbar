@@ -156,29 +156,11 @@ fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
     let Ok(manifest) = cx.read(&krate.manifest) else {
         return Vec::new();
     };
-    let mut in_package = false;
-    let mut named: Option<String> = Some("build.rs".to_string());
-    for raw in manifest.lines() {
-        let t = raw.trim();
-        if t.starts_with('[') {
-            in_package = t.trim_start_matches('[').trim_end_matches(']').trim() == "package";
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        let Some((k, v)) = t.split_once('=') else {
-            continue;
-        };
-        if k.trim() == "build" {
-            let v = v.split('#').next().unwrap_or("").trim();
-            named = match v {
-                "false" => None,
-                "true" => Some("build.rs".to_string()),
-                _ => Some(v.trim_matches('"').trim_matches('\'').to_string()),
-            };
-        }
-    }
+    let named = match package_build(&manifest) {
+        None | Some(BuildKey::On) => Some("build.rs".to_string()),
+        Some(BuildKey::Off) => None,
+        Some(BuildKey::Path(p)) => Some(p),
+    };
     let Some(script) = named else {
         return Vec::new();
     };
@@ -203,6 +185,155 @@ fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
         }
     }
     out
+}
+
+/// What a manifest's `package.build` says: on (`true`), off (`false`), or a script path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuildKey {
+    On,
+    Off,
+    Path(String),
+}
+
+/// THE `package.build` KEY, READ AS TOML WRITES IT (`None` when the manifest does not state it).
+///
+/// A header-line reader saw one spelling: a bare `[package]` line, then a bare `build = …`. TOML
+/// writes the same key as `[package] # a comment`, `[ package ]`, `["package"]`, a quoted
+/// `"build" = …`, a top-level dotted `package.build = …` and an inline `package = { build = … }`,
+/// and every one of them moved the build script somewhere this rule never read. So headers and
+/// keys are read with [`key_path`] (quoted and dotted segments, comments stripped), the multi-line
+/// string state with [`multiline_after`] (a `[package]` line inside a `"""` block is string
+/// content), and the value with [`toml_scalar`]. No TOML crate is in this workspace's lock, and
+/// `toml_doc` refuses the inline tables every manifest's dependency tables carry, so this reads
+/// the one key it needs rather than the whole document; a value it cannot read is kept as the
+/// path text it wrote, never dropped, so the script is still looked for.
+fn package_build(manifest: &str) -> Option<BuildKey> {
+    let mut table: Vec<String> = Vec::new();
+    let mut multiline: Option<&'static str> = None;
+    let mut found = None;
+    for raw in manifest.lines() {
+        let t = raw.trim().trim_start_matches('\u{feff}');
+        let inside = multiline.is_some();
+        multiline = multiline_after(t, multiline);
+        if inside || t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("[[") {
+            table = key_path(rest).map(|(k, _)| k).unwrap_or_default();
+            table.insert(0, "[[".to_string());
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix('[') {
+            table = key_path(rest).map(|(k, _)| k).unwrap_or_default();
+            continue;
+        }
+        let Some((key, rest)) = key_path(t) else {
+            continue;
+        };
+        let Some(value) = rest.strip_prefix('=').filter(|r| !r.starts_with('=')) else {
+            continue;
+        };
+        let full: Vec<&str> = table.iter().chain(&key).map(String::as_str).collect();
+        match full.as_slice() {
+            ["package", "build"] => found = Some(build_value(value)),
+            ["package"] => {
+                if let Some(v) = inline_value(value, "build") {
+                    found = Some(build_value(v));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// One `build` value: `true`, `false`, or the path a string spells.
+fn build_value(value: &str) -> BuildKey {
+    match toml_scalar(value) {
+        Some((Scalar::Bool(true), _)) => BuildKey::On,
+        Some((Scalar::Bool(false), _)) => BuildKey::Off,
+        Some((Scalar::Str(p), _)) => BuildKey::Path(p),
+        None => {
+            let raw = value.split('#').next().unwrap_or("").trim();
+            BuildKey::Path(raw.trim_matches(['"', '\'']).to_string())
+        }
+    }
+}
+
+/// A TOML scalar this reader needs: a basic or literal one-line string, or a boolean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Scalar {
+    Str(String),
+    Bool(bool),
+}
+
+/// The scalar at the head of `s` and the text after it, or `None` when `s` opens with none.
+fn toml_scalar(s: &str) -> Option<(Scalar, &str)> {
+    let s = s.trim_start();
+    if let Some(r) = s.strip_prefix("true") {
+        return Some((Scalar::Bool(true), r));
+    }
+    if let Some(r) = s.strip_prefix("false") {
+        return Some((Scalar::Bool(false), r));
+    }
+    if let Some(r) = s.strip_prefix('\'') {
+        if r.starts_with("''") {
+            return None;
+        }
+        let end = r.find('\'')?;
+        return Some((Scalar::Str(r[..end].to_string()), &r[end + 1..]));
+    }
+    let r = s.strip_prefix('"')?;
+    if r.starts_with("\"\"") {
+        return None;
+    }
+    let mut out = String::new();
+    let mut chars = r.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((Scalar::Str(out), &r[i + 1..])),
+            '\\' => match chars.next()?.1 {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// The value an inline table `{ a = …, key = … }` gives `key`, as the text that starts it.
+fn inline_value<'t>(s: &'t str, key: &str) -> Option<&'t str> {
+    let mut rest = s.trim_start().strip_prefix('{')?;
+    loop {
+        rest = rest.trim_start();
+        let (k, after) = key_path(rest)?;
+        let v = after.strip_prefix('=')?.trim_start();
+        if k.len() == 1 && k[0] == key {
+            return Some(v);
+        }
+        // Past this entry's value: a scalar, or anything up to the next top-level comma.
+        let tail = match toml_scalar(v) {
+            Some((_, t)) => t,
+            None => {
+                let mut depth = 0i32;
+                let cut = v
+                    .char_indices()
+                    .find(|(_, c)| {
+                        match c {
+                            '{' | '[' => depth += 1,
+                            '}' | ']' => depth -= 1,
+                            _ => {}
+                        }
+                        *c == ',' && depth == 0
+                    })
+                    .map_or(v.len(), |(i, _)| i);
+                &v[cut..]
+            }
+        };
+        rest = tail.trim_start().strip_prefix(',')?;
+    }
 }
 
 /// Every `key = "value"` string an attribute or macro call writes on one line, for the keys this
@@ -2165,6 +2296,53 @@ mod q128_tests {
                 "build-script-reach",
                 "crates/busbar-transport-stdio/build.rs:2",
                 "busbar-plane-llm",
+            ],
+        );
+    }
+
+    /// …however TOML spells the key: a commented or spaced header, a quoted key, a dotted key, an
+    /// inline table. Each spelling escaped the header-line reader.
+    #[test]
+    fn every_toml_spelling_of_package_build_is_read() {
+        use super::{package_build, BuildKey};
+        let p = |s: &str| Some(BuildKey::Path(s.to_string()));
+        assert_eq!(package_build("[package] # c\nbuild = \"x/build.rs\"\n"), p("x/build.rs"));
+        assert_eq!(package_build("[ package ]\nbuild = 'x/build.rs' # c\n"), p("x/build.rs"));
+        assert_eq!(package_build("[\"package\"]\n\"build\" = \"x/b.rs\"\n"), p("x/b.rs"));
+        assert_eq!(package_build("package.build = \"x/b.rs\"\n"), p("x/b.rs"));
+        assert_eq!(package_build("package = { name = \"a\", build = \"x/b.rs\" }\n"), p("x/b.rs"));
+        assert_eq!(package_build("[package]\nbuild = false\n"), Some(BuildKey::Off));
+        assert_eq!(package_build("[package]\nname = \"a\"\n"), None);
+        assert_eq!(
+            package_build("[package]\ndescription = \"\"\"\n[package]\nbuild = \"no\"\n\"\"\"\n"),
+            None
+        );
+        assert_eq!(package_build("[lib]\nbuild = \"x.rs\"\n"), None);
+    }
+
+    /// The commented header end to end: the script it moves is read as a build script.
+    #[test]
+    fn a_build_script_named_under_a_commented_package_header_is_held_to_the_rule() {
+        let base = planted(Overlay::new());
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/Cargo.toml"),
+            wire_manifest(&base).replacen(
+                "[package]\n",
+                "[package] # the wire\nbuild = \"x/build.rs\"\n",
+                1,
+            ),
+        );
+        ov.set(
+            format!("{WIRE}/x/build.rs"),
+            "fn main() {\n    let _ = std::fs::read_dir(\"..\");\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/x/build.rs:2",
             ],
         );
     }
