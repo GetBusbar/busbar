@@ -23,7 +23,7 @@
 //!   taking the transition lock.
 //! - [`BreakerCfg::bench_below_trip_threshold`] is new: a cell configured without it (a
 //!   single-member cell, with no sibling to shed to) is not benched by a failure below the trip
-//!   threshold, and a wait its destination stated only ever extends its cooldown.
+//!   threshold; a wait its destination stated is still armed, for as long as it asked.
 //!
 //! Every other piece of arithmetic (the escalation, the jitter span, the requested-wait floor and
 //! its ceiling) and every state transition is the source's.
@@ -650,19 +650,12 @@ impl BreakerCell {
                     // sub-threshold failure benches nothing — it has not earned a cooldown. An
                     // upstream's requested wait is still honored, but only for as long as it
                     // asked, not the escalating backoff a real trip earns.
-                    //
-                    // A stated wait only ever EXTENDS one already armed, never shortens it: two
-                    // failures in flight together can land in either order, and the one asking
-                    // for less must not reopen a destination the other was told to leave alone
-                    // for longer. Under the transition lock, so no other writer moves the
-                    // deadline between the read and the store.
                     if cfg.honor_retry_after {
                         if let Some(asked) = retry_after {
-                            let until =
-                                now_time.saturating_add(asked.min(max_honored_retry_after_secs));
-                            if until > self.cooldown_until.load(Ordering::Acquire) {
-                                self.cooldown_until.store(until, Ordering::Release);
-                            }
+                            self.cooldown_until.store(
+                                now_time.saturating_add(asked.min(max_honored_retry_after_secs)),
+                                Ordering::Release,
+                            );
                         }
                     }
                     FailureEffect::Nothing

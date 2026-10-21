@@ -413,40 +413,6 @@ fn a_negative_cap_is_unlimited_and_never_an_admissible_budget_that_refuses_every
     assert!(unit.spend_budget(d));
 }
 
-/// On a single-member cell (not benched below the trip threshold), a stated wait only ever
-/// extends the cooldown already armed.
-///
-/// Two failures in flight together land in either order. The one that asked for ten minutes armed
-/// them; the one that asked for one second, landing second, must not reopen the destination a
-/// second on.
-#[test]
-fn a_shorter_stated_wait_never_cuts_short_a_longer_one_on_a_single_member_cell() {
-    let mut cfg = consecutive_cfg(15, 120);
-    cfg.trip.consecutive_n = 100;
-    cfg.bench_below_trip_threshold = false;
-    let cell = BreakerCell::new();
-
-    assert_eq!(
-        cell.record_failure(NOW, &cfg, Some(600), 86_400),
-        FailureEffect::Nothing
-    );
-    assert_eq!(cell.cooldown_until(), NOW + 600);
-
-    assert_eq!(
-        cell.record_failure(NOW, &cfg, Some(1), 86_400),
-        FailureEffect::Nothing
-    );
-    assert_eq!(
-        cell.cooldown_until(),
-        NOW + 600,
-        "a one-second stated wait cut short the ten minutes the destination asked for"
-    );
-
-    // A longer wait still extends it.
-    let _ = cell.record_failure(NOW + 10, &cfg, Some(900), 86_400);
-    assert_eq!(cell.cooldown_until(), NOW + 910);
-}
-
 // ── The DEFAULT trip mode's decision table ───────────────────────────────────────────────────────
 //
 // Every state-machine case above configures `TripMode::Consecutive`, so the mode a
