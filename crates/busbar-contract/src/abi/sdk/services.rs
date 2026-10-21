@@ -217,6 +217,12 @@ impl<'b> TrustItems<'b> {
     }
 }
 
+/// `Wake` as an instance holds it for its life (status row 194): the host's own tables, read at
+/// `open`. #1471 ties `Wake` to the tables it was read from (`Wake<'t>`) and states this alias as
+/// `Wake<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
+/// the same spelling compiles before and after.
+pub type StaticWake = Wake;
+
 /// THE HOST'S WAKE, as `open` handed it (`HostTables::wake`): an instance holding work of its own
 /// (a plane's session output, named on its driver ticket) wakes a ticket through it, from any
 /// thread. A wake never blocks and never fails; one for a stale ticket is dropped by the host.
@@ -261,6 +267,12 @@ impl Wake {
         (self.wake)(self.ctx, ticket);
     }
 }
+
+/// `Services` as an instance holds it for its life (status row 194): the host's own tables, read at
+/// `open`. #1471 ties `Services` to the tables it was read from (`Services<'t>`) and states this alias as
+/// `Services<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
+/// the same spelling compiles before and after.
+pub type StaticServices = Services;
 
 /// The host services an instance was opened with: its context and the table.
 #[derive(Debug, Clone, Copy)]

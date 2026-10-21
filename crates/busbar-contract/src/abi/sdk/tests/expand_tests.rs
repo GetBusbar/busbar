@@ -484,3 +484,37 @@ fn a_fake_host_lends_its_own_tables() {
         unsafe { Wake::from_raw(fake.tables_for_tests()) }.is_some()
     );
 }
+
+#[test]
+fn a_kept_handle_is_named_by_its_static_alias() {
+    use crate::abi::mechanism::ticket::Ticket;
+    use crate::abi::sdk::auth_door::{StaticVerifyOp, VerifyOp};
+    use crate::abi::sdk::conn::{Host, StaticHost};
+    use crate::abi::sdk::services::{StaticServices, StaticWake};
+    use crate::abi::sdk::test_support::fake::FakeHost;
+    // The aliases are the types themselves: what a plugin keeps in a struct field reads back as
+    // the handle it was handed.
+    struct Kept {
+        host: StaticHost,
+        services: Option<StaticServices>,
+        wake: Option<StaticWake>,
+    }
+    let fake = FakeHost::new();
+    let tables = fake.lent();
+    let kept = Kept {
+        host: Host::of(&tables),
+        services: Host::of(&tables).services(),
+        wake: crate::abi::sdk::services::Wake::of(&tables),
+    };
+    assert_eq!(
+        format!("{:?}", kept.host),
+        format!("{:?}", Host::of(&tables))
+    );
+    assert_eq!(
+        kept.services.is_some(),
+        Host::of(&tables).services().is_some()
+    );
+    assert_eq!(kept.wake.is_some(), tables.wake.is_some());
+    let op: StaticVerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
+    assert_eq!(op.services().is_some(), kept.services.is_some());
+}

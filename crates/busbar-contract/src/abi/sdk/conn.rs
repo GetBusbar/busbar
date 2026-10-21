@@ -115,6 +115,12 @@ pub struct DiskFailure {
 /// A `disk.append`'s answer.
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
+/// `Host` as an instance holds it for its life (status row 194): the host's own tables, read at
+/// `open`. #1471 ties `Host` to the tables it was read from (`Host<'t>`) and states this alias as
+/// `Host<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
+/// the same spelling compiles before and after.
+pub type StaticHost = Host;
+
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
 #[derive(Debug, Clone, Copy)]
