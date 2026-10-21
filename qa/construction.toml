@@ -694,7 +694,10 @@ max_legacy_sites = 0
 why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \
 A third is a second selection policy growing beside the first."""
 verb = "pick_among"
-max_sites = 2
+# LOWERED 2 -> 1, the measured count (Law 9): one production call site of `pick_among(`
+# (crates/busbar-kernel-egress/src/walk.rs); the row is green and is struck from
+# CONSTRUCTION_STANDING_REDS in the same commit.
+max_sites = 1
 
 # ── 14. no-unit-crates (BUSBAR-1.6.0.md THE DESIGN, §1; fold F14) ──────────────────────────────────
 # The section 1.1 LINE-COUNT ceilings that lived here (`kernel_ceiling`, `caps_contract_ceiling`,
@@ -970,7 +973,9 @@ known_sites = [
   "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/snapshot/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
   "crates/busbar-kernel/src/snapshot/money.rs :: model",
-  "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
+  # was the kernel plane host's build_input.rs (the lane row's `Debug` field name, (c)):
+  # the row moved with the route tables' inputs to the plane driver (status row 82, D2).
+  "crates/busbar-kernel/src/plane_driver/route_input.rs :: model",
   "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
@@ -1273,7 +1278,7 @@ known_sites = [
   "crates/busbar-contract/src/abi/transport/route.rs::intern",
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
-  "crates/busbar-kernel/src/plane_host/breaker.rs",
+  # The plane host's breaker file STRUCK (status row 82, D2): deleted with the plane-side breaker.
   # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",
@@ -1283,12 +1288,13 @@ known_sites = [
   # crates/busbar-kernel/src/plane/handle_engine.rs::sweep (D2 item 15, a rename); `sweep` is still the
   # enclosing function — the escape is at :858, the fn opens at :820.
   "crates/busbar-kernel/src/host_work/handle_engine.rs::sweep",
-  # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
-  # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
-  "crates/busbar-kernel/src/plane_host/mod.rs",
-  # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
-  # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
-  "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
+  # was the substrate plane host's mod.rs — MERGED into the core-descended kernel file
+  # of the same name by 5fa320208 (+1775 lines). Its one escape (substrate's `runtime_slot_key`
+  # interner, the leak-once shape of vocabulary.rs `key` above) moved with the function to the plane
+  # driver when the kernel's plane hosting was deleted (status row 82, D2); named BY FUNCTION now, so
+  # the rest of that file is held to the rule.
+  "crates/busbar-kernel/src/plane_driver/slots.rs::runtime_slot_key",
+  # The plane host's arena `reclaim_all` STRUCK (status row 82, D2): deleted with its last rider.
   # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
   # verbatim (#83a SD-8).
   "crates/busbar-kernel/src/proto/installed.rs",

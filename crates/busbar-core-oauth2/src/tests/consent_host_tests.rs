@@ -18,6 +18,8 @@ fn the_consent_host_is_the_host_the_browser_dials() {
         ("http://127.0.0.1:9999/cb", "127.0.0.1:9999"),
         ("https://[::1]:8443/cb", "[::1]:8443"),
         ("not a uri", ""),
+        ("ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi", ""),
+        ("ldap://a%25b.example/cb", ""),
     ] {
         assert_eq!(host_of(uri), host, "{uri}");
     }
