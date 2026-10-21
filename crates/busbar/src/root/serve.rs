@@ -1177,14 +1177,20 @@ impl HookStage {
     }
 
     /// The GATE-FIRST binder of the plane registered under `plane_key` (its tail states
-    /// `abi::plane::TAIL_HOOKS_GATED`): the gates and rewrites the deployment attached to the
-    /// entry the plane's projection names, filed under the plane's registry key.
-    fn gated(&self, plane_key: &str) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+    /// `abi::plane::TAIL_HOOKS_GATED`) whose dialects are `dialects`: the gates and rewrites the
+    /// deployment attached to the entry the plane's projection names, filed under the plane's
+    /// registry key.
+    fn gated(
+        &self,
+        plane_key: &str,
+        dialects: &[&str],
+    ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
         let gov = Arc::clone(&self.gov);
         Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
             host: Arc::clone(&self.host),
             plane_key: plane_key.to_string(),
             keys: Arc::new(move |principal: &str| gov.lookup_by_sub(principal)),
+            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
         })
     }
 }
@@ -1545,7 +1551,7 @@ pub(crate) fn compose_planes_over(
             Some(stage)
                 if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
             {
-                driver.with_hooks(stage.gated(plugin.name()))
+                driver.with_hooks(stage.gated(plugin.name(), &served_facts.dialects))
             }
             // Every other plane runs the routed order (U22): the deployment's global and per-pool
             // hooks, bound per unit off the live generation, reach its request stage and its
@@ -2309,6 +2315,12 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
              Peer or none does",
             named(mix.0.as_slice()),
             named(mix.1.as_slice())
+        ),
+        GuestRefusal::Malformed(bad) => format!(
+            "{listener}: the line {} matches no request: it breaks {:?} at {}",
+            named(std::slice::from_ref(&bad.0)),
+            bad.1.rule,
+            bad.1.field
         ),
         GuestRefusal::PointNotOffered(line) => format!(
             "{listener}: the line {} needs the auth points {:#x} and its transport offers {:#x}",
@@ -3792,8 +3804,9 @@ impl DataRoutes {
             .map(|r| r.status)
             .or_else(|| caller.stated())
             .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
-        // How the answer ended, not only the status its head carried: a stream its far end cut is
-        // no delivered response, and meters nothing (status row 183).
+        // How the answer ended, its head's status and whether its far end cut it. The plane's
+        // ledger is final either way: a cut stream bills and meters what its plane ledgered
+        // (owner ruling 2026-10-20).
         served.money.settle_end_as(
             unit,
             busbar_kernel::plane_driver::UnitEnd {

@@ -809,6 +809,27 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     });
 }
 
+/// The agreed protocol is judged against the offer the handshake made (`check_agreed`, audit
+/// contract-src #11) before the framer is handed it: none agreed or an offered id passes, an id
+/// never offered fails the connection, and an id the encoding cannot carry is never offered.
+#[test]
+fn the_agreed_protocol_is_one_the_handshake_offered() {
+    let offer = protocol_name_list(&[b"pa".to_vec(), Vec::new(), b"proto-b/1".to_vec()]);
+    assert_eq!(offer, b"\x02pa\x09proto-b/1");
+    assert!(agreed_was_offered(&offer, None).is_ok());
+    assert!(agreed_was_offered(&offer, Some(b"pa")).is_ok());
+    assert!(agreed_was_offered(&offer, Some(b"proto-b/1")).is_ok());
+    assert!(matches!(
+        agreed_was_offered(&offer, Some(b"pc")),
+        Err(Failure::Refused(_))
+    ));
+    assert!(matches!(
+        agreed_was_offered(&[], Some(b"pa")),
+        Err(Failure::Refused(_))
+    ));
+    assert!(protocol_name_list(&[vec![b'x'; 256]]).is_empty());
+}
+
 /// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
 /// "the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
 /// wake), until the framer hands a `PIECE_WRITABLE` piece"): once the framer answers an emit

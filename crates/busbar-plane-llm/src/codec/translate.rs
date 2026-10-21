@@ -113,8 +113,16 @@ pub trait TranslateCodec: OperationHandler {
                 let egress_proto = egress_proto.ok_or(TranslateReqReject::EgressUnsupported)?;
                 // A4b: the handle writes ITSELF onto the egress dialect (by protocol string) after
                 // `set_model` — byte-identical to the former `set_model(model); egress.write_request`.
+                let bytes = ir.write_egress_request_bytes(egress_proto, model);
+                // A write that produced nothing is a refusal, never an empty body forwarded
+                // upstream in the caller's name (`IrHandle::write_egress_request`'s contract).
+                if bytes.is_empty() {
+                    return Err(TranslateReqReject::Unrepresentable(format!(
+                        "this request cannot be written onto {egress_proto}"
+                    )));
+                }
                 Ok(TranslatedRequest {
-                    wire: EgressWire::Bytes(ir.write_egress_request_bytes(egress_proto, model)),
+                    wire: EgressWire::Bytes(bytes),
                     dropped_controls: Vec::new(),
                 })
             }
