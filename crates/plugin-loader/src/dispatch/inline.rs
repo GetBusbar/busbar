@@ -188,9 +188,12 @@ impl InlineTickets {
     /// ticket. `None` when every slot is held.
     pub(crate) fn mint_of(self: &Arc<Self>, framing: Ticket) -> Option<InlineTicket> {
         let mut t = self.mint()?;
-        // RED: the ticket is not tied to its framing.
-        let _ = framing;
-        t.of = None;
+        let id = self.framing_of(framing);
+        self.framings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(t.ticket, id);
+        t.of = Some(id);
         Some(t)
     }
 
