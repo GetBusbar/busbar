@@ -660,18 +660,53 @@ pub fn linked_declaring_section(
         .map(|s| kept(s.name)))
 }
 
-/// THE REGISTRY FACTS OF A DISCOVERED PLANE DOOR (`candidate`, linked or dropped in), with `bind`
-/// binding a probe instance of it through the one load ([`registration`]).
+/// EVERYTHING A LINKED PLANE DOOR STATES (its Statement's name and its tail's facts, as a bind
+/// copies them out), read WITHOUT binding it: reading a linked row's static declaration, its kind
+/// tail included, is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
+/// `'static` Statement only, through the same door checks and tail checks a bind runs; nothing is
+/// bound or opened.
 ///
 /// # Errors
 ///
-/// The door will not state its facts.
+/// The door's Statement does not read as a plane Statement, or its tail is one a bind refuses.
+pub fn stated_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<(String, PlaneFacts), String> {
+    let v = crate::dispatch::load::validate::<Plane>(door).map_err(|e| e.to_string())?;
+    let name = crate::dispatch::plugin::str_bytes(v.statement.name)
+        .map(|n| String::from_utf8_lossy(n).into_owned())
+        .ok_or("the plane's Statement name is NULL or over-long")?;
+    Ok((name, tail_facts(&v.statement)?))
+}
+
+/// THE REGISTRY ROW OF A DISCOVERED PLANE DOOR (`candidate`), with `bind` binding a probe instance
+/// of it through the one load. LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff the configuration
+/// uses it): a LINKED door's row is read off its `'static` Statement ([`stated_facts`]) and binds
+/// nothing; its probe is bound the first time its section is judged or faced, which only a
+/// configuration that writes the section asks. A DROPPED-IN door's plane tail is in its library
+/// alone (its signed rendering states the tail's size, never its facts), so that row is read off a
+/// probe bound here ([`registration`]), as before.
+///
+/// # Errors
+///
+/// The door will not state its facts (a linked door), or will not bind (a dropped-in one).
 pub fn stated_registration(
     candidate: &crate::boot::Candidate,
     bind: ProbeBind,
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
-    let _ = candidate;
-    registration(bind)
+    match &candidate.origin {
+        crate::boot::Origin::Linked(row) => {
+            let (name, facts) = stated_facts(row.door)?;
+            Ok(registered(
+                &name,
+                &facts.served,
+                &facts.declared,
+                None,
+                bind,
+            ))
+        }
+        crate::boot::Origin::Dropped { .. } => registration(bind),
+    }
 }
 
 /// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
@@ -688,15 +723,52 @@ pub fn registration(
     bind: ProbeBind,
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
     let plugin = Arc::new(bind()?);
-    let served = plugin.served();
     let declared = plugin.declared();
+    Ok(registered(
+        plugin.name(),
+        &plugin.served(),
+        &declared,
+        Some(plugin),
+        bind,
+    ))
+}
+
+/// A probe instance of a door, bound once and kept: the one that judges its section.
+type Judge = std::sync::OnceLock<Arc<crate::dispatch::Plugin<Plane>>>;
+
+/// The judge `judge` holds, bound through `bind` the first time one is asked for. Bound with no
+/// lock held; two first callers each bind one, the second's let go.
+fn judge_of(
+    judge: &Judge,
+    bind: &ProbeBind,
+) -> Result<Arc<crate::dispatch::Plugin<Plane>>, String> {
+    if let Some(plugin) = judge.get() {
+        return Ok(Arc::clone(plugin));
+    }
+    let plugin = Arc::new(bind()?);
+    Ok(Arc::clone(judge.get_or_init(|| plugin)))
+}
+
+/// THE REGISTRY ROW of the plane `name` from what its door states (`served`, `declared`), its
+/// section judged by `bound` (a probe already bound) or else by the first probe `bind` binds.
+fn registered(
+    name: &str,
+    served: &ServedFacts,
+    declared: &InstanceDecl,
+    bound: Option<Arc<crate::dispatch::Plugin<Plane>>>,
+    bind: ProbeBind,
+) -> busbar_contract::plane_calls::PlaneRegistration {
     let (label, subject_noun, admin_noun) = served.nouns;
-    let key: &'static str = plugin.name().to_string().leak();
+    let key: &'static str = name.to_string().leak();
     let refusal = served.caller_credential_refusal;
-    let judge = Arc::clone(&plugin);
+    let judge: Judge = std::sync::OnceLock::new();
+    if let Some(plugin) = bound {
+        let _ = judge.set(plugin);
+    }
+    let judge_bind = Arc::clone(&bind);
     let dialects = served.dialects.clone();
     let probes: std::sync::Mutex<Vec<Probe>> = std::sync::Mutex::new(Vec::new());
-    Ok(busbar_contract::plane_calls::PlaneRegistration {
+    busbar_contract::plane_calls::PlaneRegistration {
         key,
         section: served.section,
         owns: served.owns.clone(),
@@ -725,7 +797,9 @@ pub fn registration(
         caller_credential_refusal: (!refusal.is_empty()).then_some(refusal),
         fallback: served.fallback,
         provider_keys: served.provider_keys.clone(),
-        validate: Arc::new(move |settings: &[u8]| validate(&judge, settings)),
+        validate: Arc::new(move |settings: &[u8]| {
+            validate(&judge_of(&judge, &judge_bind)?, settings)
+        }),
         facing: Arc::new(
             move |settings: &[u8],
                   owned: &[u8],
@@ -779,7 +853,7 @@ pub fn registration(
                 faced
             },
         ),
-    })
+    }
 }
 
 /// One probe instance of a door, opened against one public base URL, one set of owned sections and
