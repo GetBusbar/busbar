@@ -1177,6 +1177,13 @@ impl Gate for DepWallGate {
                 "pub struct S<const B: bool = { 1 < 2 }, #[cfg(test)] T = u8> { pub s: std::net::TcpStream }\n"
                     .to_string(),
             ),
+            // A test-marked arm whose body is no `{}` ends at its `,` (#1390's comma skip).
+            (
+                "a test mark on an arm with no `{}` body does not hide the arms after it",
+                "pub fn dial(x: u8, a: u8, b: u8) -> bool { match x { #[cfg(test)] 1 => a < b, \
+                 _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); false } } }\n"
+                    .to_string(),
+            ),
         ] {
             let mut ov = Overlay::new();
             ov.set("crates/busbar-plane-decisions/src/planted_angle_socket.rs", src);
