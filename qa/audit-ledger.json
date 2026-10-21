@@ -2628,7 +2628,7 @@
    "paths": [
     "crates/busbar-store-memory/src"
    ],
-   "tree_hash": "48029eb3c95b3caccefc909cf180cbdc8e56bd9a1d304955431889b537fb3ced",
+   "tree_hash": "4cc94d451343613e823c446de603fdddb03643154aed4959f1070f6a21be5a38",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2640,7 +2640,7 @@
    },
    "report": "The memory store's money slots keep their rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped and dedupe records only applied ops. Five defects stand. The dedupe log keeps a day of every write's full text. The record leg keeps every journal record for the life of the process, and every scan walks all of it. Spent slices, window counters and stream rows are never freed. Each token redemption sweeps the whole spent map, and a losing redemption rewrites the stored expiry. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
+   "fixed_at": "d7a4aa343290c381a1f59c6ea46eb764dd838f98",
    "exclude": [
     "crates/busbar-store-memory/src/tests"
    ],
