@@ -287,7 +287,7 @@ fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
 }
 
 /// RED: a program that ends ends every lease of its generation; the next open spawns it anew — the
-/// next generation, another process — once the restart backoff has passed.
+/// next generation, another process.
 #[test]
 fn a_program_that_ends_is_a_new_generation_on_the_next_open() {
     worker().block_on(async {
@@ -301,8 +301,6 @@ fn a_program_that_ends_is_a_new_generation_on_the_next_open() {
         assert_eq!(line(&c, a, &mut held).await, None, "the program ended");
         c.close(OWNER, a).unwrap();
         assert!(until_gone(&first).await);
-        // Past the first restart's backoff.
-        tokio::time::sleep(Duration::from_millis(150)).await;
         let b = open(&c, "one", b"").unwrap();
         assert_eq!(generation(&c, b).await, 2, "a new generation");
         let second = pid_of(&c, b, "b").await;
@@ -530,34 +528,60 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
     });
 }
 
-/// The restart policy, at exact instants (the previous release's crash-loop policy): a backoff
-/// doubling from 100ms after each end, and five ends inside a minute stop the restarts.
+/// RED (`BUSBAR-1.6.0.md` l.388: the supervisor of a spawned program is its carrier's): THE HOST
+/// HOLDS NO RESTART POLICY OF ITS OWN. A member's program that ends is dialled anew on the very next
+/// open, however often it ends: seven ends inside a second, and the eighth open is a new generation
+/// (the host's copy of the policy refused the open inside its backoff, and for good after five
+/// ends). Whether the program may be spawned is the carrier's verdict, carried by the dial: while
+/// the carrier refuses the member's supervision key the open is refused, and once it lets the dial
+/// through the program runs again.
 #[test]
-fn the_restart_policy_backs_off_and_stops_a_crash_loop() {
-    let mut s = super::Supervisor::default();
-    let t0 = std::time::Instant::now();
-    assert!(s.may_restart(t0));
-    s.crashed(t0);
-    assert!(!s.may_restart(t0 + Duration::from_millis(99)));
-    assert!(s.may_restart(t0 + Duration::from_millis(100)));
-    let t1 = t0 + Duration::from_millis(100);
-    s.crashed(t1);
-    assert!(!s.may_restart(t1 + Duration::from_millis(199)));
-    assert!(s.may_restart(t1 + Duration::from_millis(200)));
-    for n in 2..5 {
-        s.crashed(t1 + Duration::from_secs(n));
-    }
-    assert!(
-        !s.may_restart(t1 + Duration::from_secs(3600)),
-        "five ends inside a minute stop the restarts"
-    );
-    // Ends that age out of the window do not count toward the five.
-    let mut aged = super::Supervisor::default();
-    for n in 0..4 {
-        aged.crashed(t0 + Duration::from_secs(n));
-    }
-    aged.crashed(t0 + Duration::from_secs(120));
-    assert!(aged.may_restart(t0 + Duration::from_secs(121)));
+fn the_host_holds_no_restart_policy_of_its_own() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        );
+        // Answers one line, then exits.
+        declare(&c, &[("one", sh("read l; echo \"$$ $l\"", &[]))]).unwrap();
+        for n in 1..=7 {
+            let id = open(&c, "one", b"")
+                .unwrap_or_else(|e| panic!("open {n} after {} ends: {e:?}", n - 1));
+            assert_eq!(
+                generation(&c, id).await,
+                n,
+                "each open after an end spawns anew"
+            );
+            pid_of(&c, id, "x").await;
+            let mut held = Vec::new();
+            assert_eq!(line(&c, id, &mut held).await, None, "the program ended");
+            c.close(OWNER, id).unwrap();
+        }
+        let key = *door.dialled_keys.lock().unwrap().last().expect("a dial");
+        assert_eq!(
+            door.dialled_keys.lock().unwrap().as_slice(),
+            [key; 7].as_slice(),
+            "every spawn is a dial carrying the member's one key"
+        );
+        door.held_keys.lock().unwrap().insert(key);
+        assert_eq!(
+            open(&c, "one", b""),
+            Err(ConnError::Refused),
+            "the carrier's refusal is the open's answer"
+        );
+        door.held_keys.lock().unwrap().remove(&key);
+        let id = open(&c, "one", b"").expect("the carrier lets it run again");
+        assert_eq!(generation(&c, id).await, 8);
+        c.close(OWNER, id).unwrap();
+    });
 }
 
 /// The bound the connector holds on lease `id` (`None` = spent by the answer, or never set).
