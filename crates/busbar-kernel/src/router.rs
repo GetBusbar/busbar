@@ -200,6 +200,18 @@ pub(crate) async fn reshape_body_limit_413(
     reshape_oversized_413_with(render, resp).await
 }
 
+/// THE OVER-GATE REFUSAL (`REFUSE_OVER_GATE`): the 413 a body past the size gate is answered with
+/// on `path` (requested as `target`), as the router's body-limit layer renders it.
+#[must_use]
+pub fn oversized_refusal(
+    handle: &state::AppHandle,
+    path: &str,
+    target: &str,
+) -> axum::response::Response {
+    let _ = (handle, path, target);
+    axum::response::IntoResponse::into_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 /// The words of an oversized-body refusal, the previous release's.
 const OVERSIZED_MESSAGE: &str = "request body exceeds the maximum allowed size";
 

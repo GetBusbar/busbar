@@ -134,16 +134,45 @@ fn line(path: &str, methods: u32, auth: LineAuth) -> Line {
     }
 }
 
+/// The role every scripted identity carries ([`identity`]), bound under each scripted auth's name
+/// in the kit's `role_bindings` (all pools, no group), as a deployed IdP's role must be: an
+/// identity that earns no governance key is refused `NoGrant`.
+const ROLE: &str = "member";
+
+/// The `role_bindings` table binding [`ROLE`] under each of `names`.
+fn bound(names: &[String]) -> crate::config::RoleBindings {
+    names
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                std::iter::once((ROLE.to_string(), crate::config::RoleBindingCfg::default()))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 /// A kit whose data listener holds `MESSAGES` and `OTHER` (POST, the chain `auths` in order, at
-/// the union of their points) and `HEALTHZ` (GET, `none`), for `OWNER` at `GEN`.
+/// the union of their points) and `HEALTHZ` (GET, `none`), for `OWNER` at `GEN`; each auth's
+/// [`ROLE`] is bound.
 fn kit(auths: &[(&str, Arc<Script>)]) -> Kit {
+    kit_gated(auths, None)
+}
+
+/// [`kit`], its listener's admission gate `admission`.
+fn kit_gated(auths: &[(&str, Arc<Script>)], admission: Option<Arc<AdmissionGate>>) -> Kit {
     let names: Vec<String> = auths.iter().map(|(n, _)| (*n).to_string()).collect();
     let points = AuthPoints(auths.iter().fold(0, |p, (_, s)| p | s.points.bits()));
-    kit_over(
-        crate::test_support::TestApp::new().build(),
+    kit_with(
+        crate::test_support::TestApp::new()
+            .role_bindings(bound(&names))
+            .build(),
         names,
         points,
         auths,
+        kin_unsigned(),
+        admission,
     )
 }
 
@@ -169,6 +198,18 @@ fn kit_signed(
     points: AuthPoints,
     auths: &[(&str, Arc<Script>)],
     signed: SignedIngress,
+) -> Kit {
+    kit_with(app, names, points, auths, signed, None)
+}
+
+/// [`kit_signed`], its listener's admission gate `admission`.
+fn kit_with(
+    app: Arc<App>,
+    names: Vec<String>,
+    points: AuthPoints,
+    auths: &[(&str, Arc<Script>)],
+    signed: SignedIngress,
+    admission: Option<Arc<AdmissionGate>>,
 ) -> Kit {
     let chain = LineAuth::Chain(names, points);
     let guests = GuestList::seal(vec![
@@ -201,6 +242,7 @@ fn kit_signed(
         door_refusals: Vec::new(),
         ids: line_ids(3),
         signed_ingress: signed.clone(),
+        admission: admission.clone(),
     };
     inbound.install(OWNER, GEN, listener()).expect("installed");
     // The same list under another owner: a unit minted for one is not the other's.
@@ -369,10 +411,20 @@ fn post(path: &str, fields: &[(&str, &str)], query: Option<&str>) -> Head {
     }
 }
 
+/// An identity carrying [`ROLE`], which the kit binds: it earns a governance key.
 fn identity(subject: &str, credential: &str) -> Verified {
     Verified::Identity(VerifiedIdentity {
         subject: subject.to_string(),
         credential: Some(Secret::new(credential.to_string())),
+        groups: vec![ROLE.to_string()],
+        ..VerifiedIdentity::default()
+    })
+}
+
+/// An identity carrying no role: it earns no governance key (`NoGrant`).
+fn ungranted(subject: &str) -> Verified {
+    Verified::Identity(VerifiedIdentity {
+        subject: subject.to_string(),
         ..VerifiedIdentity::default()
     })
 }
@@ -862,6 +914,7 @@ fn red_a_line_id_never_carries_the_binding_bit() {
         door_refusals: Vec::new(),
         ids,
         signed_ingress: kin_unsigned(),
+        admission: None,
     };
     for ids in [
         vec![1, 2, BINDING_BIT | 3],
@@ -1635,4 +1688,306 @@ fn red_a_hand_in_keeps_the_stream_its_request_arrived_on() {
     assert_eq!(k.inbound.handed_on(OWNER, 30, 7), None, "another stream");
     assert_eq!(k.inbound.handed_on(OWNER, 31, 5), None, "another framing");
     assert_eq!(k.inbound.handed_on(OWNER + 1, 30, 5), None, "another owner");
+}
+
+// ── row 192 C, the kernel's inbound part: the root takes up a handed-in unit ─────────────────
+
+/// `unit.hand_in` for a `none` line's GET on framing `framing`, stream `stream`.
+fn hand_in_none(k: &Kit, framing: u64, stream: u64) -> (u32, UnitRef) {
+    let mut get = post(HEALTHZ, &[], None);
+    get.method = "GET".to_string();
+    k.inbound
+        .hand_in(HandIn {
+            owner: OWNER,
+            generation: GEN,
+            auth: k.id(HEALTHZ),
+            unit: UnitRef::NONE,
+            line: k.line(HEALTHZ),
+            conn: framing,
+            stream,
+            framing: Some(framing),
+            head: get,
+        })
+        .expect("handed in")
+}
+
+/// RED (/status row 192 C): the root TAKES UP the unit handed in on (owner, framing, stream): the
+/// unit, its line (the root dispatches by the line's claimant) and its generation. Taking consumes
+/// the record [`Inbound::handed_on`] reads, so a request is driven once; the unit itself stays
+/// live until it exits. A hand-in the kernel stopped records nothing to take up.
+#[test]
+fn red_take_handed_consumes_the_record_handed_on_reads() {
+    let a = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+    let k = kit(&[("a", a)]);
+    let (flow, unit) = hand_in_none(&k, 30, 5);
+    assert_eq!(flow, FLOW_CONTINUE);
+    assert_eq!(k.inbound.take_handed(OWNER + 1, 30, 5), None, "another owner");
+    assert_eq!(k.inbound.take_handed(OWNER, 30, 6), None, "another stream");
+    assert_eq!(
+        k.inbound.take_handed(OWNER, 30, 5),
+        Some(Handed {
+            unit: unit.id,
+            line: k.line(HEALTHZ),
+            generation: GEN,
+        })
+    );
+    assert_eq!(k.inbound.handed_on(OWNER, 30, 5), None, "the record was read again");
+    assert_eq!(k.inbound.take_handed(OWNER, 30, 5), None, "taken twice");
+    assert!(
+        k.inbound.unit_secret(OWNER, unit.id).is_some(),
+        "taking the record ended the unit"
+    );
+    k.inbound.exit(unit.id);
+    assert!(k.inbound.unit_secret(OWNER, unit.id).is_none());
+    // A stopped hand-in (an auth line with no verdict) leaves nothing to take up.
+    let (flow, _) = k
+        .inbound
+        .hand_in(HandIn {
+            owner: OWNER,
+            generation: GEN,
+            auth: k.id(MESSAGES),
+            unit: UnitRef::NONE,
+            line: k.line(MESSAGES),
+            conn: 31,
+            stream: 1,
+            framing: Some(31),
+            head: post(MESSAGES, &[], None),
+        })
+        .expect("handed in");
+    assert_eq!(flow, FLOW_STOP);
+    assert_eq!(k.inbound.take_handed(OWNER, 31, 1), None);
+}
+
+/// RED (/status row 192 C, the door's caller): `door_ctx` projects the unit's first-hand verdict
+/// exactly as the data-plane gate resolves a chain verdict (`auth::resolve_data_plane_identity`):
+/// a plugin identity is its principal and the key its bound role earns; a `keys` identity is the
+/// governance key it resolved; a `none` line is the anonymous caller; a unit with no identity is
+/// refused. The credential comes with it, a redacted secret.
+#[test]
+fn red_door_ctx_projects_the_verdict_as_the_data_plane_gate_resolves_it() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "sk-1"), Vec::new());
+    let k = kit(&[("a", a)]);
+    let ans = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    let (principal, ctx, credential) = k.inbound.door_ctx(ans.unit.id, &k.app).expect("admitted");
+    let (want_principal, want_ctx) = crate::auth::resolve_data_plane_identity(
+        &k.app,
+        crate::auth::ChainVerdict::Identified {
+            module: "a".to_string(),
+            principal: crate::auth::Principal {
+                id: "alice".to_string(),
+                name: None,
+                roles: vec![ROLE.to_string()],
+                ttl_secs: None,
+            },
+            resolved: None,
+        },
+    )
+    .expect("the gate admits it");
+    assert_eq!(principal.0, want_principal.0);
+    let key = |c: &crate::governance::PlaneRequestCtx| {
+        c.key
+            .as_ref()
+            .map(|k| (k.id.clone(), k.generation_hash.clone()))
+    };
+    assert!(key(&ctx).is_some(), "the bound role earned no key");
+    assert_eq!(key(&ctx), key(&want_ctx));
+    assert_eq!(
+        credential.map(|c| c.expose(&crate::seal::lend()).clone()),
+        Some(b"sk-1".to_vec())
+    );
+    // The `keys` arm: the governance key it resolved.
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, token) = minted(&gov, now + 3_600, now);
+    let kk = keys_kit(&gov);
+    let ans = kk
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, bearer(&token))
+        .unwrap();
+    let (principal, ctx, _) = kk.inbound.door_ctx(ans.unit.id, &kk.app).expect("admitted");
+    assert_eq!(principal.0.as_ref().map(|p| p.id.clone()), Some(id.clone()));
+    assert_eq!(ctx.key.as_ref().map(|key| key.id.clone()), Some(id));
+    // A `none` line: the anonymous caller, as the open front door.
+    let (_, unit) = hand_in_none(&k, 40, 1);
+    let (principal, ctx, credential) = k.inbound.door_ctx(unit.id, &k.app).expect("open");
+    assert!(principal.0.is_none());
+    assert!(ctx.key.is_none());
+    assert!(credential.is_none());
+    // No identity: refused, fail closed.
+    let r = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+    let k = kit(&[("r", r)]);
+    let ans = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    assert_eq!(
+        k.inbound.door_ctx(ans.unit.id, &k.app).map(|_| ()),
+        Err(crate::auth::IdentityRefusal::Denied)
+    );
+}
+
+/// RED (/status row 192 C; the data-plane gate's `NoGrant`): an identity that earns no governance
+/// key is decided AT THE HAND-IN, before any continue: the hand-in stops, and the refusal is the
+/// 401 the data-plane gate answers a `NoGrant` with on the path, byte for byte.
+#[test]
+fn red_a_no_grant_identity_is_stopped_at_hand_in_with_the_gates_401() {
+    let a = Script::new(AuthPoints::HEAD, ungranted("nobody"), Vec::new());
+    let k = kit(&[("a", a)]);
+    let ans = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    assert_eq!(ans.flow, FLOW_CONTINUE, "the chain identified it");
+    assert_eq!(
+        k.inbound.door_ctx(ans.unit.id, &k.app).map(|_| ()),
+        Err(crate::auth::IdentityRefusal::NoGrant)
+    );
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, ans.unit, post(MESSAGES, &[], None)),
+        (FLOW_STOP, ans.unit),
+        "a no-grant identity was handed on"
+    );
+    let refusal = k.refuse(REFUSE_STOPPED, k.line(MESSAGES), ans.unit, MESSAGES);
+    assert_eq!(
+        refusal,
+        Refusal::of(crate::auth::unauthorized_with_completion_taps(
+            &k.app, MESSAGES, None
+        ))
+    );
+    assert_eq!(refusal.status, 401);
+}
+
+/// 1.5.5's at-capacity bytes, as the outermost inbound layer shed with them.
+const OVERLOADED_BODY: &str =
+    r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#;
+
+/// RED (/status row 192 C; 1.5.5's outermost inbound cap): the admission slot is taken at the
+/// request's FIRST kernel touch, ahead of any auth: with the gate full, a new request's first
+/// `auth.call` stops without calling any auth, and a `none` line's hand-in stops.
+#[test]
+fn admission_sheds_before_any_auth_call() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let gate = admission_gate(1).expect("a gate");
+    let k = kit_gated(&[("a", Arc::clone(&a))], Some(Arc::clone(&gate)));
+    let first = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    assert_eq!(first.flow, FLOW_CONTINUE);
+    assert_eq!(a.calls(), 1);
+    let shed = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    assert_eq!(shed.flow, FLOW_STOP, "a request past the cap went on");
+    assert!(!shed.unit.is_none(), "the shed names no unit to refuse");
+    assert_eq!(a.calls(), 1, "an auth was called past the cap");
+    let (flow, _) = hand_in_none(&k, 50, 1);
+    assert_eq!(flow, FLOW_STOP, "a none line's request past the cap went on");
+}
+
+/// RED (/status row 192 C): a shed request is refused with 1.5.5's at-capacity bytes: 503,
+/// `content-type: application/json`, `retry-after: 1` and the 93-byte body, whatever the cause
+/// the transport names, a no-route and a method miss among them.
+#[test]
+fn a_shed_answers_the_1_5_5_overloaded_bytes() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let gate = admission_gate(1).expect("a gate");
+    let k = kit_gated(&[("a", a)], Some(gate));
+    let held = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    assert_eq!(held.flow, FLOW_CONTINUE);
+    let shed = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    let want = |r: &Refusal| {
+        assert_eq!(r.status, 503);
+        assert_eq!(r.body, OVERLOADED_BODY.as_bytes());
+        assert_eq!(r.body.len(), 93);
+        let field = |n: &str| {
+            r.fields
+                .iter()
+                .find(|(f, _)| f.eq_ignore_ascii_case(n))
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(field("content-type"), Some(b"application/json".to_vec()));
+        assert_eq!(field("retry-after"), Some(b"1".to_vec()));
+        assert_eq!(
+            *r,
+            Refusal::of(crate::limits::admission::inbound_overloaded_response())
+        );
+    };
+    want(&k.refuse(REFUSE_STOPPED, k.line(MESSAGES), shed.unit, MESSAGES));
+    want(&k.refuse(REFUSE_NO_ROUTE, LINE_NONE, UnitRef::NONE, "/nope"));
+    want(&k.refuse(
+        REFUSE_METHOD_MISS,
+        k.line(MESSAGES),
+        UnitRef::NONE,
+        MESSAGES,
+    ));
+    assert_eq!(k.refused.lock().unwrap().last().map(|r| r.status), Some(503));
+}
+
+/// RED (/status row 192 C): the slot is given back when the unit exits and when the request is
+/// refused (a unit-less refusal takes one for its own answer and gives it back), and when the
+/// framing ends under a unit the root never took up.
+#[test]
+fn admission_is_released_at_exit_and_at_refusal() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let gate = admission_gate(1).expect("a gate");
+    let k = kit_gated(&[("a", a)], Some(Arc::clone(&gate)));
+    let call = || {
+        k.call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+            .unwrap()
+    };
+    let held = call();
+    assert_eq!(held.flow, FLOW_CONTINUE);
+    assert_eq!(gate.available_permits(), 0);
+    k.inbound.exit(held.unit.id);
+    assert_eq!(gate.available_permits(), 1, "the exit kept its slot");
+    let held = call();
+    assert_eq!(held.flow, FLOW_CONTINUE, "the slot an exit gave back was not taken");
+    let refused = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), held.unit, MESSAGES);
+    assert_eq!(refused.status, 413);
+    assert_eq!(gate.available_permits(), 1, "the refusal kept its slot");
+    let no_route = k.refuse(REFUSE_NO_ROUTE, LINE_NONE, UnitRef::NONE, "/nope");
+    assert_eq!(no_route.status, 404);
+    assert_eq!(gate.available_permits(), 1, "a unit-less refusal kept a slot");
+    // A unit handed in and never taken up: its framing's end gives its slot back.
+    let (flow, _) = hand_in_none(&k, 60, 1);
+    assert_eq!(flow, FLOW_CONTINUE);
+    assert_eq!(gate.available_permits(), 0);
+    k.inbound.framing_ended(60);
+    assert_eq!(gate.available_permits(), 1, "an ended framing kept its slot");
+    // A unit the root took up is the root's to end: the framing's end leaves it.
+    let (_, unit) = hand_in_none(&k, 61, 1);
+    assert!(k.inbound.take_handed(OWNER, 61, 1).is_some());
+    k.inbound.framing_ended(61);
+    assert!(k.inbound.unit_secret(OWNER, unit.id).is_some());
+    k.inbound.exit(unit.id);
+    assert_eq!(gate.available_permits(), 1);
+}
+
+/// RED (/status row 192 C, the inventory's D2; `http.crosscut__413__*`): a body that grows past
+/// the size gate AFTER its request was admitted at `Head` is refused with the 413 the router's
+/// body-limit layer renders on the path (`router::oversized_refusal`, 1.5.5's per-dialect bytes),
+/// and its unit leaves the table.
+#[test]
+fn red_an_over_gate_refusal_after_a_head_verdict_answers_the_routers_413() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let k = kit(&[("a", a)]);
+    let ans = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .unwrap();
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, ans.unit, post(MESSAGES, &[], None))
+            .0,
+        FLOW_CONTINUE
+    );
+    let over = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), ans.unit, MESSAGES);
+    let handle = crate::state::AppHandle::new(Arc::clone(&k.app));
+    assert_eq!(
+        over,
+        Refusal::of(crate::router::oversized_refusal(&handle, MESSAGES, MESSAGES))
+    );
+    assert_eq!(over.status, 413);
+    assert!(k.inbound.unit_secret(OWNER, ans.unit.id).is_none());
 }

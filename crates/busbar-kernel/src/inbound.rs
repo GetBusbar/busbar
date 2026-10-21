@@ -56,6 +56,8 @@ use busbar_contract::redacted::Secret;
 use crate::guest::{GuestList, Line, LineAuth, Matched};
 use crate::state::App;
 
+pub use crate::limits::admission::AdmissionGate;
+
 /// The refusal text of a call on a listener the kernel holds no list for at that generation.
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
 /// The refusal text of a handle or line id that names no line of the list.
@@ -359,6 +361,35 @@ pub struct Listener {
     pub ids: Vec<u64>,
     /// Whether a request's path is answered by a dialect that signs ([`signed_by_dialect`]).
     pub signed_ingress: SignedIngress,
+    /// THE INBOUND ADMISSION GATE (1.5.5's outermost inbound-concurrency cap,
+    /// `limits.max_inbound_concurrent`): a request takes its slot at its first kernel touch
+    /// (`auth.call`, `unit.hand_in` or `unit.refuse`), ahead of any auth, and gives it back when its
+    /// unit exits ([`Inbound::exit`]) or is refused. A request that finds the gate full is shed with
+    /// 1.5.5's at-capacity 503. `None` = no cap (`max_inbound_concurrent: 0`). One gate is shared
+    /// by every generation and every transport of the listener ([`admission_gate`]).
+    pub admission: Option<Arc<AdmissionGate>>,
+}
+
+/// THE DATA LISTENER'S ADMISSION GATE over `max_inbound_concurrent` slots, on the same
+/// `busbar_admission_denied_total{gate="inbound"}` counter 1.5.5's outermost layer counted on;
+/// `None` for `0`, the operator's no-cap posture, as the router installs no layer for it.
+#[must_use]
+pub fn admission_gate(max_inbound_concurrent: usize) -> Option<Arc<AdmissionGate>> {
+    (max_inbound_concurrent > 0)
+        .then(|| Arc::new(AdmissionGate::new(max_inbound_concurrent, "inbound")))
+}
+
+/// A unit the root takes up where its transport handed it in ([`Inbound::take_handed`]): the unit,
+/// the line it was handed in on (the root dispatches by that line's claimant) and the generation
+/// whose list holds the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Handed {
+    /// The unit.
+    pub unit: u64,
+    /// The line's index on the listener's list.
+    pub line: u32,
+    /// The generation the unit was minted at.
+    pub generation: u64,
 }
 
 impl std::fmt::Debug for Listener {
@@ -1361,6 +1392,36 @@ impl Inbound {
             u.handed = h.framing.map(|f| (f, h.stream));
         }
         Ok((flow, unit))
+    }
+
+    /// TAKE UP THE UNIT HANDED IN on `owner`'s framing `framing`, stream `stream`: the record
+    /// [`Inbound::handed_on`] reads, consumed, so one request is driven once.
+    #[must_use]
+    pub fn take_handed(&self, owner: u64, framing: u64, stream: u64) -> Option<Handed> {
+        let _ = (owner, framing, stream);
+        None
+    }
+
+    /// THE DOOR'S VIEW OF `unit`'s CALLER: the principal, the governance context and the
+    /// credential, by the data-plane gate's own resolution.
+    ///
+    /// # Errors
+    ///
+    /// The refusal the data-plane gate resolves the verdict to.
+    pub fn door_ctx(
+        &self,
+        unit: u64,
+        app: &App,
+    ) -> Result<
+        (
+            crate::auth::AuthPrincipal,
+            crate::governance::PlaneRequestCtx,
+            Option<Secret<Vec<u8>>>,
+        ),
+        crate::auth::IdentityRefusal,
+    > {
+        let _ = (unit, app);
+        Err(crate::auth::IdentityRefusal::Denied)
     }
 
     /// THE UNIT HANDED IN on `owner`'s framing `framing`, stream `stream` ([`HandIn::framing`],

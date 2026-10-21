@@ -83,6 +83,7 @@ fn side() -> (Arc<Inbound>, GuestList) {
                     .map(|_| auth_handle::next_ref_id(RefSpace::Line))
                     .collect(),
                 signed_ingress: kin::signed_by_dialect(),
+                admission: None,
             },
         )
         .expect("the root's line ids are line ids");
@@ -263,6 +264,98 @@ fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
 #[test]
 fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
     let failing = refused_against("413", REFUSE_OVER_GATE);
+    assert!(failing.is_empty(), "{failing:#?}");
+}
+
+/// RED (/status row 192 C, the inventory's D2): a body that grows past the size gate AFTER its
+/// request was handed in and admitted on the data listener's residual line (its claimant runs the
+/// chain itself) answers, for every credentialed over-gate crosscut cell, the 1.5.5 bytes in the
+/// path's dialect: through `unit.refuse` on the admitted unit, and as the router's body-limit
+/// layer renders it (`router::oversized_refusal`), the two one answer.
+#[test]
+fn red_an_over_gate_after_an_admitted_hand_in_answers_its_1_5_5_bytes() {
+    use busbar_contract::abi::host::service::FLOW_CONTINUE;
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
+    let (inbound, _) = bare();
+    let residual = Line {
+        route: Route {
+            methods: METHOD_ANY,
+            path_form: PATH_CONTAINS,
+            path: "/".to_string(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        auth: LineAuth::Claimant,
+        ..line("/", METHOD_ANY)
+    };
+    let guests = GuestList::seal(vec![residual]).expect("the list seals");
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let handle = busbar_kernel::state::AppHandle::new(Arc::clone(&app));
+    inbound
+        .install(
+            OWNER,
+            GEN,
+            kin::Listener {
+                guests: guests.clone(),
+                auths: std::collections::HashMap::new(),
+                body_limit: 16,
+                app,
+                door_refusals: Vec::new(),
+                ids: vec![auth_handle::next_ref_id(RefSpace::Line)],
+                signed_ingress: kin::signed_by_dialect(),
+                admission: None,
+            },
+        )
+        .expect("installed");
+    let auth = inbound.specs(OWNER, GEN).expect("installed")[0].auth;
+    let mut failing = Vec::new();
+    let mut cells = 0;
+    for (stream, (name, head, credentialed)) in (1u64..).zip(crosscut("413")) {
+        if !credentialed {
+            continue;
+        }
+        cells += 1;
+        let (flow, unit) = inbound
+            .hand_in(kin::HandIn {
+                owner: OWNER,
+                generation: GEN,
+                auth,
+                unit: UnitRef::NONE,
+                line: 0,
+                conn: 1,
+                stream,
+                framing: Some(1),
+                head: head.clone(),
+            })
+            .expect("handed in");
+        if flow != FLOW_CONTINUE {
+            failing.push(format!("{name}: the residual line's hand-in stopped"));
+            continue;
+        }
+        let refusal = inbound
+            .refuse(kin::Refuse {
+                owner: OWNER,
+                generation: GEN,
+                unit,
+                cause: REFUSE_OVER_GATE,
+                line: 0,
+                request: Some(head.clone()),
+            })
+            .expect("refused");
+        let wrong = differences(&refusal, &name);
+        if !wrong.is_empty() {
+            failing.push(format!("{name} (refused): {}", wrong.join("; ")));
+        }
+        let target = head.target.clone();
+        let rendered = kin::Refusal::of(busbar_kernel::router::oversized_refusal(
+            &handle, &target, &target,
+        ));
+        let wrong = differences(&rendered, &name);
+        if !wrong.is_empty() {
+            failing.push(format!("{name} (rendered): {}", wrong.join("; ")));
+        }
+    }
+    assert!(cells > 0, "no credentialed over-gate cell was read");
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
