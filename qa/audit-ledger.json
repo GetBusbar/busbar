@@ -1458,7 +1458,7 @@
    "paths": [
     "crates/busbar-kernel-egress/src"
    ],
-   "tree_hash": "0d845ff5b3451e3525f75ca6a8ba84c992470e7cdf6f83b2f8e4ec29e14ae3ba",
+   "tree_hash": "4940e36b17ffc5599083c893ab30a5c6cd64aeb092425daad0ffb41e954ec685",
    "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
    "round": 3,
    "result": "findings",
@@ -1470,7 +1470,7 @@
    },
    "report": "The walk, pick order, tiers, probe guards, queue wait and shed words behave as the previous release did, but the last-resort terminal ranks the pool's whole membership instead of the members the hooks kept, so a degraded dispatch can reach a member a routing policy or a required compliance restriction removed, and its retry hint is computed over the same unrestricted set. The crate still carries a complete second address guard (policy, resolve-then-pin, dial table, sealed-destination check) that no dial path calls, while its module prose says the connector and kernel call it. The query-parameter auth helpers and most client-header forwarding helpers have no caller, and several doc comments state things the code does not do. Read in 9 parts, fully.",
    "auditor": "opus-r159d-kernel-egress",
-   "fixed_at": null,
+   "fixed_at": "75257a4e3b8153cc45edee2b9e952c582472f6dc",
    "exclude": [
     "crates/busbar-kernel-egress/src/tests"
    ],
