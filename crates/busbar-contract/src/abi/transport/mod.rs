@@ -983,7 +983,7 @@ pub struct FramerYield {
     /// position, in the framer's own ACCEPTING offer (what `locate` answers with
     /// [`LocateIn::accept`]), of the protocol the connection speaks; `0` = not stated. An opaque
     /// position, never a protocol's name: the host resolves it against the offer the listener
-    /// made ([`check::check_agreed`]: past the offer is refused, and a dialled framing states
+    /// made ([`check::check_agreed_position`]: past the offer is refused, and a dial states
     /// none). Carved from what was alignment padding (pre-tag, R9 as clarified 2026-09-28: the
     /// layout golden regenerated, no version bump); the size, alignment and every offset are
     /// unchanged.

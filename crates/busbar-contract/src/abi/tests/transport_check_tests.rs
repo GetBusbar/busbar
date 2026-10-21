@@ -1387,23 +1387,23 @@ fn a_begin_scheme_is_declared() {
 /// is refused, and a dialled framing (an offer of none) states none.
 #[test]
 fn an_agreed_protocol_past_the_offer_is_refused() {
-    use crate::abi::transport::check::check_agreed;
-    assert_eq!(check_agreed(0, 2), Ok(()), "not stated");
-    assert_eq!(check_agreed(1, 2), Ok(()));
-    assert_eq!(check_agreed(2, 2), Ok(()));
+    use crate::abi::transport::check::check_agreed_position;
+    assert_eq!(check_agreed_position(0, 2), Ok(()), "not stated");
+    assert_eq!(check_agreed_position(1, 2), Ok(()));
+    assert_eq!(check_agreed_position(2, 2), Ok(()));
     assert_eq!(
-        check_agreed(3, 2),
+        check_agreed_position(3, 2),
         f(Rule::IndexOutOfRange, "framer.agreed"),
         "past the offer"
     );
-    assert_eq!(check_agreed(0, 0), Ok(()), "a dial states none");
+    assert_eq!(check_agreed_position(0, 0), Ok(()), "a dial states none");
     assert_eq!(
-        check_agreed(1, 0),
+        check_agreed_position(1, 0),
         f(Rule::IndexOutOfRange, "framer.agreed"),
         "a dial agrees nothing"
     );
     assert_eq!(
-        check_agreed(u32::MAX, 2),
+        check_agreed_position(u32::MAX, 2),
         f(Rule::IndexOutOfRange, "framer.agreed")
     );
 }
