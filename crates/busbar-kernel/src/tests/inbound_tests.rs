@@ -173,6 +173,7 @@ fn kit_gated(auths: &[(&str, Arc<Script>)], admission: Option<Arc<AdmissionGate>
         auths,
         kin_unsigned(),
         admission,
+        None,
     )
 }
 
@@ -199,7 +200,7 @@ fn kit_signed(
     auths: &[(&str, Arc<Script>)],
     signed: SignedIngress,
 ) -> Kit {
-    kit_with(app, names, points, auths, signed, None)
+    kit_with(app, names, points, auths, signed, None, None)
 }
 
 /// [`kit_signed`], its listener's admission gate `admission`.
@@ -210,6 +211,7 @@ fn kit_with(
     auths: &[(&str, Arc<Script>)],
     signed: SignedIngress,
     admission: Option<Arc<AdmissionGate>>,
+    door_refuser: Option<crate::plane_routes::PlaneRefuseByPathFn>,
 ) -> Kit {
     let chain = LineAuth::Chain(names, points);
     let guests = GuestList::seal(vec![
@@ -243,6 +245,7 @@ fn kit_with(
         ids: line_ids(3),
         signed_ingress: signed.clone(),
         admission: admission.clone(),
+        door_refuser: door_refuser.clone(),
     };
     inbound.install(OWNER, GEN, listener()).expect("installed");
     // The same list under another owner: a unit minted for one is not the other's.
@@ -915,6 +918,7 @@ fn red_a_line_id_never_carries_the_binding_bit() {
         ids,
         signed_ingress: kin_unsigned(),
         admission: None,
+        door_refuser: None,
     };
     for ids in [
         vec![1, 2, BINDING_BIT | 3],
@@ -1750,6 +1754,7 @@ fn red_a_listener_table_with_a_zero_body_limit_is_refused_as_1_5_5_refused_it() 
         ids: line_ids(3),
         signed_ingress: kin_unsigned(),
         admission: None,
+        door_refuser: None,
     };
     assert_eq!(
         k.inbound.install(OWNER + 9, GEN, with(0)),
@@ -2145,4 +2150,165 @@ fn red_an_over_gate_refusal_after_a_head_verdict_answers_the_routers_413() {
     );
     assert_eq!(over.status, 413);
     assert!(k.inbound.unit_secret(OWNER, ans.unit.id).is_none());
+}
+
+// ── every refusal through the very function the router answers with ─────────────────────────
+
+/// A refusal's bytes as a client reads them off the old path: the status, the fields a refusal's
+/// meaning rides on, the body.
+type Read = (u16, Option<Vec<u8>>, Option<Vec<u8>>, Vec<u8>);
+
+fn read_refusal(r: &Refusal) -> Read {
+    let field = |n: &str| {
+        r.fields
+            .iter()
+            .find(|(f, _)| f.eq_ignore_ascii_case(n))
+            .map(|(_, v)| v.clone())
+    };
+    (
+        r.status,
+        field("www-authenticate"),
+        field("content-type"),
+        r.body.clone(),
+    )
+}
+
+/// The OLD PATH's answer (the router, its auth middleware around it) to a POST on `path` carrying
+/// no credential, over `app`.
+async fn old_path(app: Arc<App>, path: &str) -> Read {
+    crate::snapshot::init();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}{path}"))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    let field = |n: &str| resp.headers().get(n).map(|v| v.as_bytes().to_vec());
+    let (status, challenge, content_type) = (
+        resp.status().as_u16(),
+        field("www-authenticate"),
+        field("content-type"),
+    );
+    let body = resp.bytes().await.unwrap().to_vec();
+    serving.abort();
+    (status, challenge, content_type, body)
+}
+
+/// RED (/status row 192 C; THE DESIGN §6 l.962, every refusal the kernel's, byte for byte): on an
+/// AUDIENCE-BOUND plane the inbound handle's refusals are the old auth middleware's own: an identity
+/// that earns no grant is stopped at the hand-in and answered the RFC 6750 `insufficient_scope`
+/// challenge, and a request the chain denies without a credential the bare challenge, each
+/// compared against what the old path answers the same request on the same app.
+#[tokio::test]
+async fn red_an_audience_bound_planes_refusals_are_the_old_paths_challenges() {
+    for verified in [ungranted("nobody"), Verified::Reject] {
+        let a = Script::new(AuthPoints::HEAD, verified.clone(), Vec::new());
+        let mut t = crate::test_support::TestApp::new().auth(Arc::new(
+            crate::auth::AuthMiddleware::from_doors_for_test(vec![(
+                "a".to_string(),
+                Arc::clone(&a) as Arc<dyn AuthCalls>,
+            )]),
+        ));
+        t.mount_plane("bound-plane", MESSAGES, "bound-wire");
+        t.admit_plane(
+            "bound-plane",
+            crate::plane::PlaneAdmission {
+                audience: "https://gw.example/v1/messages".to_string(),
+                resource_metadata: "https://gw.example/.well-known/oauth-protected-resource"
+                    .to_string(),
+            },
+        );
+        let app = t.build();
+        assert!(
+            app.planes.admission_for(MESSAGES).is_some(),
+            "audience-bound"
+        );
+        let want = old_path(Arc::clone(&app), MESSAGES).await;
+        let k = kit_with(
+            app,
+            vec!["a".to_string()],
+            AuthPoints::HEAD,
+            &[("a", a)],
+            kin_unsigned(),
+            None,
+            None,
+        );
+        let ans = k
+            .call(
+                MESSAGES,
+                UnitRef::NONE,
+                POINT_HEAD,
+                post(MESSAGES, &[], None),
+            )
+            .unwrap();
+        let (flow, unit) = if ans.flow == FLOW_CONTINUE {
+            k.hand_in(MESSAGES, MESSAGES, ans.unit, post(MESSAGES, &[], None))
+        } else {
+            (ans.flow, ans.unit)
+        };
+        assert_eq!(flow, FLOW_STOP, "{verified:?}");
+        let got = k.refuse(REFUSE_STOPPED, k.line(MESSAGES), unit, MESSAGES);
+        assert!(
+            want.1.is_some(),
+            "the old path answered no challenge: {want:?}"
+        );
+        assert_eq!(read_refusal(&got), want, "{verified:?}");
+    }
+}
+
+/// A door's own rendering of every kernel-shaped refusal: a 413 no kernel builder answers.
+fn door_refuser() -> crate::plane_routes::PlaneRefuseByPathFn {
+    Arc::new(|r: &crate::plane_routes::KernelRefusal<'_>| {
+        let status = axum::http::StatusCode::from_u16(r.status).ok()?;
+        Some(axum::response::IntoResponse::into_response((
+            status,
+            [("x-door", "own")],
+            format!("door:{}:{}", r.status, r.target),
+        )))
+    })
+}
+
+/// RED (/status row 192 C; ARCHITECT ruling 2026-10-16, 3b B): a body past the size gate on a door's
+/// path is answered by the door's own refusal hook, the same bytes the router's body-limit layer
+/// renders through it (`router::oversized_refusal`), with a unit and without one.
+#[test]
+fn red_an_over_gate_refusal_renders_through_the_doors_own_hook() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let k = kit_with(
+        crate::test_support::TestApp::new()
+            .role_bindings(bound(&["a".to_string()]))
+            .build(),
+        vec!["a".to_string()],
+        AuthPoints::HEAD,
+        &[("a", a)],
+        kin_unsigned(),
+        None,
+        Some(door_refuser()),
+    );
+    let handle = crate::state::AppHandle::new(Arc::clone(&k.app));
+    handle.bind_door_refuser(door_refuser());
+    let want = Refusal::of(crate::router::oversized_refusal(
+        &handle, MESSAGES, MESSAGES,
+    ));
+    assert_eq!(
+        want.body,
+        b"door:413:/v1/messages".to_vec(),
+        "the door rendered"
+    );
+    let unitless = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), UnitRef::NONE, MESSAGES);
+    assert_eq!(unitless, want);
+    let ans = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
+        .unwrap();
+    let with_unit = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), ans.unit, MESSAGES);
+    assert_eq!(with_unit, want);
 }

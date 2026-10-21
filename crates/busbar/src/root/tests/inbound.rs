@@ -84,6 +84,7 @@ fn side() -> (Arc<Inbound>, GuestList) {
                     .collect(),
                 signed_ingress: kin::signed_by_dialect(),
                 admission: None,
+                door_refuser: None,
             },
         )
         .expect("the root's line ids are line ids");
@@ -304,6 +305,7 @@ fn red_an_over_gate_after_an_admitted_hand_in_answers_its_1_5_5_bytes() {
                 ids: vec![auth_handle::next_ref_id(RefSpace::Line)],
                 signed_ingress: kin::signed_by_dialect(),
                 admission: None,
+                door_refuser: None,
             },
         )
         .expect("installed");

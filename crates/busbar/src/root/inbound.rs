@@ -305,6 +305,7 @@ pub fn install_listeners(
             ids,
             signed_ingress: kin::signed_by_dialect(),
             admission: admission(),
+            door_refuser: None,
         };
         inbound.install(owner, generation, listener)?;
     }

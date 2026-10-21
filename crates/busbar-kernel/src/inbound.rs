@@ -376,6 +376,11 @@ pub struct Listener {
     /// 1.5.5's at-capacity 503. `None` = no cap (`max_inbound_concurrent: 0`). One gate is shared
     /// by every generation and every transport of the listener ([`admission_gate`]).
     pub admission: Option<Arc<AdmissionGate>>,
+    /// THE DOOR PLANES' RENDERING of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16, 3b B),
+    /// the one the router's layers render through (`state::AppHandle::bind_door_refuser`): an
+    /// over-gate body and a method miss on a door's path are answered by the door's own refusal
+    /// hook, as the router answers them. `None` = no door renders, the kernel answers its own.
+    pub door_refuser: Option<crate::plane_routes::PlaneRefuseByPathFn>,
 }
 
 /// THE DATA LISTENER'S ADMISSION GATE over `max_inbound_concurrent` slots, on the same
