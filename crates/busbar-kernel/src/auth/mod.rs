@@ -1338,7 +1338,7 @@ pub(crate) fn keys_arm_verdict(
 /// label, no roles (a vkey is a direct grant, not a group membership resolved through
 /// role_bindings). Shared by the bearer `keys` arm and the ingress-protocol AWS SigV4
 /// request-signing pre-step so both attach an identical principal.
-fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
+pub(crate) fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
     Principal {
         id: key.id.clone(),
         name: Some(key.name.clone()),

@@ -237,6 +237,22 @@ fn installing() -> std::sync::MutexGuard<'static, ()> {
 pub const ROOT_IS_NO_TRANSPORT: &str =
     "the root's own identity serves no listener: a listener's table is its transport's";
 
+/// THE DATA LISTENER'S ADMISSION GATE (1.5.5's outermost inbound cap,
+/// `limits.max_inbound_concurrent`, `0` = none): one for the process, built at the first install
+/// from the limits installed then, as the router's layer is built once at boot, and shared by every
+/// generation and every transport the listener is served through, so a slot a request took is
+/// given back to the gate it was taken from.
+fn admission() -> Option<Arc<kin::AdmissionGate>> {
+    static GATE: OnceLock<Option<Arc<kin::AdmissionGate>>> = OnceLock::new();
+    GATE.get_or_init(|| {
+        kin::admission_gate(busbar_kernel::config::limits::installed().map_or(
+            busbar_kernel::config::limits::DEFAULT_MAX_INBOUND_CONCURRENT,
+            |l| l.max_inbound_concurrent,
+        ))
+    })
+    .clone()
+}
+
 /// INSTALL THE DATA LISTENER'S TABLE under each of `owners` (the instance identities of the
 /// transports it is served through) at `generation`: the sealed `guests` with the opened auths
 /// their lines name off `app`, the size gate's limit, the door routes' unit-less refusals and each
@@ -288,7 +304,7 @@ pub fn install_listeners(
             door_refusals: door_refusals.to_vec(),
             ids,
             signed_ingress: kin::signed_by_dialect(),
-            admission: None,
+            admission: admission(),
         };
         inbound.install(owner, generation, listener)?;
     }

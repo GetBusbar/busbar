@@ -1721,7 +1721,11 @@ fn red_take_handed_consumes_the_record_handed_on_reads() {
     let k = kit(&[("a", a)]);
     let (flow, unit) = hand_in_none(&k, 30, 5);
     assert_eq!(flow, FLOW_CONTINUE);
-    assert_eq!(k.inbound.take_handed(OWNER + 1, 30, 5), None, "another owner");
+    assert_eq!(
+        k.inbound.take_handed(OWNER + 1, 30, 5),
+        None,
+        "another owner"
+    );
     assert_eq!(k.inbound.take_handed(OWNER, 30, 6), None, "another stream");
     assert_eq!(
         k.inbound.take_handed(OWNER, 30, 5),
@@ -1731,7 +1735,11 @@ fn red_take_handed_consumes_the_record_handed_on_reads() {
             generation: GEN,
         })
     );
-    assert_eq!(k.inbound.handed_on(OWNER, 30, 5), None, "the record was read again");
+    assert_eq!(
+        k.inbound.handed_on(OWNER, 30, 5),
+        None,
+        "the record was read again"
+    );
     assert_eq!(k.inbound.take_handed(OWNER, 30, 5), None, "taken twice");
     assert!(
         k.inbound.unit_secret(OWNER, unit.id).is_some(),
@@ -1768,7 +1776,12 @@ fn red_door_ctx_projects_the_verdict_as_the_data_plane_gate_resolves_it() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "sk-1"), Vec::new());
     let k = kit(&[("a", a)]);
     let ans = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     let (principal, ctx, credential) = k.inbound.door_ctx(ans.unit.id, &k.app).expect("admitted");
     let (want_principal, want_ctx) = crate::auth::resolve_data_plane_identity(
@@ -1818,7 +1831,12 @@ fn red_door_ctx_projects_the_verdict_as_the_data_plane_gate_resolves_it() {
     let r = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
     let k = kit(&[("r", r)]);
     let ans = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     assert_eq!(
         k.inbound.door_ctx(ans.unit.id, &k.app).map(|_| ()),
@@ -1834,7 +1852,12 @@ fn red_a_no_grant_identity_is_stopped_at_hand_in_with_the_gates_401() {
     let a = Script::new(AuthPoints::HEAD, ungranted("nobody"), Vec::new());
     let k = kit(&[("a", a)]);
     let ans = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     assert_eq!(ans.flow, FLOW_CONTINUE, "the chain identified it");
     assert_eq!(
@@ -1857,8 +1880,7 @@ fn red_a_no_grant_identity_is_stopped_at_hand_in_with_the_gates_401() {
 }
 
 /// 1.5.5's at-capacity bytes, as the outermost inbound layer shed with them.
-const OVERLOADED_BODY: &str =
-    r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#;
+const OVERLOADED_BODY: &str = r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#;
 
 /// RED (/status row 192 C; 1.5.5's outermost inbound cap): the admission slot is taken at the
 /// request's FIRST kernel touch, ahead of any auth: with the gate full, a new request's first
@@ -1869,18 +1891,31 @@ fn admission_sheds_before_any_auth_call() {
     let gate = admission_gate(1).expect("a gate");
     let k = kit_gated(&[("a", Arc::clone(&a))], Some(Arc::clone(&gate)));
     let first = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     assert_eq!(first.flow, FLOW_CONTINUE);
     assert_eq!(a.calls(), 1);
     let shed = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     assert_eq!(shed.flow, FLOW_STOP, "a request past the cap went on");
     assert!(!shed.unit.is_none(), "the shed names no unit to refuse");
     assert_eq!(a.calls(), 1, "an auth was called past the cap");
     let (flow, _) = hand_in_none(&k, 50, 1);
-    assert_eq!(flow, FLOW_STOP, "a none line's request past the cap went on");
+    assert_eq!(
+        flow, FLOW_STOP,
+        "a none line's request past the cap went on"
+    );
 }
 
 /// RED (/status row 192 C): a shed request is refused with 1.5.5's at-capacity bytes: 503,
@@ -1892,11 +1927,21 @@ fn a_shed_answers_the_1_5_5_overloaded_bytes() {
     let gate = admission_gate(1).expect("a gate");
     let k = kit_gated(&[("a", a)], Some(gate));
     let held = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     assert_eq!(held.flow, FLOW_CONTINUE);
     let shed = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     let want = |r: &Refusal| {
         assert_eq!(r.status, 503);
@@ -1923,7 +1968,10 @@ fn a_shed_answers_the_1_5_5_overloaded_bytes() {
         UnitRef::NONE,
         MESSAGES,
     ));
-    assert_eq!(k.refused.lock().unwrap().last().map(|r| r.status), Some(503));
+    assert_eq!(
+        k.refused.lock().unwrap().last().map(|r| r.status),
+        Some(503)
+    );
 }
 
 /// RED (/status row 192 C): the slot is given back when the unit exits and when the request is
@@ -1935,8 +1983,13 @@ fn admission_is_released_at_exit_and_at_refusal() {
     let gate = admission_gate(1).expect("a gate");
     let k = kit_gated(&[("a", a)], Some(Arc::clone(&gate)));
     let call = || {
-        k.call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
-            .unwrap()
+        k.call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
+        .unwrap()
     };
     let held = call();
     assert_eq!(held.flow, FLOW_CONTINUE);
@@ -1944,19 +1997,30 @@ fn admission_is_released_at_exit_and_at_refusal() {
     k.inbound.exit(held.unit.id);
     assert_eq!(gate.available_permits(), 1, "the exit kept its slot");
     let held = call();
-    assert_eq!(held.flow, FLOW_CONTINUE, "the slot an exit gave back was not taken");
+    assert_eq!(
+        held.flow, FLOW_CONTINUE,
+        "the slot an exit gave back was not taken"
+    );
     let refused = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), held.unit, MESSAGES);
     assert_eq!(refused.status, 413);
     assert_eq!(gate.available_permits(), 1, "the refusal kept its slot");
     let no_route = k.refuse(REFUSE_NO_ROUTE, LINE_NONE, UnitRef::NONE, "/nope");
     assert_eq!(no_route.status, 404);
-    assert_eq!(gate.available_permits(), 1, "a unit-less refusal kept a slot");
+    assert_eq!(
+        gate.available_permits(),
+        1,
+        "a unit-less refusal kept a slot"
+    );
     // A unit handed in and never taken up: its framing's end gives its slot back.
     let (flow, _) = hand_in_none(&k, 60, 1);
     assert_eq!(flow, FLOW_CONTINUE);
     assert_eq!(gate.available_permits(), 0);
     k.inbound.framing_ended(60);
-    assert_eq!(gate.available_permits(), 1, "an ended framing kept its slot");
+    assert_eq!(
+        gate.available_permits(),
+        1,
+        "an ended framing kept its slot"
+    );
     // A unit the root took up is the root's to end: the framing's end leaves it.
     let (_, unit) = hand_in_none(&k, 61, 1);
     assert!(k.inbound.take_handed(OWNER, 61, 1).is_some());
@@ -1975,7 +2039,12 @@ fn red_an_over_gate_refusal_after_a_head_verdict_answers_the_routers_413() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
     let k = kit(&[("a", a)]);
     let ans = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, post(MESSAGES, &[], None))
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
         .unwrap();
     assert_eq!(
         k.hand_in(MESSAGES, MESSAGES, ans.unit, post(MESSAGES, &[], None))
@@ -1986,7 +2055,9 @@ fn red_an_over_gate_refusal_after_a_head_verdict_answers_the_routers_413() {
     let handle = crate::state::AppHandle::new(Arc::clone(&k.app));
     assert_eq!(
         over,
-        Refusal::of(crate::router::oversized_refusal(&handle, MESSAGES, MESSAGES))
+        Refusal::of(crate::router::oversized_refusal(
+            &handle, MESSAGES, MESSAGES
+        ))
     );
     assert_eq!(over.status, 413);
     assert!(k.inbound.unit_secret(OWNER, ans.unit.id).is_none());

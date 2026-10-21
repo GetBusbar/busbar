@@ -485,8 +485,42 @@ struct UnitState {
     credential: Option<Secret<String>>,
     /// The governance key the `keys` arm resolved, held until the verdict is fixed.
     resolved: Option<Arc<crate::governance::VirtualKey>>,
-    /// Where it was handed in: (framing, stream), on a hand-in made on a framing.
+    /// Where it was handed in and admitted: (framing, stream), on a hand-in made on a framing,
+    /// until the root takes it up ([`Inbound::take_handed`]).
     handed: Option<(u64, u64)>,
+    /// The framing it was minted on; `None` for a ticketless hand-in.
+    framing: Option<u64>,
+    /// Whether the root took it up: from then on its end is the root's ([`Inbound::exit`]), not its
+    /// framing's.
+    taken: bool,
+    /// Who answers for its caller ([`Door`]).
+    door: Door,
+    /// Whether the admission gate was full at its first kernel touch: it is refused with the
+    /// at-capacity 503 and no auth is called for it.
+    shed: bool,
+    /// Its admission slot, given back when the unit leaves the table (its drop).
+    admission: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+/// Who answers for a unit's caller, by its line's auth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Door {
+    /// A `none` line: anyone, the anonymous caller.
+    Open,
+    /// The claimant runs the chain itself: the kernel holds no verdict for it.
+    Claimant,
+    /// The line's chain, its verdict first-hand on the unit.
+    Chain,
+}
+
+impl Door {
+    fn of(auth: Option<&LineAuth>) -> Self {
+        match auth {
+            Some(LineAuth::None) => Self::Open,
+            Some(LineAuth::Claimant) => Self::Claimant,
+            Some(LineAuth::Chain(..)) | None => Self::Chain,
+        }
+    }
 }
 
 impl UnitState {
@@ -512,6 +546,11 @@ impl UnitState {
             credential: None,
             resolved: None,
             handed: None,
+            framing: None,
+            taken: false,
+            door: Door::Chain,
+            shed: false,
+            admission: None,
         }
     }
 
@@ -743,6 +782,41 @@ fn ordered(names: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// THE DATA-PLANE GATE'S RESOLUTION of `u`'s verdict over `app`
+/// (`auth::resolve_data_plane_identity`), its chain verdict rebuilt from the first-hand identity as
+/// the chain built it: the provider is the module, a plugin identity's principal its subject, name,
+/// groups and ttl (`Judgement::answered`), a resolved governance key's principal the key's
+/// (`auth::principal_from_vkey`).
+fn project(
+    u: &UnitState,
+    app: &App,
+) -> Result<
+    (
+        crate::auth::AuthPrincipal,
+        crate::governance::PlaneRequestCtx,
+    ),
+    crate::auth::IdentityRefusal,
+> {
+    let verdict = match (u.door, &u.admitted) {
+        (Door::Open, _) => crate::auth::ChainVerdict::Open,
+        (Door::Chain, Some(a)) if !u.shed => crate::auth::ChainVerdict::Identified {
+            module: a.provider.clone(),
+            principal: match &a.resolved {
+                Some(key) => crate::auth::principal_from_vkey(key),
+                None => crate::auth::Principal {
+                    id: a.identity.subject.clone(),
+                    name: a.identity.name.clone(),
+                    roles: a.identity.groups.clone(),
+                    ttl_secs: a.identity.ttl_secs,
+                },
+            },
+            resolved: a.resolved.clone(),
+        },
+        _ => crate::auth::ChainVerdict::Denied,
+    };
+    crate::auth::resolve_data_plane_identity(app, verdict)
+}
+
 /// THE `keys` ARM with the signed-request pre-step ahead of it, as 1.5.5's gate ran them: a
 /// verifier's identity is the governance key holding that credential (enabled, live, not revoked)
 /// or a deny; its pass falls through to the token path; a reject or no verdict denies; an
@@ -959,16 +1033,21 @@ impl Inbound {
             .map(f)
     }
 
-    /// The unit leaves the table: its credential is zeroised (its drop).
+    /// The unit leaves the table, at its stream's end or its refusal: its credential is zeroised,
+    /// its admission slot given back and its hand-in record gone (its drop).
     pub fn exit(&self, unit: u64) {
         drop(self.units().remove(&unit));
     }
 
     /// THE HOST'S END NOTIFICATION: the framing `framing` ended (the loader retired the ticket of
     /// the connection side it drove). Its `Peer` verdict, at every generation and for every owner,
-    /// leaves the table (its credential zeroised), and so does the connection it named.
+    /// leaves the table (its credential zeroised), and so does the connection it named. So does
+    /// every unit minted on it that the root never took up (its request can no longer be
+    /// answered), giving back its admission slot; a unit the root took up is the root's to end.
     pub fn framing_ended(&self, framing: u64) {
         self.peers().retain(|(_, _, f), _| *f != framing);
+        self.units()
+            .retain(|_, u| u.taken || u.framing != Some(framing));
         self.framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1025,6 +1104,7 @@ impl Inbound {
         })
         .ok_or(UNIT_UNMINTED)?;
         let mut state = UnitState::open(owner, generation, line, secret, providers);
+        state.framing = framing;
         if let Some(peer) = framing.and_then(|f| {
             self.peers()
                 .get(&(owner, generation, f))
@@ -1035,6 +1115,20 @@ impl Inbound {
         }
         self.units().insert(unit, state);
         Ok(UnitRef { id: unit, mac })
+    }
+
+    /// THE REQUEST'S FIRST KERNEL TOUCH for the freshly minted `unit`: its door, and its admission
+    /// slot from `gate`, ahead of any auth (1.5.5's outermost cap). Answers whether it was shed (the
+    /// gate was full).
+    fn enter(&self, unit: u64, gate: Option<&Arc<AdmissionGate>>, door: Door) -> bool {
+        let slot = gate.map(|g| g.try_enter());
+        let shed = matches!(slot, Some(None));
+        if let Some(u) = self.units().get_mut(&unit) {
+            u.door = door;
+            u.shed = shed;
+            u.admission = slot.flatten();
+        }
+        shed
     }
 
     /// Whether `r` is a unit this kernel minted for `owner`, at `generation`, for `line`.
@@ -1127,7 +1221,7 @@ impl Inbound {
             return Err(OVER_GATE);
         }
         self.same_conn(call.owner, call.framing, call.conn)?;
-        let (target, unit) = if peer {
+        let (target, unit, shed) = if peer {
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
             if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
@@ -1143,27 +1237,31 @@ impl Inbound {
             peers.entry(key).or_insert_with(|| {
                 UnitState::open(call.owner, call.generation, line_ix, [0; 2], &providers)
             });
-            (Target::Peer(key), UnitRef::NONE)
+            (Target::Peer(key), UnitRef::NONE, false)
         } else {
             let unit = if call.unit.is_none() {
-                self.mint(
+                let unit = self.mint(
                     call.owner,
                     call.generation,
                     line_ix,
                     &providers,
                     Some(call.framing),
-                )?
+                )?;
+                self.enter(unit.id, table.listener.admission.as_ref(), Door::Chain);
+                unit
             } else if self.verified(call.owner, Some(call.generation), Some(line_ix), call.unit) {
                 call.unit
             } else {
                 return Err(UNIT_FOREIGN);
             };
+            let mut shed = false;
             if let Some(u) = self.units().get_mut(&unit.id) {
                 if u.head.is_none() {
                     u.head = Some(call.head.clone());
                 }
+                shed = u.shed;
             }
-            (Target::Unit(unit.id), unit)
+            (Target::Unit(unit.id), unit, shed)
         };
         let positions: Vec<Position> = providers
             .iter()
@@ -1189,6 +1287,15 @@ impl Inbound {
         let deadline = call.deadline;
         let (head, body, conn) = (call.head, call.body, call.conn);
         Ok(async move {
+            // SHED (the admission gate was full at the request's first touch): stopped before any
+            // auth is called; its refusal is the at-capacity 503.
+            if shed {
+                return Ok(Answer {
+                    flow: FLOW_STOP,
+                    unit,
+                    strips: Vec::new(),
+                });
+            }
             for p in positions {
                 let undecided = me
                     .with_state(target, |u| {
@@ -1371,43 +1478,77 @@ impl Inbound {
             self.same_conn(h.owner, f, h.conn)?;
         }
         let lines = table.listener.guests.lines();
+        let auth = lines.get(h.line as usize).map(|l| &l.auth);
         let unit = if h.unit.is_none() {
-            let names: &[String] = match lines.get(h.line as usize).map(|l| &l.auth) {
+            let names: &[String] = match auth {
                 Some(LineAuth::Chain(names, _)) => names,
                 _ => &[],
             };
-            self.mint(h.owner, h.generation, h.line, &ordered(names), h.framing)?
+            let unit = self.mint(h.owner, h.generation, h.line, &ordered(names), h.framing)?;
+            self.enter(unit.id, table.listener.admission.as_ref(), Door::of(auth));
+            unit
         } else if self.verified(h.owner, None, None, h.unit) {
             h.unit
         } else {
             return Err(UNIT_FOREIGN);
         };
-        let flow = if self.admits(&table, &h, unit) {
+        // THE GRANT, decided here, before any continue: an identity the data-plane gate would
+        // refuse `NoGrant` is stopped, and refused with the gate's own 401.
+        let granted = || {
+            !matches!(auth, Some(LineAuth::Chain(..)))
+                || self
+                    .units()
+                    .get(&unit.id)
+                    .is_some_and(|u| project(u, &table.listener.app).is_ok())
+        };
+        let flow = if self.admits(&table, &h, unit) && granted() {
             FLOW_CONTINUE
         } else {
             FLOW_STOP
         };
         if let Some(u) = self.units().get_mut(&unit.id) {
             u.head = Some(h.head);
-            u.handed = h.framing.map(|f| (f, h.stream));
+            // Only an admitted request is there for the root to take up.
+            u.handed = h
+                .framing
+                .filter(|_| flow == FLOW_CONTINUE)
+                .map(|f| (f, h.stream));
         }
         Ok((flow, unit))
     }
 
     /// TAKE UP THE UNIT HANDED IN on `owner`'s framing `framing`, stream `stream`: the record
     /// [`Inbound::handed_on`] reads, consumed, so one request is driven once.
+    /// From then on the unit's end is the root's: it calls [`Inbound::exit`] when the stream ends,
+    /// and the framing's end ([`Inbound::framing_ended`]) no longer ends it. `None` = no admitted
+    /// unit was handed in there, or it was taken up already.
     #[must_use]
     pub fn take_handed(&self, owner: u64, framing: u64, stream: u64) -> Option<Handed> {
-        let _ = (owner, framing, stream);
-        None
+        let mut units = self.units();
+        let (id, u) = units
+            .iter_mut()
+            .find(|(_, u)| u.owner == owner && u.handed == Some((framing, stream)))?;
+        u.handed = None;
+        u.taken = true;
+        Some(Handed {
+            unit: *id,
+            line: u.line,
+            generation: u.generation,
+        })
     }
 
     /// THE DOOR'S VIEW OF `unit`'s CALLER: the principal, the governance context and the
-    /// credential, by the data-plane gate's own resolution.
+    /// credential, by the data-plane gate's own resolution (`auth::resolve_data_plane_identity`)
+    /// of the unit's first-hand verdict, over `app` (the generation's). A `none` line's unit is the
+    /// anonymous caller (the open front door's `AuthPrincipal(None)` and empty context). The
+    /// credential is the one the identity was verified from, held on the unit (the
+    /// `caller-credential` style's, §6.6), copied out still a redacted secret.
     ///
     /// # Errors
     ///
-    /// The refusal the data-plane gate resolves the verdict to.
+    /// `Denied` for a unit the kernel holds no identity for (no verdict, a refusal, a line whose
+    /// claimant runs the chain itself, or no live unit); `NoGrant` for an identity that earns no
+    /// governance key, the refusal the hand-in already stopped it with.
     pub fn door_ctx(
         &self,
         unit: u64,
@@ -1420,8 +1561,16 @@ impl Inbound {
         ),
         crate::auth::IdentityRefusal,
     > {
-        let _ = (unit, app);
-        Err(crate::auth::IdentityRefusal::Denied)
+        let units = self.units();
+        let u = units
+            .get(&unit)
+            .ok_or(crate::auth::IdentityRefusal::Denied)?;
+        let (principal, ctx) = project(u, app)?;
+        let credential = u
+            .credential
+            .as_ref()
+            .map(|c| Secret::new(c.expose(&crate::seal::lend()).as_bytes().to_vec()));
+        Ok((principal, ctx, credential))
     }
 
     /// THE UNIT HANDED IN on `owner`'s framing `framing`, stream `stream` ([`HandIn::framing`],
@@ -1463,7 +1612,7 @@ impl Inbound {
         let Some(u) = units.get(&unit.id) else {
             return false;
         };
-        if u.line != h.line || u.generation != h.generation {
+        if u.line != h.line || u.generation != h.generation || u.shed {
             return false;
         }
         // (b) unless the line's auth is none, a first-hand identity from that line's auth.
@@ -1504,13 +1653,30 @@ impl Inbound {
                 return Err(UNIT_FOREIGN);
             }
         }
-        let (head, overloaded) = unit
+        if !matches!(
+            r.cause,
+            REFUSE_NO_ROUTE
+                | REFUSE_METHOD_MISS
+                | REFUSE_OVER_GATE
+                | REFUSE_STOPPED
+                | REFUSE_CHECK_FAILED
+        ) {
+            return Err(CAUSE_UNKNOWN);
+        }
+        let (head, overloaded, unit_shed) = unit
             .and_then(|u| {
                 self.units()
                     .get(&u.id)
-                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
+                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded), s.shed))
             })
-            .unwrap_or((None, false));
+            .unwrap_or((None, false, false));
+        // A request with no unit is first touched HERE: it takes its admission slot for its own
+        // answer, and gives it back once answered.
+        let slot = match (unit, table.listener.admission.as_ref()) {
+            (None, Some(gate)) => Some(gate.try_enter()),
+            _ => None,
+        };
+        let shed = unit_shed || matches!(slot, Some(None));
         // The unit's own head first, then the request the transport hands with the refusal.
         let head = head.or(r.request);
         let path = head
@@ -1524,6 +1690,8 @@ impl Inbound {
             .unwrap_or_else(|| path.clone());
         let app = &table.listener.app;
         let resp = match r.cause {
+            // SHED: 1.5.5's outermost cap answered every request past it, whatever its route.
+            _ if shed => crate::limits::admission::inbound_overloaded_response(),
             REFUSE_NO_ROUTE => crate::router::fallback_error_response(
                 &app.planes,
                 &path,
@@ -1560,6 +1728,7 @@ impl Inbound {
             _ => return Err(CAUSE_UNKNOWN),
         };
         let refusal = Refusal::of(resp);
+        drop(slot);
         if let Some(u) = unit {
             self.exit(u.id);
         }

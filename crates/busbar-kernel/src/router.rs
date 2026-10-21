@@ -185,18 +185,7 @@ pub(crate) async fn reshape_body_limit_413(
     }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    let render = || {
-        kernel_refusal_response(
-            &handle,
-            &handle.snapshot().planes,
-            busbar_contract::caps::ReasonCode::BodyTooLarge,
-            &path,
-            &target,
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
-            OVERSIZED_MESSAGE,
-        )
-    };
+    let render = || oversized_refusal(&handle, &path, &target);
     reshape_oversized_413_with(render, resp).await
 }
 
@@ -208,8 +197,16 @@ pub fn oversized_refusal(
     path: &str,
     target: &str,
 ) -> axum::response::Response {
-    let _ = (handle, path, target);
-    axum::response::IntoResponse::into_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+    kernel_refusal_response(
+        handle,
+        &handle.snapshot().planes,
+        busbar_contract::caps::ReasonCode::BodyTooLarge,
+        path,
+        target,
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        crate::proxy::KIND_REQUEST_TOO_LARGE,
+        OVERSIZED_MESSAGE,
+    )
 }
 
 /// The words of an oversized-body refusal, the previous release's.
