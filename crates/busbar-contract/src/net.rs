@@ -813,17 +813,19 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
 /// (`Host::parse_opaque`). Takes a lower-case scheme.
 #[must_use]
 pub fn is_special_scheme(scheme: &str) -> bool {
-    matches!(scheme, "http" | "https" | "ws" | "wss" | "ftp" | "file")
+    // The four web schemes are [`UrlFamily::Web`]'s one list; `url` adds two more.
+    UrlFamily::of(scheme) == UrlFamily::Web || matches!(scheme, "ftp" | "file")
 }
 
 /// The port `url` 2.5.8 elides for a (lower-case) scheme (`url::parser::default_port`): an explicit
 /// port equal to it is dropped from the URL, and so from the authority and `Host` a client sends.
 #[must_use]
 pub fn scheme_default_port(scheme: &str) -> Option<u16> {
+    // The secured web schemes take 443, the other two of [`UrlFamily::Web`]'s list 80.
     match scheme {
-        "http" | "ws" => Some(80),
         "https" | "wss" => Some(443),
         "ftp" => Some(21),
+        s if UrlFamily::of(s) == UrlFamily::Web => Some(80),
         _ => None,
     }
 }
@@ -879,6 +881,9 @@ pub struct DialAuthority {
 ///
 /// What [`parse_url`] refuses, and [`UrlRefusal::NoHost`] for a special-scheme host `url` refused:
 /// one UTS #46 refuses, or one that ends in a number and is no IPv4 address (`1.2.3.4.5`, `1.256`).
+/// [`UrlRefusal::NoHost`] too wherever [`target_host`], the destination check's reader, reads no
+/// host (`ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi`, an opaque `%25` or `%40` host): the authority a
+/// dial would take is never one the destination check refuses to read.
 pub fn dial_authority(target: &str) -> Result<DialAuthority, UrlRefusal> {
     let trimmed = strip_whatwg_removed(target);
     let web_scheme = trimmed
@@ -890,6 +895,10 @@ pub fn dial_authority(target: &str) -> Result<DialAuthority, UrlRefusal> {
     } else {
         parse_url_raw(&trimmed)?
     };
+    // One reader decides whether the target names a host at all: the destination check's.
+    if target_host(&trimmed).is_none() {
+        return Err(UrlRefusal::NoHost);
+    }
     let host = if parts.host.contains(':') {
         let v6: Ipv6Addr = parts.host.parse().map_err(|_| UrlRefusal::Bracket)?;
         format!("[{}]", url_ipv6(&v6))

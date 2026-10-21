@@ -596,7 +596,7 @@ type DialRow = (
 /// an IPv6 literal's brackets. The `Host` column is that value.
 #[test]
 fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
-    let rows: [DialRow; 19] = [
+    let rows: [DialRow; 18] = [
         // IDN, default port implied and spelled, explicit port.
         (
             "https://b\u{fc}cher.example/",
@@ -717,13 +717,6 @@ fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
             None,
             "Dir.Example",
         ),
-        (
-            "ldap://a%25b.example:389",
-            "a%25b.example",
-            Some(389),
-            Some(389),
-            "a%25b.example:389",
-        ),
     ];
     for (target, host, port, dial_port, host_header) in rows {
         let got = dial_authority(target).unwrap_or_else(|e| panic!("{target:?}: {e}"));
@@ -740,5 +733,19 @@ fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
         "https://[::1/",
     ] {
         assert!(dial_authority(target).is_err(), "{target:?}");
+    }
+    // Where the destination check's reader reads no host, no authority is read either: the two
+    // never disagree.
+    for target in [
+        "ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi",
+        "ldap://a%25b.example:389",
+        "ldap://evil%40good.example",
+    ] {
+        assert_eq!(target_host(target), None, "{target:?}");
+        assert_eq!(
+            dial_authority(target),
+            Err(UrlRefusal::NoHost),
+            "{target:?}"
+        );
     }
 }
