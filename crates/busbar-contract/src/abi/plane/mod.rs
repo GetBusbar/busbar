@@ -341,7 +341,9 @@ pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// [`crate::caps::ReasonCode::CredentialUnavailable`] (the member's credential, re-resolved for the
 /// attempt, no longer resolves, and nothing was dialled), or ends it with no member left, whether or
 /// not an attempt's request went out (the walk's exhaustion terminal, refused
-/// [`crate::caps::ReasonCode::BreakerOpen`]), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
+/// [`crate::caps::ReasonCode::BreakerOpen`]; when no attempt of the walk sent its request, the piece
+/// names why the last did not in its place, an `Unsent*` [`RefusalCode`], and [`nothing_sent`]
+/// reads that and the credential's refusal alike as a hop that never left), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
 /// flagged [`PIECE_REFUSED`] and [`PIECE_LAST`], carrying that reason in [`OnPieceIn::reason`], on
 /// the unit's own ticket: the plane's record writes on that answer are written, as any piece's are,
 /// and nothing it emits reaches the caller. Then the unit is refused as it is without the bit:
@@ -840,6 +842,28 @@ pub enum RefusalCode {
     MethodNotAllowed = 44,
     /// `Internal`.
     Internal = 45,
+    /// THE WALK'S EXHAUSTION, NOTHING SENT: the attempt had no member in hand when its request
+    /// was to go out. This and every `Unsent*` code below is a kernel-to-plane reason alone: it
+    /// rides the walk's exhausted refused piece ([`TAIL_REFUSED_PIECE`]) in place of
+    /// [`RefusalCode::BreakerOpen`] when no attempt of the walk sent a request, naming why the
+    /// last one did not, so a plane can tell a hop that never left from one that left and failed
+    /// over. It is no reason the kernel's vocabulary holds: [`reason_of`] decodes it to nothing,
+    /// and a plane never states it.
+    UnsentNoAttempt = 46,
+    /// Nothing sent: the member has no route on this node.
+    UnsentNoRoute = 47,
+    /// Nothing sent: the far request named a need its member has no binding for.
+    UnsentNeedUnbound = 48,
+    /// Nothing sent: the far request's target is not a path.
+    UnsentTargetNotPath = 49,
+    /// Nothing sent: a field of the far request is named by no RFC 9110 token.
+    UnsentFieldName = 50,
+    /// Nothing sent: the dispatch could not be recorded before the dial.
+    UnsentUnrecorded = 51,
+    /// Nothing sent: the member's auth call answered no fields.
+    UnsentAuthFailed = 52,
+    /// Nothing sent: the connection table refused to open the attempt.
+    UnsentOpenRefused = 53,
 }
 
 impl RefusalCode {
@@ -891,7 +915,32 @@ impl RefusalCode {
         RefusalCode::CredentialUnavailable,
         RefusalCode::MethodNotAllowed,
         RefusalCode::Internal,
+        RefusalCode::UnsentNoAttempt,
+        RefusalCode::UnsentNoRoute,
+        RefusalCode::UnsentNeedUnbound,
+        RefusalCode::UnsentTargetNotPath,
+        RefusalCode::UnsentFieldName,
+        RefusalCode::UnsentUnrecorded,
+        RefusalCode::UnsentAuthFailed,
+        RefusalCode::UnsentOpenRefused,
     ];
+
+    /// Whether the code is one of the `Unsent*` codes: the walk's exhaustion with no attempt's
+    /// request sent ([`RefusalCode::UnsentNoAttempt`]).
+    #[must_use]
+    pub const fn unsent(self) -> bool {
+        matches!(
+            self,
+            RefusalCode::UnsentNoAttempt
+                | RefusalCode::UnsentNoRoute
+                | RefusalCode::UnsentNeedUnbound
+                | RefusalCode::UnsentTargetNotPath
+                | RefusalCode::UnsentFieldName
+                | RefusalCode::UnsentUnrecorded
+                | RefusalCode::UnsentAuthFailed
+                | RefusalCode::UnsentOpenRefused
+        )
+    }
 
     /// The number on the wire.
     #[must_use]
@@ -1028,7 +1077,30 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::CredentialUnavailable => ReasonCode::CredentialUnavailable,
         RefusalCode::MethodNotAllowed => ReasonCode::MethodNotAllowed,
         RefusalCode::Internal => ReasonCode::Internal,
+        // THE WALK'S EXHAUSTION WITH NOTHING SENT: a kernel-to-plane piece reason, never a
+        // reason a plane states, so it decodes to nothing (a malformed plane answer).
+        RefusalCode::UnsentNoAttempt
+        | RefusalCode::UnsentNoRoute
+        | RefusalCode::UnsentNeedUnbound
+        | RefusalCode::UnsentTargetNotPath
+        | RefusalCode::UnsentFieldName
+        | RefusalCode::UnsentUnrecorded
+        | RefusalCode::UnsentAuthFailed
+        | RefusalCode::UnsentOpenRefused => return None,
     })
+}
+
+/// WHETHER THE REFUSED PIECE'S REASON (`OnPieceIn::reason`) SAYS NOTHING LEFT for the unit: the
+/// member's credential was unavailable before the dial ([`RefusalCode::CredentialUnavailable`]),
+/// or the walk exhausted with no attempt's request sent (an `Unsent*` code). `false` for every
+/// other reason, [`RefusalCode::BreakerOpen`] included: that exhaustion sent a request.
+#[must_use]
+pub const fn nothing_sent(reason: u32) -> bool {
+    match RefusalCode::of(reason) {
+        Some(RefusalCode::CredentialUnavailable) => true,
+        Some(code) => code.unsent(),
+        None => false,
+    }
 }
 
 // ── the one refusal classification ───────────────────────────────────────────────────────────────
@@ -1147,7 +1219,15 @@ impl RefusalCode {
             RefusalCode::DestinationUnreachable
             | RefusalCode::BreakerOpen
             | RefusalCode::DestinationBudgetExhausted
-            | RefusalCode::CredentialUnavailable => C::Unreachable,
+            | RefusalCode::CredentialUnavailable
+            | RefusalCode::UnsentNoAttempt
+            | RefusalCode::UnsentNoRoute
+            | RefusalCode::UnsentNeedUnbound
+            | RefusalCode::UnsentTargetNotPath
+            | RefusalCode::UnsentFieldName
+            | RefusalCode::UnsentUnrecorded
+            | RefusalCode::UnsentAuthFailed
+            | RefusalCode::UnsentOpenRefused => C::Unreachable,
             RefusalCode::SessionBudget
             | RefusalCode::SpillBudget
             | RefusalCode::ScratchExhausted

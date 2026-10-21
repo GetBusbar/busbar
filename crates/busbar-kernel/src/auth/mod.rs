@@ -917,10 +917,21 @@ impl AuthMiddleware {
                 .unwrap_or_default(),
         };
 
-        let issued = readers.iter().find_map(|r| {
-            let kind = r.kinds.first()?.clone();
-            r.issued.clone().map(|shape| (kind, shape))
-        });
+        // THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the build's fact, read from the
+        // linked rows' Statements whatever the chain names (status row 186: 1.5.5 minted the
+        // `issue_aws_credential` pair on the flag alone, `auth.chain` or not). An opened verifier
+        // states the same shape its Statement does, so with `keys` in the chain it answers first.
+        let issued = readers
+            .iter()
+            .find_map(|r| {
+                let kind = r.kinds.first()?.clone();
+                r.issued.clone().map(|shape| (kind, shape))
+            })
+            .or_else(|| match &axis {
+                Some(axis) => axis.issued_credential(),
+                None => crate::preflight::auth_axis(registry.clone())
+                    .and_then(|axis| axis.issued_credential()),
+            });
         Ok(Self {
             keys_in_chain,
             chain,
@@ -1212,8 +1223,9 @@ impl AuthMiddleware {
 
     /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
     /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
-    /// Statement states an issued shape, as its first credential kind and that shape. `None` when no
-    /// verifier states one: the host then issues none. Kind and shape are the verifier's words.
+    /// Statement states an issued shape, as its first credential kind and that shape, whether or not
+    /// `auth.chain` names `keys` (a linked row's fact, not the chain's). `None` when no linked row
+    /// states one: the host then issues none. Kind and shape are the verifier's words.
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
         self.issued.clone()
     }
