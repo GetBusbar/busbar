@@ -23,7 +23,7 @@ libfuzzer-sys = "0.4"
 # production `read_embeddings_request` reader for each dialect — so fuzzing this entry point fuzzes
 # the real JSON/wire decode of an untrusted request body. The plane lives in its own repo (rows
 # 106/107): this is the rev the root `Cargo.toml` pins, and the contract it names is this tree's.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "06723c352161e7c89514a225f752380baa4fb9a9", features = ["test-support"] }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "0d27f7d51c401781bee77a94f7cd353470516ad1", features = ["test-support"] }
 
 # Fuzz harnesses are not doctested/benchmarked and must not be picked up as workspace tests.
 [[bin]]

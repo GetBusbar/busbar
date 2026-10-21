@@ -93,7 +93,7 @@ const EXTRACTIONS: &[Extraction] = &[
         repo: "https://github.com/GetBusbar/busbar-plane-llm",
         repo_dir: "plane-llm",
         base: "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
-        rev: "06723c352161e7c89514a225f752380baa4fb9a9",
+        rev: "0d27f7d51c401781bee77a94f7cd353470516ad1",
         edited: &[
             (
                 "Cargo.toml",
