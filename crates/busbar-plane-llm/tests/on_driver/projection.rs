@@ -876,12 +876,12 @@ async fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
     let body = json!({"messages": [{"role": "user", "content": big}]});
 
     assert_eq!(
-        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+        busbar_kernel::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES,
         0,
         "the prompt projection default is UNLIMITED (0); anything else is a fail-open regression"
     );
-    busbar_kernel::proxy::set_hook_content_max_bytes(
-        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    busbar_kernel::hooks::set_hook_content_max_bytes(
+        busbar_kernel::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES,
     );
     let c = seen("openai", body.clone()).await;
     let (_, messages) = prompt(&c);
@@ -892,10 +892,10 @@ async fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
     );
     assert_eq!(messages[0].1.len(), 200_000, "content sent uncapped");
 
-    busbar_kernel::proxy::set_hook_content_max_bytes(64 * 1024);
+    busbar_kernel::hooks::set_hook_content_max_bytes(64 * 1024);
     let c = seen("openai", body).await;
-    busbar_kernel::proxy::set_hook_content_max_bytes(
-        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    busbar_kernel::hooks::set_hook_content_max_bytes(
+        busbar_kernel::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES,
     );
     let (system, messages) = c
         .prompt

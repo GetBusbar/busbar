@@ -3072,7 +3072,10 @@ mod tools_door {
             "busbar_upstream_failures_total",
             &[
                 ("lane", lane(&rig, "failing").as_str()),
-                ("disposition", busbar_kernel::proxy::DISPOSITION_TRANSIENT),
+                (
+                    "disposition",
+                    busbar_kernel::telemetry::DISPOSITION_TRANSIENT,
+                ),
             ],
         );
         let _ = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
@@ -3082,7 +3085,10 @@ mod tools_door {
                 "busbar_upstream_failures_total",
                 &[
                     ("lane", lane(&rig, "failing").as_str()),
-                    ("disposition", busbar_kernel::proxy::DISPOSITION_TRANSIENT)
+                    (
+                        "disposition",
+                        busbar_kernel::telemetry::DISPOSITION_TRANSIENT
+                    )
                 ],
             ) > before,
             "the transient failure is counted under its disposition"

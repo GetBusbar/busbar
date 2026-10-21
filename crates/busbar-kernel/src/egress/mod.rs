@@ -20,9 +20,32 @@ pub mod trust;
 
 // THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over
 // the connector's TLS wrap, with the boot-armed CONNECT tunnel), relocated from busbar-core's
-// `proxy::egress_client` per the one-egress-stack ruling. Core re-exports every name from its old
-// `crate::proxy::` paths.
+// `proxy::egress_client` per the one-egress-stack ruling; every caller names it here.
 pub mod engine;
+
+// THE EGRESS UNIT'S upstream-exchange vocabulary (#83a O1) — the capped body read, the operator
+// body caps, the network-failure labels and the client-header transparency — named here for a
+// dependent crate that reaches the egress unit only through the kernel.
+pub use busbar_kernel_egress::upstream;
+
+tokio::task_local! {
+    /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL
+    /// processing time (= total request wall-clock − upstream round-trip), reported as a
+    /// `Server-Timing: busbar;dur=<ms>` response header. Set via `.scope()` by the middleware;
+    /// written by the forward path when an upstream call returns. Microseconds; the `u64::MAX`
+    /// sentinel means "no upstream hop on this request" (admin/health/early error). Single-compiled
+    /// here so the router's `.scope()` and the plane's `.try_with()` read the ONE task-local.
+    pub static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
+}
+
+/// Build ONE egress client shard from a caller-supplied [`EngineSpec`](engine::EngineSpec).
+/// An infallible shim over the engine's fallible builder ([`engine::build_client`], where the
+/// parity ledger lives): every spec a resident plane actually passes here carries no extra trust
+/// root and no client identity — the only arms a build can fail on — so the panic path here is
+/// unreachable by construction.
+pub fn build_egress_client(spec: &engine::EngineSpec) -> engine::EngineClient {
+    engine::build_client(spec).expect("the base egress engine posture has no failing build arm")
+}
 
 // The differential-harness FIXTURE SERVERS (the plaintext recording server and redirect canary,
 // the throw-away CA material, resolver doubles; the recording TLS/mTLS servers are the connector's,

@@ -190,7 +190,7 @@ fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
     let unknown = "ingress-terminal-no-such-pool";
     assert_eq!(
         pool_label(&app, unknown),
-        crate::proxy::POOL_LABEL_UNRESOLVED
+        crate::telemetry::POOL_LABEL_UNRESOLVED
     );
     let unresolved_proto = "ingress-terminal-label-unresolved-proto";
     let unresolved = || {
@@ -198,7 +198,7 @@ fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
             crate::snapshot::REQUESTS_TOTAL,
             &[
                 ("ingress_protocol", unresolved_proto),
-                ("pool", crate::proxy::POOL_LABEL_UNRESOLVED),
+                ("pool", crate::telemetry::POOL_LABEL_UNRESOLVED),
             ],
         )
         .round() as u64

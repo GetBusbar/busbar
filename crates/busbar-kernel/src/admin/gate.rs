@@ -127,7 +127,7 @@ pub fn error_envelope(status: u16, code: &str, message: &str) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (
         status,
-        [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
         serde_json::json!({"error": {"code": code, "message": message}}).to_string(),
     )
         .into_response()
