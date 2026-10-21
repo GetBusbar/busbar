@@ -765,6 +765,138 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     );
 }
 
+/// A store that records each disaster-recovery verb it is handed, with its arguments, and refuses
+/// it, as the configured store's adapter refuses it (audit PL2 HIGH 4).
+#[cfg(feature = "root-admin")]
+struct ARecordingRefusingStore(Arc<std::sync::Mutex<Vec<String>>>);
+
+#[cfg(feature = "root-admin")]
+impl ARecordingRefusingStore {
+    fn saw(&self, call: String) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.0.lock().expect("the record").push(call);
+        Err(busbar_contract::verb_store::StoreError::Failed)
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl busbar_contract::verb_store::Store for ARecordingRefusingStore {
+    fn chain_break(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.saw("chain_break".to_string())
+    }
+
+    fn store_restore(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        backup_ref: &str,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.saw(format!("store_restore {backup_ref}"))
+    }
+
+    fn reseal_epoch_floor(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.saw("reseal_epoch_floor".to_string())
+    }
+
+    fn replay_new_verb(
+        &self,
+        _key: &(String, String),
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+        Ok(None)
+    }
+
+    fn commit_new_verb_replay(
+        &self,
+        _key: &(String, String),
+        _response: &[u8],
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Ok(())
+    }
+}
+
+/// ROW 113 (ruling (B)), THE BINDING: the admin units `main` composes over a booted node's book
+/// (`ProductionUnits::admin_over_book`) hand each disaster-recovery verb to the store THAT BOOK
+/// carries, with the verb's arguments, and answer that store's refusal. The store here records what
+/// reaches it and refuses, so the cell tells a bound store that refuses from a node with no store
+/// bound, which answers the same `503` from the units without any store seeing the verb. RED: drop
+/// the book's store, or the units' binding of it, and the record is empty.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_admin_units_hand_each_recovery_verb_to_the_books_bound_store() {
+    busbar_kernel::snapshot::init();
+    busbar_core_admin::install();
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("a governance over the memory store"),
+    );
+    gov.attach_store_calls(crate::root::store_double::RecordSlots::new().calls());
+    let booted = busbar_kernel::test_support::TestApp::new()
+        .governance(gov)
+        .build();
+    let mut book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    book.verb_store = Some(Arc::new(ARecordingRefusingStore(Arc::clone(&seen))));
+
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            // Its OWN full-tier identity: the audit ring is process-wide and other cells count
+            // the operator's rows on these same three paths.
+            let door: crate::root::units_admin::AdminDoorFn =
+                Arc::new(|_: &crate::root::units_admin::AdminRequest| {
+                    busbar_kernel::auth::AdminDoor::Identified(
+                        busbar_contract::auth::Principal::from_id("row-113-binding-operator"),
+                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                    )
+                });
+            crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)
+                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                    ADirectoryThatMintedIt,
+                )))
+        },
+    );
+
+    for (path, body, verb) in [
+        ("/api/v1/admin/chain-break", "{}", "chain_break"),
+        (
+            "/api/v1/admin/store-restore",
+            r#"{"backup_ref":"nightly"}"#,
+            "store_restore",
+        ),
+        (
+            "/api/v1/admin/reseal-epoch-floor",
+            "{}",
+            "reseal_epoch_floor",
+        ),
+    ] {
+        let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
+        assert_eq!(status, 503, "{verb} answers the bound store's refusal");
+    }
+    assert_eq!(
+        *seen.lock().expect("the record"),
+        vec![
+            "chain_break".to_string(),
+            "store_restore nightly".to_string(),
+            "reseal_epoch_floor".to_string(),
+        ],
+        "each verb, with its arguments, reached the store the book carries"
+    );
+}
+
 /// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer
 /// Q71(2) bound the last four (`verify`, `plane_facts`, `plane_record_write`, `commit_upgrade` —
 /// `the_four_q71_verbs_are_served_and_refuse_by_name`); a verb added to `NEW_VERBS` without an
