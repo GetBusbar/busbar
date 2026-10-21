@@ -39,7 +39,9 @@ USAGE
         --label "<what this baseline is of>" --run-started <epoch>
     check-baseline.py --report-only --report <compatibility.json> --run-started <epoch>
         (a leg that is reported and never pinned: the report must exist, be this run's, be an
-        a2a-tck report, and clear the plausibility minimums -- nothing is compared)
+        a2a-tck report, and clear the plausibility minimums -- nothing is compared. Its one caller,
+        `run-tck.sh control-scenario`, is run by hand and not in CI; in CI this mode is exercised
+        only by the selftests)
 
 EXIT
     0  identical to the baseline, and the floors held (or, --report-only, the report is usable)

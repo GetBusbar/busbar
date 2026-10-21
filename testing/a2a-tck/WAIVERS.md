@@ -500,6 +500,6 @@ sub-test flipped `GRPC-ERR-002` from PASS to FAIL. The HTTP status was already 4
 `unsupported_operation_and_version_not_supported_are_unimplemented` (rpcerror_tests), each of which
 was RED (`left: FailedPrecondition, right: Unimplemented`) against the pre-fix source and is GREEN
 after. `GRPC-ERR-001`/`GRPC-ERR-003` are untouched and still pass. At the pinned plane rev the
-mapping is `grpc_code` (`plane-a2a/src/framed.rs:617-632`: `-32003 | -32004 | -32009` to
-`Code::Unimplemented`), pinned by `the_error_table_carries_the_specifications_grpc_column`
+mapping is `grpc_code` (`plane-a2a/src/framed.rs:617-632`:
+`-32003 | -32004 | -32009 | -32601 => Code::Unimplemented,`), pinned by `the_error_table_carries_the_specifications_grpc_column`
 (`plane-a2a/src/tests/framed_tests.rs:110`).

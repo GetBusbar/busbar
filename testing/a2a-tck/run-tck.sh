@@ -134,7 +134,7 @@ run_tck () {
   # read as the report of a run that crashed before writing one, and it would match its baseline.
   # Removed before the suite starts, and the comparator separately refuses any report older than
   # RUN_STARTED, so the crashed run reaches the missing-report refusal it is owed.
-  rm -f "$OUT/$name.json"
+  rm -f "$OUT/$name.json" 2>/dev/null || true
   if [ -e "$OUT/$name.json" ]; then
     echo "could not remove the previous run's report $OUT/$name.json -- refusing to run" >&2
     exit 2
@@ -171,22 +171,33 @@ require_ceiling_report () {
     --report "$OUT/control-scenario-agent.json"
 }
 
+# await_card <port> <tries> <interval> <what> <log>
+#
+# Waits for the peer started as CONTROL_PID to serve its card. A peer that has already exited will
+# never serve it, so that ends the wait at once instead of after every try; either way the run is
+# refused with the peer's own log.
+await_card () {
+  local port="$1" tries="$2" interval="$3" what="$4" log="$5"
+  for _ in $(seq 1 "$tries"); do
+    if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$port/.well-known/agent-card.json"; then
+      return 0
+    fi
+    kill -0 "$CONTROL_PID" 2>/dev/null || break
+    sleep "$interval"
+  done
+  echo "$what did not come up on port $port" >&2
+  cat "$log" >&2 || true
+  kill "$CONTROL_PID" 2>/dev/null || true
+  exit 2
+}
+
 # serve_control <port> <transport>  -> exports CONTROL_PID
 serve_control () {
   local port="$1" transport="$2"
   "$BIN_DIR/a2a" serve --echo --port "$port" --quiet --transport "$transport" \
     > "$OUT/control-$transport.log" 2>&1 &
   CONTROL_PID=$!
-  for _ in $(seq 1 50); do
-    if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$port/.well-known/agent-card.json"; then
-      return 0
-    fi
-    sleep 0.2
-  done
-  echo "control did not come up on port $port" >&2
-  cat "$OUT/control-$transport.log" >&2 || true
-  kill "$CONTROL_PID" 2>/dev/null || true
-  exit 2
+  await_card "$port" 50 0.2 control "$OUT/control-$transport.log"
 }
 
 stop_control () { [ -n "${CONTROL_PID:-}" ] && kill "$CONTROL_PID" 2>/dev/null || true; }
@@ -202,16 +213,14 @@ serve_scenario_agent () {
   "$HERE/scenario-agent/serve.sh" "$port" > "$OUT/control-scenario.log" 2>&1 &
   CONTROL_PID=$!
   # A first run installs a virtualenv, so this waits longer than the binary controls do.
-  for _ in $(seq 1 300); do
-    if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$port/.well-known/agent-card.json"; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  echo "the scenario agent did not come up on port $port" >&2
-  cat "$OUT/control-scenario.log" >&2 || true
-  kill "$CONTROL_PID" 2>/dev/null || true
-  exit 2
+  await_card "$port" 300 0.5 "the scenario agent" "$OUT/control-scenario.log"
+}
+
+# install_crypto: the one extra dependency `prepare` adds -- see that verb.
+install_crypto () {
+  "$VENV/bin/python" -c 'import cryptography' 2>/dev/null \
+    || "$VENV/bin/pip" -q install cryptography \
+    || { echo "could not install cryptography into $VENV; the card-signing checks cannot run" >&2; exit 2; }
 }
 
 control_leg () {          # control_leg <transport> <port> <name>
@@ -235,6 +244,11 @@ case "${1:-}" in
   # leg is not: a recorded expectation for a peer we assemble ourselves would pin our own choices
   # as the standard. Read it as the highest score the subject leg could possibly reach, not as a
   # pass/fail of its own.
+  #
+  # NOT RUN IN CI. The conformance recorder (`xtask/src/conformance_record/a2a.rs`) runs
+  # `control-http-json` and `control-jsonrpc` and not this leg, which is run by hand. Its refusal of
+  # a run that produced no report is proven in CI only through `run-tck.sh selftest`
+  # (`crashed_ceiling_run_is_red` and its green twin), never by a run of this leg.
   control-scenario)
     fetch_tck; install_tck
     say "control: TCK scenario agent / jsonrpc, direct (TZ=$TZ)"
@@ -270,9 +284,7 @@ case "${1:-}" in
     # "could not verify" -- is a suite that silently stops checking signatures the day a wheel
     # stops building. An unverified signature is never reported as a valid one, so the only honest
     # options are "verified" and "the run failed".
-    "$VENV/bin/python" -c 'import cryptography' 2>/dev/null \
-      || "$VENV/bin/pip" -q install cryptography \
-      || { echo "could not install cryptography into $VENV; the card-signing checks cannot run" >&2; exit 2; }
+    install_crypto
     echo "A2A_TCK_DIR=$TCK_DIR"
     echo "A2A_TCK_PYTHON=$VENV/bin/python"
     ;;
@@ -293,21 +305,28 @@ case "${1:-}" in
     record_one jsonrpc   9702 control-a2a-go-jsonrpc
     ;;
 
-  # THE RUNNER'S OWN SELFTEST, run by `check-baseline-selftest.py`. It drives the real `run_tck`,
-  # `compare_control` and `require_ceiling_report` with the suite replaced by a stand-in, in a
-  # scratch directory: no network, no pinned checkout, no control. Each red leg plants the previous
-  # run's GOOD report where the runner writes its own -- the state the persistent cache leaves --
-  # and has the stand-in crash without writing one; the leg must end in the missing-report refusal,
-  # never in a match. Each has a green twin whose stand-in does write the report.
+  # THE RUNNER'S OWN SELFTEST, run by `check-baseline-selftest.py`. EVERY REFUSAL THIS RUNNER AND
+  # `scenario-agent/serve.sh` CAN MAKE IS PLANTED HERE and must fire with its own message, against
+  # the real functions, in a scratch directory, with the suite, the control binary, `go`, the
+  # harness pin file and the scenario agent replaced by stand-ins: no network, no pinned checkout,
+  # no control. Every refusal has a green twin -- the same stand-ins minus the planted defect --
+  # except `fetch_tck`'s pin refusal, whose green side needs the network and is exercised by every
+  # control leg the conformance recorder runs.
+  #
+  # The report legs plant the previous run's GOOD report where the runner writes its own -- the
+  # state the persistent cache leaves -- and have the stand-in suite crash without writing one; the
+  # leg must end in the missing-report refusal, never in a match.
   selftest)
     st="$(mktemp -d "${TMPDIR:-/tmp}/a2a-tck-selftest.XXXXXX")"
     trap 'rm -rf "$st"' EXIT
+    REAL_HERE="$HERE"
     TCK_DIR="$st/tck"; VENV="$st/venv"; OUT="$st/out"
     mkdir -p "$TCK_DIR" "$VENV/bin" "$OUT"
-    printf '#!/bin/sh\nexec python3 "$@"\n' > "$VENV/bin/python"
-    chmod +x "$VENV/bin/python"
+    # stand-in <path> <shell body>: an executable /bin/sh script.
+    standin () { mkdir -p "$(dirname "$1")"; printf '#!/bin/sh\n%s\n' "$2" > "$1"; chmod +x "$1"; }
+    standin "$VENV/bin/python" 'exec python3 "$@"'
     base="$HERE/baselines/control-a2a-go-jsonrpc.json"
-    # The baseline's own zone, so the leg is about the report and not about the caller's TZ.
+    # The baseline's own zone, so the legs are about the runner and not about the caller's TZ.
     TZ="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tz"])' "$base")"
     export TZ
     # The last good run's report: the pinned verdicts, in the suite's report shape.
@@ -321,15 +340,63 @@ json.dump({"summary": {}, "per_requirement":
     printf '%s\n' 'import os, shutil, sys' 'os.makedirs("reports", exist_ok=True)' \
       'shutil.copy(os.environ["A2A_TCK_SELFTEST_GOOD"], "reports/compatibility.json")' \
       'sys.exit(1)' > "$st/reports.py"
+    # A peer that serves a card on the port it is given (`--port N`, or the first argument).
+    printf '%s\n' '#!/usr/bin/env python3' 'import http.server, sys' \
+      'a = sys.argv[1:]' 'port = int(a[a.index("--port") + 1] if "--port" in a else a[0])' \
+      'class H(http.server.BaseHTTPRequestHandler):' \
+      '    def do_GET(self):' \
+      '        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")' \
+      '    def log_message(self, *args):' '        pass' \
+      'http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()' > "$st/serving-peer"
+    chmod +x "$st/serving-peer"
+    port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+    # A harness tree beside a fake HERE: harness_tree <dir> <install-control.sh body, or -none->.
+    harness_tree () {
+      mkdir -p "$1/a2a-tck/scenario-agent"
+      cp "$REAL_HERE/scenario-agent/serve.sh" "$1/a2a-tck/scenario-agent/serve.sh"
+      if [ "$2" != "-none-" ]; then
+        mkdir -p "$1/a2a-harness/scripts"
+        printf '%s\n' "$2" > "$1/a2a-harness/scripts/install-control.sh"
+      fi
+    }
+    harness_tree "$st/h-nofile" -none-
+    harness_tree "$st/h-noline" '# a harness file that no longer states its pins'
+    harness_tree "$st/h-disagrees" "CONTROL_GO_VERSION=\"v0.0.1\"
+CONTROL_PY_VERSION=\"0.0.1\""
+    harness_tree "$st/h-agrees" "CONTROL_GO_VERSION=\"$CONTROL_GO_VERSION\"
+CONTROL_PY_VERSION=\"9.9.9\""
+    # `go version -m` stand-ins: the pinned module version, and another one.
+    for v in "$CONTROL_GO_VERSION" v2.3.0; do
+      standin "$st/go-$v/go" "printf '%s\\n' \"\$3: go1.22\" '	path	github.com/a2aproject/a2a-go/v2/cmd/a2a' '	mod	github.com/a2aproject/a2a-go/v2	$v	h1:selftest'"
+    done
+    standin "$st/bin/a2a" 'exit 0'                       # a cached binary that answers --help
+    mkdir -p "$st/bin-serving"; ln -s "$st/serving-peer" "$st/bin-serving/a2a"
+    # Scenario agents behind a fake HERE: one that dies at once, one that serves.
+    standin "$st/agent-dies/scenario-agent/serve.sh" 'echo "scenario agent stand-in exits"; exit 1'
+    mkdir -p "$st/agent-serves/scenario-agent"
+    ln -s "$st/serving-peer" "$st/agent-serves/scenario-agent/serve.sh"
+    # A scenario-agent work directory whose venvs report their own version and do not serve.
+    for v in 9.9.9 1.1.2; do
+      standin "$st/agent-work/venv-$v/bin/python" \
+        "if [ \"\$1\" = -c ]; then echo $v; else echo \"scenario agent would serve with a2a-sdk $v: \$*\"; fi"
+    done
+    # Virtualenvs for install_tck and install_crypto: one whose imports fail and whose pip fails,
+    # one whose imports succeed.
+    standin "$st/venv-broken/bin/python" 'exit 1'
+    standin "$st/venv-broken/bin/pip" 'exit 1'
+    standin "$st/venv-ok/bin/python" 'exit 0'
+    # A cached suite checkout at a commit that is not the pin.
+    git init -q "$st/tck-wrong"
+    git -C "$st/tck-wrong" -c user.name=selftest -c user.email=selftest@invalid \
+      -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -q --allow-empty -m selftest
+
     fails=0 legs=0
-    leg () {        # leg <name> <stand-in> <want-exit> <want-text> <report-name> <judge...>
-      local name="$1" standin="$2" want="$3" text="$4" report="$5" rc=0
-      shift 5
+    # expect <name> <want-exit> <want-text> <command...>
+    expect () {
+      local name="$1" want="$2" text="$3" rc=0
+      shift 3
       legs=$((legs + 1))
-      cp "$st/$standin.py" "$TCK_DIR/run_tck.py"
-      cp "$A2A_TCK_SELFTEST_GOOD" "$OUT/$report.json"
-      touch -t 202601010000 "$OUT/$report.json"
-      ( run_tck "http://127.0.0.1:9" "$report" && "$@" ) > "$st/$name.log" 2>&1 || rc=$?
+      ( "$@" ) > "$st/$name.log" 2>&1 || rc=$?
       if [ "$rc" = "$want" ] && grep -qF -- "$text" "$st/$name.log"; then
         echo "  ok   $name"
       else
@@ -338,14 +405,82 @@ json.dump({"summary": {}, "per_requirement":
         sed 's/^/       /' "$st/$name.log"
       fi
     }
-    leg crashed_control_run_is_red crashes 2 "does not exist" control-a2a-go-jsonrpc \
+    # report_leg <name> <stand-in> <want-exit> <want-text> <report-name> <judge...>
+    report_leg () {
+      local name="$1" standin="$2" want="$3" text="$4" report="$5"
+      shift 5
+      cp "$st/$standin.py" "$TCK_DIR/run_tck.py"
+      rm -rf "$OUT/$report.json"
+      cp "$A2A_TCK_SELFTEST_GOOD" "$OUT/$report.json"
+      touch -t 202601010000 "$OUT/$report.json"
+      expect "$name" "$want" "$text" run_then_judge "$report" "$@"
+    }
+    run_then_judge () { local report="$1"; shift; run_tck "http://127.0.0.1:9" "$report" && "$@"; }
+
+    # -- the report a run leaves, and the previous run's report it must not be judged by
+    report_leg crashed_control_run_is_red crashes 2 "does not exist" control-a2a-go-jsonrpc \
       compare_control jsonrpc control-a2a-go-jsonrpc
-    leg reporting_control_run_matches reports 0 "BASELINE MATCHED" control-a2a-go-jsonrpc \
+    report_leg reporting_control_run_matches reports 0 "BASELINE MATCHED" control-a2a-go-jsonrpc \
       compare_control jsonrpc control-a2a-go-jsonrpc
-    leg crashed_ceiling_run_is_red crashes 2 "does not exist" control-scenario-agent \
+    report_leg crashed_ceiling_run_is_red crashes 2 "does not exist" control-scenario-agent \
       require_ceiling_report
-    leg reporting_ceiling_run_is_reported reports 0 "REPORT PRESENT" control-scenario-agent \
+    report_leg reporting_ceiling_run_is_reported reports 0 "REPORT PRESENT" control-scenario-agent \
       require_ceiling_report
+    # The previous report cannot be removed (it is a directory with something in it).
+    cp "$st/crashes.py" "$TCK_DIR/run_tck.py"
+    mkdir -p "$OUT/undeletable.json/held"
+    expect run_tck_refuses_a_report_it_cannot_remove 2 "could not remove the previous run's report" \
+      run_tck "http://127.0.0.1:9" undeletable
+    rm -rf "$OUT/undeletable.json"
+    expect run_tck_removes_a_report_it_can_remove 0 "a2a-tck exit 1" \
+      run_tck "http://127.0.0.1:9" removable
+
+    # -- the control binary and its pin
+    ic () { HERE="$1"; BIN_DIR="$2"; PATH="$3:$PATH"; install_control && echo "control binary verified"; }
+    expect install_control_refuses_a_missing_harness_pin_file 2 "no CONTROL_GO_VERSION pin readable" \
+      ic "$st/h-nofile/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
+    expect install_control_refuses_an_unreadable_harness_pin 2 "no CONTROL_GO_VERSION pin readable" \
+      ic "$st/h-noline/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
+    expect install_control_refuses_a_harness_pin_disagreement 2 "a2a-go pin disagreement" \
+      ic "$st/h-disagrees/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
+    expect install_control_refuses_a_binary_of_another_version 2 "is a2a-go 'v2.3.0'" \
+      ic "$st/h-agrees/a2a-tck" "$st/bin" "$st/go-v2.3.0"
+    expect install_control_accepts_the_pinned_binary 0 "control binary verified" \
+      ic "$st/h-agrees/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
+
+    # -- the suite checkout and its virtualenv
+    ft () { TCK_DIR="$1"; fetch_tck; }
+    expect fetch_tck_refuses_a_checkout_that_is_not_the_pin 2 "refusing to run" ft "$st/tck-wrong"
+    it () { VENV="$1"; install_tck && echo "suite dependencies import"; }
+    expect install_tck_refuses_dependencies_that_do_not_import 2 "did not import" it "$st/venv-broken"
+    expect install_tck_accepts_dependencies_that_import 0 "suite dependencies import" it "$st/venv-ok"
+    ic2 () { VENV="$1"; install_crypto && echo "cryptography imports"; }
+    expect install_crypto_refuses_when_it_cannot_install 2 "could not install cryptography" \
+      ic2 "$st/venv-broken"
+    expect install_crypto_accepts_an_importable_cryptography 0 "cryptography imports" ic2 "$st/venv-ok"
+
+    # -- the peers: one that exits before serving, one that serves
+    sc () { BIN_DIR="$1"; serve_control "$port" jsonrpc && echo "control came up"; stop_control; }
+    expect serve_control_refuses_a_control_that_never_serves 2 "control did not come up" sc "$st/bin"
+    expect serve_control_waits_for_a_control_that_serves 0 "control came up" sc "$st/bin-serving"
+    ssa () { HERE="$1"; serve_scenario_agent "$port" && echo "scenario agent came up"; stop_control; }
+    expect serve_scenario_agent_refuses_an_agent_that_never_serves 2 \
+      "the scenario agent did not come up" ssa "$st/agent-dies"
+    expect serve_scenario_agent_waits_for_an_agent_that_serves 0 "scenario agent came up" \
+      ssa "$st/agent-serves"
+
+    # -- scenario-agent/serve.sh and the a2a-sdk pin it reads
+    sv () { A2A_SCENARIO_AGENT_WORK="$st/agent-work" bash "$1/a2a-tck/scenario-agent/serve.sh" 1; }
+    expect serve_sh_refuses_a_missing_pin_file 2 "file is not there" sv "$st/h-nofile"
+    expect serve_sh_refuses_a_missing_pin_line 2 "states no CONTROL_PY_VERSION" sv "$st/h-noline"
+    expect serve_sh_serves_at_the_pin_it_reads 0 "would serve with a2a-sdk 9.9.9" sv "$st/h-agrees"
+
+    # -- the verbs
+    expect subject_refuses_without_an_endpoint 1 "needs BUSBAR_A2A_ENDPOINT" \
+      env -u BUSBAR_A2A_ENDPOINT bash "$REAL_HERE/run-tck.sh" subject
+    expect an_unknown_verb_prints_usage_and_refuses 2 "run-tck.sh selftest" \
+      bash "$REAL_HERE/run-tck.sh" no-such-verb
+
     if [ "$fails" -ne 0 ]; then
       echo "runner selftest: $fails of $legs legs FAILED"
       exit 1

@@ -29,9 +29,16 @@ wraps prints `grpc: 0/72 (72 skipped)` with a tick next to it. The refusals, and
     --record: floors, label, provenance, age   record_* cases
     --report-only: absent, stale, collapsed,   report_only_* cases
                    given a baseline
-    the runner: a suite that writes no report  runner_crashed_run_is_red (`run-tck.sh selftest`,
-                while the previous run's report    which drives the real run_tck with a stand-in
-                sits where it would go             suite, both ways)
+    the runner and scenario-agent/serve.sh     runner_selftest_plants_every_refusal
+
+`runner_selftest_plants_every_refusal` runs `run-tck.sh selftest`, which plants EVERY refusal
+`run-tck.sh` and `scenario-agent/serve.sh` can make against the real functions with stand-ins (a
+suite that crashes while the previous run's good report sits where the runner writes its own, a
+report it cannot remove, a harness pin that disagrees or cannot be read, a control binary of
+another version, a checkout that is not the pin, a virtualenv whose imports fail, peers that never
+serve, a missing a2a-sdk pin file or line, a subject with no endpoint, an unknown verb). Each has
+a green twin except the checkout pin, whose green side needs the network and is run by every
+control leg the conformance recorder runs. It prints its own leg list.
 
 The one that had to be found the expensive way has its own case: `NOT TESTED` is the TCK's status
 for a requirement nothing ran, and counting it as executed made a 73-requirement run look like a
@@ -269,13 +276,11 @@ def main():
                            capture_output=True, text=True)
         judge("run_start_is_required", p.returncode, p.stdout + p.stderr, 2, "--run-started")
 
-    # --- The runner. `run-tck.sh selftest` drives the real `run_tck` with a stand-in suite that
-    #     crashes while the previous run's GOOD report sits where the runner writes its own; the
-    #     control and the ceiling leg must both end in the missing-report refusal, and both must
-    #     pass when the stand-in does write its report.
+    # --- The runner. `run-tck.sh selftest` plants every refusal the runner and serve.sh can make
+    #     (see the docstring); the leg count is pinned so a deleted leg is not a quiet pass.
     p = subprocess.run(["bash", RUNNER, "selftest"], capture_output=True, text=True)
-    judge("runner_crashed_run_is_red", p.returncode, p.stdout + p.stderr, 0,
-          "runner selftest: 4 legs, all green")
+    judge("runner_selftest_plants_every_refusal", p.returncode, p.stdout + p.stderr, 0,
+          "runner selftest: 25 legs, all green")
 
     for name in PASSES:
         print("  ok   %s" % name)
