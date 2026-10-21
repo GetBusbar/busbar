@@ -26,9 +26,11 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
     let release = test_plugins::key(7);
     let doors = crate::LINKED.export_doors.iter().map(|d| {
         let name = d.name().expect("a linked export door states its name");
-        (name, d.alias)
+        let alias = d.alias().expect("a linked export door states its alias");
+        (name, alias)
     });
     for (name, alias) in doors {
+        let alias = alias.as_str();
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
         let rows = || linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
         // RED ARM: both doors claim the module, as two different plugins.
@@ -79,11 +81,14 @@ fn a_linked_export_declares_stating_needs_boots() {
         doors
             .iter()
             .map(|d| {
+                let declares = d.declares().expect("the linked row states its declares");
                 let mut doc: serde_json::Value =
-                    serde_json::from_str(d.declares).expect("the linked row's declares is JSON");
+                    serde_json::from_str(&declares).expect("the linked row's declares is JSON");
                 doc["needs"] = serde_json::from_str(needs).expect("a needs value");
+                // Restated as a row's `linked-declares` value over a door that states none: the
+                // restatement is the one the root reads.
                 crate::root::linked::LinkedDoorExport {
-                    declares: Box::leak(doc.to_string().into_boxed_str()),
+                    declares: Some(Box::leak(doc.to_string().into_boxed_str())),
                     ..*d
                 }
             })
@@ -271,10 +276,11 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 /// the tables carry no store (and no ranking row) to hand the kernel.
 #[test]
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
-    let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
-    assert_eq!(stores, [true], "one linked store: ephemeral");
+    let stores = super::linked_stores(crate::LINKED.stores).expect("the linked store states");
+    let ephemeral: Vec<_> = stores.iter().map(|s| s.1).collect();
+    assert_eq!(ephemeral, [true], "one linked store: ephemeral");
     assert!(
-        !(crate::LINKED.stores[0].2)().is_null(),
+        !(stores[0].2)().is_null(),
         "the linked store states its door"
     );
     let strategies = [

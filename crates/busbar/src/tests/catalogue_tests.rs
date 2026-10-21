@@ -42,10 +42,13 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
     // The export axis: each memory-ABI row on `export-doors` states its `declares`.
     let rows = LINKED.export_doors.iter().map(|d| {
         let name = d.name().expect("a linked export door states its name");
-        (name, d.declares)
+        let declares = d
+            .declares()
+            .expect("a linked export door states its declares");
+        (name, declares)
     });
     for (name, declares) in rows {
-        let decl: serde_json::Value = serde_json::from_str(declares)
+        let decl: serde_json::Value = serde_json::from_str(&declares)
             .unwrap_or_else(|e| panic!("linked export '{name}': its declares section: {e}"));
         for d in decl["diagnostics"].as_array().into_iter().flatten() {
             let code = d["code"].as_u64().expect("a code") as u16;

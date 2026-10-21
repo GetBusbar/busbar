@@ -54,7 +54,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::SECTION_REQUIRED;
 use busbar_contract::abi::mechanism::door::{
-    KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
+    KindTailHead, Section, Statement, EXT_DECLARES, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -446,11 +446,26 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     stream_ceiling_secs: 0,
 };
 
-/// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
-/// contract's one key for them, built at compile time.
-const EXTENSIONS: &[u8] = &extensions::entry::<
-    { extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()) },
->(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+/// The plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the contract's one key for them.
+const PROVIDER_KEYS_ENTRY: [u8; extensions::entry_len(
+    EXT_PROVIDER_KEYS,
+    PROVIDER_KEYS.as_bytes(),
+)] = extensions::entry(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+
+/// The plane's `declares` section ([`crate::DECLARES`], the one its signed tarball carries) under the
+/// contract's one key for it ([`EXT_DECLARES`]): a composition root that links this door reads the
+/// plane's catalogue codes and breaker facts off its Statement, naming nothing of this crate but its
+/// door.
+const DECLARES_ENTRY: [u8; extensions::entry_len(EXT_DECLARES, crate::DECLARES.as_bytes())] =
+    extensions::entry(EXT_DECLARES, crate::DECLARES.as_bytes());
+
+/// The Statement's extensions: the provider keys, then the `declares` section, built at compile
+/// time.
+const EXTENSIONS: &[u8] =
+    &extensions::concat::<EXTENSIONS_LEN>(&PROVIDER_KEYS_ENTRY, &DECLARES_ENTRY);
+
+/// The two entries' joined length.
+const EXTENSIONS_LEN: usize = PROVIDER_KEYS_ENTRY.len() + DECLARES_ENTRY.len();
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = Statement {

@@ -685,6 +685,8 @@ fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<Stri
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
     // The auth axis (`auths`): a `kind: auth` plugin's linked door.
     declared.push(cfg_of(AUTH_AXIS));
+    // The store axis (`stores`): a linked store's door.
+    declared.push(cfg_of(STORE_AXIS));
     // The memory-ABI export axis: what a test that documents the linked sinks' declarations needs.
     declared.push(cfg_of(EXPORT_DOOR_AXIS));
     let mut set: Vec<String> = Vec::new();

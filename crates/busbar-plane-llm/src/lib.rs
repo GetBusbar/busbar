@@ -45,6 +45,16 @@ pub mod refusal;
 /// this plane's codes from its door's declaration whichever way the plane came in.
 pub const DECLARES: &str = include_str!("../declares.json");
 
+/// THE DOOR ([`plane_door`]'s `plugin_door!`): what a composition root that links this plane names
+/// of it, at the crate root (BUSBAR-1.6.0.md, the door-only gate: a linked row names
+/// `<crate>::door`), the same door this crate's dropped-in image exports. Its Statement states the
+/// plane, its sections, its needs and its `declares` section.
+pub use plane_door::door;
+/// The plane's own dialect declarations ([`plane_door::PROTOCOLS`]), which a composition root that
+/// links this door seeds the kernel's protocol registry from: Rust values (each holds its codec and
+/// handler), so no Statement field states them.
+pub use plane_door::PROTOCOLS;
+
 use busbar_contract::ids::LaneId;
 use busbar_contract::ir::egress_prep::LaneCaps;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

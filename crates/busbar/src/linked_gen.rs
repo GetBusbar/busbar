@@ -22,10 +22,17 @@
 //   [package.metadata.busbar.linked-name]   <row key> = "<registry key>"         (the key an `auths`
 //                                            row answers on the auth axis, and every surface prints;
 //                                            for a `hooks` row, the name the admin surface prints)
-//   [package.metadata.busbar.linked-canonical] <row key> = "<manifest name>"     (an `auths` row's
-//                                            CANONICAL name, when it is not its key: the manifest
-//                                            name its signed tarball states, plugins.yaml
-//                                            `manifest_name`; config may name the row by either)
+//   [package.metadata.busbar.linked-canonical] <row key> = "<manifest name>"     (an `auths` or
+//                                            `stores` row's CANONICAL name, when it is not its key:
+//                                            the manifest name its signed tarball states,
+//                                            plugins.yaml `manifest_name`; config may name the row
+//                                            by either)
+//   [package.metadata.busbar.linked-declares] <row key> = "<item>"               (the `declares`
+//                                            JSON of a door whose Statement does not state it under
+//                                            `EXT_DECLARES` yet; read only for such a door)
+//   [package.metadata.busbar.linked-alias]  <row key> = "<item>"                 (the module alias
+//                                            of an export door whose Statement states no
+//                                            `REWRITE_ALIAS` yet; read only for such a door)
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
@@ -51,7 +58,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("cli-help", "cli_help", "CLI_HELP"),
-    ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
     ("hooks", "hook_doors", "door"),
@@ -92,10 +98,29 @@ pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
 /// (`crate::root::boot::discover_planes`), so a compiled-in plane is bound through the same table
 /// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
 pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
-/// The export axis on the export kind's MEMORY ABI: each row's crate states its plugin `NAME`,
-/// `ALIAS` and manifest `DECLARES`, and its entry module exports its `door` (`plugin_door!`), the
-/// same door its `cdylib` exports — admitted through the one registration as a door row.
+/// The export axis on the export kind's MEMORY ABI: each row's entry module exports its `door`
+/// (`plugin_door!`), the same door its `cdylib` exports — admitted through the one registration as
+/// a door row. Its name, its module alias (`REWRITE_ALIAS`) and its manifest `declares`
+/// (`EXT_DECLARES`) are read off that door's Statement (`crate::root::linked::LinkedDoorExport`); a
+/// door that does not state its alias or its `declares` yet answers its row's
+/// [`LINKED_ALIAS`] / [`LINKED_DECLARES`] value.
 pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
+
+/// The store axis: each row's entry module exports its store's memory-ABI `door`; the root reads its
+/// key (the Statement's `name`) and whether it is ephemeral (`MARK_EPHEMERAL`) off that door
+/// (`crate::root::linked::linked_stores`), and its canonical name is its row's
+/// `[package.metadata.busbar.linked-canonical]` value (its key, when it has none).
+pub(crate) const STORE_AXIS: &str = "stores";
+
+/// THE `declares` ROWS: `<row key> = "<path>"`, the item holding the JSON `declares` section of a
+/// door whose Statement does not state one (`EXT_DECLARES`) yet. The root reads a door's own
+/// Statement first; a row answers only for a door that states none, and is dropped when its door
+/// states it.
+pub(crate) const LINKED_DECLARES: &str = "package.metadata.busbar.linked-declares";
+
+/// THE ALIAS ROWS: `<row key> = "<path>"`, the module alias of an export door whose Statement does
+/// not state one (`REWRITE_ALIAS`) yet; read only for such a door, and dropped when it states it.
+pub(crate) const LINKED_ALIAS: &str = "package.metadata.busbar.linked-alias";
 
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
@@ -105,11 +130,10 @@ const CLAIMS_AXIS: &str = "claims";
 /// build): each row's entry exports its memory-ABI `door`.
 const SECRET_AXIS: &str = "secret-doors";
 
-/// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
-/// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
-/// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
-/// `linked-name` row states and the canonical name its `linked-canonical` row states (the key, when
-/// it has none).
+/// The auth axis (#2 rule (1), #40): each row's entry module exports the memory-ABI `door` every
+/// `kind: auth` plugin exports (the same door its dropped-in build exports as `busbar_plugin_door`:
+/// THE DESIGN, compiled-in = dropped-in), registered under the key its `linked-name` row states and
+/// the canonical name its `linked-canonical` row states (the key, when it has none).
 const AUTH_AXIS: &str = "auths";
 
 /// THE LINKED HOOK NAMES (`$OUT_DIR/linked_hook_names.rs`, included by `main.rs`): each enabled `hooks`-axis row's `linked-name`, in manifest order — what the
@@ -334,6 +358,7 @@ pub(crate) fn linked_source(
                     || axis == AUTH_AXIS
                     || axis == SECRET_AXIS
                     || axis == EXPORT_DOOR_AXIS
+                    || axis == STORE_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
@@ -420,21 +445,16 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
-    // NO STATEMENT HOME for the `declares` document a `linked-declares` row names (a crate's
-    // `DECLARES`, here and for the plane doors below): the Statement carries metric families,
-    // diagnostic ids and answers, never the document's needs or destinations.
-    // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
-    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
-    // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
-    // with no such row declares none.
+    // THE SECRET DOORS' `declares` ROWS: `(door, declares)`, the JSON a door's
+    // `[package.metadata.busbar.linked-declares]` row names, for a door whose Statement states no
+    // `declares` (`EXT_DECLARES`) yet. The root reads each door's own Statement first (its disk
+    // need, THE DESIGN §11.11 R4); a row answers only for a door that states none.
     out.push_str("    secret_declares: &[");
     for ((entry, list), (feature, _)) in linked.iter().zip(&on) {
         if !list.iter().any(|a| a == SECRET_AXIS) {
             continue;
         }
-        if let Some(path) =
-            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
-        {
+        if let Some(path) = metadata_value(manifest, LINKED_DECLARES, feature) {
             out.push_str(&format!("({entry}::door, {path}), "));
         }
     }
@@ -453,11 +473,10 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
-    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
-    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
-    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
-    // root finds a bound door plane's declaration by its Statement). A door row with no such row
-    // declares none.
+    // THE PLANE DOORS' `declares` ROWS: `(crate, door, declares)`, the JSON a door's
+    // `[package.metadata.busbar.linked-declares]` row names, for a door whose Statement states no
+    // `declares` (`EXT_DECLARES`) yet. The root reads each plane door's own Statement first
+    // (`crate::root::linked::plane_declares`); a row answers only for a door that states none.
     out.push_str("    plane_door_declares: &[");
     for ((feature, krate), (entry, _)) in on.iter().zip(&linked) {
         let is_door = axes
@@ -466,9 +485,7 @@ pub(crate) fn linked_source(
         if !is_door {
             continue;
         }
-        if let Some(path) =
-            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
-        {
+        if let Some(path) = metadata_value(manifest, LINKED_DECLARES, feature) {
             out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
         }
     }
@@ -544,7 +561,7 @@ pub(crate) fn linked_source(
                 feature,
             )
             .unwrap_or_else(|| name.clone());
-            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::door), "));
+            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door), "));
         }
     }
     out.push_str("],\n");
@@ -555,17 +572,38 @@ pub(crate) fn linked_source(
         .unwrap_or_default();
     out.push_str(&format!("    operator_auth: {operator:?},\n"));
     out.push_str("    export_doors: &[");
-    for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
+    for ((entry, list), (feature, _)) in linked.iter().zip(&on) {
         if list.iter().any(|a| a == EXPORT_DOOR_AXIS) {
-            let c = ident(krate);
-            // Its name is its door's Statement `name` (`LinkedDoorExport::name`). NO STATEMENT
-            // HOME for the other two, so they are still read off the crate: `ALIAS` (a Statement
-            // states an alias as a `REWRITE_ALIAS` rewrite, and not every export door states one)
-            // and `DECLARES` (the Statement carries metric families, diagnostic ids and answers,
-            // never the whole `declares` document).
+            // The row names its `door`: its name, alias and `declares` are read off the door's
+            // Statement (`LinkedDoorExport::{name, alias, declares}`). A `linked-alias` or
+            // `linked-declares` row answers only for a door that does not state its own yet.
+            let row = |table: &str| {
+                metadata_value(manifest, table, feature)
+                    .map_or_else(|| "None".to_string(), |path| format!("Some({path})"))
+            };
             out.push_str(&format!(
-                "crate::root::linked::LinkedDoorExport {{ alias: {c}::ALIAS, \
-                 declares: {c}::DECLARES, door: {entry}::door }}, "
+                "crate::root::linked::LinkedDoorExport {{ door: {entry}::door, alias: {}, \
+                 declares: {} }}, ",
+                row(LINKED_ALIAS),
+                row(LINKED_DECLARES)
+            ));
+        }
+    }
+    out.push_str("],\n");
+    // THE STORE AXIS: each row names its `door`; its key and `ephemeral` are read off the door's
+    // Statement (`crate::root::linked::linked_stores`), its canonical name is packaging data.
+    out.push_str("    stores: &[");
+    for ((entry, list), (feature, _)) in linked.iter().zip(&on) {
+        if list.iter().any(|a| a == STORE_AXIS) {
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .map_or_else(|| "None".to_string(), |name| format!("Some({name:?})"));
+            out.push_str(&format!(
+                "crate::root::linked::LinkedStoreDoor {{ door: {entry}::door, canonical: \
+                 {canonical} }}, "
             ));
         }
     }
@@ -582,10 +620,9 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     // NO STATEMENT HOME for any `AXES` item but `hooks` (`door`): each is a Rust value or fn the
-    // root calls in process (protocol declarations, ingress entries, seam and node installers,
-    // diagnostics, host and compose steps, help rows, the gauntlet declaration keys), and `STORE`
-    // states a canonical manifest name no Statement field carries (its key is the Statement's
-    // `name` and its `ephemeral` the store tail's). They are still read off the entry.
+    // root calls in process (protocol declarations, each holding its codec and handler; ingress
+    // entries, seam and node installers, diagnostics, host and compose steps, help rows, the
+    // gauntlet declaration keys). They are still read off the entry.
     for (axis, field, item) in AXES {
         out.push_str(&format!("    {field}: &["));
         for e in on_axis(axis) {
