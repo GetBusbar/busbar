@@ -20,10 +20,11 @@
 //! Unix-only: it drives the process lifecycle with `SIGTERM`, the signal busbar's graceful shutdown
 //! listens for.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with an LLM provider (`protocol: anthropic`); a `--no-default-features`
+// The fixture boots a REAL busbar with a provider on a linked wire dialect; a `--no-default-features`
 // build has no wire codec compiled in and fail-closes at boot (BUSBAR-9007), which is correct product
 // behavior, not a regression. The state-file invariant under test is plane-independent, but this proof
-// of it requires a bootable server, so it is gated on the LLM plane. Full-feature builds still run it.
+// of it requires a bootable server, so it is gated on the linked provider-pool section. Full-feature
+// builds still run it.
 #![cfg(linked_section_pools)]
 
 mod common;
