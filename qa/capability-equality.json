@@ -458,7 +458,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_one_audit_record_per_unit"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_seals_one_record_per_unit_end_on_one_chain_and_none_without_a_unit"
       }
     },
     {
@@ -527,7 +527,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it"
       }
     },
     {
@@ -598,7 +598,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_classifies_a_refused_request_as_the_callers_fault"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_brings_every_fixture_to_the_end_it_names"
       }
     },
     {
@@ -933,7 +933,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape"
       }
     },
     {

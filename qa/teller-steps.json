@@ -120,8 +120,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_malformed_body",
-          "note": "a chat whose body is not JSON at all is refused 400 by the pools door's arrival step, before any model or pool is resolved, and the refusal is counted under the bounded unresolved pool label"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_brings_every_fixture_to_the_end_it_names",
+          "note": "the Malformed fixture is the arrival step's own parse refusal (400), taken before a model exists and before anything is accounted, beside the five other fixture ends driven through the door"
         }
       },
       "decode": {
@@ -131,8 +131,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_missing_model",
-          "note": "a chat body the dialect decodes but which names no model is refused 400 at decode, before routing picks a pool, and is counted under the unresolved label, never under a caller-supplied string"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape",
+          "note": "each of the six caller dialects the door words name driven through the door in every decode shape: a named model reaches the door and is served, a body-model request with no model is the ladder's own 400, a malformed body is the arrival refusal, and the action the door does not serve is the endpoint's own 404"
         }
       },
       "authenticate": {
@@ -142,8 +142,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_wrong_key_in_every_dialects_own_envelope",
-          "note": "a caller presenting a key this deployment never minted is refused before routing on every dialect's own path, each in its own envelope and status (generate 400 INVALID_ARGUMENT, messages and chat 401, converse 403), and no far end is dialled"
+          "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_none",
+          "note": "three credentials through the deployment's own data door: the live bearer is admitted, charged to its key and its line on the node's book names that key; a bearer never minted and one whose lifetime ran out are both refused at the door, so no unit, line, record, dial or charge exists for either"
         }
       },
       "verify": {
@@ -153,8 +153,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_an_ad_hoc_route_naming_the_wrong_provider",
-          "note": "where the unit may go: an ad-hoc route naming a provider that is not the model's own is refused 400 in the caller's messages envelope before any destination is dialled, both members left untouched"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_brings_every_fixture_to_the_end_it_names",
+          "note": "the PoolAcl fixture: a key that may not reach the pool it named is refused 403 by the pre-admission guard before anything is priced, one of the six fixture ends driven through the door"
         }
       },
       "approve": {
@@ -164,8 +164,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_pool_refusal_and_charges_no_fee",
-          "note": "whether the caller may do this at all: a key allowed only another pool is refused 403 on the pool it named, counted as a client error with its duration, no fee and nothing billable on its ledger, the far end never dialled"
+          "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing",
+          "note": "a gate seated on the door driven both ways: a vetoing gate is asked and stops the unit with its 451, the far end never dialled, no metering row, its admission kept and its fee refunded as 1.5.5 did; a gate that does not veto is asked too and the unit goes on to the same served end"
         }
       },
       "admit": {
@@ -175,8 +175,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_spent_budget_without_charging_anything",
-          "note": "a group whose all-time bucket is already past its cap is refused 429 at admit: the bucket, its durable row and the key's own ledger read exactly what they read before, and the refusal is sealed as OverBudget at the Admit step"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it",
+          "note": "the OverBudget fixture: the door refuses a spent group budget and nothing lands on the key's bucket or its metering, asserted beside the money every other fixture leaves (a post-door refusal keeps the admission it drew)"
         }
       },
       "route": {
@@ -186,8 +186,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_reroutes_to_the_twin_before_the_first_byte",
-          "note": "the walk the route step drives on the pools door: the first member answers 503 before any byte, the twin is tried through the same walk, and its answer is the one the caller receives, each member dialled once"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
+          "note": "the walk the route step drives on all six fixtures: each delivered unit dials its far end once and a refused one never, the same-dialect answer is relayed byte for byte, admissions are drawn exactly where the shipped path drew them, and the member's breaker stays closed"
         }
       },
       "meter": {
@@ -197,8 +197,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_bills_a_whole_answer_its_own_usage_once",
-          "note": "a same-dialect whole answer reporting 1500 input and 90 output tokens reaches the caller byte for byte, the key's ledger holds exactly 1590 tokens counted once, and the sealed record reports that same figure"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it",
+          "note": "the delivered fixtures' usage on the door: the streamed unit accrues its reported 11 in and 7 out at stream end, the buffered one its 1 in and 1 out, each with exactly one metering row of lane m0"
         }
       },
       "audit": {
@@ -208,8 +208,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_one_audit_record_per_unit",
-          "note": "one keyed unit served through the pools door to a loopback far end seals exactly one record on the node's audit chain, no more and no fewer"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_seals_one_record_per_unit_end_on_one_chain_and_none_without_a_unit",
+          "note": "a served unit and an abandoned one (the caller gone while the far end holds its body) each seal exactly one record on one chain, linked and verifiable, a forgery detected, and a request refused at the door before it was a unit seals none"
         }
       },
       "encode": {
@@ -219,8 +219,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_model_plane_request_is_counted_exactly_once",
-          "note": "one model request through the pools door ends at one terminal: busbar_requests_total moves by exactly one for its pool, not once from the unit's finish and again from the plane ingress boundary"
+          "test": "crates/busbar/src/root/tests/serve_door_money_gaps.rs::the_pools_door_dials_a_served_unit_once_and_a_refused_one_never",
+          "note": "a served unit reaches its far end exactly once and a refused one never, on three ends each on its own deployment (refused at the pool guard, refused at the door, served), so the exit posts once; the one-terminal-per-unit count is crates/busbar-kernel/src/ingress/tests/terminal_tests.rs"
         }
       }
     },
