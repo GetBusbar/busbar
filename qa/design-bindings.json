@@ -4440,7 +4440,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "a_mapped_provider_code_overrides_and_an_unmapped_one_falls_back_to_the_status",
+     "ref": "a_far_end_error_is_placed_in_its_class",
      "proves": "the provider code is first in the error_map ladder",
      "source": "curated",
      "status": "mapped"
@@ -4496,7 +4496,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:a_mapped_provider_code_overrides_and_an_unmapped_one_falls_back_to_the_status, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, oracle-cell:route.cheapest|card-swap, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
+   "verdict_detail": "test:a_far_end_error_is_placed_in_its_class, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, oracle-cell:route.cheapest|card-swap, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",

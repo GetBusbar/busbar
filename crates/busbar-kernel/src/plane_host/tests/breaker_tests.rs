@@ -282,28 +282,24 @@ fn failure_signal_carries_the_canonical_signal_unchanged() {
     assert_eq!(refused_signal(), Settle::RecordNothing);
 }
 
-/// FAITHFULNESS PROOF (end-to-end): settling the 401 and 429 signals THROUGH [`admit`] + the host's
-/// `breaker_settle` leaves the target cell in the SAME state as recording the `normalize_raw_error`
+/// FAITHFULNESS PROOF (end-to-end): settling an auth and a rate-limit signal THROUGH [`admit`] + the
+/// host's `breaker_settle` leaves the target cell in the SAME state as recording that
 /// `CanonicalSignal` directly onto an identical cell. This is the guarantee
 /// CLUSTER-1 needs: the host settle path IS the plane's own `record_signal` disposition.
 #[test]
 fn settle_through_host_matches_direct_record_signal() {
-    use crate::breaker::{normalize_raw_error, RawUpstreamError};
-    use std::collections::HashMap;
-    let no_map: HashMap<String, String> = HashMap::new();
+    use crate::breaker::{CanonicalSignal, StatusClass};
 
-    for raw in [
-        RawUpstreamError {
-            http_status: 401,
-            provider_code: None,
-            structured_type: None,
-            retry_after_secs: None,
+    for cs in [
+        CanonicalSignal {
+            class: StatusClass::Auth,
+            provider_signal: None,
+            retry_after: None,
         },
-        RawUpstreamError {
-            http_status: 429,
-            provider_code: Some("slow_down".to_string()),
-            structured_type: None,
-            retry_after_secs: Some(30),
+        CanonicalSignal {
+            class: StatusClass::RateLimit,
+            provider_signal: Some("slow_down".to_string()),
+            retry_after: Some(30),
         },
     ] {
         // BOTH cells stamp an Open cooldown as `now() + cooldown` off the WALL CLOCK, one recording
@@ -318,9 +314,8 @@ fn settle_through_host_matches_direct_record_signal() {
         for _ in 0..16 {
             let started = busbar_kernel::store::now();
 
-            // Direct path: normalize + record straight onto a fresh cell.
+            // Direct path: record straight onto a fresh cell.
             let direct = crate::test_support::TestApp::new().build();
-            let cs = normalize_raw_error(&raw, &no_map);
             direct.plane_breakers.record_signal(POOL_STR, 0, &cs);
             let direct_state = direct.plane_breakers.state_at(POOL_STR, 0);
 
@@ -343,17 +338,17 @@ fn settle_through_host_matches_direct_record_signal() {
         }
         let (direct_state, hosted_state) = sample.unwrap_or_else(|| {
             panic!(
-                "the wall clock ticked through 16 consecutive attempts at http {}: the two \
+                "the wall clock ticked through 16 consecutive attempts at {:?}: the two \
                  recordings can never be compared within one second",
-                raw.http_status
+                cs.class
             )
         });
 
         assert_eq!(
             direct_state, hosted_state,
             "host settle must leave the cell in the same state as a direct record_signal \
-             for http {}",
-            raw.http_status
+             for {:?}",
+            cs.class
         );
     }
 }

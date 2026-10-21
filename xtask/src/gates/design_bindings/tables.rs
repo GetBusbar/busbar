@@ -533,7 +533,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "a_body_model_member_never_reaches_a_same_dialect_path_model_far_end", "strip_same_protocol_model_shim forces re-encode"),
     ]),
     ("PB-98", &[
-        ("test", "a_mapped_provider_code_overrides_and_an_unmapped_one_falls_back_to_the_status", "the provider code is first in the error_map ladder"),
+        ("test", "a_far_end_error_is_placed_in_its_class", "the provider code is first in the error_map ladder"),
         ("test", "restored_halfopen_state_normalizes_to_open", "HalfOpen restores as Open"),
         ("test", "restore_does_not_clobber_new_limit_with_unlimited_sentinel", "the budget carry-over rule on restore"),
         ("test", "test_hard_down_follows_identity_across_rebuild", "(model, provider) identity across a config apply"),

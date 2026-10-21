@@ -41,10 +41,6 @@ pub mod cell;
 pub mod cfg;
 pub mod classify;
 pub mod journal;
-/// THE LEGACY ENGINES' NORMALIZER, NOT A BREAKER INPUT. The retiring engines read it through
-/// `busbar-kernel`'s `breaker` module until D2 deletes them with it; this unit never calls it, and
-/// no new caller may.
-pub mod normalize;
 pub mod port;
 
 use std::collections::HashMap;
@@ -540,25 +536,6 @@ impl<J: JournalSink> BreakerUnit<J> {
             epoch: owned_epoch,
             now,
         });
-    }
-
-    /// The at-capacity terminal's requested-wait: the SOONEST genuine (`> 0`) cooldown
-    /// among the given members' states, else [`AT_CAPACITY_RETRY_AFTER_SECS`], always floored at 1.
-    /// A member reporting `Suppressed { until }` with `until <= now` (an expired cooldown — the
-    /// member is actually probe-winnable) contributes no genuine cooldown, matching 1.5.5's
-    /// exclusion of an at-capacity-but-Closed member from this same computation.
-    pub fn on_exhausted_retry_after(states: impl IntoIterator<Item = LaneState>, now: u64) -> u64 {
-        let soonest = states
-            .into_iter()
-            .filter_map(|s| match s {
-                LaneState::Suppressed { until } => {
-                    let remaining = until.saturating_sub(now);
-                    (remaining > 0).then_some(remaining)
-                }
-                _ => None,
-            })
-            .min();
-        soonest.unwrap_or(AT_CAPACITY_RETRY_AFTER_SECS).max(1)
     }
 }
 

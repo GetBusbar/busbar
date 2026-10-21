@@ -594,7 +594,7 @@
       "capability": "disposition",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-kernel/src/tests/breaker_tests.rs::test_structured_type_drives_error_map",
+      "test": "crates/busbar-plane-llm/tests/exchange_reply.rs::a_far_end_error_is_placed_in_its_class",
       "root": {
         "state": "proven",
         "leg": "root-llm",
