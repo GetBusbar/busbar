@@ -271,7 +271,7 @@ fn governed_full(
     let reads = Arc::clone(&current);
     let hooks = super::HookStage {
         host: Arc::new(move || {
-            busbar_kernel::plane_host::engine_host(&reads.lock().expect("unpoisoned"))
+            busbar_kernel::plane_driver::engine_host(&reads.lock().expect("unpoisoned"))
         }),
         gov: Arc::clone(&gov),
     };

@@ -1147,7 +1147,7 @@ pub(super) mod session_door {
             host: {
                 let live_app = Arc::clone(&live_app);
                 Arc::new(move || {
-                    busbar_kernel::plane_host::engine_host(
+                    busbar_kernel::plane_driver::engine_host(
                         live_app
                             .get()
                             .expect("the cell's App is built before any unit"),

@@ -313,8 +313,8 @@ impl Rig {
         }
     }
 
-    fn host(&self) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
-        busbar_kernel::plane_host::engine_host(&self.app)
+    fn host(&self) -> Arc<dyn busbar_kernel::plane_driver::EngineHost> {
+        busbar_kernel::plane_driver::engine_host(&self.app)
     }
 }
 
@@ -3000,7 +3000,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
 /// arrival's model rides its body.
 #[allow(clippy::too_many_arguments)]
 async fn native_run_via_loop(
-    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_driver::EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
@@ -4471,7 +4471,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     node.bind_book(Arc::clone(&book.durability));
 
     let arrival = plane::WalkArrival {
-        host: busbar_kernel::plane_host::engine_host(&app),
+        host: busbar_kernel::plane_driver::engine_host(&app),
         gov: gov_ctx.clone(),
         proto: linked_dialect(
             DIALECTS["rerank"]["path_dialect"]
@@ -5781,7 +5781,7 @@ async fn serve_rerank(
     let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     node.bind_book(Arc::clone(&book.durability));
     let arrival = plane::WalkArrival {
-        host: busbar_kernel::plane_host::engine_host(&app),
+        host: busbar_kernel::plane_driver::engine_host(&app),
         gov: busbar_contract::records::PlaneRequestCtx {
             key: Some(Arc::clone(&key)),
         },

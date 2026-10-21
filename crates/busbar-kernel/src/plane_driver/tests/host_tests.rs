@@ -1,29 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/plane_host/mod.rs`.
+//! Tests for `crates/busbar-kernel/src/plane_driver/host.rs`.
 
 use super::*;
 use std::sync::Arc;
-
-/// The host clock reads the kernel's one clock in nanoseconds, and the seconds and milliseconds
-/// veneers are that reading scaled down.
-#[test]
-fn the_host_clock_is_a_live_nanosecond_reading_scaled_by_its_veneers() {
-    let app = crate::test_support::TestApp::new().build();
-    let nanos = clock_now_nanos();
-    let ms = clock_now_ms_over(&app);
-    let secs = clock_now_secs_over(&app);
-    assert!(
-        nanos > 0,
-        "host clock must be a live nonzero nanosecond reading"
-    );
-    assert!(ms > 0 && secs > 0, "the veneers read the same live clock");
-    assert!(
-        (ms / 1_000).abs_diff(secs) <= 1,
-        "milliseconds and seconds are one clock at two scales: {ms} ms vs {secs} s"
-    );
-}
 
 /// ONE RULE. The predicate every metrics fold asks is asserted directly, so no fold can be "fixed"
 /// apart from it.

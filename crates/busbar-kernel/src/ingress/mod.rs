@@ -793,7 +793,7 @@ async fn delegate_body_arrival(
         let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
         let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
+                host: crate::plane_driver::engine_host(&app),
                 gov,
                 caller_token: caller,
             },
