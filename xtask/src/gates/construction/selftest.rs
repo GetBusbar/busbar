@@ -799,6 +799,87 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "static DASHED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
         ],
     ));
+    // a6's review of #1454: five evasions the row read green. Each names its static.
+    // The type read to its top-level end: a `;` inside `[u8; 0]` is the type's own, not its end.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a tuple whose first field is an array type",
+        "zz_planted_tupled_store",
+        "use std::sync::OnceLock;\n\nstatic TUPLED: ([u8; 0], OnceLock<Vec<String>>) = ([], \
+         OnceLock::new());\n\npub fn install(rows: Vec<String>) {\n    let _ = TUPLED.1.set(rows);\n}\n",
+        &["static TUPLED at crates/busbar-kernel/src/zz_planted_tupled_store.rs"],
+    ));
+    // A setter imported with `use` (and under an alias) and called bare from another file.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_use_store.rs",
+        "use std::sync::OnceLock;\n\nstatic IMPORTED: OnceLock<Vec<String>> = OnceLock::new();\n\n\
+         pub(crate) fn put(rows: Vec<String>) {\n    let _ = IMPORTED.set(rows);\n}\n",
+    );
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_use_caller.rs",
+        "use crate::zz_planted_use_store::put;\n\npub fn zz_install(rows: Vec<String>) {\n    \
+         put(rows);\n}\n",
+    );
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_use_alias.rs",
+        "use crate::zz_planted_use_store::{put as stash};\n\npub fn zz_install_aliased(rows: \
+         Vec<String>) {\n    stash(rows);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind a setter another file imports with `use` and calls bare",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static IMPORTED at crates/busbar-kernel/src/zz_planted_use_store.rs",
+            "pub fn zz_install (through put)",
+            "pub fn zz_install_aliased (through put)",
+        ],
+    ));
+    // A static a `macro_rules!` declares under a metavariable name, its type handed in.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a macro-generated static",
+        "zz_planted_macro_store",
+        "use std::sync::OnceLock;\n\nmacro_rules! zz_store {\n    ($name:ident, $ty:ty) => {\n        \
+         static $name: OnceLock<$ty> = OnceLock::new();\n    };\n}\n\nzz_store!(GENERATED, \
+         Vec<String>);\n\npub fn install(rows: Vec<String>) {\n    let _ = GENERATED.set(rows);\n}\n",
+        &["static GENERATED at crates/busbar-kernel/src/zz_planted_macro_store.rs"],
+    ));
+    // A trait method (no `pub` on it) that takes the value and sets the store.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a trait-method installer",
+        "zz_planted_trait_store",
+        "use std::sync::OnceLock;\n\nstatic BY_TRAIT: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
+         trait ZzInstall {\n    fn install_rows(&self, rows: Vec<String>);\n}\n\npub struct \
+         ZzHandle;\n\nimpl ZzInstall for ZzHandle {\n    fn install_rows(&self, rows: Vec<String>) \
+         {\n        let _ = BY_TRAIT.set(rows);\n    }\n}\n",
+        &[
+            "static BY_TRAIT at crates/busbar-kernel/src/zz_planted_trait_store.rs",
+            "pub fn install_rows",
+        ],
+    ));
+    // An `UnsafeCell` wrapper: the struct's field is the cell.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind an UnsafeCell wrapper",
+        "zz_planted_unsafe_cell_store",
+        "use std::cell::UnsafeCell;\n\npub struct ZzSlot(UnsafeCell<Vec<String>>);\n\nstatic SLOT: \
+         ZzSlot = ZzSlot(UnsafeCell::new(Vec::new()));\n\npub fn install(rows: Vec<String>) {\n    \
+         drop((rows, SLOT.0.get()));\n}\n",
+        &["static SLOT at crates/busbar-kernel/src/zz_planted_unsafe_cell_store.rs"],
+    ));
     // AND NOT EVERY STATIC: a fn-local memo nothing outside the kernel reaches is not installed.
     let mut ov = on(base);
     ov.set(
@@ -1667,6 +1748,63 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
         _ => r.note_infra_failure(
             "[rules.lean-core] max_hits or a [rules.ports-only.max_per_crate] figure could not be \
              raised, so the rule that refuses a raised ceiling is unproven",
+        ),
+    }
+
+    // A CEILING SET BY ITS MEASURING CHANGE IS SET ONCE (ARCHITECT ruling on #1454, the #1418
+    // MINTED precedent). The base here carries `[gate.census.measured]`, so the debt ceiling it
+    // set is held like any other: raised again it is refused. And a fresh
+    // `[gate.census.measured]` entry whose detector did not change in the same diff excuses no
+    // rise from 0.
+    let debt_max = ConstructionGate::cfg(cx).ok().and_then(|c| {
+        c.rule("kernel-no-protocol-registry")
+            .ok()
+            .and_then(|t| t.int_of("max_debt"))
+    });
+    let rule = "rules.kernel-no-protocol-registry";
+    let raised_debt = debt_max.and_then(|max| {
+        ceilings::set_int(&text, rule, "max_debt", max + 1).map(|t| (max, t))
+    });
+    match raised_debt {
+        Some((max, raised)) => {
+            let mut ov = on(base);
+            ov.set(CEILINGS, raised);
+            let rose = format!("{max} -> {}", max + 1);
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a measured debt ceiling raised again in a later change is refused",
+                &[census::ROW_CENSUS],
+                ov,
+                &["[rules.kernel-no-protocol-registry] max_debt", rose.as_str()],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] max_debt could not be raised, so the rule that \
+             holds a measured ceiling once set is unproven",
+        ),
+    }
+    let header = format!("[{}]\n", census::MEASURED);
+    let entry = "\"rules.lean-core.max_hits\" = \"words -- planted; drain: none\"\n";
+    let unmeasured = ceilings::set_int(&text, "rules.lean-core", "max_hits", 3)
+        .filter(|t| t.contains(&header))
+        .map(|t| t.replacen(&header, &format!("{header}{entry}"), 1));
+    match unmeasured {
+        Some(planted) => {
+            let mut ov = on(base);
+            ov.set(CEILINGS, planted);
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a measured entry whose detector did not change excuses no rise from 0",
+                &[census::ROW_CENSUS],
+                ov,
+                &["[rules.lean-core] max_hits", "0 -> 3", "did not change"],
+            ));
+        }
+        None => r.note_infra_failure(
+            "the measured ledger or [rules.lean-core] max_hits could not be planted, so the rule \
+             that a measured entry needs its detector change is unproven",
         ),
     }
     r
