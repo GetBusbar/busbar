@@ -30,7 +30,7 @@ fn plugin_logs(p: &PluginsCfg) -> Result<(), String> {
 fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_kernel::preflight::install_test_root(busbar_kernel::preflight::RootInstall {
+        busbar_kernel::test_support::install_test_root(busbar_kernel::preflight::RootInstall {
             plugin_logs: Some(plugin_logs),
             ..busbar_kernel::preflight::root_rows()
         });

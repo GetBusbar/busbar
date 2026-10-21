@@ -9,7 +9,7 @@
 //! drives the kernel in process over a REAL dropped-in plugin (a signed tarball the loader scans, a
 //! cdylib the loader loads) installs this instead — the loader's own registry build and auth rows,
 //! as the root composes them — through the kernel's test seams
-//! (`busbar_kernel::preflight::{install_test_root, install_test_auth_axis}`, read ahead of the
+//! (`busbar_kernel::test_support::{install_test_root, install_test_auth_axis}`, read ahead of the
 //! stand-in). An integration test cannot call the root's code (the root is a binary), so this is the
 //! root's composition restated over the loader; the root's own unit tests prove the root's.
 //!
@@ -322,7 +322,7 @@ static EXPORTS: LoaderExports = LoaderExports;
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_kernel::preflight::install_test_root(RootInstall {
+        busbar_kernel::test_support::install_test_root(RootInstall {
             registry_build: Some(registry_rows),
             export_axis: Some(&EXPORTS),
             auth_chain_module: Some(
@@ -331,7 +331,7 @@ pub fn install() {
             hook_answers: Some(hook_answers),
             ..busbar_kernel::preflight::root_rows()
         });
-        busbar_kernel::preflight::install_test_auth_axis(auth_axis);
+        busbar_kernel::test_support::install_test_auth_axis(auth_axis);
     });
 }
 

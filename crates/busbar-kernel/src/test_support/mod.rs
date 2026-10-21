@@ -2325,6 +2325,19 @@ pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
 
+/// Install `rows` as this test binary's root ([`crate::preflight::root_rows`]): every read after it
+/// answers them, ahead of the stand-in. A test of the composition root's package that drives the
+/// kernel in process over the loader installs its loader-backed rows here. The first install stands.
+pub fn install_test_root(rows: crate::preflight::RootInstall) {
+    let _ = crate::preflight::TEST_ROOT.set(rows);
+}
+
+/// Install `open` as this test binary's auth axis opener, read ahead of the stand-in. The first
+/// install stands.
+pub fn install_test_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = crate::preflight::TEST_AUTH_AXIS.set(open);
+}
+
 /// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
 /// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
 /// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as

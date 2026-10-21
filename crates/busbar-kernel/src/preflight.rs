@@ -294,25 +294,13 @@ pub fn root_rows() -> RootInstall {
 /// so its stand-in rows are in-process doubles). Read ahead of the stand-in, whichever read came
 /// first; the first install stands.
 #[cfg(any(test, feature = "test-support"))]
-static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
+pub(crate) static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// Install `rows` as this test binary's root ([`TEST_ROOT`]): every [`root_rows`] read after it
-/// answers them. The first install stands.
+/// A TEST BINARY'S OWN AUTH AXIS OPENER, read ahead of the stand-in (the [`TEST_ROOT`] rule); filled by
+/// [`crate::test_support::install_test_auth_axis`].
 #[cfg(any(test, feature = "test-support"))]
-pub fn install_test_root(rows: RootInstall) {
-    let _ = TEST_ROOT.set(rows);
-}
-
-/// A TEST BINARY'S OWN AUTH AXIS OPENER, read ahead of the stand-in (the [`TEST_ROOT`] rule).
-#[cfg(any(test, feature = "test-support"))]
-static TEST_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
-
-/// Install `open` as this test binary's auth axis opener ([`TEST_AUTH_AXIS`]). The first install
-/// stands.
-#[cfg(any(test, feature = "test-support"))]
-pub fn install_test_auth_axis(open: AuthAxisOpener) {
-    let _ = TEST_AUTH_AXIS.set(open);
-}
+pub(crate) static TEST_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
+    std::sync::OnceLock::new();
 
 /// The hook names the composition root's OWN test binary hands in, in the root's words (its
 /// generated linked-hook list): a test build's install record reports them in place of the
