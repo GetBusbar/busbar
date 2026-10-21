@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LLM DIALECTS' DECLARED SCHEMES, PRESENTED THROUGH THE LINKED AUTH PLUGINS (P2 D1, the auth
+//! THE MODEL DIALECTS' DECLARED SCHEMES, PRESENTED THROUGH THE LINKED AUTH PLUGINS (P2 D1, the auth
 //! split; #83a SD-2b, SD-3; O7, S2-a).
 //!
 //! The kernel holds no auth style: a lane's credential is bound on the auth plugin serving the
@@ -13,6 +13,11 @@
 //! suite holds its mapping of each real declaration to the same `bindings`, so the halves together
 //! are the byte-identity proof of the switch, and neither names the other. Ported from the
 //! kernel's `egress_auth` differential, which it replaces.
+//!
+//! Every dialect this suite addresses is found in the fixture by the SHAPE of its recorded scheme
+//! or binding (a bearer scheme, one header, a credential-family table, a binding naming a signing
+//! service), never by name: the dialect names, the signing service and the signing hosts are the
+//! fixture's data.
 //!
 //! THE MAIN LOG'S LINES (ARCHITECT D1 2026-10-05, LOG LINES): a credential the plugin cannot present
 //! is its declared diagnostic on the #85 envelope, which the root writes to the main log in the line
@@ -68,7 +73,7 @@ fn binding_of(
     let style = row["style"].as_str().expect("style").to_string();
     let mut params = row["params"].clone();
     let mut sent = Vec::new();
-    if style == "sigv4" {
+    if is_signing(row) {
         let region = recorded_region(host).unwrap_or("us-east-1");
         params["region"] = serde_json::Value::String(region.to_string());
         let content_type = params["content_type"].as_str().expect("content_type");
@@ -94,15 +99,10 @@ fn present_bound(binding: &StyleBinding, key: &str, ctx: &SigningContext) -> Vec
     strings(&bound(binding, own).headers_for(key, ctx))
 }
 
-/// `decl`'s dialect (its twin name's tail), presented.
-fn present(decl: &'static ProtocolDecl, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
-    let dialect = decl
-        .name
-        .rsplit('-')
-        .next()
-        .expect("a twin name ends in its dialect");
+/// `dialect`, presented under its recorded binding with its twin's static headers.
+fn present(dialect: &str, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
     present_bound(
-        &binding_of(dialect, ctx.host, decl.static_headers),
+        &binding_of(dialect, ctx.host, twin(dialect).static_headers),
         key,
         ctx,
     )
@@ -129,7 +129,94 @@ fn recorded_region(host: &str) -> Option<&'static str> {
         .and_then(|r| r["region"].as_str())
 }
 
-const ANTHROPIC_FAMILIES: &[CredentialFamily] = &[
+/// A recorded binding is the SIGNING one when its parameters name a service.
+fn is_signing(binding: &serde_json::Value) -> bool {
+    binding["params"].get("service").is_some()
+}
+
+/// The fixture's one signing dialect: the binding whose parameters name a service.
+fn signing_dialect() -> &'static str {
+    let found: Vec<&'static str> = fixture()["bindings"]
+        .as_object()
+        .expect("bindings")
+        .iter()
+        .filter(|(_, row)| is_signing(row))
+        .map(|(dialect, _)| dialect.as_str())
+        .collect();
+    match found.as_slice() {
+        [one] => *one,
+        other => panic!("exactly one signing binding is recorded: {other:?}"),
+    }
+}
+
+/// The service the signing binding names: the scope's service segment.
+fn signing_service() -> &'static str {
+    fixture()["bindings"][signing_dialect()]["params"]["service"]
+        .as_str()
+        .expect("the signing binding names its service")
+}
+
+/// The recorded signing host for `region`: the FIPS one when `fips`, else the plain one.
+fn signing_host(region: &str, fips: bool) -> &'static str {
+    fixture()["regions"]
+        .as_array()
+        .expect("regions")
+        .iter()
+        .filter(|r| r["region"] == region)
+        .filter_map(|r| r["host"].as_str())
+        .find(|h| h.contains("-fips.") == fips)
+        .unwrap_or_else(|| panic!("a recorded {region} host, fips {fips}"))
+}
+
+/// The recorded dialects whose scheme satisfies `pred`, in the fixture's order.
+fn dialects_where(pred: impl Fn(&serde_json::Value) -> bool) -> Vec<&'static str> {
+    fixture()["schemes"]
+        .as_object()
+        .expect("schemes")
+        .iter()
+        .filter(|(_, scheme)| pred(scheme))
+        .map(|(dialect, _)| dialect.as_str())
+        .collect()
+}
+
+/// A static scheme with no credential family, presenting `own` and `passthrough` alike as `how`.
+fn plain_static(scheme: &serde_json::Value, how: impl Fn(&serde_json::Value) -> bool) -> bool {
+    scheme["kind"] == "static"
+        && scheme["families"].as_array().is_some_and(Vec::is_empty)
+        && how(&scheme["own"])
+        && how(&scheme["passthrough"])
+}
+
+/// The dialects whose scheme presents the credential as a bearer token, either mode.
+fn bearer_dialects() -> Vec<&'static str> {
+    let found = dialects_where(|s| plain_static(s, |h| h["bearer"] == true));
+    assert!(!found.is_empty(), "a bearer dialect is recorded");
+    found
+}
+
+/// The one dialect whose scheme presents the credential in one named header, either mode, and
+/// that header.
+fn header_dialect() -> (&'static str, &'static str) {
+    let found = dialects_where(|s| plain_static(s, |h| h.get("header").is_some()));
+    let [one] = found.as_slice() else {
+        panic!("exactly one single-header dialect is recorded: {found:?}");
+    };
+    let header = fixture()["schemes"][*one]["own"]["header"]
+        .as_str()
+        .expect("its header");
+    (*one, header)
+}
+
+/// The one dialect whose scheme carries a credential-family table.
+fn family_dialect() -> &'static str {
+    let found = dialects_where(|s| s["families"].as_array().is_some_and(|f| !f.is_empty()));
+    let [one] = found.as_slice() else {
+        panic!("exactly one family-table dialect is recorded: {found:?}");
+    };
+    *one
+}
+
+const PREFIX_FAMILIES: &[CredentialFamily] = &[
     CredentialFamily {
         prefix: "sk-ant-api",
         presented_as: CredentialHeader::Raw {
@@ -143,60 +230,68 @@ const ANTHROPIC_FAMILIES: &[CredentialFamily] = &[
     },
 ];
 
-const GOOG: CredentialHeader = CredentialHeader::Raw {
+const ONE_HEADER: CredentialHeader = CredentialHeader::Raw {
     header: "x-goog-api-key",
     trim_start: false,
 };
 
-static TWINS: [ProtocolDecl; 6] = [
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-openai")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-responses")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-cohere")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::Static {
-            families: &[],
-            own: GOOG,
-            passthrough: GOOG,
-        }),
-        ..ProtocolDecl::named("declared-twin-gemini")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::Static {
-            families: ANTHROPIC_FAMILIES,
-            own: CredentialHeader::Raw {
-                header: "x-api-key",
-                trim_start: false,
+/// The declared schemes, one twin per distinct SHAPE the fixture records, typed here so the fixture
+/// holds them ([`each_twin_carries_the_fixture_scheme_of_its_dialect`]). The signing twin's service
+/// is the fixture's own (the scope names it), so this source names none.
+fn twins() -> &'static [ProtocolDecl] {
+    static TWINS: OnceLock<Vec<ProtocolDecl>> = OnceLock::new();
+    TWINS.get_or_init(|| {
+        vec![
+            ProtocolDecl {
+                egress_scheme: Some(EgressScheme::bearer()),
+                ..ProtocolDecl::named("declared-twin-bearer")
             },
-            passthrough: CredentialHeader::Bearer,
-        }),
-        ..ProtocolDecl::named("declared-twin-anthropic")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::SigV4 {
-            service: "bedrock",
-            region_of_host: recorded_region,
-            default_region: "us-east-1",
-            content_type: "application/json",
-        }),
-        ..ProtocolDecl::named("declared-twin-bedrock")
-    },
-];
+            ProtocolDecl {
+                egress_scheme: Some(EgressScheme::Static {
+                    families: &[],
+                    own: ONE_HEADER,
+                    passthrough: ONE_HEADER,
+                }),
+                ..ProtocolDecl::named("declared-twin-header")
+            },
+            ProtocolDecl {
+                egress_scheme: Some(EgressScheme::Static {
+                    families: PREFIX_FAMILIES,
+                    own: CredentialHeader::Raw {
+                        header: "x-api-key",
+                        trim_start: false,
+                    },
+                    passthrough: CredentialHeader::Bearer,
+                }),
+                ..ProtocolDecl::named("declared-twin-family")
+            },
+            ProtocolDecl {
+                egress_scheme: Some(EgressScheme::SigV4 {
+                    service: signing_service(),
+                    region_of_host: recorded_region,
+                    default_region: "us-east-1",
+                    content_type: "application/json",
+                }),
+                ..ProtocolDecl::named("declared-twin-signing")
+            },
+        ]
+    })
+}
 
+/// `dialect`'s twin: the one whose declared scheme is the scheme the fixture records for it.
 fn twin(dialect: &str) -> &'static ProtocolDecl {
-    let name = format!("declared-twin-{dialect}");
-    TWINS
+    let data = &fixture()["schemes"][dialect];
+    let found: Vec<&'static ProtocolDecl> = twins()
         .iter()
-        .find(|d| d.name == name)
-        .unwrap_or_else(|| panic!("no twin for {dialect}"))
+        .filter(|d| d.egress_scheme.as_ref().map(describe).as_ref() == Some(data))
+        .collect();
+    match found.as_slice() {
+        [one] => *one,
+        other => panic!(
+            "{dialect}: exactly one twin carries its recorded scheme, found {}",
+            other.len()
+        ),
+    }
 }
 
 fn presentation(h: &CredentialHeader) -> serde_json::Value {
@@ -229,7 +324,7 @@ fn describe(scheme: &EgressScheme) -> serde_json::Value {
             content_type,
             ..
         } => serde_json::json!({
-            "kind": "sigv4",
+            "kind": fixture()["schemes"][signing_dialect()]["kind"],
             "service": service,
             "default_region": default_region,
             "content_type": content_type,
@@ -241,16 +336,23 @@ fn hex(v: &serde_json::Value) -> Vec<u8> {
     hex::decode(v.as_str().expect("hex")).expect("hex")
 }
 
-/// Every twin carries exactly the scheme data the fixture records for its dialect — the data the
-/// plane's own suite holds each real declaration to.
+/// Every recorded dialect's scheme is carried, exactly, by one twin, and every twin carries some
+/// dialect's: the data the plane's own suite holds each real declaration to.
 #[test]
 fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
     let schemes = fixture()["schemes"].as_object().expect("schemes");
-    assert_eq!(schemes.len(), TWINS.len());
+    let mut used = std::collections::BTreeSet::new();
     for (dialect, data) in schemes {
-        let scheme = twin(dialect).egress_scheme.expect("declared");
+        let decl = twin(dialect);
+        let scheme = decl.egress_scheme.expect("declared");
         assert_eq!(&describe(&scheme), data, "{dialect}");
+        used.insert(decl.name);
     }
+    assert_eq!(
+        used.len(),
+        twins().len(),
+        "every twin carries a recorded scheme"
+    );
 }
 
 /// THE DIFFERENTIAL: presented under each dialect's declared scheme, through the linked auth
@@ -263,8 +365,8 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
         let dialect = row["dialect"].as_str().expect("dialect");
         let key = String::from_utf8(hex(&row["key_hex"])).expect("utf-8 key");
         // AN EMPTY KEY NEVER REACHES THE BUILDER ON THE WIRE: the lane's writer asks for no header
-        // at all for a key that presents (1.5.5's `lane_auth_headers` and the passthrough rule;
-        // `test_keyless_lane_sends_no_auth_header`), so the builder's raw answer for it was never
+        // at all for a key that presents (1.5.5's `lane_auth_headers` and the passthrough rule, its
+        // keyless-lane test), so the builder's raw answer for it was never
         // sent and is no byte-identity obligation of the plugin's.
         if key.is_empty() {
             continue;
@@ -281,7 +383,7 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
                 UpstreamCreds::Passthrough
             },
         };
-        let presented: Vec<serde_json::Value> = present(twin(dialect), &key, &ctx)
+        let presented: Vec<serde_json::Value> = present(dialect, &key, &ctx)
             .into_iter()
             .map(|(k, v)| serde_json::json!([k, hex::encode(v.as_bytes())]))
             .collect();
@@ -306,7 +408,7 @@ fn signed(key: &str, host: &str, uri: &str, body: &[u8]) -> Vec<(String, String)
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
         upstream_creds: UpstreamCreds::Own,
     };
-    present(twin("bedrock"), key, &ctx)
+    present(signing_dialect(), key, &ctx)
 }
 
 fn get(headers: &[(String, String)], name: &str) -> Option<String> {
@@ -320,15 +422,17 @@ fn get(headers: &[(String, String)], name: &str) -> Option<String> {
 fn a_signing_dialect_request_carries_the_scope_the_host_names() {
     let h = signed(
         "AKIDEXAMPLE:SECRETKEY",
-        "bedrock-runtime.us-east-1.amazonaws.com",
-        "/model/anthropic.claude%3A0/converse",
+        signing_host("us-east-1", false),
+        "/model/vendor.model%3A0/converse",
         br#"{"messages":[]}"#,
     );
     let auth = get(&h, "authorization").expect("authorization header");
+    let scope = format!(
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/{}/aws4_request, ",
+        signing_service()
+    );
     assert!(
-        auth.starts_with(
-            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/bedrock/aws4_request, "
-        ),
+        auth.starts_with(&scope),
         "scope/region derived from host; got: {auth}"
     );
     assert!(auth.contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date"));
@@ -342,7 +446,7 @@ fn a_signing_dialect_request_carries_the_scope_the_host_names() {
 fn a_session_token_is_sent_and_signed_for_the_hosts_region() {
     let h = signed(
         "AKID:SECRET:SESSIONTOKEN",
-        "bedrock-runtime.eu-west-1.amazonaws.com",
+        signing_host("eu-west-1", false),
         "/model/m/converse",
         b"{}",
     );
@@ -351,13 +455,13 @@ fn a_session_token_is_sent_and_signed_for_the_hosts_region() {
         Some("SESSIONTOKEN")
     );
     let auth = get(&h, "authorization").expect("authorization");
-    assert!(auth.contains("/eu-west-1/bedrock/aws4_request"));
+    assert!(auth.contains(&format!("/eu-west-1/{}/aws4_request", signing_service())));
     assert!(auth.contains("x-amz-security-token"));
 }
 
 #[test]
 fn a_misconfigured_or_unsendable_signing_credential_signs_nothing() {
-    let host = "bedrock-runtime.us-east-1.amazonaws.com";
+    let host = signing_host("us-east-1", false);
     for key in [
         "not-a-valid-key",
         "AKID\r\nINJECT:SECRET",
@@ -381,12 +485,15 @@ fn a_misconfigured_or_unsendable_signing_credential_signs_nothing() {
 fn a_fips_host_signs_for_its_region_and_an_unnamed_one_for_the_default() {
     let fips = signed(
         "AKID:SECRET",
-        "bedrock-runtime-fips.eu-west-1.amazonaws.com",
+        signing_host("eu-west-1", true),
         "/model/m/converse",
         b"{}",
     );
     let auth = get(&fips, "authorization").expect("authorization");
-    assert!(auth.contains("/eu-west-1/bedrock/aws4_request"), "{auth}");
+    assert!(
+        auth.contains(&format!("/eu-west-1/{}/aws4_request", signing_service())),
+        "{auth}"
+    );
     assert!(!auth.contains("/us-east-1/"), "{auth}");
     let cname = signed(
         "AKID:SECRET",
@@ -395,7 +502,10 @@ fn a_fips_host_signs_for_its_region_and_an_unnamed_one_for_the_default() {
         b"{}",
     );
     let auth = get(&cname, "authorization").expect("authorization");
-    assert!(auth.contains("/us-east-1/bedrock/aws4_request"), "{auth}");
+    assert!(
+        auth.contains(&format!("/us-east-1/{}/aws4_request", signing_service())),
+        "{auth}"
+    );
 }
 
 // ══ SIGV4 SIGNS THE WALKED REQUEST (auth audit fix b; BUSBAR-1.6.0 l.870-873) ═══════════════════
@@ -418,14 +528,7 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
 
     const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
     const AUTHORITY: &str = "runtime.example.com";
-    let dialect = fixture()["bindings"]
-        .as_object()
-        .expect("bindings")
-        .iter()
-        .find(|(_, row)| row["params"].get("service").is_some())
-        .map(|(dialect, _)| dialect.as_str())
-        .expect("a signing binding");
-    let binding = binding_of(dialect, SIGNING_HOST, &[]);
+    let binding = binding_of(signing_dialect(), signing_host("us-east-1", false), &[]);
     let (style, params) = (binding.style.as_str(), &binding.params);
     let service = params["service"].as_str().expect("service");
     assert_eq!(
@@ -514,7 +617,8 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
     );
 }
 
-/// The SigV4 steps the cell above recomputes with, ported from `tests/sigv4_both_ways.rs`.
+/// The SigV4 steps the cell above recomputes with, ported from the binary-level both-ways suite
+/// that now lives in the signing plugin's own repository.
 mod sigv4 {
     use sha2::{Digest, Sha256};
 
@@ -589,8 +693,8 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
         timestamp_epoch: 1_752_000_000,
         upstream_creds: UpstreamCreds::Own,
     };
-    let p = |dialect: &str, key: &str| present(twin(dialect), key, &ctx);
-    for dialect in ["openai", "responses", "cohere"] {
+    let p = |dialect: &str, key: &str| present(dialect, key, &ctx);
+    for dialect in bearer_dialects() {
         assert_eq!(
             p(dialect, "sk-test"),
             vec![("authorization".to_string(), "Bearer sk-test".to_string())],
@@ -600,15 +704,13 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
             assert!(p(dialect, bad).is_empty(), "{dialect}: {bad:?}");
         }
     }
+    let (dialect, header) = header_dialect();
     assert_eq!(
-        p("gemini", "AIzaSyValidKey123"),
-        vec![(
-            "x-goog-api-key".to_string(),
-            "AIzaSyValidKey123".to_string()
-        )]
+        p(dialect, "AIzaSyValidKey123"),
+        vec![(header.to_string(), "AIzaSyValidKey123".to_string())]
     );
     for bad in ["bad\nkey", "key\u{0000}bad"] {
-        assert!(p("gemini", bad).is_empty(), "gemini: {bad:?}");
+        assert!(p(dialect, bad).is_empty(), "{dialect}: {bad:?}");
     }
 }
 
@@ -619,7 +721,7 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
 // credential, now declared data.
 
 const FAMILY_TABLE: EgressScheme = EgressScheme::Static {
-    families: ANTHROPIC_FAMILIES,
+    families: PREFIX_FAMILIES,
     own: CredentialHeader::Raw {
         header: "x-api-key",
         trim_start: false,
@@ -627,10 +729,13 @@ const FAMILY_TABLE: EgressScheme = EgressScheme::Static {
     passthrough: CredentialHeader::Bearer,
 };
 
+/// The one version header the versioned twin declares: a twin's own word, written verbatim.
+const VERSION_HEADER: &str = "x-twin-version";
+
 static STATIC_TWINS: [ProtocolDecl; 3] = [
     ProtocolDecl {
         egress_scheme: Some(FAMILY_TABLE),
-        static_headers: &[("anthropic-version", "2023-06-01")],
+        static_headers: &[(VERSION_HEADER, "2023-06-01")],
         ..ProtocolDecl::named("static-twin-versioned")
     },
     ProtocolDecl {
@@ -659,11 +764,12 @@ fn presented(name: &str, key: &str, mode: UpstreamCreds) -> Vec<(String, String)
         timestamp_epoch: 1_752_000_000,
         upstream_creds: mode,
     };
-    // The family-table twins carry the anthropic scheme, the two-statics twin the bearer one.
+    // The family-table twins carry the family-table dialect's scheme, the two-statics twin a
+    // bearer one.
     let dialect = if name == "static-twin-two-statics" {
-        "openai"
+        bearer_dialects()[0]
     } else {
-        "anthropic"
+        family_dialect()
     };
     present_bound(
         &binding_of(dialect, ctx.host, static_twin(name).static_headers),
@@ -683,7 +789,7 @@ fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
 /// omitted, the version stays).
 #[test]
 fn a_declared_static_header_follows_the_credential_verbatim() {
-    let v = ("anthropic-version", "2023-06-01");
+    let v = (VERSION_HEADER, "2023-06-01");
     let own = UpstreamCreds::Own;
     let pt = UpstreamCreds::Passthrough;
     for (key, mode, want) in [
@@ -734,10 +840,7 @@ fn with_no_static_header_declared_the_version_header_is_absent() {
         ("sk-ant-api03-bad\nkey", UpstreamCreds::Own),
     ] {
         let h = presented("static-twin-unversioned", key, mode);
-        assert!(
-            h.iter().all(|(k, _)| k != "anthropic-version"),
-            "{key:?}: {h:?}"
-        );
+        assert!(h.iter().all(|(k, _)| k != VERSION_HEADER), "{key:?}: {h:?}");
     }
     assert_eq!(
         presented(
@@ -799,14 +902,12 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
 /// `dialect`'s recorded binding, its lines naming `protocol` (the name 1.5.5's twin carried): every
 /// static style's (each records a `protocol`), the signing style (which records none) naming none.
 fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
-    let mut binding = binding_of(dialect, SIGNING_HOST, &[]);
+    let mut binding = binding_of(dialect, signing_host("us-east-1", false), &[]);
     if binding.params.get("protocol").is_some() {
         binding.params["protocol"] = serde_json::Value::String(protocol.to_string());
     }
     binding
 }
-
-const SIGNING_HOST: &str = "bedrock-runtime.us-east-1.amazonaws.com";
 
 /// Every line the main log took, DEBUG and above, while `f` ran.
 fn main_log(f: impl FnOnce()) -> Vec<String> {
@@ -829,7 +930,7 @@ fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<Strin
     };
     main_log(|| {
         let ctx = SigningContext {
-            host: SIGNING_HOST,
+            host: signing_host("us-east-1", false),
             canonical_uri: "/model/m/converse",
             body: b"{}",
             timestamp_epoch: 1_756_000_000,
@@ -849,7 +950,7 @@ fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
 /// nothing. A malformed credential without that token logged nothing then and logs nothing now.
 #[test]
 fn an_unsendable_session_token_logs_the_signers_own_line() {
-    let signing = named_binding("bedrock", "static-twin-signing");
+    let signing = named_binding(signing_dialect(), "static-twin-signing");
     assert_eq!(
         lines(&signing, "AKID:SECRET:TOK\r\nEN"),
         vec![
@@ -872,7 +973,7 @@ fn an_unsendable_session_token_logs_the_signers_own_line() {
 /// theirs, each naming the header it omitted.
 #[test]
 fn an_unpresentable_static_credential_logs_its_builders_own_line() {
-    let bearer = named_binding("openai", "static-twin-bearer");
+    let bearer = named_binding(bearer_dialects()[0], "static-twin-bearer");
     assert_eq!(
         lines(&bearer, "bad\nkey"),
         vec![
@@ -883,20 +984,26 @@ fn an_unpresentable_static_credential_logs_its_builders_own_line() {
         ]
     );
     assert_eq!(
-        lines(&named_binding("gemini", "static-twin-header"), "bad\nkey"),
-        vec![
+        lines(
+            &named_binding(header_dialect().0, "static-twin-header"),
+            "bad\nkey"
+        ),
+        vec![format!(
             "egress credential contains invalid header bytes (ASCII control character); \
              omitting auth header — upstream will reject with 401 diag=BUSBAR-4013 \
-             header=x-goog-api-key"
-                .to_string()
-        ]
+             header={}",
+            header_dialect().1
+        )]
     );
     for (key, header) in [
         ("sk-ant-api03-bad\nkey", "x-api-key"),
         ("sk-ant-oat01-bad\ntoken", "authorization"),
     ] {
         assert_eq!(
-            lines(&named_binding("anthropic", "static-twin-versioned"), key),
+            lines(
+                &named_binding(family_dialect(), "static-twin-versioned"),
+                key
+            ),
             vec![format!(
                 "auth credential contains bytes invalid for an HTTP header value (e.g. a \
                  trailing newline); omitting the credential header — upstream will return \
@@ -978,7 +1085,7 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
 fn a_callers_unpresentable_credential_logs_on_its_request() {
     assert_eq!(
         lines_in(
-            &named_binding("openai", "static-twin-bearer"),
+            &named_binding(bearer_dialects()[0], "static-twin-bearer"),
             "bad\nkey",
             UpstreamCreds::Passthrough
         ),
@@ -991,7 +1098,7 @@ fn a_callers_unpresentable_credential_logs_on_its_request() {
     );
     assert_eq!(
         lines_in(
-            &named_binding("bedrock", "static-twin-signing"),
+            &named_binding(signing_dialect(), "static-twin-signing"),
             "AKID:SECRET:TOK\r\nEN",
             UpstreamCreds::Passthrough
         )
@@ -1228,7 +1335,7 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
             let mut sealed =
                 sealed_settings(params, &format!("https://{host}"), &serde_json::json!({}))
                     .expect("the dialect's parameters seal");
-            if *style == "sigv4" {
+            if is_signing(want) {
                 let read = sealed
                     .as_object_mut()
                     .and_then(|fields| {

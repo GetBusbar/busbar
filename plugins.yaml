@@ -657,6 +657,10 @@ plugins:
     release_gate: optional
     gate: suite
     description: "First-party signed kind:auth plugin cdylib: the sigv4 auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    # The binary-level both-ways suite (auth-sigv4-plugin/tests/sigv4_both_ways.rs, moved from
+    # busbar's root under Law 0) boots a real busbar built from the checkout at the pin.
+    busbar_checkout: true
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
     declares: "auth-sigv4/declares.json"
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own

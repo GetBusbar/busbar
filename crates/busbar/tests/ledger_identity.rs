@@ -102,9 +102,20 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// The one lane and its provider — the oracle's `m-<dialect>` naming.
-const LANE: &str = "m-openai-chat";
-const PROVIDER: &str = "openai-chat";
+/// The one lane and its provider. The provider speaks the dialect that claims [`CHAT_ROUTE`]
+/// ([`chat_dialect`]), so the cell names none.
+const LANE: &str = "m-chat-lane";
+const PROVIDER: &str = "chat-lane";
+/// The route every request of the mix is sent to, and the one the mock answers on.
+const CHAT_ROUTE: &str = "/v1/chat/completions";
+
+/// The dialect that claims [`CHAT_ROUTE`] on the linked rows: the provider is configured in it,
+/// read off the linked declarations rather than spelled.
+fn chat_dialect() -> &'static str {
+    linked::install();
+    busbar_kernel::proto::detect_protocol(CHAT_ROUTE, &axum::http::HeaderMap::new())
+        .unwrap_or_else(|| panic!("a linked plane claims {CHAT_ROUTE}"))
+}
 
 /// The mock upstream answers with a FIXED usage on every delivered response. This is the mock's own
 /// documented invariant ("fixed usage (11 in / 7 out) … no clocks, no randomness"), and the test
@@ -431,7 +442,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     let total_spend = usage["total"]["spend_micros"].as_i64().expect("spend");
     assert_eq!(
         total_spend, expected_micros,
-        "{delivered} delivered responses at {MICROS_PER_RESPONSE} micro-units each"
+        "{delivered} delivered answers at {MICROS_PER_RESPONSE} micro-units each"
     );
     let ledger_micros: i64 = ledger.values().map(|r| r.micros().expect("projects")).sum();
     assert_eq!(ledger_micros, expected_micros);
@@ -481,7 +492,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     let rows = totals["rows"].as_array().expect("a rows array");
     assert!(
         !rows.is_empty(),
-        "the node settled {delivered} delivered responses and its own books carry no row: \
+        "the node settled {delivered} delivered answers and its own books carry no row: \
          an empty ledger reconciles, so this is what makes every check below a claim\n{totals}\nlog:\n{}",
         rig.log()
     );
@@ -514,7 +525,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     assert_eq!(
         served_micros, expected_micros,
         "the node's own books carry {served_micros} micro-units for {delivered} delivered \
-         responses and the legacy rows carry {expected_micros}; the {fee_micros} micro-units of \
+         answers and the legacy rows carry {expected_micros}; the {fee_micros} micro-units of \
          flat per-request fee in that figure are posted by the root's own pricing, so the two are \
          the same money and not two views of it\n{totals}"
     );
@@ -792,13 +803,7 @@ impl Rig {
     fn chat(&self, token: &str) -> Response {
         let body =
             format!(r#"{{"model":"{LANE}","messages":[{{"role":"user","content":"ping"}}]}}"#);
-        request(
-            PORTS.data,
-            "POST",
-            "/v1/chat/completions",
-            Some(token),
-            Some(&body),
-        )
+        request(PORTS.data, "POST", CHAT_ROUTE, Some(token), Some(&body))
     }
 
     /// Flip the mock's control file AND WAIT until the mock is answering that way. busbar sees a
@@ -847,7 +852,7 @@ impl Rig {
         request(
             PORTS.mock,
             "POST",
-            "/v1/chat/completions",
+            CHAT_ROUTE,
             None,
             Some(r#"{"model":"control-readback","messages":[]}"#),
         )
@@ -975,7 +980,8 @@ fn write_configs(dir: &Path) {
     std::fs::write(
         dir.join("providers.yaml"),
         format!(
-            "{PROVIDER}:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{}\"\n",
+            "{PROVIDER}:\n  protocol: {}\n  base_url: \"http://127.0.0.1:{}\"\n",
+            chat_dialect(),
             PORTS.mock
         ),
     )

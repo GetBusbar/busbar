@@ -561,7 +561,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh rotates and revokes"),
     ]),
     ("PB-101", &[
-        ("test", "crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound", "on the shipped binary, through the linked sigv4 auth plugin's verify over records.secret: a signed request is admitted, a tampered body and an unknown AccessKeyId are refused byte-identically (the dummy-secret path)"),
         ("oracle-cell", "llm|bedrock|bedrock|request|unauthenticated", "the bedrock ingress refusal diffed against 1.5.5"),
         ("test", "throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch", "MIN_BODY_THROUGHPUT_BYTES_PER_SEC and the grace"),
         ("test", "a_fast_large_upload_is_not_killed_by_the_throughput_floor", "the floor does not kill a fast upload"),

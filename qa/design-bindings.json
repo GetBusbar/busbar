@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 426
+   "test": 425
   }
  },
  "dropped_since_last_write": [],
@@ -4655,13 +4655,6 @@
    "status": "mapped",
    "checks": [
     {
-     "kind": "test",
-     "ref": "crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound",
-     "proves": "on the shipped binary, through the linked sigv4 auth plugin's verify over records.secret: a signed request is admitted, a tampered body and an unknown AccessKeyId are refused byte-identically (the dummy-secret path)",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
      "kind": "oracle-cell",
      "ref": "llm|bedrock|bedrock|request|unauthenticated",
      "proves": "the bedrock ingress refusal diffed against 1.5.5",
@@ -4712,7 +4705,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound, oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
+   "verdict_detail": "oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
   },
   {
    "id": "PB-102",
