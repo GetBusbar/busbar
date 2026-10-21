@@ -510,10 +510,10 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
             if line.starts_with("//") {
                 continue;
             }
-            // An attribute is read WHOLE: one that spans lines (`#[allow(\n    unsafe_code)]`) is
-            // joined to its closing `]` and read without whitespace, and the item it sits over is
-            // the first line after that.
-            let (attr, attr_end) = if line.starts_with("#[") || line.starts_with("#![") {
+            // An attribute is read WHOLE: one that spans lines (`#[allow(\n    unsafe_code)]`) or is
+            // spaced (`# [`, `#! [`, a `#` alone on its line) is joined to its closing `]` and read
+            // without whitespace, and the item it sits over is the first line after that.
+            let (attr, attr_end) = if opens_attribute(&lines, n) {
                 attribute_at(&lines, n)
             } else {
                 (String::new(), n)
@@ -528,19 +528,24 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
                     n + 1
                 ));
             }
-            if attr.starts_with("#[") && attr.contains("allow(") && attr.contains("unsafe_code") {
+            // Every lint level that RELAXES `unsafe_code` under the crate's `deny` is a site:
+            // `allow`, `expect` and `warn` alike, bare or inside a `cfg_attr`.
+            if attr.starts_with("#[") && attr.contains("unsafe_code") && relaxes(&attr) {
                 allows += 1;
                 let item = lines[attr_end + 1..]
                     .iter()
                     .map(|l| l.trim())
-                    .find(|l| !l.starts_with("#[") && !l.starts_with("//"))
+                    .find(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"))
                     .unwrap_or_default();
                 if rel == "lib.rs" && item == "pub mod abi;" {
                     abi_allows += 1;
                 } else if rel == ALLOC_COUNTER_IMPL.0 && item == ALLOC_COUNTER_IMPL.1 {
                     alloc_allows += 1;
                 } else {
-                    out.push(format!("{rel}:{}: allow(unsafe_code) over `{item}`", n + 1));
+                    out.push(format!(
+                        "{rel}:{}: a relaxing unsafe_code attribute `{attr}` over `{item}`",
+                        n + 1
+                    ));
                 }
             }
             if !rel.starts_with("abi/") && !inside_impl && has_unsafe_token(line) {
@@ -576,11 +581,15 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
 fn attribute_at(lines: &[&str], n: usize) -> (String, usize) {
     let mut joined = String::new();
     let mut depth = 0i32;
+    let mut opened = false;
     for (at, l) in lines.iter().enumerate().skip(n) {
         let code = l.split("//").next().unwrap_or_default();
         for c in code.chars() {
             match c {
-                '[' => depth += 1,
+                '[' => {
+                    depth += 1;
+                    opened = true;
+                }
                 ']' => depth -= 1,
                 _ => {}
             }
@@ -588,11 +597,34 @@ fn attribute_at(lines: &[&str], n: usize) -> (String, usize) {
                 joined.push(c);
             }
         }
-        if depth <= 0 {
+        if opened && depth <= 0 {
             return (joined, at);
         }
     }
     (joined, lines.len().saturating_sub(1))
+}
+
+/// Line `n` opens an attribute: `#` then, past any whitespace (a line break included), an
+/// optional `!` and `[`. `# [allow(..)]`, `#! [..]` and a `#` alone on its line all count.
+fn opens_attribute(lines: &[&str], n: usize) -> bool {
+    let Some(rest) = lines[n].trim_start().strip_prefix('#') else {
+        return false;
+    };
+    let mut tail = rest.to_string();
+    for l in lines.iter().skip(n + 1).take(2) {
+        tail.push('\n');
+        tail.push_str(l);
+    }
+    let t = tail.trim_start();
+    let t = t.strip_prefix('!').map_or(t, str::trim_start);
+    t.starts_with('[')
+}
+
+/// A joined attribute (whitespace removed) sets `unsafe_code` to a level weaker than `deny`.
+fn relaxes(attr: &str) -> bool {
+    ["allow(", "expect(", "warn("]
+        .iter()
+        .any(|level| attr.contains(level))
 }
 
 /// True when `line` holds the `unsafe` keyword as a whole word (not inside `unsafe_code`).
