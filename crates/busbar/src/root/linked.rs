@@ -561,12 +561,12 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
         .iter()
         .map(|candidate| {
             let name = candidate.name.clone();
-            let candidate = candidate.clone();
+            let bound = candidate.clone();
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
-                        std::slice::from_ref(&candidate),
+                        std::slice::from_ref(&bound),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),
                         probe.adopter(),
@@ -576,11 +576,11 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                     .into_iter()
                     .next()
                     .map(|(_, plane)| plane)
-                    .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
+                    .ok_or_else(|| format!("{}: the door bound nothing", bound.name))
                 });
             Ok((
                 name,
-                crate::root::loader::dispatch::kinds::plane::registration(bind)?,
+                crate::root::loader::dispatch::kinds::plane::stated_registration(candidate, bind)?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;

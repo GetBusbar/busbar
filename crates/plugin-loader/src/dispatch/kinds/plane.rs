@@ -660,6 +660,20 @@ pub fn linked_declaring_section(
         .map(|s| kept(s.name)))
 }
 
+/// THE REGISTRY FACTS OF A DISCOVERED PLANE DOOR (`candidate`, linked or dropped in), with `bind`
+/// binding a probe instance of it through the one load ([`registration`]).
+///
+/// # Errors
+///
+/// The door will not state its facts.
+pub fn stated_registration(
+    candidate: &crate::boot::Candidate,
+    bind: ProbeBind,
+) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
+    let _ = candidate;
+    registration(bind)
+}
+
 /// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
 /// Statement name, its declaring section and its tail's words, read off the facts kept at its bind,
 /// and its own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe
