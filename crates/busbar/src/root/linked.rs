@@ -377,9 +377,12 @@ pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
-/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
-/// before anything resolves a store or a secret.
+/// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
+/// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
+/// taken of every configuration as it is built (`crate::root::door_steps::door_config`), so a
+/// config apply refreshes them onto the new generation. No row is a default store: the store is
+/// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
+/// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
@@ -390,8 +393,15 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            // The root's card repricer is the kernel's rate holder and dater (the node unit, in
+            // every build's root-unit table, arms its journal before the boot resolution:
+            // `crate::root::kernel::install_card_repricer`).
+            rate_apply: Some(&crate::root::kernel::CardRepricer),
+            rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");

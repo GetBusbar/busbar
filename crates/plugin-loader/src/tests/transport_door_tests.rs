@@ -89,7 +89,7 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
-        .open_transport_entries(&bind())
+        .open_transport_entries(&bind(), &uses(&["door-fixture"]))
         .expect("the door opens");
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
@@ -140,11 +140,44 @@ fn a_transport_library_with_no_door_is_refused() {
     );
     let registry = dropped("no-door", manifest, &lib);
     let why = registry
-        .open_transport_entries(&bind())
+        .open_transport_entries(&bind(), &uses(&["no-door"]))
         .err()
         .expect("a library with no door is not a transport");
     assert!(
         why.contains("exports no memory-ABI door"),
         "the refusal names the missing door: {why}"
     );
+}
+
+/// A configuration that uses the URL schemes `schemes` and nothing else.
+fn uses(schemes: &[&str]) -> crate::boot::Uses {
+    crate::boot::Uses {
+        schemes: schemes.iter().map(|s| (*s).to_string()).collect(),
+        ..crate::boot::Uses::default()
+    }
+}
+
+/// LAW 7 FOR A DROPPED-IN TRANSPORT (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its
+/// configuration section is present. No verb configured → that plugin is never loaded."; l.351:
+/// "Select picks a dropped-in transport from the signed manifest without opening it").
+///
+/// RED before the registry opened only the transports a configured URL's scheme selects: every
+/// admitted `kind: transport` image was staged, loaded and opened, whatever the configuration
+/// dialled, so its library initialisers ran in a node that never named its scheme.
+#[test]
+fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
+    let lib = fixture();
+    let registry = dropped("door-fixture", manifest(), &lib);
+    let entries = registry
+        .open_transport_entries(&bind(), &uses(&["https"]))
+        .expect("nothing to open is no refusal");
+    assert!(
+        entries.doors.is_empty(),
+        "a transport whose claims no configured scheme uses was opened: {:?}",
+        entries.doors.iter().map(|d| d.name()).collect::<Vec<_>>()
+    );
+    let entries = registry
+        .open_transport_entries(&bind(), &uses(&["door-fixture"]))
+        .expect("the selected door opens");
+    assert_eq!(entries.doors.len(), 1, "the scheme it claims selects it");
 }
