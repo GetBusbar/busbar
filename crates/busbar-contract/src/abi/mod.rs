@@ -105,6 +105,90 @@ macro_rules! layout {
     }};
 }
 
+/// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods (status row 194): a list
+/// is a private pointer and a private length, so safe code sets both at once, to items that live
+/// for the program, and nothing else. Per list `name, name_len: T => name_ptr, with_name,
+/// with_raw_name;` it states, in the struct's `impl`:
+///
+/// * `with_name(&'static [T])` — the safe setter, `const`: the pointer and the length together;
+/// * `with_raw_name(ptr, len)` — `unsafe`: a list stated unchecked, as a host's own test states
+///   what a foreign plugin could, for the host's checks to judge;
+/// * `name()` — the items, for a struct built by its setters;
+/// * `name_ptr()` / `name_len()` — the raw pointer and length, which a host reads a foreign
+///   struct by, under its own checks.
+macro_rules! abi_lists {
+    ($($list:ident, $len:ident: $t:ty => $ptr:ident, $with:ident, $raw:ident;)+) => {$(
+        #[doc = concat!(
+            "Set `", stringify!($list), "` to `items`, which live for the program: its pointer ",
+            "and its length together, the one safe way to set either (status row 194)."
+        )]
+        #[must_use]
+        pub const fn $with(mut self, items: &'static [$t]) -> Self {
+            self.$list = items.as_ptr();
+            self.$len = items.len();
+            self
+        }
+
+        #[doc = concat!(
+            "Set `", stringify!($list), "` to `len` items at `ptr`, unchecked: a host's own test ",
+            "stating a list as a foreign plugin could, for the host's checks to judge."
+        )]
+        ///
+        /// # Safety
+        ///
+        #[doc = concat!(
+            "Every read of the list through [`Self::", stringify!($list), "`] finds `len` ",
+            "initialised items at `ptr`, alive and unwritten for as long as that read. A list ",
+            "nothing reads that way (one only a host's checks read, through [`Self::",
+            stringify!($ptr), "`]) may be anything."
+        )]
+        #[must_use]
+        pub const unsafe fn $raw(mut self, ptr: *const $t, len: usize) -> Self {
+            self.$list = ptr;
+            self.$len = len;
+            self
+        }
+
+        #[doc = concat!(
+            "The `", stringify!($list), "` items: a list set by [`Self::", stringify!($with),
+            "`] lives for the program."
+        )]
+        #[must_use]
+        pub fn $list(&self) -> &[$t] {
+            // SAFETY: the list was set by the safe setter (items that live for the program) or by
+            // the raw one, whose caller promised that every read here finds it valid.
+            unsafe { crate::abi::abi_slice(self.$list, self.$len) }
+        }
+
+        #[doc = concat!("The raw pointer of `", stringify!($list), "` (NULL = none).")]
+        #[must_use]
+        pub const fn $ptr(&self) -> *const $t {
+            self.$list
+        }
+
+        #[doc = concat!("How many items `", stringify!($list), "` states.")]
+        #[must_use]
+        pub const fn $len(&self) -> usize {
+            self.$len
+        }
+    )+};
+}
+
+/// `len` items at `p`, or none for a NULL `p` or a zero `len`: the one place the private lists
+/// and strings of the ABI (status row 194) are read as slices.
+///
+/// # Safety
+///
+/// A non-NULL `p` with a non-zero `len` names `len` initialised, aligned `T`s, alive and unwritten
+/// for `'a`.
+pub(crate) unsafe fn abi_slice<'a, T>(p: *const T, len: usize) -> &'a [T] {
+    if p.is_null() || len == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's contract.
+    unsafe { std::slice::from_raw_parts(p, len) }
+}
+
 pub mod host;
 pub mod sdk;
 

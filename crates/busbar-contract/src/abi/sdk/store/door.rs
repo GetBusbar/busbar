@@ -1517,30 +1517,28 @@ slot!(
 #[macro_export]
 macro_rules! store_door {
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0);
+        $crate::store_door!(@door $store, $name, $version, $max_inflight, &[]);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
-        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len());
+        $crate::store_door!(@door $store, $name, $version, $max_inflight, $needs);
     };
-    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr) => {
+    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr) => {
+        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 2] =
             $crate::abi::sdk::store::door::DIAG_IDS;
+        // The Statement through its setters: its lists are private (status row 194).
         $crate::plugin_door! {
             ops: $crate::abi::store::Ops,
-            statement: $crate::abi::mechanism::door::Statement {
-                diag_ids: __BUSBAR_STORE_DIAGS.as_ptr(),
-                diag_ids_len: 2,
-                kind_tail: ::core::ptr::from_ref(&__BUSBAR_STORE_TAIL)
-                    .cast::<$crate::abi::mechanism::door::KindTailHead>(),
-                marks: $crate::abi::sdk::store::door::marks::<$store>(),
-                needs: $needs,
-                needs_len: $needs_len,
-                ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
+            statement: {
+                let mut statement =
+                    $crate::abi::sdk::door::statement($name, $version, $max_inflight)
+                        .with_diag_ids(&__BUSBAR_STORE_DIAGS)
+                        .with_kind_tail(&__BUSBAR_STORE_TAIL)
+                        .with_needs(__BUSBAR_STORE_NEEDS);
+                statement.marks = $crate::abi::sdk::store::door::marks::<$store>();
+                statement
             },
             lifecycle: {
                 validate: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Validate<$store>>,

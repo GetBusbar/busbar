@@ -548,18 +548,16 @@ pub const fn ops_head<T: KindOps>(
     }
 }
 
-/// Borrowed `'static` UTF-8 as an [`AbiStr`].
+/// Borrowed `'static` UTF-8 as an [`AbiStr`]: [`AbiStr::of`].
 #[must_use]
 pub const fn abi_str(s: &'static str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    AbiStr::of(s)
 }
 
 /// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail, no
 /// extensions, no marks, no rewrites, no sections, no needs, no settings paths, no answers and no claims. Its `size`, `kind` and `kind_abi` are stamped by [`plugin_door!`](crate::plugin_door)
-/// ([`stamp`]); a plugin extends it with struct-update syntax.
+/// ([`stamp`]); a plugin extends it with the Statement's setters (`with_families`,
+/// `with_kind_tail`, ...) and sets its plain fields directly (status row 194).
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
     Statement {
