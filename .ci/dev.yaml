@@ -1,8 +1,9 @@
 # What dev must pass to move into qa: gates, the oracle against the 1.5.5 golden, conformance, the
-# 1.6.0 done-oracle, the Q128 architecture audit (`cargo xtask q128 audit`) and the feature-gated
-# suites. ModernCI names a branch file for the branch being moved, so the move dev -> qa reads this
-# file. predev is retired (OWNER 2026-10-16): lanes land on dev through .ci/default.yaml, and this
-# move judges dev's head. All six green on dev's head is DEV-GREEN; the landing into qa is the
+# 1.6.0 done-oracle, the Q128 architecture audit (`cargo xtask q128 audit`), the feature-gated
+# suites and every registered gate's red proof (selftest-1..4, row 191). ModernCI names a branch
+# file for the branch being moved, so the move dev -> qa reads this file. predev is retired (OWNER
+# 2026-10-16): lanes land on dev through .ci/default.yaml, and this move judges dev's head. Every
+# check green on dev's head is DEV-GREEN; the landing into qa is the
 # owner's approval (docs/design/BUSBAR-1.6.0.md Part 6).
 to: qa
 # Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
@@ -161,7 +162,7 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
-  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated]
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
 checks:
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
@@ -362,5 +363,38 @@ checks:
       timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
     # Absolute at this rung, as every check of this move (no `baseline`: qa holds no suites to be
     # measured against).
+    requires: [cc, git-history]
+    needs: [gates]
+  # EVERY REGISTERED GATE'S RED PROOF on dev's head (row 191), ABSOLUTE like `gates`: a gate that
+  # cannot be shown to go RED proves nothing when it is green. `cargo xtask selftest --shard=K/4`
+  # is the K-th of 4 round-robin slices of the registry (every gate in exactly one), one `xtask
+  # selftest <gate>` process per gate. The base-relative plants read dev's previous commit, as the
+  # gates check does. The same shards run on demand in .ci/default.yaml.
+  selftest-1:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=1/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-2:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=2/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-3:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=3/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-4:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=4/4
     requires: [cc, git-history]
     needs: [gates]
