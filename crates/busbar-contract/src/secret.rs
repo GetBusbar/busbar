@@ -9,13 +9,14 @@
 //! failure as FAIL-CLOSED (an unresolvable secret refuses boot, never resolves empty).
 //!
 //! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
-//! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
-//! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
-//! every rendering is byte-identical. The `env`/`file` sources are ordinary secret-kind plugins in
-//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN, "Plugins"), called through the
-//! secret kind table; the kernel reaches every loaded secret plugin through [`SecretAxis`] and
-//! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
-//! this crate once that reference merged here, when `busbar-api` retired.
+//! contract's, #35(a)). The error is [`SecretModuleError`] here because
+//! [`crate::kinds::SecretError`] is a different type (#35 de-collision); its `Debug` keeps the
+//! historical `SecretError` label so every rendering is byte-identical. The `env`/`file` sources
+//! are ordinary secret-kind plugins in their own repos (one secret plugin per source; THE DESIGN,
+//! "Plugins"), called through the secret kind table; the kernel reaches every loaded secret plugin
+//! through [`SecretAxis`] and [`SecretCalls`]. The [`SecretResolve`] seam followed the config
+//! secret reference it takes into this crate once that reference merged here, when `busbar-api`
+//! retired.
 
 use crate::secret_ref::SecretRef;
 
