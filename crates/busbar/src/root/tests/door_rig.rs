@@ -8,8 +8,8 @@
 //! break them at the pin; every such shape is held here instead, behind a signature that does not
 //! move when the root's internals do:
 //!
-//! * no struct literal of a root type: the door's egress is an [`EgressRig`] (its reach, journal
-//!   and walk clock, each defaulted), its composition a [`DoorCompose`], the store it records to
+//! * no struct literal of a root type: the door's egress is an [`EgressRig`] (its reach and journal,
+//!   the rest defaulted), its composition a [`DoorCompose`], the store it records to
 //!   a [`DoorStore`], its process connector a [`ProcessRig`];
 //! * no installer by its path: [`install_root_auth`] hands the kernel the root's auth rows and its
 //!   auth-axis opener by whichever install path the kernel has;
@@ -19,9 +19,9 @@
 //! contract's own public surfaces directly. What a cell needs and this rig does not offer is added
 //! HERE, never reached for past it.
 //!
-//! Which items a build's cells use depends on the planes it links, so an item no linked plane's
-//! cells call is not dead code.
-#![allow(dead_code, unused_imports)]
+//! The rig compiles iff an enabled door's cells name it (`build.rs` sets `door_rig`), and it
+//! carries no allow: an item no compiled cell calls is dead code and refused, so the surface is
+//! exactly what the cells use.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,9 +34,13 @@ use busbar_contract::transport::TransportSettings;
 use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::{DestJudge, SignKey};
 use busbar_kernel::plane_driver::{GenerationHost, PlaneMoney};
-use busbar_kernel_egress::ports::{Clock, Journal};
+use busbar_kernel_egress::ports::Journal;
 
 use super::{DoorEgress, HookStage, LateServices, Served, StreamFramers};
+use crate::root::boot::DoorPlane;
+use crate::root::durability::NodeBook;
+use crate::root::kernel::PinnedHistory;
+use crate::root::loader::sign::BreakerDecl;
 use crate::root::door_steps::{DoorReach, OutboundAuths, ProviderRoute};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -45,12 +49,11 @@ use crate::root::loader::dispatch::{
 
 pub(crate) use super::planes_tests::{Published, PUBLISHING};
 pub(crate) use super::with_pools;
-pub(crate) use crate::root::boot::DoorPlane;
 pub(crate) use crate::root::door_steps::Rules;
-pub(crate) use crate::root::durability::{Durability, NodeBook, UnitCounts};
-pub(crate) use crate::root::kernel::{PinnedHistory, RootHistory};
+pub(crate) use crate::root::durability::{Durability, UnitCounts};
+pub(crate) use crate::root::kernel::RootHistory;
 pub(crate) use crate::root::loader::dispatch::LinkedRow;
-pub(crate) use crate::root::loader::sign::{BreakerDecl, NeedLevel};
+pub(crate) use crate::root::loader::sign::NeedLevel;
 pub(crate) use crate::root::plane_node::{Node, NodeEndPost};
 pub(crate) use busbar_core_connector::tls::install_crypto_provider;
 pub(crate) use busbar_core_connector::Connector;
@@ -62,11 +65,6 @@ pub(super) use super::secret_source_tests::{
 };
 
 // ── THE LINKED TABLE ─────────────────────────────────────────────────────────────────────────────
-
-/// The plane doors this build links.
-pub(crate) fn linked_plane_doors() -> &'static [DoorFn] {
-    crate::LINKED.plane_doors
-}
 
 /// Every linked protocol declaration registered on the kernel's test protocol set, as the root's
 /// config-fixture cells install it.
@@ -90,7 +88,7 @@ pub(crate) fn door_breaker(statement_name: &str) -> Result<Option<BreakerDecl>, 
 
 /// The section `door` declares, read by binding it once as a probe (nothing opened to the network)
 /// under `instance`; `None` when it will not bind.
-pub(crate) fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
+fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
     let dispatcher = Dispatcher::new(DispatchConfig::default());
     let row = LinkedRow::of(door).ok()?;
     let plane = load_linked::<Plane>(
@@ -109,7 +107,8 @@ pub(crate) fn declared_section(door: DoorFn, instance: &str) -> Option<&'static 
 
 /// Of the linked plane doors, the one that declares `section` ([`declared_section`]).
 pub(crate) fn door_declaring(section: &str) -> Option<DoorFn> {
-    linked_plane_doors()
+    crate::LINKED
+        .plane_doors
         .iter()
         .copied()
         .find(|&door| declared_section(door, "door-rig-probe") == Some(section))
@@ -247,13 +246,6 @@ impl ProcessRig {
         }
     }
 
-    /// The transport settings its entries are opened with.
-    #[must_use]
-    pub(crate) fn settings(mut self, settings: TransportSettings) -> Self {
-        self.settings = settings;
-        self
-    }
-
     /// One more trust anchor (a root certificate's DER) its connections trust.
     #[must_use]
     pub(crate) fn trusting(mut self, der: Vec<u8>) -> Self {
@@ -327,7 +319,7 @@ pub(crate) fn node_book(pin: fn() -> Option<PinnedHistory>) -> NodeBook {
 pub(crate) struct DoorStore {
     opened: busbar_contract::store_calls::OpenedStore,
     /// The axis it was opened on, held while the store is.
-    axis: crate::root::loader::store_v3::DoorStoreAxis,
+    _axis: crate::root::loader::store_v3::DoorStoreAxis,
 }
 
 impl DoorStore {
@@ -366,15 +358,18 @@ pub(crate) fn open_ephemeral_store(instance: &str) -> Result<DoorStore, String> 
         instance,
         b"{}",
     )?;
-    Ok(DoorStore { opened, axis })
+    Ok(DoorStore {
+        opened,
+        _axis: axis,
+    })
 }
 
 // ── THE DOOR'S EGRESS AND ITS COMPOSITION ────────────────────────────────────────────────────────
 
 /// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER, as production seals it: no provider (a member is
 /// reached at its own address), the builtin secret sources, the linked outbound auths over the
-/// process's connection table, the walk's connections, the node's journal and the walk's clock
-/// (the node's own unless one is given). Every part not handed to [`EgressRig::new`] is defaulted.
+/// process's connection table, the walk's connections and the node's journal. Every part not
+/// handed to [`EgressRig::new`] is defaulted.
 pub(crate) struct EgressRig {
     providers: BTreeMap<String, ProviderRoute>,
     secrets: Arc<dyn SecretResolve>,
@@ -382,7 +377,6 @@ pub(crate) struct EgressRig {
     conns: Arc<dyn PollConns>,
     stream_ceiling_secs: u64,
     journal: Arc<dyn Journal>,
-    clock: Option<Arc<dyn Clock>>,
 }
 
 impl EgressRig {
@@ -406,29 +400,7 @@ impl EgressRig {
             conns,
             stream_ceiling_secs: 600,
             journal,
-            clock: None,
         }
-    }
-
-    /// The secret seam its bindings resolve through.
-    #[must_use]
-    pub(crate) fn secrets(mut self, secrets: Arc<dyn SecretResolve>) -> Self {
-        self.secrets = secrets;
-        self
-    }
-
-    /// The stream ceiling, whole seconds.
-    #[must_use]
-    pub(crate) fn stream_ceiling_secs(mut self, secs: u64) -> Self {
-        self.stream_ceiling_secs = secs;
-        self
-    }
-
-    /// The clock its walk reads (a failure's cooldown and a shed's wait).
-    #[must_use]
-    pub(crate) fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = Some(clock);
-        self
     }
 
     /// `f` over the root's [`DoorEgress`] sealed over this rig.
