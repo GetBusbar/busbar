@@ -762,8 +762,10 @@ unsafe fn copied(s: AbiStr) -> String {
     if s.ptr.is_null() {
         return String::new();
     }
-    // SAFETY: the caller's contract.
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    // SAFETY: the caller's contract; formed only through the one capped reader (THE DESIGN §11.13
+    // M1), and a range it refuses reads as absent.
+    String::from_utf8_lossy(unsafe { crate::dispatch::validate::lent_str(s) }.unwrap_or_default())
+        .into_owned()
 }
 
 /// A credential form as the transcript spells it: `name:kind[:required]` a field, in order.
@@ -772,8 +774,12 @@ fn spelled_form(out: &BeginLoginOut) -> String {
         return "[]".to_string();
     }
     // SAFETY: a READY `begin_login` names `form_len` fields of plugin memory held under the
-    // answer's lease (or `'static`), valid until that lease is released (after this copy).
-    let fields = unsafe { std::slice::from_raw_parts(out.form, out.form_len) };
+    // answer's lease (or `'static`), valid until that lease is released (after this copy); formed
+    // only through the one capped reader (THE DESIGN §11.13 M1), which refuses an over-long or
+    // misaligned form.
+    let Some(fields) = (unsafe { crate::dispatch::validate::lent(out.form, out.form_len) }) else {
+        return "malformed".to_string();
+    };
     let fields: Vec<String> = fields
         .iter()
         .map(|f: &LoginField| {

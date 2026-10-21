@@ -70,15 +70,24 @@ pub fn bind() -> Bind {
 }
 
 /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
-/// key), so two linked rows are two instances to the host services.
+/// key), so two linked rows are two instances to the host services, and logging to that row's own
+/// plugin log file under the configured `plugins.logs` (THE DESIGN §11.2, "Plugin logging": every
+/// plugin, compiled in or dropped in; a dropped-in door's is opened by the registry).
 ///
 /// # Errors
 ///
 /// The row's plugin log file cannot be opened.
 pub fn row_bind(row: &str) -> Result<Bind, String> {
+    let bound = bind();
+    let sink = crate::root::boot::plugin_logs().sink(
+        row,
+        busbar_contract::abi::mechanism::KindCode::Transport,
+        bound.sink.clone(),
+    )?;
     Ok(Bind {
         instance: Arc::from(row),
-        ..bind()
+        sink: Arc::new(sink),
+        ..bound
     })
 }
 

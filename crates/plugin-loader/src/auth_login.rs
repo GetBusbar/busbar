@@ -133,13 +133,14 @@ pub(super) fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
             .filter(|u| !u.is_empty())
             .map(LoginOutcome::Authorize),
         BEGIN_FORM => {
-            if out.form.is_null() || out.form_len == 0 || out.form_len > FORM_MAX {
+            if out.form_len == 0 || out.form_len > FORM_MAX {
                 return None;
             }
-            // SAFETY: the kind's check refused a NULL form with a count; the form is `form_len`
-            // (bounded above) `LoginField`s of plugin memory, held under the op's lease, which is
-            // released only after this copy.
-            let fields = unsafe { std::slice::from_raw_parts(out.form, out.form_len) };
+            // SAFETY: formed only through the one capped reader (THE DESIGN §11.13 M1), which
+            // refuses a NULL, over-long or misaligned form; what passes is `form_len` (bounded
+            // above) `LoginField`s of plugin memory, held under the op's lease, which is released
+            // only after this copy.
+            let fields = unsafe { crate::dispatch::validate::lent(out.form, out.form_len) }?;
             let fields = fields
                 .iter()
                 .map(|f: &LoginField| {
