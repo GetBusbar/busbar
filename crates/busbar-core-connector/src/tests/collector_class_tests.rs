@@ -4,7 +4,7 @@
 //! THE OTLP COLLECTOR POLICY AS THE `loopback-allowed` EGRESS CLASS JUDGES IT (ARCHITECT rule 15.3:
 //! ported, not dropped). 1.5.x held the OTLP endpoint to a collector guard (`collector_policy`),
 //! deleted with the cold export lane together with its suite (`crates/busbar/src/root/tests/otlp.rs`)
-//! and the root's egress-carrier tests. In 1.6.0 the `busbar-export-otlp` sink declares one outbound
+//! and the root's egress-carrier tests. In 1.6.0 the trace-export sink declares one outbound
 //! need in the `loopback-allowed` class and names the collector itself; the http framer locates the
 //! collector URL's authority and whether it is secured, and the connector's open judges that: the
 //! endpoint check, the one dial judge ([`judge`] over a [`GuardJudge`], the node's own ports held
@@ -411,7 +411,7 @@ fn only_an_http_or_https_url_names_a_collector() {
     for url in [
         "file:///etc/shadow",
         "ftp://collector.example.com",
-        "grpc://collector:4317",
+        "rpc://collector:4317",
         "HTTPX://collector.example.com",
     ] {
         assert_eq!(j.judge_name(url, LA, false), Err(DEST_SCHEME), "{url}");
