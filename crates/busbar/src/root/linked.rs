@@ -90,8 +90,9 @@ pub struct Linked {
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
     /// [`LinkedDoorExport`]).
     pub export_doors: &'static [LinkedDoorExport],
-    /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
-    pub stores: &'static [LinkedStore],
+    /// The store axis: each linked store's `(key, ephemeral, door, canonical)`, its key and
+    /// `ephemeral` read off its door's Statement the first time the kernel asks ([`store_row`]).
+    pub stores: fn() -> &'static [LinkedStore],
     /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
     /// root's hook axis (`crate::root::hooks`).
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
@@ -213,15 +214,13 @@ pub struct LinkedClaims {
     pub claims: &'static [busbar_contract::grammar::Claim],
 }
 
-/// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its alias,
-/// the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door its
-/// `cdylib` exports. Its name is its door's Statement `name` ([`LinkedDoorExport::name`]).
+/// A linked export sink on the export kind's MEMORY ABI: the manifest `declares` section as JSON
+/// and its door (`plugin_door!`), the same door its `cdylib` exports. Its name is its door's
+/// Statement `name` ([`LinkedDoorExport::name`]) and its alias the Statement's `REWRITE_ALIAS`
+/// rewrite ([`LinkedDoorExport::alias`]): the row names `<crate>::door` (BUSBAR-1.6.0.md, the
+/// door-only gate) and every fact a Statement carries is read off it.
 #[derive(Clone, Copy)]
 pub struct LinkedDoorExport {
-    /// The module name an `export:` instance names it by. NO STATEMENT HOME: a Statement states an
-    /// alias as a `REWRITE_ALIAS` rewrite, and not every export door states one, so the row still
-    /// reads its crate's `ALIAS` (`src/linked_gen.rs`, the export axis).
-    pub alias: &'static str,
     /// Its manifest `declares` section. NO STATEMENT HOME: the Statement carries metric families,
     /// diagnostic ids and answers, never the whole `declares` document (destinations, egress), so
     /// the row still reads its crate's `DECLARES` (`src/linked_gen.rs`, the export axis).
@@ -244,6 +243,51 @@ impl LinkedDoorExport {
             .map(|read| read.name)
             .map_err(|e| format!("its Statement rendering: byte {} is not {}", e.at, e.what))
     }
+
+    /// The module name an `export:` instance names it by: the door's Statement `REWRITE_ALIAS`
+    /// rewrite (BUSBAR-1.6.0.md, One Statement: `rewrites` carries the live aliases).
+    ///
+    /// # Errors
+    ///
+    /// The door or its Statement is refused, or the Statement states no alias.
+    pub fn alias(&self) -> Result<String, String> {
+        let row =
+            crate::root::loader::dispatch::LinkedRow::of(self.door).map_err(|e| e.to_string())?;
+        let read = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .map_err(|e| format!("its Statement rendering: byte {} is not {}", e.at, e.what))?;
+        read.rewrites
+            .into_iter()
+            .find(|(class, _, _)| *class == busbar_contract::abi::mechanism::door::REWRITE_ALIAS)
+            .map(|(_, from, _)| from)
+            .ok_or_else(|| format!("`{}` states no alias (no REWRITE_ALIAS rewrite)", read.name))
+    }
+}
+
+/// A linked store row off its door (WIRE-STORE Q8/Q9): its key is the door's Statement `name`, its
+/// `ephemeral` the Statement's `MARK_EPHEMERAL`, and its canonical name the row's
+/// `linked-canonical` (its key, when it has none). The row names `<crate>::door` and nothing else
+/// (BUSBAR-1.6.0.md, the door-only gate).
+///
+/// # Panics
+///
+/// The build's own store door is refused, as a linked transport door's is
+/// (`crate::root::doors::name_of`).
+#[must_use]
+pub fn store_row(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    canonical: Option<&'static str>,
+) -> LinkedStore {
+    let stated = crate::root::loader::dispatch::rendering_of(door)
+        .unwrap_or_else(|e| panic!("a linked store door is refused: {e}"));
+    let read = busbar_contract::abi::mechanism::rendering::read(&stated).unwrap_or_else(|e| {
+        panic!(
+            "a linked store door's Statement rendering: byte {} is not {}",
+            e.at, e.what
+        )
+    });
+    let key: &'static str = Box::leak(read.name.into_boxed_str());
+    let ephemeral = read.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0;
+    (key, ephemeral, door, canonical.unwrap_or(key))
 }
 
 /// The newest export payload schema this binary speaks — what a linked sink states.
@@ -286,7 +330,8 @@ pub fn linked_exports(
         .iter()
         .map(|d| {
             let name = d.name().map_err(|e| format!("a linked export door: {e}"))?;
-            manifest(&name, d.alias, d.declares)
+            let alias = d.alias().map_err(|e| format!("a linked export door: {e}"))?;
+            manifest(&name, &alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(busbar_kernel::preflight::answering_former_names)
         })
@@ -371,7 +416,7 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
-            stores: linked.stores,
+            stores: (linked.stores)(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),

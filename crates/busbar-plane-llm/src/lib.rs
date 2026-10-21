@@ -36,6 +36,9 @@ pub mod exchange;
 pub mod meta;
 pub mod plane;
 pub mod plane_door;
+/// THE DOOR (BUSBAR-1.6.0.md, Crate shape and the door-only gate): the one path a composition
+/// root's linked row names into this crate, `busbar_plane_llm::door`.
+pub use plane_door::door;
 pub mod refusal;
 
 /// THE PLANE'S DECLARED METADATA (`declares.json`): the `declares` section its signed tarball carries

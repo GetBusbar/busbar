@@ -25,8 +25,7 @@ fn read(door: DoorFn) -> rendering::Read {
 
 /// The root's linked store row the double stands in for: the one under the double's key.
 fn real_row() -> &'static busbar_kernel::preflight::LinkedStore {
-    crate::LINKED
-        .stores
+    (crate::LINKED.stores)()
         .iter()
         .find(|s| s.0 == store_double::STORE.0)
         .expect("the root links a store under the key the double answers")

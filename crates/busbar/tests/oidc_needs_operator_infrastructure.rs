@@ -14,7 +14,7 @@ use busbar_contract::abi::mechanism::rendering;
 
 #[test]
 fn the_linked_oidc_plugins_needs_declare_operator_infrastructure() {
-    let stated = busbar_plugin_loader::dispatch::rendering_of(busbar_auth_oidc::door::door)
+    let stated = busbar_plugin_loader::dispatch::rendering_of(busbar_auth_oidc::door)
         .expect("the oidc door renders its Statement");
     let read = rendering::read(&stated).expect("its Statement reads back");
     let outbound: Vec<&rendering::ReadNeed> = read

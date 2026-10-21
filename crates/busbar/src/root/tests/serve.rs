@@ -636,8 +636,7 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
             // The build's ephemeral linked store, picked by its flag (the row's `(name, ephemeral,
             // door)`), as boot opens it.
             StoreDoor::Linked(
-                crate::LINKED
-                    .stores
+                (crate::LINKED.stores)()
                     .iter()
                     .find(|s| s.1)
                     .expect("the build links an ephemeral store")
