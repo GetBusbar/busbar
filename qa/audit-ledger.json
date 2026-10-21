@@ -2242,7 +2242,7 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "da9b4eb22b57a74b728b4a63692ecb416de9578add58cf367c4fdfa598ee07cc",
+   "tree_hash": "869792afb644fe034595b4ce52f303cdead3342e17feeb5b73253ddf831db2dd",
    "audited_at": "a88c8109b44c896e4300410e33e7efaf776f1265",
    "round": 3,
    "result": "findings",
@@ -2252,7 +2252,7 @@
    },
    "report": "The plane serves the session revisions and the legacy event stream inbound and relays tool results unchanged. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller. The task path drops the caller's down-scope, lets an answer rewrite admitted arguments and fails on stdio servers. The operator connect verb blocks calls to session servers, streamed answers are re-encoded, and without a signing key all callers share one owner. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "e673ca134cb51784f5d3d01c99dccf5372dfa1d2",
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
    ],
