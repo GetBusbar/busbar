@@ -88,19 +88,16 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-/// Lowered 1220 -> 1212 by the D2 plane-side breaker/arena and gauntlet-runner deletion (status
-/// row 82, #1374). Dev 893d659a8d's tree holds 1223 scanned files (three over its 1220 floor);
-/// this lane deletes 11 and adds none, so 1223 - 11 = 1212: 7 `busbar-kernel/src` files
-/// (`plane_host/{breaker,govern,scope}.rs`,
+/// Raised 1220 -> 1233, the count on the D2 lane's head (status row 82, #1374 and #1377) over dev
+/// 08d4d7c501, whose tree holds 1243 scanned files. #1374 deletes 11 and adds none: 7
+/// `busbar-kernel/src` files (`plane_host/{breaker,govern,scope}.rs`,
 /// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`) and 4 `busbar/src/root`
 /// gauntlet files (`gauntlet_install.rs`, `gauntlet_kernel.rs`, `tests/gauntlet_kernel.rs`,
-/// `tests/percall_meter_shadow.rs`).
-/// Raised 1212 -> 1213 by the D2 kernel plane hosting deletion (status row 82, #1377): 6 files
-/// leave (`plane_host/{build_input,mod}.rs`, `plane_host/tests/{build_input,mod,plane_answer,
-/// residual}_tests.rs`) and 7 arrive (`plane_driver/{answer,host,route_input}.rs`,
-/// `plane_driver/tests/{answer,host,route_input}_tests.rs`, `tests/residual_log_tests.rs`),
-/// so 1212 - 6 + 7 = 1213.
-pub const MIN_FILES: usize = 1213;
+/// `tests/percall_meter_shadow.rs`). #1377 deletes 6 (`plane_host/{build_input,mod}.rs`,
+/// `plane_host/tests/{build_input,mod,plane_answer,residual}_tests.rs`) and adds 7
+/// (`plane_driver/{answer,host,route_input}.rs`, `plane_driver/tests/{answer,host,route_input}_tests.rs`,
+/// `tests/residual_log_tests.rs`). 1243 - 11 - 6 + 7 = 1233.
+pub const MIN_FILES: usize = 1233;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
