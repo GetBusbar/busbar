@@ -1858,6 +1858,15 @@ if [ -f qa/teller-steps.json ]; then
       bash testing/shadow-oracle/rigs-ledger.sh --selftest
     step "the rig suites the matrix cites RUN and pass (mcp.rig / a2a.battery / a2a.tck / voice.rig)" \
       bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
+    # THE ROWS BEHIND A RED RIG RUN, NAMED HERE. `step` keeps a red command's last four lines, and
+    # for this one those are verdict.sh's banner and the ledger's path on the runner, so the reason
+    # the rigs were red never reached this readout. Every row that is not PASS, with the head of its
+    # detail, is printed from the ledger the run just wrote.
+    if [ -s target/rigs-ledger/ledger.tsv ]; then
+      printf '  \033[36m[info]\033[0m rig ledger rows not PASS:\n'
+      awk -F'\t' '$2 != "PASS" && $2 != "N/A" { printf "          %s %s %s\n", $2, $1, substr($4, 1, 160) }' \
+        target/rigs-ledger/ledger.tsv | head -n 40
+    fi
   fi
   printf '  \033[36m[info]\033[0m '
   cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
