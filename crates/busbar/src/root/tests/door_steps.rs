@@ -1888,8 +1888,8 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     // With the host's clock served (row 176), the first ask can answer before the mint it set off
     // has landed. The mint is then waited on at the endpoint's close of its exchange, never on the
     // wall clock (Law 8). The plugin closes the exchange BEFORE it stores the token, inside the
-    // same `tick` crossing (busbar-auth-oauth `mint/mod.rs`, `Minted::tick`: `wire.close(conn)`,
-    // then the parse and the store), so the close wakes this task while that crossing still runs
+    // same `tick` crossing (the linked minting plugin's `Minted::tick`: `wire.close(conn)`, then
+    // the parse and the store), so the close wakes this task while that crossing still runs
     // on the instance's dispatcher worker. The second ask therefore goes THROUGH that worker
     // (`fields`, submitted on the instance's own worker, where its tick and drive cross), which
     // starts it only once the tick crossing has returned, the token stored. `fields_now` crosses
