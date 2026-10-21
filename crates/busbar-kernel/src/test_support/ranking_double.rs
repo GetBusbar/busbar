@@ -240,10 +240,10 @@ use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pend
 /// at its defaults (`busbar-plugin-loader`, `dispatch::worker::Budgets::default`).
 pub const CALL_BUDGET: Duration = Duration::from_secs(1);
 
-/// Whether `module` names the double on the hook axis: its Statement name or one of its words, in a
-/// build that links the ranking hooks.
+/// Whether `module` names the double on the hook axis: its Statement name or one of its words, in
+/// every test build (THE DESIGN l.1443: the kernel has no `hooks-ranking` feature to switch it on).
 fn answers(module: &str) -> bool {
-    cfg!(feature = "linked-hook-double") && (module == NAME || WORDS.contains(&module))
+    module == NAME || WORDS.contains(&module)
 }
 
 /// One opened instance, on the hook port.

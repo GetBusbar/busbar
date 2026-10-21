@@ -203,16 +203,25 @@ fn read_cached(file: &Path) -> Result<Option<AuditSigningKey>, KeysetError> {
     }
 }
 
-/// The fingerprint the newest `Bootstrap` on the chain sealed, if any. A chain that will not read
-/// back yields none: the journal's own finding already names that, and a Bootstrap nobody can read
-/// is not one this node can be refused over.
-fn sealed_fingerprint(durability: &Durability) -> Option<[u8; 32]> {
-    let records = durability.chain().ok()?.ok()?;
-    records
+/// The fingerprint the newest `Bootstrap` on the chain sealed, if any. A chain that does not verify
+/// yields none: the journal's own finding already names that, and a Bootstrap nobody can verify is
+/// not one this node can be refused over.
+///
+/// # Errors
+///
+/// The chain could not be read back. That is a refusal, never a chain with no `Bootstrap` on it:
+/// taken for one, it sealed a second `Bootstrap` over the deployment's first (audit R1#3).
+fn sealed_fingerprint(durability: &Durability) -> Result<Option<[u8; 32]>, KeysetError> {
+    let records = match durability.chain() {
+        Ok(Ok(records)) => records,
+        Ok(Err(_)) => return Ok(None),
+        Err(e) => return Err(KeysetError::Store(durability.unreadable(&e))),
+    };
+    Ok(records
         .iter()
         .filter(|r| r.class == RecordClass::Bootstrap)
         .max_by_key(|r| r.node_seq)
-        .and_then(|r| bootstrap_fingerprint(&r.body))
+        .and_then(|r| bootstrap_fingerprint(&r.body)))
 }
 
 fn sign_with(durability: &mut Durability, key: AuditSigningKey) {
@@ -250,7 +259,7 @@ pub fn bind(
         return Ok(KeysetSource::Ephemeral);
     };
     let file = dir.join(KEYSET_FILE);
-    let prior = sealed_fingerprint(durability);
+    let prior = sealed_fingerprint(durability)?;
     let cached = match (prior, read_cached(&file)) {
         // A sealed Bootstrap and a file that cannot be read are the refusal, not an I/O fault: the
         // file does not yield the fingerprint, and the store holds no keyset.
@@ -346,7 +355,7 @@ fn bind_in_store(
     at: StepName,
     now: u64,
 ) -> Result<KeysetSource, KeysetError> {
-    let prior = sealed_fingerprint(durability);
+    let prior = sealed_fingerprint(durability)?;
     let held = crate::root::durability::stored_keyset(calls).map_err(KeysetError::Store)?;
     let held = held
         .map(|seed| {
