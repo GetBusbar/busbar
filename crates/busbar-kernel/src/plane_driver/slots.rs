@@ -71,3 +71,29 @@ where
         (**self).as_any()
     }
 }
+
+/// The `plane_slots` companion key under which a plane's ALWAYS-PRESENT per-generation runtime object
+/// is carried — DERIVED from the plane's own decl `key` by the neutral `"<key>:runtime"` convention,
+/// so core spells no plane token. It is deliberately distinct from the plane's config-conditional
+/// dispatch slot (carried under the bare decl key): the runtime bundle exists on every generation
+/// whereas the dispatch slot is absent when the plane's config block is unspecified, so folding them
+/// onto one key would change the bare key's presence semantics (and the dispatch table `build_dispatch`
+/// derives from it). Named by both core's `appbuild` (which composes the slot) and the owning plane
+/// (which reads it back off its slot) — each passes its decl key and gets the
+/// SAME interned `&'static str`, so it lives in the neutral substrate rather than either crate.
+///
+/// Interned process-lifetime (leaked once per distinct key, bounded by the plane count) so the
+/// companion key is a stable `&'static str` fit for the `plane_slots` map's key type without either
+/// caller holding a hard-coded literal.
+pub fn runtime_slot_key(plane_key: &str) -> &'static str {
+    static INTERNED: std::sync::Mutex<std::collections::BTreeMap<String, &'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let composed = format!("{plane_key}:runtime");
+    let mut interned = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(k) = interned.get(&composed) {
+        return k;
+    }
+    let leaked: &'static str = Box::leak(composed.clone().into_boxed_str());
+    interned.insert(composed, leaked);
+    leaked
+}

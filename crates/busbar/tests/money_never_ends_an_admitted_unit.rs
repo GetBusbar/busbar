@@ -356,11 +356,15 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// `refusal_for` with it — three sites: one `GroupFrozen`, one `OverBudget` and the one carried
 /// `reason` (its pinned row struck by the deletion commit). No production path constructed that
 /// crate's `Door`; the served admission refuses over-budget in the kernel (`door.rs`), which is
-/// the `OverBudget` the non-vacuity assert below still sees. The population is sixty-four since; the
-/// floor is re-armed there. A population that falls because code was DELETED
+/// the `OverBudget` the non-vacuity assert below still sees. The population was sixty-four since. D2
+/// (status row 82) then deleted the root's gauntlet rider (`root/gauntlet_kernel.rs`): no linked
+/// row carries a `gauntlet-*` axis, so `install()` registered it under no plane and nothing served
+/// it — taking its two sites with it: one `NoDestination` (the rider's pre-admission destination
+/// check) and one `TaskLost` (its synchronous `route` arm, never taken). None is a money reason and
+/// none was served. The population is sixty-two since; the floor is re-armed there. A population that falls because code was DELETED
 /// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
 /// with no deletion is the scanner regression this floor exists to catch.
-const MIN_REFUSAL_SITES: usize = 64;
+const MIN_REFUSAL_SITES: usize = 62;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///
