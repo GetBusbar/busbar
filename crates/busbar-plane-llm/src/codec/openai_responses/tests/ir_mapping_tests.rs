@@ -641,7 +641,11 @@ fn a_responses_answer_served_at_flex_or_scale_keeps_its_tier() {
         let ir = ResponsesReader
             .read_response(crate::codec::test_host::HOST, &responses)
             .expect("read");
-        assert_eq!(ir.usage.detail.service_tier.as_deref(), Some(tier), "{tier}");
+        assert_eq!(
+            ir.usage.detail.service_tier.as_deref(),
+            Some(tier),
+            "{tier}"
+        );
     }
 }
 
