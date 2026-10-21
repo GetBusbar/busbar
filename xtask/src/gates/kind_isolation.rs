@@ -11558,11 +11558,13 @@ impl Gate for KindIsolationGate {
         // it the `plane` skeleton is derived from an empty file list and every plane in the tree
         // passes a comparison against nothing. Since the extraction the exemplar is not a crate of
         // this repo at all: it is the pinned checkout `cargo metadata` resolves, which both the
-        // mount and the exemplar resolver read. So "not in the tree" is the resolver's answer with
-        // the exemplar (and its `-plugin` twin) gone from it; removing its manifest from the mount
-        // alone leaves the resolver reading the same checkout back in.
+        // mount and the exemplar resolver read. So "not in the tree" is both: its manifest gone
+        // from the tree the census reads (the pinned base layer lays it whatever the resolver
+        // says), AND the resolver's answer with the exemplar (and its `-plugin` twin) gone from
+        // it. Either alone leaves the exemplar read back in, by the census or by the resolver.
         let exemplar_gone = move || {
             let mut ov = Overlay::new();
+            ov.remove("crates/busbar-plane-a2a/Cargo.toml");
             let meta = cx
                 .cargo_metadata_all_features("Cargo.toml")
                 .ok()
