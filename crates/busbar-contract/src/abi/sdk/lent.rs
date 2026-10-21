@@ -837,6 +837,8 @@ lend! {
 /// through its [`lend!`] accessor above (a list, a buffer, loose bytes or one struct).
 macro_rules! lent_fields {
     ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {$(
+        // A field named `len` reads the field the host stated; its struct has no emptiness.
+        #[allow(clippy::len_without_is_empty)]
         impl<'a> Lent<'a, $ty> { $( lent_fields!(@one $how $name $(: $t)?); )+ }
     )+};
     (@one val $name:ident: $t:ty) => {
