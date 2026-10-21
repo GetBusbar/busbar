@@ -2530,6 +2530,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
     let door: &'static Door = Box::leak(Box::new(Door {
         kind: auth as u32,
         kind_abi: auth.abi_version(),
+        layout: auth.layout_fingerprint(),
         statement: st,
         ..real
     }));
