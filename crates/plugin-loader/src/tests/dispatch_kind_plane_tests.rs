@@ -419,6 +419,61 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     assert_eq!(copied.listed, vec!["listed-one".to_string()]);
 }
 
+/// RED (audit contract-src #11, `check_claim_target`'s own rule: "the host runs this on every target
+/// it copies into the generation"): a claim whose TARGET breaks the claim grammar refuses the whole
+/// snapshot when the host copies it, so it never loads as a route nothing can match. Each bad
+/// target is one the claims' shape check (`check_claims`, which reads no text) passes.
+#[test]
+fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
+    use busbar_contract::abi::plane::{
+        Claim, CLAIM_CATALOG, CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS,
+    };
+    let s = |t: &'static str| AbiStr {
+        ptr: t.as_ptr(),
+        len: t.len(),
+    };
+    let claim = |target: &'static str, flags: u32| Claim {
+        verb: s("chat"),
+        target: s(target),
+        carrier: s("carrier-a"),
+        flags,
+        refusal_dialect: 0,
+        _pad: 0,
+    };
+    let copied = |c: &Claim| {
+        let mut snapshot = snap(7);
+        snapshot.claims = c;
+        snapshot.claims_len = 1;
+        crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 4)
+    };
+    for good in [
+        claim("/t/{id}", CLAIM_PATTERN),
+        claim("/v1/*:sign", CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS),
+    ] {
+        assert!(
+            copied(&good).is_some(),
+            "a well-formed claim copies: {good:?}"
+        );
+    }
+    for bad in [
+        // A pattern with a half-braced segment.
+        claim("/t/{id", CLAIM_PATTERN),
+        // A pattern with no placeholder.
+        claim("/t/id", CLAIM_PATTERN),
+        // A raw affix with no `*`.
+        claim("/v1/sign", CLAIM_RAW_AFFIX),
+        // A signed path off anything but a raw affix.
+        claim("/v1/sign", CLAIM_SIGNED_INGRESS),
+        // A raw affix that lists a catalog.
+        claim("/v1/*:sign", CLAIM_RAW_AFFIX | CLAIM_CATALOG),
+    ] {
+        assert!(
+            copied(&bad).is_none(),
+            "a claim whose target breaks the grammar was copied into the generation: {bad:?}"
+        );
+    }
+}
+
 #[test]
 fn refresh_green_and_red_on_its_snapshot() {
     let mut i: RefreshIn = z();
