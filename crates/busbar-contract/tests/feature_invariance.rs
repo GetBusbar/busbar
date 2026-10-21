@@ -493,6 +493,7 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
     let mut out = Vec::new();
     let mut abi_allows = 0;
     let mut alloc_allows = 0;
+    let mut allows = 0;
     for (rel, text) in files {
         let lines: Vec<&str> = text.lines().collect();
         // The allocator impl block: from its first line to the first line that is `}` alone.
@@ -509,18 +510,27 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
             if line.starts_with("//") {
                 continue;
             }
-            if line.starts_with("#![")
-                && line.contains("unsafe_code")
-                && !line.starts_with("#![deny(unsafe_code)]")
-                && !line.starts_with("#![forbid(unsafe_code)]")
+            // An attribute is read WHOLE: one that spans lines (`#[allow(\n    unsafe_code)]`) is
+            // joined to its closing `]` and read without whitespace, and the item it sits over is
+            // the first line after that.
+            let (attr, attr_end) = if line.starts_with("#[") || line.starts_with("#![") {
+                attribute_at(&lines, n)
+            } else {
+                (String::new(), n)
+            };
+            if attr.starts_with("#![")
+                && attr.contains("unsafe_code")
+                && !attr.starts_with("#![deny(unsafe_code)]")
+                && !attr.starts_with("#![forbid(unsafe_code)]")
             {
                 out.push(format!(
                     "{rel}:{}: a crate- or module-level unsafe_code attribute other than deny or forbid",
                     n + 1
                 ));
             }
-            if line.starts_with("#[") && line.contains("allow(") && line.contains("unsafe_code") {
-                let item = lines[n + 1..]
+            if attr.starts_with("#[") && attr.contains("allow(") && attr.contains("unsafe_code") {
+                allows += 1;
+                let item = lines[attr_end + 1..]
                     .iter()
                     .map(|l| l.trim())
                     .find(|l| !l.starts_with("#[") && !l.starts_with("//"))
@@ -552,7 +562,37 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
              exactly one is permitted"
         ));
     }
+    // THE TOTAL, beside the per-site counts: two allows in the whole crate, one per sanctioned site.
+    if allows > 2 {
+        out.push(format!(
+            "{allows} allow(unsafe_code) attributes in all; exactly two are permitted"
+        ));
+    }
     out
+}
+
+/// The attribute that opens on line `n`, joined across lines up to its balancing `]` and with
+/// every whitespace character removed, and the index of the line it closes on.
+fn attribute_at(lines: &[&str], n: usize) -> (String, usize) {
+    let mut joined = String::new();
+    let mut depth = 0i32;
+    for (at, l) in lines.iter().enumerate().skip(n) {
+        let code = l.split("//").next().unwrap_or_default();
+        for c in code.chars() {
+            match c {
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            if !c.is_whitespace() {
+                joined.push(c);
+            }
+        }
+        if depth <= 0 {
+            return (joined, at);
+        }
+    }
+    (joined, lines.len().saturating_sub(1))
 }
 
 /// True when `line` holds the `unsafe` keyword as a whole word (not inside `unsafe_code`).
@@ -596,17 +636,74 @@ fn an_unsafe_site_outside_the_abi_is_red() {
         1
     );
     assert_eq!(plant("lib.rs", "#![allow(unsafe_code)]\n").len(), 1);
-    let two = unsafe_findings(&[
+    // A third allow, beside the two sanctioned ones: red per site (over `mod inner;`) AND red on
+    // the total (three in all).
+    let three = unsafe_findings(&[
         (
             "lib.rs".to_string(),
             "#[allow(unsafe_code)]\npub mod abi;\n".to_string(),
+        ),
+        (
+            "alloc_counter.rs".to_string(),
+            "#[allow(unsafe_code)]\nunsafe impl GlobalAlloc for Counting {\n}\n".to_string(),
         ),
         (
             "abi/mod.rs".to_string(),
             "#[allow(unsafe_code)]\nmod inner;\n".to_string(),
         ),
     ]);
-    assert_eq!(two.len(), 2, "{two:?}");
+    assert_eq!(three.len(), 2, "{three:?}");
+    // The two sanctioned sites alone are green.
+    let sanctioned = unsafe_findings(&[
+        (
+            "lib.rs".to_string(),
+            "#[allow(unsafe_code)]\npub mod abi;\n".to_string(),
+        ),
+        (
+            "alloc_counter.rs".to_string(),
+            "#[allow(unsafe_code)]\nunsafe impl GlobalAlloc for Counting {\n}\n".to_string(),
+        ),
+    ]);
+    assert!(sanctioned.is_empty(), "{sanctioned:?}");
+}
+
+/// RED: an attribute split across lines is read whole. A multi-line `#[allow(\n unsafe_code)]`
+/// over a `#[no_mangle]` item, and a multi-line crate-level `#![allow(...)]`, are refused like
+/// their one-line spellings; the sanctioned allow split across lines still counts toward the total.
+#[test]
+fn a_multi_line_unsafe_code_attribute_is_red() {
+    let plant = |rel: &str, text: &str| unsafe_findings(&[(rel.to_string(), text.to_string())]);
+    let split = "#[allow(\n    unsafe_code\n)]\n#[no_mangle]\npub extern \"C\" fn exported() {}\n";
+    let found = plant("dest.rs", split);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("pub extern"), "{found:?}");
+    assert_eq!(plant("lib.rs", "#![allow(\n    unsafe_code\n)]\n").len(), 1);
+    assert_eq!(
+        plant(
+            "lib.rs",
+            "#![cfg_attr(\n    test,\n    allow(unsafe_code)\n)]\n"
+        )
+        .len(),
+        1
+    );
+    // Split across lines over the sanctioned module: still the sanctioned site, still counted.
+    assert!(plant("lib.rs", "#[allow(\n    unsafe_code\n)]\npub mod abi;\n").is_empty());
+    let over = unsafe_findings(&[
+        (
+            "lib.rs".to_string(),
+            "#[allow(\n    unsafe_code,\n)]\npub mod abi;\n".to_string(),
+        ),
+        (
+            "alloc_counter.rs".to_string(),
+            "#[allow(unsafe_code)]\nunsafe impl GlobalAlloc for Counting {\n}\n".to_string(),
+        ),
+        (
+            "dest.rs".to_string(),
+            "#[allow(\n    unsafe_code\n)]\n#[no_mangle]\npub extern \"C\" fn exported() {}\n"
+                .to_string(),
+        ),
+    ]);
+    assert_eq!(over.len(), 2, "{over:?}");
 }
 
 /// The counting allocator's unsafe exemption is the impl block and nothing wider. GREEN: the one

@@ -100,7 +100,7 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
 /// on the door-only gaps; BUSBAR-1.6.0.md l.246, the One Statement table: the Statement's `declares`
 /// row is "metric series, diagnostics, structured answers", diagnostics in full; l.3574's
 /// "diagnostic ids" is the indexed view of the same document). The WHOLE document travels here as a
-/// JSON payload (catalog entries, metric families with `shed`, the disk need of §11.11 R4,
+/// JSON payload (catalog entries, metric families with `shed`, the disk need of the host's bounded disk lane (the Q-DISK ruling),
 /// `breaker`), read ONCE at load and never per request ("JSON only as a payload"). It rides the
 /// shared mechanism's extensions blob, not a `repr(C)` field: a field would change the Statement's
 /// layout and its ABI version. `contract_abi` is not part of it: the Statement's own `kind_abi`

@@ -137,9 +137,13 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let key_len = KEY_LEN.load(Ordering::SeqCst);
         if key_len != 0 && layout.size() >= key_len {
-            // SAFETY: `ptr` is a live block of `layout.size()` bytes until `System` frees it below,
-            // and its owner has given it up: nothing else reads or writes it during `dealloc`. It
-            // is read as plain bytes and nothing read is kept.
+            // SAFETY (TEST ONLY, and NOT fully sound): `ptr` is a live block of `layout.size()`
+            // bytes until `System` frees it below, and its owner has given it up, so nothing else
+            // reads or writes it during `dealloc`. But the slice spans the WHOLE block, including
+            // bytes the owner never wrote: reading uninitialised memory through a `&[u8]` is
+            // undefined behaviour, and Miri would flag it. It is accepted here because this
+            // allocator is compiled only into test binaries (the dev-only `alloc-counter`
+            // feature), reads the bytes only to compare them, and keeps nothing it read.
             let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
             witness_freed(block, key_len);
         }
