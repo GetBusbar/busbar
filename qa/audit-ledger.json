@@ -2483,7 +2483,7 @@
    "paths": [
     "crates/busbar-plane-streaming-plugin/src"
    ],
-   "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+   "tree_hash": "94ac41ebaddd0de836d45d670c5312cf7b118ebb4cc7fe0bfa67f5fb2a904068",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -2495,7 +2495,7 @@
    },
    "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
    "auditor": "opus-r159c-plane-twins",
-   "fixed_at": null,
+   "fixed_at": "f1d4d737016117f5491915df4b8c0650fc6a0c7e",
    "exclude": [
     "crates/busbar-plane-streaming-plugin/src/tests"
    ],
