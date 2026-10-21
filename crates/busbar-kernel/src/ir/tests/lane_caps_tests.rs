@@ -124,7 +124,7 @@ mod provider_entry {
 
     impl LaneCapsFor for ResolvedProvider {
         fn lane_caps_for(&self, wire_model: &str) -> LaneCaps {
-            crate::plane_host::LegacyLaneKeys::of(self).lane_caps(wire_model)
+            crate::plane_driver::route_input::LegacyLaneKeys::of(self).lane_caps(wire_model)
         }
     }
 

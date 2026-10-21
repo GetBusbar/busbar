@@ -473,50 +473,117 @@ const SOURCE_DIRS: [(&str, &str); 2] = [
 /// Which file in the tree OWNS a named rig cell, or `None` — the "nothing owns this any more"
 /// answer that makes the claim red.
 pub fn resolve_cell(cx: &Ctx, cell_id: &str) -> Option<String> {
-    if oracle_cell_ids(cx).contains(cell_id) {
-        return Some("testing/shadow-oracle/cells.json".to_string());
-    }
-    let (namespace, rest) = cell_id.split_once('|')?;
-    if rest.is_empty() {
-        return None;
-    }
+    CellOwners::new(cx).resolve(cell_id)
+}
 
-    // THE H2 ARM RETURNS EARLY WHETHER OR NOT IT RESOLVES. A `mcp.rig|h2-…` id whose subject
-    // script vanished must not fall through into the later arms and be adopted by a substring
-    // match somewhere else — that is exactly how a deleted script keeps a green row.
-    if let Some((_, dir)) = H2_DIRS.iter().find(|(ns, _)| *ns == namespace) {
-        if rest.starts_with("h2-") {
-            let path = format!("{dir}/{rest}.sh");
-            return cx.exists(&path).then_some(path);
+/// THE RIG COLUMN'S EVIDENCE, READ ONCE PER RUN AND NOT ONCE PER CELL.
+///
+/// [`resolve_cell`] used to re-read its evidence for every cell it was asked about: it parsed
+/// `testing/shadow-oracle/cells.json` (1.4 MB) and `rigs-baseline.json` afresh, and re-listed each
+/// suite directory with `read_dir`, sixty times per gate run — once per cell of the matrix. A
+/// self-test case is a gate run over a tree one plant away from the last, so the `teller-steps`
+/// battery parsed the oracle's cell list some 1 400 times and went over its work-unit budget
+/// (25 754 of 25 237 on ModernCI, 2026-10-18) doing it. Nothing a run reads changes between two
+/// cells of the same run, so the owners are read here once and every cell is put to the same
+/// answer, in the same arm order, as before. The oracle's id set is a pure function of the file's
+/// bytes, so it is also memoised on them ([`oracle_ids_of`]): a plant that edits `cells.json` is
+/// read fresh, and every other case re-uses the reading.
+struct CellOwners<'c> {
+    cx: &'c Ctx,
+    /// The oracle's cell ids ([`oracle_cell_ids`]), read on first use.
+    oracle: std::cell::OnceCell<std::sync::Arc<BTreeSet<String>>>,
+    /// `rigs-baseline.json`'s row keys ([`rig_baseline_ids`]), read on first use.
+    baseline: std::cell::OnceCell<BTreeSet<String>>,
+    /// Each [`SOURCE_DIRS`] base's sorted file list ([`collect_paths`]), listed on first use.
+    listed: std::cell::RefCell<BTreeMap<&'static str, std::rc::Rc<Vec<String>>>>,
+}
+
+impl<'c> CellOwners<'c> {
+    fn new(cx: &'c Ctx) -> CellOwners<'c> {
+        CellOwners {
+            cx,
+            oracle: std::cell::OnceCell::new(),
+            baseline: std::cell::OnceCell::new(),
+            listed: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
 
-    // THE FILE ARM RETURNS EARLY TOO, for the H2 arm's reason: a check renamed out of its rig's
-    // file must not be adopted by another arm's search somewhere else.
-    if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
-        return cx
-            .read(file)
-            .is_ok_and(|t| declares_id(&t, rest))
-            .then(|| (*file).to_string());
-    }
-
-    if namespace == "voice.rig" {
-        let path = format!("testing/voice-conformance/legs/{rest}.sh");
-        if cx.exists(&path) {
-            return Some(path);
+    /// Which file in the tree OWNS `cell_id` — [`resolve_cell`]'s answer, arm for arm.
+    fn resolve(&self, cell_id: &str) -> Option<String> {
+        let cx = self.cx;
+        if self
+            .oracle
+            .get_or_init(|| oracle_cell_ids(cx))
+            .contains(cell_id)
+        {
+            return Some(ORACLE_CELLS_REL.to_string());
         }
-    }
-
-    if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
-        if let Some(owner) = declared_in_source(cx, base, rest) {
-            return Some(owner);
+        let (namespace, rest) = cell_id.split_once('|')?;
+        if rest.is_empty() {
+            return None;
         }
+
+        // THE H2 ARM RETURNS EARLY WHETHER OR NOT IT RESOLVES. A `mcp.rig|h2-…` id whose subject
+        // script vanished must not fall through into the arms below and be adopted by a substring
+        // match somewhere else — that is exactly how a deleted script keeps a green row.
+        if let Some((_, dir)) = H2_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            if rest.starts_with("h2-") {
+                let path = format!("{dir}/{rest}.sh");
+                return cx.exists(&path).then_some(path);
+            }
+        }
+
+        // THE FILE ARM RETURNS EARLY TOO, for the H2 arm's reason: a check renamed out of its rig's
+        // file must not be adopted by another arm's search somewhere else.
+        if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
+            return cx
+                .read(file)
+                .is_ok_and(|t| declares_id(&t, rest))
+                .then(|| (*file).to_string());
+        }
+
+        if namespace == "voice.rig" {
+            let path = format!("testing/voice-conformance/legs/{rest}.sh");
+            if cx.exists(&path) {
+                return Some(path);
+            }
+        }
+
+        if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            if let Some(owner) = self.declared_in_source(base, rest) {
+                return Some(owner);
+            }
+        }
+
+        if self
+            .baseline
+            .get_or_init(|| rig_baseline_ids(cx))
+            .contains(cell_id)
+        {
+            return Some("testing/shadow-oracle/rigs-baseline.json".to_string());
+        }
+        None
     }
 
-    if rig_baseline_ids(cx).contains(cell_id) {
-        return Some("testing/shadow-oracle/rigs-baseline.json".to_string());
+    /// The first file under `base`, in sorted path order, that DECLARES `needle` as a whole token.
+    /// The listing is taken once per base per run; each file is still read through the context, so
+    /// a plant's bytes are the ones searched.
+    fn declared_in_source(&self, base: &'static str, needle: &str) -> Option<String> {
+        let paths = std::rc::Rc::clone(
+            self.listed
+                .borrow_mut()
+                .entry(base)
+                .or_insert_with(|| std::rc::Rc::new(source_paths(self.cx, base))),
+        );
+        paths
+            .iter()
+            .find(|rel| {
+                self.cx
+                    .read(rel.as_str())
+                    .is_ok_and(|t| declares_id(&t, needle))
+            })
+            .cloned()
     }
-    None
 }
 
 /// The characters a scenario id is made of. Anything else is a boundary, and a match that is not
@@ -564,14 +631,12 @@ fn declares_id(text: &str, needle: &str) -> bool {
     false
 }
 
-/// The first file under `base`, in sorted path order, that DECLARES `needle` as a whole token.
-fn declared_in_source(cx: &Ctx, base: &str, needle: &str) -> Option<String> {
+/// Every file under `base`, in sorted path order — the candidates [`CellOwners`] searches.
+fn source_paths(cx: &Ctx, base: &str) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     collect_paths(&cx.abs(base), cx.root(), &mut paths);
     paths.sort();
     paths
-        .into_iter()
-        .find(|rel| cx.read(rel).is_ok_and(|t| declares_id(&t, needle)))
 }
 
 /// Path components that are BUILD OUTPUT, never a declaration site. A `__pycache__/*.pyc` carries
@@ -601,13 +666,12 @@ fn collect_paths(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<St
     }
 }
 
-/// Ids read out of a JSON list-of-objects keyed by `id`. An unreadable file yields an EMPTY set,
-/// matching the Python — and the emptiness is never itself a pass, because a cell that resolves
-/// nowhere is red.
-fn json_ids(cx: &Ctx, rel: &str, list_key: &str) -> BTreeSet<String> {
-    cx.read(rel)
+/// Ids read out of a JSON document's list-of-objects keyed by `id`. An unreadable or unparseable
+/// file yields an EMPTY set, matching the Python — and the emptiness is never itself a pass,
+/// because a cell that resolves nowhere is red.
+fn ids_in(text: &str, list_key: &str) -> BTreeSet<String> {
+    json_lite::parse(text)
         .ok()
-        .and_then(|t| json_lite::parse(&t).ok())
         .and_then(|d| d.get(list_key).as_array().map(<[Json]>::to_vec))
         .map(|cells| {
             cells
@@ -618,8 +682,40 @@ fn json_ids(cx: &Ctx, rel: &str, list_key: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-fn oracle_cell_ids(cx: &Ctx) -> BTreeSet<String> {
-    json_ids(cx, "testing/shadow-oracle/cells.json", "cells")
+const ORACLE_CELLS_REL: &str = "testing/shadow-oracle/cells.json";
+
+fn oracle_cell_ids(cx: &Ctx) -> std::sync::Arc<BTreeSet<String>> {
+    match cx.read(ORACLE_CELLS_REL) {
+        Ok(text) => oracle_ids_of(&text),
+        Err(_) => std::sync::Arc::new(BTreeSet::new()),
+    }
+}
+
+/// The oracle's cell ids read out of `text` — [`ids_in`] over `cells.json`'s bytes — MEMOISED ON
+/// THOSE BYTES. The reading is a pure function of them, so a case that plants a different
+/// `cells.json` is read fresh and every case that does not shares one parse.
+fn oracle_ids_of(text: &str) -> std::sync::Arc<BTreeSet<String>> {
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cell = Arc<OnceLock<Arc<BTreeSet<String>>>>;
+    type Memo = Mutex<BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut a);
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    (text.len(), text).hash(&mut b);
+    0x7e1_u32.hash(&mut b);
+    let key = (text.len(), a.finish(), b.finish());
+    // The cell is handed out under the lock and FILLED OUTSIDE it, so concurrent cases that need the
+    // same bytes take one parse between them instead of one each.
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| Arc::new(ids_in(text, "cells"))).clone()
 }
 
 fn rig_baseline_ids(cx: &Ctx) -> BTreeSet<String> {
@@ -633,6 +729,7 @@ fn rig_baseline_ids(cx: &Ctx) -> BTreeSet<String> {
 
 pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
     let mut out = Vec::new();
+    let owners = CellOwners::new(cx);
     for plane in m.planes() {
         for step in m.step_order() {
             let cell = m.cell(&plane, &step);
@@ -640,7 +737,7 @@ pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
             if cell_id == "none" {
                 continue;
             }
-            if resolve_cell(cx, &cell_id).is_none() {
+            if owners.resolve(&cell_id).is_none() {
                 out.push(format!(
                     "{LEDGER_REL}: matrix.{plane}.{step} names rig cell {}, which NOTHING in the \
                      tree owns -- no oracle cell of that id, no h2 subject script, no voice leg, \
@@ -2456,5 +2553,126 @@ mod root_gating_tests {
         let (lines, rc) = root_legs_gating_verdict(&matrix(), &legs(&["root-x"]));
         assert_eq!(rc, 0, "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with("GREEN: ")), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod cell_owner_tests {
+    use super::*;
+
+    /// THE REFERENCE: [`resolve_cell`] as it was before [`CellOwners`], re-reading every piece of
+    /// evidence for every cell it is asked about. Kept here, and only here, so the memoised reading
+    /// has something to be held to.
+    fn resolve_cell_rereading(cx: &Ctx, cell_id: &str) -> Option<String> {
+        if ids_in(&cx.read(ORACLE_CELLS_REL).unwrap_or_default(), "cells").contains(cell_id) {
+            return Some(ORACLE_CELLS_REL.to_string());
+        }
+        let (namespace, rest) = cell_id.split_once('|')?;
+        if rest.is_empty() {
+            return None;
+        }
+        if let Some((_, dir)) = H2_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            if rest.starts_with("h2-") {
+                let path = format!("{dir}/{rest}.sh");
+                return cx.exists(&path).then_some(path);
+            }
+        }
+        if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
+            return cx
+                .read(file)
+                .is_ok_and(|t| declares_id(&t, rest))
+                .then(|| (*file).to_string());
+        }
+        if namespace == "voice.rig" {
+            let path = format!("testing/voice-conformance/legs/{rest}.sh");
+            if cx.exists(&path) {
+                return Some(path);
+            }
+        }
+        if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            let mut paths: Vec<String> = Vec::new();
+            collect_paths(&cx.abs(base), cx.root(), &mut paths);
+            paths.sort();
+            if let Some(owner) = paths
+                .into_iter()
+                .find(|rel| cx.read(rel).is_ok_and(|t| declares_id(&t, rest)))
+            {
+                return Some(owner);
+            }
+        }
+        if rig_baseline_ids(cx).contains(cell_id) {
+            return Some("testing/shadow-oracle/rigs-baseline.json".to_string());
+        }
+        None
+    }
+
+    /// THE MEMOISED OWNERS ARE THE PER-CELL RE-READ'S, on the real tree and on planted ones: every
+    /// cell the committed matrix names plus the ids the self-test plants, asked of one
+    /// [`CellOwners`] per tree (so every answer after the first is served warm) and of the
+    /// reference that re-reads per cell. The `cells.json` plant is asked AFTER the real tree filled
+    /// the oracle memo, so a memo that answered from the wrong bytes would show here.
+    #[test]
+    fn the_memoised_cell_owners_are_the_per_cell_reread_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let m = load(&base).expect("the committed matrix loads");
+        let mut ids: Vec<String> = Vec::new();
+        for plane in m.planes() {
+            for step in m.step_order() {
+                ids.push(m.cell(&plane, &step).str_or("cell", ""));
+            }
+        }
+        ids.extend(
+            [
+                "teller|a-scenario-that-was-renamed-away",
+                "mcp.rig|h2-a-step-with-no-script",
+                "jev.rig|h2-a-check-that-was-renamed-away",
+                "mcp.battery|ADV.MALFORMED",
+                "a2a.supplement|SERVER-002",
+                "teller|planted-oracle-cell",
+                "voice.rig|a-leg-with-no-script",
+                "no-namespace",
+                "mcp.battery|",
+            ]
+            .map(str::to_string),
+        );
+        let planted_oracle = {
+            let mut ov = Overlay::new();
+            ov.set(
+                ORACLE_CELLS_REL,
+                "{\"cells\": [{\"id\": \"teller|planted-oracle-cell\"}]}\n",
+            );
+            ov
+        };
+        let no_jev = {
+            let mut ov = Overlay::new();
+            ov.set(FILE_RIGS[0].1, String::new());
+            ov
+        };
+        for (i, ov) in [Overlay::new(), planted_oracle, no_jev]
+            .into_iter()
+            .enumerate()
+        {
+            let cx = base.with_overlay(ov);
+            let owners = CellOwners::new(&cx);
+            let mut resolved = 0usize;
+            for id in &ids {
+                let want = resolve_cell_rereading(&cx, id);
+                assert_eq!(
+                    owners.resolve(id),
+                    want,
+                    "plant {i}: the memoised owner of {id:?} is not the re-read's"
+                );
+                assert_eq!(
+                    resolve_cell(&cx, id),
+                    want,
+                    "plant {i}: resolve_cell's owner of {id:?} is not the re-read's"
+                );
+                resolved += usize::from(want.is_some());
+            }
+            assert!(
+                resolved > 0,
+                "plant {i}: no id resolved, so nothing was compared"
+            );
+        }
     }
 }
