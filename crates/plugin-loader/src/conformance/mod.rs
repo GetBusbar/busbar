@@ -11,8 +11,8 @@
 //!
 //! ```ignore
 //! busbar_plugin_loader::conformance_suite! {
-//!     door: busbar_secret_env::door::door,          // the LINKED door (its logic crate's)
-//!     cdylib: "busbar_secret_env_plugin",           // the crate whose cdylib is the DROPPED door
+//!     door: <logic crate>::door::door,              // the LINKED door (its logic crate's)
+//!     cdylib: "<logic crate>_plugin",               // the crate whose cdylib is the DROPPED door
 //!     inputs: include_str!("conformance.json"),     // what the kind's script drives
 //! }
 //! ```

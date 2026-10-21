@@ -4,15 +4,6 @@
 use super::*;
 use crate::plugin::{AbiVersion, Kind};
 
-/// The role is derived from the declaration, never stated beside it: nothing under a transport makes
-/// it a carrier, anything under it makes it a framer.
-#[test]
-fn the_role_is_what_the_transport_composes_over() {
-    assert_eq!(role_of(&[]), Role::Carrier);
-    assert_eq!(role_of(&["a"]), Role::Framer);
-    assert_eq!(role_of(&["a", "b"]), Role::Framer);
-}
-
 /// A rendering sink keeps every byte, in order.
 #[test]
 fn a_byte_sink_keeps_what_it_is_given_in_order() {
@@ -323,7 +314,6 @@ fn a_row_is_its_declaration_constant_for_constant() {
     assert_eq!(row.transport_facts, <Declared as M>::TRANSPORT_FACTS);
     assert_eq!(row.status_at, <Declared as M>::STATUS_CLASS);
     assert_eq!(row.status_namespace, <Declared as M>::STATUS_NAMESPACE);
-    assert_eq!(row.role(), Role::Framer);
 }
 
 /// A transport that answers for its own key alone makes ONE claim, and that claim is its declared
@@ -401,5 +391,9 @@ fn an_entry_states_one_claim_per_wire_each_with_its_own_status_leg() {
             ("second", Some(StatusAt::Terminal))
         ]
     );
-    assert_eq!(row.role(), Role::Framer, "the role stays the entry's");
+    assert_eq!(
+        row.composes_over,
+        ["below"],
+        "what it composes over stays the entry's"
+    );
 }
