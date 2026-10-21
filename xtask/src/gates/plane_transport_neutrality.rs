@@ -110,9 +110,9 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// 1195, the count on #1230 merged with dev 9791fbba72: dev's `busbar-contract/src/transport/
 /// driver.rs` left (deleted on dev, not by this PR), none arrived.
 /// MERGED with dev 0f3c9caa44 (1234 by the D2 lane's count above): this PR's 27 kernel egress engine
-/// files leave it, and the floor is held at 1206, one under the 1207 that leaves (NOT gate-measured:
-/// the merge was resolved without the gate; the next gate run's measure replaces it).
-pub const MIN_FILES: usize = 1206;
+/// files leave it. SET to 1207, the gate's measure on c61266f99d (`zero-file-refusal`: "1207 file(s)
+/// across 14 census-neutral root(s)"), replacing the 1206 estimate the unmeasured merge carried.
+pub const MIN_FILES: usize = 1207;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";

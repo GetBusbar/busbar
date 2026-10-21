@@ -147,7 +147,11 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// Added: `kernel/src/test_support/operator_double.rs` (3c6eca3201, #1327) and
 /// `kernel/src/test_support/tests/ranking_double_tests.rs` (9fa1dacdf8, #1237).
 /// 1109 - 3 + 2 = 1108.
-pub const NEUTRAL_FLOOR: usize = 1108;
+///
+/// RE-PINNED 1108 -> 1089 on #1230 (the kernel egress engine deletion): the gate's measure on
+/// c61266f99d merged with dev 0f3c9caa44 is `neutral_files=1089` (`core-llm-family-freeze`: "files=1089
+/// -- below its floor 1108"); the PR deletes the engine files, so the population fell, not the walk.
+pub const NEUTRAL_FLOOR: usize = 1089;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
