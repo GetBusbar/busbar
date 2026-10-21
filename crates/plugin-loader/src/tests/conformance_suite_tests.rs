@@ -1534,3 +1534,21 @@ fn a_suite_names_its_door_by_function_or_by_macro_door_alike() {
     assert_eq!(by_fn as usize, by_macro as usize);
     assert_eq!(by_macro as usize, named as usize);
 }
+
+#[test]
+fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike() {
+    use crate::dispatch::{rendering_of, rendering_of_macro, LinkedRow};
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    let by_fn = super::Subject::new(door, "plane_door_plugin", "{}");
+    let by_macro = super::Subject::of_macro(macro_door, "plane_door_plugin", "{}");
+    assert_eq!(by_fn.door as usize, by_macro.door as usize);
+    let row = LinkedRow::of(door).expect("the door states its Statement");
+    let row_macro = LinkedRow::of_macro(macro_door).expect("the door states its Statement");
+    assert_eq!(row.statement, row_macro.statement);
+    assert_eq!(row.door as usize, row_macro.door as usize);
+    assert_eq!(
+        rendering_of(door).expect("renders"),
+        rendering_of_macro(macro_door).expect("renders")
+    );
+}

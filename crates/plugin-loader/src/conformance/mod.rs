@@ -245,6 +245,21 @@ impl Subject {
         s
     }
 
+    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
+    /// and 194). #1469 makes `new` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_macro(
+        door: busbar_contract::abi::sdk::door::MacroDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door_fn(), cdylib_crate, inputs)
+    }
+
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
     /// (Q-P4-8).
     #[must_use]

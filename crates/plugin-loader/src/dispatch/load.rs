@@ -103,6 +103,29 @@ impl LinkedRow {
             door,
         })
     }
+
+    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows
+    /// 159 and 194). #1469 makes `of` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `LinkedRow::of_macro(plugin::MACRO_DOOR)` compiles before and after.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`rendering_of`] refuses.
+    pub fn of_macro(door: busbar_contract::abi::sdk::door::MacroDoor) -> Result<Self, LoadError> {
+        Self::of(door.door_fn())
+    }
+}
+
+/// [`rendering_of`] over a `MACRO_DOOR` (status rows 159 and 194), as [`LinkedRow::of_macro`]: the
+/// name #1469 keeps beside its `rendering_of(MacroDoor)`.
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of_macro(
+    door: busbar_contract::abi::sdk::door::MacroDoor,
+) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door.door_fn())
 }
 
 /// A compiled-in door's Statement, checked as [`rendering_of`] checks it, for a kind's own reader
