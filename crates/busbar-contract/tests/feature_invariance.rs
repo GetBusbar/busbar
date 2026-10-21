@@ -45,6 +45,15 @@
 //!    `services-double` feature a plugin's `[dev-dependencies]` edge enables
 //!    (`tests/test_seal_is_dev_only.rs` refuses any other edge). It is a `HostServices` test
 //!    double, the host's trait and not the plugin ABI, so a release build carries none of it.
+//!
+//! 5. The COUNTING ALLOCATOR (ARCHITECT ruling 2026-10-21): `pub mod alloc_counter;` in `lib.rs`,
+//!    behind exactly [`ALLOC_COUNTER_CFG`] — this crate's own `cfg(test)`, or the dev-only, EMPTY
+//!    `alloc-counter` feature a plugin's `[dev-dependencies]` edge enables
+//!    (`tests/test_seal_is_dev_only.rs` refuses any other edge and any `default` naming it). Plugin
+//!    crate roots keep the literal `#![forbid(unsafe_code)]`, so the `GlobalAlloc` impl their
+//!    allocation gates install lives here. Its `#[allow(unsafe_code)]` is the unsafe policy's
+//!    second and last sanctioned site, over [`ALLOC_COUNTER_IMPL`] alone (see
+//!    [`unsafe_findings`]).
 
 use std::path::{Path, PathBuf};
 
@@ -81,6 +90,22 @@ const SERVICES_DOUBLE_CFG: &str = "#[cfg(any(test, feature = \"services-double\"
 /// The one item [`SERVICES_DOUBLE_CFG`] may gate: `(file under src/, the item's first line)`.
 const SERVICES_DOUBLE_ITEM: (&str, &str) = ("services.rs", "pub mod double;");
 
+/// The dev-only counting allocator's feature. Empty, never in `default`, and enabled by
+/// `[dev-dependencies]` edges only (`tests/test_seal_is_dev_only.rs`).
+const ALLOC_COUNTER_FEATURE: &str = "alloc-counter";
+
+/// The one attribute the counting allocator's module declaration may carry.
+const ALLOC_COUNTER_CFG: &str = "#[cfg(any(test, feature = \"alloc-counter\"))]";
+
+/// The one item [`ALLOC_COUNTER_CFG`] may gate: `(file under src/, the item's first line)`.
+const ALLOC_COUNTER_ITEM: (&str, &str) = ("lib.rs", "pub mod alloc_counter;");
+
+/// The one item outside `abi/` an `#[allow(unsafe_code)]` may sit over, and the only place outside
+/// `abi/` an `unsafe` token may appear (between this line and the block's closing `}`):
+/// `(file under src/, the item's first line)`. The allocator impl, not its module.
+const ALLOC_COUNTER_IMPL: (&str, &str) =
+    ("alloc_counter.rs", "unsafe impl GlobalAlloc for Counting {");
+
 /// Every item `test-seal` may gate: `(file under src/, the item's first line)`. The type and its two
 /// sealed-trait impls, and the tests' seal `KernelSeal::acquire_for_kernel` (#65, ARCHITECT ruling
 /// 2026-10-14: the release seal reaches the kernel through its own symbol, so the minter is
@@ -114,12 +139,13 @@ fn feature_findings(manifest: &str) -> Vec<String> {
             let value = line.split('=').nth(1).unwrap_or_default().trim();
             if !(NEUTRAL_TRANSPORT_FEATURES.contains(&key)
                 || key == TEST_SEAL_FEATURE
-                || key == SERVICES_DOUBLE_FEATURE)
+                || key == SERVICES_DOUBLE_FEATURE
+                || key == ALLOC_COUNTER_FEATURE)
             {
                 out.push(format!(
                     "the contract declares feature {key:?} beyond the neutral transport-axis gates \
-                     and the dev-only `test-seal` and `services-double`, so its plugin-visible \
-                     surface is not one surface"
+                     and the dev-only `test-seal`, `services-double` and `alloc-counter`, so its \
+                     plugin-visible surface is not one surface"
                 ));
             } else if value != "[]" {
                 out.push(format!(
@@ -189,6 +215,17 @@ fn cfg_findings(files: &[(String, String)]) -> Vec<String> {
                     .find(|l| !l.starts_with("#["))
                     .unwrap_or_default();
                 if rel == SERVICES_DOUBLE_ITEM.0 && item == SERVICES_DOUBLE_ITEM.1 {
+                    continue;
+                }
+            }
+            // The counting allocator: this exact attribute, over that one item, in lib.rs.
+            if line.trim_end() == ALLOC_COUNTER_CFG {
+                let item = lines[n + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("#["))
+                    .unwrap_or_default();
+                if rel == ALLOC_COUNTER_ITEM.0 && item == ALLOC_COUNTER_ITEM.1 {
                     continue;
                 }
             }
@@ -435,6 +472,10 @@ fn test_seal_over_another_item_is_red() {
 /// and exactly ONE `#[allow(unsafe_code)]` exists — on `pub mod abi;` — and no `unsafe` token appears
 /// in any source file outside `src/abi/`. Every module that was unsafe-free under `forbid` is still
 /// unsafe-free, now by this scan plus the crate-level `deny`.
+///
+/// ONE MORE SITE (ARCHITECT ruling 2026-10-21): the test-only counting allocator's
+/// `unsafe impl GlobalAlloc` ([`ALLOC_COUNTER_IMPL`]) carries the second and last allow, over that
+/// impl block alone; the rest of `alloc_counter.rs` stays under the crate's `deny`.
 #[test]
 fn the_crate_denies_unsafe_outside_the_abi_and_undocumented_items() {
     let lib = std::fs::read_to_string(src_dir().join("lib.rs")).expect("the root is readable");
@@ -445,15 +486,26 @@ fn the_crate_denies_unsafe_outside_the_abi_and_undocumented_items() {
 }
 
 /// Every breach of the unsafe policy in `(path relative to src/, text)`: an `allow(unsafe_code)`
-/// anywhere but over `pub mod abi;` in `lib.rs`, more than one such allow, an `unsafe` token outside
-/// `abi/`, or a crate-level `allow`/`warn` that would re-open the whole crate.
+/// anywhere but over `pub mod abi;` in `lib.rs` or over [`ALLOC_COUNTER_IMPL`] in its file, more
+/// than one allow at either site, an `unsafe` token outside `abi/` and outside that one impl block,
+/// or a crate-level `allow`/`warn` that would re-open the whole crate.
 fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
     let mut out = Vec::new();
-    let mut allows = 0;
+    let mut abi_allows = 0;
+    let mut alloc_allows = 0;
     for (rel, text) in files {
         let lines: Vec<&str> = text.lines().collect();
+        // The allocator impl block: from its first line to the first line that is `}` alone.
+        let mut in_alloc_impl = false;
         for (n, raw) in lines.iter().enumerate() {
             let line = raw.trim_start();
+            if rel == ALLOC_COUNTER_IMPL.0 && raw.trim_end() == ALLOC_COUNTER_IMPL.1 {
+                in_alloc_impl = true;
+            }
+            let inside_impl = in_alloc_impl;
+            if in_alloc_impl && raw.trim_end() == "}" {
+                in_alloc_impl = false;
+            }
             if line.starts_with("//") {
                 continue;
             }
@@ -468,24 +520,36 @@ fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
                 ));
             }
             if line.starts_with("#[") && line.contains("allow(") && line.contains("unsafe_code") {
-                allows += 1;
                 let item = lines[n + 1..]
                     .iter()
                     .map(|l| l.trim())
                     .find(|l| !l.starts_with("#[") && !l.starts_with("//"))
                     .unwrap_or_default();
-                if !(rel == "lib.rs" && item == "pub mod abi;") {
+                if rel == "lib.rs" && item == "pub mod abi;" {
+                    abi_allows += 1;
+                } else if rel == ALLOC_COUNTER_IMPL.0 && item == ALLOC_COUNTER_IMPL.1 {
+                    alloc_allows += 1;
+                } else {
                     out.push(format!("{rel}:{}: allow(unsafe_code) over `{item}`", n + 1));
                 }
             }
-            if !rel.starts_with("abi/") && has_unsafe_token(line) {
-                out.push(format!("{rel}:{}: unsafe outside the abi module", n + 1));
+            if !rel.starts_with("abi/") && !inside_impl && has_unsafe_token(line) {
+                out.push(format!(
+                    "{rel}:{}: unsafe outside the abi module and the counting allocator's impl",
+                    n + 1
+                ));
             }
         }
     }
-    if allows > 1 {
+    if abi_allows > 1 {
         out.push(format!(
-            "{allows} allow(unsafe_code) attributes; exactly one is permitted"
+            "{abi_allows} allow(unsafe_code) attributes over `pub mod abi;`; exactly one is permitted"
+        ));
+    }
+    if alloc_allows > 1 {
+        out.push(format!(
+            "{alloc_allows} allow(unsafe_code) attributes over the counting allocator's impl; \
+             exactly one is permitted"
         ));
     }
     out
@@ -543,6 +607,111 @@ fn an_unsafe_site_outside_the_abi_is_red() {
         ),
     ]);
     assert_eq!(two.len(), 2, "{two:?}");
+}
+
+/// The counting allocator's unsafe exemption is the impl block and nothing wider. GREEN: the one
+/// allow over the impl, with `unsafe` inside the block. RED: the allow lifted to the module
+/// declaration or over another item, `unsafe` in the same file outside the block, the impl in
+/// another file, and a second allow on the impl.
+#[test]
+fn the_counting_allocator_unsafe_exemption_is_its_impl_alone() {
+    let plant = |rel: &str, text: &str| unsafe_findings(&[(rel.to_string(), text.to_string())]);
+    let right = "use std::alloc::GlobalAlloc;\n\
+                 #[allow(unsafe_code)] // REVIEWED, TEST ONLY\n\
+                 // SAFETY: forwards.\n\
+                 unsafe impl GlobalAlloc for Counting {\n    \
+                 unsafe fn alloc(&self, l: Layout) -> *mut u8 { unsafe { System.alloc(l) } }\n\
+                 }\n\
+                 pub fn allocations() -> u64 { 0 }\n";
+    assert!(
+        plant("alloc_counter.rs", right).is_empty(),
+        "{:?}",
+        plant("alloc_counter.rs", right)
+    );
+    // The allow lifted to the module declaration.
+    assert_eq!(
+        plant("lib.rs", "#[allow(unsafe_code)]\npub mod alloc_counter;\n").len(),
+        1
+    );
+    // `unsafe` in the module but outside the impl block.
+    let outside = format!("{right}pub fn peek() -> u8 {{ unsafe {{ *P }} }}\n");
+    assert_eq!(plant("alloc_counter.rs", &outside).len(), 1);
+    // The allow over another item in the same file.
+    assert_eq!(
+        plant(
+            "alloc_counter.rs",
+            "#[allow(unsafe_code)]\npub fn reset() -> u64 { 0 }\n"
+        )
+        .len(),
+        1
+    );
+    // The same impl in another file: both the allow and its unsafe tokens are refused.
+    assert_eq!(
+        plant("dest.rs", right).len(),
+        3,
+        "{:?}",
+        plant("dest.rs", right)
+    );
+    // A second allow on the impl.
+    let doubled = right.replacen(
+        "#[allow(unsafe_code)] // REVIEWED, TEST ONLY\n",
+        "#[allow(unsafe_code)]\n#[allow(unsafe_code)] // REVIEWED, TEST ONLY\n",
+        1,
+    );
+    assert_eq!(
+        plant("alloc_counter.rs", &doubled).len(),
+        1,
+        "{:?}",
+        plant("alloc_counter.rs", &doubled)
+    );
+}
+
+/// The counting allocator is not in a release build: its declaration carries exactly
+/// [`ALLOC_COUNTER_CFG`]. RED: an ungated `pub mod alloc_counter;`, the attribute over another
+/// item or in another file, a composed spelling, and a non-empty `alloc-counter`.
+#[test]
+fn the_alloc_counter_is_behind_its_test_only_attribute() {
+    let files = src_files();
+    let (_, text) = files
+        .iter()
+        .find(|(rel, _)| rel == ALLOC_COUNTER_ITEM.0)
+        .expect("src/lib.rs is present");
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == ALLOC_COUNTER_ITEM.1)
+        .expect("src/lib.rs still declares the counting allocator");
+    assert!(
+        lines[..at]
+            .iter()
+            .rev()
+            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+            .any(|l| *l == ALLOC_COUNTER_CFG),
+        "src/lib.rs: `{}` is not behind `{ALLOC_COUNTER_CFG}`, so the allocator ships in every build",
+        ALLOC_COUNTER_ITEM.1
+    );
+
+    let plant = |rel: &str, text: String| cfg_findings(&[(rel.to_string(), text)]);
+    let right = format!("{ALLOC_COUNTER_CFG}\npub mod alloc_counter;\n");
+    assert!(plant("lib.rs", right.clone()).is_empty());
+    assert_eq!(plant("services.rs", right).len(), 1);
+    let other = format!("{ALLOC_COUNTER_CFG}\npub fn shipped_only_sometimes() {{}}\n");
+    assert_eq!(plant("lib.rs", other).len(), 1);
+    let composed =
+        "#[cfg(any(debug_assertions, feature = \"alloc-counter\"))]\npub mod alloc_counter;\n";
+    assert_eq!(plant("lib.rs", composed.to_string()).len(), 1);
+    let bare = "#[cfg(feature = \"alloc-counter\")]\npub mod alloc_counter;\n";
+    assert_eq!(plant("lib.rs", bare.to_string()).len(), 1);
+    assert!(feature_findings("[features]\nalloc-counter = []\n").is_empty());
+    assert_eq!(
+        feature_findings("[features]\nalloc-counter = [\"dep:serde_json\"]\n").len(),
+        1
+    );
+    // A `default` naming it is a feature beyond the exemptions.
+    assert_eq!(
+        feature_findings("[features]\ndefault = [\"alloc-counter\"]\nalloc-counter = []\n").len(),
+        1
+    );
 }
 
 /// The crates that sit BELOW the contract, and may therefore be named by it.
