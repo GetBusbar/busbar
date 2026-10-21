@@ -572,10 +572,19 @@ fn a_bare_idn_authority_reads_as_its_punycode_name() {
         extract_normalized_authority_host("b\u{fc}cher\u{ff1c}.example:1"),
         None
     );
-    // The 1.5.5 validators' reader of an `https` URL is kept as it was.
+    // The 1.5.5 validators' reader of a web URL reads the name the dial reaches too: a host read as
+    // written was judged as a name no dial reaches (`ｌｏｃａｌｈｏｓｔ` passed for `localhost`).
     assert_eq!(
         extract_normalized_host("https://b\u{fc}cher.example/").as_deref(),
-        Some("b\u{fc}cher.example")
+        Some("xn--bcher-kva.example")
+    );
+    assert_eq!(
+        extract_normalized_host("https://Plain.Example./").as_deref(),
+        Some("Plain.Example")
+    );
+    assert_eq!(
+        extract_normalized_host("https://b\u{fc}cher\u{ff1c}.example/"),
+        None
     );
 }
 
@@ -746,6 +755,88 @@ fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
             dial_authority(target),
             Err(UrlRefusal::NoHost),
             "{target:?}"
+        );
+    }
+}
+
+/// `url` 2.5.8'S IPv4 READING (`url/src/host.rs` `ends_in_a_number`, `parse_ipv4addr`): the short,
+/// octal and hex forms read as the address `url` dials, a domain as none, and a host that ends in a
+/// number but is no address refused.
+#[test]
+fn url_host_ipv4_reads_a_host_as_url_2_5_8_reads_it() {
+    let v4 = |s: &str| s.parse::<Ipv4Addr>().expect("an address");
+    for (host, addr) in [
+        ("127.0.0.1", "127.0.0.1"),
+        ("127.1", "127.0.0.1"),
+        ("0x7f.1", "127.0.0.1"),
+        ("0X7F.1", "127.0.0.1"),
+        ("017700000001", "127.0.0.1"),
+        ("2130706433", "127.0.0.1"),
+        ("0177.0.0.1", "127.0.0.1"),
+        ("169.254.169.254.", "169.254.169.254"),
+        ("0x", "0.0.0.0"),
+        ("1.0x", "1.0.0.0"),
+        ("0xffffffff", "255.255.255.255"),
+    ] {
+        assert_eq!(url_host_ipv4(host), Ok(Some(v4(addr))), "{host}");
+    }
+    for domain in ["localhost", "example.com", "0x7g", "1.2.x", "", "."] {
+        assert_eq!(url_host_ipv4(domain), Ok(None), "{domain:?}");
+    }
+    for refused in [
+        "1.2.3.4.5",
+        "999.1.1.1",
+        "09",
+        "1.256.0x10000",
+        "4294967296",
+        "x.0",
+        "1..2",
+    ] {
+        assert_eq!(url_host_ipv4(refused), Err(UrlRefusal::NoHost), "{refused}");
+    }
+}
+
+/// THE HOST A DESTINATION JUDGE COMPARES: a non-ASCII host is the ASCII name or address UTS #46
+/// maps it to; an ASCII host, an alternate IPv4 spelling and an IPv6 literal (a zone id included)
+/// are what the guard always compared; a host `url` reads as an address the address reader does not
+/// (or refuses) is unjudgeable.
+#[test]
+fn judged_host_maps_to_what_a_url_client_dials() {
+    for (host, judged) in [
+        ("\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}", "localhost"),
+        ("\u{2460}\u{2461}\u{2466}.0.0.1", "127.0.0.1"),
+        (
+            "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
+            "169.254.169.254",
+        ),
+        ("LOCALHOST\u{3002}", "localhost"),
+        ("\u{ff10}x7f.1", "0x7f.1"),
+        ("b\u{fc}cher.example", "xn--bcher-kva.example"),
+        ("Api.Example.COM.", "api.example.com"),
+        ("0x7f.1", "0x7f.1"),
+        ("017700000001", "017700000001"),
+        ("08", "08"),
+        ("[::1]", "::1"),
+        ("[FE80::1%25ETH0]", "fe80::1%25eth0"),
+        ("fe80::1%eth0", "fe80::1%eth0"),
+        ("::ffff:1.2.3.4", "::ffff:1.2.3.4"),
+        ("x.0x7f-a", "x.0x7f-a"),
+    ] {
+        assert_eq!(judged_host(host).as_deref(), Ok(judged), "{host:?}");
+    }
+    for unjudgeable in [
+        "0x",
+        "1.0x",
+        "0x.0x.0x.0x",
+        "1.2.3.4.5",
+        "999.1.1.1",
+        "b\u{fc}cher\u{ff1c}.example",
+        "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}:80",
+    ] {
+        assert_eq!(
+            judged_host(unjudgeable),
+            Err(UrlRefusal::NoHost),
+            "{unjudgeable:?}"
         );
     }
 }

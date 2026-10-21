@@ -4061,6 +4061,97 @@ pub(crate) mod tool_door {
         .await;
     }
 
+    /// The SSRF guard bypass's odd host spellings (HIGH), each beside the plain ASCII host a URL
+    /// client dials it as: full-width `ｌｏｃａｌｈｏｓｔ`, circled-digit `①②⑦.0.0.1` and
+    /// `①⑥⑨.②⑤④.①⑥⑨.②⑤④`, `LOCALHOST。` with its ideographic full stop, and the full-width spellings
+    /// of `0x7f.1` and `017700000001`.
+    const ODD_HOSTS: [(&str, &str); 6] = [
+        (
+            "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
+            "localhost",
+        ),
+        ("\u{2460}\u{2461}\u{2466}.0.0.1", "127.0.0.1"),
+        (
+            "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
+            "169.254.169.254",
+        ),
+        ("LOCALHOST\u{3002}", "localhost"),
+        ("\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}", "0x7f.1"),
+        (
+            "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
+            "017700000001",
+        ),
+    ];
+
+    /// RED (HIGH, the SSRF guard bypass): the argument guard refuses a URL whose host is an odd
+    /// spelling exactly as it refuses the plain ASCII host a URL client dials it as (the same
+    /// status, JSON-RPC code, reason and sentence), on the `://` path and on the spellings without
+    /// `//` a WHATWG reader still reads a host from (`http:h`, `http:/\h`); and a host `url` dials
+    /// as `0.0.0.0` (`0x`) is refused. On the guard that compared hosts only ASCII-lowercased each
+    /// `://` spelling was admitted and sent, and the upstream fetched loopback or the metadata
+    /// address.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_odd_host_spelling_in_the_arguments_is_refused_as_its_ascii_host() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-odd-hosts";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+        let refusal = |status: StatusCode, body: &[u8], url: &str| {
+            let shown = String::from_utf8_lossy(body);
+            assert_eq!(status.as_u16(), 403, "`{url}` must be refused: {shown}");
+            let body: serde_json::Value = serde_json::from_slice(body).expect("JSON-RPC");
+            assert_eq!(
+                body["error"]["data"]["reason"], "tool_argument_refused",
+                "`{url}`: {body}"
+            );
+            (
+                body["error"]["code"].clone(),
+                body["error"]["data"]["reason"].clone(),
+                body["error"]["message"].clone(),
+            )
+        };
+        let spellings: [fn(&str) -> String; 3] = [
+            |h| format!("http://{h}/latest/meta-data/"),
+            |h| format!("http:{h}/latest/meta-data/"),
+            |h| format!("http:/\\{h}/latest/meta-data/"),
+        ];
+        for (odd, plain) in ODD_HOSTS {
+            for spell in spellings {
+                let (odd_url, plain_url) = (spell(odd), spell(plain));
+                let (status, body) = send(&rig.router, Some(&rig.token), &fetching(&odd_url)).await;
+                let odd_refusal = refusal(status, &body, &odd_url);
+                let (status, body) =
+                    send(&rig.router, Some(&rig.token), &fetching(&plain_url)).await;
+                let plain_refusal = refusal(status, &body, &plain_url);
+                assert_eq!(
+                    odd_refusal, plain_refusal,
+                    "`{odd_url}` beside `{plain_url}`"
+                );
+            }
+        }
+        for url in ["http://0x/latest/meta-data/", "http:0x/latest/meta-data/"] {
+            let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
+            refusal(status, &body, url);
+        }
+        let mut wire = Vec::new();
+        while let Ok(r) = heard.try_recv() {
+            wire.push(r);
+        }
+        assert!(
+            wire.iter().all(|r| !r.contains("\"tools/call\"")),
+            "no refused call reached the wire: {wire:?}"
+        );
+        // GREEN control: a public IDN host is its punycode name, and served.
+        let (status, body) = send(
+            &rig.router,
+            Some(&rig.token),
+            &fetching("https://b\u{fc}cher.example/notes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
     /// A UNIT THE PLANE ANSWERS ITSELF (ARCHITECT Q-L3B-LOCAL): a keyed `tools/list` names no entry,
     /// is admitted with no route walk and answered 200 by the plane from its catalogue — nothing
     /// charged (only far-end-reported units bill), nothing dialled, every unit ended.
