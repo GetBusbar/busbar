@@ -193,12 +193,11 @@ const STAND_IN: RootInstall = RootInstall {
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
-/// [`crate::test_support::hook_axis_stand_in`]): the ranking double, under its feature.
+/// [`crate::test_support::hook_axis_stand_in`]): the ranking double, in every test build (THE
+/// DESIGN l.1443: the kernel has no `hooks-ranking` feature to switch it on).
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
-    #[cfg(feature = "hooks-ranking")]
-    crate::test_support::ranking_double::door,
-];
+pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] =
+    &[crate::test_support::ranking_double::door];
 
 /// The composition root's linked store, auth and hook entries (the build's in-process stores, its
 /// auth rows and, when compiled in, its ranking hooks), the operator credential's words and its
