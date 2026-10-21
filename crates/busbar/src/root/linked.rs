@@ -330,7 +330,9 @@ pub fn linked_exports(
         .iter()
         .map(|d| {
             let name = d.name().map_err(|e| format!("a linked export door: {e}"))?;
-            let alias = d.alias().map_err(|e| format!("a linked export door: {e}"))?;
+            let alias = d
+                .alias()
+                .map_err(|e| format!("a linked export door: {e}"))?;
             manifest(&name, &alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(busbar_kernel::preflight::answering_former_names)

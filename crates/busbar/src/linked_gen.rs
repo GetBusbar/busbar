@@ -660,8 +660,11 @@ pub(crate) fn linked_source(
     let mut store_rows = String::new();
     for ((_, list), (feature, krate)) in linked.iter().zip(&on) {
         if list.iter().any(|a| a == STORE_AXIS) {
-            let canonical =
-                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature);
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            );
             store_rows.push_str(&format!(
                 "crate::root::linked::store_row({}, {canonical:?}), ",
                 door_of(krate)

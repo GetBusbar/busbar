@@ -2827,8 +2827,8 @@ fn linked_export_axis() {
         // rewrite): the test names `<crate>::door` and nothing else, as the root's row does.
         let door = busbar_export_prometheus::door;
         let stated = busbar_plugin_loader::dispatch::rendering_of(door).expect("the door states");
-        let read = busbar_contract::abi::mechanism::rendering::read(&stated)
-            .expect("its Statement reads");
+        let read =
+            busbar_contract::abi::mechanism::rendering::read(&stated).expect("its Statement reads");
         let alias = read
             .rewrites
             .iter()
