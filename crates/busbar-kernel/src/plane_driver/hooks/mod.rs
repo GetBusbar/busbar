@@ -52,11 +52,11 @@ use crate::diagnostics::{
     ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
+use crate::hooks::taps::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::hooks::{
     content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
-use crate::proxy::proxy_vocab::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hook_wire::HookStageProjection;
