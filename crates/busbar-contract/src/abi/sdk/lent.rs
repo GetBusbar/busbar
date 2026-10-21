@@ -490,39 +490,9 @@ pub fn open_failed<T: AbiOut>(
 /// The accessors of each `in`, one per pointer field and named after it, stated once. Each is `unsafe` inside only
 /// because the kind's ABI, cited beside it, is what makes the pointer valid for the call.
 macro_rules! lend {
-    (fn $reg:ident; $($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {
-        $(
-            impl<'a> Lent<'a, $ty> { $( lend!(@one $p $how($p $(, $n)?) $(-> $el)?); )+ }
-        )+
-        /// THE POINTER AND LENGTH PAIRS of each struct this block lends (status row 194): for each
-        /// list, buffer or loose bytes, the pointer's offset, its length's (or capacity's) offset
-        /// and that field's width, which the test support holds a hand-built `in` to.
-        fn $reg(t: std::any::TypeId) -> Option<Vec<(usize, usize, usize)>> {
-            $(
-                if t == std::any::TypeId::of::<$ty>() {
-                    return Some(
-                        [$( lend!(@pair $ty, $how $p $(, $n)?) ),+]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<(usize, usize, usize)>>(),
-                    );
-                }
-            )+
-            None
-        }
-    };
-    (@pair $ty:ty, one $p:ident) => { None };
-    (@pair $ty:ty, $how:ident $p:ident, $n:ident) => {
-        Some((
-            std::mem::offset_of!($ty, $p),
-            std::mem::offset_of!($ty, $n),
-            {
-                let blank = std::mem::MaybeUninit::<$ty>::uninit();
-                // SAFETY: a place projection of an uninitialised value, never read: its address.
-                crate::abi::pointee_size(unsafe { std::ptr::addr_of!((*blank.as_ptr()).$n) })
-            },
-        ))
-    };
+    ($($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {$(
+        impl<'a> Lent<'a, $ty> { $( lend!(@one $p $how($p $(, $n)?) $(-> $el)?); )+ }
+    )+};
     (@one $name:ident bytes($p:ident, $n:ident)) => {
         #[doc = concat!("The bytes `", stringify!($p), "`/`", stringify!($n), "` lend the call.")]
         #[must_use]
@@ -581,155 +551,163 @@ use crate::abi::transport::{
     IngestIn, KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
-lend! {
-    fn lend_pairs_kinds;
-    // THE LIFECYCLE (`abi::mechanism::lifecycle`).
-    OpenIn {
-        list(secrets, secrets_len) -> Blob;
-        one(host) -> HostTables;
-        buf(err_buf, err_cap) -> u8;
-    }
-    RefreshIn { list(secrets, secrets_len) -> Blob; }
-    ReadyIn { one(host) -> HostTables; }
-    // THE AUTH KIND (`abi::auth`): `verify`'s field lines and strip array, a login's requested
-    // scopes and submitted form fields, and the host's identity buffer.
-    VerifyIn {
-        list(lines, lines_len) -> NamedValue;
-        buf(strip, strip_cap) -> StripName;
-    }
-    // `fields`' head envelope (NULL unless the style needs it), and the host's field buffer and
-    // field array.
-    FieldsIn {
-        list(headers, headers_len) -> NamedValue;
-        buf(field_buf, field_buf_cap) -> u8;
-        buf(fields, fields_cap) -> FieldSpan;
-    }
-    BeginLoginIn { list(scopes, scopes_len) -> AbiStr; }
-    CompleteLoginIn { list(submitted, submitted_len) -> NamedValue; }
-    IdentityBuf {
-        buf(buf, buf_cap) -> u8;
-        buf(groups, groups_cap) -> Span;
-    }
-    ValidateIn { buf(err_buf, err_cap) -> u8; }
-    // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
-    PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
-    ArriveIn {
-        list(fields, fields_len) -> Field;
-        buf(units_buf, units_cap) -> UnitCount;
-    }
-    OnPieceIn {
-        list(head_fields, head_fields_len) -> Field;
-        buf(reply_buf, reply_cap) -> u8;
-        buf(units_buf, units_cap) -> UnitCount;
-        buf(records_buf, records_cap) -> RecordWrite;
-        buf(fields_buf, fields_cap) -> OutField;
-        buf(arena_buf, arena_cap) -> u8;
-    }
-    RefusalIn {
-        buf(reply_buf, reply_cap) -> u8;
-        buf(fields_buf, fields_cap) -> OutField;
-        buf(arena_buf, arena_cap) -> u8;
-        buf(records_buf, records_cap) -> RecordWrite;
-    }
-    ServeIn {
-        list(fields, fields_len) -> Field;
-        buf(reply_buf, reply_cap) -> u8;
-        buf(fields_buf, fields_cap) -> OutField;
-        buf(arena_buf, arena_cap) -> u8;
-        buf(records_buf, records_cap) -> RecordWrite;
-    }
-    CatalogIn {
-        list(fields, fields_len) -> Field;
-        list(names, names_len) -> AbiStr;
-        buf(reply_buf, reply_cap) -> u8;
-        buf(fields_buf, fields_cap) -> OutField;
-        buf(arena_buf, arena_cap) -> u8;
-    }
-    PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
-    PlaneCancelIn {
-        buf(records_buf, records_cap) -> RecordWrite;
-        buf(arena_buf, arena_cap) -> u8;
-    }
-    ProjectIn {
-        list(fields, fields_len) -> Field;
-        buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;
-        buf(arena_buf, arena_cap) -> u8;
-        buf(messages_buf, messages_cap) -> crate::abi::hook::MessageView;
-    }
-    // THE TRANSPORT KIND (`abi::transport`).
-    FramerSink {
-        buf(wire, wire_cap) -> u8;
-        buf(frame, frame_cap) -> u8;
-        buf(pieces, pieces_cap) -> FramePiece;
-        buf(heads, heads_cap) -> HeadSlots;
-    }
-    ListenIn { buf(addr_buf, addr_cap) -> u8; }
-    AcceptIn { buf(peer_buf, peer_cap) -> u8; }
-    ArrivalIn { buf(peer_buf, peer_cap) -> u8; }
-    DialIn { one(dest) -> Destination; }
-    Destination {
-        list(args, args_len) -> AbiStr;
-        list(env, env_len) -> Field;
-    }
-    ReadIn { buf(buf, cap) -> u8; }
-    WriteIn { bytes(bytes, len); }
-    LocateIn {
-        buf(authority_buf, authority_cap) -> u8;
-        buf(name_buf, name_cap) -> u8;
-        buf(alpn_buf, alpn_cap) -> u8;
-        buf(defaults_buf, defaults_cap) -> u8;
-    }
-    BeginIn {
-        one(facts) -> ConnFacts;
-        list(fields, fields_len) -> Field;
-        one(lane) -> DatagramLane;
-    }
-    IngestIn {
-        bytes(bytes, len);
-        one(lane) -> DatagramLane;
-    }
-    EmitIn {
-        bytes(bytes, len);
-        one(lane) -> DatagramLane;
-    }
-    EncodeIn {
-        list(fields, fields_len) -> Field;
-        bytes(body, body_len);
-    }
-    RefuseIn { bytes(bytes, len); }
-    FinishIn {
-        bytes(final_bytes, final_bytes_len);
-        one(lane) -> DatagramLane;
-    }
-    FramingIn { one(lane) -> DatagramLane; }
-    // THE DATAGRAM LANE (`abi::transport::datagram`): the keying-material item lent for the call
-    // that presents it, and the host buffer the answer's routes go into.
-    DatagramLane {
-        one(keying) -> KeyingMaterial;
-        buf(routes, routes_cap) -> DatagramRoute;
-        list(paths, paths_len) -> DatagramPath;
-    }
-    KeyingMaterial { bytes(bytes, len); }
-    AdoptIn {
-        one(facts) -> ConnFacts;
-        bytes(leftover, leftover_len);
-    }
-    // THE HOOK KIND (`abi::hook`): the views, and the host buffers `decide`/`transform` answer into.
-    DecideIn {
-        list(candidates, candidates_len) -> HookCandidateStatic;
-        list(candidate_dynamics, candidates_len) -> HookCandidateDynamic;
-        list(budget, budget_len) -> HookBudgetBucketState;
-        buf(order_buf, order_cap) -> u32;
-        buf(reject_message_buf, reject_message_cap) -> u8;
-        buf(restrict_tags_buf, restrict_tags_cap) -> u8;
-        buf(rewrite_buf, rewrite_cap) -> u8;
-    }
-    HookRequestView { list(signals, signals_len) -> HookSignalEntry; }
-    HookCandidateStatic { list(tags, tags_len) -> AbiStr; }
-    HookCandidateDynamic { list(signals, signals_len) -> HookSignalEntry; }
-    HookPromptView { list(messages, messages_len) -> HookMessageView; }
-    NotifyIn { list(signals, signals_len) -> HookSignalEntry; }
+/// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
+/// test support its pointer and length pairs (status row 194).
+macro_rules! lend_kinds_list {
+    ($then:ident $($arg:tt)*) => {
+        $then! {
+            $($arg)*
+            // THE LIFECYCLE (`abi::mechanism::lifecycle`).
+            OpenIn {
+                list(secrets, secrets_len) -> Blob;
+                one(host) -> HostTables;
+                buf(err_buf, err_cap) -> u8;
+            }
+            RefreshIn { list(secrets, secrets_len) -> Blob; }
+            ReadyIn { one(host) -> HostTables; }
+            // THE AUTH KIND (`abi::auth`): `verify`'s field lines and strip array, a login's requested
+            // scopes and submitted form fields, and the host's identity buffer.
+            VerifyIn {
+                list(lines, lines_len) -> NamedValue;
+                buf(strip, strip_cap) -> StripName;
+            }
+            // `fields`' head envelope (NULL unless the style needs it), and the host's field buffer and
+            // field array.
+            FieldsIn {
+                list(headers, headers_len) -> NamedValue;
+                buf(field_buf, field_buf_cap) -> u8;
+                buf(fields, fields_cap) -> FieldSpan;
+            }
+            BeginLoginIn { list(scopes, scopes_len) -> AbiStr; }
+            CompleteLoginIn { list(submitted, submitted_len) -> NamedValue; }
+            IdentityBuf {
+                buf(buf, buf_cap) -> u8;
+                buf(groups, groups_cap) -> Span;
+            }
+            ValidateIn { buf(err_buf, err_cap) -> u8; }
+            // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
+            PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
+            ArriveIn {
+                list(fields, fields_len) -> Field;
+                buf(units_buf, units_cap) -> UnitCount;
+            }
+            OnPieceIn {
+                list(head_fields, head_fields_len) -> Field;
+                buf(reply_buf, reply_cap) -> u8;
+                buf(units_buf, units_cap) -> UnitCount;
+                buf(records_buf, records_cap) -> RecordWrite;
+                buf(fields_buf, fields_cap) -> OutField;
+                buf(arena_buf, arena_cap) -> u8;
+            }
+            RefusalIn {
+                buf(reply_buf, reply_cap) -> u8;
+                buf(fields_buf, fields_cap) -> OutField;
+                buf(arena_buf, arena_cap) -> u8;
+                buf(records_buf, records_cap) -> RecordWrite;
+            }
+            ServeIn {
+                list(fields, fields_len) -> Field;
+                buf(reply_buf, reply_cap) -> u8;
+                buf(fields_buf, fields_cap) -> OutField;
+                buf(arena_buf, arena_cap) -> u8;
+                buf(records_buf, records_cap) -> RecordWrite;
+            }
+            CatalogIn {
+                list(fields, fields_len) -> Field;
+                list(names, names_len) -> AbiStr;
+                buf(reply_buf, reply_cap) -> u8;
+                buf(fields_buf, fields_cap) -> OutField;
+                buf(arena_buf, arena_cap) -> u8;
+            }
+            PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
+            PlaneCancelIn {
+                buf(records_buf, records_cap) -> RecordWrite;
+                buf(arena_buf, arena_cap) -> u8;
+            }
+            ProjectIn {
+                list(fields, fields_len) -> Field;
+                buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;
+                buf(arena_buf, arena_cap) -> u8;
+                buf(messages_buf, messages_cap) -> crate::abi::hook::MessageView;
+            }
+            // THE TRANSPORT KIND (`abi::transport`).
+            FramerSink {
+                buf(wire, wire_cap) -> u8;
+                buf(frame, frame_cap) -> u8;
+                buf(pieces, pieces_cap) -> FramePiece;
+                buf(heads, heads_cap) -> HeadSlots;
+            }
+            ListenIn { buf(addr_buf, addr_cap) -> u8; }
+            AcceptIn { buf(peer_buf, peer_cap) -> u8; }
+            ArrivalIn { buf(peer_buf, peer_cap) -> u8; }
+            DialIn { one(dest) -> Destination; }
+            Destination {
+                list(args, args_len) -> AbiStr;
+                list(env, env_len) -> Field;
+            }
+            ReadIn { buf(buf, cap) -> u8; }
+            WriteIn { bytes(bytes, len); }
+            LocateIn {
+                buf(authority_buf, authority_cap) -> u8;
+                buf(name_buf, name_cap) -> u8;
+                buf(alpn_buf, alpn_cap) -> u8;
+                buf(defaults_buf, defaults_cap) -> u8;
+            }
+            BeginIn {
+                one(facts) -> ConnFacts;
+                list(fields, fields_len) -> Field;
+                one(lane) -> DatagramLane;
+            }
+            IngestIn {
+                bytes(bytes, len);
+                one(lane) -> DatagramLane;
+            }
+            EmitIn {
+                bytes(bytes, len);
+                one(lane) -> DatagramLane;
+            }
+            EncodeIn {
+                list(fields, fields_len) -> Field;
+                bytes(body, body_len);
+            }
+            RefuseIn { bytes(bytes, len); }
+            FinishIn {
+                bytes(final_bytes, final_bytes_len);
+                one(lane) -> DatagramLane;
+            }
+            FramingIn { one(lane) -> DatagramLane; }
+            // THE DATAGRAM LANE (`abi::transport::datagram`): the keying-material item lent for the call
+            // that presents it, and the host buffer the answer's routes go into.
+            DatagramLane {
+                one(keying) -> KeyingMaterial;
+                buf(routes, routes_cap) -> DatagramRoute;
+                list(paths, paths_len) -> DatagramPath;
+            }
+            KeyingMaterial { bytes(bytes, len); }
+            AdoptIn {
+                one(facts) -> ConnFacts;
+                bytes(leftover, leftover_len);
+            }
+            // THE HOOK KIND (`abi::hook`): the views, and the host buffers `decide`/`transform` answer into.
+            DecideIn {
+                list(candidates, candidates_len) -> HookCandidateStatic;
+                list(candidate_dynamics, candidates_len) -> HookCandidateDynamic;
+                list(budget, budget_len) -> HookBudgetBucketState;
+                buf(order_buf, order_cap) -> u32;
+                buf(reject_message_buf, reject_message_cap) -> u8;
+                buf(restrict_tags_buf, restrict_tags_cap) -> u8;
+                buf(rewrite_buf, rewrite_cap) -> u8;
+            }
+            HookRequestView { list(signals, signals_len) -> HookSignalEntry; }
+            HookCandidateStatic { list(tags, tags_len) -> AbiStr; }
+            HookCandidateDynamic { list(signals, signals_len) -> HookSignalEntry; }
+            HookPromptView { list(messages, messages_len) -> HookMessageView; }
+            NotifyIn { list(signals, signals_len) -> HookSignalEntry; }
+        }
+    };
 }
+
+lend_kinds_list!(lend);
 
 // THE STORE KIND (`abi::store`): the lists a write lends and the host buffers a request-path read
 // fills. A nested host buffer (`store::HostBuf`, `HostBlobs`, `HostSessions`, `HostRecords`) is
@@ -740,25 +718,33 @@ use crate::abi::store::{
     ReserveIn, SessionRow, SliceReleaseIn, UnitCell, UsageCell, WindowCap, WindowCapsIn,
 };
 
-lend! {
-    fn lend_pairs_store;
-    AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
-    OpBlobsIn { list(records, records_len) -> Blob; }
-    AppendBatchIn { list(records, records_len) -> Blob; }
-    ReserveIn {
-        list(cells, cells_len) -> UnitCell;
-        buf(grants, grants_cap) -> CellGrant;
-    }
-    SliceReleaseIn {
-        list(items, items_len) -> ReleaseItem;
-        buf(released, released_cap) -> u64;
-    }
-    WindowCapsIn { list(caps, caps_len) -> WindowCap; }
-    StoreHostBuf { buf(ptr, cap) -> u8; }
-    StoreHostBlobs { buf(items, items_cap) -> Blob; }
-    HostSessions { buf(items, items_cap) -> SessionRow; }
-    HostRecords { buf(items, items_cap) -> RecordEntry; }
+/// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
+/// test support its pointer and length pairs (status row 194).
+macro_rules! lend_store_list {
+    ($then:ident $($arg:tt)*) => {
+        $then! {
+            $($arg)*
+            AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
+            OpBlobsIn { list(records, records_len) -> Blob; }
+            AppendBatchIn { list(records, records_len) -> Blob; }
+            ReserveIn {
+                list(cells, cells_len) -> UnitCell;
+                buf(grants, grants_cap) -> CellGrant;
+            }
+            SliceReleaseIn {
+                list(items, items_len) -> ReleaseItem;
+                buf(released, released_cap) -> u64;
+            }
+            WindowCapsIn { list(caps, caps_len) -> WindowCap; }
+            StoreHostBuf { buf(ptr, cap) -> u8; }
+            StoreHostBlobs { buf(items, items_cap) -> Blob; }
+            HostSessions { buf(items, items_cap) -> SessionRow; }
+            HostRecords { buf(items, items_cap) -> RecordEntry; }
+        }
+    };
 }
+
+lend_store_list!(lend);
 
 // THE EXPORT KIND (`abi::export`): the recorder snapshot `scrape` lends (families, their samples,
 // their labels) and the host buffer it renders into, `check`'s instances and `serve`'s headers.
@@ -767,17 +753,25 @@ use crate::abi::export::{
     ServeIn as ExportServeIn,
 };
 
-lend! {
-    fn lend_pairs_export;
-    ScrapeIn {
-        list(families, families_len) -> ScrapeFamily;
-        buf(buf, cap) -> u8;
-    }
-    ScrapeFamily { list(samples, samples_len) -> ScrapeSample; }
-    ScrapeSample { list(labels, labels_len) -> ScrapeLabel; }
-    CheckIn { list(instances, instances_len) -> CheckInstance; }
-    ExportServeIn { list(headers, headers_len) -> AbiStr; }
+/// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
+/// test support its pointer and length pairs (status row 194).
+macro_rules! lend_export_list {
+    ($then:ident $($arg:tt)*) => {
+        $then! {
+            $($arg)*
+            ScrapeIn {
+                list(families, families_len) -> ScrapeFamily;
+                buf(buf, cap) -> u8;
+            }
+            ScrapeFamily { list(samples, samples_len) -> ScrapeSample; }
+            ScrapeSample { list(labels, labels_len) -> ScrapeLabel; }
+            CheckIn { list(instances, instances_len) -> CheckInstance; }
+            ExportServeIn { list(headers, headers_len) -> AbiStr; }
+        }
+    };
 }
+
+lend_export_list!(lend);
 
 /// THE FIELD ACCESSORS of every struct a call lends (status row 194), one per field and named after
 /// it, so a [`Lent`] reads all of its struct without its `Deref` (which #1471 removes). A number or
@@ -1673,69 +1667,6 @@ macro_rules! lent_field_list {
 }
 
 lent_field_list!(lent_fields);
-
-/// The fields each lent struct embeds: a nested struct (`sub`), a string or a payload, by offset
-/// and type, from the one list the field accessors are stated from.
-macro_rules! lent_embeds {
-    ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {
-        fn lent_embeds(t: std::any::TypeId) -> Vec<(usize, std::any::TypeId)> {
-            $(
-                if t == std::any::TypeId::of::<$ty>() {
-                    #[allow(unused_mut)]
-                    let mut v = Vec::new();
-                    $( lent_embeds!(@one v, $ty, $how $name $(: $t)?); )+
-                    return v;
-                }
-            )+
-            Vec::new()
-        }
-    };
-    (@one $v:ident, $ty:ty, sub $name:ident: $t:ty) => {
-        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<$t>()));
-    };
-    (@one $v:ident, $ty:ty, str $name:ident) => {
-        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<AbiStr>()));
-    };
-    (@one $v:ident, $ty:ty, blob $name:ident) => {
-        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<Blob>()));
-    };
-    (@one $v:ident, $ty:ty, val $name:ident: $t:ty) => {};
-}
-
-lent_field_list!(lent_embeds);
-
-/// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
-/// payloads' included, at their offsets in it: `(pointer, length, length's width)` (status row
-/// 194). What the test support's builders may set together, and nothing else.
-pub(crate) fn lent_pairs(t: std::any::TypeId) -> Vec<(usize, usize, usize)> {
-    let word = std::mem::size_of::<usize>();
-    let mut out = if t == std::any::TypeId::of::<AbiStr>() {
-        vec![(
-            std::mem::offset_of!(AbiStr, ptr),
-            std::mem::offset_of!(AbiStr, len),
-            word,
-        )]
-    } else if t == std::any::TypeId::of::<Blob>() {
-        vec![(
-            std::mem::offset_of!(Blob, ptr),
-            std::mem::offset_of!(Blob, len),
-            word,
-        )]
-    } else {
-        lend_pairs_kinds(t)
-            .or_else(|| lend_pairs_store(t))
-            .or_else(|| lend_pairs_export(t))
-            .unwrap_or_default()
-    };
-    for (at, inner) in lent_embeds(t) {
-        out.extend(
-            lent_pairs(inner)
-                .into_iter()
-                .map(|(p, n, w)| (at + p, at + n, w)),
-        );
-    }
-    out
-}
 
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]

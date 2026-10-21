@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{
     slot, ConfigureIn, ConfigureOut, DecideOut, DescribeOut, NotifyIn, StatusOut, TransformOut,
+    VERB_PREFER,
 };
 use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::{
@@ -212,6 +213,9 @@ struct Inner {
     settings: Vec<u8>,
     state: Mutex<State>,
     next_worker: AtomicU32,
+    /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
+    /// is refused where the host reads it ([`HookInstance::verdict`]).
+    orders: bool,
 }
 
 impl Inner {
@@ -562,6 +566,22 @@ impl HookInstance {
         settings: &[u8],
         rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
     ) -> Result<Self, String> {
+        Self::open_declaring(plugin, dispatcher, settings, true, rebind)
+    }
+
+    /// [`Self::open`] for a hook whose `declares.hook.orders` is `orders`: when `false`, the hook
+    /// declared that its `decide` never answers an order, and every order it does answer is refused
+    /// (ARCHITECT ruling, status row 194).
+    ///
+    /// # Errors
+    /// The plugin's refusal, in 1.5.5's words.
+    pub fn open_declaring(
+        plugin: Plugin<Hook>,
+        dispatcher: Arc<Dispatcher>,
+        settings: &[u8],
+        orders: bool,
+        rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
+    ) -> Result<Self, String> {
         open(&plugin, settings)?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -571,6 +591,7 @@ impl HookInstance {
                 settings: settings.to_vec(),
                 state: Mutex::new(State::Live(Arc::new(plugin))),
                 next_worker: AtomicU32::new(0),
+                orders,
             }),
         })
     }
@@ -611,6 +632,11 @@ impl HookInstance {
             match inner.submit(s, budget, frame as Lent, make, regrow).await {
                 Ok(done) => {
                     release(&done.plugin, done.lease);
+                    if !inner.orders && done.outcome == Outcome::Ready {
+                        if let Some(refused) = refused_order(s, &done.out, &inner.name) {
+                            return Answered::Broken(refused);
+                        }
+                    }
                     let frame = current.lock().unwrap_or_else(|p| p.into_inner()).clone();
                     drop(done.lent);
                     Answered::Answer {
@@ -651,6 +677,23 @@ impl HookInstance {
             Some(bytes)
         })
     }
+}
+
+/// THE ORDER A HOOK THAT DECLARED `orders: false` ANSWERED, refused: the text, when `out` is a
+/// `decide` answer naming an order (PREFER, or order slots written or needed), else `None`. The one
+/// place the host reads a hook's order from its answer, so an order is never read past it.
+fn refused_order<O: 'static>(s: u32, out: &O, name: &str) -> Option<String> {
+    if s != slot::DECIDE {
+        return None;
+    }
+    let out: &dyn std::any::Any = out;
+    let o = out.downcast_ref::<DecideOut>()?;
+    (o.verbs & VERB_PREFER != 0 || o.order_written > 0 || o.order_needed > 0).then(|| {
+        format!(
+            "hook plugin '{name}' declared `hook.orders: false` and answered an order: its \
+             `decide` must always abstain, so the order is refused"
+        )
+    })
 }
 
 /// The regrown frame for the one short re-call of `s` (`decide` or `transform`).
@@ -1031,6 +1074,7 @@ impl HookAxis for HookRows {
             })
         };
         let conns = ConnTable::serving(self.conns.map(|table| table()));
+        let c_orders = c.orders;
         let plugin = Self::bind(&c, &self.dispatcher, label, sink(label)?, conns.clone())?;
         let rebind = {
             let (dispatcher, label) = (Arc::clone(&self.dispatcher), label.to_string());
@@ -1038,10 +1082,11 @@ impl HookAxis for HookRows {
             move || Self::bind(&c, &dispatcher, &label, Arc::clone(&sink), conns.clone())
         };
         let text = settings.to_string();
-        let opened = HookInstance::open(
+        let opened = HookInstance::open_declaring(
             plugin,
             Arc::clone(&self.dispatcher),
             text.as_bytes(),
+            c_orders,
             rebind,
         )?;
         Ok(Arc::new(opened))

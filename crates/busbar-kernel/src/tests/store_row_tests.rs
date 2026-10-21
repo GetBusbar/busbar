@@ -24,5 +24,5 @@ fn a_store_row_reads_alike_by_door_function_or_by_macro_door() {
         (BY_MACRO.0, BY_MACRO.1, BY_MACRO.3)
     );
     assert_eq!(BY_FN.2 as usize, BY_MACRO.2 as usize, "one door function");
-    assert_eq!(BY_FN.2 as usize, store_double::door as usize);
+    assert_eq!(BY_FN.2 as usize, store_double::door as *const () as usize);
 }
