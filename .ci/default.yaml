@@ -4,6 +4,19 @@
 to: dev
 on_green: merge
 deadline: 6h
+# Guarded beyond the engine's built-ins (.ci/**, golden(s), *.golden, *.snap) and `rules:` below:
+# the proof ledgers and design-binding docs under qa/ and the gate code itself. A change to any of
+# these needs a person's approval at the exact head. qa/*.toml stays under `rules:` so a
+# ratchet-proven tightening still passes on its own (2026-10-21: #1342 entered the queue with
+# qa/*.json and xtask/src/gates/** edits and no approval asked).
+guarded:
+  - "qa/**/*.json"
+  - "qa/**/*.md"
+  - "qa/*.ledger"
+  - "qa/*.allow"
+  - "qa/*.missing"
+  - "qa/*.status"
+  - "xtask/src/gates/**"
 # Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
 # its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
 # a new file still asks the owner. Both files are under `rules: ["qa/*.toml"]` below.
