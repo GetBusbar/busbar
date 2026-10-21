@@ -100,21 +100,16 @@ impl EgressTrust {
 /// THE TAG of a key pin's canonical spelling: `sha256/<standard base64>`, the spelling an operator
 /// is shown and writes in the operator docs, the same one `openssl ... | base64` gives
 /// after it and the one the kernel's egress pin renders.
-pub const KEY_PIN_TAG: &str = "sha256/";
+pub const KEY_PIN_TAG: &str = crate::abi::sdk::digest::SHA256_TAG;
 
 /// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
-/// DER, tag and length included), as `sha256/<standard base64 with padding>`. What the connector
+/// DER, tag and length included), as `sha256/<standard base64 with padding>`, spelled by the
+/// contract's one tagged-digest renderer (`abi::sdk::digest::sha256_tagged`). What the connector
 /// reports as observed and what every written pin is read to ([`canonical_key_pin`]), so a pin and
 /// an observation compare as the digest they spell.
 #[must_use]
 pub fn key_pin(subject_public_key_info: &[u8]) -> String {
-    use sha2::Digest as _;
-    render_key_pin(&sha2::Sha256::digest(subject_public_key_info))
-}
-
-/// A digest in the canonical spelling.
-fn render_key_pin(digest: &[u8]) -> String {
-    format!("{KEY_PIN_TAG}{}", crate::media::base64_encode(digest))
+    crate::abi::sdk::digest::sha256_tagged(subject_public_key_info)
 }
 
 /// A written key pin that names no SHA-256 digest: why, never the value itself.
@@ -134,27 +129,36 @@ impl std::fmt::Display for BadKeyPin {
 
 impl std::error::Error for BadKeyPin {}
 
-/// THE ONE READER OF A WRITTEN KEY PIN, to its canonical spelling ([`key_pin`]): the canonical
-/// `sha256/<base64>`, or the plain `<base64>` alias, surrounding whitespace ignored. The base64 is
-/// standard with its padding, and must decode to exactly one SHA-256 digest (32 bytes).
+/// THE ONE READER OF A WRITTEN KEY PIN, to its canonical spelling ([`key_pin`]), surrounding
+/// whitespace ignored. The two spellings are told apart by what DECODES, never by the prefix alone:
+///
+/// * canonical: `sha256/` followed by standard, padded base64 that decodes to exactly 32 bytes;
+/// * otherwise the WHOLE value is the plain alias: standard, padded base64 of exactly 32 bytes.
+///
+/// So a plain alias whose own base64 happens to begin `sha256/` (`/` is a base64 digit) reads as
+/// that alias, its 37-character tail being no padded base64.
 ///
 /// # Errors
 ///
-/// Anything else: another tag, a malformed or unpadded base64, or a digest of another length.
+/// Neither reading names one SHA-256 digest.
 pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
     use base64::Engine as _;
+    let decode = |encoded: &str| -> Option<[u8; 32]> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()?;
+        bytes.try_into().ok()
+    };
     let written = written.trim();
-    let encoded = written.strip_prefix(KEY_PIN_TAG).unwrap_or(written);
-    if encoded.is_empty() {
-        return Err(BadKeyPin("it is empty"));
-    }
-    let digest = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|_| BadKeyPin("it is not `sha256/` and standard, padded base64"))?;
-    if digest.len() != 32 {
-        return Err(BadKeyPin("it does not decode to 32 bytes"));
-    }
-    Ok(render_key_pin(&digest))
+    let digest = written
+        .strip_prefix(KEY_PIN_TAG)
+        .and_then(decode)
+        .or_else(|| decode(written))
+        .ok_or(BadKeyPin(
+            "it is neither `sha256/` and the standard, padded base64 of 32 bytes, nor that base64 \
+             alone",
+        ))?;
+    Ok(crate::abi::sdk::digest::tagged(&digest))
 }
 
 /// THE TRUST ANCHORS OF ONE DESTINATION a need reaches (the transport pin, ARCHITECT 2026-10-03): the

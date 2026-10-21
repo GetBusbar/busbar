@@ -70,3 +70,50 @@ fn a_pin_that_names_no_sha256_digest_is_refused() {
         );
     }
 }
+
+/// RED: a PLAIN alias whose own base64 begins `sha256/` (`/` is a base64 digit) is read as that
+/// alias, by what decodes, never by the prefix alone. Thirty-two bytes are 44 base64 characters
+/// (43 digits, the 43rd carrying 4 bits and 2 zero bits, and one `=`), so `sha256/` + 36 `A` + `=`
+/// is 44 characters decoding to exactly 32 bytes; the 37-character tail after `sha256/` is no
+/// padded base64 (37 is not a multiple of 4). Read by its prefix, it was refused.
+#[test]
+fn red_a_plain_alias_that_begins_like_the_tag_reads_as_the_alias() {
+    use base64::Engine as _;
+    let plain = format!("{KEY_PIN_TAG}{}=", "A".repeat(36));
+    assert_eq!(plain.len(), 44);
+    let digest = base64::engine::general_purpose::STANDARD
+        .decode(&plain)
+        .expect("a plain alias of 32 bytes");
+    assert_eq!(digest.len(), 32);
+    assert!(
+        base64::engine::general_purpose::STANDARD
+            .decode(plain.strip_prefix(KEY_PIN_TAG).expect("tagged"))
+            .is_err(),
+        "its tail is no padded base64"
+    );
+    assert_eq!(
+        canonical_key_pin(&plain).as_deref(),
+        Ok(format!("{KEY_PIN_TAG}{plain}").as_str())
+    );
+}
+
+/// RED: a tagged value is canonical only where its tail decodes to EXACTLY one SHA-256 digest; a
+/// tail of 31 or 33 bytes is refused (and is no plain alias either).
+#[test]
+fn red_a_tagged_value_of_31_or_33_bytes_is_refused() {
+    for n in [31_usize, 33] {
+        let tail = crate::media::base64_encode(&vec![7_u8; n]);
+        let written = format!("{KEY_PIN_TAG}{tail}");
+        assert!(
+            matches!(canonical_key_pin(&written), Err(BadKeyPin(_))),
+            "{n} bytes: {written}"
+        );
+    }
+}
+
+/// The tagged spelling is the contract's ONE tagged-digest renderer's: the key pin of a key info is
+/// its document digest, byte for byte.
+#[test]
+fn the_key_pin_is_the_one_tagged_digest() {
+    assert_eq!(key_pin(SPKI), crate::abi::sdk::digest::sha256_tagged(SPKI));
+}
