@@ -837,6 +837,9 @@ fn judged_host_maps_to_what_a_url_client_dials() {
             judged_host(unjudgeable),
             Err(UrlRefusal::NoHost),
             "{unjudgeable:?}"
+        );
+    }
+}
 
 /// file: hosts are read opaque; no file: URL is dialled or judged. A non-ASCII local-file URL host
 /// reads as `url`'s opaque host, not as a punycode name, and an ASCII one is read as before.
