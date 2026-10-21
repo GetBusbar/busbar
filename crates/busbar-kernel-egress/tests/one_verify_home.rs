@@ -65,8 +65,9 @@ fn no_verify_unit_is_exported() {
 /// [`the_network_readers_live_code_calls_stay`].
 #[test]
 fn trust_net_declares_no_second_destination_judge() {
-    let net = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/trust/net.rs"))
-        .expect("the network readers are readable");
+    let net =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/trust/net.rs"))
+            .expect("the network readers are readable");
     let declared: Vec<&str> = [
         "pub struct GuardPolicy",
         "pub struct PinnedTarget",
