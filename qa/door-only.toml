@@ -6,10 +6,11 @@
 
 # THE SEAMS BEHIND AN ALIAS. The static-seam rule read only the words on a static's own line, so a
 # function pointer or trait object named through a type alias passed it. The scan now resolves
-# aliases (Law 9: a sharpened instrument arms at TODAY'S MEASURED VALUE). Seven rows below were in
-# the tree, unseen, before the scan could see them: SPAWN_SECRETS, CONFIG_PROJECTION,
-# INSTALLED_BODY_INGRESS, ONE_SHOT_RUNNERS, SESSION_RUNNERS, AUTH_AXIS and HELD. They drain like any
-# other row.
+# aliases. Four rows below were in the tree, unseen, before the scan could see them:
+# SPAWN_SECRETS, CONFIG_PROJECTION, AUTH_AXIS and HELD. They are drain-only architecture debt at
+# today's measured count (ARCHITECT ruling, row 159: honest measurement of debt already there; Law
+# 9: the ceiling only falls); each names its drain PR.
+# drain PR: pending
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-core-connector/src/spawn_env.rs"
@@ -22,6 +23,7 @@ file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
 count = 1
 
+# drain PR: pending
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/appbuild.rs"
@@ -43,24 +45,7 @@ file = "crates/busbar-kernel/src/egress/trust/mod.rs"
 item = "EGRESS_TRUST"
 count = 1
 
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/ingress/arrival.rs"
-item = "INSTALLED_BODY_INGRESS"
-count = 1
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane_host/mod.rs"
-item = "ONE_SHOT_RUNNERS"
-count = 1
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane_host/mod.rs"
-item = "SESSION_RUNNERS"
-count = 1
-
+# drain PR: pending
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/preflight.rs"
@@ -79,6 +64,7 @@ file = "crates/busbar-kernel/src/rate_apply.rs"
 item = "EPOCH"
 count = 1
 
+# drain PR: pending
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar/src/root/durability/store_identity.rs"

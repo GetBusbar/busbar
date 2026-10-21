@@ -34,6 +34,16 @@ pub const EXEMPT_SEAMS: &[&str] = &[
     "crates/busbar-kernel/src/admin/seam.rs",
 ];
 
+/// NAMED STATIC EXEMPTIONS, by file and item: statics the architect ruled the install path, not
+/// debt. Each must still be declared where it is named, or the scan errors: an exemption whose
+/// static is gone forgives nothing and is struck with it.
+///
+/// `ROOT_ROWS`: the composition root's one install record (ARCHITECT WIRE-STORE Q8 and the
+/// opener-seam ruling, "installed via RootRows"; the #1202 ruling: the linked table `linked_gen`
+/// emits names only `<crate>::door`, so every plugin row the record carries is a door).
+pub const EXEMPT_STATICS: &[(&str, &str)] =
+    &[("crates/busbar-kernel/src/preflight.rs", "ROOT_ROWS")];
+
 pub const SPEC: Spec = Spec {
     gate: "door-only",
     ledger: "qa/door-only.toml",
@@ -331,6 +341,7 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     // The closure's aliases first, `busbar-contract`'s included (the door type is declared there):
     // a static anywhere in scope may name one.
     let mut aliases = Aliases::default();
+    let mut exempt_seen: Vec<(&str, &str)> = Vec::new();
     for m in members.iter().filter(|m| closure.contains(&m.name)) {
         match one_abi::rs_files(cx, &m.dir) {
             Ok(files) => {
@@ -399,6 +410,13 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                     continue;
                 }
                 if let Some((name, mut ty)) = static_decl(&sl.counted) {
+                    if let Some(&ex) = EXEMPT_STATICS
+                        .iter()
+                        .find(|(f, i)| *f == rel.as_str() && *i == name.as_str())
+                    {
+                        exempt_seen.push(ex);
+                        continue;
+                    }
                     for more in lines.iter().skip(idx + 1).take(6) {
                         if ty.contains('=') || sl.counted.contains('=') || sl.counted.contains(';')
                         {
@@ -421,6 +439,13 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                     }
                 }
             }
+        }
+    }
+    for (file, item) in EXEMPT_STATICS {
+        if !exempt_seen.contains(&(*file, *item)) {
+            errors.push(format!(
+                "named exemption {file} {item}: no such static in the tree; strike the exemption"
+            ));
         }
     }
     (findings, errors)
@@ -500,6 +525,12 @@ impl Gate for DoorOnlyGate {
              pub static PLANTED_CELL: std::sync::Mutex<std::cell::Cell<u8>> =\n    \
              std::sync::Mutex::new(std::cell::Cell::new(0));\n",
         );
+        // THE NAMED EXEMPTION IS ONE STATIC IN ONE FILE: the same name elsewhere is a finding.
+        let mut exempt_elsewhere = Overlay::new();
+        exempt_elsewhere.set(
+            file,
+            "pub static ROOT_ROWS: std::sync::OnceLock<fn() -> u8> = std::sync::OnceLock::new();\n",
+        );
         let mut seam = Overlay::new();
         seam.set(
             file,
@@ -532,6 +563,12 @@ impl Gate for DoorOnlyGate {
                     "a static of door rows behind the contract's door alias is RED, naming it",
                     rows,
                     vec![file, "PLANTED_ROWS"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a static named like the ROOT_ROWS exemption, in another file, is RED",
+                    exempt_elsewhere,
+                    vec![file, "ROOT_ROWS"],
                 ),
                 (
                     ROW_SEAM,
