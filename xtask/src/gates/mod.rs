@@ -3493,8 +3493,8 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(abi_freeze::AbiFreezeGate),
-        summary: "the condemned busbar-contract abi/hot and abi/cold lanes do not grow (frozen \
-                  until the memory ABI replaces them)",
+        summary: "the condemned busbar-contract abi/hot and abi/cold lanes stay deleted, and no \
+                  hand-kept size row stands for them",
     },
     Registration {
         name: "contract-stateless",
