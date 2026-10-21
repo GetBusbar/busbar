@@ -143,6 +143,10 @@ pub type Offenders = BTreeMap<String, BTreeSet<String>>;
 struct Ledger {
     pinned: BTreeSet<(String, String)>,
     errors: Vec<String>,
+    /// `carrier<TAB>crate` rows, retired: refused in the ledger as it stands, but a base that
+    /// still carries one is read for its pins all the same (the change that retires them is the
+    /// one that strikes them, so its own base always has them).
+    carrier_rows: Vec<String>,
 }
 
 fn read_ledger(text: &str) -> Ledger {
@@ -154,7 +158,7 @@ fn read_ledger(text: &str) -> Ledger {
         }
         let parts: Vec<&str> = t.split('\t').collect();
         match parts.as_slice() {
-            ["carrier", name] => l.errors.push(format!(
+            ["carrier", name] => l.carrier_rows.push(format!(
                 "{LEDGER}:{}: `carrier<TAB>{name}` names a crate as a carrier, and a carrier is a \
                  KIND: a plugin whose declared kind is `transport` is exempt with no row, and no \
                  other plugin is. Strike the row",
@@ -883,6 +887,7 @@ impl Gate for DepWallGate {
         };
         let mut rows = Vec::new();
         let mut scope = ledger.errors.clone();
+        scope.extend(ledger.carrier_rows.iter().cloned());
         if roots < MIN_ROOTS {
             scope.push(format!(
                 "{roots} crate(s) in scope, under the floor of {MIN_ROOTS}: a scope that small \
