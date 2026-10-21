@@ -130,13 +130,10 @@ impl Fp {
     #[must_use]
     pub(crate) fn with(self, part: &[u8]) -> Self {
         let mut f = self.word(part.len() as u64);
-        let mut words = part.chunks_exact(8);
-        for w in &mut words {
-            let mut b = [0u8; 8];
-            b.copy_from_slice(w);
-            f = f.word(u64::from_le_bytes(b));
+        let (words, rest) = part.as_chunks::<8>();
+        for w in words {
+            f = f.word(u64::from_le_bytes(*w));
         }
-        let rest = words.remainder();
         if !rest.is_empty() {
             let mut b = [0u8; 8];
             b[..rest.len()].copy_from_slice(rest);
