@@ -188,6 +188,20 @@ fn append_capped(
     }
 }
 
+/// The carried weight of one buffered token logprob: its token string and bytes and every top
+/// alternative's, plus each entry's own size, so a run of empty tokens still weighs what it holds.
+fn logprob_bytes(lp: &crate::codec::ir::IrTokenLogprob) -> usize {
+    let alt = |t: &crate::codec::ir::IrTopLogprob| {
+        std::mem::size_of::<crate::codec::ir::IrTopLogprob>()
+            .saturating_add(t.token.len())
+            .saturating_add(t.bytes.as_ref().map_or(0, Vec::len))
+    };
+    std::mem::size_of::<crate::codec::ir::IrTokenLogprob>()
+        .saturating_add(lp.token.len())
+        .saturating_add(lp.bytes.as_ref().map_or(0, Vec::len))
+        .saturating_add(lp.top.iter().map(alt).sum::<usize>())
+}
+
 /// The carried TEXT weight of one buffered citation — the owned strings it holds, which is the part
 /// an upstream controls and can therefore grow without bound. The fixed-width numeric fields are not
 /// counted; they cannot be inflated.
@@ -3017,12 +3031,30 @@ impl ResponsesWriter {
     /// Buffer streamed token logprobs for the message item at `index` until `BlockStop` builds the
     /// `output_text.done` event and the finalized part that carry them. Lock poisoning degrades to
     /// a no-op.
+    /// Bounded on both axes, as `append_citations` is: a new index is refused past
+    /// `MAX_OPEN_TOOLS`, and an item's buffered logprobs stop accumulating once their carried weight
+    /// ([`logprob_bytes`]: token strings, byte arrays and top alternatives) would cross
+    /// [`Self::accum_byte_cap`]. The whole batch is refused rather than split.
     fn append_logprobs(&self, index: usize, lps: &[crate::codec::ir::IrTokenLogprob]) {
         if lps.is_empty() {
             return;
         }
+        let added: usize = lps.iter().map(logprob_bytes).sum();
         if let Ok(mut map) = self.logprob_accum.lock() {
-            map.entry(index).or_default().extend_from_slice(lps);
+            match map.get_mut(&index) {
+                Some(entry) => {
+                    let held: usize = entry.iter().map(logprob_bytes).sum();
+                    if held.saturating_add(added) <= self.accum_byte_cap() {
+                        entry.extend_from_slice(lps);
+                    }
+                }
+                None => {
+                    if map.len() >= MAX_OPEN_TOOLS || added > self.accum_byte_cap() {
+                        return;
+                    }
+                    map.entry(index).or_default().extend_from_slice(lps);
+                }
+            }
         }
     }
 

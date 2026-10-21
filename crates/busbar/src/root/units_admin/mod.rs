@@ -925,8 +925,11 @@ impl AuditView for NodeAudit {
         take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
         let durability = self.lock();
-        let records = durability.audit_window(from, to);
-        take(&durability.record, Some(&records));
+        // A window the journal would not read back is not answered at all, which the range read
+        // renders as the store failure it is; never as an empty window.
+        if let Some(records) = durability.audit_window(from, to) {
+            take(&durability.record, Some(&records));
+        }
     }
 
     fn keys(&self) -> AuditKeySet {
@@ -3306,8 +3309,8 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
 
 /// What an operation that changed something and has nothing to say answers with.
 ///
-/// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
-/// resealed. There is no document to return and none was ever specified, so the answer carries no
+/// A recovery verb's whole result is its effect: the chain broke, or the floor resealed (a restore
+/// is refused, never answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
 /// body and declares no content type — inventing a document here would put a schema on the wire that
 /// nothing describes and that a client would then be entitled to depend on.
 fn applied_answer() -> AdminAnswer {
