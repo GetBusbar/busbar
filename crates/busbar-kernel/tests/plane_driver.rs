@@ -511,6 +511,13 @@ impl Double {
                     o.verdict = VERDICT_RETRY;
                     return (ready(Outcome::Ready), Hold::No);
                 }
+                // An answer done before any byte, with a retry verdict (mode `done-retry`): the
+                // kernel fails it over, and the plane keeps the unit for the next attempt.
+                b"done-retry" => {
+                    o.flags = EMIT_DONE;
+                    o.verdict = VERDICT_RETRY;
+                    return (ready(Outcome::Ready), Hold::No);
+                }
                 b"short" | b"short-twice" if u.short => {
                     // The dispatcher's rule: a second short answer on the re-call is FAULT.
                     if u.mode == b"short-twice" {
@@ -1188,9 +1195,11 @@ impl PlaneCalls for Double {
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
+        // A done answer with a retry verdict keeps the unit for the kernel's next attempt.
         if answer.outcome == Outcome::Ready
             && out.flags & EMIT_DONE != 0
             && out.more == 0
+            && out.verdict != VERDICT_RETRY
             && input.flags & PIECE_REFUSED == 0
         {
             self.closed(input.unit);

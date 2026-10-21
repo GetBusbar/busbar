@@ -650,6 +650,13 @@ impl Answer {
         }
     }
 
+    /// The answer says the unit's reply is complete, its last window answered: the plane lets the
+    /// unit go ([`super::close`]). The refused piece's answer never does: the unit's `refusal`
+    /// follows it.
+    fn says_done(&self, piece: &Piece) -> bool {
+        self.flags & EMIT_DONE != 0 && self.more == 0 && piece.flags & PIECE_REFUSED == 0
+    }
+
     /// The usage-tap fault this answer carries, as the reason the kernel counts it under; `None`
     /// only for an answer that carries none. A byte outside the vocabulary is `unknown`, counted.
     fn usage_tap_fault(&self) -> Option<&'static str> {
@@ -765,9 +772,11 @@ impl<'u> Pumping<'u> {
         if cause.is_some() {
             self.cancel_writes = flight.cancel_writes();
             // THE CANCEL CROSSED ON THE OP'S WORKER (its answer carries the disposition, or the
-            // cancel's FAULT): the unit's closing call. An op that ended on its own before the
-            // cancel reached it is closed by [`Self::cancel`]'s own crossing instead.
-            if answered.disposition.is_some() || answered.outcome == AbiOutcome::Fault {
+            // cancel's FAULT): the unit's closing call. So is the op's own answer, when it ended on
+            // its own before the cancel reached it saying the unit's reply is complete.
+            let done = answered.outcome == AbiOutcome::Ready
+                && out.as_ref().is_some_and(|o| o.says_done(p));
+            if answered.disposition.is_some() || answered.outcome == AbiOutcome::Fault || done {
                 self.lock().close.closed();
             }
         }
@@ -1346,13 +1355,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
-                    // THE PLANE SAID THE UNIT'S REPLY IS COMPLETE, its last window answered: its
-                    // closing call ([`super::close`]). The refused piece's answer is not: the unit's
-                    // `refusal` follows it.
-                    if out.flags & EMIT_DONE != 0
-                        && out.more == 0
-                        && piece.flags & PIECE_REFUSED == 0
-                    {
+                    // THE PLANE SAID THE UNIT'S REPLY IS COMPLETE: its closing call, unless the
+                    // kernel fails this answer over (a retry verdict before the first byte), which
+                    // keeps the unit for its next attempt (`PIECE_FINAL`: only an answer the kernel
+                    // will not fail over is the unit's last).
+                    let retried = out.verdict == VERDICT_RETRY && {
+                        let st = run.lock();
+                        fails_over(st.facts.streamed, st.facts.relayed)
+                    };
+                    if out.says_done(&piece) && !retried {
                         run.lock().close.closed();
                     }
                     out

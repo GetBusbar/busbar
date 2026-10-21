@@ -268,6 +268,9 @@ enum Exit {
     FailedBeforeTheAnswer,
     /// A record write failed after its answer began (the store out).
     FailedAfterTheAnswerBegan,
+    /// A done answer with a retry verdict failed over, then the next attempt failed after its
+    /// answer began.
+    FailedOverThenFailedAfterTheAnswerBegan,
     /// Its deadline passed with an op in flight.
     PastTheDeadline,
     /// The plane's generation was replaced with an op in flight (drain).
@@ -286,7 +289,7 @@ enum Exit {
     SessionEnded,
 }
 
-const EXITS: [Exit; 18] = [
+const EXITS: [Exit; 19] = [
     Exit::Completed,
     Exit::AnsweredLocally,
     Exit::RefusedAtArrive,
@@ -297,6 +300,7 @@ const EXITS: [Exit; 18] = [
     Exit::PanickedAtTheScreen,
     Exit::FailedBeforeTheAnswer,
     Exit::FailedAfterTheAnswerBegan,
+    Exit::FailedOverThenFailedAfterTheAnswerBegan,
     Exit::PastTheDeadline,
     Exit::Drained,
     Exit::GoneMidAnswer,
@@ -484,6 +488,14 @@ async fn closed_by(exit: Exit) -> u32 {
                 ),
                 Exit::FailedBeforeTheAnswer => (passing(), unit_on("fault"), 0),
                 Exit::FailedAfterTheAnswerBegan => (passing(), unit_on("row-late"), 0),
+                Exit::FailedOverThenFailedAfterTheAnswerBegan => (
+                    passing(),
+                    (
+                        cases::Far::new(&["done-retry", "row-late"], cases::CHUNKS),
+                        "/call",
+                    ),
+                    0,
+                ),
                 Exit::PastTheDeadline => (passing(), unit_on("hang"), now_ns() + 40_000_000),
                 Exit::NoMemberLeft => {
                     (passing(), (cases::Far::new(&[], cases::CHUNKS), "/call"), 0)
