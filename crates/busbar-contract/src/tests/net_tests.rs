@@ -387,7 +387,10 @@ fn the_contract_address_values_are_the_std_types() {
     let sock: Result<super::SocketAddr, super::AddrParseError> = "[::1]:443".parse();
     assert_eq!(
         sock,
-        Ok(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 443)))
+        Ok(std::net::SocketAddr::from((
+            std::net::Ipv6Addr::LOCALHOST,
+            443
+        )))
     );
     assert!("example.com:443".parse::<super::SocketAddr>().is_err());
     let v6: super::SocketAddrV6 = super::SocketAddrV6::new(super::Ipv6Addr::LOCALHOST, 1, 0, 0);
