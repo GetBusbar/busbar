@@ -724,8 +724,9 @@ pub fn registration(
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
     let plugin = Arc::new(bind()?);
     let declared = plugin.declared();
+    let name = plugin.name().to_string();
     Ok(registered(
-        plugin.name(),
+        &name,
         &plugin.served(),
         &declared,
         Some(plugin),
@@ -798,7 +799,8 @@ fn registered(
         fallback: served.fallback,
         provider_keys: served.provider_keys.clone(),
         validate: Arc::new(move |settings: &[u8]| {
-            validate(&judge_of(&judge, &judge_bind)?, settings)
+            let plugin = judge_of(&judge, &judge_bind)?;
+            validate(&plugin, settings)
         }),
         facing: Arc::new(
             move |settings: &[u8],
