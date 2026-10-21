@@ -154,10 +154,10 @@ const ROWS: &[Row] = &[
     }),
     ("disk_append", |s, l| {
         let dest = DiskDest {
-            key: "dest".to_string(),
+            key: "sink".to_string(),
             path: "/nowhere".to_string(),
             rotate_at: None,
-            keep: 0,
+            rotate: crate::services::DiskRotate::Truncate,
         };
         now(
             "disk_append",
