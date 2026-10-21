@@ -10,11 +10,7 @@
 use super::DIAGNOSTICS;
 
 fn published() -> Vec<serde_json::Value> {
-    let path =
-        std::path::PathBuf::from(std::env::var_os("BUSBAR_CHECKOUT").expect(
-            "BUSBAR_CHECKOUT is unset: busbar's tree at .busbar-ref (plugin CI exports it)",
-        ))
-        .join("docs/diagnostics.json");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
     let text = std::fs::read_to_string(path).expect("docs/diagnostics.json is readable");
     serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array")
 }
