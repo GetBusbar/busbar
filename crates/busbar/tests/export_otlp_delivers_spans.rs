@@ -126,7 +126,7 @@ fn request(port: u16, method: &str, path: &str, body: &str) -> Option<u16> {
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// THE WIRE UNDER THE DOOR, into `dir`'s plugins. A build that does not link the tcp row boots only
+/// THE WIRE UNDER THE DOOR, into `dir`'s plugins. A build that does not link the wire's row boots only
 /// with it dropped in; one that links it would refuse the tarball as a second row on the same key.
 fn drop_in_wire(dir: &Path) {
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {

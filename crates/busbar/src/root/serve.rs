@@ -3832,8 +3832,9 @@ impl DataRoutes {
             .map(|r| r.status)
             .or_else(|| caller.stated())
             .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
-        // How the answer ended, not only the status its head carried: a stream its far end cut is
-        // no delivered response, and meters nothing (status row 183).
+        // How the answer ended, its head's status and whether its far end cut it. The plane's
+        // ledger is final either way: a cut stream bills and meters what its plane ledgered
+        // (owner ruling 2026-10-20).
         served.money.settle_end_as(
             unit,
             busbar_kernel::plane_driver::UnitEnd {
