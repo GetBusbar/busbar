@@ -18,6 +18,8 @@
 //!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/door-only.toml`.
 
+use std::collections::BTreeMap;
+
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::one_abi::{self, Finding, Spec};
 use crate::gates::{Gate, Report};
@@ -93,6 +95,231 @@ fn holds_code(ty: &str) -> bool {
         || one_abi::has_word(ty, "dyn")
 }
 
+/// How deep an alias may name another alias before the walk stops (a cycle, or a chain no real
+/// tree writes).
+const ALIAS_DEPTH: usize = 8;
+
+/// The roots a path may start at that name the crate it is written in.
+const SELF_ROOTS: &[&str] = &["crate", "self", "super"];
+
+/// THE BINARY CLOSURE'S TYPE ALIASES, so a static whose declared type holds code BEHIND AN ALIAS
+/// is the finding a spelled one is. `static ROWS: OnceLock<&[Row]>` with `type Row = (&str,
+/// DoorFn)` and `type DoorFn = extern "C" fn() -> *const Door` declares the same seam as spelling
+/// the `fn`; reading only the words on the static's own line passes it.
+///
+/// An alias is resolved the way the compiler resolves the name: a path rooted at `crate`, `self`
+/// or `super` in the crate it is written in, a path rooted at a workspace crate in that crate (or,
+/// when that crate re-exports the alias, wherever the workspace declares it), and a bare name
+/// through the file's own `use` items, else in its own crate. A path rooted anywhere else (`std`,
+/// `core`, a registry crate) is not a workspace alias.
+#[derive(Default)]
+pub struct Aliases {
+    /// crate ident -> alias name -> every declaration: (declaring file, right-hand side).
+    by_crate: BTreeMap<String, BTreeMap<String, Vec<(String, String)>>>,
+    /// file -> its `use` items, blanked, one string each.
+    uses: BTreeMap<String, Vec<String>>,
+}
+
+impl Aliases {
+    /// Read `file` (production lines only) of crate `krate`: its aliases and its `use` items.
+    pub fn read(&mut self, krate: &str, file: &str, text: &str) {
+        // Every crate read is a workspace crate, aliases or none: a path rooted at it is resolved
+        // in it (and through its re-exports), never skipped as a registry crate's.
+        self.by_crate.entry(krate.to_string()).or_default();
+        let lines = one_abi::production(text);
+        let mut uses = Vec::new();
+        for (idx, sl) in lines.iter().enumerate() {
+            let t = sl.counted.trim_start();
+            let after_vis = strip_visibility(t);
+            let joined = |first: &str| {
+                let mut all = first.to_string();
+                for more in lines.iter().skip(idx + 1).take(ALIAS_DEPTH) {
+                    if all.contains(';') {
+                        break;
+                    }
+                    all.push(' ');
+                    all.push_str(more.counted.trim());
+                }
+                all.split(';').next().unwrap_or_default().to_string()
+            };
+            if let Some(rest) = after_vis.strip_prefix("use ") {
+                uses.push(joined(rest));
+            } else if let Some(rest) = after_vis.strip_prefix("type ") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let decl = joined(rest);
+                let Some((_, rhs)) = decl.split_once('=') else {
+                    continue;
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                self.by_crate
+                    .entry(krate.to_string())
+                    .or_default()
+                    .entry(name)
+                    .or_default()
+                    .push((file.to_string(), rhs.trim().to_string()));
+            }
+        }
+        self.uses.insert(file.to_string(), uses);
+    }
+
+    /// Does `ty`, written in `file` of crate `krate`, hold code — spelled, or behind an alias?
+    pub fn holds(&self, ty: &str, krate: &str, file: &str) -> bool {
+        self.holds_at(ty, krate, file, 0)
+    }
+
+    fn holds_at(&self, ty: &str, krate: &str, file: &str, depth: usize) -> bool {
+        if holds_code(ty) {
+            return true;
+        }
+        if depth >= ALIAS_DEPTH {
+            return false;
+        }
+        for path in paths(ty) {
+            let Some(last) = path.last() else {
+                continue;
+            };
+            let (target, name, imported) = if path.len() > 1 {
+                (self.crate_of(&path[0], krate), last.clone(), true)
+            } else {
+                match self.imported(file, last) {
+                    Some((root, name)) => (self.crate_of(&root, krate), name, true),
+                    None => (Some(krate.to_string()), last.clone(), false),
+                }
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let here = self.by_crate.get(&target).and_then(|a| a.get(&name));
+            let decls: Vec<(&str, &(String, String))> = match here {
+                Some(d) => d.iter().map(|x| (target.as_str(), x)).collect(),
+                // A re-export: the crate a path or a `use` names declares no such alias, so the
+                // workspace's declaration of it is the one meant.
+                None if imported => self
+                    .by_crate
+                    .iter()
+                    .filter_map(|(k, a)| a.get(&name).map(|d| (k.as_str(), d)))
+                    .flat_map(|(k, d)| d.iter().map(move |x| (k, x)))
+                    .collect(),
+                None => Vec::new(),
+            };
+            for (k, (f, rhs)) in decls {
+                if self.holds_at(rhs, k, f, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// The workspace crate a path rooted at `root`, written in crate `krate`, names; `None` for a
+    /// root outside the workspace.
+    fn crate_of(&self, root: &str, krate: &str) -> Option<String> {
+        if SELF_ROOTS.contains(&root) {
+            return Some(krate.to_string());
+        }
+        self.by_crate.contains_key(root).then(|| root.to_string())
+    }
+
+    /// The `use` item of `file` that brings `name` into scope: the root its path starts at and the
+    /// name it is declared under (`use a::B as name` declares `B`).
+    fn imported(&self, file: &str, name: &str) -> Option<(String, String)> {
+        let uses = self.uses.get(file)?;
+        uses.iter().find_map(|u| {
+            let toks = paths(u);
+            if !toks.iter().any(|p| p.last().is_some_and(|l| l == name)) {
+                return None;
+            }
+            let root = toks.first()?.first()?.clone();
+            let renamed = u
+                .split(',')
+                .find_map(|part| {
+                    let (from, to) = part.split_once(" as ")?;
+                    (to.trim().trim_end_matches('}').trim() == name).then(|| {
+                        from.trim()
+                            .rsplit("::")
+                            .next()
+                            .unwrap_or_default()
+                            .trim_start_matches('{')
+                            .trim()
+                            .to_string()
+                    })
+                })
+                .unwrap_or_else(|| name.to_string());
+            Some((root, renamed))
+        })
+    }
+}
+
+/// `t` without a leading `pub` or `pub(...)`.
+fn strip_visibility(t: &str) -> &str {
+    let Some(rest) = t.strip_prefix("pub") else {
+        return t;
+    };
+    if rest.starts_with(char::is_whitespace) {
+        return rest.trim_start();
+    }
+    match rest.find(')') {
+        Some(close) if rest.starts_with('(') => rest[close + 1..].trim_start(),
+        _ => t,
+    }
+}
+
+/// The paths written in `text`, each as its segments (`a::b::C` is `[a, b, C]`). A lifetime is not
+/// a path, and a keyword-rooted `dyn`/`fn` is read by [`holds_code`] before any path is.
+fn paths(text: &str) -> Vec<Vec<String>> {
+    let chars: Vec<char> = text.chars().collect();
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !ident(chars[i]) || (i > 0 && (ident(chars[i - 1]) || chars[i - 1] == '\'')) {
+            i += 1;
+            continue;
+        }
+        let mut path = Vec::new();
+        loop {
+            let start = i;
+            while i < chars.len() && ident(chars[i]) {
+                i += 1;
+            }
+            path.push(chars[start..i].iter().collect::<String>());
+            let mut j = i;
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            if j + 1 < chars.len() && chars[j] == ':' && chars[j + 1] == ':' {
+                let mut k = j + 2;
+                while k < chars.len() && chars[k] == ' ' {
+                    k += 1;
+                }
+                if k < chars.len() && ident(chars[k]) {
+                    i = k;
+                    continue;
+                }
+            }
+            break;
+        }
+        if !path[0].starts_with(|c: char| c.is_ascii_digit()) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Is this file test code as a whole: an inner `#![cfg(...)]` naming `test` (and not `not(test)`)?
+fn test_only_file(text: &str) -> bool {
+    text.lines().map(str::trim_start).any(|t| {
+        t.starts_with("#![cfg(")
+            && (t.contains("(test") || t.contains(" test,") || t.contains(" test)"))
+            && !t.contains("not(test")
+    })
+}
+
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
@@ -101,6 +328,20 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         Err(e) => return (findings, vec![e]),
     };
     let closure = one_abi::binary_closure(&members);
+    // The closure's aliases first, `busbar-contract`'s included (the door type is declared there):
+    // a static anywhere in scope may name one.
+    let mut aliases = Aliases::default();
+    for m in members.iter().filter(|m| closure.contains(&m.name)) {
+        match one_abi::rs_files(cx, &m.dir) {
+            Ok(files) => {
+                let krate = m.name.replace('-', "_");
+                for f in &files {
+                    aliases.read(&krate, &f.rel_str(), &f.text);
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
     let plugin_idents: Vec<String> = members
         .iter()
         .filter(|m| one_abi::is_plugin_crate(&m.name))
@@ -128,8 +369,10 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                 continue;
             }
         };
+        let krate = m.name.replace('-', "_");
         for f in &files {
             let rel = f.rel_str();
+            let test_only = test_only_file(&f.text);
             // A multi-line static's type runs onto the next lines; read up to its `=` or `;`.
             let lines = one_abi::production(&f.text);
             for (idx, sl) in lines.iter().enumerate() {
@@ -152,7 +395,7 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                         }
                     }
                 }
-                if EXEMPT_SEAMS.contains(&rel.as_str()) {
+                if EXEMPT_SEAMS.contains(&rel.as_str()) || test_only {
                     continue;
                 }
                 if let Some((name, mut ty)) = static_decl(&sl.counted) {
@@ -173,7 +416,7 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                             break;
                         }
                     }
-                    if holds_code(&ty) {
+                    if aliases.holds(&ty, &krate, &rel) {
                         findings.push(Finding::new(ROW_SEAM, &rel, name, sl.no));
                     }
                 }
@@ -230,6 +473,33 @@ impl Gate for DoorOnlyGate {
             file,
             format!("pub fn planted() {{ {plugin}::carrier::Planted::go(); }}\n"),
         );
+        // A SEAM BEHIND AN ALIAS: the function pointer is named by an alias, not spelled on the
+        // static's line, so a reading of that line alone passes it.
+        let mut aliased = Overlay::new();
+        aliased.set(
+            file,
+            "pub type PlantedHook = fn() -> u8;\n\
+             pub static PLANTED_ALIASED: std::sync::OnceLock<PlantedHook> = std::sync::OnceLock::new();\n",
+        );
+        // THE LINKED-ROW SHAPE: rows of plugin doors behind two aliases, the second the contract's
+        // own door type, reached through a path into another workspace crate.
+        let mut rows = Overlay::new();
+        rows.set(
+            file,
+            "pub type PlantedRow = (&'static str, busbar_contract::abi::mechanism::door::DoorFn);\n\
+             pub static PLANTED_ROWS: std::sync::OnceLock<&'static [PlantedRow]> =\n    \
+             std::sync::OnceLock::new();\n",
+        );
+        // DATA BEHIND AN ALIAS, and a std type that shares a name with a workspace alias: neither
+        // holds code, so neither is a finding.
+        let mut data = Overlay::new();
+        data.set(
+            file,
+            "pub type PlantedWords = (&'static str, u8);\n\
+             pub static PLANTED_WORDS: std::sync::OnceLock<PlantedWords> = std::sync::OnceLock::new();\n\
+             pub static PLANTED_CELL: std::sync::Mutex<std::cell::Cell<u8>> =\n    \
+             std::sync::Mutex::new(std::cell::Cell::new(0));\n",
+        );
         let mut seam = Overlay::new();
         seam.set(
             file,
@@ -253,6 +523,18 @@ impl Gate for DoorOnlyGate {
                 ),
                 (
                     ROW_SEAM,
+                    "a static whose fn pointer is behind an alias is RED, naming it",
+                    aliased,
+                    vec![file, "PLANTED_ALIASED"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a static of door rows behind the contract's door alias is RED, naming it",
+                    rows,
+                    vec![file, "PLANTED_ROWS"],
+                ),
+                (
+                    ROW_SEAM,
                     "a static fn-pointer seam in the kernel is RED, naming it",
                     seam,
                     vec![file, "PLANTED_SEAM"],
@@ -265,6 +547,14 @@ impl Gate for DoorOnlyGate {
             "a row holding <crate>::door, and a static holding data, are not findings",
             &[ROW_PATH, ROW_SEAM],
             door,
+        ));
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "data behind an alias, and std's Cell beside a workspace alias of that name, are not \
+             findings",
+            &[ROW_SEAM],
+            data,
         ));
         report
     }
