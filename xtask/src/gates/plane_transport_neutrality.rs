@@ -96,11 +96,14 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `tests/percall_meter_shadow.rs`). #1377 deletes 6 (`plane_host/{build_input,mod}.rs`,
 /// `plane_host/tests/{build_input,mod,plane_answer,residual}_tests.rs`) and adds 7
 /// (`plane_driver/{answer,host,route_input}.rs`, `plane_driver/tests/{answer,host,route_input}_tests.rs`,
-/// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234.
-/// Merged into status row 82 (D2), GetBusbar/busbar#1376, with the protocol registry's and the
-/// body-ingress arrival host's deletions above (#1376's own count, also 1234 on its head after dev
-/// 08d4d7c501): the merged tree's floor stays 1234 until the gate measures the merge.
-pub const MIN_FILES: usize = 1234;
+/// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234. Lowered 1234 -> 1232 by status row 82
+/// (D2, GetBusbar/busbar#1276 over dev 0f3c9caa44): the kernel's body-ingress arrival host leaves
+/// with its terminal tests (`busbar-kernel/src/ingress/arrival_host.rs`,
+/// `ingress/tests/terminal_tests.rs`); the gate's count on 4f926f805c is 1232. Lowered 1232 -> 1225
+/// by status row 82 (D2, GetBusbar/busbar#1376, the proto drain): the kernel's protocol registry
+/// leaves with its suites (`busbar-kernel/src/proto/{mod,registry,installed}.rs`,
+/// `proto/tests/{installed_tests,neutral_protocols,registry_builtins}.rs`, `tests/proto.rs`).
+pub const MIN_FILES: usize = 1225;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
