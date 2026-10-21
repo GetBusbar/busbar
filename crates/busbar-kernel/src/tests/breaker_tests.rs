@@ -401,7 +401,12 @@ fn the_classifier_places_every_shared_dialect_error_as_recorded() {
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
             .expect("fixture is JSON");
     let rows = doc["rows"].as_array().expect("rows");
-    assert!(!rows.is_empty());
+    // THE RECORDED SIZE IS THE FLOOR: a fixture cut to one row is a shrunk proof, never a pass.
+    assert!(
+        rows.len() >= 11,
+        "{} rows, under the recorded 11",
+        rows.len()
+    );
     for row in rows {
         let raw = RawUpstreamError {
             http_status: row["http_status"].as_u64().expect("status") as u16,

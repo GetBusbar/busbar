@@ -22,9 +22,7 @@
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::{
-    CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
-};
+use busbar_contract::protocol::SigningContext;
 use busbar_kernel::bound_credential::{bind, CredentialProvider, StyleBinding};
 
 fn fixture() -> &'static serde_json::Value {
@@ -94,18 +92,11 @@ fn present_bound(binding: &StyleBinding, key: &str, ctx: &SigningContext) -> Vec
     strings(&bound(binding, own).headers_for(key, ctx))
 }
 
-/// `decl`'s dialect (its twin name's tail), presented.
-fn present(decl: &'static ProtocolDecl, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
-    let dialect = decl
-        .name
-        .rsplit('-')
-        .next()
-        .expect("a twin name ends in its dialect");
-    present_bound(
-        &binding_of(dialect, ctx.host, decl.static_headers),
-        key,
-        ctx,
-    )
+/// `dialect`, presented under the binding the fixture records for it (`bindings`), with no static
+/// header. The root names no vendor's scheme: which header a dialect's credential rides in is the
+/// recorded binding's, and the plane's own suite holds its real declarations to that binding.
+fn present(dialect: &str, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
+    present_bound(&binding_of(dialect, ctx.host, &[]), key, ctx)
 }
 
 fn strings(h: &[(axum::http::HeaderName, axum::http::HeaderValue)]) -> Vec<(String, String)> {
@@ -119,7 +110,7 @@ fn strings(h: &[(axum::http::HeaderName, axum::http::HeaderValue)]) -> Vec<(Stri
         .collect()
 }
 
-/// The signing twin's region function: the fixture's recorded answer for the host.
+/// The signing binding's region: the fixture's recorded answer for the host.
 fn recorded_region(host: &str) -> Option<&'static str> {
     fixture()["regions"]
         .as_array()
@@ -129,133 +120,18 @@ fn recorded_region(host: &str) -> Option<&'static str> {
         .and_then(|r| r["region"].as_str())
 }
 
-const ANTHROPIC_FAMILIES: &[CredentialFamily] = &[
-    CredentialFamily {
-        prefix: "sk-ant-api",
-        presented_as: CredentialHeader::Raw {
-            header: "x-api-key",
-            trim_start: true,
-        },
-    },
-    CredentialFamily {
-        prefix: "sk-ant-oat",
-        presented_as: CredentialHeader::Bearer,
-    },
-];
-
-const GOOG: CredentialHeader = CredentialHeader::Raw {
-    header: "x-goog-api-key",
-    trim_start: false,
-};
-
-static TWINS: [ProtocolDecl; 6] = [
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-openai")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-responses")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-cohere")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::Static {
-            families: &[],
-            own: GOOG,
-            passthrough: GOOG,
-        }),
-        ..ProtocolDecl::named("declared-twin-gemini")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::Static {
-            families: ANTHROPIC_FAMILIES,
-            own: CredentialHeader::Raw {
-                header: "x-api-key",
-                trim_start: false,
-            },
-            passthrough: CredentialHeader::Bearer,
-        }),
-        ..ProtocolDecl::named("declared-twin-anthropic")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::SigV4 {
-            service: "bedrock",
-            region_of_host: recorded_region,
-            default_region: "us-east-1",
-            content_type: "application/json",
-        }),
-        ..ProtocolDecl::named("declared-twin-bedrock")
-    },
-];
-
-fn twin(dialect: &str) -> &'static ProtocolDecl {
-    let name = format!("declared-twin-{dialect}");
-    TWINS
-        .iter()
-        .find(|d| d.name == name)
-        .unwrap_or_else(|| panic!("no twin for {dialect}"))
-}
-
-fn presentation(h: &CredentialHeader) -> serde_json::Value {
-    match h {
-        CredentialHeader::Bearer => serde_json::json!({"bearer": true}),
-        CredentialHeader::Raw { header, trim_start } => {
-            serde_json::json!({"header": header, "trim_start": trim_start})
-        }
-    }
-}
-
-fn describe(scheme: &EgressScheme) -> serde_json::Value {
-    match scheme {
-        EgressScheme::Static {
-            families,
-            own,
-            passthrough,
-        } => serde_json::json!({
-            "kind": "static",
-            "families": families
-                .iter()
-                .map(|f| serde_json::json!({"prefix": f.prefix, "presented_as": presentation(&f.presented_as)}))
-                .collect::<Vec<_>>(),
-            "own": presentation(own),
-            "passthrough": presentation(passthrough),
-        }),
-        EgressScheme::SigV4 {
-            service,
-            default_region,
-            content_type,
-            ..
-        } => serde_json::json!({
-            "kind": "sigv4",
-            "service": service,
-            "default_region": default_region,
-            "content_type": content_type,
-        }),
-    }
-}
-
 fn hex(v: &serde_json::Value) -> Vec<u8> {
     hex::decode(v.as_str().expect("hex")).expect("hex")
-}
-
-/// Every twin carries exactly the scheme data the fixture records for its dialect — the data the
-/// plane's own suite holds each real declaration to.
-#[test]
-fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
-    let schemes = fixture()["schemes"].as_object().expect("schemes");
-    assert_eq!(schemes.len(), TWINS.len());
-    for (dialect, data) in schemes {
-        let scheme = twin(dialect).egress_scheme.expect("declared");
-        assert_eq!(&describe(&scheme), data, "{dialect}");
-    }
 }
 
 /// THE DIFFERENTIAL: presented under each dialect's declared scheme, through the linked auth
 /// plugins, the request carries exactly the credential headers that dialect's own builder wrote,
 /// for every credential, mode and request in the fixture.
+///
+/// THE FLOOR IS THE RECORDED FIXTURE'S, NOT ONE ROW: every one of the six recorded dialects is
+/// compared in both modes, each pair over at least [`PAIR_FLOOR`] presenting rows and the whole over
+/// at least [`ROW_FLOOR`], so a fixture cut to one row, to one dialect or to empty lists is RED here
+/// rather than a differential over nothing.
 #[test]
 fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
     let mut compared = 0usize;
@@ -281,7 +157,7 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
                 UpstreamCreds::Passthrough
             },
         };
-        let presented: Vec<serde_json::Value> = present(twin(dialect), &key, &ctx)
+        let presented: Vec<serde_json::Value> = present(dialect, &key, &ctx)
             .into_iter()
             .map(|(k, v)| serde_json::json!([k, hex::encode(v.as_bytes())]))
             .collect();
@@ -295,7 +171,103 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
         );
         compared += 1;
     }
-    assert!(compared > 0);
+    assert_eq!(
+        Ok(compared),
+        differential_floor(fixture()),
+        "every presenting row is compared, and the fixture is not under its floor"
+    );
+}
+
+/// The recorded fixture's own size: six dialects, each in both modes over 21 credentials or more,
+/// 510 rows whose key presents. A fixture that shrinks below these is a shrunk proof, never a pass.
+const DIALECT_FLOOR: usize = 6;
+const PAIR_FLOOR: usize = 21;
+const ROW_FLOOR: usize = 510;
+
+/// The number of presenting rows (a non-empty key) `doc` holds, or why it is under the floor:
+/// fewer than [`DIALECT_FLOOR`] recorded dialects, a recorded dialect with fewer than
+/// [`PAIR_FLOOR`] presenting rows in either mode, or fewer than [`ROW_FLOOR`] in all.
+fn differential_floor(doc: &serde_json::Value) -> Result<usize, String> {
+    let mut per_pair: std::collections::BTreeMap<(String, String), usize> = Default::default();
+    let mut presenting = 0usize;
+    for row in doc["rows"].as_array().ok_or("no rows list")? {
+        if row["key_hex"].as_str().unwrap_or("").is_empty() {
+            continue;
+        }
+        presenting += 1;
+        *per_pair
+            .entry((
+                row["dialect"].as_str().unwrap_or("").to_string(),
+                row["mode"].as_str().unwrap_or("").to_string(),
+            ))
+            .or_default() += 1;
+    }
+    let dialects = doc["schemes"].as_object().ok_or("no schemes object")?;
+    if dialects.len() < DIALECT_FLOOR {
+        return Err(format!(
+            "{} recorded dialects, under the floor of {DIALECT_FLOOR}",
+            dialects.len()
+        ));
+    }
+    for dialect in dialects.keys() {
+        for mode in ["own", "passthrough"] {
+            let n = per_pair
+                .get(&(dialect.clone(), mode.to_string()))
+                .copied()
+                .unwrap_or(0);
+            if n < PAIR_FLOOR {
+                return Err(format!(
+                    "{dialect} {mode}: {n} presenting rows, under the floor of {PAIR_FLOOR}"
+                ));
+            }
+        }
+    }
+    if presenting < ROW_FLOOR {
+        return Err(format!(
+            "{presenting} presenting rows, under the floor of {ROW_FLOOR}"
+        ));
+    }
+    Ok(presenting)
+}
+
+/// THE FLOOR BITES: the fixture cut to one row, to empty lists, or with one dialect's rows in one
+/// mode removed is under the differential's floor, so the differential cannot pass over a shrunk
+/// fixture the way a one-row floor let it.
+#[test]
+fn a_cut_credential_fixture_is_under_the_differentials_floor() {
+    let whole = fixture().clone();
+    assert!(differential_floor(&whole).is_ok());
+
+    let mut one_row = whole.clone();
+    let first = whole["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| !r["key_hex"].as_str().unwrap_or("").is_empty())
+        .cloned()
+        .expect("a presenting row");
+    one_row["rows"] = serde_json::json!([first]);
+    assert!(differential_floor(&one_row).is_err(), "one row");
+
+    let mut empty = whole.clone();
+    empty["rows"] = serde_json::json!([]);
+    empty["schemes"] = serde_json::json!({});
+    assert!(differential_floor(&empty).is_err(), "empty lists");
+
+    let mut no_gemini_passthrough = whole.clone();
+    no_gemini_passthrough["rows"] = serde_json::Value::Array(
+        whole["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter(|r| !(r["dialect"] == "gemini" && r["mode"] == "passthrough"))
+            .cloned()
+            .collect(),
+    );
+    assert!(
+        differential_floor(&no_gemini_passthrough).is_err(),
+        "one dialect's mode removed"
+    );
 }
 
 fn signed(key: &str, host: &str, uri: &str, body: &[u8]) -> Vec<(String, String)> {
@@ -306,7 +278,7 @@ fn signed(key: &str, host: &str, uri: &str, body: &[u8]) -> Vec<(String, String)
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
         upstream_creds: UpstreamCreds::Own,
     };
-    present(twin("bedrock"), key, &ctx)
+    present("bedrock", key, &ctx)
 }
 
 fn get(headers: &[(String, String)], name: &str) -> Option<String> {
@@ -589,7 +561,7 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
         timestamp_epoch: 1_752_000_000,
         upstream_creds: UpstreamCreds::Own,
     };
-    let p = |dialect: &str, key: &str| present(twin(dialect), key, &ctx);
+    let p = |dialect: &str, key: &str| present(dialect, key, &ctx);
     for dialect in ["openai", "responses", "cohere"] {
         assert_eq!(
             p(dialect, "sk-test"),
@@ -618,38 +590,22 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
 // the credential is presented for — the one version header its builder used to write beside the
 // credential, now declared data.
 
-const FAMILY_TABLE: EgressScheme = EgressScheme::Static {
-    families: ANTHROPIC_FAMILIES,
-    own: CredentialHeader::Raw {
-        header: "x-api-key",
-        trim_start: false,
-    },
-    passthrough: CredentialHeader::Bearer,
-};
-
-static STATIC_TWINS: [ProtocolDecl; 3] = [
-    ProtocolDecl {
-        egress_scheme: Some(FAMILY_TABLE),
-        static_headers: &[("anthropic-version", "2023-06-01")],
-        ..ProtocolDecl::named("static-twin-versioned")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(FAMILY_TABLE),
-        ..ProtocolDecl::named("static-twin-unversioned")
-    },
-    ProtocolDecl {
-        egress_scheme: Some(EgressScheme::bearer()),
-        static_headers: &[("x-static-one", "1"), ("x-static-two", "two")],
-        ..ProtocolDecl::named("static-twin-two-statics")
-    },
+/// The static-header cases: a name, the recorded binding it is presented under, and the static
+/// headers it declares. Only the statics are the case's own; the credential's presentation is the
+/// recorded binding's.
+const STATIC_CASES: [(&str, &str, &[(&str, &str)]); 3] = [
+    (
+        "static-twin-versioned",
+        "anthropic",
+        &[("anthropic-version", "2023-06-01")],
+    ),
+    ("static-twin-unversioned", "anthropic", &[]),
+    (
+        "static-twin-two-statics",
+        "openai",
+        &[("x-static-one", "1"), ("x-static-two", "two")],
+    ),
 ];
-
-fn static_twin(name: &str) -> &'static ProtocolDecl {
-    STATIC_TWINS
-        .iter()
-        .find(|d| d.name == name)
-        .expect("a twin")
-}
 
 fn presented(name: &str, key: &str, mode: UpstreamCreds) -> Vec<(String, String)> {
     let ctx = SigningContext {
@@ -659,17 +615,11 @@ fn presented(name: &str, key: &str, mode: UpstreamCreds) -> Vec<(String, String)
         timestamp_epoch: 1_752_000_000,
         upstream_creds: mode,
     };
-    // The family-table twins carry the anthropic scheme, the two-statics twin the bearer one.
-    let dialect = if name == "static-twin-two-statics" {
-        "openai"
-    } else {
-        "anthropic"
-    };
-    present_bound(
-        &binding_of(dialect, ctx.host, static_twin(name).static_headers),
-        key,
-        &ctx,
-    )
+    let &(_, dialect, statics) = STATIC_CASES
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .expect("a static case");
+    present_bound(&binding_of(dialect, ctx.host, statics), key, &ctx)
 }
 
 fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {

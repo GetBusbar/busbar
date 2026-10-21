@@ -4,16 +4,16 @@
 //! THE DECLARED EGRESS SCHEMES, AS THIS PLANE DECLARES THEM (#83a SD-2b, SD-3; O7, S2-a). All six
 //! dialects state their egress credential as DECLARED DATA — a credential-family table, or a SigV4
 //! signature whose region is a pure function of the host — and carry no builder, so the lane key is
-//! presented by the host's egress-auth unit and never passes through this plane. The one
+//! presented by the linked auth plugin serving the bound style and never passes through this plane. The one
 //! non-credential header a dialect always sends (a version header) is declared beside its scheme,
 //! in `static_headers`.
 //!
 //! The codec proves its own seam here and reaches no host: every declaration's scheme data and the
 //! signing dialect's host-to-region answers are held to the shared fixture
 //! `testing/plane-copies/declared-credentials.json` — the headers each dialect's own builder wrote,
-//! per credential, mode and request. The host's suite holds its egress-auth unit to the same file:
-//! presented under schemes carrying exactly this data, it writes exactly those headers. Together the
-//! two suites are the byte-identity proof of the switch.
+//! per credential, mode and request. The composition root's suite holds the linked auth plugins to the
+//! same file: bound under each dialect's recorded binding, they write exactly those headers. Together
+//! the two suites are the byte-identity proof of the switch.
 
 use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl};
 

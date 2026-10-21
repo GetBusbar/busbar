@@ -201,27 +201,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar/src/root/tests/declared_credentials.rs"
-line = 132
-text = "const ANTHROPIC_FAMILIES: &[CredentialFamily] = &["
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/src/root/tests/declared_credentials.rs"
-line = 174
-text = "families: ANTHROPIC_FAMILIES,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/src/root/tests/declared_credentials.rs"
-line = 623
-text = "families: ANTHROPIC_FAMILIES,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar/src/root/tests/door_steps.rs"
 line = 3561
 text = "busbar_kernel::proto::PROTO_ANTHROPIC,"

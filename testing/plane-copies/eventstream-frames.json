@@ -1,5 +1,5 @@
 {
-  "about": "AWS event-stream frames the host's encoder writes, byte for byte: the LLM plane's copy of the codec must encode and decode them identically.",
+  "about": "AWS event-stream frames the host's encoder wrote before it was deleted, byte for byte: a one-sided golden the LLM plane's codec must encode and decode identically, with no second copy left in the host.",
   "exception_frames": [
     {
       "exception_type": "throttlingException",

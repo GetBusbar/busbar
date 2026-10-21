@@ -59,7 +59,19 @@ fn the_host_seam_holds_the_shared_floor_and_every_shared_verdict() {
                 serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
                     .expect("fixture is JSON");
             assert_eq!(doc["max_json_depth"], MAX_JSON_DEPTH as u64);
-            for case in doc["cases"].as_array().expect("cases") {
+            // THE RECORDED SIZE IS THE FLOOR: 34 cases, 18 accepted and 16 refused. A fixture cut
+            // to one case or to one verdict is a shrunk proof, never a pass.
+            let cases = doc["cases"].as_array().expect("cases");
+            let accepted = cases
+                .iter()
+                .filter(|c| c["accepted"].as_bool() == Some(true))
+                .count();
+            assert!(
+                cases.len() >= 34 && accepted >= 18 && cases.len() - accepted >= 16,
+                "{} cases, {accepted} accepted: under the recorded 34 (18 accepted, 16 refused)",
+                cases.len()
+            );
+            for case in cases {
                 let text = match case["raw"].as_str() {
                     Some(raw) => raw.to_string(),
                     None => {

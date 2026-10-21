@@ -125,6 +125,8 @@ mod max_tokens_precedence_tests;
 mod openai_family_tests;
 #[path = "phase1_5_relocated_tests.rs"]
 mod phase1_5_relocated_tests;
+#[path = "plane_copies_floor_tests.rs"]
+mod plane_copies_floor_tests;
 #[path = "published_spec_shape_tests.rs"]
 mod published_spec_shape_tests;
 #[path = "response_format_matrix_tests.rs"]
