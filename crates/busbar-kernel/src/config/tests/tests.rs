@@ -4400,7 +4400,9 @@ fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field
 fn a_section_a_linked_but_unused_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
     let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
     busbar_kernel::plane::registry::install_linked_required_sections(&["providers", "models"]);
-    let none = crate::config::deploy_from_yaml_str(NO_CATALOG).map(|_| ());
+    // No `pools:` here: the plane's verb would USE the plane (Law 7), and with no plane registered
+    // the section has no owner to parse it, so the refusal would name the unowned section first.
+    let none = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\n").map(|_| ());
     let providers_only =
         crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n").map(|_| ());
     let both = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n").map(|_| ());
