@@ -703,46 +703,31 @@ async fn openapi_builds_the_served_document_off_the_async_worker() {
 }
 
 /// GREEN twin: the served document is still the committed one less the operations of every plane
-/// this node does not configure — for a gzip-accepting client and an identity-only one alike, the
-/// same bytes `openapi_for_configured_planes` renders, with every unmarked admin path kept.
+/// this node does not configure — for a gzip-accepting client and an identity-only one alike. This
+/// test binary links no plane, so every plane the committed document marks is unconfigured here:
+/// both answers are exactly `openapi_for_configured_planes` with nothing configured, as JSON, and
+/// every unmarked admin path is kept.
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
-    let app = crate::new_test_app().build();
-    let configured = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
-            .is_some_and(|decl| app.plane_configured(decl))
-    };
-    let expected = super::handlers::openapi_for_configured_planes(
-        &super::handlers::openapi_json(),
-        configured,
-    );
-    let handle = Arc::new(AppHandle::new(Arc::clone(&app)));
+    let expected =
+        super::handlers::openapi_for_configured_planes(&super::handlers::openapi_json(), |_| false)
+            .expect("the committed document marks plane operations");
+    let doc: serde_json::Value = serde_json::from_str(&expected).unwrap();
+    assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
+    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
     for accept in [Some("gzip"), None] {
         let resp =
             super::handlers::openapi(State(Arc::clone(&handle)), openapi_headers(accept)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let gzipped = resp
-            .headers()
-            .get(axum::http::header::CONTENT_ENCODING)
-            .is_some();
+        assert!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_ENCODING)
+                .is_none(),
+            "a filtered document is served as JSON (accept-encoding {accept:?})"
+        );
         use http_body_util::BodyExt;
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        match &expected {
-            Some(filtered) => {
-                assert!(!gzipped, "a filtered document is served as JSON");
-                assert_eq!(std::str::from_utf8(&bytes).unwrap(), filtered.as_str());
-                let doc: serde_json::Value = serde_json::from_str(filtered).unwrap();
-                assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
-            }
-            None if gzipped => {
-                assert_eq!(accept, Some("gzip"));
-                assert_eq!(&bytes[..], include_bytes!("../openapi.json.gz"));
-            }
-            None => assert_eq!(
-                std::str::from_utf8(&bytes).unwrap(),
-                super::handlers::openapi_json()
-            ),
-        }
+        assert_eq!(std::str::from_utf8(&bytes).unwrap(), expected.as_str());
     }
 }
 
@@ -762,13 +747,10 @@ fn trust_marking_its_thread(
 
 fn inspect_body(tarball: &[u8]) -> axum::body::Bytes {
     use base64::Engine as _;
-    axum::body::Bytes::from(
-        serde_json::json!({
-            "file": "candidate.tar.gz",
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(tarball),
-        })
-        .to_string(),
-    )
+    axum::body::Bytes::from(format!(
+        r#"{{"file":"candidate.tar.gz","tarball_b64":"{}"}}"#,
+        base64::engine::general_purpose::STANDARD.encode(tarball)
+    ))
 }
 
 /// RED (a read blocks an async worker): `POST /plugins/inspect` — reachable by the read-only

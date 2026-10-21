@@ -4599,7 +4599,11 @@ where
     read(app).await;
     let _ = done.send(());
     watchdog.join().unwrap();
-    sibling.await.expect("the sibling task runs");
+    // A read that held the worker never let the sibling start, and with the read over nothing
+    // would ever open the pipe's reading end for it: cancel it before its first poll. A read that
+    // left the worker free already let it run to completion, so this cancels nothing.
+    sibling.abort();
+    let _ = sibling.await;
     !watchdog_fired.load(std::sync::atomic::Ordering::SeqCst)
 }
 
@@ -4652,15 +4656,10 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let dir = tmp_plugins_dir("named-flagged");
     std::fs::create_dir_all(&dir).unwrap();
     let overlay = dir.join("overlay.json");
-    std::fs::write(
-        &overlay,
-        serde_json::json!({
-            "version": 1,
-            "named_maps": {"export": {"broken": {"no_such_field": true}}}
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let mut doc = serde_json::json!({"version": 1, "named_maps": {}});
+    doc["named_maps"][NamedMapSection::Export.key()] =
+        serde_json::json!({"broken": {"no_such_field": true}});
+    std::fs::write(&overlay, doc.to_string()).unwrap();
     let app = crate::new_test_app().overlay_path(overlay).build();
     let page = AdminService::new(Arc::clone(&app))
         .list_named_defs(NamedMapSection::Export)
