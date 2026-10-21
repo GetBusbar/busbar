@@ -31,6 +31,181 @@ pub trait DoorSet: Send + Sync {
     fn rows(&self) -> &[&'static PlaneDecl];
 }
 
+/// THE OPENED DOOR TABLE, LENT (status row 82, D2): the rows the composition root folded, which the
+/// root OWNS and hands, by value, to what reads them — the config parse it runs, the `App` each
+/// generation builds ([`crate::state::App::doors`]) — exactly as it hands its rules
+/// ([`crate::appbuild::RootRules`]). A `Copy` borrow of the root's table: the kernel keeps no copy of
+/// its own, so two tables in one process are two answers, each read by what it was handed to.
+///
+/// Every reader the kernel had over the installed set is a method here, answering byte-for-byte what
+/// the free function answered over the same rows.
+#[derive(Clone, Copy, Default)]
+pub struct Doors {
+    rows: &'static [&'static PlaneDecl],
+}
+
+impl std::fmt::Debug for Doors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.rows.iter().map(|d| d.key))
+            .finish()
+    }
+}
+
+impl Doors {
+    /// No door: the table of a build that opened none.
+    pub const NONE: Doors = Doors { rows: &[] };
+
+    /// The table over `rows`, already folded ([`merged_boot_plane_decls`]) by the root that owns
+    /// them.
+    #[must_use]
+    pub const fn lent(rows: &'static [&'static PlaneDecl]) -> Doors {
+        Doors { rows }
+    }
+
+    /// Every opened door's row, in the root's fold order.
+    #[must_use]
+    pub fn decls(self) -> &'static [&'static PlaneDecl] {
+        self.rows
+    }
+
+    /// THE SCOPE-KIND at ABI scope-kind index `idx` over this table (see the free
+    /// [`scope_kind_at`] for the derivation and its base-first dedup).
+    #[must_use]
+    pub fn scope_kind_at(self, idx: u32) -> Option<&'static str> {
+        let mut seen: Vec<&'static str> = Vec::new();
+        std::iter::once("pool")
+            .chain(self.rows.iter().flat_map(|d| d.scope_kinds.iter().copied()))
+            .filter(|k| {
+                let fresh = !seen.contains(k);
+                if fresh {
+                    seen.push(k);
+                }
+                fresh
+            })
+            .nth(idx as usize)
+    }
+
+    /// THE ABI SCOPE-KIND INDEX for a kind string over this table: the inverse of
+    /// [`Self::scope_kind_at`], sharing its dedup.
+    #[must_use]
+    pub fn scope_kind_index(self, kind: &str) -> Option<u32> {
+        let mut seen: Vec<&'static str> = Vec::new();
+        std::iter::once("pool")
+            .chain(self.rows.iter().flat_map(|d| d.scope_kinds.iter().copied()))
+            .filter(|k| {
+                let fresh = !seen.contains(k);
+                if fresh {
+                    seen.push(k);
+                }
+                fresh
+            })
+            .position(|k| k == kind)
+            .map(|i| i as u32)
+    }
+
+    /// The door whose key is `key`. Allocates nothing.
+    #[must_use]
+    pub fn plane_decl_for(self, key: &str) -> Option<&'static PlaneDecl> {
+        self.rows.iter().copied().find(|d| d.key == key)
+    }
+
+    /// The door whose declaring config section is `section`.
+    #[must_use]
+    pub fn plane_decl_for_config_section(self, section: &str) -> Option<&'static PlaneDecl> {
+        self.rows
+            .iter()
+            .copied()
+            .find(|d| d.config_section == section)
+    }
+
+    /// The fallback door's key (see the free [`fallback_key`]): the door that declares itself the
+    /// fallback, else the first, else `""`.
+    #[must_use]
+    pub fn fallback_key(self) -> &'static str {
+        debug_assert!(
+            self.rows.iter().filter(|d| d.fallback).count() <= 1,
+            "more than one registered plane declares itself the fallback catch-all — it must be \
+             unique or `fallback_key`/`is_fallback` first-win nondeterministically"
+        );
+        self.rows
+            .iter()
+            .find(|d| d.fallback)
+            .or_else(|| self.rows.first())
+            .map(|d| d.key)
+            .unwrap_or("")
+    }
+
+    /// Whether `key` names the door that declares itself the fallback.
+    #[must_use]
+    pub fn is_fallback(self, key: &str) -> bool {
+        self.rows.iter().any(|d| d.key == key && d.fallback)
+    }
+
+    /// The door that declares itself the fallback, or `None`.
+    #[must_use]
+    pub fn fallback_decl(self) -> Option<&'static PlaneDecl> {
+        self.rows.iter().copied().find(|d| d.fallback)
+    }
+
+    /// Every door's key, in fold order.
+    pub fn plane_keys(self) -> impl Iterator<Item = &'static str> {
+        self.rows.iter().map(|d| d.key)
+    }
+
+    /// The door whose key is `key`, or panic.
+    #[must_use]
+    pub fn plane_decl(self, key: &str) -> &'static PlaneDecl {
+        self.plane_decl_for(key)
+            .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
+    }
+
+    /// The distinct wire formats door `key` translates between, named.
+    #[must_use]
+    pub fn wire_format_names(self, key: &str) -> &'static [&'static str] {
+        (self.plane_decl(key).wire_format_names)()
+    }
+
+    /// Every dialect a provider's `protocol` may name over this table, each once, in fold order.
+    #[must_use]
+    pub fn provider_dialects(self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for d in self.rows {
+            for name in (d.provider_dialects)() {
+                if !out.contains(name) {
+                    out.push(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// Door `key`'s one wire format, when it has exactly one.
+    #[must_use]
+    pub fn sole_wire_format(self, key: &str) -> Option<&'static str> {
+        sole_of(self.wire_format_names(key))
+    }
+
+    /// How many distinct wire formats door `key` translates between.
+    #[must_use]
+    pub fn wire_formats(self, key: &str) -> usize {
+        self.wire_format_names(key).len()
+    }
+
+    /// Whether door `key` has earned a superset intermediate representation.
+    #[must_use]
+    pub fn has_superset_ir(self, key: &str) -> bool {
+        superset_of(self.wire_formats(key))
+    }
+}
+
+/// THE PROCESS TABLE, while the installed set still stands: the rows [`plane_decls`] answers, as a
+/// [`Doors`]. The bridge every reader not yet handed a table reads through.
+#[must_use]
+pub fn process_doors() -> Doors {
+    Doors::lent(plane_decls())
+}
+
 /// The rows of the set the composition root installed, read once at install: data, never a seam
 /// another crate installs code into (door-only:static-seam).
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();

@@ -13,7 +13,7 @@
 // posture, `plane/mod.rs`).
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::plane_driver::doors::{is_fallback, sole_wire_format, wire_format_names};
+use crate::plane_driver::doors::{is_fallback, sole_wire_format};
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
 ///
@@ -87,7 +87,7 @@ pub struct PlaneDispatch {
 struct Claim {
     /// The normalised mount path, matched at a segment boundary.
     path: String,
-    /// The [`wire_format_names`] entry spoken here. Not a free string: a claim naming a
+    /// The [`crate::plane_driver::doors::Doors::wire_format_names`] entry spoken here. Not a free string: a claim naming a
     /// format its plane does not list would put a label in the `ingress_protocol` series that no
     /// plane admits to speaking, which is exactly the kind of coincidence that vocabulary exists to
     /// prevent. `a_claim_only_names_a_wire_format_its_plane_speaks` holds it.
@@ -327,7 +327,7 @@ impl Ingress {
     /// The WIRE FORMAT spoken on this path, or `None` when the kernel cannot name one (a fallback
     /// path, or a mounted plane with several dialects).
     ///
-    /// This is the `ingress_protocol` metric-label vocabulary (see [`wire_format_names`]),
+    /// This is the `ingress_protocol` metric-label vocabulary (see [`crate::plane_driver::doors::Doors::wire_format_names`]),
     /// so a mounted plane labels as its own dialect.
     pub fn wire_format(self) -> Option<&'static str> {
         match self {
@@ -359,9 +359,12 @@ impl Ingress {
     /// interface list is an ORDERED list whose first entry is the preferred binding, busbar's own
     /// card publishes these in this order, and a refusal that cannot know which binding the caller
     /// intended is owed the one the card names first.
-    pub fn shaping_wire_format(self) -> Option<&'static str> {
+    pub fn shaping_wire_format(
+        self,
+        doors: crate::plane_driver::doors::Doors,
+    ) -> Option<&'static str> {
         match self {
-            Ingress::Mounted(key) => wire_format_names(key).first().copied(),
+            Ingress::Mounted(key) => doors.wire_format_names(key).first().copied(),
             Ingress::Fallback => None,
         }
     }

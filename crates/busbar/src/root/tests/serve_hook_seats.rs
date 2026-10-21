@@ -923,7 +923,11 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if let Some(cap) = opts.request_body_max_bytes {
         yaml.push_str(&format!("limits:\n  request_body_max_bytes: {cap}\n"));
     }
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        &yaml,
+        busbar_kernel::plane_driver::doors::process_doors(),
+    )
+    .map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
         defs_yaml.push_str(&format!(

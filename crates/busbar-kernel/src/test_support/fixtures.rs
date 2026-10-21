@@ -58,6 +58,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         crate::config::ResolvedProvider::from(provider),
     );
     crate::config::RootCfg {
+        doors: crate::plane_driver::doors::process_doors(),
         plane_defs: Default::default(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),

@@ -128,8 +128,13 @@ fn the_not_found_names_the_plane_s_own_subject() {
     for decl in verb_planes() {
         let refused = busbar_core_admin::planeverbs::registered(|| None::<()>)
             .expect_err("a lookup that resolved nothing must refuse");
-        let rendered =
-            busbar_core_admin::planeverbs::to_admin_error(decl.key, "billing", refused).message();
+        let rendered = busbar_core_admin::planeverbs::to_admin_error(
+            busbar_kernel::plane_driver::doors::process_doors(),
+            decl.key,
+            "billing",
+            refused,
+        )
+        .message();
         assert!(
             rendered.contains(&format!("{} `billing`", decl.subject_noun)),
             "the `{}` refusal must name the plane's own subject noun: {rendered}",
@@ -156,7 +161,14 @@ fn the_audit_naming_is_derived_from_the_plane() {
         );
         for verb in ["connect", "approve"] {
             let name = format!("k3-audit-{}-{verb}", decl.key);
-            busbar_core_admin::planeverbs::audit(decl.key, verb, &name, "applied", &principal);
+            busbar_core_admin::planeverbs::audit(
+                busbar_kernel::plane_driver::doors::process_doors(),
+                decl.key,
+                verb,
+                &name,
+                "applied",
+                &principal,
+            );
             let resource = format!("{}:{name}", decl.audit_kind);
             let rows = AUDIT.list_filtered(0, 8, None, Some(&resource));
             assert_eq!(rows.len(), 1, "one audit row on `{resource}`: {rows:?}");

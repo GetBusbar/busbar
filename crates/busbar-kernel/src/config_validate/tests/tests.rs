@@ -8,6 +8,7 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
+        doors: crate::plane_driver::doors::process_doors(),
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
@@ -2184,8 +2185,11 @@ models:
     provider: acme
     max_concurrent: 10
 "#;
-    let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
-        .expect_err("a config setting the removed auth keys must fail to parse");
+    let err = crate::config::prepass::frozen_from_yaml_str(
+        yaml,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect_err("a config setting the removed auth keys must fail to parse");
     let msg = err.to_string();
     assert!(
         msg.contains("unknown field"),
@@ -2208,8 +2212,11 @@ models:
   model-1:
     provider: acme
 "#;
-    let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
-        .expect_err("the removed api_key_env key must fail to parse");
+    let err2 = crate::config::prepass::frozen_from_yaml_str(
+        yaml2,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect_err("the removed api_key_env key must fail to parse");
     assert!(
         err2.to_string().contains("unknown field"),
         "expected an unknown-field error for api_key_env; got: {err2}"

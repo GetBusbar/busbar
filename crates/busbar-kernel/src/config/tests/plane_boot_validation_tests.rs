@@ -79,9 +79,12 @@ const CROSS_PLANE_REFUSAL: &str = "`bays.dock`: `hooks:` may only name hooks fro
      plane may reference an entry on another. Did you mean the hook `siem`?";
 
 fn boot(section: &str) -> Result<(), String> {
-    crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\nbays:\n{section}"))
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    crate::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\nbays:\n{section}"),
+        crate::plane_driver::doors::process_doors(),
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 fn assert_refused(got: Result<(), String>, sentence: &str) {
@@ -183,13 +186,14 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         ),
     ] {
         let err = section
-            .parse_def("dock", &def)
+            .parse_def(crate::plane_driver::doors::process_doors(), "dock", &def)
             .err()
             .expect("the write path must refuse it");
         assert_eq!(err, sentence);
     }
     section
         .parse_def(
+            crate::plane_driver::doors::process_doors(),
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "open" }, "hooks": ["siem"] }),
         )
@@ -205,6 +209,7 @@ fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
     let section = NamedMapSection::Plane("bays");
     let err = section
         .parse_def(
+            crate::plane_driver::doors::process_doors(),
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
         )
@@ -263,7 +268,7 @@ fn boot_refuses_a_forwarded_caller_credential_in_the_planes_own_words() {
     let moorings = |default: &str| {
         crate::config::deploy_from_yaml_str(&format!(
             "providers: {{}}\nmodels: {{}}\nmoorings:\n  upstream_credentials: {default}\n  berth: {{}}\n"
-        ))
+        ), crate::plane_driver::doors::process_doors())
         .map(|_| ())
         .map_err(|e| e.to_string())
     };

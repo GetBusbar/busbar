@@ -78,9 +78,10 @@ fn pools_of(section: &str) -> ModelPools {
     // kernel's neutral test plane first, as the timeout cells do (nextest runs each test in its
     // own process, so no other test has registered one).
     busbar_kernel::test_support::register_neutral_test_plane();
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
-        "providers: {{}}\nmodels: {{}}\npools:\n{section}"
-    ))
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\npools:\n{section}"),
+        busbar_kernel::plane_driver::doors::process_doors(),
+    )
     .expect("the deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
     ModelPools::of(&cfg)

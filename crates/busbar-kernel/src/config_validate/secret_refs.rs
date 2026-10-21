@@ -102,6 +102,9 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         auth,
         providers,
         identity_providers,
+        // ── THE LENT DOOR TABLE: references to the plane rows the composition root folded, read
+        // by every plane walk; no operator value. ──
+        doors: _,
         // ── ADDRESSES, NAMES AND REFERENCES: strings the operator types in the clear. A listen
         // address, a public URL, a module name or a bare hook/group/definition name is not a
         // credential and has no `SecretRef` anywhere beneath it. ──

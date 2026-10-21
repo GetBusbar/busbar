@@ -348,9 +348,11 @@ fn test_histogram_bank_drains_all_thread_samples() {
 fn test_translation_bank_counts_known_protocol_pair() {
     crate::snapshot::init();
     let (from, to) = shipped_protocols();
+    // The slots are the generation's: built over the door table its `App` was lent.
+    let app = TestApp::new().build();
     let labels = [("from", from), ("to", to)];
     let before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
-    translation(from, to);
+    translation(&app, from, to);
     let after = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
@@ -361,7 +363,7 @@ fn test_translation_bank_counts_known_protocol_pair() {
     // Unknown (plugin) protocol names fall back to the macro and are still counted.
     let fb_labels = [("from", "tel-custom-proto"), ("to", to)];
     let fb_before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &fb_labels);
-    translation("tel-custom-proto", to);
+    translation(&app, "tel-custom-proto", to);
     let fb_after = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &fb_labels);
     assert_eq!((fb_after - fb_before).round() as u64, 1);
 }

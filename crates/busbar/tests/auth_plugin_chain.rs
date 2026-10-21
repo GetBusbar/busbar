@@ -521,6 +521,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         Some(&dir2.join("providers.yaml")),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::plane_driver::doors::process_doors(),
     )
     .expect("the configuration reads");
     let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)

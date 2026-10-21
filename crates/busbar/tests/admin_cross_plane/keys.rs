@@ -2542,7 +2542,11 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     // sibling 409 on the same operation kept the check green.
     let mut over_claimed = Vec::new();
     for (rel, method) in documented_operations() {
-        let declared = declared_errors(method, &rel);
+        let declared = declared_errors(
+            busbar_kernel::plane_driver::doors::process_doors(),
+            method,
+            &rel,
+        );
         for de in declared {
             let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
             let proven = if ambiguous {
@@ -2602,7 +2606,8 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     let stale: Vec<_> = COND_WITNESS_DEBT
         .iter()
         .filter(|(m, rel, k, c)| {
-            let declared = declared_errors(*m, rel);
+            let declared =
+                declared_errors(busbar_kernel::plane_driver::doors::process_doors(), *m, rel);
             let ambiguous = declared.iter().filter(|o| o.kind == *k).count() > 1;
             !ambiguous || !declared.iter().any(|d| d.kind == *k && d.cond == *c)
         })
@@ -2732,8 +2737,10 @@ fn rate_limit_doc_table_matches_classifier() {
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
             ) && !answered_by_loop(rel, *method)
-                && busbar_kernel::ratelimit::classify_mutation(rel)
-                    == busbar_kernel::ratelimit::MutationClass::Config
+                && busbar_kernel::ratelimit::classify_mutation(
+                    busbar_kernel::plane_driver::doors::process_doors(),
+                    rel,
+                ) == busbar_kernel::ratelimit::MutationClass::Config
         })
         .collect();
 
@@ -2753,13 +2760,13 @@ fn rate_limit_doc_table_matches_classifier() {
 /// functional gap did not exist. Prose that describes a gap as a closed set is worse than prose that
 /// says nothing, because it stops the reader from looking.
 ///
-/// So the row is parsed out of the committed file and required to equal `OverlaySection::all()`
+/// So the row is parsed out of the committed file and required to equal `OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors())`
 /// EXACTLY, in both directions: a section live in the code but missing from the doc fails, and a
 /// section the doc claims but the parser rejects fails too.
 #[test]
 fn overlay_reset_doc_row_matches_the_section_set() {
     use busbar_kernel::config::overlay::OverlaySection;
-    // Register the plane config sections (`tools`/`agents`) so `OverlaySection::all()`/`parse` see
+    // Register the plane config sections (`tools`/`agents`) so `OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors())`/`parse` see
     // them — busbar-core's own `cfg(test)` binary has them as builtins; here the plane testkits must
     // be installed first (this test builds no `App`, so nothing else triggers the install).
     crate::ensure_seam();
@@ -2790,19 +2797,19 @@ fn overlay_reset_doc_row_matches_the_section_set() {
         doc_sections.len()
     );
 
-    let all = OverlaySection::all();
+    let all = OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors());
     let code_sections: std::collections::BTreeSet<&str> = all.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         code_sections.len(),
         all.len(),
-        "OverlaySection::all() yields a duplicate wire name"
+        "OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors()) yields a duplicate wire name"
     );
     let missing_from_doc: Vec<_> = code_sections.difference(&doc_sections).collect();
     let missing_from_code: Vec<_> = doc_sections.difference(&code_sections).collect();
     assert!(
         missing_from_doc.is_empty() && missing_from_code.is_empty(),
         "docs/admin-api.md's `DELETE /overlay/{{section}}` row has drifted from \
-         OverlaySection::all().\nLive in the code but absent from the doc (an operator is told the \
+         OverlaySection::all(busbar_kernel::plane_driver::doors::process_doors()).\nLive in the code but absent from the doc (an operator is told the \
          section does not exist): {missing_from_doc:?}\nClaimed by the doc but rejected by \
          `OverlaySection::parse` (an operator is told to call something that 400s): \
          {missing_from_code:?}"
@@ -2811,7 +2818,8 @@ fn overlay_reset_doc_row_matches_the_section_set() {
     // Every name the doc lists really is accepted by the parser, not merely present in the enum.
     for name in &doc_sections {
         assert!(
-            OverlaySection::parse(name).is_some(),
+            OverlaySection::parse(busbar_kernel::plane_driver::doors::process_doors(), name)
+                .is_some(),
             "the doc lists section `{name}` but `OverlaySection::parse` rejects it"
         );
     }

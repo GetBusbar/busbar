@@ -290,7 +290,7 @@ impl busbar_kernel::plane_host::TelemetryHost for EngineHostImpl {
     }
 
     fn telemetry_translation(&self, from: &str, to: &str) {
-        crate::telemetry::translation(from, to);
+        crate::telemetry::translation(&self.app, from, to);
     }
 
     fn pool_label<'a>(&self, model: &'a str) -> &'a str {

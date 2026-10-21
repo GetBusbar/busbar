@@ -1584,6 +1584,9 @@ impl TestApp {
         for f in finalizers {
             f(&mut self);
         }
+        // The door table this generation is built from, as production's `appbuild` reads it off
+        // the configuration it was lent: every plane read below is a read of it.
+        let doors = crate::plane_driver::doors::process_doors();
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
@@ -1616,7 +1619,7 @@ impl TestApp {
         // build seeds none. With no plane registered for the section, nothing is seeded. The decl
         // key comes from the registry, never spelled as a literal.
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(
+        if let Some(decl) = doors.plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = seeded_section_plane_runtime() {
@@ -1651,7 +1654,8 @@ impl TestApp {
             &ts_pools,
             &ts_by_model,
             |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-            crate::plane_driver::doors::fallback_key(),
+            doors.fallback_key(),
+            doors,
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
@@ -1668,7 +1672,7 @@ impl TestApp {
         // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
         // registers and a decl read after it named two different planes — the LLM runtime then landed
         // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
-        let fallback = crate::plane_driver::doors::fallback_decl();
+        let fallback = doors.fallback_decl();
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
@@ -1829,9 +1833,7 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) =
-                    crate::plane_driver::doors::plane_decl_for_config_section(section)
-                {
+                if let Some(decl) = doors.plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1858,9 +1860,7 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) =
-                    crate::plane_driver::doors::plane_decl_for_config_section(section)
-                {
+                if let Some(decl) = doors.plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1884,6 +1884,7 @@ impl TestApp {
             Vec::new()
         };
         let app = std::sync::Arc::new(crate::state::App {
+            doors,
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
@@ -1909,7 +1910,8 @@ impl TestApp {
                 .plane_pools_by_section
                 .into_iter()
                 .filter_map(|(section, pools)| {
-                    crate::plane_driver::doors::plane_decl_for_config_section(section)
+                    doors
+                        .plane_decl_for_config_section(section)
                         .map(|decl| (decl.key, pools))
                 })
                 .collect(),

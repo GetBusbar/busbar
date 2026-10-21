@@ -273,8 +273,9 @@ fn register_protocols() {
 /// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
-/// every root unit's seal.
-fn register_planes() {
+/// every root unit's seal. Returns the folded door table: the root holds it and lends it to every
+/// reader (the CLI flags, the config loads, the generations `run` builds).
+fn register_planes() -> busbar_kernel::plane_driver::doors::Doors {
     // The root legacy table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::legacy::install();
@@ -289,7 +290,10 @@ fn register_planes() {
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
     root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes(&LINKED);
+    let doors = root::linked::register_planes(&LINKED);
+    // Every opened plane's declared billable classes and fee units into the process vocabulary,
+    // once, over the table just folded: a rate apply finds them there.
+    root::kernel::register_plane_classes(doors);
     root::linked::register_exports(dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
@@ -321,6 +325,7 @@ fn register_planes() {
     // composition that disagrees with itself must not bind a listener, and finding that out on the
     // first request would be finding it out from a customer.
     root::linked::seal(ROOT_UNITS);
+    doors
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
@@ -365,7 +370,7 @@ fn main() {
     // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
-    register_planes();
+    let doors = register_planes();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -385,7 +390,7 @@ fn main() {
     root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
-    if let Some(code) = root::cli::handle_cli_flags() {
+    if let Some(code) = root::cli::handle_cli_flags(doors) {
         std::process::exit(code);
     }
     // Enable jemalloc's background purge thread: freed dirty/muzzy pages are returned to the OS after
@@ -500,7 +505,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, doors));
     }
     #[cfg(not(unix))]
     {
@@ -509,11 +514,15 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, doors));
     }
 }
 
-async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
+async fn run(
+    data_workers: usize,
+    late_services: std::sync::Arc<root::serve::LateServices>,
+    plane_doors: busbar_kernel::plane_driver::doors::Doors,
+) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
@@ -542,6 +551,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
+        plane_doors,
     )
     .unwrap_or_else(|e| die(e));
     let LoadedConfig {
@@ -862,10 +872,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
     // signer and the hydrated demotion record this first build made, once.
-    let planes: Vec<_> = busbar_kernel::plane_driver::doors::plane_decls()
-        .iter()
-        .map(|d| &d.declaration)
-        .collect();
+    let planes: Vec<_> = app.doors.decls().iter().map(|d| &d.declaration).collect();
     let signer = app
         .governance
         .clone()
@@ -965,7 +972,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             served
                 .unopened(root::boot::door_planes())
                 .into_iter()
-                .chain(root::boot::unbound_sections()),
+                .chain(root::boot::unbound_sections(app.doors)),
         );
     }
     served.spawn_ticks();

@@ -111,11 +111,14 @@ fn seam_record_boot(app: &busbar_kernel::state::App) {
     app.record_version_at(0, "system", "boot");
 }
 
-/// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.
+/// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`, over
+/// `doors`, the door table the generation the router serves was lent; every route builder below
+/// takes it as a parameter.
 fn seam_mount(
     router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+    doors: busbar_kernel::plane_driver::doors::Doors,
 ) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
-    crate::transport::mount(router, &crate::v1::json::JsonV1)
+    crate::transport::mount(router, &crate::v1::json::JsonV1, doors)
 }
 
 /// TEST/TEST-SUPPORT router builder: register this crate's admin mount seam (idempotently, once per

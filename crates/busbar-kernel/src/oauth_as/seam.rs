@@ -5,8 +5,7 @@
 //! runtime object and mount its routes, without naming its crate: the reverse edge Cargo refuses
 //! (`busbar-core-oauth2` depends on `busbar-kernel`, never the other way).
 //!
-//! Registered once by the composition root, the discipline `plane_driver::doors::install_doors`
-//! documents for the registry planes. `oauth_as` is a SINGLETON (no named-definition map, no
+//! Registered once by the composition root, before any config is loaded. `oauth_as` is a SINGLETON (no named-definition map, no
 //! scope-kind grants, no admin CRUD verbs), so it rides this small bespoke fn-pointer set rather
 //! than the full `PlaneDecl` vocabulary, which would force several of its fields to fictions here.
 
@@ -98,7 +97,7 @@ pub struct AsPlaneSeam {
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
 
 /// Register the authorization-server plane's seam. Called EXACTLY ONCE, by the composition root
-/// (alongside `plane_driver::doors::install_doors`), before any config is loaded. `oauth_as:` carries
+/// (alongside the door table it folds), before any config is loaded. `oauth_as:` carries
 /// no feature flag, so every shipped build registers this. The kernel's own test binary never links
 /// `busbar-core-oauth2` (that would be the forbidden reverse edge) and so never calls this; it also
 /// never configures `oauth_as:` on any `App` it builds, so an unregistered seam and an always-`None`

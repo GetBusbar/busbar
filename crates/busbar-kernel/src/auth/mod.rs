@@ -1373,7 +1373,7 @@ fn denial_dialect(
     match dialect {
         Some(dialect) => dialect,
         None => ingress_for_path(app, path)
-            .shaping_wire_format()
+            .shaping_wire_format(app.doors)
             .unwrap_or(""),
     }
 }
@@ -2379,7 +2379,7 @@ pub(crate) async fn auth_middleware(
             let rel = path
                 .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(&path);
-            let class = crate::ratelimit::classify_mutation(rel);
+            let class = crate::ratelimit::classify_mutation(app.doors, rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())

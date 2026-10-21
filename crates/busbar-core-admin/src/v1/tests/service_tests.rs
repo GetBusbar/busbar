@@ -4061,16 +4061,28 @@ mod plane_fees_on_admin_usage {
         assert_eq!((book, admin), (10, 10 * MICROS_PER_MINOR));
         let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
         assert_eq!(
-            crate::v1::service::row_lane(POOLS_MODEL, POOLS_PLANE),
+            crate::v1::service::row_lane(
+                busbar_kernel::plane_driver::doors::process_doors(),
+                POOLS_MODEL,
+                POOLS_PLANE
+            ),
             POOLS_MODEL,
             "the fallback plane's key is a pools row"
         );
         assert_eq!(
-            crate::v1::service::row_lane(POOLS_MODEL, POOLS_PROVIDER),
+            crate::v1::service::row_lane(
+                busbar_kernel::plane_driver::doors::process_doors(),
+                POOLS_MODEL,
+                POOLS_PROVIDER
+            ),
             POOLS_MODEL
         );
         assert_eq!(
-            crate::v1::service::row_lane("srv.read", FEE_PLANE),
+            crate::v1::service::row_lane(
+                busbar_kernel::plane_driver::doors::process_doors(),
+                "srv.read",
+                FEE_PLANE
+            ),
             format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read")
         );
     }

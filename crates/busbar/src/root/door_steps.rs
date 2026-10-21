@@ -931,7 +931,7 @@ impl DriverSteps for DoorSteps<'_> {
         let (names, providers) = &self.facts.translations;
         if let (Some(from), Some(to)) = (names.get(dialect as usize), providers.get(provider)) {
             if from != to {
-                busbar_kernel::telemetry::translation(from, to);
+                busbar_kernel::telemetry::translation(&self.app, from, to);
             }
         }
     }
@@ -1820,7 +1820,8 @@ pub fn kernel_sections(
     // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
     // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
     let required = |key: &'static str| {
-        busbar_kernel::plane_driver::doors::plane_decls()
+        cfg.doors
+            .decls()
             .iter()
             .any(|d| d.required_config_sections.contains(&key))
     };

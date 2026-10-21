@@ -34,7 +34,10 @@ fn refusal_for(section: &str, hook: &str) -> String {
     let yaml = format!(
         "providers: {{}}\nmodels: {{}}\n{section}:\n  x:\n    url: \"https://vendor.example/x\"\n    pin: {{ mechanism: unpinned }}\n    hooks: [\"{hook}\"]\n"
     );
-    let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(&yaml) {
+    let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(
+        &yaml,
+        busbar_kernel::plane_driver::doors::process_doors(),
+    ) {
         Err(e) => vec![e.to_string()],
         Ok(deploy) => busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
             .err()

@@ -411,6 +411,7 @@ pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> 
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        app.doors,
         Vec::new(),
         Vec::new(),
     )
@@ -437,6 +438,7 @@ pub fn base_data_core_lines(
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        app.doors,
         Vec::new(),
         Vec::new(),
     )
@@ -457,6 +459,7 @@ pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, Rou
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        app.doors,
         Vec::new(),
         Vec::new(),
     )

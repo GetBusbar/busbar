@@ -73,7 +73,7 @@ pub struct App {
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
     /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key` of the plane that
-    /// DECLARES itself fallback ([`crate::plane_driver::doors::fallback_decl`]; a key naming no plane when none
+    /// DECLARES itself fallback ([`crate::plane_driver::doors::Doors::fallback_decl`]; a key naming no plane when none
     /// does), under which THIS config generation's runtime object rides in [`App::plane_slots`], the
     /// same opaque slot every other registered plane carries its own runtime object in. Resolved ONCE
     /// at build (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`])
@@ -82,6 +82,9 @@ pub struct App {
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
+    /// THE OPENED DOOR TABLE this generation was built from, lent by the composition root
+    /// ([`crate::plane_driver::doors::Doors`]): every plane read the generation answers reads it.
+    pub doors: crate::plane_driver::doors::Doors,
     /// The composition root's rules this generation was built under
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
@@ -538,8 +541,7 @@ impl App {
         // viewer — yields the substrate-resident EMPTY_VIEW (an empty projection).
         let key = self.fallback_runtime_key;
         match (
-            crate::plane_driver::doors::plane_decl_for(crate::plane_driver::doors::fallback_key())
-                .and_then(|d| d.viewer),
+            (self.doors.plane_decl_for(self.doors.fallback_key())).and_then(|d| d.viewer),
             self.plane_slot(key),
         ) {
             (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
@@ -610,7 +612,7 @@ impl App {
     }
 
     /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build from the
-    /// declared fallback plane (`crate::plane_driver::doors::fallback_decl`). The relocated engine reads its runtime
+    /// declared fallback plane (`crate::plane_driver::doors::Doors::fallback_decl`). The relocated engine reads its runtime
     /// slot through this cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` +
     /// mutex-guarded intern) on every own-runtime accessor call — the hot-path allocation the alloc
     /// gate pins.
@@ -755,9 +757,7 @@ impl busbar_kernel::plane_driver::slots::ContainerGateSink for App {
         // The map key is the plane's stable decl key. `reresolve` is only ever called for an installed
         // plane, whose key is `&'static`; recover that static key from the registry so the map's
         // `&'static str` key type is satisfied without leaking (the `plane_key` argument is a borrow).
-        if let Some(static_key) =
-            crate::plane_driver::doors::plane_decl_for(plane_key).map(|d| d.key)
-        {
+        if let Some(static_key) = self.doors.plane_decl_for(plane_key).map(|d| d.key) {
             self.plane_gates.insert(static_key, gates);
             self.plane_rewrites.insert(static_key, rewrites);
         }
@@ -936,7 +936,9 @@ impl AppHandle {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; that plane's
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
-        for decl in crate::plane_driver::doors::plane_decls() {
+        // The incoming generation's doors: the table it was built from is the one its planes
+        // reconcile against.
+        for decl in next.doors.decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
                     &*prior as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,

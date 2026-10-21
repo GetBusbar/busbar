@@ -327,8 +327,9 @@ impl PlaneCfg for DoorSection {
     /// registration set is config, so the config validator refuses a present card silent about one
     /// at boot and on every apply, rather than a unit ledgered on a lane no card prices. A door
     /// that states no scope kind, or prices no class beside its fee units, bills no registration.
-    fn ledger_lanes(&self) -> Vec<String> {
-        let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(self.section)
+    fn ledger_lanes(&self, doors: crate::plane_driver::doors::Doors) -> Vec<String> {
+        let Some(decl) = doors
+            .plane_decl_for_config_section(self.section)
             .filter(|d| is_door(d))
         else {
             return Vec::new();

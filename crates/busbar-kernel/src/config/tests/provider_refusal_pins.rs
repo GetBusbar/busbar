@@ -19,9 +19,10 @@ use super::{resolve, ProviderDef, ProviderDeploy};
 /// live parse words it (`deploy_from_yaml_str`, the parse boot and `--validate` both run).
 fn deployment_refusal(key: &str) -> String {
     crate::test_support::register_neutral_test_plane();
-    crate::config::deploy_from_yaml_str(&format!(
-        "providers:\n  p:\n    api_key: {{env: K}}\n    {key}: [a]\n"
-    ))
+    crate::config::deploy_from_yaml_str(
+        &format!("providers:\n  p:\n    api_key: {{env: K}}\n    {key}: [a]\n"),
+        crate::plane_driver::doors::process_doors(),
+    )
     .expect_err("a sequence where the provider key wants a scalar or a map is refused")
     .to_string()
 }

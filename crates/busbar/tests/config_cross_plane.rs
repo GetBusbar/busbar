@@ -27,7 +27,8 @@ fn register_planes() {
 fn deploy_yaml(sections: &str) -> DeployCfg {
     register_planes();
     let text = format!("providers: {{}}\nmodels: {{}}\n{sections}");
-    deploy_from_yaml_str(&text).unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
+    deploy_from_yaml_str(&text, busbar_kernel::plane_driver::doors::process_doors())
+        .unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
 // (`resolve_provider_hook_and_core_fallback_agree` is RETIRED with its subject: no plane implements
@@ -54,10 +55,13 @@ tools:
     pin: { mechanism: unpinned }
     tools_allow: { anything: { publish_as: foo_bar } }
 "#;
-    let refused = deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{colliding}"))
-        .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
-        .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
-        .expect("a config whose published names are not unique is refused");
+    let refused = deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\n{colliding}"),
+        busbar_kernel::plane_driver::doors::process_doors(),
+    )
+    .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
+    .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
+    .expect("a config whose published names are not unique is refused");
     assert!(refused.contains("published as `foo_bar`"), "{refused}");
 
     // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.

@@ -195,10 +195,14 @@ pub enum Cond {
 
 impl Cond {
     /// The single canonical human phrasing for this condition — written ONCE. Every endpoint that
-    /// declares a `(kind, cond)` renders identically.
+    /// declares a `(kind, cond)` renders identically. `doors` is the door table the document is
+    /// generated over (the overlay section names are read off it).
     #[cfg(feature = "openapi-schema")]
-    pub fn phrase(self) -> &'static str {
-        match self {
+    pub fn phrase(
+        self,
+        doors: busbar_kernel::plane_driver::doors::Doors,
+    ) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(match self {
             Cond::StaleIfMatch => "stale `If-Match` (re-read and retry)",
             Cond::MalformedIfMatch => "malformed `If-Match` header",
             Cond::UnknownResource => "unknown resource",
@@ -246,13 +250,10 @@ impl Cond {
                 // DERIVED, never restated: the hand-written four-name list here outlived the
                 // arrival of the `named_maps` overlay section, so the API's own error taxonomy
                 // asserted `export` was not a section while it was becoming one.
-                static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-                    format!(
-                        "unknown overlay section (expected one of {})",
-                        busbar_kernel::config::overlay::OverlaySection::valid_names()
-                    )
-                });
-                PROSE.as_str()
+                return std::borrow::Cow::Owned(format!(
+                    "unknown overlay section (expected one of {})",
+                    busbar_kernel::config::overlay::OverlaySection::valid_names(doors)
+                ));
             }
             Cond::InvalidLabels => {
                 "invalid mint-time `labels`: a reserved or non-Prometheus label name, or too \
@@ -274,7 +275,7 @@ impl Cond {
                 "the plugin name/alias collides with an already-installed plugin under a different \
                  filename"
             }
-        }
+        })
     }
 }
 
@@ -364,9 +365,14 @@ pub fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
 /// NOT listed here (and not listable): 401, the generic under-scope 403, 405, 429 and 500 — every
 /// operation can emit them, so `openapi_doc()` stamps them algorithmically. (1.5.2 scope collapse
 /// removed the only per-endpoint `Forbidden` declaration — the hook-escalation refusal — since a
-/// non-`full` caller can no longer reach a hook mutation at all.)
+/// non-`full` caller can no longer reach a hook mutation at all.) The named-map sections are matched
+/// over `doors`, the door table the admin surface is mounted with.
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
-pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
+pub fn declared_errors(
+    doors: busbar_kernel::plane_driver::doors::Doors,
+    method: MethodTag,
+    rel: &str,
+) -> &'static [DocErr] {
     use Cond::*;
     use ErrKind::*;
     use MethodTag::*;
@@ -617,8 +623,8 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         // section additive here: adding the variant adds its five operations' declarations with
         // no arm of their own. The one asymmetry is the identity-providers TRUST CEILING, which is
         // keyed off `has_trust_ceiling()` rather than off the section's name.
-        (m, r) if NamedMapSection::parse_rel(r).is_some() => {
-            let (section, shape) = NamedMapSection::parse_rel(r).expect("just matched");
+        (m, r) if NamedMapSection::parse_rel(doors, r).is_some() => {
+            let (section, shape) = NamedMapSection::parse_rel(doors, r).expect("just matched");
             named_map_declared_errors(m, section, shape)
         }
         // A templated READ with no arm of its own answers 404 for an unknown resource and nothing
@@ -712,12 +718,17 @@ fn named_map_declared_errors(
 /// This is the ONLY producer of 4xx response text in the document. `openapi_doc()` calls it and
 /// writes the result verbatim; there is no per-endpoint prose left to drift.
 #[cfg(feature = "openapi-schema")]
-pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)> {
-    let declared = declared_errors(method, rel);
+pub fn declared_responses(
+    doors: busbar_kernel::plane_driver::doors::Doors,
+    method: MethodTag,
+    rel: &str,
+) -> Vec<(String, String)> {
+    let declared = declared_errors(doors, method, rel);
     // Status → ordered list of (code, phrase), de-duplicated, in declaration order.
-    let mut by_status: Vec<(u16, Vec<(&'static str, &'static str)>)> = Vec::new();
+    type Phrase = std::borrow::Cow<'static, str>;
+    let mut by_status: Vec<(u16, Vec<(&'static str, Phrase)>)> = Vec::new();
     for de in declared {
-        let (status, code, phrase) = (de.kind.status(), de.kind.code(), de.cond.phrase());
+        let (status, code, phrase) = (de.kind.status(), de.kind.code(), de.cond.phrase(doors));
         let slot = match by_status.iter_mut().find(|(s, _)| *s == status) {
             Some(slot) => &mut slot.1,
             None => {
@@ -725,7 +736,7 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
                 &mut by_status.last_mut().expect("just pushed").1
             }
         };
-        if !slot.contains(&(code, phrase)) {
+        if !slot.iter().any(|(c, p)| *c == code && *p == phrase) {
             slot.push((code, phrase));
         }
     }
@@ -734,7 +745,7 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
         .into_iter()
         .map(|(status, clauses)| {
             // Within one status, group the phrases under their code: "`code`: a, b | `code2`: c".
-            let mut by_code: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+            let mut by_code: Vec<(&'static str, Vec<Phrase>)> = Vec::new();
             for (code, phrase) in clauses {
                 match by_code.iter_mut().find(|(c, _)| *c == code) {
                     Some((_, phrases)) => phrases.push(phrase),

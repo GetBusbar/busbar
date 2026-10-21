@@ -718,8 +718,11 @@ async fn node_boot_hooks_arm() {
     // A deployment naming no plane at all (a door-only build links no protocol to name one), over
     // the kernel's stand-in store.
     let cfg = || {
-        let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
-            .expect("a minimal deployment");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            "providers: {}\nmodels: {}\n",
+            busbar_kernel::plane_driver::doors::process_doors(),
+        )
+        .expect("a minimal deployment");
         let mut cfg =
             busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
         cfg.store = Some(busbar_kernel::test_support::stand_in_store());

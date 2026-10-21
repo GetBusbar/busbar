@@ -12,7 +12,7 @@ use crate::config::tests::base_deploy;
 /// back to `(section, shape)` without a hand-written path list anywhere.
 #[test]
 fn every_section_round_trips_its_three_route_shapes() {
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections(crate::plane_driver::doors::process_doors()) {
         assert_eq!(
             section.path_root().as_ref(),
             format!("/{}", section.key()),
@@ -20,26 +20,44 @@ fn every_section_round_trips_its_three_route_shapes() {
         );
         let root = section.path_root().to_string();
         assert_eq!(
-            NamedMapSection::parse_rel(&root),
+            NamedMapSection::parse_rel(crate::plane_driver::doors::process_doors(), &root),
             Some((section, NamedMapShape::Collection))
         );
         assert_eq!(
-            NamedMapSection::parse_rel(&format!("{root}/{{name}}")),
+            NamedMapSection::parse_rel(
+                crate::plane_driver::doors::process_doors(),
+                &format!("{root}/{{name}}")
+            ),
             Some((section, NamedMapShape::Item))
         );
         assert_eq!(
-            NamedMapSection::parse_rel(&format!("{root}/{{name}}/settings")),
+            NamedMapSection::parse_rel(
+                crate::plane_driver::doors::process_doors(),
+                &format!("{root}/{{name}}/settings")
+            ),
             Some((section, NamedMapShape::Settings))
         );
         // A path that merely SHARES the prefix is not a named-map route.
         assert_eq!(
-            NamedMapSection::parse_rel(&format!("{root}/{{name}}/health")),
+            NamedMapSection::parse_rel(
+                crate::plane_driver::doors::process_doors(),
+                &format!("{root}/{{name}}/health")
+            ),
             None
         );
     }
     // Sections the generic CRUD deliberately does NOT serve.
-    assert_eq!(NamedMapSection::parse_rel("/hooks"), None);
-    assert_eq!(NamedMapSection::parse_rel("/groups/{name}"), None);
+    assert_eq!(
+        NamedMapSection::parse_rel(crate::plane_driver::doors::process_doors(), "/hooks"),
+        None
+    );
+    assert_eq!(
+        NamedMapSection::parse_rel(
+            crate::plane_driver::doors::process_doors(),
+            "/groups/{name}"
+        ),
+        None
+    );
 }
 
 // `sections_holds_the_frozen_named_map_order_under_the_default_feature_set` MOVED to
@@ -140,7 +158,11 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
     let _isolation = crate::plane_driver::doors::TestRegistryIsolation::empty();
     let section = NamedMapSection::Plane("bays");
     let err = section
-        .parse_def("dock", &serde_json::json!({}))
+        .parse_def(
+            crate::plane_driver::doors::process_doors(),
+            "dock",
+            &serde_json::json!({}),
+        )
         .err()
         .expect("a section no plane declares is refused");
     assert_eq!(err, "unknown field `bays`");

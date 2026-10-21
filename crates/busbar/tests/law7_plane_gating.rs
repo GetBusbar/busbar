@@ -172,7 +172,11 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
         let yaml = format!(
             "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parse");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            busbar_kernel::plane_driver::doors::process_doors(),
+        )
+        .expect("parse");
         let mut defs = std::collections::HashMap::new();
         defs.insert(
             "acme".to_string(),

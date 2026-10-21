@@ -68,7 +68,8 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
 /// linked planes this generation CONFIGURED, in plane-list order. An unconfigured plane's boot hooks
 /// never run — it restores nothing and starts nothing. One generic check, naming no plane.
 fn configured_decls(app: &crate::state::App) -> Vec<&'static crate::plane_driver::row::PlaneDecl> {
-    crate::plane_driver::doors::plane_decls()
+    app.doors
+        .decls()
         .iter()
         .copied()
         .filter(|d| app.plane_configured(d))
@@ -115,11 +116,9 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
     // caller pins busbar by). `card_issuer` derives it through that plane's `card_signer` seam
     // and reduces it to its PUBLIC halves core-side; with that plane compiled out no plane derives
     // one and it is `None` — no plane's `start` hook reads it — so no `#[cfg]` is needed here.
-    let card_issuer = app_handle
-        .load()
-        .governance
-        .as_ref()
-        .and_then(|g| g.card_issuer());
+    let generation = app_handle.load();
+    let card_issuer =
+        (generation.governance.as_ref()).and_then(|g| g.card_issuer(generation.doors));
     let ctx = crate::plane_driver::row::BootCtx::for_start(app_handle, card_issuer);
     run_start_hooks(&configured_decls(&app_handle.load()), &ctx)
 }

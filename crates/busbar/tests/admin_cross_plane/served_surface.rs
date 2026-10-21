@@ -125,7 +125,7 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
         };
         out.insert(op, source);
     }
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections(busbar_kernel::plane_driver::doors::process_doors()) {
         let source = match section {
             NamedMapSection::Plane(key) => Source::Plane(key),
             _ => Source::Router,

@@ -156,7 +156,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
             for (model, tokens) in
                 gov.bucket_model_tokens(&app.cost, &key.id, crate::governance::WINDOW_TOTAL, now)
             {
-                for (tier, v) in crate::governance::token_series(&model, &tokens) {
+                for (tier, v) in crate::governance::token_series(app.doors, &model, &tokens) {
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
                     for (k, val) in metric_labels(key) {
@@ -217,7 +217,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                 for (model, tokens) in
                     gov.bucket_model_tokens(&app.cost, &bucket.bucket_id, bucket.window, now)
                 {
-                    for (tier, v) in crate::governance::token_series(&model, &tokens) {
+                    for (tier, v) in crate::governance::token_series(app.doors, &model, &tokens) {
                         set_gauge(
                             metrics::gauge!(
                                 BUCKET_TOKENS,

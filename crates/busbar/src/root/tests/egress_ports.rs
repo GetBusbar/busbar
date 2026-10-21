@@ -216,7 +216,11 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
                 attempt_timeout_ms: 10000\n  plain:\n    provider: far\npools:\n  fast:\n    \
                 members:\n      - model: patient\n        attempt_timeout_ms: 50\n      - model: \
                 plain\n  slow:\n    members:\n      - model: patient\n";
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        yaml,
+        busbar_kernel::plane_driver::doors::process_doors(),
+    )
+    .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     let app = busbar_kernel::test_support::TestApp::new().build();
     let serving = crate::root::model_egress::ModelServing {

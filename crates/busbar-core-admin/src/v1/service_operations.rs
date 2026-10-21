@@ -318,7 +318,9 @@ impl AdminService {
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
         })
-        .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+        .ok_or_else(|| {
+            AdminError::not_found(format!("{} `{name}`", section.singular(self.app.doors)))
+        })
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
@@ -1537,10 +1539,13 @@ impl AdminService {
             // over counts nobody recorded is not one this read may serve.
             let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
             if !corrections.is_empty() {
-                let lane = row_lane(&r.model, &r.provider);
+                let lane = row_lane(self.app.doors, &r.model, &r.provider);
                 let eras: Vec<u64> = rows
                     .iter()
-                    .filter(|o| o.key_id == r.key_id && row_lane(&o.model, &o.provider) == lane)
+                    .filter(|o| {
+                        o.key_id == r.key_id
+                            && row_lane(self.app.doors, &o.model, &o.provider) == lane
+                    })
                     .map(|o| o.priced_from_ms)
                     .collect();
                 for (class, delta) in row_count_corrections(
@@ -1587,7 +1592,7 @@ impl AdminService {
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
             // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
             // requests at the plane's own fee, as the budget book charges them (#47).
-            let lane = row_lane(&r.model, &r.provider);
+            let lane = row_lane(self.app.doors, &r.model, &r.provider);
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
@@ -1620,7 +1625,7 @@ impl AdminService {
             // view keeps 1.5.5's shape (`row_carries_classes`).
             let none = UsageBreakdown::default();
             let unitemized = std::collections::BTreeMap::new();
-            let itemized = if row_carries_classes(&r.provider) {
+            let itemized = if row_carries_classes(self.app.doors, &r.provider) {
                 classes
             } else {
                 &unitemized

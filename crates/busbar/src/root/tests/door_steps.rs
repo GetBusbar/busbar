@@ -7102,7 +7102,11 @@ done
 #[test]
 fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            yaml,
+            busbar_kernel::plane_driver::doors::process_doors(),
+        )
+        .expect("a deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
         super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
     };
@@ -8424,6 +8428,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
+        busbar_kernel::plane_driver::doors::process_doors(),
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
@@ -8504,6 +8509,7 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     use busbar_kernel::appbuild::RootRules as _;
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+        busbar_kernel::plane_driver::doors::process_doors(),
     )
     .expect("parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
@@ -8560,8 +8566,11 @@ fn a_required_section_written_empty_hands_the_plane_its_sections() {
         ..NEUTRAL_FALLBACK
     };
     let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
-    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
-        .expect("a deployment");
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\n",
+        busbar_kernel::plane_driver::doors::process_doors(),
+    )
+    .expect("a deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
     let sections = super::kernel_sections(&cfg);
     assert_eq!(

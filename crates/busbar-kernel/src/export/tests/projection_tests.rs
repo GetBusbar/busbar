@@ -496,7 +496,11 @@ store:
     let defs = std::collections::HashMap::new();
     // CONTROL: without the export block the same config resolves — so the refusal below is the
     // export stream's, not some other defect in the fixture.
-    let control: crate::config::DeployCfg = serde_yaml::from_str(base).expect("fixture parses");
+    let control: crate::config::DeployCfg = crate::config::prepass::frozen_from_yaml_str(
+        base,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect("fixture parses");
     if let Err(errors) = crate::config::resolve(&control, &defs) {
         panic!("the fixture without `export:` must resolve; errors were: {errors:#?}");
     }
@@ -504,7 +508,11 @@ store:
         "{base}export:\n  siem:\n    module: request-log-webhook\n    streams: [prompts]\n    \
          settings:\n      url: https://siem.example.com/l\n"
     );
-    let deploy: crate::config::DeployCfg = serde_yaml::from_str(&yaml).expect("fixture parses");
+    let deploy: crate::config::DeployCfg = crate::config::prepass::frozen_from_yaml_str(
+        &yaml,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect("fixture parses");
     let errors = crate::config::resolve(&deploy, &defs)
         .expect_err("a producerless stream must make the whole config fail to resolve");
     assert_error_mentions(&errors, &["prompts", "NO PRODUCER", "later release"]);

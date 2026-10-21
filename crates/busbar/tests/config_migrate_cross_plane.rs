@@ -102,7 +102,11 @@ agent_pools:
 
     // (a) It parses into the 1.6.0 DeployCfg (deny_unknown_fields is the real gate: a surviving
     // `plugin:`/`at:`/tool_pools would fail HERE; the rich pool members are valid 1.6.0 grammar).
-    let deploy: DeployCfg = deploy_from_yaml_str(&out.yaml).unwrap_or_else(|e| {
+    let deploy: DeployCfg = deploy_from_yaml_str(
+        &out.yaml,
+        busbar_kernel::plane_driver::doors::process_doors(),
+    )
+    .unwrap_or_else(|e| {
         panic!(
             "migrated config must boot-parse on 1.6.0: {e}\n{}",
             out.yaml
@@ -181,7 +185,8 @@ agents:
         doc[section]["pools"]["p"] = pool;
         let raw = serde_yaml::to_string(&doc).expect("the config renders");
         let deploy: DeployCfg =
-            deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
+            deploy_from_yaml_str(&raw, busbar_kernel::plane_driver::doors::process_doors())
+                .unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
         resolve(&deploy, &defs)
             .map(|_| ())
             .map_err(|e| format!("{e:?}"))

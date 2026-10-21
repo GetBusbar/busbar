@@ -2234,6 +2234,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
     );
 
     let err = match result {
@@ -2278,6 +2279,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
     )
     .unwrap_or_else(|e| {
         panic!("the migrated config must boot cleanly through the real boot path: {e}")
@@ -2387,8 +2389,14 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     // Guarded so any ambient value is restored on drop (incl. panic).
     let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
     std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("a mutable default config must boot");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
     assert_eq!(
         loaded.overlay_path.as_deref(),
@@ -2405,9 +2413,13 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
 fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
     let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
-    let Err(err) =
-        load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-    else {
+    let Err(err) = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
+    ) else {
         panic!("mutable + overlay disabled must refuse to boot");
     };
     // Pin the SPECIFIC resolve_backend Err arm for `overlay: false` on a mutable config — not an OR of
@@ -2427,8 +2439,14 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
 fn boot_locked_config_has_no_overlay() {
     let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
     let (dir, config_path, _p) = boot_config_dir("locked", cfg);
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("a locked config boots");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect("a locked config boots");
     assert!(loaded.config_locked);
     assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2458,8 +2476,14 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
     .unwrap();
 
     // No override → the `providers_file:` pointer is used.
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("providers_file pointer resolves");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect("providers_file pointer resolves");
     assert_eq!(
         loaded.providers_path, catalog,
         "the providers_file pointer must be honored"
@@ -2473,6 +2497,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
         Some(&other),
         false,
         crate::config::EnvSubst::Strict,
+        crate::plane_driver::doors::process_doors(),
     )
     .expect("override resolves");
     assert_eq!(

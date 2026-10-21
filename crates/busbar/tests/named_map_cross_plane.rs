@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `NamedMapSection::sections()` BYTE-IDENTITY TEST, relocated here from
+//! CROSS-PLANE `NamedMapSection::sections(busbar_kernel::plane_driver::doors::process_doors())` BYTE-IDENTITY TEST, relocated here from
 //! `src/config/tests/named_map_tests.rs` (the "fix the 38" pass after the A6/HostCtx
 //! dev-dependency-cycle cleanup): `sections()` is folded from the REAL registered plane roster (see
 //! its doc — under the default/test/openapi feature set the fold is `[identity-providers, export,
@@ -12,7 +12,7 @@
 //! that frozen order is a claim about the roster's fold, which
 //! `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids `busbar-kernel`
 //! itself from asserting via a synthetic `#[cfg(test)]` decl. Every other test in
-//! `named_map_tests.rs` is parameterized over WHATEVER `NamedMapSection::sections()` returns and
+//! `named_map_tests.rs` is parameterized over WHATEVER `NamedMapSection::sections(busbar_kernel::plane_driver::doors::process_doors())` returns and
 //! stays there.
 
 mod linked;
@@ -31,10 +31,11 @@ fn register_planes() {
 #[test]
 fn sections_holds_the_frozen_named_map_order_under_the_default_feature_set() {
     register_planes();
-    let keys: Vec<&'static str> = NamedMapSection::sections()
-        .iter()
-        .map(|s| s.key())
-        .collect();
+    let keys: Vec<&'static str> =
+        NamedMapSection::sections(busbar_kernel::plane_driver::doors::process_doors())
+            .iter()
+            .map(|s| s.key())
+            .collect();
     assert_eq!(
         keys,
         vec!["identity-providers", "export", "tools", "agents"],

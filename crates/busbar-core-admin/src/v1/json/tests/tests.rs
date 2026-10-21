@@ -346,7 +346,7 @@ const COMMITTED_OPENAPI_PATH: &str =
 #[cfg(feature = "openapi-schema")]
 fn openapi_doc_seamed() -> serde_json::Value {
     crate::ensure_seam();
-    openapi_doc()
+    openapi_doc(busbar_kernel::plane_driver::doors::process_doors())
 }
 
 /// The string the live handler serves (the inflate of the embedded gz) must be BYTE-IDENTICAL to
@@ -520,7 +520,11 @@ fn declared_errors_is_total_and_well_formed() {
             let Some(method) = MethodTag::from_op_key(key) else {
                 continue;
             };
-            let declared = declared_errors(method, rel);
+            let declared = declared_errors(
+                busbar_kernel::plane_driver::doors::process_doors(),
+                method,
+                rel,
+            );
             let mut seen = std::collections::BTreeSet::new();
             for de in declared {
                 assert!(
@@ -531,7 +535,9 @@ fn declared_errors_is_total_and_well_formed() {
                     de.kind.status()
                 );
                 assert!(
-                    !de.cond.phrase().is_empty(),
+                    !de.cond
+                        .phrase(busbar_kernel::plane_driver::doors::process_doors())
+                        .is_empty(),
                     "{key} {rel}: {:?} has no phrase",
                     de.cond
                 );
@@ -547,7 +553,11 @@ fn declared_errors_is_total_and_well_formed() {
             let by_status = op[OAS_OPERATION_STATUSES]
                 .as_object()
                 .expect("documented statuses");
-            for (status, description) in declared_responses(method, rel) {
+            for (status, description) in declared_responses(
+                busbar_kernel::plane_driver::doors::process_doors(),
+                method,
+                rel,
+            ) {
                 assert_eq!(
                     by_status[&status]["description"].as_str(),
                     Some(description.as_str()),

@@ -567,7 +567,8 @@ fn dup_claim_guard_passes_for_the_shipped_registry() {
 /// `resolve`), exactly as boot and `--validate` lower it.
 fn resolved(yaml: &str) -> RootCfg {
     register_planes();
-    let deploy = deploy_from_yaml_str(yaml).expect("the fixture configuration parses");
+    let deploy = deploy_from_yaml_str(yaml, busbar_kernel::plane_driver::doors::process_doors())
+        .expect("the fixture configuration parses");
     resolve(&deploy, &HashMap::new()).unwrap_or_else(|e| panic!("the fixture resolves: {e:?}"))
 }
 

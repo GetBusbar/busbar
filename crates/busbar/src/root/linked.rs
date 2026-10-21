@@ -500,12 +500,17 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 /// plane whose declaration the loader will not admit refuses the boot (exit 2) whichever door it
 /// came in by, before any listener binds.
 ///
+/// The folded table is returned: the composition root holds it and lends it, by value, to every
+/// reader (the config loads, the generations it builds, the root's own walks), exactly as it hands
+/// the root rules.
+///
 /// [`DoorSet`]: busbar_kernel::plane_driver::doors::DoorSet
-pub fn register_planes(linked: &Linked) {
+pub fn register_planes(linked: &Linked) -> busbar_kernel::plane_driver::doors::Doors {
     match plane_rows(linked) {
         Ok(rows) => {
             let set: &'static RootDoors = Box::leak(Box::new(RootDoors::fold(&rows)));
             busbar_kernel::plane_driver::doors::install_doors(set);
+            busbar_kernel::plane_driver::doors::Doors::lent(&set.rows)
         }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");

@@ -69,9 +69,9 @@ impl NamedMapSection {
     /// out. It must NOT be the source the config deletion-gate reads (that would silently accept a
     /// `tools:` block for a compiled-out plane) — the gate reads the frozen static
     /// [`busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS`] instead.
-    pub fn sections() -> Vec<NamedMapSection> {
+    pub fn sections(doors: crate::plane_driver::doors::Doors) -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane_driver::doors::plane_decls() {
+        for decl in doors.decls() {
             if decl.named_def_list.is_some() {
                 out.push(NamedMapSection::Plane(decl.config_section));
             }
@@ -104,15 +104,13 @@ impl NamedMapSection {
     /// literal. With the owning plane compiled out (no registered decl) `singular` is never reached —
     /// a definition on an absent plane is refused before any noun is stamped — but it still answers
     /// the section key rather than panicking.
-    pub fn singular(self) -> &'static str {
+    pub fn singular(self, doors: crate::plane_driver::doors::Doors) -> &'static str {
         match self {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
-            NamedMapSection::Plane(_) => {
-                crate::plane_driver::doors::plane_decl_for_config_section(self.key())
-                    .map(|d| d.admin_noun)
-                    .unwrap_or_else(|| self.key())
-            }
+            NamedMapSection::Plane(_) => (doors.plane_decl_for_config_section(self.key()))
+                .map(|d| d.admin_noun)
+                .unwrap_or_else(|| self.key()),
         }
     }
 
@@ -142,8 +140,11 @@ impl NamedMapSection {
     // Consumed by the error taxonomy + the doc audits, both of which are `test`/`openapi-schema`
     // gated; genuinely absent from a shipped build, so allow it there rather than deleting the seam.
     #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
-    pub fn parse_rel(rel: &str) -> Option<(NamedMapSection, NamedMapShape)> {
-        for section in NamedMapSection::sections() {
+    pub fn parse_rel(
+        doors: crate::plane_driver::doors::Doors,
+        rel: &str,
+    ) -> Option<(NamedMapSection, NamedMapShape)> {
+        for section in NamedMapSection::sections(doors) {
             let root = section.path_root();
             if rel == root.as_ref() {
                 return Some((section, NamedMapShape::Collection));
@@ -212,7 +213,8 @@ impl NamedMapSection {
         name: &str,
         def: &serde_json::Value,
     ) -> Result<(), String> {
-        self.parse_def(name, def)?.install(deploy, name)
+        self.parse_def(deploy.doors, name, def)?
+            .install(deploy, name)
     }
 
     /// THE ONE typed parse of a raw definition document — `deny_unknown_fields`, so a typo'd or
@@ -230,7 +232,12 @@ impl NamedMapSection {
     /// including tokens `config_validate` refuses to boot. So the VALUE-level rules that boot
     /// enforces run here too, through the same functions boot calls — see the `max_admin_scope`
     /// check below ([`parse_ceiling`](crate::config::parse::parse_ceiling)).
-    pub fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
+    pub fn parse_def(
+        self,
+        doors: crate::plane_driver::doors::Doors,
+        name: &str,
+        def: &serde_json::Value,
+    ) -> Result<NamedDef, String> {
         match self {
             NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
@@ -265,10 +272,10 @@ impl NamedMapSection {
             //
             // With the owning plane compiled out the section is an unknown key ([`unknown_section`]).
             NamedMapSection::Plane(_) => {
-                if crate::plane_driver::doors::plane_decl_for_config_section(self.key()).is_none() {
+                if doors.plane_decl_for_config_section(self.key()).is_none() {
                     return Err(unknown_section(self.key()));
                 }
-                plane_config_validate(self, name, def)?;
+                plane_config_validate(doors, self, name, def)?;
                 Ok(NamedDef::Plane {
                     section: self,
                     def: def.clone(),
@@ -279,8 +286,13 @@ impl NamedMapSection {
 
     /// `Ok(())` iff `def` parses into this section's typed config — the write-path validation twin of
     /// [`NamedMapSection::parse_def`], which it delegates to so there is only ever one grammar.
-    pub fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
-        self.parse_def(name, def).map(|_| ())
+    pub fn validate_def(
+        self,
+        doors: crate::plane_driver::doors::Doors,
+        name: &str,
+        def: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.parse_def(doors, name, def).map(|_| ())
     }
 
     /// Every OTHER config site that still references `name` BY BARE NAME, as human path strings.
@@ -347,12 +359,12 @@ impl NamedMapSection {
 /// the sections that reach this helper) validates vacuously; a section whose plane is compiled out is
 /// refused by the caller before it reaches here.
 fn plane_config_validate(
+    doors: crate::plane_driver::doors::Doors,
     section: NamedMapSection,
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(section.key())
-    else {
+    let Some(decl) = doors.plane_decl_for_config_section(section.key()) else {
         return Ok(());
     };
     // The kernel's own judgement of the definition first, exactly as boot runs it on a section
@@ -364,7 +376,7 @@ fn plane_config_validate(
         name,
         &entry,
         decl.trust_keys,
-        &crate::config::plane_sections::config_sections(),
+        &crate::config::plane_sections::config_sections_from(doors.decls()),
     )?;
     if let Some(f) = decl.config_validate {
         f(name, def)?;

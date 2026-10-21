@@ -79,7 +79,11 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
         again.changes
     );
 
-    let deploy: config::DeployCfg = serde_yaml::from_str(&out.yaml).expect("the output parses");
+    let deploy: config::DeployCfg = crate::config::prepass::frozen_from_yaml_str(
+        &out.yaml,
+        crate::plane_driver::doors::process_doors(),
+    )
+    .expect("the output parses");
     assert_eq!(
         deploy.store.map(|s| s.module),
         Some(config::MIGRATED_STORE_MODULE.to_string())

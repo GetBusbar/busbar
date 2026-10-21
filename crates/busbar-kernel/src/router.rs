@@ -390,6 +390,7 @@ pub fn build_router_with_limits(
     // set is not something a later hot-swap can rewrite. Each plane's `mount` reads its own slot.
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
+    let table = app.doors;
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
@@ -399,10 +400,11 @@ pub fn build_router_with_limits(
         &plugin_routes,
         &plane_slots,
         oauth_as.as_ref(),
+        table,
         Vec::new(),
         Vec::new(),
     );
-    let router = crate::admin::seam::mount_admin(router);
+    let router = crate::admin::seam::mount_admin(router, table);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
@@ -428,6 +430,7 @@ pub(crate) fn base_data_router(
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
     oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    table: crate::plane_driver::doors::Doors,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
 ) -> (
@@ -487,7 +490,7 @@ pub(crate) fn base_data_router(
     // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
     // so the route order is stable.
     let mut router = router;
-    for decl in crate::plane_driver::doors::plane_decls() {
+    for decl in table.decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
@@ -840,8 +843,8 @@ pub(crate) fn apply_common_layers(
     // COMPOSED IN ONLY WHEN A PLANE IS MOUNTED — the same composition rule as `server_timing`
     // below and for the same reason: a layer that is pure passthrough for every request this
     // deployment can ever receive is not free, it is a `handle.load()` + a mount-table walk per
-    // request. Plane mounts are fixed at boot (`plane_driver::doors::install_doors` registers once,
-    // before the first request), so `has_mounts()` cannot change under a config apply and omitting
+    // request. Plane mounts are fixed at boot (the generation's door table, lent by the composition
+    // root before the first request), so `has_mounts()` cannot change under a config apply and omitting
     // the layer is behaviour-identical to running its no-op arm. This is the plugins-cost-nothing
     // contract made structural: a deployment that configured no plane carries NONE of the
     // plane machinery on its request path.
@@ -1223,6 +1226,7 @@ pub fn build_split_routers_serving_doors(
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
+    let table = app.doors;
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
@@ -1230,6 +1234,7 @@ pub fn build_split_routers_serving_doors(
         &plugin_routes,
         &plane_slots,
         oauth_as.as_ref(),
+        table,
         doors,
         sessions,
     );
@@ -1255,7 +1260,7 @@ pub fn build_split_routers_serving_doors(
             endpoints::healthz,
         )
         .into_parts();
-    let admin = crate::admin::seam::mount_admin(admin);
+    let admin = crate::admin::seam::mount_admin(admin, table);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     let admin = apply_common_layers(
         admin,

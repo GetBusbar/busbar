@@ -597,9 +597,10 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
 
 /// The declaring sections of the discovered door planes the boot never bound (Law 7: the boot
 /// configuration writes none of their sections). Like a bound plane left unopened, each is
-/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one.
+/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one. Each
+/// section is read off `doors`, the door table the root lent the generation.
 #[must_use]
-pub fn unbound_sections() -> Vec<&'static str> {
+pub fn unbound_sections(doors: busbar_kernel::plane_driver::doors::Doors) -> Vec<&'static str> {
     let bound = door_planes();
     DOOR_CANDIDATES
         .get()
@@ -607,9 +608,7 @@ pub fn unbound_sections() -> Vec<&'static str> {
         .iter()
         .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
         .filter_map(|c| c.verbs.first())
-        .filter_map(|section| {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
-        })
+        .filter_map(|section| doors.plane_decl_for_config_section(section))
         .filter(|decl| !decl.fallback)
         .map(|decl| decl.config_section)
         .collect()

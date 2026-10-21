@@ -10090,6 +10090,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             Some(&providers_path),
             false,
             busbar_kernel::config::EnvSubst::Strict,
+            busbar_kernel::plane_driver::doors::process_doors(),
         )
         .expect("disk reload");
         // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
@@ -10178,6 +10179,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::plane_driver::doors::process_doors(),
     )
     .expect("fresh boot disk-load");
     assert_eq!(

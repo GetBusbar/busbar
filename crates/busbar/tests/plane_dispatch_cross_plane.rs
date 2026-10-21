@@ -413,7 +413,7 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
     register_planes();
     for p in plane_keys().filter(|p| *p != fallback_key()) {
         assert_eq!(
-            Ingress::Mounted(p).shaping_wire_format(),
+            Ingress::Mounted(p).shaping_wire_format(busbar_kernel::plane_driver::doors::process_doors()),
             Some(WIRE_JSONRPC),
             "{p:?} is mountable but its door does not speak JSON-RPC — `ingress::native`'s mounted \
              arm would mis-shape its refusals"
