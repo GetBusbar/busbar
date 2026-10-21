@@ -727,6 +727,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
+    // The resolved providers' URLs select the dropped-in transports the seal opens (Law 7).
+    root::boot::note_provider_urls(cfg.providers.values().map(|p| p.base_url.clone()));
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
     // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
@@ -746,7 +748,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
-    root::boot::load_door_planes();
+    // Law 7: a plane binds only when the sections its composition reads are written.
+    root::boot::load_door_planes(
+        deploy
+            .door_sections()
+            .keys()
+            .chain(root::door_steps::kernel_sections(&cfg).keys())
+            .copied(),
+    );
     // THE EXPORT AXIS'S SINKS, opened once on the same dispatcher, each declaring its needs on the
     // one connector just built — before the first app is built, so the routes they declare are in
     // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
@@ -960,13 +969,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
-    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
-    // once, here, so an apply that first writes one's section is stored and validated but
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED OR NEVER BOUND (their section absent, Law 7): a door
+    // plane is bound and opened once, at boot, so an apply that first writes one's section is stored and validated but
     // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
     // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
     // Without governance no door plane is opened at all, at boot or after a restart: none is held.
     if app.governance.is_some() {
-        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+        root_rules.hold_unopened(
+            served
+                .unopened(root::boot::door_planes())
+                .into_iter()
+                .chain(root::boot::unbound_sections()),
+        );
     }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
