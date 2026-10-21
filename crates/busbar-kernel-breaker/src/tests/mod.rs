@@ -423,6 +423,63 @@ fn budget_spend_never_drives_the_counter_negative() {
     assert_eq!(budget.remaining(), Some(1));
 }
 
+/// A negative cap is the unlimited sentinel, whichever constructor it reaches.
+///
+/// `limited` once stored a negative cap as a limited budget: every spend refused it (nothing is
+/// left above zero), while the unit's exhaustion test asked only for exactly zero, so the
+/// destination read as admissible, was selected, and was then refused at the spend.
+#[test]
+fn a_negative_cap_is_unlimited_and_never_an_admissible_budget_that_refuses_every_spend() {
+    let budget = LifetimeBudget::limited(-1);
+    assert_eq!(
+        budget.remaining(),
+        None,
+        "a negative cap is the unlimited sentinel"
+    );
+    assert!(budget.spend(), "an unlimited budget admits every spend");
+
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(41);
+    unit.set_budget(d, -7);
+    assert_eq!(unit.budget_remaining(d), None);
+    assert!(unit.try_admit("", d, NOW).is_ok());
+    assert!(unit.spend_budget(d));
+}
+
+/// On a single-member cell (not benched below the trip threshold), a stated wait only ever
+/// extends the cooldown already armed.
+///
+/// Two failures in flight together land in either order. The one that asked for ten minutes armed
+/// them; the one that asked for one second, landing second, must not reopen the destination a
+/// second on.
+#[test]
+fn a_shorter_stated_wait_never_cuts_short_a_longer_one_on_a_single_member_cell() {
+    let mut cfg = consecutive_cfg(15, 120);
+    cfg.trip.consecutive_n = 100;
+    cfg.bench_below_trip_threshold = false;
+    let cell = BreakerCell::new();
+
+    assert_eq!(
+        cell.record_failure(NOW, &cfg, Some(600), 86_400),
+        FailureEffect::Nothing
+    );
+    assert_eq!(cell.cooldown_until(), NOW + 600);
+
+    assert_eq!(
+        cell.record_failure(NOW, &cfg, Some(1), 86_400),
+        FailureEffect::Nothing
+    );
+    assert_eq!(
+        cell.cooldown_until(),
+        NOW + 600,
+        "a one-second stated wait cut short the ten minutes the destination asked for"
+    );
+
+    // A longer wait still extends it.
+    let _ = cell.record_failure(NOW + 10, &cfg, Some(900), 86_400);
+    assert_eq!(cell.cooldown_until(), NOW + 910);
+}
+
 // ── The DEFAULT trip mode's decision table ───────────────────────────────────────────────────────
 //
 // Every state-machine case above configures `TripMode::Consecutive`, so the mode a
