@@ -15,9 +15,9 @@ use crate::diagnostics::{
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, snapshot,
-    state, store, telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, snapshot, state, store,
+    telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -143,14 +143,7 @@ pub struct RootInstall {
     /// [`crate::state::App`] so the operator surface judges a plugin exactly as boot does. `None` =
     /// no trust resolves (the admin catalog lists the linked rows alone; an upload is refused).
     pub trust_policy: Option<TrustPolicyBuild>,
-    /// The host's own counters every `/metrics` scrape exposes, one described family each: the
-    /// root's dispatcher's `bb_*` counters, read when the scrape is (`None` = none).
-    pub host_counters: Option<HostCounters>,
 }
-
-/// THE HOST'S OWN COUNTERS: each counter's family name, its HELP text and its cumulative value,
-/// read at scrape time ([`RootInstall::host_counters`]).
-pub type HostCounters = fn() -> Vec<(&'static str, &'static str, u64)>;
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
 ///
@@ -187,7 +180,6 @@ const STAND_IN: RootInstall = RootInstall {
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
     trust_policy: Some(crate::test_support::trust_policy_stand_in),
-    host_counters: None,
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
@@ -899,61 +891,6 @@ pub(crate) fn resolve_signing_key(
         })?;
     let secret = parse_signing_secret(&bytes)?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
-}
-
-/// Parse resolved bytes into a 32-byte ed25519 PUBLIC key: accept RAW 32 bytes or 64 hex chars. The
-/// verifying-key twin of [`parse_signing_secret`] — same wire shapes (a fleet's `operator.pub` is
-/// distributed either as raw bytes in a file or as 64 hex chars), a distinct error string so a
-/// malformed operator key never reads as a malformed signing key.
-pub(crate) fn parse_operator_public_key(bytes: &[u8]) -> Result<[u8; 32], String> {
-    if bytes.len() == 32 {
-        let mut out = [0u8; 32];
-        out.copy_from_slice(bytes);
-        return Ok(out);
-    }
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        let s = s.trim();
-        if s.len() == 64 {
-            if let Ok(v) = hex::decode(s) {
-                let mut out = [0u8; 32];
-                out.copy_from_slice(&v);
-                return Ok(out);
-            }
-        }
-    }
-    Err(
-        "auth.operator_pub must resolve to a 32-byte ed25519 PUBLIC key (raw 32 bytes or 64 hex \
-         characters)"
-            .to_string(),
-    )
-}
-
-/// Resolve the POLICY-SEALED operator public key. `auth.operator_pub` is a reference to an EXISTING
-/// secret (env/file/plugin) resolving to the raw 32-byte ed25519 VERIFYING key the fleet's operator
-/// ceremony sealed (`operator.pub`). D38's `amend_rate_history` verifies a back-dated correction's
-/// detached signature against it. Fleet-shared: every node resolves the SAME key.
-///
-/// When `auth.operator_pub` is ABSENT this returns `None` — the operator ceremony has not run, which
-/// the composition root seals as [`crate::posture`]'s `OperatorState::Unset`, refusing every
-/// irreducible money-governance verb at the ceremony gate exactly as the release without this key
-/// does. FAIL-CLOSED: a configured-but-unresolvable / malformed operator key refuses boot, so a
-/// fleet that MEANT to seal a key never comes up silently ungated.
-pub fn resolve_operator_public_key(
-    auth: Option<&config::AuthCfg>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<Option<[u8; 32]>, String> {
-    let Some(op) = auth.and_then(|a| a.operator_pub.as_ref()) else {
-        return Ok(None);
-    };
-    let bytes = resolver.resolve_at_config(op, &busbar_contract::config_time::ConfigScope::config_time()).map_err(|e| {
-        format!(
-            "auth.operator_pub did not resolve: {e}. auth.operator_pub is a reference to an EXISTING \
-             secret (env/file/plugin) holding the fleet's sealed operator public key (32 raw bytes \
-             or 64 hex chars — the `operator.pub` your operator ceremony produced), or OMIT \
-             auth.operator_pub entirely if this fleet has not run the operator ceremony."
-        )
-    })?;
-    Ok(Some(parse_operator_public_key(&bytes)?))
 }
 
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL

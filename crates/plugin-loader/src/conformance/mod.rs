@@ -11,8 +11,8 @@
 //!
 //! ```ignore
 //! busbar_plugin_loader::conformance_suite! {
-//!     door: busbar_secret_env::door::door,          // the LINKED door (its logic crate's)
-//!     cdylib: "busbar_secret_env_plugin",           // the crate whose cdylib is the DROPPED door
+//!     door: <logic crate>::door::door,              // the LINKED door (its logic crate's)
+//!     cdylib: "<logic crate>_plugin",               // the crate whose cdylib is the DROPPED door
 //!     inputs: include_str!("conformance.json"),     // what the kind's script drives
 //! }
 //! ```
@@ -348,15 +348,49 @@ impl Subject {
     /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
     /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
     /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
-    /// unreachable. `None` when the inputs name none (the instance is handed no table).
+    /// unreachable. `None` when the inputs name no far end (the instance is handed no table).
     ///
     /// # Panics
-    /// When a far end names no `url`.
+    /// When a far end names no `url`, or `inputs.unreached_schemes` is named (the plane suite's
+    /// alone: [`Subject::far_table`]).
     #[must_use]
     pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        assert!(
+            self.inputs.get("unreached_schemes").is_none(),
+            "conformance.json: unreached_schemes is read by the plane suite only, which asserts \
+             after its fold that no open touched one"
+        );
+        self.far_table()
+            .map(|t| t as Arc<dyn busbar_contract::conn::DeclaredConns>)
+    }
+
+    /// [`Subject::far_ends`]' table, kept whole: with every scheme `inputs.unreached_schemes`
+    /// names ([`crate::https_conns::judge_unreached`]: named, reasoned, covered by a cited test
+    /// cell of the plugin's own repo, and named by a declared need) answering the load's scheme
+    /// match ([`HttpsConns::unreached`](crate::https_conns::HttpsConns::unreached)), and every open
+    /// on one counted, so the fold can assert none was made.
+    ///
+    /// # Panics
+    /// When a far end names no `url`, or an unreached scheme is refused.
+    #[must_use]
+    pub fn far_table(&self) -> Option<Arc<crate::https_conns::HttpsConns>> {
         let ends = self.inputs.get("far_ends")?.as_array()?;
-        let table =
-            crate::https_conns::HttpsConns::framing(crate::stand_in::FramedFacts::stand_in());
+        let facts = crate::stand_in::FramedFacts::stand_in();
+        let unreached = match self.inputs.get("unreached_schemes") {
+            None => Vec::new(),
+            Some(value) => {
+                let transports: Vec<String> =
+                    self.needs().into_iter().map(|n| n.transport).collect();
+                crate::https_conns::judge_unreached(
+                    value,
+                    &facts.transport,
+                    &transports,
+                    &repo_root(),
+                )
+                .unwrap_or_else(|why| panic!("conformance.json: {why}"))
+            }
+        };
+        let table = crate::https_conns::HttpsConns::framing(facts).unreached(unreached);
         for e in ends {
             let url = e["url"]
                 .as_str()
@@ -792,6 +826,17 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
         conns: ConnTable::NoNeeds,
+    }
+}
+
+/// The plugin repo's root, a cited cell's path is read under: the crate's directory
+/// (`CARGO_MANIFEST_DIR` at test run) when the workspace is the crate, otherwise its parent (the
+/// workspace a plugin's `-plugin` crate sits in).
+fn repo_root() -> PathBuf {
+    let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
+    match dir.parent() {
+        Some(parent) if parent.join("Cargo.toml").is_file() => parent.to_path_buf(),
+        _ => dir,
     }
 }
 

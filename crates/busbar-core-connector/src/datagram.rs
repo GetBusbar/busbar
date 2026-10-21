@@ -254,6 +254,22 @@ impl DatagramFraming {
         Self::begin(door, cert, local, SIDE_ACCEPT, None, &[])
     }
 
+    /// Begin an ACCEPTING association on `door` under a certificate minted for it alone: as
+    /// [`Self::accept`], the session's certificate the connector's own, so the host that serves the
+    /// association names no protocol of it.
+    ///
+    /// # Errors
+    ///
+    /// The certificate could not be minted, or the entry refused to frame it, or answered outside
+    /// the lane's rules.
+    pub fn accept_minted(
+        door: Arc<dyn FramerDoor>,
+        local: SocketAddr,
+    ) -> Result<(Self, Yielded), Refused> {
+        let cert = SessionCert::mint().map_err(|e| fault(format!("{e:?}")))?;
+        Self::accept(door, Arc::new(cert), local)
+    }
+
     /// Begin a DIALLING association on `door`: as [`Self::accept`], with the `opening` fields the
     /// framing offers (its own description comes back as a piece) and the destination `judge` every
     /// candidate the far end's answer advertises meets, under the dialling need's egress `class`,

@@ -98,14 +98,25 @@ use crate::sign::{Declares, Manifest};
 
 // ── the subjects ─────────────────────────────────────────────────────────────────────────────────
 
-/// The request-log FILE sink's door, LINKED (its logic crate's `door`).
-const FILE_DOOR: DoorFn = busbar_export_file::door;
+/// The request-log FILE sink's door, LINKED (its logic crate's `door`): the both-ways table's
+/// `export` row.
+const FILE_DOOR: DoorFn = both_ways::export_fixture::door;
 /// The FILE sink's `-plugin` crate, whose `cdylib` exports the same door: the DROPPED-IN build.
-const FILE_CDYLIB: &str = "busbar_export_file_plugin";
-/// The request-log WEBHOOK sink's door, LINKED.
-const WEBHOOK_DOOR: DoorFn = busbar_export_webhook::door;
+fn file_cdylib() -> &'static str {
+    both_ways::export_row("export").1
+}
+/// The request-log WEBHOOK sink's door, LINKED: the both-ways table's `export-carried` row.
+const WEBHOOK_DOOR: DoorFn = both_ways::export_carried_fixture::door;
 /// The WEBHOOK sink's `-plugin` crate's `cdylib`: the DROPPED-IN build.
-const WEBHOOK_CDYLIB: &str = "busbar_export_webhook_plugin";
+fn webhook_cdylib() -> &'static str {
+    both_ways::export_row("export-carried").1
+}
+/// The span collector's door, LINKED: the both-ways table's `export-trace` row.
+const TRACE_DOOR: DoorFn = both_ways::export_trace_fixture::door::door;
+/// The span collector's `-plugin` crate's `cdylib`: the DROPPED-IN build.
+fn trace_cdylib() -> &'static str {
+    both_ways::export_row("export-trace").1
+}
 
 /// What the FILE sink carries: the request-log line.
 const FILE_CARRIES: [u8; 1] = [ExportStream::Logs as u8];
@@ -113,7 +124,7 @@ const FILE_CARRIES: [u8; 1] = [ExportStream::Logs as u8];
 /// The FILE sink's own manifest declaration (its `declares.json`): its series, its codes and its
 /// one destination, `path`.
 fn file_declaration() -> Declares {
-    Declares::from_declares_json(busbar_export_file::DECLARES.as_bytes())
+    Declares::from_declares_json(both_ways::export_fixture::DECLARES.as_bytes())
         .expect("the file sink's declaration parses")
 }
 
@@ -129,8 +140,9 @@ fn file_declares() -> Declares {
 
 /// The WEBHOOK sink's own manifest declaration, without its series (as [`file_declares`]).
 fn webhook_declares() -> Declares {
-    let declared = Declares::from_declares_json(busbar_export_webhook::DECLARES.as_bytes())
-        .expect("the webhook sink's declaration parses");
+    let declared =
+        Declares::from_declares_json(both_ways::export_carried_fixture::DECLARES.as_bytes())
+            .expect("the webhook sink's declaration parses");
     Declares {
         metrics: Vec::new(),
         ..declared
@@ -710,7 +722,7 @@ fn run_compiled_in(path: &Path) -> Vec<String> {
 /// the loader against the Statement the linked door renders. A `cdylib` not built is a hard failure
 /// naming the command that builds it, never a skip.
 fn run_dropped_in(path: &Path) -> Vec<String> {
-    let bytes = cdylib_bytes(FILE_CDYLIB);
+    let bytes = cdylib_bytes(file_cdylib());
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
     let stated = rendering_of(FILE_DOOR).expect("the door renders its Statement");
@@ -736,7 +748,8 @@ fn run_dropped_in(path: &Path) -> Vec<String> {
 /// The rotation record the FILE sink reports for a rotation of `path`.
 fn rotated_record(path: &Path) -> String {
     format!(
-        "log 0 busbar_export_file: request-log file rotated by rename path={p} archive={p}.1",
+        "log 0 {target}: request-log file rotated by rename path={p} archive={p}.1",
+        target = both_ways::export_row("export").0,
         p = path.display()
     )
 }
@@ -803,7 +816,7 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
 #[test]
 fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
     let name = "export-fixture";
-    let doors = both(manifest(name, file_declares()), FILE_DOOR, FILE_CDYLIB);
+    let doors = both(manifest(name, file_declares()), FILE_DOOR, file_cdylib());
     let dir = scratch("k5");
     let path = dir.join("requests.jsonl");
     let [linked, dropped] = doors.map(|registry| {
@@ -1003,7 +1016,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 
     // Dropped-in, pre-envelope: the real cdylib staged by the real loader, its envelopes kept
     // plugin-local.
-    let bytes = cdylib_bytes(FILE_CDYLIB);
+    let bytes = cdylib_bytes(file_cdylib());
     let (lib, staged) = crate::stage::load_library_from_bytes(&bytes, "#11-pre-envelope")
         .expect("stage the file sink cdylib");
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the library is leaked below, so the
@@ -1126,14 +1139,16 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         .iter()
         .map(|s| (s.name.clone(), s.kind.clone()))
         .collect();
+    // The sink's one reserved series, as 1.5.5 declared it (v1.5.5 `metrics.rs:177`): the rotation
+    // counters 1.5.5 never had are no longer declared (the sink's own repo at 1980b90).
     assert!(
         series
             .iter()
-            .any(|(n, _)| n == "busbar_file_logs_rotated_total"),
+            .any(|(n, _)| n == "busbar_file_logs_dropped_total"),
         "{series:?}"
     );
     let name = "s1-fixture";
-    let doors = both(manifest(name, declared.clone()), FILE_DOOR, FILE_CDYLIB);
+    let doors = both(manifest(name, declared.clone()), FILE_DOOR, file_cdylib());
     let dir = scratch("s1");
     let path = dir.join("requests.jsonl");
     let [linked, dropped] = doors.map(|registry| {
@@ -1157,8 +1172,12 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
         (both_ways::row(&registry, name), transcript)
     });
+    let every_granted = format!(
+        r#""granted":{}"#,
+        serde_json::json!(vec![true; series.len()])
+    );
     assert!(
-        linked.1.contains(r#""granted":[true,true,true]"#)
+        linked.1.contains(&every_granted)
             && linked.1.contains("request-log file rotated by rename"),
         "the linked door grants every declared series and the sink reports: {}",
         linked.1
@@ -1166,10 +1185,10 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     assert_eq!(linked, dropped, "both doors grant and fold the same");
 
     // RED ARM 1: a third party declaring the same claims is granted nothing.
-    let lib = cdylib_bytes(FILE_CDYLIB);
+    let lib = cdylib_bytes(file_cdylib());
     let mut third = stating(manifest("s1-third-party", declared.clone()), FILE_DOOR);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(FILE_CDYLIB, third, &lib);
+    let registry = both_ways::dropped_third_party(file_cdylib(), third, &lib);
     let sink = ExportRows::new(&registry, Arc::clone(&d))
         .open("s1-third-party", "export.tail", &file_settings(&path))
         .expect("a third party opens; its declaration is simply not granted");
@@ -1209,7 +1228,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
 #[test]
 fn a_sink_validates_its_settings_the_same_through_either_door() {
     let name = "s2-sink";
-    let doors = both(manifest(name, file_declares()), FILE_DOOR, FILE_CDYLIB);
+    let doors = both(manifest(name, file_declares()), FILE_DOOR, file_cdylib());
     let refused = serde_json::json!({ "path": 7 });
     let accepted = serde_json::json!({ "path": "/var/log/busbar/requests.jsonl", "rotate_mb": 64 });
     let [linked, dropped] = doors.map(|registry| {
@@ -1261,7 +1280,7 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     let decl = webhook_declares();
     assert!(decl.diagnostics.iter().any(|d| d.code == 7072), "{decl:?}");
     let name = "s3-fixture";
-    let doors = both(manifest(name, decl.clone()), WEBHOOK_DOOR, WEBHOOK_CDYLIB);
+    let doors = both(manifest(name, decl.clone()), WEBHOOK_DOOR, webhook_cdylib());
     let cfg = serde_json::json!({ "url": format!("https://{UNREACHABLE_TARGET}/in") });
     let [linked, dropped] = doors.map(|registry| {
         let tape = Arc::new(Tape::default());
@@ -1299,10 +1318,10 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     assert_eq!(linked, dropped, "both doors state and raise the same");
 
     // RED ARM: a third party's declaration is not first-party.
-    let lib = cdylib_bytes(WEBHOOK_CDYLIB);
+    let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(manifest("s3-third-party", decl.clone()), WEBHOOK_DOOR);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(WEBHOOK_CDYLIB, third, &lib);
+    let registry = both_ways::dropped_third_party(webhook_cdylib(), third, &lib);
     let row = registry.resolve("s3-third-party").expect("admitted");
     assert_eq!(row.manifest.declares.diagnostics, decl.diagnostics);
     assert!(!row.first_party());
@@ -1348,7 +1367,7 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
         })
         .to_string()
     };
-    let doors = both(declaring("s4-fixture", true), FILE_DOOR, FILE_CDYLIB);
+    let doors = both(declaring("s4-fixture", true), FILE_DOOR, file_cdylib());
     let [linked, dropped] = doors.map(|registry| {
         let on_disk =
             |_: &Tape| ns(&path) == Some(vec![3, 4]) && ns(&archive(&path, 1)) == Some(vec![1, 2]);
@@ -1375,12 +1394,14 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
         )])
         .expect("the linked door admits the sink");
     let refused = run(&registry, "s4-undeclared", &|tape| {
-        tape.count(busbar_export_file::OPEN_FAILED) == 4
+        tape.count(both_ways::export_fixture::OPEN_FAILED) == 4
     });
     let _ = std::fs::remove_dir_all(&dir);
     assert!(refused.contains(r#""live":null"#), "{refused}");
     assert_eq!(
-        refused.matches(busbar_export_file::OPEN_FAILED).count(),
+        refused
+            .matches(both_ways::export_fixture::OPEN_FAILED)
+            .count(),
         4,
         "one refusal line per delivery: {refused}"
     );
@@ -1426,7 +1447,7 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
         })
         .to_string()
     };
-    let doors = both(m.clone(), WEBHOOK_DOOR, WEBHOOK_CDYLIB);
+    let doors = both(m.clone(), WEBHOOK_DOOR, webhook_cdylib());
     let [linked, dropped] = doors.map(|registry| {
         (
             both_ways::row(&registry, name),
@@ -1470,12 +1491,12 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     let files = both(
         manifest("k9c-sink", file_declares()),
         FILE_DOOR,
-        FILE_CDYLIB,
+        file_cdylib(),
     );
     let hooks = both(
         manifest("k9c-hook", webhook_declares()),
         WEBHOOK_DOOR,
-        WEBHOOK_CDYLIB,
+        webhook_cdylib(),
     );
     let file_instances = [("tail".to_string(), serde_json::json!({ "path": "/tmp/x" }))];
     let hook_instances = [(
@@ -1550,7 +1571,7 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     let doors = both(
         manifest(name, webhook_declares()),
         WEBHOOK_DOOR,
-        WEBHOOK_CDYLIB,
+        webhook_cdylib(),
     );
     let [linked, dropped] = doors.map(|registry| {
         let far = Arc::new(Far::default());
@@ -1615,7 +1636,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
     let doors = both(
         manifest(name, webhook_declares()),
         WEBHOOK_DOOR,
-        WEBHOOK_CDYLIB,
+        webhook_cdylib(),
     );
     let settings = serde_json::json!({
         "url": format!("https://{STALL_TARGET}/in"),
@@ -1689,12 +1710,12 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
 /// while the webhook sink, whose need is in the open web, is admitted from the same third party.
 #[test]
 fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
-    let otlp: DoorFn = busbar_export_otlp::door::door;
+    let collector: DoorFn = TRACE_DOOR;
     let settings = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
     let doors = both(
         manifest("k9e2-otlp", Declares::default()),
-        otlp,
-        "busbar_export_otlp_plugin",
+        collector,
+        trace_cdylib(),
     );
     let opened = doors.map(|registry| {
         assert!(registry
@@ -1719,10 +1740,10 @@ fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
     // RED ARM: the same collector from a third party is refused at the load.
-    let lib = cdylib_bytes("busbar_export_otlp_plugin");
-    let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), otlp);
+    let lib = cdylib_bytes(trace_cdylib());
+    let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party("busbar_export_otlp_plugin", third, &lib);
+    let registry = both_ways::dropped_third_party(trace_cdylib(), third, &lib);
     assert!(
         registry.resolve("k9e2-third-otlp").is_none(),
         "never admitted"
@@ -1743,13 +1764,13 @@ fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
     assert!(refused.contains(words), "{refused}");
 
     // The open web is any trusted plugin's: the webhook from the same third party is admitted.
-    let lib = cdylib_bytes(WEBHOOK_CDYLIB);
+    let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(
         manifest("k9e2-third-hook", webhook_declares()),
         WEBHOOK_DOOR,
     );
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(WEBHOOK_CDYLIB, third, &lib);
+    let registry = both_ways::dropped_third_party(webhook_cdylib(), third, &lib);
     let row = registry.resolve("k9e2-third-hook").expect("admitted");
     assert!(!row.first_party());
 }
@@ -1772,14 +1793,14 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     // A sink named by the FILE sink's own Statement.
     let sink = crate::observe::EnvelopeObserver::of(
         crate::observe::testing::observing(),
-        "busbar-export-file",
+        "export-sink",
         busbar_contract::abi::mechanism::kind::EXPORT,
         &stated,
     );
     // A metric of a family the Statement declares, named by the family: a counter with one label.
     let counted = crate::observe::EnvelopeObserver::with_families(
         crate::observe::testing::observing(),
-        "busbar-export-file",
+        "export-sink",
         busbar_contract::abi::mechanism::kind::EXPORT,
         vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
             name: "busbar_file_logs_rotated_total".into(),
@@ -1824,7 +1845,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         id: DIAG_LOG,
         name: b"",
         severity: 0,
-        text: b"busbar_export_file: a log record",
+        text: b"sink: a log record",
     });
     let folds = crate::observe::testing::folds();
     assert_eq!(
@@ -1833,10 +1854,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         "one observation; the log record is not one: {folds:?}"
     );
     let (plugin, kind, metrics, diagnostics) = &folds[0];
-    assert_eq!(
-        (plugin.as_str(), kind.as_str()),
-        ("busbar-export-file", "export")
-    );
+    assert_eq!((plugin.as_str(), kind.as_str()), ("export-sink", "export"));
     assert!(metrics.is_empty());
     assert_eq!(diagnostics[0]["code"], "BUSBAR-7074");
     assert_eq!(diagnostics[0]["level"], "warn");
@@ -1864,7 +1882,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     let behind = crate::observe::EnvelopeObserver::before(
         crate::observe::testing::observing(),
         log_sink.clone(),
-        "busbar-export-file",
+        "export-sink",
         busbar_contract::abi::mechanism::kind::EXPORT,
         Vec::new(),
     );
@@ -1899,12 +1917,12 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
 /// the both-doors identity of span delivery is held here, where the release key is the test's.)
 #[test]
 fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
-    let otlp: DoorFn = busbar_export_otlp::door::door;
+    let collector: DoorFn = TRACE_DOOR;
     let name = "s7-otlp";
     let doors = both(
         manifest(name, Declares::default()),
-        otlp,
-        "busbar_export_otlp_plugin",
+        collector,
+        trace_cdylib(),
     );
     let span = serde_json::json!({
         "trace_id": "4bf92f3577b34da6",

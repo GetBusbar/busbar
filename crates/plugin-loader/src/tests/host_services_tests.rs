@@ -1648,17 +1648,20 @@ fn records_secret_serves_only_a_declared_kind() {
         }; 1],
     );
     // A caller that declares no credential kind.
-    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let i = secret_in("signed", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(d.ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNDECLARED_KIND);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    // A caller that declares `sigv4`.
+    // A caller that declares `signed`.
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
-    assert!(wake.credential_kinds.set(vec!["sigv4".to_string()]).is_ok());
+    assert!(wake
+        .credential_kinds
+        .set(vec!["signed".to_string()])
+        .is_ok());
     let reader = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     let other = secret_in("bearer", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(reader, &other);
@@ -1666,14 +1669,14 @@ fn records_secret_serves_only_a_declared_kind() {
     assert_eq!(error(&o), UNDECLARED_KIND);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    let mut ticketless = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let mut ticketless = secret_in("signed", "AKID", &mut buf, &mut spans);
     ticketless.head.handle.ticket = Ticket::NONE;
     let (ret, o) = call_secret(reader, &ticketless);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNTICKETED);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let i = secret_in("signed", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(reader, &i);
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::SECRET_LIVE);
@@ -1681,7 +1684,7 @@ fn records_secret_serves_only_a_declared_kind() {
     assert_eq!(&buf[..6], b"s3cr3t");
     assert_eq!(
         d.route.provider.secrets.lock().unwrap().as_slice(),
-        &["sigv4:AKID".to_string()]
+        &["signed:AKID".to_string()]
     );
 }
 
@@ -1859,7 +1862,9 @@ fn blank_written() -> svc::DiskWritten {
 
 /// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
 /// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
-/// it was not granted, or one its settings leave unset, is REFUSED before the kernel sees anything.
+/// it was not granted, or one its settings leave unset, is never opened: FAILED at the
+/// `DISK_OPEN_FAILED` step in the host's words before the kernel sees anything, the step a sink
+/// reports as a file it could not open (1.5.5's BUSBAR-7074).
 /// A granted, bound key reaches the kernel's disk lane with the bound path and the bytes unchanged,
 /// and the lane's report lands in the caller's result slot (READY: the whole of the bytes; FAILED:
 /// the step in `value`, nothing written). RED: before the slot, `disk.append` was no slot at all.
@@ -1868,9 +1873,15 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     let d = double();
     let mut w = blank_written();
     // The double's instance was granted no destination.
-    let (ret, o) = call_disk(d.ctx, &disk_in("path", b"line\n", 0, &mut w));
-    assert_eq!(ret.outcome(), Outcome::Refused);
+    let i = disk_in("path", b"line\n", 0, &mut w);
+    let (ret, o) = call_disk(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
     assert_eq!(error(&o), NO_DESTINATION);
+    assert!(
+        svc::check_disk_append(&i, ret, &o).is_ok(),
+        "the open-step failure is a well-formed FAILED answer"
+    );
     assert!(d.route.provider.appended.lock().unwrap().is_empty());
 
     // An instance granted `path`, its settings binding it.
@@ -1881,7 +1892,8 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     let ctx = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     // Granted, not yet bound (its settings set no path): refused.
     let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
-    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
     assert_eq!(error(&o), NO_DESTINATION);
     let bound = DiskDest {
         key: "path".into(),
@@ -1892,7 +1904,8 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     wake.bound.write().unwrap().push(bound.clone());
     // A key the instance was not granted, even with a path under it.
     let (ret, o) = call_disk(ctx, &disk_in("other", b"line\n", 0, &mut w));
-    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
     assert_eq!(error(&o), NO_DESTINATION);
     assert!(d.route.provider.appended.lock().unwrap().is_empty());
 

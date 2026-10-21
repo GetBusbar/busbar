@@ -8322,6 +8322,56 @@ fn writer_tool_arguments_stop_growing_at_the_translate_cap() {
     );
 }
 
+/// Q128 arch u57: THE LOGPROB ACCUMULATOR IS BOUNDED ON BOTH AXES like every sibling on the writer.
+/// A backend streaming logprob deltas against an unbounded run of distinct indices, or an unbounded
+/// run of them against one index that never stops, used to grow `logprob_accum` without limit.
+#[test]
+fn writer_logprob_accumulator_is_bounded_in_entries_and_bytes() {
+    let lp = |token: String| crate::codec::ir::IrTokenLogprob {
+        token,
+        logprob: -0.1,
+        bytes: None,
+        top: Vec::new(),
+    };
+    let writer = ResponsesWriter;
+    for index in 0..(MAX_OPEN_TOOLS + 50) {
+        writer.append_logprobs(index, &[lp("a".to_string())]);
+    }
+    assert_eq!(
+        writer.logprob_accum.lock().unwrap().len(),
+        MAX_OPEN_TOOLS,
+        "logprob_accum admits exactly MAX_OPEN_TOOLS distinct items"
+    );
+
+    let cap = busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
+    let writer = ResponsesWriter;
+    let batch: Vec<_> = (0..64).map(|_| lp("b".repeat(16 * 1024))).collect();
+    let weight: usize = batch.iter().map(logprob_bytes).sum();
+    for _ in 0..((cap / weight) + 8) {
+        writer.append_logprobs(0, &batch);
+    }
+    let map = writer.logprob_accum.lock().unwrap();
+    let held: usize = map
+        .get(&0)
+        .expect("the item accumulates")
+        .iter()
+        .map(logprob_bytes)
+        .sum();
+    assert!(
+        held <= cap,
+        "logprobs never exceed the translate cap ({cap}), got {held}"
+    );
+    assert!(
+        held + weight > cap,
+        "the test drove the buffer up to the cap, got {held}"
+    );
+    assert_eq!(
+        map.get(&0).map(Vec::len).unwrap_or(0) % batch.len(),
+        0,
+        "a batch is kept whole or dropped whole"
+    );
+}
+
 /// A URL citation must SURVIVE a Responses→Responses hop.
 ///
 /// The Responses wire shape for an annotation is the published `UrlCitationBody`, which FLATTENS

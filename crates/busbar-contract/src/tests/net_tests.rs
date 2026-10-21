@@ -408,3 +408,101 @@ fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
         );
     }
 }
+
+/// THE VERBATIM HOST READER keeps what the shared reader normalises: a trailing root dot stays
+/// (`example.com.` is not `example.com`), a percent-encoded host is not decoded, and an IPv6
+/// literal is unbracketed as `Ipv6Addr` displays it; the authority is read exactly as
+/// `parse_url` reads it. RED against `url_host`, which drops the dot.
+#[test]
+fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
+    use crate::net::{url_host, url_host_verbatim};
+    assert_eq!(
+        url_host_verbatim("http://example.com./x").as_deref(),
+        Some("example.com.")
+    );
+    assert_eq!(
+        url_host("http://example.com./x").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("https://user@example.com:8443/p?q").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("foo://ex%41mple/").as_deref(),
+        Some("ex%41mple")
+    );
+    assert_eq!(
+        url_host_verbatim("http://[::ffff:a9fe:a9fe]/").as_deref(),
+        Some("::ffff:169.254.169.254")
+    );
+    assert_eq!(url_host_verbatim("file:///etc/passwd"), None);
+    assert_eq!(url_host_verbatim("mailto:a@b"), None);
+}
+
+/// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
+/// web scheme) `\`; the userinfo runs to the authority's last `@`; a generic scheme keeps its `\`.
+#[test]
+fn the_authority_ends_where_the_dialling_stack_ends_it() {
+    fn at(url: &str) -> (Option<&str>, Option<&str>, &str, &str) {
+        let a = url_authority(url);
+        (a.scheme, a.userinfo, a.host_port, a.tail)
+    }
+    assert_eq!(
+        at("https://evil.example\\@victim.example/p"),
+        (Some("https"), None, "evil.example", "\\@victim.example/p")
+    );
+    assert_eq!(
+        at("https://u:p@w@host.example:8443/x?q#f"),
+        (Some("https"), Some("u:p@w"), "host.example:8443", "/x?q#f")
+    );
+    assert_eq!(
+        at("https://host.example#f@other.example"),
+        (Some("https"), None, "host.example", "#f@other.example")
+    );
+    assert_eq!(
+        at("host.example\\x@other"),
+        (None, None, "host.example", "\\x@other")
+    );
+    assert_eq!(
+        at("ftp://a\\b@dir.example/o"),
+        (Some("ftp"), Some("a\\b"), "dir.example", "/o")
+    );
+    assert_eq!(
+        at("HTTPS://h.example"),
+        (Some("HTTPS"), None, "h.example", "")
+    );
+    // The authority the split reads is the host the WHATWG reader reads.
+    for url in [
+        "https://evil.example\\@victim.example/p",
+        "https://u:p@host.example/x",
+        "https://host.example?x@y",
+    ] {
+        assert_eq!(
+            url_host(url).as_deref(),
+            Some(url_authority(url).host_port.split(':').next().unwrap_or("")),
+            "{url}"
+        );
+    }
+}
+
+/// The address value types a plugin names through the contract ARE `std::net`'s: a plugin that
+/// switches its `std::net::SocketAddr` to `busbar_contract::net::SocketAddr` reads the same value.
+#[test]
+fn the_contract_address_values_are_the_std_types() {
+    let v4: Result<super::Ipv4Addr, super::AddrParseError> = "127.0.0.1".parse();
+    assert_eq!(v4, Ok(std::net::Ipv4Addr::LOCALHOST));
+    let sock: Result<super::SocketAddr, super::AddrParseError> = "[::1]:443".parse();
+    assert_eq!(
+        sock,
+        Ok(std::net::SocketAddr::from((
+            std::net::Ipv6Addr::LOCALHOST,
+            443
+        )))
+    );
+    assert!("example.com:443".parse::<super::SocketAddr>().is_err());
+    let v6: super::SocketAddrV6 = super::SocketAddrV6::new(super::Ipv6Addr::LOCALHOST, 1, 0, 0);
+    let ip: super::IpAddr = (*v6.ip()).into();
+    assert!(ip.is_loopback());
+    let _: Option<super::SocketAddrV4> = None;
+}

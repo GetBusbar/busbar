@@ -46,17 +46,6 @@ pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
     dispatcher
 }
 
-/// THE DISPATCHER'S `bb_*` COUNTERS for the kernel's `/metrics` scrape
-/// (`busbar_kernel::preflight::RootInstall::host_counters`): every family its stats hold
-/// (`DispatchStats::families`), none before the dispatcher is built — a scrape never builds one.
-#[must_use]
-pub fn host_counters() -> Vec<(&'static str, &'static str, u64)> {
-    DISPATCHER
-        .get()
-        .map(|d| d.stats().families().to_vec())
-        .unwrap_or_default()
-}
-
 /// The process's dispatcher (built at boot; built with one worker and no installed services on
 /// first use where no boot ran).
 #[must_use]
@@ -76,7 +65,9 @@ pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
     Arc::new(RootAuthAxis(
-        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher()).with_conns(conns),
+        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher())
+            .with_conns(conns)
+            .with_logs(|| crate::root::boot::plugin_logs().clone()),
     ))
 }
 

@@ -812,8 +812,9 @@ pub fn compose_book(
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
     // corrected count and every recorded content access survive the restart — off the disk, or off
-    // the chain the store kept.
-    durability.restore_amendments();
+    // the chain the store kept. A chain that will not read back refuses the boot here as it would
+    // have at the book's build: taken for an empty one, every signed correction would revert.
+    durability.restore_amendments()?;
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
@@ -900,18 +901,29 @@ pub fn book(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let adapter = super::loader::store_adapter::StoreAdapter::native(gov.store());
-    // THIS NODE'S STABLE IDENTITY (ARCHITECT 2026-10-07 H3 ruling, follow-up): the id the store's
-    // node registry keeps for this host, minted into it on the host's first boot. Its journal
-    // records are keyed by it, so two nodes on one store never write under one identity.
-    let node =
-        super::durability::node_id(lane.calls().as_ref(), &super::durability::host_identity())
-            .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // THIS NODE'S IDENTITY (ARCHITECT 2026-10-07 H3 ruling, follow-up; Q128 root part 12 HIGH 2):
+    // with a data directory, the id kept in it (adopting the registry's id for this host on the
+    // first boot that has none, and then holding the host name's lease for it); without one, the store registry's id for this host while this
+    // process holds the host name's lease, else a fresh id of its own. Its journal records are
+    // keyed by it, so two live nodes on one store never write under one identity, whatever their
+    // host names. The host name is only a label.
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    let host = super::durability::host_identity();
+    let calls = lane.calls();
+    let taken = match data_dir.as_deref() {
+        Some(dir) => super::durability::persisted_node(calls.as_ref(), dir, &host),
+        None => super::durability::take_node(calls.as_ref(), &host),
+    }
+    .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    if let Some(lease) = taken.lease {
+        super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
+    }
+    let node = taken.id;
     let mig = super::migration::MigrationConfig {
         node,
         ..super::migration::config_from(&app.cost, now)
     };
     let token = super::kernel::new_kernel().durability_token();
-    let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent

@@ -1,6 +1,6 @@
-//! The claim this plane makes over arriving bytes.
+//! The claim this surface makes over arriving bytes.
 //!
-//! Every one of the table's verbs ismounted under one prefix, and this crate names it:
+//! Every one of the table's verbs is mounted under one prefix, and this crate names it:
 //! [`busbar_contract::surface::ADMIN_PREFIX`]. The prefix used to be transcribed here as a literal,
 //! with a hand-written assertion over the copy that could not check the original, because a plugin
 //! may name `busbar-contract` and nothing else in the workspace and the literal lived in a
@@ -10,11 +10,11 @@
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
 use busbar_contract::surface::ADMIN_PREFIX;
 
-/// The transport this plane's one claim is made against: plain HTTP request/response, never a
-/// session transport (see [`crate::admin_codec::meta`] for why this plane does not implement `SessionPlane`).
+/// The transport this surface's one claim is made against: plain HTTP request/response, never a
+/// session transport (see the [`crate::admin_codec`] module doc for why there is no `SessionPlane` half).
 pub const TRANSPORT: &str = "http";
 
-/// The credential scheme this plane's claim authenticates under.
+/// The credential scheme this surface's claim authenticates under.
 ///
 /// **Judgment call**: the design does not name a scheme key for the admin surface as it does for a
 /// plane's own key scheme. `admin-token` is chosen here as a coherent, self-describing name for the
@@ -23,7 +23,7 @@ pub const TRANSPORT: &str = "http";
 /// listener's source.
 const SCHEME: &str = "admin-token";
 
-/// The one alternative this plane's claim may narrow to: a bearer credential. The admin surface has
+/// The one alternative this surface's claim may narrow to: a bearer credential. The admin surface has
 /// never offered a second credential form for its own listener, so there is nothing to narrow among.
 const SCHEME_ALTS: &[&str] = &["bearer"];
 
@@ -46,12 +46,12 @@ const ADMIN_PATTERN: &[PathSeg] = &[
 /// claim to be.
 const _: () = assert!(matches!(ADMIN_PREFIX.as_bytes(), b"/api/v1/admin"));
 
-/// This plane's one claim.
+/// This surface's one claim.
 ///
-/// One claim is enough: every one of the table's verbs isreached under the same prefix, decoded by
+/// One claim is enough: every one of the table's verbs is reached under the same prefix, decoded by
 /// method-and-path dispatch inside `decode_ingress` rather than by a separate claim per operation.
 /// Splitting the claim per verb would buy nothing — the kernel's overlap check is about which PLANE
-/// a request routes to, not which operation, and every admin operation is unambiguously this plane's.
+/// a request routes to, not which operation, and every admin operation is unambiguously this surface's.
 pub const CLAIMS: &[Claim] = &[Claim {
     transport: TRANSPORT,
     selector: Selector::PathPattern(ADMIN_PATTERN),
@@ -59,6 +59,6 @@ pub const CLAIMS: &[Claim] = &[Claim {
     scheme_alternatives: SCHEME_ALTS,
     // No idempotency location: the admin surface's own `If-Match` optimistic-concurrency scheme is
     // a body/header concern the verbs unit enforces, not a client-supplied idempotency key this
-    // plane's claim would declare.
+    // surface's claim would declare.
     idempotency: None,
 }];

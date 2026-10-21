@@ -139,7 +139,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             errors.push(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
-                crate::proto::DEFAULT_MAX_TOKENS
+                crate::config::limits::DEFAULT_MAX_TOKENS
             ));
         }
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never
@@ -289,13 +289,6 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
-    // UNIFIED `pools:` NEUTRALITY (1.6.0, design `1.6.0-unified-pools.md` §7-8). The single neutral
-    // `pools:` map infers each pool's KIND from its members and resolves members by NAME ALONE, which
-    // is sound only if names are GLOBALLY UNIQUE: no name defined in two nouns, and no pool name
-    // colliding with a noun/member name. Checked here (over the resolved `RootCfg`) so a clean
-    // `--validate` is a clean boot — the same reason the context_max conflict moved here.
-    validate_unified_pool_names(cfg, &mut errors);
-
     // The same reserved-prefix collision applies to PROVIDER names: a provider named `api` is
     // reachable via the adhoc route `POST /api/<model>/v1/messages`, whose first segment the auth
     // middleware intercepts as an admin request for the identical reason. Reject it symmetrically.
@@ -320,17 +313,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // provider sweep (not just its protocol arm) is a function a test can drive against an EMPTY
     // set. See `validate_providers_with` for why the empty set is the load-bearing case.
     //
-    // Read through `registry().codec_protocols()` rather than the `known_protocols()` re-export:
-    // both yield the same codec set (`known_protocols` IS `registry().codec_protocols()`), but the
-    // `registry()` accessor SEEDS core's own-test built-in tail first, where the bare re-export does
-    // not. Under the test-support surface, validation can be a test's FIRST registry read (an
-    // app-boot fixture that never hit a request path), and an unseeded read would spuriously see an
-    // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
-    // the direct substrate re-export and the composition root installed the protocols in `main`.
+    // The known set is the registered planes' DECLARED provider dialects
+    // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3): each plane states which
+    // of its dialects a provider's `protocol` may name, as data, and the kernel names none.
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
     // P2-243/P2-decvalidate) — a plane like the decisions plane speaks a dialect with no translating
-    // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
+    // IR (jev), so it is never a provider dialect the fallback plane declares and would otherwise be an "unknown
     // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
     // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a
     // plane's own dialect restriction is a declared CONSTANT, so a throwaway default instance
@@ -340,9 +329,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
-        .codec_protocols()
-        .to_vec();
+    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
     for decl in crate::plane::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
@@ -1000,6 +987,30 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         ));
                     }
                 }
+                // Rule (verbs, #77(9) l.2279): the per-verb allow-list is `"*"` or a list of the
+                // closed admin table's operation names. Any other shape, and any name the table
+                // does not declare, is refused: an allow-list entry that grants nothing must never
+                // sit inert while the operator believes it granted.
+                match binding.verb_grant() {
+                    None | Some(Ok(crate::config::VerbGrant::All)) => {}
+                    Some(Err(shape)) => errors.push(format!(
+                        "role_bindings.{module}.{role}.verbs must be \"{all}\" or a list of admin \
+                         verb names, not {shape}",
+                        all = crate::config::ALL_ADMIN_VERBS
+                    )),
+                    Some(Ok(crate::config::VerbGrant::Named(names))) => {
+                        for name in names {
+                            if crate::admin::seam::admin_verb_rung(&name).is_none() {
+                                errors.push(format!(
+                                    "role_bindings.{module}.{role}.verbs names unknown admin verb \
+                                     '{name}': expected \"{all}\" or operation names from the \
+                                     admin verb table (e.g. get_keys, post_keys)",
+                                    all = crate::config::ALL_ADMIN_VERBS
+                                ));
+                            }
+                        }
+                    }
+                }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
                         errors.push(format!(
@@ -1106,7 +1117,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
     // so this neutral rule carries no plane token: the concrete noun is registry-supplied at
     // runtime, never a literal here.
-    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     if cfg.endpoint_resource(endpoint_section).is_some()
         && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
     {
@@ -1720,9 +1731,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // about one refuses here with a paste-ready stub, rather than a unit ledgered on a lane no card
     // prices (which fails every read of the bucket that holds it).
     //
-    // [`PlaneCfg::ledger_lanes`]: crate::plane::config::PlaneCfg::ledger_lanes
+    // [`PlaneCfg::ledger_lanes`]: crate::config::plane_sections::PlaneCfg::ledger_lanes
     if let Some(card) = &cfg.rate_card {
-        for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
+        for defs in cfg.plane_defs.values() {
             let lanes = defs.ledger_lanes();
             let missing: Vec<&str> = (lanes.iter().map(String::as_str))
                 .filter(|l| {
@@ -1957,65 +1968,6 @@ fn reserved_admin_name(name: &str) -> bool {
 /// exactly that. Same first-segment test as the sibling so `admin/x` cannot slip through either.
 fn reserved_legacy_admin_name(name: &str) -> bool {
     name.split('/').next() == Some("admin")
-}
-
-/// Resolve the single `on_exhausted: fallback_pool:<name>` edge out of `pool_name`, if it has one.
-/// UNIFIED `pools:` GLOBAL-NAME VALIDATOR (1.6.0). The neutral `pools:` map infers a pool's kind
-/// from its members and resolves every member by NAME ALONE. That is sound only when names are
-/// globally unique, so this refuses:
-///
-/// 1. A name defined in TWO nouns (`models:`/`tools:`/`agents:`) — kind inference could not decide
-///    which plane a member of that name belongs to, and the router would silently pick one.
-/// 2. A POOL name that collides with a member/registration name on the same keyspace — already
-///    partly covered for models above; here it is extended to the other registered nouns.
-///
-/// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
-/// resolution, in `config::resolve`, where the members are still visible before projection; this
-/// function is the name-uniqueness half that makes that inference unambiguous.)
-pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
-    use std::collections::BTreeSet;
-    let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
-    // The plane registry nouns read through their always-present type-erased seam. With the owning
-    // plane compiled out the seam holds a `RawPlaneSection`, whose `def_names` is empty (a present
-    // section is refused at resolve), so no name resolves there — the same answer the per-plane
-    // feature gate gave, without naming a plane.
-    let tool_names: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
-    let agent_names: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
-
-    // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
-    for (a, b, name_a, name_b) in [
-        (&models, &tool_names, "models", "tools"),
-        (&models, &agent_names, "models", "agents"),
-        (&tool_names, &agent_names, "tools", "agents"),
-    ] {
-        for dup in a.intersection(b) {
-            errors.push(format!(
-                "`{dup}` is defined in both the top-level `{name_a}:` and `{name_b}:` maps. Pool \
-                 member names are resolved by name alone (a pool's kind is inferred from its \
-                 members), so a name may live in at most ONE noun. Rename one of them."
-            ));
-        }
-    }
-
-    // (2) A pool name must not collide with a registration name on the plane it routes to (the pool
-    // and the registration share the breaker keyspace). Cross-checked against every noun, since a
-    // single neutral `pools:` map is not scoped by kind.
-    for pool_name in cfg
-        .pools
-        .keys()
-        .chain(cfg.tool_pools.keys())
-        .chain(cfg.agent_pools.keys())
-    {
-        for (set, noun) in [(&tool_names, "tools"), (&agent_names, "agents")] {
-            if set.contains(pool_name.as_str()) {
-                errors.push(format!(
-                    "pool name '{pool_name}' conflicts with a `{noun}:` registration of the same \
-                     name; a pool and a registration share the failover breaker keyspace, so their \
-                     names must be distinct. Rename the pool."
-                ));
-            }
-        }
-    }
 }
 
 /// Returns `Some(target)` only for a well-formed FallbackPool action; `None` for a pool with no

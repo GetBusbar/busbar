@@ -74,6 +74,10 @@ impl VerifyPlugin for Judge {
                 ..VerifiedIdentity::default()
             }),
             Some(b"bad") => Verdict::Reject,
+            Some(b"log") => {
+                tracing::warn!(target: "judge", "the judge logged a verify");
+                Verdict::Pass
+            }
             Some(b"slow") => {
                 std::thread::sleep(Duration::from_millis(200));
                 Verdict::Pass
@@ -583,29 +587,29 @@ fn an_auth_row_answers_to_its_statements_alias_rewrite() {
         .expect("the row opens by its Statement's alias");
 }
 
-/// Two auth doors declaring they read the `sigv4` credential kind, and one declaring `bearer`.
+/// Two auth doors declaring they read the `signed` credential kind, and one declaring `bearer`.
 mod readers {
     use busbar_contract::abi::sdk::auth_door::with_credential_kinds;
 
     use super::*;
 
-    const SIGV4: &[AbiStr] = &[abi_str("sigv4")];
+    const SIGNED: &[AbiStr] = &[abi_str("signed")];
     const BEARER: &[AbiStr] = &[abi_str("bearer")];
-    const SIGV4_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), SIGV4);
+    const SIGNED_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), SIGNED);
     const BEARER_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), BEARER);
 
     pub(super) mod a {
         use super::*;
         busbar_contract::auth_verify_door!(
             Judge,
-            with_tail(statement("reader-a", "1.0.0", 8), SIGV4_TAIL)
+            with_tail(statement("reader-a", "1.0.0", 8), SIGNED_TAIL)
         );
     }
     pub(super) mod b {
         use super::*;
         busbar_contract::auth_verify_door!(
             Judge,
-            with_tail(statement("reader-b", "1.0.0", 8), SIGV4_TAIL)
+            with_tail(statement("reader-b", "1.0.0", 8), SIGNED_TAIL)
         );
     }
     pub(super) mod c {
@@ -633,11 +637,11 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
     let err = rows
         .open("reader-a", "reader-a", &serde_json::json!("ok"))
         .err()
-        .expect("a second reader of sigv4 refuses");
+        .expect("a second reader of signed refuses");
     assert_eq!(
         err,
         "auth plugins 'reader-a' and 'reader-b' both declare they read the credential kind \
-         'sigv4'; one verifier reads a credential kind"
+         'signed'; one verifier reads a credential kind"
     );
     assert!(rows
         .open("reader-c", "reader-c", &serde_json::json!("ok"))
@@ -872,4 +876,66 @@ mod outbound {
         let other = auth_rows.serving("other", &serde_json::json!({}));
         assert!(matches!(other, Ok(None)), "no row states another style");
     }
+}
+
+/// The plugin log directory [`logged_rows`] writes under: one per test process.
+fn log_dir() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("busbar-auth-plugin-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    })
+    .clone()
+}
+
+fn log_config() -> crate::dispatch::PluginLogConfig {
+    let dir = log_dir();
+    crate::dispatch::PluginLogConfig::from_words(
+        Some(dir.to_str().expect("a UTF-8 scratch path")),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the named directory resolves")
+}
+
+/// AN AUTH INSTANCE WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2: "all plugins
+/// should log to their plugin's log file. no logs for plugins is not an option ... The HOST writes
+/// it to that plugin instance's own log file").
+///
+/// RED before an opened auth instance was bound to its instance's log file: every auth instance
+/// bound a sink that wrote its records into the host's log, keyed by plugin name, and no auth
+/// plugin log file was ever written.
+#[test]
+fn an_auth_instance_logs_to_its_own_plugin_log_file() {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door("judge", judge::door)])
+        .expect("the linked door registers");
+    let a = AuthRows::new(Arc::new(registry), dispatcher())
+        .with_logs(log_config)
+        .open("judge", "auth.logged", &serde_json::json!("ok"))
+        .expect("the linked door opens");
+    assert_eq!(
+        a.verify_now(&request(Some("log"), None)),
+        Some(answered(Verified::Pass))
+    );
+    let path = log_config().path_for("auth.logged");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("the judge logged a verify") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        text.contains("the judge logged a verify"),
+        "the instance's plugin log file {} holds no record of its own: {text:?}",
+        path.display()
+    );
 }

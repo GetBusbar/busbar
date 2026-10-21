@@ -1171,7 +1171,7 @@ async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
     );
 }
 
-/// F25 row 83: rehomed from crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::
+/// F25 row 83: rehomed from the retired engine crate's src/engine/tests/client_header_forwarding_tests.rs::
 /// hop_by_hop_host_and_length_are_re_derived. MECHANICS: the caller's hop-by-hop fields (and a field
 /// its `connection` nominates), `host` and `content-length` never reach the upstream; the upstream
 /// connection derives its own. Every field of the legacy matrix is handed over and only the trace
@@ -1262,7 +1262,7 @@ impl Telemetry for Labels {
     fn queued(&self, _: &str, _: i64) {}
 }
 
-/// F25 row 124: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::
+/// F25 row 124: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::
 /// test_metric_pool_label_resolves_model_for_default_cell. The upstream METRIC pool label resolves
 /// the default (`""`) cell, shared by every direct route, to the ROUTED lane's model name (so those
 /// series correlate with `busbar_requests_total`), lane by lane; a NAMED pool keeps its name
@@ -1392,7 +1392,7 @@ async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
 
-/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
+/// F25 row 75: rehomed from the retired engine crate's src/engine/tests/auth_style_tests.rs::
 /// test_host_from_base_backslash_authority_matches_wire_host (its signed-host half; the dialler's
 /// reading of each URL is pinned in busbar-kernel-egress's `net_tests`). A WHATWG reader ends a web
 /// URL's authority at the first `\` exactly as at `/`, so the host the auth call signs must be the
@@ -2839,6 +2839,105 @@ async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_doe
         pieces.iter().all(|p| !p.cut),
         "a complete answer is not cut: {pieces:?}"
     );
+}
+
+/// The upstream-failure dispositions the far end counted, in order.
+#[derive(Default)]
+struct Failures {
+    failed: Mutex<Vec<&'static str>>,
+}
+impl Telemetry for Failures {
+    fn upstream_attempt(&self, _: &str, _: DestinationId) {}
+    fn upstream_failure(&self, _: &str, _: DestinationId, disposition: &'static str) {
+        self.failed.lock().unwrap().push(disposition);
+    }
+    fn failover(&self, _: &str, _: &'static str) {}
+    fn breaker_trip(&self, _: &str, _: DestinationId) {}
+    fn queued(&self, _: &str, _: i64) {}
+}
+
+/// Drive one answer from `script` to its last piece, the plane reading the last piece `fault`
+/// (an `once` unit, so a non-success head is relayed for the plane to read): the breaker's records
+/// and the upstream failures counted.
+async fn read_last_as(
+    script: Script,
+    fault: u8,
+) -> (Vec<(DestinationId, Outcome)>, Vec<&'static str>) {
+    let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
+    let failures = Arc::new(Failures::default());
+    r.egress.telemetry = Arc::clone(&failures) as Arc<dyn Telemetry>;
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    loop {
+        let p = far.next(&t).await.expect("a piece through the last");
+        far.judged(&t, if p.last { fault } else { FAULT_NONE });
+        if p.last {
+            break;
+        }
+    }
+    drop(far);
+    let observed = r.book.observed.lock().unwrap().clone();
+    let failed = failures.failed.lock().unwrap().clone();
+    (observed, failed)
+}
+
+/// ORACLE ROW 86 (1.5.5 /metrics), status rows 49/68 (the breaker's fact; the plane's fault
+/// reading at the far end): A FAULT THE PLANE READS INSIDE A SUCCESS — an in-band error frame after
+/// a 200 head, read on the answer's last piece — records the breaker's compensating transient (the
+/// head's success, then the transient) and counts NO upstream failure, as 1.5.5 recorded a
+/// stream's terminal error on the breaker alone (v1.5.5 `proxy/response_body.rs:451-479`; the 1.5.5
+/// golden's in-band stream-error cells, `stream_upstream_error@fixture`, carry no
+/// `busbar_upstream_failures_total`). RED before the fix: one `transient` failure counted.
+#[tokio::test]
+async fn a_fault_read_inside_a_success_records_the_breaker_and_counts_no_upstream_failure() {
+    let (observed, failed) = read_last_as(
+        Script::Answer(
+            200,
+            None,
+            vec![b"data: {\"a\":1}\n\n", b"data: {\"error\":{}}\n\n"],
+        ),
+        FAULT_TRANSIENT,
+    )
+    .await;
+    assert_eq!(
+        observed,
+        vec![
+            (DestinationId::new(1), Outcome::Success),
+            (
+                DestinationId::new(1),
+                Outcome::Transient { retry_after: None }
+            ),
+        ],
+        "the head's success, then the compensating transient the plane's reading states"
+    );
+    assert!(
+        failed.is_empty(),
+        "a fault inside a success counts no upstream failure (1.5.5): {failed:?}"
+    );
+}
+
+/// The control: a relayed FAILURE the plane reads as a transient fault is an upstream failure and
+/// is counted, as 1.5.5's attempt classifier counted it.
+#[tokio::test]
+async fn a_relayed_failure_the_plane_reads_transient_counts_its_upstream_failure() {
+    let (observed, failed) = read_last_as(
+        Script::Answer(502, None, vec![b"{\"error\":\"upstream\"}"]),
+        FAULT_TRANSIENT,
+    )
+    .await;
+    assert_eq!(
+        observed,
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )]
+    );
+    assert_eq!(failed, vec!["transient"]);
 }
 
 /// THE FRAMER'S OWN HEAD LINES GO OUT IN THE HEAD THE AUTH SIGNS (THE DESIGN section 6, step 5:

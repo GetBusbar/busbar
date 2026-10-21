@@ -55,6 +55,8 @@ pub struct AuthRows {
     /// A connection table held by the axis itself (a test's stand-in for the connector, with far
     /// ends of its own), used the same way when no `conns` is read.
     held: Option<Arc<dyn DeclaredConns>>,
+    /// Where each instance opened to serve writes its plugin log (THE DESIGN §11.2).
+    logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -72,12 +74,21 @@ impl AuthRows {
             dispatcher,
             conns: None,
             held: None,
+            logs: None,
         }
     }
 
+    /// Each instance opened to serve writes its log records and diagnostics to its own plugin log
+    /// file under the configured `plugins.logs` that `logs` answers when it opens.
+    #[must_use]
+    pub fn with_logs(mut self, logs: fn() -> crate::dispatch::PluginLogConfig) -> Self {
+        self.logs = Some(logs);
+        self
+    }
+
     /// Each instance opened to serve declares its needs on the table `conns` answers when it opens
-    /// (the process's one connector): a networked auth door (a directory over `tcp`) dials through
-    /// it.
+    /// (the process's one connector): a networked auth door (a directory over a stream transport)
+    /// dials through it.
     #[must_use]
     pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);
@@ -118,10 +129,15 @@ impl AuthRows {
         let name = row.key();
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
+        // Opened to serve: its own plugin log file (THE DESIGN §11.2). A fact read binds no file.
+        let envelope = match self.logs.filter(|_| serving) {
+            Some(logs) => sink.to_file(&logs(), label).map_err(refused)?,
+            None => sink.bind(),
+        };
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
-            sink: sink.bind(),
+            sink: envelope,
             dispatcher: self.dispatcher.adopter(),
             // Serving: the host's table (else a table the axis holds), or (none) a door that
             // declares no need. A fact read: a probe, bound with no table whatever it declares.

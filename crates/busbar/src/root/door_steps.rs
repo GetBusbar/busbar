@@ -719,6 +719,17 @@ impl<'s> DoorSteps<'s> {
         self.lock().downgraded.clone()
     }
 
+    /// Whether the unit's far end CUT its STREAMED answer after its head, as the driver told the
+    /// steps at the unit's audit ([`DriverSteps::answered`]): the caller asked for the answer
+    /// streamed (`ROUTE_STREAM`), and its connection failed, or its send's deadline passed, before
+    /// the answer completed. A whole (non-stream) answer cut by its far end is not one. Neither
+    /// changes the bill: the unit bills what its plane ledgered (owner ruling 2026-10-20).
+    #[must_use]
+    pub fn stream_cut(&self) -> bool {
+        let u = self.lock();
+        u.answered.1 && u.stream
+    }
+
     /// WHETHER A BUDGET DOWNGRADE MAY SEND THE UNIT TO `to` (1.5.5's `admit_check` guard, hop by
     /// hop): `to` is a pool of this section not yet visited, the visited set is smaller than the
     /// pool count, and the caller's grant reaches `to` and every pool its `on_exhausted` fallback
@@ -895,6 +906,13 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    fn pool_holds(&self, pool: &[u8], member: &str) -> bool {
+        std::str::from_utf8(pool)
+            .ok()
+            .and_then(|pool| self.pools.pools().get(pool))
+            .is_some_and(|members| members.iter().any(|m| m == member))
+    }
+
     fn decoded(&self, _ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
         let mut u = self.lock();
         u.op = Some(op);
@@ -919,6 +937,8 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn answered(&self, _ctx: &UnitCtx, streamed: bool, cut: bool) {
+        // A stream the far end cut bills what its plane ledgered, as any other: the cut is a fact
+        // of the unit's end, never a reason to drop its usage (owner ruling 2026-10-20).
         self.lock().answered = (streamed, cut);
     }
 
@@ -1609,6 +1629,11 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 pub struct Rules {
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     owned_anchors: Mutex<Vec<&'static str>>,
+    /// The declaring sections of the door planes the boot bound but did not open (their section
+    /// absent from the boot configuration), held once the boot composed its planes
+    /// ([`Rules::hold_unopened`]). A door plane is opened once, at boot, so a configuration that
+    /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
+    unopened: Mutex<Vec<&'static str>>,
 }
 
 impl Rules {
@@ -1627,9 +1652,43 @@ impl Rules {
             }
         }
     }
+
+    /// Hold the declaring sections of the door planes the boot left unopened (`sections`): each a
+    /// plane bound through its door whose section the boot configuration did not write.
+    pub fn hold_unopened(&self, sections: impl IntoIterator<Item = &'static str>) {
+        let mut held = self
+            .unopened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for section in sections {
+            if !held.contains(&section) {
+                held.push(section);
+            }
+        }
+    }
+}
+
+/// Does `cfg` write the plane whose declaring section is `section` (Law 7, BUSBAR-1.6.0.md l.547:
+/// a plane loads iff its verb is present)? The declaring section selects; an owned, consumed or
+/// required section does not on its own.
+pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) -> bool {
+    cfg.plane_sections.contains(section)
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = self
+            .unopened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .filter(|section| writes_plane(section, cfg))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
         let anchors = self
             .owned_anchors
@@ -1754,7 +1813,17 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // A WRITTEN consumed|required key counts, even an empty one (ARCHITECT row-82 ruling): a
+    // section some registered plane requires is written in every document that parsed (the pre-pass
+    // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
+    // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
+    // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
+    let required = |key: &'static str| {
+        busbar_kernel::plane::registry::plane_decls()
+            .iter()
+            .any(|d| d.required_config_sections.contains(&key))
+    };
+    if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }
@@ -3638,12 +3707,14 @@ pub fn sealed_settings(
     Ok(serde_json::Value::Object(sealed))
 }
 
-/// The host of `base_url`: after its scheme, before its port, path, query or fragment.
+/// The host of `base_url`, the one the request dials: its authority read by the one split
+/// ([`busbar_contract::net::url_authority`]), before its port.
 fn base_url_host(base_url: &str) -> &str {
-    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    authority.split(':').next().unwrap_or("")
+    busbar_contract::net::url_authority(base_url)
+        .host_port
+        .split(':')
+        .next()
+        .unwrap_or("")
 }
 
 /// The dotted label of `host` right after the first of `after`, when it reads as a dashed name

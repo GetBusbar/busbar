@@ -79,10 +79,10 @@ use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
     WorkBook, WorkBounds, WORK_SCHEMA,
 };
-use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{
     Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
 };
+use crate::trust::demotion::DemotionRecord;
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
@@ -972,9 +972,9 @@ impl KernelServices {
         }
         let prefix = demotion_key(instance, "");
         let replayed = rows.iter().filter_map(|r| {
-            let counterparty = match r.server.strip_prefix(prefix.as_str()) {
+            let counterparty = match r.upstream.strip_prefix(prefix.as_str()) {
                 Some(cp) => cp,
-                None if default && !r.server.contains(DEMOTION_SEP) => r.server.as_str(),
+                None if default && !r.upstream.contains(DEMOTION_SEP) => r.upstream.as_str(),
                 None => return None,
             };
             Some((counterparty, r.recorded_at.saturating_mul(1000)))
@@ -1031,7 +1031,7 @@ impl KernelServices {
 
     /// THE ONE DECIDE PATH, the core-admin verbs' ([`Self::trust_rule`]) and a plane's own
     /// administrative verb's (`trust.decide`) alike: the trust book's decision
-    /// ([`TrustBook::decide`]), kept durably before it answers; approving a counterparty also
+    /// ([`TrustBook::rule`], kept durably, then [`TrustBook::apply`]); approving a counterparty also
     /// clears its durable demotion.
     ///
     /// # Errors
@@ -1045,31 +1045,37 @@ impl KernelServices {
         ruling: Ruling,
         expected: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let (row, fact) = self
+        let refused = |why: Undecided| match why {
+            Undecided::NoSuchKey => TrustRefused::NoSuchKey,
+            Undecided::NothingSighted => TrustRefused::NothingSighted,
+            Undecided::Rootless => TrustRefused::Rootless,
+            Undecided::Stale => TrustRefused::Stale,
+        };
+        // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
+        // then takes effect, so a decision the store refused is not in force in this process
+        // either (THE DESIGN §11.12 l.1617-1619, the trust record is durable; Q128 p5#2).
+        let fact = self
             .trust
-            .decide(instance, counterparty, item, ruling, expected)
-            .map_err(|why| match why {
-                Undecided::NoSuchKey => TrustRefused::NoSuchKey,
-                Undecided::NothingSighted => TrustRefused::NothingSighted,
-                Undecided::Rootless => TrustRefused::Rootless,
-                Undecided::Stale => TrustRefused::Stale,
-            })?;
+            .rule(instance, counterparty, item, ruling, expected)
+            .map_err(refused)?;
         if let Some(d) = self.demotions.get() {
             d.record
                 .keep_decision(&fact, (self.wall_ms)() / 1000)
                 .map_err(TrustRefused::Store)?;
-            if fact.item.is_none() && ruling == Ruling::Approve {
-                let cleared = |server: &str| {
-                    crate::plane::quarantine::settle(
-                        &d.record,
-                        server,
-                        crate::trust::TrustState::Approved,
-                    );
-                };
-                cleared(&demotion_key(&fact.instance, &fact.counterparty));
-                if *d.default_instance == *fact.instance {
-                    cleared(&fact.counterparty);
-                }
+        }
+        let row = self.trust.apply(&fact).map_err(refused)?;
+        let clears = fact.item.is_none() && ruling == Ruling::Approve;
+        if let Some(d) = self.demotions.get().filter(|_| clears) {
+            let cleared = |server: &str| {
+                crate::trust::demotion::settle(
+                    &d.record,
+                    server,
+                    crate::trust::TrustState::Approved,
+                );
+            };
+            cleared(&demotion_key(&fact.instance, &fact.counterparty));
+            if *d.default_instance == *fact.instance {
+                cleared(&fact.counterparty);
             }
         }
         Ok(row)
@@ -1349,14 +1355,27 @@ impl KernelServices {
     /// after it starts, whatever any plane's own tick schedule is. A record write whose flush the
     /// pool refused, with no later write to start another, reaches the store within one interval.
     /// The composition root runs it once, beside the services it built; it never ends.
+    ///
+    /// It is also THE KERNEL'S ONE CLOCK for the compiled-in crates (THE DESIGN §1): each interval
+    /// beats every work handed to [`crate::tick::on_clock`] and runs the jobs the beat answers here,
+    /// on this one task, beside the ticks, so no crate keeps a timer or a task of its own.
     pub async fn flushes(&self) {
+        use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut jobs = futures::stream::FuturesUnordered::new();
         loop {
-            at.tick().await;
-            self.flush_tick();
-            self.verify_tick();
+            tokio::select! {
+                _ = at.tick() => {
+                    self.flush_tick();
+                    self.verify_tick();
+                    let wall = std::time::UNIX_EPOCH
+                        + std::time::Duration::from_millis((self.wall_ms)());
+                    jobs.extend(crate::tick::beat(wall));
+                }
+                Some(()) = jobs.next(), if !jobs.is_empty() => {}
+            }
         }
     }
 
@@ -1773,7 +1792,7 @@ impl HostServices for KernelServices {
         let unprefixed = (caller.instance == d.default_instance).then(|| counterparty.to_string());
         submit(pool, later, move || {
             let settle = |server: &str, state| {
-                crate::plane::quarantine::settle(&record, server, state);
+                crate::trust::demotion::settle(&record, server, state);
             };
             if effect == Effect::Demote {
                 settle(&key, crate::trust::TrustState::Quarantined);

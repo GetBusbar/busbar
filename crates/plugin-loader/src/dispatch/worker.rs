@@ -169,9 +169,10 @@ pub struct DispatchStats {
 pub type CounterFamily = (&'static str, &'static str, u64);
 
 impl DispatchStats {
-    /// EVERY `bb_*` COUNTER these stats hold, one exposition family each (coordinator ruling
-    /// 2026-10-14: the dispatcher's `bb_*` counters are exported through the process's metrics
-    /// path, HELP and TYPE included). The one list the composition root hands the kernel's scrape.
+    /// EVERY `bb_*` COUNTER these stats hold, each with its name and HELP text: the dispatcher's
+    /// own counts, read by whoever holds the dispatcher (the conformance suite). They are NOT on
+    /// the customer `/metrics` scrape: 1.5.5 served no `bb_*` family and the scrape must match it
+    /// (oracle row 86).
     #[must_use]
     pub const fn families(&self) -> [CounterFamily; 2] {
         [
