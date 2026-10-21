@@ -563,7 +563,7 @@ fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address
     }
 }
 
-/// The odd spellings of the SSRF guard bypass (HIGH, the plane-mcp argument guard's hosts reach
+/// The odd spellings of the SSRF guard bypass (HIGH, a plugin argument guard's hosts reach
 /// here as written), each beside the plain ASCII host a URL client dials it as: `url` 2.5.8 maps the
 /// host by UTS #46 before it dials, so `ｌｏｃａｌｈｏｓｔ` fetches `localhost` and
 /// `①⑥⑨.②⑤④.①⑥⑨.②⑤④` fetches the metadata address.

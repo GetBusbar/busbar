@@ -578,7 +578,7 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
     );
 }
 
-/// RED (HIGH, the SSRF guard bypass through the mcp plane's argument guard): `dest.judge` asked
+/// RED (HIGH, the SSRF guard bypass through a plugin's argument guard): `dest.judge` asked
 /// about the exact host strings that guard passes it (a bare host, an IPv6 literal bracketed,
 /// never resolved; `DEST_REFUSE_PRIVATE` for a registration granted no private reach, none for one
 /// granted it) answers each odd spelling with the verdict of the plain ASCII host a URL client
@@ -637,7 +637,7 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
                 "`{odd}` beside `{plain}`"
             );
         }
-        // The `://` spelling of the same destination, as the plane's undeclared-URL path carries it.
+        // The `://` spelling of the same destination, as an argument guard's undeclared-URL path carries it.
         let url = |h: &str| format!("https://{h}/latest/meta-data/");
         assert_eq!(
             judge(&url(odd), svc::DEST_REFUSE_PRIVATE),
