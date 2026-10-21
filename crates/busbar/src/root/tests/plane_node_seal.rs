@@ -668,3 +668,130 @@ async fn a_unit_with_no_hooks_seals_an_empty_hook_list() {
     );
     assert!(!record.outcome.hook_failed, "no hook failed");
 }
+
+/// A card history pinned at its head: one entry per `(effective_from_ms, author)`, in append order,
+/// each holding the absent card (these units report nothing, so no price is read off it).
+fn pinned(
+    entries: Vec<(u64, busbar_kernel_ledger::cost::Author)>,
+) -> crate::root::kernel::PinnedHistory {
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    let mut head = busbar_kernel_ledger::cost::HistorySeq::OPENING;
+    for (effective_from, author) in entries {
+        head = history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+            effective_from,
+            effective_until: None,
+            card: crate::root::kernel::card_from_config(
+                std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
+                0,
+                false,
+            ),
+            appended_at: effective_from,
+            author,
+        });
+    }
+    crate::root::kernel::PinnedHistory::for_test(Arc::new(history), head)
+}
+
+/// A configuration write's entry, produced by policy generation `policy_epoch`.
+fn configured(policy_epoch: u64) -> busbar_kernel_ledger::cost::Author {
+    busbar_kernel_ledger::cost::Author::Config { policy_epoch }
+}
+
+/// Drive one borrowed [`ToDestination`] unit admitted under the history `history` builds for its
+/// arrival instant (in milliseconds), and hand back the one record the node sealed for it.
+async fn sealed_under(
+    history: impl FnOnce(u64) -> Option<crate::root::kernel::PinnedHistory>,
+) -> busbar_kernel_audit::AuditRecord {
+    let node = Arc::new(Node::new());
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let arrived = node.arrived();
+    let outcome = node
+        .drive_borrowed(
+            node.mint(),
+            arrived,
+            &PrincipalId::new("acct:seal"),
+            &post,
+            &ToDestination,
+            Box::new(|| -> Option<Reported> { None }),
+            history(arrived.ms()),
+            None,
+            OpClassId::new("seal"),
+        )
+        .await;
+    assert!(outcome.is_some(), "the table took the unit and it ended");
+    assert_eq!(post.open_units(), 0, "its facts closed at its end");
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let records = durability.audit_records.clone();
+    assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
+    records.into_iter().next().expect("one record")
+}
+
+/// A UNIT SEALS THE POLICY GENERATION IT RAN UNDER: the policy epoch of the configuration whose
+/// card was in force when it ARRIVED, off the history pinned at its door — not the head's, when a
+/// later configuration takes effect after the arrival (audit root r4 B-4; THE DESIGN §1,
+/// `BUSBAR-1.6.0.md` l.190-193: the fixed record's "controls", "never optional"). Its card version
+/// is read off the same entry at the same instant, as it always was. RED before the fix: the node
+/// sealed `Controls::default()` beside the hold and settle refs, so `policy_epoch` was 0 whatever
+/// generation the unit ran under.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_seals_the_policy_epoch_of_the_configuration_in_force_when_it_arrived() {
+    let record = sealed_under(|arrived_ms| {
+        Some(pinned(vec![
+            (0, configured(3)),
+            (arrived_ms.saturating_add(60_000), configured(5)),
+        ]))
+    })
+    .await;
+    assert_eq!(
+        record.controls.policy_epoch, 3,
+        "the record names the generation of the configuration in force at the unit's arrival"
+    );
+    assert_eq!(
+        record.usage.rate_card_version, 0,
+        "and its card is the entry in force at that same instant, not the head"
+    );
+}
+
+/// AN AMENDMENT IS NO POLICY GENERATION: a unit whose arrival an amendment re-prices still ran under
+/// the configuration beneath it, and its record names that configuration's epoch, while its card
+/// version names the amendment that priced it (audit root r4 B-4; THE DESIGN §1, l.190-193). RED
+/// before the fix: `policy_epoch` was 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_under_an_amended_card_seals_the_configuration_beneath_it() {
+    let record = sealed_under(|_| {
+        Some(pinned(vec![
+            (0, configured(4)),
+            (
+                0,
+                busbar_kernel_ledger::cost::Author::Amend {
+                    reason_hash: [7; 32],
+                },
+            ),
+        ]))
+    })
+    .await;
+    assert_eq!(
+        record.controls.policy_epoch, 4,
+        "an amendment corrects a price; the generation is the configuration's"
+    );
+    assert_eq!(
+        record.usage.rate_card_version, 1,
+        "the card version is the amendment that priced the arrival"
+    );
+}
+
+/// GREEN TWIN: a unit admitted under NO card history names no policy generation (0, the journal's
+/// "no epoch to report") and the opening card, exactly as before the fix — the record never invents
+/// a generation (audit root r4 B-4; THE DESIGN §1, l.190-193).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_admitted_under_no_history_seals_no_policy_generation() {
+    let record = sealed_under(|_| None).await;
+    assert_eq!(record.controls.policy_epoch, 0, "no history, no generation");
+    assert_eq!(
+        record.usage.rate_card_version,
+        busbar_kernel_ledger::cost::HistorySeq::OPENING.get(),
+        "and the opening card, as before"
+    );
+}
