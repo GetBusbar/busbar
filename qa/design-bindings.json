@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 425
+   "test": 426
   }
  },
  "dropped_since_last_write": [],
@@ -899,10 +899,17 @@
      "proves": "try_admit returns MissingGroup, never admitted",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes",
+     "proves": "the rendered MissingGroup refusal on the door is byte-identical to the kernel's spelling of the direct try_admit block",
+     "source": "curated",
+     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:the_pools_door_fails_closed_on_a_key_naming_an_unconfigured_group, test:test_missing_group_fails_closed"
+   "verdict_detail": "test:the_pools_door_fails_closed_on_a_key_naming_an_unconfigured_group, test:test_missing_group_fails_closed, test:the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes"
   },
   {
    "id": "PB-20",

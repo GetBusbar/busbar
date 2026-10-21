@@ -2950,6 +2950,127 @@ mod tools_door {
         assert_eq!(calls(&mut heard), 1, "the minted key's call went out once");
     }
 
+    /// VERIFY: a caller whose grant names ANOTHER server is refused inside the unit, and the refused
+    /// server is never dialled — neither its tool endpoint nor the token endpoint its
+    /// `token_exchange:` registration would have been asked for a credential sees a byte — while the
+    /// server its grant does name is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_grant_for_another_server_is_refused_before_its_server_or_token_endpoint_is_touched()
+    {
+        let _one = PUBLISHING.lock().await;
+        std::env::set_var(SUBJECT, "busbar-own-subject");
+        let instance = "serve-door-tools-verify";
+        let _published = Published(instance);
+        let (granted, mut granted_heard) = tool_server().await;
+        let (fenced, mut fenced_heard) = tool_server().await;
+        let mut tools = registration("granted", granted, "");
+        let other = registration(
+            "fenced",
+            fenced,
+            &format!(
+                "  allow_private: true\n  aud: \"http://127.0.0.1:{fenced}\"\n  \
+                 token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+                 subject_token: {{ env: {SUBJECT} }}\n"
+            ),
+        );
+        tools
+            .as_mapping_mut()
+            .expect("a mapping")
+            .extend(other.as_mapping().expect("a mapping").clone());
+        let rig = rig_tools(instance, granted, tools, &|app| app);
+        let (_, token) = key_on(
+            &rig,
+            busbar_kernel::governance::NewKeySpec {
+                name: "granted-only".to_string(),
+                ..Default::default()
+            },
+            Some(&[("scope_server", "granted")]),
+        );
+
+        let (status, answer) = call(&rig, &token, "fenced_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "another server's tool is refused: {answer}"
+        );
+        assert!(
+            drain(&mut fenced_heard).is_empty(),
+            "the refused server's tool endpoint never heard a byte"
+        );
+        assert!(
+            crate::root::door_steps::tests::tool_door::exchanges(&rig).is_empty(),
+            "the refused server's token endpoint was never asked"
+        );
+
+        let (status, answer) = call(&rig, &token, "granted_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "its own server is served: {answer}");
+        assert!(drain(&mut granted_heard).contains(&"call"));
+    }
+
+    /// ROUTE: a sole registration whose server answers a call with a bare `503` ends the unit with a
+    /// failure the caller reads, after exactly ONE attempt at the one registered target — no silent
+    /// success and no retry storm — and the unit ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-single-503";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let rig = rig_tools(instance, port, registration("solo", port, ""), &|app| app);
+
+        let (status, answer) =
+            call(&rig, &rig.token, "solo_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the failure is the caller's to read: {answer}"
+        );
+        assert!(
+            answer.get("error").is_some() || answer["result"]["isError"] == true,
+            "a failure, not a silent success: {answer}"
+        );
+        let calls = drain(&mut heard).iter().filter(|w| **w == "call").count();
+        assert_eq!(calls, 1, "exactly one attempt at the one target");
+        assert_eq!(rig.admitted(), 1, "one unit");
+        assert!(rig.all_ended(), "the unit ended");
+    }
+
+    /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
+    /// attributed to the tool it called and to this plane, counting one request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-meter-row";
+        let _published = Published(instance);
+        let (port, _heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
+            app
+        });
+        let charged_at = busbar_kernel::store::now();
+
+        let (status, answer) =
+            call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        rig.gov.flush_metering();
+        let rows = rig
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read");
+        let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key.id).collect();
+        assert_eq!(mine.len(), 1, "one metering row for the key: {rows:?}");
+        assert_eq!(mine[0].requests, 1, "counting one request: {:?}", mine[0]);
+        assert!(
+            mine[0].model.contains("read_file"),
+            "attributed to the tool it called: {:?}",
+            mine[0]
+        );
+        assert_eq!(
+            mine[0].provider, rig.plane_key,
+            "attributed to this plane: {:?}",
+            mine[0]
+        );
+    }
+
     /// A key minted on `rig`'s book under `spec`, its grants exactly `scopes` (`(grant kind row,
     /// value)`, `None` = every scope): its bearer token.
     fn key_on(
@@ -7120,6 +7241,48 @@ mod pools_door_refusals {
         let text = String::from_utf8_lossy(&body);
         assert_eq!(status, 429, "{text}");
         assert!(text.contains("group 'ghost' is not configured"), "{text}");
+        assert_eq!(far.served(), 0);
+    }
+
+    /// PB-19, THE RENDERED REFUSAL IS THE DIRECT ADMISSION'S, BYTE FOR BYTE: a key naming a group
+    /// this node's config does not know is refused by the pools door with exactly the status, kind
+    /// and message the kernel's one limit-refusal spelling renders for the direct admission's own
+    /// `MissingGroup` block over the same book and card — nothing reworded on the door path — and
+    /// the far end is never dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-ghost-group-bytes";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("finance", &finance)),
+                key_group: Some("ghost"),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let key = rig.gov.lookup_by_sub(&rig.key_id).expect("the rig's key");
+        let blocked = rig
+            .gov
+            .try_admit(&rig.app.cost, &key, "p", busbar_kernel::store::now())
+            .err()
+            .expect("the direct admission refuses a key naming an unconfigured group");
+        let (direct_status, direct_kind, direct_message, _) =
+            busbar_kernel::ingress::limit_refusal("", &blocked);
+
+        let (status, _, body) = rig.chat().await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, direct_status.as_u16(), "{text}");
+        assert!(
+            text.contains(&direct_message),
+            "{direct_message:?} in {text}"
+        );
+        assert!(text.contains(direct_kind), "{direct_kind:?} in {text}");
         assert_eq!(far.served(), 0);
     }
 }

@@ -265,8 +265,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_destination_guard_and_the_argument_guard_refuse_before_anything_is_sent",
-          "note": "verify's destination judgement on the door: the connector's guard refuses a registration's private address at the dial and the plane's argument guard refuses a cloud-metadata URL, both before a byte reaches the server"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_grant_for_another_server_is_refused_before_its_server_or_token_endpoint_is_touched",
+          "note": "a caller whose grant names another server is refused inside the unit and the refused server is never dialled -- neither its tool endpoint nor the token endpoint its token_exchange registration names sees a byte -- while the granted server is served"
         }
       },
       "approve": {
@@ -298,8 +298,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk",
-          "note": "route is the kernel's walk on the door: a primary's transient failure fails the call over to its twin before the caller hears anything, and once its cell trips every next call is admitted to the twin first"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt",
+          "note": "an upstream answering a bare 503 ends the unit with a failure the caller reads, after exactly one attempt at the one registered target -- no silent success and no retry storm -- and the one unit ends"
         }
       },
       "meter": {
@@ -309,8 +309,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_call_is_charged_to_the_presenting_key_and_a_spent_budget_refuses_it",
-          "note": "one served tools/call meters exactly one request on the governance book, charged to the key that presented it at the plane's per-request fee and to no other key on the same door"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_call_writes_one_metering_row_naming_its_tool_and_plane",
+          "note": "one served tools/call writes exactly ONE metering row, under the presenting key, attributed to the namespaced tool it called and to this plane, counting one request"
         }
       },
       "audit": {
@@ -321,7 +321,7 @@
           "state": "proven",
           "leg": "root-mcp",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain",
-          "note": "every call through the door lands one row on the kernel's audit chain under the verified key -- served calls applied, a refused one rejected, each row sealed and linked to the row before it"
+          "note": "each served tools/call lands exactly ONE tool-call row on the kernel's audit chain whose resource names the tool it called (audited_read_file), under the calling key, outcome applied, each row sealed and linked to the one before"
         }
       },
       "encode": {
@@ -332,7 +332,7 @@
           "state": "proven",
           "leg": "root-mcp",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain",
-          "note": "one call is one terminal: three calls through the door, two served and one refused, append exactly three consecutive records to the plane's chained call log -- never a double post, never a dropped one"
+          "note": "one call is one terminal: three calls through the door, two served and one refused, append exactly three consecutive records to the plane's chained call log and one kernel audit row each (applied, applied, rejected) -- never a double post, never a dropped one"
         }
       }
     },
