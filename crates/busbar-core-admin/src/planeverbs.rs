@@ -35,7 +35,7 @@
 use crate::v1::contract::AdminError;
 
 /// Re-export the relocated resolve/look seam so `crate::admin::planeverbs::{PlaneTrust, PlaneVerbError,
-/// registered}` keeps resolving for the in-core (a2a) callers and the shared `connect` bound.
+/// registered}` keeps resolving for the in-core agent-plane callers and the shared `connect` bound.
 pub use busbar_kernel::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
 
 /// RECORD ONE PLANE TRUST VERB in the audit trail.

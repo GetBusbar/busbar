@@ -659,7 +659,8 @@ impl DoorApply {
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
-        let pools = DoorPools::of(&table);
+        let pools =
+            DoorPools::of(&table).map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -965,8 +966,11 @@ impl Checkpoints {
     /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
     fn tick(&self) -> usize {
         // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
-        // directory keeps journaling under its host's id only while it holds it.
-        crate::root::durability::refresh_held_lease();
+        // directory keeps journaling under its host's id only while it holds it. It is held on the
+        // lane of the book the node settles onto.
+        if let Some(lane) = self.post.node().book_lane() {
+            lane.refresh_held_lease();
+        }
         self.epoch.bump();
         self.money
             .iter()
@@ -1724,7 +1728,7 @@ pub(crate) fn compose_planes_over(
             // The route table: the section, with the catalog model its `session.model` names
             // folded in.
             let table = routes_of(section, egress.reach.catalog);
-            let pools = DoorPools::of(&table);
+            let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
             let routes = crate::root::door_steps::member_routes(
                 &table,
                 &pools,
@@ -1908,7 +1912,7 @@ fn seal_live(
     // The route table: the section, with the catalog model its `session.model` names folded in
     // ([`catalog_routes`]).
     let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
-    let pools = DoorPools::of(&table);
+    let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(

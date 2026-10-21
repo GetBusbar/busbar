@@ -29,7 +29,8 @@ use busbar_core_admin::GovernanceError;
 use busbar_kernel::host_services::{KernelServices, TrustRefused};
 use busbar_kernel::trust::book::{KeyRow, Ruling};
 
-use super::{AdminAnswer, AmendmentJournal, LedgerView};
+use super::{AdminAnswer, AmendmentJournal, LedgerView, VerifySnapshot};
+use busbar_kernel_ledger::checkpoint::Checkpoint;
 
 /// Which plane THIS node serves under a key, and what it declares: `None` for a key no plane is
 /// registered under, and for a registered plane this node has not configured (Law 7). A predicate
@@ -108,21 +109,35 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
     use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
-    let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
+    // THE SAME RE-DERIVATION THE CHECKPOINTS READ SERVES (ARCHITECT A1): each held checkpoint is
+    // handed over as the chain re-derives it, checked as it arrives, and only the latest is kept
+    // for the book check below, so the verb holds one checkpoint's figures beside the walk's.
     let mut findings: Vec<Finding> = Vec::new();
-    for checkpoint in &checkpoints {
+    let mut count = 0usize;
+    let mut since: Option<Checkpoint> = None;
+    let snapshot = ledger.verify_snapshot_anchored(&mut |checkpoint| {
         if !checkpoint.body_hash_verifies() {
             findings.push(Finding::CheckpointEdited {
                 checkpoint_seq: checkpoint.checkpoint_seq,
             });
         }
-    }
-    for pair in checkpoints.windows(2) {
-        findings.extend(sequences_are_monotonic(&pair[0], &pair[1]));
-    }
-    let since = checkpoints.last();
-    let book_verified = match (since, &book) {
-        (Some(since), Some(now)) => {
+        if let Some(previous) = &since {
+            findings.extend(sequences_are_monotonic(previous, checkpoint));
+        }
+        count += 1;
+        since = Some(checkpoint.clone());
+    });
+    let VerifySnapshot {
+        read,
+        book,
+        anchored,
+    } = snapshot;
+    // A held checkpoint the chain does not reproduce is a finding naming its sequence number, and
+    // the book is then measured against no checkpoint: the last one handed over is not the head.
+    let unreadable = read.err();
+    let since = since.as_ref();
+    let book_verified = match (since, &book, &unreadable) {
+        (Some(since), Some(now), None) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
                 verify(since, now, anchored.as_ref())
@@ -144,6 +159,9 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
     let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    if let Some(unreadable) = &unreadable {
+        findings.push(unreadable.to_string());
+    }
     // EVERY BALANCE WITH NO FIGURE (#42): its balance, window, lane and refusal, in words.
     findings.extend(
         refused
@@ -181,7 +199,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             .map(|finding| format!("stored chain: {finding}")),
     );
     answer(&serde_json::json!({
-        "checkpoints": checkpoints.len(),
+        "checkpoints": count,
         "since": since.map(|c| serde_json::json!({
             "checkpoint_seq": c.checkpoint_seq,
             "node": c.node,

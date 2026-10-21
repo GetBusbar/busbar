@@ -1,4 +1,5 @@
 use busbar_kernel::audit_ring;
+use busbar_kernel::config::MIGRATED_STORE_MODULE;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
@@ -475,8 +476,9 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     // A RANGE, not an equality, and the reason is a real failure: this asserted exactly 300 and
     // went red in CI. The test seeds the cell with `now + 300` from one `now()`, and the handler
     // computes the remainder from a SECOND `now()` taken when the request arrives. Between them sit
-    // a router build, a TCP bind, a task spawn and a real HTTP round trip — so on a loaded runner
-    // the wall clock ticks and the answer is 299, which is correct behaviour reported as a failure.
+    // a router build, a socket bind, a task spawn and a real request round trip — so on a loaded
+    // runner the wall clock ticks and the answer is 299, which is correct behaviour reported as a
+    // failure.
     //
     // The property worth asserting is that the cell reports ITS OWN cooldown rather than a
     // neighbour's or a default, and a couple of seconds of slack proves that just as well while
@@ -959,7 +961,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
@@ -994,7 +996,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": MIGRATED_STORE_MODULE}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1007,7 +1009,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": MIGRATED_STORE_MODULE}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1919,7 +1921,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
@@ -3694,7 +3696,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": "memory"}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": MIGRATED_STORE_MODULE}}}).to_string())
         .send()
         .await
         .unwrap();
@@ -4303,7 +4305,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let proposed = serde_json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "models": {}
         },
         "providers": {}
@@ -4338,7 +4340,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "models": {}
         },
         "providers": {}
@@ -4391,7 +4393,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         "config": {
             "oauth_as": null,
             "providers": {},
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "models": {}
         },
         "providers": {}
@@ -4418,7 +4420,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     handle.abort();
 }
 
-/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, FLIP-A2A;
+/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, PLANE-FLIP;
 /// DECISIONS #52, admin API and config file are ONE schema): a 1.6.0-additive top-level key the boot
 /// pre-pass lifts (`oauth_as:`, as a plane's section is) applies 200, where the plain-derived
 /// `DeployCfg` body refused it "unknown field". THE RED ARM: a key the boot loader does not know is
@@ -4444,7 +4446,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let lifted = apply(serde_json::json!({
         "oauth_as": null,
         "providers": {},
-        "store": {"module": "memory"},
+        "store": {"module": MIGRATED_STORE_MODULE},
         "models": {}
     }))
     .await
@@ -4456,7 +4458,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let unknown = apply(serde_json::json!({
         "not_a_config_key": true,
         "providers": {},
-        "store": {"module": "memory"},
+        "store": {"module": MIGRATED_STORE_MODULE},
         "models": {}
     }))
     .await
@@ -7256,7 +7258,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .await
         .unwrap();
     let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], "memory");
+    assert_eq!(items[0]["name"], MIGRATED_STORE_MODULE);
     let dyn_row = items
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
@@ -7394,7 +7396,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     };
     install(
         "acme-secret-vault.tar.gz",
-        admin_test_tarball_kind("acme-secret-vault", "vault", "secret"),
+        admin_test_tarball_kind("acme-secret-vault", "acmevault", "secret"),
     )
     .await;
     install(
@@ -7443,7 +7445,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
         .map(|p| p["name"].as_str().unwrap())
         .collect();
     assert!(
-        store_names.contains(&"memory") && store_names.contains(&"acme-store-junk"),
+        store_names.contains(&MIGRATED_STORE_MODULE) && store_names.contains(&"acme-store-junk"),
         "type=store still lists the compiled-in default + the store plugin: {store_list}"
     );
     assert!(
@@ -7560,7 +7562,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["name"] == "memory")
+        .find(|p| p["name"] == MIGRATED_STORE_MODULE)
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
 
@@ -7735,7 +7737,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     let memory_row = items
         .iter()
-        .find(|p| p["name"] == "memory")
+        .find(|p| p["name"] == MIGRATED_STORE_MODULE)
         .expect("compiled-in memory row present");
     assert_eq!(
         memory_row["file"],
@@ -10228,8 +10230,8 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .body(
             serde_json::json!({
                 "listen": "127.0.0.1:0",
-                "store": {"module": "memory"},
-                "store": { "module": "memory" },
+                "store": {"module": MIGRATED_STORE_MODULE},
+                "store": { "module": MIGRATED_STORE_MODULE },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -10434,7 +10436,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": "memory", "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": MIGRATED_STORE_MODULE, "settings": { "licenseKey": { "env": var } } }
             })
             .to_string(),
         )
@@ -11485,7 +11487,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
         .identity_provider(
             "corp-oidc",
             serde_json::from_value(serde_json::json!({
-                "module": "oidc",
+                "module": "acme-idp",
                 "settings": {
                     "issuer": "https://idp.example.com",
                     "client_secret": "hunter2-idp"
@@ -11571,7 +11573,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
         .export_def(
             "base-metrics",
             serde_json::from_value(serde_json::json!({
-                "module": "prometheus", "settings": {"buffer_seconds": 60}
+                "module": "acme-metrics", "settings": {"buffer_seconds": 60}
             }))
             .unwrap(),
         )
@@ -11725,7 +11727,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .body(
             serde_json::json!({
                 "store": {
-                    "module": "memory",
+                    "module": MIGRATED_STORE_MODULE,
                     "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
                 }
             })
@@ -11750,7 +11752,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let store = &json["settings"]["store"];
     assert_eq!(
-        store["module"], "memory",
+        store["module"], MIGRATED_STORE_MODULE,
         "the non-secret shape still introspects: {json}"
     );
     assert_eq!(

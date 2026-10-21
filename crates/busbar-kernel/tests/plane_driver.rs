@@ -230,6 +230,8 @@ struct Double {
     refused: Mutex<Vec<u32>>,
     /// Every caller piece of a `/scope-local*` unit: its attempt number and the member it lent.
     scope_members: Mutex<Vec<(u32, Vec<u8>)>>,
+    /// The caller reference every piece it was handed was lent, in order.
+    caller_refs: Mutex<Vec<Vec<u8>>>,
 }
 
 /// The double's driver-ticket wake line (R-PUSH): off, it has no wake channel.
@@ -338,6 +340,10 @@ impl Double {
     unsafe fn piece(&self, t: Ticket, i: &OnPieceIn, o: &mut OnPieceOut) -> (Answered, Hold) {
         self.count(stat::ON_PIECES);
         self.stats[stat::UNIT].store(i.unit, Ordering::SeqCst);
+        self.caller_refs
+            .lock()
+            .unwrap()
+            .push(text(i.caller_ref).to_vec());
         if i.stream != 0 {
             return (self.session_piece(i, o), Hold::No);
         }
@@ -3212,5 +3218,121 @@ async fn a_unit_cancelled_before_its_first_piece_is_freed() {
     assert!(
         r.plane.heads.lock().unwrap().is_empty(),
         "the cancel found the unit `arrive` keyed, and freed it"
+    );
+}
+
+// ── the governed chain's caller reference ────────────────────────────────────────────────────────
+
+/// A driver whose book lends caller references under `slot` (a governed chain), over the double.
+fn governed(slot: busbar_kernel::plane_driver::CallerRefs) -> Rig {
+    let plane = Arc::new(Double::default());
+    let book = Arc::new(cases::Book::default());
+    let driver = PlaneDriver::new(
+        plane.clone(),
+        DriverConfig {
+            caps: BufferCaps::default(),
+            op_classes: vec![OpClassId::new("call")],
+            status_of: refusal_status,
+            refusal_statuses: cases::statuses(),
+            caller_refs: Some(slot),
+        },
+        book.clone(),
+        services(),
+        ("test_plane", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted");
+    Rig {
+        plane,
+        driver,
+        book,
+    }
+}
+
+/// One `/call` unit of the battery's verified principal through `r`: its outcome, and what the far
+/// end was sent.
+async fn verified_call(
+    r: &Rig,
+) -> (
+    busbar_contract::caps::Outcome,
+    Vec<busbar_kernel::plane_driver::OutboundRequest>,
+) {
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/call", b"ping"), 0);
+    let outcome = cases::drive(&units).await;
+    (outcome, far.sent())
+}
+
+/// RED, THE GOVERNED CHAIN NEVER LENDS AN EMPTY CALLER REFERENCE: a plane reads an empty reference
+/// as an ungoverned unit, so on a driver whose book lends references, a verified principal whose
+/// reference cannot be derived (the book holds no key yet) is refused before the plane is lent the
+/// unit: no piece crosses, nothing reaches the far end. Before the fix the unit ran, and every
+/// piece was lent the empty reference.
+#[tokio::test]
+async fn red_a_governed_unit_with_no_caller_reference_is_refused_before_the_plane_runs() {
+    let slot: busbar_kernel::plane_driver::CallerRefs = Arc::default();
+    let r = governed(Arc::clone(&slot));
+    let (outcome, sent) = verified_call(&r).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Verify,
+                busbar_contract::caps::ReasonCode::Unauthenticated
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(r.stats()[stat::ON_PIECES], 0, "no piece crossed");
+    assert!(sent.is_empty(), "nothing reached the far end");
+    assert!(
+        r.plane.caller_refs.lock().unwrap().is_empty(),
+        "no empty caller reference was lent"
+    );
+}
+
+/// The same governed driver, once its book holds a key: the unit runs, and every piece is lent the
+/// principal's own reference under that key (never empty, never the principal).
+#[tokio::test]
+async fn a_governed_unit_is_lent_its_principals_reference_once_the_book_holds_a_key() {
+    let slot: busbar_kernel::plane_driver::CallerRefs = Arc::default();
+    let r = governed(Arc::clone(&slot));
+    let key = busbar_kernel::auth::CallerRefKey::derive(&[7u8; 32]);
+    let expected = key.caller_ref(common::principal().as_str()).into_bytes();
+    *slot.write().unwrap() = Some(Arc::new(key));
+    let (outcome, sent) = verified_call(&r).await;
+    assert!(
+        matches!(outcome, busbar_contract::caps::Outcome::Completed),
+        "{outcome:?}"
+    );
+    assert_eq!(sent.len(), 1, "the unit reached the far end");
+    let lent = r.plane.caller_refs.lock().unwrap().clone();
+    assert!(!lent.is_empty(), "the plane was lent the unit");
+    assert!(
+        lent.iter().all(|l| *l == expected),
+        "every piece carries the principal's own reference: {lent:?}"
+    );
+}
+
+/// An UNGOVERNED driver (no book: it lends no references) still runs a verified unit, every piece
+/// lent the empty reference a plane reads as ungoverned.
+#[tokio::test]
+async fn an_ungoverned_unit_runs_lent_the_empty_reference() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (outcome, sent) = verified_call(&r).await;
+    assert!(
+        matches!(outcome, busbar_contract::caps::Outcome::Completed),
+        "{outcome:?}"
+    );
+    assert_eq!(sent.len(), 1);
+    let lent = r.plane.caller_refs.lock().unwrap().clone();
+    assert!(
+        !lent.is_empty() && lent.iter().all(Vec::is_empty),
+        "{lent:?}"
     );
 }

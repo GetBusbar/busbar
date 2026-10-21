@@ -403,6 +403,19 @@ impl Node {
         let _ = self.book.set(book);
     }
 
+    /// The lane to the configured store the book bound to this node keeps ([`Node::bind_book`]):
+    /// the lane the boot's lease on the host name is held on. `None` before a book is bound, or on
+    /// a book over no store.
+    #[must_use]
+    pub fn book_lane(&self) -> Option<crate::root::durability::JournalLane> {
+        self.book.get().and_then(|book| {
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .lane()
+                .cloned()
+        })
+    }
+
     /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
     /// store keeps up. The book's journal is kept by the configured store and the lane to it is
     /// full: admitting the unit would put records on the chain nothing has room to hold, and a record
@@ -2722,7 +2735,7 @@ impl Sealing {
 }
 
 /// How the plane classed the finish, in the record's own words.
-fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
+pub(crate) fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
     match finish {
         busbar_contract::FinishClass::Complete => RecordFinish::Complete,
         busbar_contract::FinishClass::TurnComplete => RecordFinish::TurnComplete,
@@ -2861,7 +2874,10 @@ fn settling_at<'a>(
 /// The same `card_at` the admin read resolves through (`busbar-core-admin/src/v1/service.rs`). TWO
 /// COPIES OF ONE RULING ARE TWO CHANCES TO GET IT WRONG — this one is written to match rather than to
 /// differ, and #43's end state is the one kernel-side implementation that retires both.
-fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: u64) -> u64 {
+pub(crate) fn card_in_force(
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    arrived_ms: u64,
+) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
         .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
 }

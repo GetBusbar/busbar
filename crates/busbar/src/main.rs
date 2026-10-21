@@ -1157,6 +1157,17 @@ async fn run(
     app_handle.on_apply(Box::new(|app| {
         root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
     }));
+    // Every opened transport instance is refreshed with the applied limits, as boot opened it with
+    // them (`root::doors::refresh_live`): a plugin is a plugin, and every kind's `refresh` slot is
+    // called on an apply. A refresh binds nothing; a listener set change applies on restart.
+    app_handle.on_apply(Box::new(|_| {
+        let refused = root::doors::refresh_live(&root::policy::client_settings(
+            &busbar_kernel::config::limits::installed().unwrap_or_default(),
+        ));
+        for why in refused {
+            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
+        }
+    }));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {

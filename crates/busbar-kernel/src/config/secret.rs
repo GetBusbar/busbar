@@ -389,6 +389,16 @@ pub fn resolve_linked_string(
     SecretResolver::linked_only(linked).resolve_string(secret)
 }
 
+/// The SUGARS the secret plugins of the secret axis the root lent (`linked`) declare in their
+/// Statements (audit contract-admin #10, Law 1): the shorthand each answers to, the settings key its
+/// value lands under and what a refusal says that value names. The kernel reads them here and spells
+/// none; no axis lent, none is declared.
+pub(crate) fn sugars(
+    linked: crate::preflight::LinkedSecrets,
+) -> busbar_contract::secret_ref::Sugars {
+    linked.map(|a| a.sugars()).unwrap_or_default()
+}
+
 /// [`resolve_linked_string`] at CONFIG TIME, with its proof (`--validate`, the config checks, and
 /// the root's program environments, through the secret axis it lends).
 pub fn resolve_linked_string_at_config(
