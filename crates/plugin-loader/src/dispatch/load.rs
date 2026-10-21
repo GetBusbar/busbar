@@ -147,6 +147,14 @@ impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
 }
 
 impl LoadedDoor {
+    /// The door function itself, admitted: what a compiled-in row's tables hold once its door is
+    /// admitted ([`open_linked`]). Holding or handing on a door function is safe; every entry into
+    /// it runs the loader's checks.
+    #[must_use]
+    pub const fn door_fn(self) -> DoorFn {
+        self.door
+    }
+
     /// A door the loader read itself, or a test's or harness's restated door: the one way to a
     /// `LoadedDoor` other than a `MacroDoor`, and `unsafe`.
     ///
@@ -158,6 +166,59 @@ impl LoadedDoor {
     #[must_use]
     pub const unsafe fn from_raw(door: DoorFn) -> Self {
         Self { door }
+    }
+}
+
+/// THE LINKED DOOR'S ONE ENTRY (status row 195; coordinator ruling (a), `BUSBAR-1.6.0.md`
+/// l.272-274: the root is `forbid(unsafe_code)`, and the loader holds the reviewed `unsafe`): a
+/// compiled-in door-root crate's bare `door` (Part 4 A.1, l.3560: its only public item), admitted
+/// exactly as a dropped-in library's door is once `dlsym` has resolved it (Part 2 #2 rule (1):
+/// compiled in = dropped in, one path), and only then a [`LoadedDoor`]. The door function is called
+/// on the loader's FFI worker ([`enter_door`]); its head is read and judged ([`read_door`]: the
+/// magic, the mechanism version, its kind and that kind's ABI version); and the kind's own
+/// [`validate_door`] runs, the one every origin runs: its table against the host's, its Statement
+/// ([`statement`]: the lists, the kind tail, a transport's [`FramePiece`] stride and a plane's
+/// [`ANSWER_LAYOUT`]). A refusal is the same [`LoadError`] the dropped-in door earns, word for word.
+///
+/// # Safety
+///
+/// `door` is the `door` a `plugin_door!` (or a kind's door macro) expanded in a crate this binary
+/// links and the root manifest's `[package.metadata.busbar.door-root]` table names: `'static`
+/// code answering NULL or a `'static` door, as the symbol `dlsym` resolves in a library held open
+/// is. The generated linked table (`crate::linked`, `build.rs`) is the one caller.
+///
+/// # Errors
+///
+/// The refusal the door, its table or its Statement earns.
+pub(crate) unsafe fn open_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
+    validate_any(enter_door(door))?;
+    // SAFETY: the caller's contract (a door-root crate's own door), and the host's own checks just
+    // admitted its door, table and Statement, as `dlsym`'s door is admitted before a dropped plugin
+    // is bound.
+    Ok(unsafe { LoadedDoor::from_raw(door) })
+}
+
+// THE GENERATED DOOR-ROOT TABLE (`build.rs`, `src/linked_gen.rs`): `linked_rows`, each door-root
+// crate this build links, admitted through [`open_linked`] here, beside the `dlopen` path whose
+// checks it shares. `crate::linked` is its one safe reader.
+include!(concat!(env!("OUT_DIR"), "/linked_doors.rs"));
+
+/// [`validate_door`] over the kind the door itself states: the door checks every origin runs,
+/// for a door no caller has asked of one kind.
+pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
+    use super::kinds::{
+        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
+        transport::Transport,
+    };
+    let (_, kind) = read_door(p, None)?;
+    match kind {
+        KindCode::Store => validate_door::<Store>(p),
+        KindCode::Secret => validate_door::<Secret>(p),
+        KindCode::Auth => validate_door::<Auth>(p),
+        KindCode::Hook => validate_door::<Hook>(p),
+        KindCode::Export => validate_door::<Export>(p),
+        KindCode::Plane => validate_door::<Plane>(p),
+        KindCode::Transport => validate_door::<Transport>(p),
     }
 }
 

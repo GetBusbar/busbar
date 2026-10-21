@@ -11,7 +11,7 @@
 
 use busbar_contract::abi::mechanism::door::DoorFn;
 
-use super::{check, declared, stated, store_row, DoorRoot};
+use super::{check, check_statements, declared, stated, store_row, DoorRoot};
 
 /// A door-root row of `door` on `axis`, stating `name` for it where its axis names one.
 fn row(axis: &'static str, door: DoorFn, name: Option<&'static str>) -> DoorRoot {
@@ -33,7 +33,7 @@ fn a_door_root_store_row_states_what_its_store_constant_states() {
         .first()
         .expect("every build links its default store");
     assert_eq!(
-        check(&[row("stores", door, Some(key))]),
+        check_statements(&[row("stores", door, Some(key))]),
         Ok(()),
         "the store's door states itself a store, named its key"
     );
@@ -56,7 +56,7 @@ fn a_door_root_secret_row_boots_off_its_door() {
         .iter()
         .map(|door| row("secret-doors", *door, None))
         .collect();
-    assert_eq!(check(&rows), Ok(()));
+    assert_eq!(check_statements(&rows), Ok(()));
     for (_, door, json) in declared(&rows, "secret-doors") {
         assert_eq!(
             stated(door).expect("it states itself").declares,
@@ -74,7 +74,7 @@ fn a_door_root_transport_row_boots_off_its_door() {
     let (key, door) = *crate::LINKED_TRANSPORT_DOORS
         .first()
         .expect("every build links a transport door");
-    assert_eq!(check(&[row("transport", door, None)]), Ok(()));
+    assert_eq!(check_statements(&[row("transport", door, None)]), Ok(()));
     assert_eq!(stated(door).expect("it states itself").name, key);
 }
 
@@ -89,7 +89,7 @@ fn a_door_root_auth_row_is_named_its_canonical_name() {
         .map(|(_, canonical, door)| row("auths", *door, Some(*canonical)))
         .collect();
     assert!(!rows.is_empty(), "the auth axis is linked");
-    assert_eq!(check(&rows), Ok(()));
+    assert_eq!(check_statements(&rows), Ok(()));
 }
 
 /// GREEN: A DOOR-ROOT EXPORT ROW is the row its crate's `NAME` and `ALIAS` state: its Statement's
@@ -98,7 +98,7 @@ fn a_door_root_auth_row_is_named_its_canonical_name() {
 #[test]
 fn a_door_root_export_row_states_what_its_constants_state() {
     for linked in crate::LINKED.export_doors.iter() {
-        assert_eq!(check(&[row("export-doors", linked.door, None)]), Ok(()));
+        assert_eq!(check_statements(&[row("export-doors", linked.door, None)]), Ok(()));
         let read = super::export_row(linked.door);
         assert_eq!(
             (read.name, read.alias),
@@ -121,7 +121,7 @@ fn a_door_root_hook_row_boots_off_its_door() {
         .map(|door| row("hooks", *door, None))
         .collect();
     assert!(!rows.is_empty(), "the hook axis is linked");
-    assert_eq!(check(&rows), Ok(()));
+    assert_eq!(check_statements(&rows), Ok(()));
 }
 
 /// GREEN: A DOOR-ROOT PLANE DOOR ROW reads its door alone; its `declares`, where its Statement
@@ -135,7 +135,7 @@ fn a_door_root_plane_door_row_boots_off_its_door() {
         .map(|door| row("plane-door", *door, None))
         .collect();
     assert!(!rows.is_empty(), "the plane door axis is linked");
-    assert_eq!(check(&rows), Ok(()));
+    assert_eq!(check_statements(&rows), Ok(()));
     for (_, door, json) in declared(&rows, "plane-door") {
         assert_eq!(stated(door).expect("it states itself").declares, Some(json));
     }
@@ -146,7 +146,7 @@ fn a_door_root_plane_door_row_boots_off_its_door() {
 #[test]
 fn a_door_on_another_kinds_axis_is_refused() {
     let door = crate::LINKED.secrets[0];
-    let refused = check(&[row("stores", door, None)]).expect_err("a secret door is no store");
+    let refused = check_statements(&[row("stores", door, None)]).expect_err("a secret door is no store");
     assert!(
         refused.contains("`stores`") && refused.contains("kind 1") && refused.contains("kind 2"),
         "{refused}"
@@ -158,7 +158,7 @@ fn a_door_on_another_kinds_axis_is_refused() {
 #[test]
 fn a_door_named_otherwise_than_its_row_is_refused() {
     let door = crate::LINKED.stores[0].2;
-    let refused = check(&[row("stores", door, Some("door-root-not-its-name"))])
+    let refused = check_statements(&[row("stores", door, Some("door-root-not-its-name"))])
         .expect_err("the row and the Statement disagree");
     assert!(
         refused.contains("`door-root-not-its-name`")
@@ -172,6 +172,39 @@ fn a_door_named_otherwise_than_its_row_is_refused() {
 #[test]
 fn a_door_root_row_on_a_kernel_typed_axis_is_refused() {
     let door = crate::LINKED.secrets[0];
-    let refused = check(&[row("protocols", door, None)]).expect_err("no door-root axis");
+    let refused = check_statements(&[row("protocols", door, None)]).expect_err("no door-root axis");
     assert!(refused.contains("`protocols`"), "{refused}");
+}
+
+/// GREEN: THIS BUILD'S OWN DOOR-ROOT ROWS boot: each crate's door admitted by the loader
+/// (`open_linked`, the `dlopen` path's checks) and its Statement agreeing with its row.
+#[test]
+fn this_builds_door_root_rows_are_admitted_and_agree_with_their_rows() {
+    let rows = crate::LINKED.door_roots;
+    assert!(!rows.is_empty(), "this build links a door-root crate");
+    assert_eq!(check(rows), Ok(()));
+    for row in rows {
+        assert!(
+            crate::root::loader::linked::linked().contains(&row.row),
+            "`{}` is linked through the loader's door-root table",
+            row.row
+        );
+    }
+}
+
+/// RED: A ROW NAMING A CRATE THE LOADER DOES NOT LINK is refused at boot with the loader's words.
+#[test]
+fn a_door_root_row_the_loader_does_not_link_is_refused() {
+    let door = crate::LINKED.secrets[0];
+    let refused = check(&[DoorRoot {
+        row: "door-root-not-linked",
+        axis: "secret-doors",
+        door,
+        name: None,
+    }])
+    .expect_err("the loader links no such crate");
+    assert!(
+        refused.contains("plugin 'door-root-not-linked'") && refused.contains("no door-root crate"),
+        "{refused}"
+    );
 }

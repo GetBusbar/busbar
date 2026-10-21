@@ -3438,3 +3438,216 @@ fn red_a_slot_whose_counter_is_spent_is_retired() {
         "a retired slot's own generation was judged a forgery"
     );
 }
+
+// ── THE LINKED DOOR-ROOT ENTRY: `open_linked` refuses as the dropped-in door is refused ─────────
+
+/// One restated door for an `open_linked` cell, behind its own door function.
+struct LinkedSlot(std::sync::atomic::AtomicPtr<Door>);
+
+impl LinkedSlot {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()))
+    }
+    fn set(&self, d: Door) {
+        self.0.store(
+            Box::into_raw(Box::new(d)),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+    fn get(&self) -> *const Door {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+static LINKED_ABI: LinkedSlot = LinkedSlot::new();
+static LINKED_PIECE: LinkedSlot = LinkedSlot::new();
+static LINKED_LAYOUT: LinkedSlot = LinkedSlot::new();
+
+/// The door function of linked cell `I`: the kind ABI (0), the piece (1), the plane layout (2).
+extern "C" fn linked_cell<const I: usize>() -> *const Door {
+    [&LINKED_ABI, &LINKED_PIECE, &LINKED_LAYOUT][I].get()
+}
+
+/// A slot that answers READY: a table cell that is never called.
+extern "C" fn ready_slot(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    _: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Ready)
+}
+
+/// The host's table of `K`, every slot filled: a door whose table the loader admits, so its
+/// Statement is what decides.
+fn whole_table<K: Kind>() -> *const busbar_contract::abi::mechanism::lifecycle::OpsHead {
+    use busbar_contract::abi::mechanism::lifecycle::OpsHead;
+    let size = crate::dispatch::host_table_size::<K>();
+    let slots = crate::dispatch::host_slots::<K>();
+    let words: &'static mut [u64] =
+        Box::leak(vec![0u64; (size as usize).div_ceil(8)].into_boxed_slice());
+    let head = words.as_mut_ptr().cast::<OpsHead>();
+    // SAFETY: the buffer is `size` bytes (rounded up) of zeros, 8-aligned, leaked for the process; the
+    // head and every slot lie inside it.
+    unsafe {
+        std::ptr::addr_of_mut!((*head).size).write(size);
+        std::ptr::addr_of_mut!((*head).slots).write(slots);
+        let first = head
+            .cast::<u8>()
+            .add(std::mem::offset_of!(OpsHead, validate))
+            .cast::<Option<busbar_contract::abi::mechanism::call::Op>>();
+        for i in 0..slots as usize {
+            first.add(i).write(Some(
+                ready_slot as busbar_contract::abi::mechanism::call::Op,
+            ));
+        }
+    }
+    head
+}
+
+/// A door of `kind` over the host's whole table of `K` and `statement`.
+fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
+    Door {
+        magic: DOOR_MAGIC,
+        mechanism_version: MECHANISM_VERSION,
+        size: std::mem::size_of::<Door>() as u32,
+        kind: kind as u32,
+        kind_abi: kind.abi_version(),
+        statement: Box::leak(Box::new(statement)),
+        ops: whole_table::<K>(),
+        ready: None,
+    }
+}
+
+/// RED (status row 195, coordinator ruling (a)): A LINKED DOOR-ROOT DOOR AT ANOTHER KIND ABI is
+/// refused by `open_linked` exactly as the same door is refused once `dlsym` has resolved it (the
+/// dropped-in path's own `validate`): the same `KindAbi`, word for word, older and newer alike.
+#[test]
+fn open_linked_refuses_another_kind_abi_as_the_dropped_in_door_is_refused() {
+    let abi = plug::KIND.abi_version();
+    for v in [abi - 1, abi + 1] {
+        // SAFETY: the real door is `'static`.
+        let mut d = unsafe { *plug::busbar_plugin_door() };
+        d.kind_abi = v;
+        LINKED_ABI.set(d);
+        let door: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<0>;
+        // SAFETY: the cell's door function answers a `'static` door (a restated real door).
+        let linked = unsafe { crate::dispatch::load::open_linked(door) }
+            .err()
+            .expect("a linked door at another kind ABI is refused");
+        let dropped = crate::dispatch::load::validate::<TestKind>(door)
+            .err()
+            .expect("the dropped-in door at another kind ABI is refused");
+        assert_eq!(linked, dropped, "the same refusal, both ways");
+        assert_eq!(
+            linked,
+            LoadError::KindAbi {
+                kind: plug::KIND,
+                door: v,
+                host: abi
+            }
+        );
+        assert_eq!(linked.to_string(), dropped.to_string());
+    }
+}
+
+/// RED (status row 195): A LINKED DOOR-ROOT TRANSPORT BUILT AGAINST ANOTHER FRAME PIECE, and a
+/// linked plane built against another answer layout, are refused by `open_linked` exactly as the
+/// dropped-in door is (the same `FramePieceSize` / `PlaneLayout`, word for word). GREEN: the host's
+/// piece and layout are admitted. (Row 188's layout fingerprint joins the same shared check.)
+#[test]
+fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
+    use crate::dispatch::kinds::{plane::Plane, transport::Transport};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
+    use busbar_contract::abi::transport::{Claim, FramePiece, TransportTail};
+    const NAMES: &[AbiStr] = &[busbar_contract::abi::sdk::door::abi_str("tele")];
+    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
+    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
+    let piece_door = |piece: u32| {
+        // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set.
+        let mut t: TransportTail = unsafe { std::mem::zeroed() };
+        t.head.size = std::mem::size_of::<TransportTail>() as u32;
+        t.frame_piece_size = piece;
+        t.claim_rows = row;
+        t.claim_rows_len = 1;
+        let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
+        door_over::<Transport>(
+            KindCode::Transport,
+            Statement {
+                size: std::mem::size_of::<Statement>() as u32,
+                kind: KindCode::Transport as u32,
+                kind_abi: KindCode::Transport.abi_version(),
+                kind_tail: tail,
+                claims: NAMES.as_ptr(),
+                claims_len: NAMES.len(),
+                ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+            },
+        )
+    };
+    let layout_door = |layout: u32| {
+        // SAFETY: an all-zero PlaneTail is a valid value; its size and layout are set.
+        let mut t: PlaneTail = unsafe { std::mem::zeroed() };
+        t.head.size = std::mem::size_of::<PlaneTail>() as u32;
+        t.answer_layout = layout;
+        let tail = (Box::leak(Box::new(t)) as *const PlaneTail).cast::<KindTailHead>();
+        door_over::<Plane>(
+            KindCode::Plane,
+            Statement {
+                size: std::mem::size_of::<Statement>() as u32,
+                kind: KindCode::Plane as u32,
+                kind_abi: KindCode::Plane.abi_version(),
+                kind_tail: tail,
+                ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
+            },
+        )
+    };
+    let piece = std::mem::size_of::<FramePiece>() as u32;
+    let piece_cell: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<1>;
+    let layout_cell: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<2>;
+
+    // GREEN: the host's piece and layout are admitted.
+    LINKED_PIECE.set(piece_door(piece));
+    // SAFETY: the cell answers a `'static` door built above.
+    assert!(unsafe { crate::dispatch::load::open_linked(piece_cell) }.is_ok());
+    LINKED_LAYOUT.set(layout_door(ANSWER_LAYOUT));
+    // SAFETY: as above.
+    assert!(unsafe { crate::dispatch::load::open_linked(layout_cell) }.is_ok());
+
+    // RED: another piece, refused as the dropped-in transport is.
+    LINKED_PIECE.set(piece_door(piece - 8));
+    // SAFETY: as above.
+    let linked = unsafe { crate::dispatch::load::open_linked(piece_cell) }
+        .err()
+        .expect("a linked transport at another piece is refused");
+    let dropped = crate::dispatch::load::validate::<Transport>(piece_cell)
+        .err()
+        .expect("the dropped-in transport at another piece is refused");
+    assert_eq!(linked, dropped, "the same refusal, both ways");
+    assert_eq!(
+        linked,
+        LoadError::FramePieceSize {
+            plugin: "sockets".into(),
+            stated: piece - 8,
+            host: piece,
+        }
+    );
+
+    // RED: another answer layout, refused as the dropped-in plane is.
+    LINKED_LAYOUT.set(layout_door(ANSWER_LAYOUT + 1));
+    // SAFETY: as above.
+    let linked = unsafe { crate::dispatch::load::open_linked(layout_cell) }
+        .err()
+        .expect("a linked plane at another layout is refused");
+    let dropped = crate::dispatch::load::validate::<Plane>(layout_cell)
+        .err()
+        .expect("the dropped-in plane at another layout is refused");
+    assert_eq!(linked, dropped, "the same refusal, both ways");
+    assert_eq!(
+        linked,
+        LoadError::PlaneLayout {
+            plugin: "tools".into(),
+            stated: ANSWER_LAYOUT + 1,
+            host: ANSWER_LAYOUT,
+        }
+    );
+}

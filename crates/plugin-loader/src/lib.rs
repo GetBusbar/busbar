@@ -124,6 +124,8 @@ impl LinkedPlugin {
     }
 }
 
+/// The linked door-root doors (status row 195): each admitted once, read safely.
+pub mod linked;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use registry::{

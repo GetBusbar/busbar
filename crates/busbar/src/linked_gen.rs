@@ -171,13 +171,74 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 }
 
 /// THE DOOR-ROOT TABLE (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic
-/// crate has `fn door()` as its only public item): `<plugin crate> = "<its door>"`. A crate named
-/// here is DOOR-ROOT: its rows read that `door` and nothing else of the crate's, and every fact their
-/// axes need comes off the door's Statement (`crate::root::door_root`). A crate not named here is
-/// TRANSITIONAL and keeps its entry's reads (`linked-entry`, else `<crate>::linked`), so a fleet that
-/// has not converged still links; the transitional arm is deleted once every crate is named here.
-/// The table is per crate, so the two arms mix row by row.
+/// crate has `fn door()` as its only public item): `<plugin crate> = "<its door>"`, in the LOADER's
+/// manifest (`crates/plugin-loader/Cargo.toml`, which holds the crates' edges behind
+/// `linked-<crate>`; `build.rs` appends the table to the manifest it hands this generator). A crate
+/// named there is DOOR-ROOT: the root names nothing of it, and each of its rows reads the door the
+/// loader admitted (`busbar_plugin_loader::linked::door`, through a generated forwarder, see
+/// [`door_root_forwarder`]) and every fact its axis needs off that door's Statement
+/// (`crate::root::door_root`). A crate not named there is TRANSITIONAL and keeps its entry's reads
+/// (`linked-entry`, else `<crate>::linked`), so a fleet that has not converged still links; the
+/// transitional arm is deleted once every crate is named there. The table is per crate, so the two
+/// arms mix row by row. Coordinator ruling (a), BUSBAR-1.6.0.md l.272-274: the root stays
+/// `forbid(unsafe_code)`; the loader holds the one `unsafe` entry.
 pub(crate) const DOOR_ROOT: &str = "package.metadata.busbar.door-root";
+
+/// The loader's feature a door-root crate links under (`busbar-plugin-loader/linked-<crate>`).
+pub(crate) fn loader_feature(krate: &str) -> String {
+    format!("linked-{krate}")
+}
+
+/// The features the manifest's `[dependencies]` edge on `busbar-plugin-loader` turns on: a
+/// door-root crate whose `linked-<crate>` is among them is linked in every build.
+pub(crate) fn loader_features(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[dependencies]";
+            continue;
+        }
+        if let (true, Some((krate, spec))) = (in_table, code.split_once('=')) {
+            if krate.trim() != "busbar-plugin-loader" {
+                continue;
+            }
+            let Some((_, list)) = spec.split_once("features") else {
+                return Vec::new();
+            };
+            let list = list.split('[').nth(1).unwrap_or("");
+            let list = list.split(']').next().unwrap_or("");
+            return list
+                .split(',')
+                .map(|f| f.trim().trim_matches('"').to_string())
+                .filter(|f| !f.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// The name of the generated forwarder of door-root crate `krate`'s door.
+pub(crate) fn door_root_fn(krate: &str) -> String {
+    format!("__door_root_{}", ident(krate))
+}
+
+/// A DOOR-ROOT CRATE'S DOOR, as the generated tables hold it: a door function of the root's own that
+/// answers the door the loader admitted (`busbar_plugin_loader::linked::door`: the crate's `door`
+/// through `open_linked`, sharing the `dlopen` path's checks) and NULL where the loader refused it
+/// (the boot refuses that row first, with the loader's words: `crate::root::door_root::check`).
+/// Calling a door function is safe; so is this one, and the root names nothing of the crate.
+pub(crate) fn door_root_forwarder(krate: &str) -> String {
+    format!(
+        "/// The door of door-root crate `{krate}`, as the loader admitted it.\n\
+         #[allow(dead_code)]\n\
+         extern \"C\" fn {name}() -> *const ::busbar_contract::abi::mechanism::door::Door {{\n    \
+         ::busbar_plugin_loader::linked::door({krate:?})\n        \
+         .map_or(::std::ptr::null(), |door| (door.door_fn())())\n\
+         }}\n",
+        name = door_root_fn(krate)
+    )
+}
 
 /// THE AXES A DOOR-ROOT ROW MAY REGISTER ON: each reads the row's `door` and what its Statement
 /// states. Every other axis reads a kernel-typed item of the crate's (`PLANE_HOOKS`, `PROTOCOLS`,
@@ -224,13 +285,18 @@ pub(crate) fn metadata_rows(manifest: &str, table: &str) -> Vec<(String, String)
     rows
 }
 
-/// THE DOOR A LINKED ROW READS, and whether the row is door-root: the `door-root` table's door for
-/// `krate`, else `<entry>::door` (`entry` the row's transitional entry module).
+/// THE DOOR A LINKED ROW READS, and whether the row is door-root: a door-root crate's generated
+/// forwarder (`crate::<door_root_fn>`), else `<entry>::door` (`entry` the row's transitional entry
+/// module).
 pub(crate) fn door_of(manifest: &str, krate: &str, entry: &str) -> (String, bool) {
-    metadata_rows(manifest, DOOR_ROOT)
-        .into_iter()
-        .find(|(k, _)| k == krate)
-        .map_or_else(|| (format!("{entry}::door"), false), |(_, door)| (door, true))
+    if metadata_rows(manifest, DOOR_ROOT)
+        .iter()
+        .any(|(k, _)| k == krate)
+    {
+        (format!("crate::{}", door_root_fn(krate)), true)
+    } else {
+        (format!("{entry}::door"), false)
+    }
 }
 
 /// A DOOR-ROOT ROW'S MANIFEST CHECKS: it names only axes that read its door
@@ -253,6 +319,27 @@ pub(crate) fn check_door_root(manifest: &str, feature: &str, krate: &str, axes: 
             "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): `[{table}]` names an item of              the crate's beside its `door`; what it would read is the door's Statement's"
         );
     }
+}
+
+/// `manifest` with the loader manifest's `[package.metadata.busbar.door-root]` table appended (the
+/// table and nothing else of the loader's), so the generators read the door-root crates beside the
+/// root's own tables. A root manifest that states a door-root table of its own is refused: the
+/// table has one home.
+pub(crate) fn with_door_root_table(manifest: &str, loader: &str) -> String {
+    let header = format!("[{DOOR_ROOT}]");
+    assert!(
+        !manifest
+            .lines()
+            .any(|l| l.split('#').next().unwrap_or("").trim() == header),
+        "Cargo.toml: `{header}` lives in crates/plugin-loader/Cargo.toml, beside the crates' edges"
+    );
+    let rows = metadata_rows(loader, DOOR_ROOT);
+    let mut out = manifest.to_string();
+    out.push_str(&format!("\n{header}\n"));
+    for (krate, door) in rows {
+        out.push_str(&format!("{krate:?} = {door:?}\n"));
+    }
+    out
 }
 
 /// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
@@ -375,8 +462,15 @@ pub(crate) fn linked_source(
     let units = metadata_map(manifest, "package.metadata.busbar.root-units");
     // A row is linked when its feature is on — or always, when its crate is an edge no feature can
     // drop. Anything else would be a row no build ever links, dropped silently.
+    // A door-root crate's edge is the loader's: it is linked in every build when the root's loader
+    // edge turns its `linked-<crate>` feature on.
+    let door_root_rows = metadata_rows(manifest, DOOR_ROOT);
+    let loader_on = loader_features(manifest);
     let always = |key: &str, krate: &str| {
-        !features.iter().any(|f| f == key) && required.iter().any(|d| d == krate)
+        !features.iter().any(|f| f == key)
+            && (required.iter().any(|d| d == krate)
+                || (door_root_rows.iter().any(|(k, _)| k == krate)
+                    && loader_on.contains(&loader_feature(krate))))
     };
     for (feature, krate) in &plugins {
         assert!(
@@ -444,6 +538,16 @@ pub(crate) fn linked_source(
         String::from("// @generated by build.rs from Cargo.toml metadata (src/linked_gen.rs).\n");
     let mut externs: Vec<String> = Vec::new();
     for (_, krate) in &on {
+        // A door-root crate is the loader's edge: the root names it nowhere, and holds its door
+        // through a generated forwarder instead.
+        if door_root_rows.iter().any(|(k, _)| k == krate) {
+            let line = door_root_forwarder(krate);
+            if !externs.contains(&line) {
+                out.push_str(&line);
+                externs.push(line);
+            }
+            continue;
+        }
         let line = format!("extern crate {} as _;\n", ident(krate));
         if !externs.contains(&line) {
             out.push_str(&line);

@@ -60,7 +60,7 @@ static READ: Mutex<Vec<(usize, &'static Stated)>> = Mutex::new(Vec::new());
 /// The loader refuses the door or its Statement, its rendering does not read back, or its
 /// `declares` document is not UTF-8.
 pub fn stated(door: DoorFn) -> Result<&'static Stated, String> {
-    let at = door as usize;
+    let at = door as *const () as usize;
     if let Some((_, stated)) = READ
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -144,14 +144,29 @@ fn kind_of(axis: &str) -> Option<KindCode> {
     })
 }
 
-/// THE BOOT'S CHECK OF EVERY DOOR-ROOT ROW: each door's Statement is read, and it must be the kind
-/// its axis registers, state the name its row states, and state what its axis reads (a transport
-/// its own claim as its name, an export its alias).
+/// THE BOOT'S CHECK OF EVERY DOOR-ROOT ROW: its crate's door admitted by the loader
+/// (`busbar_plugin_loader::linked::door`: `open_linked`, the `dlopen` path's own checks, and the
+/// same refusal word for word), then [`check_statements`].
+///
+/// # Errors
+///
+/// The first row the loader refuses, with the loader's refusal, or [`check_statements`]' refusal.
+pub fn check(rows: &[DoorRoot]) -> Result<(), String> {
+    for row in rows {
+        crate::root::loader::linked::door(row.row)
+            .map_err(|e| format!("plugin '{}': {e}", row.row))?;
+    }
+    check_statements(rows)
+}
+
+/// EACH DOOR-ROOT ROW'S DOOR AGAINST ITS ROW: each door's Statement is read, and it must be the
+/// kind its axis registers, state the name its row states, and state what its axis reads (a
+/// transport its own claim as its name, an export its alias).
 ///
 /// # Errors
 ///
 /// The first row whose door is refused or whose Statement disagrees with its row, naming both.
-pub fn check(rows: &[DoorRoot]) -> Result<(), String> {
+pub fn check_statements(rows: &[DoorRoot]) -> Result<(), String> {
     for row in rows {
         let stated = stated(row.door).map_err(|e| format!("plugin '{}': {e}", row.row))?;
         let want = kind_of(row.axis).ok_or_else(|| {
