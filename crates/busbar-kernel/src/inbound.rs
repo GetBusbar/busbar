@@ -43,7 +43,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
+use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
     UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_CHECK_FAILED, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE,
     REFUSE_OVER_GATE, REFUSE_STOPPED,
@@ -93,6 +93,14 @@ pub const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
 /// The refusal text of a listener table whose line ids break the ref-id space's rule.
 pub const IDS_REFUSED: &str =
     "a line's handle id is 0, carries the binding bit, repeats, or the ids do not cover the lines";
+
+/// THE REFUSAL OF A LISTENER TABLE WHOSE SIZE GATE IS 0 while a line holds the body point: 1.5.5
+/// refused a request-body limit below its floor at config load, 0 included
+/// (`crates/busbar/src/config_validate/mod.rs:1440-1445` at v1.5.5), and this is that refusal's
+/// text for 0. A body-point line is never lent a 0 limit (`check::check_lines`).
+pub const BODY_LIMIT_ZERO: &str =
+    "limits.request_body_max_bytes (0) is below the 65536-byte floor \
+     — too small to admit a minimal request";
 
 /// The top bit of the ref-id space: every outbound binding's handle id carries it and no inbound
 /// line's does (the loader's `auth_handle::RefSpace`; one rule both ways, #74).
@@ -421,7 +429,12 @@ impl Listener {
         (0u32..)
             .zip(self.guests.lines().iter().zip(&self.ids))
             .map(|(i, (l, id))| {
-                let points = l.auth.points().bits();
+                // The body point includes the head (THE DESIGN §6 item 1): a line whose chain
+                // needs both is lent the body point alone, a set the line table accepts.
+                let mut points = l.auth.points().bits();
+                if points & POINT_HEAD_BODY != 0 {
+                    points &= !POINT_HEAD;
+                }
                 LineSpec {
                     line: i,
                     auth: *id,
@@ -945,6 +958,15 @@ impl Inbound {
         listener: Listener,
     ) -> Result<(), &'static str> {
         let lines = listener.guests.lines().len();
+        if listener.body_limit == 0
+            && listener
+                .guests
+                .lines()
+                .iter()
+                .any(|l| l.auth.points().has(AuthPoint::HeadBody))
+        {
+            return Err(BODY_LIMIT_ZERO);
+        }
         let lines_by_id: HashMap<u64, u32> = listener.ids.iter().copied().zip(0u32..).collect();
         if listener.ids.len() != lines
             || lines_by_id.len() != lines
@@ -1365,7 +1387,12 @@ impl Inbound {
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
                 };
-                if !calls.inbound_points().has(point) {
+                // The body point includes the head: an auth that needs the head is answered there
+                // too, on a line lent the body point alone.
+                let needs = calls.inbound_points();
+                if !needs.has(point)
+                    && !(point == AuthPoint::HeadBody && needs.has(AuthPoint::Head))
+                {
                     continue;
                 }
                 let unit_id = match target {
