@@ -27,7 +27,7 @@ use std::sync::Arc;
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hooks::TransformOutcome;
 
-use super::super::{FarEnd, PlaneUnits};
+use super::super::{DriverSteps, FarEnd, PlaneUnits};
 use super::{veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
@@ -69,7 +69,7 @@ pub struct GatedHooks {
 }
 
 /// The CURRENT generation's engine host, read per unit (a config apply replaces it).
-pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane_host::EngineHost> + Send + Sync>;
+pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane_driver::EngineHost> + Send + Sync>;
 
 /// A governance key lookup by the principal the kernel verified.
 pub type PrincipalKeys =
@@ -85,6 +85,9 @@ pub struct HostGatedHooks {
     pub plane_key: String,
     /// The caller's governance key, by the principal the kernel verified.
     pub keys: PrincipalKeys,
+    /// The plane's dialect names, in its tail's order: the label an in-session hook of the unit is
+    /// told (its `ingress_protocol`) and the op its access amendment records, as at the screen.
+    pub dialects: Vec<String>,
 }
 
 impl HookBinder for HostGatedHooks {
@@ -94,6 +97,13 @@ impl HookBinder for HostGatedHooks {
 
     fn order(&self) -> HookOrder {
         HookOrder::Gated
+    }
+
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn bind_gated(&self, container: &str, principal: Option<&str>) -> Option<GatedHooks> {
@@ -115,7 +125,7 @@ impl HookBinder for HostGatedHooks {
     }
 }
 
-impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
     /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
@@ -130,7 +140,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         };
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
-        let Some(entry) = bound_entry(recorded.as_deref(), route, &view)? else {
+        let holds = |pool: &[u8], member: &str| self.steps.pool_holds(pool, member);
+        let Some(entry) = bound_entry(recorded.as_deref(), route, &view, holds)? else {
             return Ok(());
         };
         let entry = entry.to_string();
@@ -142,10 +153,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
         if !hooks.gates.is_empty() {
-            let projected = view.projected.clone().unwrap_or_default();
             let now_ms = crate::store::now_ms();
             let door = DoorSubject {
-                projected: &projected,
+                // The plane's own body, or none: a gate granted the content never screens an
+                // absent body as empty content (`decide_door`, audit Q128 p15#3).
+                projected: view.projected.as_deref(),
                 container: &view.pool,
                 dialect: &view.dialect,
                 request_id: hooks.request_id,
@@ -156,6 +168,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     generation: s.generation,
                     now_ms,
                 }),
+                // THE DESIGN Appendix B.9 l.5436-5437: the hook view's plane-derived fields.
+                plane: crate::hooks::gate::DoorShape {
+                    max_tokens: view.max_tokens,
+                    stream: view.stream,
+                    end_user: view.end_user.as_deref(),
+                },
             };
             if let GateVerdict::Reject {
                 status,
@@ -227,7 +245,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 ///
 /// - a unit routed over a POOL (`ROUTE_POOL`, a pool named) recorded the pool, and hooks are
 ///   attached to its members: the entry is the member the plane's projection names, as 1.5.5
-///   bound its hooks;
+///   bound its hooks, admitted only when it is a member of the recorded pool (`holds`, the
+///   generation's own record of the pool's members); any other entry, the empty one included,
+///   refuses the unit (THE DESIGN §1 l.183-187: the hook gate applies to every plane the same
+///   way);
 /// - a projection that names no entry and states no body (a task's continuation, whose call was
 ///   screened at the unit that created the task) has nothing for a gate to screen: `None`, nothing
 ///   is bound.
@@ -235,12 +256,16 @@ fn bound_entry<'v>(
     recorded: Option<&'v [u8]>,
     route: u8,
     view: &'v Projection,
+    holds: impl Fn(&[u8], &str) -> bool,
 ) -> Result<Option<&'v str>, Stopped> {
     if view.pool.is_empty() && view.projected.is_none() {
         return Ok(None);
     }
     let recorded = recorded.unwrap_or_default();
     if route == busbar_contract::abi::plane::ROUTE_POOL && !recorded.is_empty() {
+        if view.pool.is_empty() || !holds(recorded, view.pool.as_str()) {
+            return Err(Stopped::Unreadable);
+        }
         return Ok(Some(&view.pool));
     }
     if recorded != view.pool.as_bytes() {
@@ -257,7 +282,7 @@ fn bound_entry<'v>(
 /// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words, never clamped to a 4xx.
 ///
 /// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
-fn rewrite_refusal(status: u16, message: &str) -> (u16, String) {
+pub(super) fn rewrite_refusal(status: u16, message: &str) -> (u16, String) {
     use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
     if status == REQUIRED_HOOK_UNAVAILABLE_STATUS && message == REQUIRED_HOOK_UNAVAILABLE_MESSAGE {
         return (status, message.to_string());

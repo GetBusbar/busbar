@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): ONE long-lived program connection
+//! MEMBER PROGRAMS (ARCHITECT round 5 Q-L3B-PROGRAM (A)): ONE long-lived program connection
 //! per (instance, need, member), for a need whose `target_from` is the member-program path
 //! (`busbar_contract::section::MEMBER_PROGRAM`). Each member's program is spawned on the first open
 //! that names it ([`Member::lease`]) and kept: every later open on the member is a LEASE on the
@@ -21,11 +21,11 @@
 //!   interleave part of one message with another's.
 //! * Closing a lease leaves the program running. A program that ends (its output closed, a failed
 //!   pipe, or found exited when a lease opens) ends every lease of its generation, and the next
-//!   open spawns it anew: the next generation. A program that keeps ending is restarted under
-//!   backoff and stopped after a burst of ends by THE CARRIER that runs it (THE DESIGN §2 l.388:
-//!   the program's supervisor is its carrier transport's): each spawn names the member's
-//!   supervision key (`DialIn::supervision_key`), and a dial the carrier's policy holds down is
-//!   REFUSED, so a binary that always fails becomes a refusal, not a fork loop.
+//!   open spawns it anew: the next generation. WHETHER IT MAY BE SPAWNED AGAIN IS NOT DECIDED
+//!   HERE: the supervisor of a spawned program is its carrier's (`BUSBAR-1.6.0.md` l.388). Every
+//!   spawn is a `dial` carrying the member's supervision key (`DialIn::supervision_key`), and the
+//!   carrier's verdict on it (spawned, or refused while it holds the program down) is the open's
+//!   answer. The host keeps only the spawn's hygiene ([`Connection::spawn`], `hostio`).
 //! * A member RETIRED by a re-declaration (its registration gone, or its program changed) admits
 //!   no new lease; its program is killed once its last lease closes (at once when it has none).
 
@@ -175,8 +175,8 @@ impl State {
     }
 
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
-    /// killed and every lease of its generation ends. The carrier counts the end toward the
-    /// member's restart policy (it finds the program ended when its connection is shut).
+    /// killed and every lease of its generation ends. The end is the carrier's to count (its
+    /// supervisor saw the program's output close, or finds it ended at the `shut`).
     fn ended(&mut self, generation: u64, failure: Option<Failure>, fan: &Fan) {
         if self
             .live
@@ -267,8 +267,9 @@ impl Member {
     }
 
     /// A LEASE on the member's program: spawned first when none runs (a new generation; one found
-    /// exited is ended first), refused for a retired member and while the restart policy holds the
-    /// program down. `first` (when not empty) is the lease's first message, written whole.
+    /// exited is ended first), refused for a retired member, and refused when the carrier refuses
+    /// the spawn (its supervisor holding the program down is the carrier's verdict, not this
+    /// host's). `first` (when not empty) is the lease's first message, written whole.
     pub(crate) fn lease(&self, first: &[u8]) -> Result<u64, ConnError> {
         let mut st = self.lock();
         if st.retired {
@@ -284,7 +285,6 @@ impl Member {
             st.ended(generation, None, &self.fan);
         }
         if st.live.is_none() {
-            // THE CARRIER holds a program that keeps ending down: its dial is REFUSED.
             let dial = Dial {
                 target: self.program.command.clone(),
                 tls: None,
@@ -307,7 +307,6 @@ impl Member {
                     st.live = Some(Live { conn, generation });
                     st.mid_frame = false;
                 }
-                // A spawn that fails is counted like any end, by the carrier.
                 Err(f) => return Err(map(&f)),
             }
         }

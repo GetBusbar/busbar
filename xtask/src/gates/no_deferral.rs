@@ -343,6 +343,39 @@ fn markers_in(rel: &str, text: &str) -> Vec<String> {
     out
 }
 
+/// [`markers_in`]'s answer for one file, MEMOISED ON ITS PATH AND BYTES.
+///
+/// The gate lexed every discovered file (all of `crates/**/src`, some 40 MB) on every run, and a
+/// self-test case is a run over a tree one planted file away from the last: both batteries paid the
+/// whole tree's lex once per case, and went over their work-unit budgets doing it (`no-deferral`
+/// 10 189 of 9 000, `no-deferral-strict-done` 11 258 of 9 462, ModernCI 2026-10-18). The markers
+/// are a pure function of `(path, bytes)` — the path is part of every `file:line` they carry — so
+/// every case after the first lexes only what it planted, and the reconciliation against the
+/// waivers is still taken fresh on every run.
+fn markers_memo(rel: &str, text: &str) -> std::sync::Arc<Vec<String>> {
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cell = Arc<OnceLock<Arc<Vec<String>>>>;
+    type Memo = Mutex<std::collections::BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    (rel, text).hash(&mut a);
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    (text.len(), rel, text).hash(&mut b);
+    0xdef_u32.hash(&mut b);
+    let key = (text.len(), a.finish(), b.finish());
+    // The cell is handed out under the lock and FILLED OUTSIDE it, so concurrent cases that need the
+    // same file take one lex between them instead of one each.
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| Arc::new(markers_in(rel, text))).clone()
+}
+
 // ── DISCOVERY ────────────────────────────────────────────────────────────────────────────────────
 
 /// The walk discovery takes; the tracked set it is reconciled against is cut by the same spec.
@@ -823,7 +856,7 @@ impl Gate for NoDeferralGate {
         // (2) SCAN, then reconcile BOTH WAYS.
         let mut markers: Vec<String> = Vec::new();
         for (rel, text) in &files {
-            markers.extend(markers_in(rel, text));
+            markers.extend(markers_memo(rel, text).iter().cloned());
         }
 
         let mut unwaived: Vec<String> = Vec::new();
@@ -883,7 +916,7 @@ impl Gate for NoDeferralGate {
         // The expiry every planted waiver names: the one the committed `hot/*` rows retire against,
         // read off the allowlist rather than typed here, so a re-pointed plan cannot leave these
         // plants naming an item that is gone (they named tracker row `H5` for as long as it lived).
-        let live = hot_expiry(base).unwrap_or_else(|| "KP-36".to_string());
+        let live = live_expiry(base);
 
         report.push(prove_green(
             base,
@@ -1078,12 +1111,25 @@ impl Gate for NoDeferralGate {
                 &["not an item in", id],
             ));
         }
-        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Close the TODO item every `hot/*` waiver names
-        //    while the 52 markers stay; before this case the closed row still "resolved" and the
-        //    waivers could never expire.
+        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Close the TODO item a waiver names while the
+        //    waiver stays; before this case the closed row still "resolved" and the waivers could
+        //    never expire.
+        //
+        //    THE PLANT WRITES ITS OWN WAIVER ROW. It used to close the item the COMMITTED `hot/*`
+        //    waivers named and lean on those rows to expire; when the last of them was struck
+        //    (3d5638a58e) the register was empty, closing the item expired nothing, and the case
+        //    went GREEN — a proof that had quietly become a no-op. The row is now part of the
+        //    plant, naming the same open item the plant closes, so the predicate it proves (a
+        //    waiver whose expiry is closed is EXPIRED) holds over any register, empty included.
         match close_todo_item(&base.read(TODO).unwrap_or_default(), &live) {
             Some(closed) => {
-                let mut ov = Overlay::new();
+                let mut ov = waivers_overlay(
+                    base,
+                    &format!(
+                        "crates/busbar-contract/src/abi/hot/xtask_expired_plant.rs:1\ta planted \
+                         waiver whose expiry the plant closes [retires: {live}]"
+                    ),
+                );
                 ov.set(TODO, closed);
                 report.push(prove_red(
                     base,
@@ -1184,6 +1230,24 @@ impl Gate for NoDeferralGate {
 }
 
 /// The expiry the first committed `*/hot/*` waiver names — the id every planted waiver reuses.
+/// The expiry every planted waiver names: the committed `hot/*` rows' own, while one is open in
+/// the TODO, else the first OPEN `KP-<step>` the TODO carries (`KP-36` first, the step those rows
+/// retired against). Derived from the tree rather than typed, so a plant never names an item that
+/// is gone or already closed — a closed one would make every expiry plant red for the wrong reason
+/// and the expired-waiver plant inert.
+fn live_expiry(cx: &Ctx) -> String {
+    let todo = cx.read(TODO).unwrap_or_default();
+    let open = |id: &String| todo_item_open(&todo, id) == Some(true);
+    hot_expiry(cx)
+        .filter(open)
+        .or_else(|| {
+            std::iter::once("KP-36".to_string())
+                .chain((0..1000).map(|n| format!("KP-{n}")))
+                .find(open)
+        })
+        .unwrap_or_else(|| "KP-36".to_string())
+}
+
 fn hot_expiry(cx: &Ctx) -> Option<String> {
     let text = cx.read(WAIVERS).ok()?;
     text.lines()
@@ -1419,7 +1483,8 @@ fn decolour(line: &str) -> String {
 
 #[cfg(test)]
 mod todo_expiry_tests {
-    use super::{close_todo_item, todo_item_open};
+    use super::{close_todo_item, discover, markers_in, markers_memo, todo_item_open};
+    use crate::ctx::{Ctx, Overlay};
 
     /// A TODO in the committed shape: numbered items before and after the KERNEL<>PLUGINS table,
     /// whose step numbers overlap theirs, plus an `ITEM <n>` heading.
@@ -1447,6 +1512,46 @@ mod todo_expiry_tests {
 ## ITEM 572 — `oauth-as` 0.9.3 → 1.0.0
 ## ~~ITEM 573~~ — struck
 ";
+
+    /// THE MEMOISED MARKERS ARE THE FULL LEX'S, on the real tree and on planted ones: every
+    /// discovered file's markers through the memo (cold, then warm) equal [`markers_in`] over the
+    /// same bytes, and a planted file whose bytes change after the real tree filled the memo is
+    /// lexed fresh — under the same path, so a memo keyed on the path alone would answer wrong.
+    #[test]
+    fn the_memoised_markers_are_the_full_lex_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let real = discover(&base).expect("discovery reads the real tree");
+        let (rel, text) = real.last().cloned().expect("discovery found a file");
+        let planted = |extra: &str| {
+            let mut ov = Overlay::new();
+            ov.set(&rel, format!("{text}{extra}"));
+            ov
+        };
+        let plants = [
+            Overlay::new(),
+            planted("\npub fn planted() -> u8 { todo!() }\n"),
+            planted("\n// FIXME: a second planted marker\npub fn other() -> u8 { 1 }\n"),
+        ];
+        let mut any = 0usize;
+        for (i, ov) in plants.into_iter().enumerate() {
+            let cx = base.with_overlay(ov);
+            for (path, body) in discover(&cx).expect("discovery reads the planted tree") {
+                let full = markers_in(&path, &body);
+                any += full.len();
+                assert_eq!(
+                    *markers_memo(&path, &body),
+                    full,
+                    "plant {i}: {path} (cold)"
+                );
+                assert_eq!(
+                    *markers_memo(&path, &body),
+                    full,
+                    "plant {i}: {path} (warm)"
+                );
+            }
+        }
+        assert!(any > 0, "no marker anywhere, so nothing was compared");
+    }
 
     #[test]
     fn kp_steps_resolve_inside_their_section_only() {
