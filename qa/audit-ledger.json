@@ -448,7 +448,7 @@
    "paths": [
     "crates/busbar-auth-oauth/src"
    ],
-   "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
+   "tree_hash": "23c1a147d9910f05c220b49a99737683dd716fed4f925642fb41be2684776b07",
    "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
    "round": 4,
    "result": "findings",
@@ -460,7 +460,7 @@
    },
    "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully.",
    "auditor": "opus-r159c-auth-reread",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-auth-oauth/src/tests"
    ],
@@ -529,7 +529,7 @@
    "paths": [
     "crates/busbar-auth-oidc/src"
    ],
-   "tree_hash": "35f49e87657b9215714cd3b4211d6c158fe7367de51ee04768eb45c3442937a1",
+   "tree_hash": "2b461e80edefc8b9e0cd7496cfe2fd6094fec44cc1e1999e40e6d0967cb2510a",
    "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
    "round": 1,
    "result": "findings",
@@ -541,7 +541,7 @@
    },
    "report": "The scope is the OIDC auth plugin: it checks a caller's bearer JWT against the identity provider's published key set (RS256/ES256 on ring, alg-confusion, crit and enc-key guards, exact issuer/audience with the azp rule, exp/nbf with skew, a fail-closed clock floor), turns the role claim into the principal's roles, keeps its own verdict cache that is flushed on refresh, and runs browser login (authorize URL, its own code-for-token exchange with the lent client secret, nonce binding, id_token verification). All of its I/O goes through the host connector over declared operator-infrastructure needs, as sans-IO single-flight fetches with refresh-ahead on tick. The verification logic, key-set caching and login flow hold up. The main gap is that the plugin's verify never names the credential line it consumes (it declares no carrier and returns no strip names), even though the locked auth-points rule says every auth called names its credential lines whatever its verdict. Today the kernel strips the bearer carriers itself, so no plane sees the token, but that relies on the kernel naming the line, which the same rule forbids. Smaller issues: the plugin writes identity bytes into the host's buffers before it knows they fit, against the short-buffer rule (and duplicates the SDK's one identity writer), and a stale doc comment says there is no driver ticket when the plugin's tick and drive use one. Read fully.",
    "auditor": "opus-q128-auth-oidc-src-a",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-auth-oidc/src/tests"
    ],
@@ -568,7 +568,7 @@
    "paths": [
     "crates/busbar-auth-sigv4/src"
    ],
-   "tree_hash": "9442ed04f284c0978d2c83757635aeebe319e77fef3eadcf192f977415d7a4ae",
+   "tree_hash": "6b6626cdd0fe84201676fb30101620f653e7748472ea4f60527c5cd84fbd4adb",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -580,7 +580,7 @@
    },
    "report": "The SigV4 plugin signs the walked request's method, query and sent content type, re-encodes the path, keeps its day keys ahead of midnight and verifies inbound signatures in constant time with the dummy-secret rule; its secret is now held in a private redacting, wiping holder. It still carries its own raw-pointer boundary where an auth plugin must forbid unsafe code, and a per-thread static holds its reply storage. The outbound query is sorted but never re-encoded to the canonical form, and HMAC key state derived from the secret is freed unwiped. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-auth-sigv4/src/tests"
    ],
@@ -993,7 +993,7 @@
    "paths": [
     "crates/busbar-export-otlp/src"
    ],
-   "tree_hash": "52dc9a1cb3a7598643e120b5143ca8f1d0e29a39350ca2b643ee707d09f87bcd",
+   "tree_hash": "bb2c4ae2cba777d81e45e8ef2c3afb5bd1df110b02b2427b011dcdd0dfab0f95",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -1005,7 +1005,7 @@
    },
    "report": "The trace sink opens no socket: it encodes each traces batch as one OTLP protobuf request, sends it through the host's framed exchange on a loopback-allowed need, parks across pending turns, never retries, never fails the request, carries no money field, refuses a second instance in 1.5.5's words and moves URL credentials into a Basic header, masking them in every line. Its need declares no configured target, so the host never pins it to the operator's collector and the sink names its own dial target on every export. Its credential-bearing url is not declared secret. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-export-otlp/src/tests"
    ],
@@ -1113,7 +1113,7 @@
    "paths": [
     "crates/busbar-export-webhook/src"
    ],
-   "tree_hash": "60d691440721e27a16eb27e69a1f425a474377972df67ae65d17403f63c90f5d",
+   "tree_hash": "b5529490d4f24c0e2adb235d71e8b59c3f9053a90c3e3f51c38a084f3a7341fb",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -1125,7 +1125,7 @@
    },
    "report": "The request-log webhook sink opens no socket: it declares one outbound need on the open-web class targeted at its url setting, POSTs each line through the host's framed exchange, never retries, never fails the request, and masks URL credentials in every line it writes. A URL's user:password now rides as Basic auth as in 1.5.5, and dropped deliveries warn again. An auth header 1.5.5 would have skipped now drops every line, the auth-header value is not marked secret, and two catalogue entries give stale guidance. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-export-webhook/src/tests"
    ],
@@ -2628,7 +2628,7 @@
    "paths": [
     "crates/busbar-store-memory/src"
    ],
-   "tree_hash": "a512b8bd415c25f698b5946250db748e3a5570925ca1bc1a6c8cef5f5157b067",
+   "tree_hash": "48029eb3c95b3caccefc909cf180cbdc8e56bd9a1d304955431889b537fb3ced",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2640,7 +2640,7 @@
    },
    "report": "The memory store's money slots keep their rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped and dedupe records only applied ops. Five defects stand. The dedupe log keeps a day of every write's full text. The record leg keeps every journal record for the life of the process, and every scan walks all of it. Spent slices, window counters and stream rows are never freed. Each token redemption sweeps the whole spent map, and a losing redemption rewrites the stored expiry. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-store-memory/src/tests"
    ],
@@ -2935,7 +2935,7 @@
    "paths": [
     "crates/busbar-transport-webrtc/src"
    ],
-   "tree_hash": "0dfade6d4981e14d6e3e98a241cf72115f4dcc6699a62073f3710b1a218fba07",
+   "tree_hash": "eb4ed285d948e095c3280fed305d8db2cb58712cb4a3aec2656581c4d9be45b5",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2947,7 +2947,7 @@
    },
    "report": "The webrtc framer hands its handshake shim to the media stack through a per-thread slot with a destructor, beside two module statics. The SRTP keying material it hands on is copied by the media stack into buffers freed without zeroing. A data channel can reorder messages under buffer pressure, and one channel's overflow or write error fails the whole association. Rendezvous terms grow with every advertised candidate and can spin on YIELD_MORE. Each SRTP open allocates twice. The host now drives the framer with a lane and certificate. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "exclude": [
     "crates/busbar-transport-webrtc/src/tests"
    ],
@@ -3401,7 +3401,7 @@
    "paths": [
     "crates/busbar-auth-oidc/declares.json"
    ],
-   "tree_hash": "b9de0ab876eac9b6cd5c20a67ae14749d34fe7461df299be9b4ab04a5be3c738",
+   "tree_hash": "b7222c3f764006e20555a4f1e5ef773291b16cde5738d624d739c5f12938bb4f",
    "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
    "round": 1,
    "result": "findings",
@@ -3413,7 +3413,7 @@
    },
    "report": "The file is the OIDC auth plugin's declared-metadata document, which is signed into its dropped-in manifest and read by the fleet tooling and the published conformance suite. It states only a contract-ABI range of 3..3, which matches the auth kind's current ABI version. However, the plugin's Statement declares six outbound connection needs, all over the `http` transport (discovery, JWKS and token exchange), and the file does not list that transport. The current host's conformance suite requires the file's needs to equal the Statement's exactly, so this plugin fails that check. The fleet render also reads the list to give a networked plugin its conformance host, and the sibling OAuth auth plugin does list `http`. As a minor point, the range it states is a field the architecture has retired in favour of the kind's single ABI version; the fleet gate still requires it, so the two would have to change together. Read fully.",
    "auditor": "opus-q128-auth-oidc-declares-json-a",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "rounds": [
     {
      "round": 1,
@@ -3487,7 +3487,7 @@
    "paths": [
     "crates/busbar-auth-webhook-signature/declares.json"
    ],
-   "tree_hash": "019071d1e8d03954895590537a1dbab8a425f39bb8374792622bc609f475a411",
+   "tree_hash": "38553ebedbd61eae03d579b2d35f5e2d60b8f08e390cc70ff7f39bd84602cb2c",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -3499,7 +3499,7 @@
    },
    "report": "The webhook-signature auth plugin's declares document states only a contract-ABI window of three to three. That equals the auth kind's version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the plugin opens no connection, emits no metric series, raises no coded diagnostic, names no destination and reads no disk. The loader drops the stated range unread, so admission is unaffected. Read fully.",
    "auditor": "opus-r159c-declares",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "rounds": [
     {
      "round": 1,
@@ -4301,7 +4301,7 @@
    "paths": [
     "crates/busbar-transport-webrtc/declares.json"
    ],
-   "tree_hash": "65280f096bb8f6b276b087690ff9923bdc56ce620b77f220f9dff424919823b8",
+   "tree_hash": "02d1e42ea2c79c056645bab2c6cde521dec808a648e43ffe7c2d16024f41451c",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -4313,7 +4313,7 @@
    },
    "report": "The webrtc transport's declares document states only a contract-ABI window of one to one. That equals the transport kind's current version, but the range is a field the design retired, and the host's declares gate now refuses any file that still states it. Nothing else is owed: the framer states no connection needs, emits no declared metric series, raises no coded diagnostic and names no destination, egress policy, breaker fact or disk need. The loader drops the range unread, so admission is unaffected. Read fully.",
    "auditor": "opus-r159c-declares",
-   "fixed_at": null,
+   "fixed_at": "3cf045646e78b511cad4f11c19858feb5db16bb4",
    "rounds": [
     {
      "round": 1,
