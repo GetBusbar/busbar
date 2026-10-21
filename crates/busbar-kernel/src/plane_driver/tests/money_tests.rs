@@ -523,17 +523,16 @@ fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived
     );
 }
 
-/// A STREAM ITS FAR END CUT BILLS NO TOKENS AND IS NOT METERED, ITS REQUEST STILL COUNTS AND ITS
-/// FEE STANDS AS ITS PLANE REPORTED IT (status row 183; BUSBAR-1.6.0.md, Budgets, l.1014-1019): a
-/// unit whose 2xx stream the far end cut after the far end reported 40 input tokens ledgers none of
-/// them and writes no metering row (v1.5.5 `proxy/response_body.rs`: a transport error sets
-/// `stream_failed` (:283) and the drop-time gate bills no tokens (:642)); its admitted request and
-/// the fee its plane reported stay, as 1.5.5's finish kept the fee of a 2xx head
-/// (`ingress/mod.rs:574-575`; oracle cell `route.failover|fo|primary-cut-stream`, golden usage
-/// `{"requests":1}`, tokens 0).
-/// RED: the cut stream's reported tokens ledgered, or its end metered on its head's 2xx alone.
+/// A STREAM ITS FAR END CUT BILLS AND METERS WHAT ITS PLANE LEDGERED, AND KEEPS ITS FEE (owner
+/// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."): a
+/// unit whose 2xx stream the far end cut after the plane reported 40 input tokens ledgers those
+/// 40, writes their metering row against the serving member, and keeps the fee its plane
+/// reported. The cut is a fact of the end, never a reason for core to override the plane's
+/// ledger.
+/// RED: the cut stream's reported tokens dropped, or its metering row skipped (status row 183, as
+/// #1282 wrote it).
 #[test]
-fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee() {
+fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
     admit(&r);
     let report = [
@@ -546,7 +545,6 @@ fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee(
     ];
     let _ = r.money.checkpoint(&ctx(1), &report);
     r.money.served(&ctx(1), "m", "acme");
-    r.money.far_cut(UnitKey::new(1));
     r.money.settle_end_as(
         UnitKey::new(1),
         UnitEnd {
@@ -554,17 +552,26 @@ fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee(
             cut: true,
         },
     );
-    assert!(metering_rows(&r).is_empty(), "a cut stream meters nothing");
+    let rows = metering_rows(&r);
+    assert_eq!(rows.len(), 1, "a cut stream meters what it spent: {rows:?}");
+    let row = &rows[0];
     assert_eq!(
-        usage(&r),
-        (0, 5),
-        "no token of the cut stream bills, and the fee its plane reported stands"
+        (row.model.as_str(), row.provider.as_str(), row.requests),
+        ("m", "acme", 1)
     );
+    assert_eq!(
+        (row.tokens_input, row.tokens_output),
+        (40, 0),
+        "the row carries the tokens the plane ledgered"
+    );
+    let (tokens, spend) = usage(&r);
+    assert_eq!(tokens, 40, "every token the plane ledgered bills");
+    assert!(spend >= 5, "and the fee its plane reported stands: {spend}");
     let u = r
         .gov
         .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
         .expect("usage");
-    assert_eq!(u.requests, 1, "the request unit still counts");
+    assert_eq!(u.requests, 1, "the request unit counts once");
 }
 
 /// A unit that failed over ledgers AND meters under the member that served it, never the model

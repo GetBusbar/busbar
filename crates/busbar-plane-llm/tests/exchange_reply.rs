@@ -585,21 +585,15 @@ fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_iden
     }
 }
 
-/// One instant for the whole process: a relay timed on it reports a stream's latency as 0 however
-/// long the relay took.
-fn stopped_clock() -> std::time::Instant {
-    static AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    *AT.get_or_init(std::time::Instant::now)
-}
-
 /// A stream from a far end of every dialect reaches a caller of every dialect whole, whatever the
 /// piece boundaries, and its usage is read at the end.
 ///
 /// ONE CLOCK FOR BOTH RELAYS. A Bedrock caller's `metadata` frame reports the stream's real elapsed
-/// `metrics.latencyMs` (1.5.5 bytes), so two relays of one stream on the wall clock answer
-/// different bytes whenever they straddle a millisecond (bedrock<-responses, latencyMs 1 vs 0, on a
-/// loaded runner: merge-queue run 37136423381). The byte equality below is the piece-boundary claim,
-/// not a race against the clock, so both relays are timed on [`stopped_clock`].
+/// `metrics.latencyMs` (1.5.5 bytes), read off the HOST's monotonic clock, so two relays of one
+/// stream on a running clock answer different bytes whenever they straddle a millisecond
+/// (bedrock<-responses, latencyMs 1 vs 0, on a loaded runner: merge-queue run 37136423381). The
+/// byte equality below is the piece-boundary claim, not a race against the clock, so both relays
+/// are fed by [`HOST`], which holds no monotonic clock.
 #[test]
 fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
     let mut checked = 0;
@@ -608,11 +602,11 @@ fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
         assert!(!far.is_empty(), "{egress}");
         for ingress in SIX {
             let whole = relay_all(
-                &mut Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock),
+                &mut Relay::new(relay_ctx(ingress, egress, true)),
                 &far,
                 usize::MAX,
             );
-            let mut r = Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock);
+            let mut r = Relay::new(relay_ctx(ingress, egress, true));
             let pieces = relay_all(&mut r, &far, 7);
             assert!(!whole.is_empty(), "{ingress}<-{egress}");
             if ingress != "responses" && ingress != "anthropic" && ingress != "cohere" {
@@ -4704,6 +4698,47 @@ mod rehomed_metering {
             "v1.5.5's figure: the readable count, nothing else"
         );
     }
+}
+
+/// Q128 arch u59: A TRANSLATED STREAM IS TIMED ON THE HOST'S ONE CLOCK. A Bedrock caller's
+/// `metadata` frame reports `metrics.latencyMs` as the host's monotonic time between the stream's
+/// first byte and that frame, so a host whose clock moved 250 ms reports 250 whatever the process
+/// clock did. RED: the relay read `std::time::Instant::now`, the plane's own clock, and reported the
+/// process time the test took (0).
+#[test]
+fn a_translated_stream_is_timed_on_the_hosts_clock() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Clocked(AtomicU64);
+    impl busbar_contract::codec::CodecHost for Clocked {
+        fn fill_entropy(&self, out: &mut [u8]) -> bool {
+            out.fill(7);
+            true
+        }
+        fn wall_clock_now(&self) -> Option<u64> {
+            Some(1_700_000_000)
+        }
+        fn monotonic_ns(&self) -> Option<u64> {
+            Some(self.0.load(Ordering::Relaxed))
+        }
+    }
+    let host = Clocked(AtomicU64::new(5_000_000_000));
+    let far = native_stream("anthropic");
+    let (first, rest) = far.split_at(far.len() / 2);
+    let mut r = Relay::new(relay_ctx("bedrock", "anthropic", true));
+    let mut out = Vec::new();
+    if let (Fed::Bytes(b), _) = r.feed(&host, first) {
+        out.extend_from_slice(&b);
+    }
+    host.0.fetch_add(250_000_000, Ordering::Relaxed);
+    if let (Fed::Bytes(b), _) = r.feed(&host, rest) {
+        out.extend_from_slice(&b);
+    }
+    out.extend(r.end(&host).bytes);
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("\"latencyMs\":250"),
+        "the metadata frame reports the host's 250 ms: {text}"
+    );
 }
 
 /// AN OPENAI FAR END'S WHOLE ANSWER READS AS AN ANTHROPIC MESSAGE: an anthropic caller served by an

@@ -371,15 +371,47 @@ impl AdminService {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
         let now = busbar_kernel::store::now();
+        // THE STORE READS RUN OFF THE ASYNC WORKER, all of the group's buckets in one blocking
+        // task (as `get_usage`'s are): a slow store never stalls the worker the admin surface and
+        // the data plane share. One read per bucket, in bucket order.
+        let reads = match self.app.governance.clone() {
+            Some(gov) => {
+                let cost = self.app.cost.clone();
+                let wanted: Vec<(String, String)> = rt
+                    .buckets
+                    .iter()
+                    .map(|b| (b.bucket_id.to_string(), b.window.to_string()))
+                    .collect();
+                tokio::task::spawn_blocking(move || {
+                    wanted
+                        .iter()
+                        // Include the flat per-request fee (`true`) — the group `/usage` read must
+                        // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket,
+                        // groups included). Passing `false` here understated spend and overstated
+                        // remaining budget, so operators saw more headroom than the enforcer
+                        // actually allows.
+                        .map(|(id, window)| {
+                            gov.derived_bucket_usage_priced(&cost, id, window, true, now)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|e| {
+                    busbar_kernel::diagnostics::diag_error!(
+                        busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
+                        group = name, err = %e,
+                        "group usage read failed"
+                    );
+                    AdminError::Internal
+                })?
+            }
+            None => Vec::new(),
+        };
+        let mut reads = reads.into_iter();
         let mut buckets = Vec::with_capacity(rt.buckets.len());
         for b in &rt.buckets {
-            let usage = match &self.app.governance {
-                Some(gov) => gov
-                    // Include the flat per-request fee (`true`) — the group `/usage` read must
-                    // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket, groups
-                    // included). Passing `false` here understated spend and overstated remaining
-                    // budget, so operators saw more headroom than the enforcer actually allows.
-                    .derived_bucket_usage_priced(&self.app.cost, &b.bucket_id, b.window, true, now)
+            let usage = match reads.next() {
+                Some(read) => read
                     .map_err(|e| {
                         busbar_kernel::diagnostics::diag_error!(
                             busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
