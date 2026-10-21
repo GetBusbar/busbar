@@ -88,7 +88,7 @@ impl ManifestFacts {
 ///
 /// A safe `extern "C" fn` is no door the loader takes:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0308
 /// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
 ///     core::ptr::null()
 /// }
@@ -191,9 +191,7 @@ impl LinkedRow {
 ///
 /// The refusal the door or its Statement earns.
 pub(crate) fn statement_of(door: MacroDoor) -> Result<Statement, LoadError> {
-    // SAFETY: a `MacroDoor` is a door the contract's macro built, a compiled-in item loaded for the
-    // process's life (`MacroDoor::__from_door_macro`'s contract); a door takes no argument.
-    let (door, _) = read_door(unsafe { door.door_fn()() }, None)?;
+    let (door, _) = read_door(enter_door(door.into()), None)?;
     statement(&door)
 }
 
@@ -280,15 +278,10 @@ pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, us
         Err(_) => return Ok(None),
     };
     let at = enter_door(door);
-    let ops = if at.is_null() {
-        0
-    } else {
-        // SAFETY: a non-NULL door answer is a `'static` door of the library's; only its `ops` word
-        // is read, unaligned, while the library is open.
-        unsafe { std::ptr::addr_of!((*at).ops).read_unaligned() as usize }
-    };
+    // The door's head checks, as every other door entry reads it: a NULL door is `NullDoor`.
+    let read = read_door(at, None).map(|(read, _)| read.ops as usize);
     drop(Lib(Some(lib), None));
-    Ok(Some((at as usize, ops)))
+    Ok(Some((at as usize, read?)))
 }
 
 /// Why a plugin was refused. Every refusal names the value it saw and the host's.

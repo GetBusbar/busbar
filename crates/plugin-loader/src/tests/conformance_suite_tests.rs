@@ -187,13 +187,12 @@ mod suite_conns {
         MIXED_DOOR.load(Ordering::SeqCst)
     }
 
-    // SAFETY: a test's restated door: it answers the `'static` door it laid out over the test
-    // plugin's real one.
-    const TCP_LOADED: LoadedDoor = unsafe { LoadedDoor::from_raw(tcp_door) };
-    // SAFETY: as `TCP_LOADED`.
-    const HTTP_LOADED: LoadedDoor = unsafe { LoadedDoor::from_raw(http_door) };
-    // SAFETY: as `TCP_LOADED`.
-    const MIXED_LOADED: LoadedDoor = unsafe { LoadedDoor::from_raw(mixed_door) };
+    /// One of this module's restated doors, as a door the loader may enter.
+    fn loaded(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedDoor {
+        // SAFETY: every caller here hands one of this module's restated doors, each answering the
+        // `'static` door it laid out over the test plugin's real one.
+        unsafe { LoadedDoor::from_raw(door) }
+    }
 
     fn subject(door: LoadedDoor) -> Subject {
         Subject::of_loaded(door, "unused", "{}")
@@ -211,7 +210,7 @@ mod suite_conns {
     #[test]
     fn a_need_the_table_does_not_serve_keeps_the_bind_with_no_table() {
         let d = dispatcher();
-        for door in [HTTP_LOADED, MIXED_LOADED] {
+        for door in [loaded(http_door), loaded(mixed_door)] {
             let s = subject(door);
             assert!(!s.needs().is_empty());
             assert!(s.conns(&d).is_none(), "{:?}", s.needs());
@@ -238,12 +237,14 @@ mod suite_conns {
     #[test]
     fn a_host_connector_handed_in_serves_every_need_and_takes_the_anchors() {
         let d = dispatcher();
-        let s = subject(HTTP_LOADED).with_host(a_host).with_anchors("PEM");
+        let s = subject(loaded(http_door))
+            .with_host(a_host)
+            .with_anchors("PEM");
         assert!(matches!(s.bind(&d, "hosted").conns, ConnTable::Host(_)));
         assert_eq!(HOSTED.with(std::cell::Cell::take).as_deref(), Some("PEM"));
-        let plain = subject(HTTP_LOADED);
+        let plain = subject(loaded(http_door));
         assert!(matches!(plain.bind(&d, "plain").conns, ConnTable::Probe));
-        let unhosted = subject(TCP_LOADED).with_anchors("PEM");
+        let unhosted = subject(loaded(tcp_door)).with_anchors("PEM");
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             unhosted.conns(&d).is_some()
         }))
@@ -261,12 +262,13 @@ mod suite_conns {
     #[test]
     fn a_tcp_need_is_bound_to_a_table_that_dials_a_real_endpoint() {
         let d = dispatcher();
-        let s = subject(TCP_LOADED);
+        let s = subject(loaded(tcp_door));
         assert_eq!(s.needs().len(), 1);
         assert!(matches!(s.bind(&d, "a").conns, ConnTable::Host(_)));
         let table = s.conns(&d).expect("a tcp need is handed a table");
         let p = load_linked::<TestKind>(
-            &LinkedRow::of_loaded(TCP_LOADED).expect("the restated door states its Statement"),
+            &LinkedRow::of_loaded(loaded(tcp_door))
+                .expect("the restated door states its Statement"),
             Bind {
                 conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
                 ..bind(&d, "networked")

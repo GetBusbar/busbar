@@ -811,7 +811,7 @@ pub const fn door<T: KindOps>(
 /// `reply::call` enters only a slot a door view names (status row 159): a `ViewOp` is not built
 /// from a raw `Op` or a safe `extern "C" fn`; a door view's own slot is one:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0063
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -887,7 +887,7 @@ pub const fn door<T: KindOps>(
 /// An `Instance` is no pointer and no
 /// overwritten `out.instance`; a READY `open`'s own is one:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0308
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -929,7 +929,7 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0063
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -1010,7 +1010,7 @@ pub const fn door<T: KindOps>(
 ///
 /// A fake host hands safe code no table; it lends its tables to an `open` alone:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, test_in::TestIn};
 /// fn main() {
