@@ -194,7 +194,12 @@ impl PluginAdmission for RootAdmission {
     /// The EXPLICIT rollback's trust: the policy with this plugin's floor LOWERED to the target's
     /// own version, so a validly-signed OLDER artifact clears it; a signature or opt-in failure is
     /// still fatal (a rollback authenticates the operator, never the artifact).
-    fn rollback_target(&self, file: &str, bytes: &[u8], cfg: &PluginsCfg) -> Result<Stated, Refusal> {
+    fn rollback_target(
+        &self,
+        file: &str,
+        bytes: &[u8],
+        cfg: &PluginsCfg,
+    ) -> Result<Stated, Refusal> {
         let what = format!(" `{file}`");
         let unpacked = unpack_checked(bytes, &what)?;
         let manifest = &unpacked.manifest;

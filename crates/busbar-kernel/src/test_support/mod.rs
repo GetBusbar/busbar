@@ -2137,7 +2137,11 @@ pub fn test_hook_env_with_wrong_kind_plugin(
 ) -> crate::hooks::HookEnv {
     let registry = rows::linked_only()
         .with_dropped(rows::row("hook-double-real", hook_alias, "hook"))
-        .with_dropped(rows::row("hook-double-wrongkind", wrong_kind_alias, "secret"));
+        .with_dropped(rows::row(
+            "hook-double-wrongkind",
+            wrong_kind_alias,
+            "secret",
+        ));
     hook_double_env(registry, &[hook_alias])
 }
 
@@ -2411,7 +2415,8 @@ pub use store_axis::store_axis_stand_in;
 pub struct AdmissionStandIn;
 
 /// Why the stand-in refuses a question about a tarball's bytes.
-const NO_ADMISSION: &str = "a test build has no plugin admission: the composition root's tests prove it";
+const NO_ADMISSION: &str =
+    "a test build has no plugin admission: the composition root's tests prove it";
 
 impl crate::admission::PluginAdmission for AdmissionStandIn {
     fn is_tarball(&self, file: &str) -> bool {

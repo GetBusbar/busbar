@@ -23,13 +23,13 @@
 //! carriers, the head point). That the door renders and answers the same through the loader is the
 //! loader's and the root's to prove (`crates/plugin-loader`, `crates/busbar/tests`).
 
+use busbar_contract::abi::auth::FACT_OPERATOR;
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
 use busbar_contract::abi::sdk::auth_door::{
     carrier, verify_tail, with_operator, with_tail, Answer, Strip, Verdict, VerifiedIdentity,
     VerifyPlugin, VerifyView,
 };
-use busbar_contract::abi::auth::FACT_OPERATOR;
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest, Verifying};
 use busbar_contract::redacted::{constant_time_eq, sha256_hex};

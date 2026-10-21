@@ -161,9 +161,9 @@ impl StandIn {
             .collect();
         if let Some(double) = self.registry.as_any().downcast_ref::<super::rows::Rows>() {
             for (row, words, door) in double.linked_doors() {
-                let held = rows.iter().any(|r| {
-                    r.key == row.key && std::ptr::fn_addr_eq(r.door, door)
-                });
+                let held = rows
+                    .iter()
+                    .any(|r| r.key == row.key && std::ptr::fn_addr_eq(r.door, door));
                 if row.kind == AUTH && !held {
                     rows.push(LinkedAuthRow {
                         key: row.key,

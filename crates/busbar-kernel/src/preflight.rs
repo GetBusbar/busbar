@@ -55,8 +55,8 @@ pub type LinkedStore = (
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
 /// one dispatcher and opened through the store v3 table.
 pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
-pub use busbar_kernel_identity::operator::LinkedAuth;
 use busbar_contract::plugin_rows::PluginRows;
+pub use busbar_kernel_identity::operator::LinkedAuth;
 /// THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8: the composition root builds the plugin registry;
 /// the kernel receives it as the contract's [`PluginRows`] view and names no registry type): the
 /// linked rows alone, or the directory scan with the linked rows ahead of it, each step noted so the
@@ -348,8 +348,7 @@ pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
 /// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the
 /// composition root's (it holds the dispatcher), installed once; the kernel names neither the
 /// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
-pub type AuthAxisOpener =
-    fn(Arc<dyn PluginRows>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
+pub type AuthAxisOpener = fn(Arc<dyn PluginRows>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
 
 static AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
 

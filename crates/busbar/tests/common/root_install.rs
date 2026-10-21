@@ -83,27 +83,28 @@ fn registry_rows(
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    let registry = busbar_plugin_loader::boot::registry(Build { linked, scan }, &mut |n| match n {
-        Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
-        Note::Off => note(BuildNote::Off),
-        Note::Scanned(scanned) => {
-            let copies: Vec<CopyLine> = scanned
-                .linked_copies()
-                .iter()
-                .map(|c| CopyLine {
-                    name: c.name.clone(),
-                    version: c.version.clone(),
-                    file: c.file.clone(),
-                    line: c.line(),
-                })
-                .collect();
-            note(BuildNote::Scanned {
-                rows: scanned,
-                copies: &copies,
-            });
-        }
-        Note::FloorUnwritable(e) => note(BuildNote::FloorUnwritable(e)),
-    })?;
+    let registry =
+        busbar_plugin_loader::boot::registry(Build { linked, scan }, &mut |n| match n {
+            Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
+            Note::Off => note(BuildNote::Off),
+            Note::Scanned(scanned) => {
+                let copies: Vec<CopyLine> = scanned
+                    .linked_copies()
+                    .iter()
+                    .map(|c| CopyLine {
+                        name: c.name.clone(),
+                        version: c.version.clone(),
+                        file: c.file.clone(),
+                        line: c.line(),
+                    })
+                    .collect();
+                note(BuildNote::Scanned {
+                    rows: scanned,
+                    copies: &copies,
+                });
+            }
+            Note::FloorUnwritable(e) => note(BuildNote::FloorUnwritable(e)),
+        })?;
     Ok(Arc::new(registry))
 }
 
@@ -324,7 +325,9 @@ pub fn install() {
         busbar_kernel::preflight::install_test_root(RootInstall {
             registry_build: Some(registry_rows),
             export_axis: Some(&EXPORTS),
-            auth_chain_module: Some(busbar_plugin_loader::dispatch::kinds::auth::declares_chain_module),
+            auth_chain_module: Some(
+                busbar_plugin_loader::dispatch::kinds::auth::declares_chain_module,
+            ),
             hook_answers: Some(hook_answers),
             ..busbar_kernel::preflight::root_rows()
         });
@@ -410,7 +413,11 @@ impl PluginAdmission for LoaderAdmission {
         trust_policy(cfg).map(|_| ())
     }
 
-    fn inventory(&self, dir: &std::path::Path, cfg: &PluginsCfg) -> Result<Vec<Inventoried>, String> {
+    fn inventory(
+        &self,
+        dir: &std::path::Path,
+        cfg: &PluginsCfg,
+    ) -> Result<Vec<Inventoried>, String> {
         let policy = trust_policy(cfg)?;
         Ok(busbar_plugin_loader::inventory_tarballs(dir, &policy)
             .into_iter()
@@ -443,13 +450,14 @@ impl PluginAdmission for LoaderAdmission {
                 )));
             }
         };
-        let installed = busbar_plugin_loader::scan_and_validate(dir, &policy).map_err(|errors| {
-            Refusal::Conflict(format!(
+        let installed =
+            busbar_plugin_loader::scan_and_validate(dir, &policy).map_err(|errors| {
+                Refusal::Conflict(format!(
                 "cannot validate the installed plugin set before publishing (fix or remove the \
                  offending tarball first): {}",
                 errors.join("; ")
             ))
-        })?;
+            })?;
         for existing in installed.loadable() {
             if existing.file == file {
                 continue;
@@ -501,7 +509,12 @@ impl PluginAdmission for LoaderAdmission {
         Ok((stated(&unpacked.manifest), judged))
     }
 
-    fn rollback_target(&self, file: &str, bytes: &[u8], cfg: &PluginsCfg) -> Result<Stated, Refusal> {
+    fn rollback_target(
+        &self,
+        file: &str,
+        bytes: &[u8],
+        cfg: &PluginsCfg,
+    ) -> Result<Stated, Refusal> {
         let what = format!(" `{file}`");
         let unpacked = unpack_checked(bytes, &what)?;
         let manifest = &unpacked.manifest;

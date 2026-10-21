@@ -115,7 +115,11 @@ impl<S: StoreSlots> SlotStore<S> {
     /// # Errors
     /// The store refused its settings or its connect step (`plugin '<name>' open failed: <text>`),
     /// or faulted (`status 3`).
-    pub(crate) fn open(name: &'static str, settings: &[u8], mint: OpIdMint) -> Result<Self, String> {
+    pub(crate) fn open(
+        name: &'static str,
+        settings: &[u8],
+        mint: OpIdMint,
+    ) -> Result<Self, String> {
         let refused = |reason: &str| format!("plugin '{name}' open failed: {reason}");
         let opened = catch_unwind(AssertUnwindSafe(|| -> Result<Option<S>, String> {
             let store = S::open(settings, None)?;

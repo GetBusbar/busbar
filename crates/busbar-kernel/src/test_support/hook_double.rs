@@ -358,8 +358,8 @@ impl HookAxisDouble {
     /// A double answering `modules`, beside the build's linked rows.
     #[must_use]
     pub fn new(modules: &[&str]) -> Arc<Self> {
-        let linked = super::hook_axis_stand_in(&super::rows::empty())
-            .expect("the build's linked hook rows");
+        let linked =
+            super::hook_axis_stand_in(&super::rows::empty()).expect("the build's linked hook rows");
         Arc::new(Self {
             rows: modules.iter().map(|m| m.to_string()).collect(),
             linked,

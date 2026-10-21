@@ -20,9 +20,9 @@ use super::loader::{
     boot::*, dispatch::LoadError, dispatch::ManifestFacts, LinkedPlugin, PluginRegistry,
 };
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
-use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
 
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
@@ -106,9 +106,9 @@ pub fn registry_rows(
 #[must_use]
 pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     match *row {
-        LinkedRow::Store((key, ephemeral, door, canonical)) => answering_former_names(
-            LinkedPlugin::store_named(canonical, key, door, ephemeral),
-        ),
+        LinkedRow::Store((key, ephemeral, door, canonical)) => {
+            answering_former_names(LinkedPlugin::store_named(canonical, key, door, ephemeral))
+        }
         LinkedRow::Auth((key, canonical, door)) => {
             answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door))
         }

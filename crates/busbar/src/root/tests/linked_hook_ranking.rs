@@ -30,8 +30,9 @@ use crate::root::loader::PluginRegistry;
 
 /// The hook axis the shipped binary installs, over an empty registry: the linked rows alone.
 fn linked_axis() -> Arc<dyn HookAxis> {
-    crate::root::hooks::axis(&(Arc::new(PluginRegistry::empty())
-        as Arc<dyn busbar_contract::plugin_rows::PluginRows>))
+    crate::root::hooks::axis(
+        &(Arc::new(PluginRegistry::empty()) as Arc<dyn busbar_contract::plugin_rows::PluginRows>),
+    )
     .expect("the linked hook rows")
 }
 
