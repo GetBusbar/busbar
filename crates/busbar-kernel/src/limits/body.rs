@@ -21,7 +21,7 @@
 use std::time::Duration;
 
 /// The MINIMUM sustained throughput a body read must keep once [`THROUGHPUT_GRACE`] has passed.
-/// Fixed (owner decision): far below any honest client's rate, well above a client stalling a byte
+/// Fixed (owner ruling): far below any honest client's rate, well above a client stalling a byte
 /// every inter-frame bound.
 pub const MIN_THROUGHPUT_BYTES_PER_SEC: u64 = 1024;
 

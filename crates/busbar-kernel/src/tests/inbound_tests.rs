@@ -1259,7 +1259,7 @@ fn red_keys_the_bearer_decides_beside_an_x_api_key() {
 
 // ── the host-held credentials' verifier ahead of the `keys` arm (1.5.5's signed-ingress step) ──
 //
-// The 1.5.5 oracle exercises it in the signed-ingress dialect's request cells (`llm__<signing
+// The 1.5.5 oracle exercises it in the signed-ingress dialect's request cells (`<plane>__<signing
 // dialect>__*__request__*`, admitted, unauthenticated) and, over the size gate, in
 // `http.crosscut__413__*`. The dialect is the registry's declared fact, so these cells answer it
 // through the listener's `signed_ingress`.
