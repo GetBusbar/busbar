@@ -1556,7 +1556,15 @@ extern "C" fn abi_down_door() -> *const Door {
 /// `extern` per door: `kind-isolation:law0` reads each ABI
 /// string literal as the secret instance `c`.
 extern "C" fn restated_door<const I: usize>() -> *const Door {
-    [&NETWORKED, &VERSIONED, &CONNECTED, &PIECED, &LAID, &FINGERPRINTED][I].get()
+    [
+        &NETWORKED,
+        &VERSIONED,
+        &CONNECTED,
+        &PIECED,
+        &LAID,
+        &FINGERPRINTED,
+    ][I]
+        .get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
