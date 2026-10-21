@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2591,
+    "total": 2592,
     "by_plane": {
       "a2a": 468,
-      "core": 1008,
+      "core": 1009,
       "llm": 203,
       "mcp": 912
     },
@@ -90,7 +90,7 @@
       "llm.wire": 196,
       "mcp": 913,
       "money.reserved-tier": 2,
-      "neutrality": 22,
+      "neutrality": 23,
       "ops.raw": 1,
       "ops.scrape": 16,
       "plugins": 13,
@@ -36668,6 +36668,126 @@
         }
       },
       "why": "D2-PROTO (busbar #545): the served surface of a config whose `models:` section is present and empty (no pools). Recorded from the published 1.5.5: the three model listings answer an empty list in each dialect's envelope (openai bearer, anthropic x-api-key + anthropic-version, gemini x-goog-api-key); a chat to an unknown model is the dialect's 404 (anthropic /v1/messages, openai /v1/chat/completions); a wrong anthropic key is 401 and a wrong bearer on the bedrock converse path is 403 AccessDeniedException; an unmatched path is the openai 404; a wrong method on /v1/messages is the anthropic 405"
+    },
+    {
+      "id": "neutrality|no-pools|surface",
+      "plane": "core",
+      "family": "neutrality",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m:\n    provider: p\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-no-pools-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/healthz",
+              "headers": []
+            }
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "x-api-key",
+                  "{VK}"
+                ],
+                [
+                  "anthropic-version",
+                  "2023-06-01"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "DELETE",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "x-api-key",
+                  "{VK}"
+                ]
+              ]
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "busbar status row 179: the served surface of the smallest valid 1.5.5 document, `providers:` and `models:` with NO `pools:` (v1.5.5 crates/busbar/src/config/mod.rs:2626-2632; `pools:` was optional). The shared oracle config always writes pools (recorder/config_emit.rs), so no cell reached a document without them. Recorded from the published 1.5.5: healthz; a chat naming the configured model is served on the openai and anthropic paths (status); a GET on /v1/chat/completions is the openai 405 and a DELETE on /v1/messages the anthropic 405, each in its dialect's envelope"
     },
     {
       "id": "neutrality|routes|a2a-shaped-404",

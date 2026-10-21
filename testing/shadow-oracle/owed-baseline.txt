@@ -988,6 +988,7 @@ neutrality|boot-lines
 neutrality|metrics-no-plane-series
 neutrality|metrics-series
 neutrality|models-empty|surface
+neutrality|no-pools|surface
 neutrality|NEUT-U-auth|validate
 neutrality|NEUT-U-export|validate
 neutrality|NEUT-U-groups|validate
