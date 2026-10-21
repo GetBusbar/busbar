@@ -587,29 +587,29 @@ fn an_auth_row_answers_to_its_statements_alias_rewrite() {
         .expect("the row opens by its Statement's alias");
 }
 
-/// Two auth doors declaring they read the `sigv4` credential kind, and one declaring `bearer`.
+/// Two auth doors declaring they read the `signed` credential kind, and one declaring `bearer`.
 mod readers {
     use busbar_contract::abi::sdk::auth_door::with_credential_kinds;
 
     use super::*;
 
-    const SIGV4: &[AbiStr] = &[abi_str("sigv4")];
+    const SIGNED: &[AbiStr] = &[abi_str("signed")];
     const BEARER: &[AbiStr] = &[abi_str("bearer")];
-    const SIGV4_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), SIGV4);
+    const SIGNED_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), SIGNED);
     const BEARER_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), BEARER);
 
     pub(super) mod a {
         use super::*;
         busbar_contract::auth_verify_door!(
             Judge,
-            with_tail(statement("reader-a", "1.0.0", 8), SIGV4_TAIL)
+            with_tail(statement("reader-a", "1.0.0", 8), SIGNED_TAIL)
         );
     }
     pub(super) mod b {
         use super::*;
         busbar_contract::auth_verify_door!(
             Judge,
-            with_tail(statement("reader-b", "1.0.0", 8), SIGV4_TAIL)
+            with_tail(statement("reader-b", "1.0.0", 8), SIGNED_TAIL)
         );
     }
     pub(super) mod c {
@@ -637,11 +637,11 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
     let err = rows
         .open("reader-a", "reader-a", &serde_json::json!("ok"))
         .err()
-        .expect("a second reader of sigv4 refuses");
+        .expect("a second reader of signed refuses");
     assert_eq!(
         err,
         "auth plugins 'reader-a' and 'reader-b' both declare they read the credential kind \
-         'sigv4'; one verifier reads a credential kind"
+         'signed'; one verifier reads a credential kind"
     );
     assert!(rows
         .open("reader-c", "reader-c", &serde_json::json!("ok"))

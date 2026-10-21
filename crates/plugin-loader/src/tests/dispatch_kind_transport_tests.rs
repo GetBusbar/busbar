@@ -736,3 +736,68 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
         "a short record refuses the load"
     );
 }
+
+/// RED (audit contract-src #11): every string list a transport's tail states is judged at bind by
+/// its own contract check, so a name counted over a NULL pointer refuses the load. The claims a
+/// connection may upgrade to (`check_upgrades_to`) and each claim row's fact keys
+/// (`check_claim_facts`) were never judged by the host.
+#[test]
+fn red_a_null_upgrade_name_or_claim_fact_refuses_the_bind() {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER};
+
+    let broken = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    let bind = |upgrades: &[AbiStr], facts: &[AbiStr]| -> Result<(), String> {
+        let claims: [Claim; 1] = [Claim {
+            selector_forms: abi_str(""),
+            egress_selector_forms: abi_str(""),
+            facts: if facts.is_empty() {
+                std::ptr::null()
+            } else {
+                facts.as_ptr()
+            },
+            facts_len: facts.len(),
+            status_namespace: abi_str(""),
+            session: 0,
+            session_bound: 0,
+            unit0_trigger: 0,
+            status_at: 0,
+            _reserved: 0,
+        }];
+        let mut tail: TransportTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        };
+        tail.role = ROLE_FRAMER;
+        tail.claim_rows = claims.as_ptr();
+        tail.claim_rows_len = 1;
+        if !upgrades.is_empty() {
+            tail.upgrades_to = upgrades.as_ptr();
+            tail.upgrades_to_len = upgrades.len();
+        }
+        let names = [abi_str("own")];
+        let st = Statement {
+            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            ..statement("t", "0", 1)
+        };
+        Transport::context(&st).map(|_| ())
+    };
+    let good = [abi_str("next-claim")];
+    assert_eq!(bind(&good, &good), Ok(()), "named lists bind");
+    assert!(
+        bind(&[abi_str("next-claim"), broken], &[]).is_err(),
+        "an upgrade name counted over a NULL pointer bound"
+    );
+    assert!(
+        bind(&[], &[broken]).is_err(),
+        "a claim fact key counted over a NULL pointer bound"
+    );
+}
