@@ -63,6 +63,14 @@ pub struct Vocab {
     pub camel_prefixes: Vec<String>,
     /// `LLM`, `MCP`, `OPENAI`, `OpenAI`, … — the acronym spellings the CamelCase list cannot see.
     pub screaming_prefixes: Vec<String>,
+
+    // ── the reverse side ──
+    /// `busbar_kernel`, `busbar_kernel_ledger`, `busbar_core_admin`, … — the crate identifiers a
+    /// plane crate may not name: every neutral-family crate of the census whose kind the
+    /// architecture grants no plane-family kind (`kind_isolation::plane_wall_crates`). The
+    /// BACKWARDS rule's needles. Empty until [`crate::gates::plane_purity`]'s measurement fills it
+    /// from the census, and an empty list is refused beside the other classes.
+    pub wall_idents: Vec<String>,
 }
 
 /// A spelling the capitalisation rules cannot produce from the lowercase key, for a key that IS in
@@ -157,19 +165,22 @@ impl Vocab {
             literal_words: literal_words.into_iter().collect(),
             camel_prefixes: camel.into_iter().collect(),
             screaming_prefixes: screaming.into_iter().collect(),
+            wall_idents: Vec::new(),
         }
     }
 
     /// The counts the gate prints beside its denominator, so a reader can see the words it used.
     pub fn summary(&self) -> String {
         format!(
-            "planes={} [{}] transports={} [{}] dialects={} [{}]",
+            "planes={} [{}] transports={} [{}] dialects={} [{}] wall_crates={} [{}]",
             self.planes.len(),
             self.planes.join(" "),
             self.transports.len(),
             self.transports.join(" "),
             self.dialects.len(),
-            self.dialects.join(" ")
+            self.dialects.join(" "),
+            self.wall_idents.len(),
+            self.wall_idents.join(" ")
         )
     }
 
@@ -185,6 +196,9 @@ impl Vocab {
         }
         if self.dialects.is_empty() {
             out.push("dialects");
+        }
+        if self.wall_idents.is_empty() {
+            out.push("wall_crates");
         }
         out
     }

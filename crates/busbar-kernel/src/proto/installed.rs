@@ -12,8 +12,8 @@ use busbar_contract::protocol::ProtocolDecl;
 
 // ── TEST-SUPPORT PROTOCOL REGISTRATION (the neutral seam) ──────────────────────────────────────────
 // A protocol crate's test-kit registers its `&'static ProtocolDecl` here — a SUBSTRATE type — exactly
-// as production's composition root `install_protocols` does, so the extracted protocol crates
-// (the retired engine crate, `busbar-mcp`) reach the neutral ABI (`busbar_kernel::proto::register_test_protocol`)
+// as production's composition root `install_protocols` does, so an extracted protocol crate
+// reaches the neutral ABI (`busbar_kernel::proto::register_test_protocol`)
 // rather than back into `busbar_kernel::proto::registry`. `busbar-core`'s test-support `registry()` folds
 // this list ahead of its built-ins on every read, so a protocol registered by any test before it reads
 // the registry is visible regardless of test order. This is the exact analogue of the plane axis's
@@ -84,7 +84,7 @@ pub fn test_registered_protocols_len() -> usize {
 
 // ── THE PROTOCOL REGISTRY SINGLETON — RELOCATED DOWN from `busbar_kernel::proto::registry` ───────────
 // The declarations, the boot-time aggregates, and the process singleton, moved onto the neutral
-// substrate so an extracted protocol crate (the retired engine crate) resolves `decl_for` / `known_protocols`
+// substrate so an extracted protocol crate resolves `decl_for` / `known_protocols`
 // through the neutral ABI rather than reaching BACK into `busbar-core` implementation (the
 // reverse-edge rule). `busbar-core` re-exports every item below at its historical
 // `busbar_kernel::proto::registry::…` path, so every in-core / plugin caller compiles unchanged and the
@@ -250,7 +250,8 @@ static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::O
 
 /// THE KERNEL'S CODEC HOST: the host services every codec the kernel drives is handed, down its call
 /// graph, as a `&dyn CodecHost` — the host entropy source (the OS CSPRNG, one `getrandom` fill per
-/// call) and the host wall clock (`store::now`, whole Unix seconds). A value with no state: the
+/// call), the host wall clock (`store::now`, whole Unix seconds) and its monotonic clock. A value with
+/// no state of its own: the
 /// services are the kernel's, and the contract holds neither.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CodecHostServices;
@@ -265,6 +266,13 @@ impl busbar_contract::codec::CodecHost for CodecHostServices {
 
     fn wall_clock_now(&self) -> Option<u64> {
         Some(crate::store::now())
+    }
+
+    /// The kernel's monotonic reading, nanoseconds from the first one this process took.
+    fn monotonic_ns(&self) -> Option<u64> {
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let origin = ORIGIN.get_or_init(std::time::Instant::now);
+        Some(u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX))
     }
 }
 
@@ -343,11 +351,11 @@ static TEST_REGISTRY_MEMO: std::sync::Mutex<Option<(usize, &'static Registry)>> 
     std::sync::Mutex::new(None);
 
 /// CORE'S OWN-TEST-BINARY BUILT-IN HOOK. Core's `cfg(test)` build names its shipped protocol set
-/// (the retired engine crate's `DECLS` + the MCP protocol) in a `tests/` file the neutral-purity lint excludes, and
+/// in a `tests/` file the neutral-purity lint excludes, and
 /// installs it here as the stable TAIL of the boot fold — exactly as the pre-relocation core registry
 /// folded `builtin_decls()`. The neutral substrate spells no protocol crate; it only holds the fn
-/// pointer core hands it. Unset in every other build (the retired engine crate's own test binary registers its
-/// dialects through [`register_test_protocol`] and needs no core tail).
+/// pointer core hands it. Unset in every other build (a protocol crate's own test binary registers
+/// its dialects through [`register_test_protocol`] and needs no core tail).
 #[cfg(any(test, feature = "test-support"))]
 static TEST_BUILTINS_HOOK: std::sync::OnceLock<fn() -> &'static [&'static ProtocolDecl]> =
     std::sync::OnceLock::new();
@@ -397,7 +405,7 @@ pub fn registry() -> &'static Registry {
 // RESOLVE A PROTOCOL BY NAME is [`Registry::decl`] (above). The single free-fn wrapper `decl_for` —
 // the ONE by-name resolution the `structure-lint` census pins — stays in `busbar-core`
 // (`proto::registry::decl_for`) so it can seed core's OWN-test built-in tail before it reads; every
-// other crate (the retired engine crate) resolves through `registry().decl(name)` directly on this neutral ABI.
+// other crate resolves through `registry().decl(name)` directly on this neutral ABI.
 
 /// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
 /// speaks, or `None` for a path that names none. Folds every registered protocol's
@@ -448,7 +456,7 @@ pub fn known_protocols() -> &'static [&'static str] {
 
 // ── THE REGISTRY-RESOLVED PROTO ACCESSORS — RELOCATED DOWN from `busbar_kernel::proto` ───────────────
 // Thin reads of the registry singleton above, moved onto the neutral substrate so an extracted
-// protocol crate (the retired engine crate) resolves a protocol fact through the neutral ABI rather than reaching
+// protocol crate resolves a protocol fact through the neutral ABI rather than reaching
 // BACK into `busbar-core` (the reverse-edge rule). `busbar-core` re-exports each at its historical
 // `busbar_kernel::proto::…` path, so every in-core / plugin caller compiles unchanged and the values are
 // byte-identical. They read the SAME singleton `registry()` returns, so — exactly as `known_protocols`
@@ -461,7 +469,7 @@ pub fn streaming_content_types() -> &'static [&'static str] {
     registry().streaming_content_types()
 }
 
-/// The set of array-stream shim keys across every declared protocol (only Gemini declares one), the
+/// The set of array-stream shim keys across every declared protocol (a protocol declares at most one), the
 /// aggregate `proxy::strip_router_shim_keys` reads to remove every protocol's marker while naming none.
 pub fn array_stream_shim_keys() -> &'static [&'static str] {
     registry().array_stream_shim_keys()
@@ -486,8 +494,8 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
 }
 
 /// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
-/// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
-/// lane protocols).
+/// lane-build path, or `None` for an unknown name or one that declares no wire codec (a protocol
+/// with no codec is not a lane protocol).
 pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
     registry()
         .decl(name)

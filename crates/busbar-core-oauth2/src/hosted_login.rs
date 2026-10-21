@@ -60,15 +60,13 @@ async fn browser(handle: Arc<AppHandle>, req: Request<Body>) -> Response {
     // `.await` (axum's `Body` is not `Sync`, so the handler future would not be `Send`).
     let params = parse_query(req.uri().query().unwrap_or(""));
     let cookie_raw = read_cookie(&req);
-    // Whether this navigation came from busbar's OWN page (the key-issued page's "Refresh key"
-    // link). Browsers set `Sec-Fetch-Site` themselves and a page cannot forge it; `cross-site` is a
-    // link from another site, `none` a typed, bookmarked or mail-app URL, and an absent header an
-    // old browser or a non-browser. Only `same-origin` may rotate.
-    let same_origin = req
+    // The navigation's `Sec-Fetch-Site`, read for [`refresh_rotates`] (absent: an old browser or a
+    // non-browser).
+    let sec_fetch_site = req
         .headers()
         .get("sec-fetch-site")
         .and_then(|v| v.to_str().ok())
-        == Some("same-origin");
+        .map(str::to_string);
     drop(req);
     let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
@@ -82,16 +80,44 @@ async fn browser(handle: Arc<AppHandle>, req: Request<Body>) -> Response {
         return callback(&app, &handle, cookie_raw, code, get("state")).await;
     }
     match get("method") {
-        // `?refresh=1` marks a ROTATE ("Refresh key"): the completing handler mints with refresh=true.
-        // Honoured only from busbar's own page: a rotate revokes the user's key, and any other site
-        // can navigate a signed-in user here (the IdP approves silently), so a cross-site, typed or
-        // header-less `refresh=1` is a plain issue that re-shows the key.
+        // `?refresh=1` marks a ROTATE ("Refresh key"): the completing handler mints with refresh=true,
+        // under the rule [`refresh_rotates`] states.
         Some(method) => {
-            let refresh = same_origin && get("refresh").as_deref() == Some("1");
+            let refresh = refresh_rotates(
+                get("refresh").as_deref() == Some("1"),
+                sec_fetch_site.as_deref(),
+            );
             begin(&app, &method, refresh).await
         }
         None => chooser(&app),
     }
+}
+
+/// Whether a `?refresh=1` rotation is honoured only on a navigation from busbar's OWN page
+/// (`Sec-Fetch-Site: same-origin`, the key-issued page's "Refresh key" link). A rotate revokes the
+/// user's key, and any site can navigate a signed-in user to `?refresh=1` while the IdP approves
+/// silently (K3 #20). `false` is 1.5.5's behaviour, which this build keeps until the owner signs the
+/// change: `?refresh=1` rotates whatever the navigation's origin (v1.5.5
+/// crates/busbar/src/auth/token.rs:324). The owner's signature flips this one line.
+pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = false;
+
+/// Whether a `begin` asked to rotate (`refresh_param`) rotates the key, given the navigation's
+/// `Sec-Fetch-Site`, under [`REFRESH_NEEDS_SAME_ORIGIN`].
+fn refresh_rotates(refresh_param: bool, sec_fetch_site: Option<&str>) -> bool {
+    refresh_rotates_under(REFRESH_NEEDS_SAME_ORIGIN, refresh_param, sec_fetch_site)
+}
+
+/// [`refresh_rotates`] under a stated `needs_same_origin`. Browsers set `Sec-Fetch-Site` themselves
+/// and a page cannot forge it: `cross-site` is a link from another site, `none` a typed, bookmarked
+/// or mail-app URL, `same-site` a sibling subdomain, and an absent header an old browser or a
+/// non-browser. With `needs_same_origin`, only `same-origin` rotates; every other navigation is a
+/// plain issue that re-shows the key.
+fn refresh_rotates_under(
+    needs_same_origin: bool,
+    refresh_param: bool,
+    sec_fetch_site: Option<&str>,
+) -> bool {
+    refresh_param && (!needs_same_origin || sec_fetch_site == Some("same-origin"))
 }
 
 /// The chooser: one button per method that has a `browser_login` block, in config order.
@@ -323,8 +349,8 @@ async fn issue_and_render(
             "Your Busbar policy does not allow the key your account would be issued. Ask your \
              Busbar admin to review your access.",
         ),
-        // No grant; or the subject's key is disabled, or another identity provider minted it: the
-        // same refusal page.
+        // No grant; or (only with the unsigned `SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE` on) the
+        // subject's key is disabled, or another identity provider minted it: the same refusal page.
         SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound => error_page(
             StatusCode::FORBIDDEN,
             "No access yet",

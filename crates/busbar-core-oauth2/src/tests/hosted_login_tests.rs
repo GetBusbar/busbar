@@ -331,25 +331,42 @@ async fn refresh_flag_for(
         .refresh
 }
 
-/// K3 #20: a `refresh=1` login ROTATES (revokes) the user's key, and any site can navigate a signed-in
-/// user to it while the IdP approves silently. It is honoured only on a navigation from busbar's own
-/// page (`Sec-Fetch-Site: same-origin`, the key-issued page's "Refresh key" link); a cross-site link,
-/// a typed or mailed URL (`none`), a sibling subdomain (`same-site`) or no header at all is a plain
-/// issue that re-shows the key.
+/// 1.5.5 PARITY CELL (Q128 u27): `GET /auth/token?method=<m>&refresh=1` ROTATES the key whatever
+/// the navigation's `Sec-Fetch-Site`, a cross-site link, a typed URL, a sibling subdomain and a
+/// header-less client included, as 1.5.5 did (v1.5.5 crates/busbar/src/auth/token.rs:324). RED
+/// against the same-origin rule (K3 #20), under which only `same-origin` rotates.
 #[tokio::test]
-async fn a_refresh_link_rotates_only_from_busbars_own_page() {
+async fn a_refresh_link_rotates_from_any_origin_as_1_5_5_did() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
     let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
-    for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
+    for site in [
+        Some("cross-site"),
+        None,
+        Some("none"),
+        Some("same-site"),
+        Some("same-origin"),
+    ] {
         assert!(
-            !refresh_flag_for(&handle, site).await,
-            "Sec-Fetch-Site {site:?} must not rotate the key"
+            refresh_flag_for(&handle, site).await,
+            "Sec-Fetch-Site {site:?} rotates the key, as 1.5.5 did"
         );
     }
-    assert!(
-        refresh_flag_for(&handle, Some("same-origin")).await,
-        "the key-issued page's own Refresh link still rotates"
-    );
+}
+
+/// THE SIGNABLE RULE, held ready (K3 #20): under `needs_same_origin` only a navigation from
+/// busbar's own page (`same-origin`) rotates; a cross-site link, a typed or mailed URL (`none`), a
+/// sibling subdomain (`same-site`) or no header at all is a plain issue. Without it every
+/// `refresh=1` rotates, and no navigation without `refresh=1` ever does.
+#[test]
+fn the_same_origin_refresh_rule_is_held_ready_behind_its_const() {
+    for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
+        assert!(!refresh_rotates_under(true, true, site), "{site:?}");
+        assert!(refresh_rotates_under(false, true, site), "{site:?}");
+    }
+    assert!(refresh_rotates_under(true, true, Some("same-origin")));
+    for needs in [true, false] {
+        assert!(!refresh_rotates_under(needs, false, Some("same-origin")));
+    }
 }
 
 /// An authorize URL a `HeaderValue` cannot represent must FAIL CLOSED, not panic. `Location` carries
