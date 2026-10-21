@@ -1045,7 +1045,6 @@ typedef struct bb_plane_OpClass bb_plane_OpClass;
 typedef struct bb_plane_BillableClass bb_plane_BillableClass;
 typedef struct bb_plane_RouteCost bb_plane_RouteCost;
 typedef struct bb_plane_RecordChain bb_plane_RecordChain;
-typedef struct bb_plane_RecordRetention bb_plane_RecordRetention;
 typedef struct bb_plane_PinMechanism bb_plane_PinMechanism;
 typedef struct bb_plane_RefusalStatus bb_plane_RefusalStatus;
 typedef struct bb_plane_TrustKey bb_plane_TrustKey;
@@ -2660,12 +2659,6 @@ struct bb_plane_RecordChain {
     uint32_t _reserved;
 };
 
-/* One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than */
-struct bb_plane_RecordRetention {
-    uint32_t kind;
-    uint32_t rule;
-};
-
 /* One pin mechanism a [`TRUST_PIN`] key accepts, as the operator spells it. */
 struct bb_plane_PinMechanism {
     bb_mech_AbiStr token;
@@ -2737,8 +2730,6 @@ struct bb_plane_PlaneTail {
     uint64_t stream_ceiling_secs;
     const bb_mech_AbiStr *metric_lanes;
     size_t metric_lanes_len;
-    const bb_plane_RecordRetention *record_retentions;
-    size_t record_retentions_len;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -5401,10 +5392,6 @@ BB_ASSERT(offsetof(bb_plane_RecordChain, kind) == 0, "bb_plane_RecordChain.kind:
 BB_ASSERT(offsetof(bb_plane_RecordChain, framing) == 4, "bb_plane_RecordChain.framing: offset");
 BB_ASSERT(offsetof(bb_plane_RecordChain, flags) == 8, "bb_plane_RecordChain.flags: offset");
 BB_ASSERT(offsetof(bb_plane_RecordChain, _reserved) == 12, "bb_plane_RecordChain._reserved: offset");
-BB_ASSERT(sizeof(bb_plane_RecordRetention) == 8, "bb_plane_RecordRetention: size");
-BB_ASSERT(BB_ALIGNOF(bb_plane_RecordRetention) == 4, "bb_plane_RecordRetention: alignment");
-BB_ASSERT(offsetof(bb_plane_RecordRetention, kind) == 0, "bb_plane_RecordRetention.kind: offset");
-BB_ASSERT(offsetof(bb_plane_RecordRetention, rule) == 4, "bb_plane_RecordRetention.rule: offset");
 BB_ASSERT(sizeof(bb_plane_PinMechanism) == 24, "bb_plane_PinMechanism: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PinMechanism) == 8, "bb_plane_PinMechanism: alignment");
 BB_ASSERT(offsetof(bb_plane_PinMechanism, token) == 0, "bb_plane_PinMechanism.token: offset");
@@ -5424,7 +5411,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 440, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 424, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -5470,8 +5457,6 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_openapi) == 376, "bb_plane_PlaneTai
 BB_ASSERT(offsetof(bb_plane_PlaneTail, stream_ceiling_secs) == 400, "bb_plane_PlaneTail.stream_ceiling_secs: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, metric_lanes) == 408, "bb_plane_PlaneTail.metric_lanes: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, metric_lanes_len) == 416, "bb_plane_PlaneTail.metric_lanes_len: offset");
-BB_ASSERT(offsetof(bb_plane_PlaneTail, record_retentions) == 424, "bb_plane_PlaneTail.record_retentions: offset");
-BB_ASSERT(offsetof(bb_plane_PlaneTail, record_retentions_len) == 432, "bb_plane_PlaneTail.record_retentions_len: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");

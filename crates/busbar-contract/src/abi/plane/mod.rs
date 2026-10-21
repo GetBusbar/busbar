@@ -174,7 +174,6 @@
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
-//! | (new) record retention rules (terminal-only vs by age) | tail [`PlaneTail::record_retentions`]; a kind not listed is purged by age |
 //! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | Statement: [`SECTION_REQUIRED`](crate::abi::mechanism::door::SECTION_REQUIRED) on a `sections` entry |
@@ -1343,27 +1342,6 @@ impl RecordChain {
     };
 }
 
-/// One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than
-/// a purge's cutoff the host's purge drops. The host passes the rule with every purge of the kind
-/// (the store ABI's `KindBeforeIn::retention`), so no store infers it from the kind's name. A kind
-/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE)).
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RecordRetention {
-    /// Index into [`PlaneTail::record_kinds`].
-    pub kind: u32,
-    /// [`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE) |
-    /// [`RETENTION_TERMINAL_ONLY`](crate::abi::store::plane::RETENTION_TERMINAL_ONLY).
-    pub rule: u32,
-}
-
-impl RecordRetention {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `RecordRetention { …, ..RecordRetention::ZERO }` so a field appended
-    /// later reads as not declared.
-    pub const ZERO: Self = Self { kind: 0, rule: 0 };
-}
-
 /// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
 /// fingerprint?}`: which authenticity root it has and the operator's out-of-band material.
 pub const TRUST_PIN: u32 = 1;
@@ -1621,13 +1599,6 @@ pub struct PlaneTail {
     pub metric_lanes: *const AbiStr,
     /// How many.
     pub metric_lanes_len: usize,
-    /// THE RETENTION RULE OF EACH RECORD KIND THAT IS NOT PURGED BY AGE ([`RecordRetention`]): at
-    /// most one entry per kind, each naming a kind of [`PlaneTail::record_kinds`]. A kind not listed
-    /// is purged by age. NULL/0 = none. A tail addition: a tail whose `size` ends before it lists
-    /// none.
-    pub record_retentions: *const RecordRetention,
-    /// How many.
-    pub record_retentions_len: usize,
 }
 
 impl PlaneTail {
@@ -1679,8 +1650,6 @@ impl PlaneTail {
         stream_ceiling_secs: 0,
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
-        record_retentions: std::ptr::null(),
-        record_retentions_len: 0,
     };
 }
 

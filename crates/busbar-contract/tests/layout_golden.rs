@@ -1013,7 +1013,6 @@ fn compute_layout() -> String {
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
     record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
-    record!(s, pkind::RecordRetention, [kind, rule]);
     record!(s, pkind::PinMechanism, [token, flags, _reserved]);
     record!(
         s,
@@ -1072,9 +1071,7 @@ fn compute_layout() -> String {
             admin_openapi,
             stream_ceiling_secs,
             metric_lanes,
-            metric_lanes_len,
-            record_retentions,
-            record_retentions_len
+            metric_lanes_len
         ]
     );
     record!(
