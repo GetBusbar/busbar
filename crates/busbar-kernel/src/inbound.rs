@@ -1358,7 +1358,7 @@ impl Inbound {
         };
         if let Some(u) = self.units().get_mut(&unit.id) {
             u.head = Some(h.head);
-            // RED: where it was handed in is not kept.
+            u.handed = h.framing.map(|f| (f, h.stream));
         }
         Ok((flow, unit))
     }

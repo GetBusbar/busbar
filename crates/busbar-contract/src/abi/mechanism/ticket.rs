@@ -60,9 +60,7 @@ impl Ticket {
     /// number. A host-side reading: a plugin never decodes a ticket.
     #[must_use]
     pub const fn framing(self) -> u64 {
-        // RED: no framing is named.
-        let _ = self;
-        0
+        ((self.slot as u64) << 32) | self.generation as u64
     }
 }
 

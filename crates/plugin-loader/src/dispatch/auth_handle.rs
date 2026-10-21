@@ -424,5 +424,6 @@ pub trait AuthHandleHost: Send + Sync {
 /// later minting of the slot repeats.
 #[must_use]
 pub const fn framing_of(t: busbar_contract::abi::mechanism::ticket::Ticket) -> u64 {
-    ((t.slot as u64) << 32) | t.generation as u64
+    // The contract's one reading, the connector's too (`Framing::framing_id`).
+    t.framing()
 }
