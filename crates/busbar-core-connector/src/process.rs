@@ -6,9 +6,10 @@
 //! DESTINATION GUARD: one destination check, in the connector, for every outbound connection).
 //! [`dest_judge`] builds the deployment's one destination judge ([`GuardJudge`]: the one
 //! [`Guard`], the system resolver, each egress class's scheme rule); the root hands that same judge
-//! to [`build`] (the connector's dial judge, [`judge`]) and to the kernel (`dest.judge` and the
-//! kernel's own clients), so every dial of every kind is judged by one guard. The root hands in
-//! the deployment's values and holds what it returns; nothing here keeps a second.
+//! to [`build_with_secrets`] (the connector's dial judge, [`judge`]) and to the kernel
+//! (`dest.judge` and the kernel's own clients), so every dial of every kind is judged by one guard.
+//! The root hands in the deployment's values and holds what it returns; nothing here keeps a
+//! second.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 /// The default outbound trust will not build, a proxy variable is set and does not parse,
 /// `entries` refuses, two entries claim one scheme, or
 /// an entry states no claim.
-pub fn build(
+pub fn build_with_secrets(
     entries: impl FnOnce() -> Result<Vec<Entry>, String>,
     dest: Arc<dyn DestJudge>,
     own_ports: &[u16],
@@ -60,6 +61,33 @@ pub fn build(
             .proxying(proxy)
             .resolving_spawn_secrets(spawn_secrets),
     ))
+}
+
+// FINAL-REPIN: delete when the pinned door root cells call build_with_secrets
+/// THE PINNED DOOR ROOT CELLS' NAME for [`build_with_secrets`], kept until their pin moves: the
+/// same connector, its program environment references resolved through the linked secret plugins
+/// at config time, as the root's boot resolves them. Never in a shipped build (`test-support`).
+///
+/// # Errors
+///
+/// As [`build_with_secrets`].
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn build(
+    entries: impl FnOnce() -> Result<Vec<Entry>, String>,
+    dest: Arc<dyn DestJudge>,
+    own_ports: &[u16],
+    wake: WakeTicket,
+    pool: PoolPosture,
+) -> Result<Arc<Connector>, String> {
+    build_with_secrets(
+        entries,
+        dest,
+        own_ports,
+        wake,
+        pool,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
+    )
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.

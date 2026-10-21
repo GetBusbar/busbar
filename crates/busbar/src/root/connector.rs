@@ -186,9 +186,9 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
     }
 }
 
-/// THE CONNECTOR'S SECRET RESOLVER, the one the boot hands `process::build`: a member program's
-/// `env` secret references resolve through the linked secret plugins at config time and are held
-/// for the spawns. A door's root cells build their connector with this same resolver.
+/// THE CONNECTOR'S SECRET RESOLVER, the one the boot hands `process::build_with_secrets`: a member
+/// program's `env` secret references resolve through the linked secret plugins at config time and
+/// are held for the spawns. A door's root cells build their connector with this same resolver.
 #[must_use]
 pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
     busbar_kernel::config::secret::resolve_linked_string_at_config
@@ -216,7 +216,7 @@ pub fn boot(
     // here and never taken from a submitter: the first submit is made on the control runtime,
     // whose thread then waits synchronously on worker ops (the boot's `ready`).
     crate::root::dispatch::dispatcher().install_runtime(io_reactor());
-    let built = process::build(
+    let built = process::build_with_secrets(
         || {
             declared(
                 entries(doors, settings)?,

@@ -19,7 +19,7 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
-    let built = process::build(
+    let built = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
@@ -31,7 +31,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
-    let second = process::build(
+    let second = process::build_with_secrets(
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
@@ -322,7 +322,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
         .build()
         .expect("a runtime");
     rt.block_on(async {
-        let c = process::build(
+        let c = process::build_with_secrets(
             || entries(doors, &TransportSettings::default()),
             judge(),
             &[],

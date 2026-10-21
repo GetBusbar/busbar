@@ -236,7 +236,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -908,7 +908,7 @@ pub(super) mod session_door {
             ..Default::default()
         })
         .expect("the guard");
-        busbar_core_connector::process::build(
+        busbar_core_connector::process::build_with_secrets(
             || {
                 crate::root::connector::entries(
                     crate::LINKED_TRANSPORT_DOORS,
@@ -3920,7 +3920,7 @@ async fn serve_configured(
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
