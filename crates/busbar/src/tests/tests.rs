@@ -1515,3 +1515,28 @@ fn the_root_spells_no_planes_line_serve_flag() {
         );
     }
 }
+
+/// COMPILED IN OR DROPPED IN, ONE PATH (BUSBAR-1.6.0.md l.2179, Part 2 #2): which plane serves the
+/// `pools` map is read off each served plane's declared section at run time, so the binary gates no
+/// run-time behaviour (the config-apply refresh, the health probes) on whether that plane's row was
+/// linked into the build. A `linked_section_<name>` cfg may gate a test, never serving code.
+/// RED before the fix: the pools plane's apply refresh (`main.rs`) and its health probes
+/// (`root/serve.rs` `arm_probes`) compiled only under `cfg(linked_section_pools)`, so the same plane
+/// dropped into `plugins.dir` kept its boot providers, secrets and pools until a restart, unprobed.
+#[test]
+fn no_serving_code_is_gated_on_which_plane_rows_were_linked() {
+    for (file, src) in [
+        ("main.rs", include_str!("../main.rs")),
+        ("root/serve.rs", include_str!("../root/serve.rs")),
+    ] {
+        for (n, line) in src.lines().enumerate() {
+            let line = line.trim();
+            assert!(
+                !(line.starts_with("#[cfg(linked_section_")
+                    || line.starts_with("#[cfg(not(linked_section_")),
+                "{file}:{}: serving code is gated on a linked row: {line}",
+                n + 1
+            );
+        }
+    }
+}
