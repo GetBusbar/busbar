@@ -216,6 +216,8 @@ fn rig(instance: &'static str, chain: Chain, max_inbound: usize) -> Rig {
     )
     .expect("the test plane composes");
     served.post = Some(post);
+    // The framer of the test plane's framed claim: the neutral frame door, dropped in.
+    served.framers = Some(super::money_tests::neutral_framers());
     let (app, token) = match chain {
         Chain::Keys => (
             busbar_kernel::test_support::TestApp::new().keys_chain(),
@@ -1041,6 +1043,71 @@ async fn an_over_cap_stream_ends_on_its_own_on_h2_and_the_connection_serves_on()
                 .zip(left.iter().zip(right.iter()))
             {
                 assert_eq!(l, r, "h2__{case}: the answers differ handed up and framed");
+            }
+        })
+        .await;
+}
+
+/// One framed claim's answer over h2: the status, the head fields but `date` in order, the body and
+/// the closing block (the trailers), each field as `(name, value)`.
+type Closed = (u16, Vec<(String, Vec<u8>)>, Vec<u8>, Vec<(String, Vec<u8>)>);
+
+/// `body` POSTed to the framed claim `path` over h2 by prior knowledge at `at`: its answer and its
+/// closing block.
+async fn framed_over_h2(at: SocketAddr, path: &str, body: &'static [u8]) -> Closed {
+    use http_body_util::BodyExt as _;
+    let stream = tokio::net::TcpStream::connect(at)
+        .await
+        .expect("the listener accepts");
+    let (mut send, conn) = hyper::client::conn::http2::handshake(
+        hyper_util::rt::TokioExecutor::new(),
+        hyper_util::rt::TokioIo::new(stream),
+    )
+    .await
+    .expect("the h2 preface is answered");
+    drop(tokio::task::spawn_local(conn));
+    let scheme = axum::http::uri::Scheme::HTTP;
+    let request = hyper::Request::post(format!("{scheme}://{at}{path}"))
+        .body(http_body_util::Full::new(bytes::Bytes::from_static(body)))
+        .expect("a request");
+    let response = tokio::time::timeout(EXCHANGE_BOUND, send.send_request(request))
+        .await
+        .expect("answered in time")
+        .expect("answered");
+    let fields = |h: &axum::http::HeaderMap| -> Vec<(String, Vec<u8>)> {
+        h.iter()
+            .filter(|(name, _)| name.as_str() != "date")
+            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+            .collect()
+    };
+    let status = response.status().as_u16();
+    let head = fields(response.headers());
+    let collected = response.into_body().collect().await.expect("the body");
+    let closing = collected.trailers().map(fields).unwrap_or_default();
+    (status, head, collected.to_bytes().to_vec(), closing)
+}
+
+/// A FRAMED CLAIM'S CLOSING BLOCK REACHES ITS CALLER ON BOTH PATHS (ARCHITECT 4l): the test plane's
+/// framed claim, framed by its own framer (the neutral frame door, dropped in), answers its messages
+/// and closes with the framer's own closing block (the unit's final status, message and details);
+/// over h2 the caller reads the same answer and the same closing block handed up and framed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_framed_claims_closing_block_reaches_its_caller_on_both_paths() {
+    let _one = PUBLISHING.lock().await;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let rig = rig("accepted-framed-claim", Chain::Keys, 0);
+            let handed_up = rig.handed_up();
+            let framed = rig.framed(rig.linked_framer());
+            for path in ["/framed/status", "/framed/ok"] {
+                let left = framed_over_h2(handed_up, path, b"\x02hi\x03abc").await;
+                let right = framed_over_h2(framed, path, b"\x02hi\x03abc").await;
+                assert!(
+                    left.3.iter().any(|(name, _)| name == "frame-status"),
+                    "{path}: the hand-up delivers the framer's closing block: {left:?}"
+                );
+                assert_eq!(left, right, "{path}: the framed claim's answers differ");
             }
         })
         .await;
