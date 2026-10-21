@@ -1383,9 +1383,8 @@ impl TestApp {
     /// something a chain module would have admitted.
     ///
     /// The stand-in's role is BOUND (all pools, no group) under `role_bindings`, as a deployed IdP's
-    /// must be: an identified principal that earns no key is refused `NoGrant`, so an
-    /// unbound stand-in would admit nothing and every "core refused it" assertion would pass against
-    /// a closed door.
+    /// is: the principal is admitted under a governance key, so every "core refused it" assertion
+    /// judges a governed admission, never a keyless one.
     pub fn idp_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare("test-idp-module")],
