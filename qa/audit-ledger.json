@@ -3198,7 +3198,7 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": "4315b727396e6484e598a380b8bc4137e295c85d4ac526899e6bf7109e870be9",
+   "tree_hash": "04474784df2274c39678b2b707c51f759ccbaa209d93cf1b267157dca578255b",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -3210,7 +3210,7 @@
    },
    "report": "Many gates can still be satisfied without fixing what they police. Drain-only ledgers, construction ceilings, Law 0 rows and the segment-debt list accept a new row or a raised figure in the same change. Rosters of dialects, nouns, wire fields, literals and seams are typed by hand. Scanners miss legal spellings, continued string lines and pinned plugin sources. The audit ledger passes with nothing audited, and one zero round erases a finding. Conformance deciders admit a manifest subset and ignore a runner's exit. Read in eleven parts; production code fully, selftest batteries sampled.",
    "auditor": "opus-r159b-xtask",
-   "fixed_at": null,
+   "fixed_at": "af15a5e87218bb25497f79d4bc51a061493f92c5",
    "exclude": [
     "xtask/src/tests"
    ],
