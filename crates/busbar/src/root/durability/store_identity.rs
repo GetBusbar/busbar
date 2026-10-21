@@ -396,6 +396,23 @@ fn put_lease(calls: &dyn StoreCalls, host: &str, row: LeaseRow) -> Result<(), St
         .map_err(|f| format!("the store would not keep this host's lease: {f}"))
 }
 
+/// `host`'s lease row as the store holds it: its holder and when it lapses (0 = released). A
+/// test-only read, so a cell asserts what a hand-driven refresh or release left in the store.
+#[cfg(test)]
+pub(super) fn lease_row(calls: &dyn StoreCalls, host: &str) -> Option<([u8; 16], u64)> {
+    read_lease(calls, host)
+        .expect("the lease reads")
+        .map(|row| (row.holder, row.expires_ms))
+}
+
+/// Put `host`'s held lease back to lapse at `expires_ms`, its holder kept: a test-only write, so a
+/// cell tells a refresh by the expiry it moves without reading the wall clock.
+#[cfg(test)]
+pub(super) fn set_lease_expiry(calls: &dyn StoreCalls, host: &str, expires_ms: u64) {
+    let (holder, _) = lease_row(calls, host).expect("a lease is held");
+    put_lease(calls, host, LeaseRow { holder, expires_ms }).expect("the lease is kept");
+}
+
 /// Whether another process holds `host`'s lease live now.
 fn held_live(row: Option<LeaseRow>, holder: &[u8; 16], now: u64) -> bool {
     row.is_some_and(|row| row.holder != *holder && row.expires_ms > now)
