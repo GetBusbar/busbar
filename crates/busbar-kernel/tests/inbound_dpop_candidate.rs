@@ -74,7 +74,9 @@ impl Verifying for Answered {
 fn identity(subject: &str, credential: &str) -> Verified {
     Verified::Identity(VerifiedIdentity {
         subject: subject.to_string(),
-        credential: Some(busbar_contract::redacted::Secret::new(credential.to_string())),
+        credential: Some(busbar_contract::redacted::Secret::new(
+            credential.to_string(),
+        )),
         groups: vec![ROLE.to_string()],
         ..VerifiedIdentity::default()
     })
@@ -268,7 +270,10 @@ async fn red_a_dpop_proven_token_is_the_candidate_a_plugin_auth_is_lent() {
             authority: "a.example".to_string(),
             query: None,
             fields: vec![
-                ("authorization".to_string(), authorization.as_bytes().to_vec()),
+                (
+                    "authorization".to_string(),
+                    authorization.as_bytes().to_vec(),
+                ),
                 ("dpop".to_string(), proof.as_bytes().to_vec()),
             ],
         };
