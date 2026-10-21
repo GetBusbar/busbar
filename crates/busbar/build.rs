@@ -363,7 +363,13 @@ fn test_linked_source(manifest: &str) -> String {
     // A door row's module is the one its plane-door row names in `linked-entry`, so the roster
     // never spells a module the crate has moved.
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
+    let door_roots = metadata_rows(manifest, DOOR_ROOT);
     for id in &doors {
+        // A door-root crate's door is the one the door-root table names (status row 195).
+        if let Some((_, door)) = door_roots.iter().find(|(k, _)| ident(k) == *id) {
+            out.push_str(&format!("    ({id:?}, {door}),\n"));
+            continue;
+        }
         let module = entries
             .iter()
             .map(|(_, module)| module)
@@ -753,7 +759,9 @@ fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> 
             .or_else(|| entries.iter().find(|(k, _)| *k == krate))
             .map_or_else(|| format!("{}::linked", ident(&krate)), |(_, e)| e.clone());
         if !entry.starts_with("crate::") {
-            out.push_str(&format!("    ::{entry}::door,\n"));
+            // A door-root row reads the door its table names; a transitional one its entry's.
+            let (door, _) = door_of(manifest, &krate, &entry);
+            out.push_str(&format!("    ::{door},\n"));
         }
     }
     out.push_str("];\n");
@@ -792,6 +800,8 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             .or_else(|| entries.iter().find(|(k, _)| *k == krate))
             .map(|(_, path)| path.clone())
             .unwrap_or_else(|| format!("{}::linked", ident(&krate)));
+        // The door the row reads: a door-root crate's named door, else its entry's (status row 195).
+        let (door_fn, _) = door_of(manifest, &krate, &entry);
         let door = axes
             .iter()
             .any(|(f, a)| *f == key && a.split_whitespace().any(|x| x == DOOR_AXIS));
@@ -809,14 +819,14 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
         // have no root), as the root's linked table reads them (BUSBAR-1.6.0.md l.3560-3561).
         door_builds.push_str(&format!(
             "fn __door_build_{n}(settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-             let key = self::__busbar_doors::row_facts(::{entry}::door).key;\n    \
-             self::__busbar_doors::build(key, ::{entry}::door, settings)\n}}\n\
+             let key = self::__busbar_doors::row_facts(::{door_fn}).key;\n    \
+             self::__busbar_doors::build(key, ::{door_fn}, settings)\n}}\n\
              fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
-             self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
+             self::__busbar_doors::claims_of(::{door_fn})\n}}\n"
         ));
         let (build, claims) = (format!("__door_build_{n}"), format!("__door_claims_{n}"));
         rows.push_str(&format!(
-            "        LinkedWire::of(::{entry}::door, {build}, {claims}),\n"
+            "        LinkedWire::of(::{door_fn}, {build}, {claims}),\n"
         ));
     }
     let source = format!(

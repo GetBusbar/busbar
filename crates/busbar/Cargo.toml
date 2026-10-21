@@ -463,10 +463,19 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
-# A door-root transport's entry is its crate root, whose only public item is `door`
-# (BUSBAR-1.6.0.md l.3560); the row reads everything else off that door's Statement.
-busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming::door"
+
+# THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
+# has `fn door()` as its only public item): `<plugin crate> = "<its door>"`. A crate named here is
+# linked by its door alone: every row of it reads that door and nothing else, and every fact its
+# axis needs (a transport's key, layers and session; an auth row's canonical name; a store's key and
+# `ephemeral`; an export's name, alias and `declares`; a secret or plane door's `declares`) is read
+# off the door's Statement (`root::door_root`). A crate not named here is TRANSITIONAL: it keeps its
+# `linked-entry` (else `<crate>::linked`) reads until its own door-root round names it here, and the
+# transitional arm is deleted once every crate is. A door-root row may name only axes that read its
+# door, and no `linked-entry` or `linked-declares` row.
+[package.metadata.busbar.door-root]
+busbar-transport-grpc = "busbar_transport_grpc::door"
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.

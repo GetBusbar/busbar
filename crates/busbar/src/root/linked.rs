@@ -88,10 +88,15 @@ pub struct Linked {
     /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
-    /// [`LinkedDoorExport`]).
-    pub export_doors: &'static [LinkedDoorExport],
-    /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
-    pub stores: &'static [LinkedStore],
+    /// [`LinkedDoorExport`]), built on first read (a door-root row's facts are its Statement's,
+    /// `crate::root::door_root::export_row`); a reference to it is the slice every reader takes.
+    pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
+    /// The store axis: each linked store's `(key, ephemeral, door, canonical)`, built on first read
+    /// (a door-root row's facts are its Statement's, `crate::root::door_root::store_row`).
+    pub stores: &'static std::sync::LazyLock<Vec<LinkedStore>>,
+    /// Every DOOR-ROOT row (`[package.metadata.busbar.door-root]`), checked against its door's
+    /// Statement before anything registers (`crate::root::door_root::check`).
+    pub door_roots: &'static [crate::root::door_root::DoorRoot],
     /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
     /// root's hook axis (`crate::root::hooks`).
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
@@ -405,7 +410,23 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
 /// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets, linked.secret_declares) {
+    // A DOOR-ROOT ROW whose door's Statement disagrees with its row refuses the boot before any
+    // row registers (status row 195).
+    if let Err(refusal) = crate::root::door_root::check(linked.door_roots) {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    }
+    let declared: Vec<(busbar_contract::abi::mechanism::door::DoorFn, &str)> = linked
+        .secret_declares
+        .iter()
+        .copied()
+        .chain(
+            crate::root::door_root::declared(linked.door_roots, "secret-doors")
+                .into_iter()
+                .map(|(_, door, json)| (door, json)),
+        )
+        .collect();
+    match link_secrets(linked.secrets, &declared) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry),
@@ -716,6 +737,27 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
     DROPPED.get().copied()
 }
 
+/// EVERY LINKED PLANE DOOR'S `declares`, `(row, door, declares)`: a transitional row's off its
+/// `linked-declares` row ([`Linked::plane_door_declares`]), a door-root row's off its door's
+/// Statement (`EXT_DECLARES`; status row 195).
+pub fn plane_door_declares(
+    linked: &Linked,
+) -> Vec<(
+    &'static str,
+    busbar_contract::abi::mechanism::door::DoorFn,
+    &'static str,
+)> {
+    linked
+        .plane_door_declares
+        .iter()
+        .copied()
+        .chain(crate::root::door_root::declared(
+            linked.door_roots,
+            "plane-door",
+        ))
+        .collect()
+}
+
 /// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
 /// Statement name: a linked door's in its row's `declares.json` ([`Linked::plane_door_declares`]),
 /// a dropped-in plane's in its signed manifest (`dropped`). `None`: it declares none, and its
@@ -731,7 +773,7 @@ pub fn door_breaker(
     dropped: Option<&crate::root::loader::PluginRegistry>,
     plane: &str,
 ) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
-    for (row, door, json) in linked.plane_door_declares {
+    for (row, door, json) in &plane_door_declares(linked) {
         let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
             .map_err(|e| format!("plugin '{row}': {e}"))?;
         let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
@@ -838,7 +880,7 @@ pub fn register_diagnostics(linked: &Linked) {
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
-    match door_declared_diagnostics(linked.plane_door_declares, &installed) {
+    match door_declared_diagnostics(&plane_door_declares(linked), &installed) {
         Ok(declared) => installed.extend(declared),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");

@@ -325,7 +325,7 @@ host = "unit"
         out.contains(".map(|door| (crate::root::doors::row_facts(*door).key, *door))"),
         "{out}"
     );
-    // A DOOR-ROOT ENTRY (its crate root, whose only public item is `door`) links the same way.
+    // An entry at the crate root links the same way: the row reads `<entry>::door`.
     let door_root = manifest.replace(
         "wire-high = \"busbar_wire::linked::high\"",
         "wire-high = \"busbar_wire\"",
@@ -359,6 +359,171 @@ host = "unit"
         ),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|f: &str| f == "host"));
+        assert!(refused.is_err(), "must be refused:\n{broken}");
+    }
+}
+
+/// DOOR-ROOT ROWS OF EVERY KIND (status row 195; BUSBAR-1.6.0.md l.3560-3561): a crate the
+/// `door-root` table names is linked by the door it names and nothing else of the crate's, on every
+/// axis a door can carry (transport, plane door, secret, auth, export, store, hook); its facts are
+/// read off its Statement at boot (`root::door_root`), and every one of its rows is listed for the
+/// boot's check. A crate the table does not name keeps its transitional reads beside it, row by row.
+/// RED: a door-root row naming a kernel-typed axis, an entry module or a `declares` path is refused,
+/// and so is a door-root row for a crate no row links.
+#[test]
+fn the_generator_links_a_door_root_row_of_every_kind_by_its_door_alone() {
+    let manifest = r#"
+[dependencies]
+busbar-wire = { path = "../busbar-wire" }
+busbar-plane-x = { path = "../busbar-plane-x" }
+busbar-secret-x = { path = "../busbar-secret-x" }
+busbar-auth-x = { path = "../busbar-auth-x" }
+busbar-export-x = { path = "../busbar-export-x" }
+busbar-store-x = { path = "../busbar-store-x" }
+busbar-hook-x = { path = "../busbar-hook-x" }
+busbar-store-old = { path = "../busbar-store-old" }
+busbar-export-old = { path = "../busbar-export-old" }
+
+[features]
+
+[package.metadata.busbar.linked]
+wire = "busbar-wire"
+plane-x = "busbar-plane-x"
+secret-x = "busbar-secret-x"
+auth-x = "busbar-auth-x"
+export-x = "busbar-export-x"
+store-x = "busbar-store-x"
+hook-x = "busbar-hook-x"
+store-old = "busbar-store-old"
+export-old = "busbar-export-old"
+
+[package.metadata.busbar.linked-axes]
+wire = "transport transport-door"
+plane-x = "plane-door"
+secret-x = "secret-doors"
+auth-x = "auths"
+export-x = "export-doors"
+store-x = "stores"
+hook-x = "hooks"
+store-old = "stores"
+export-old = "export-doors"
+
+[package.metadata.busbar.linked-entry]
+busbar-export-old = "busbar_export_old"
+
+[package.metadata.busbar.linked-name]
+auth-x = "x-key"
+hook-x = "x-hook"
+
+[package.metadata.busbar.linked-canonical]
+auth-x = "busbar-auth-x"
+
+[package.metadata.busbar.door-root]
+busbar-wire = "busbar_wire::door"
+busbar-plane-x = "busbar_plane_x::door"
+busbar-secret-x = "busbar_secret_x::door"
+busbar-auth-x = "busbar_auth_x::door"
+busbar-export-x = "busbar_export_x::door"
+busbar-store-x = "busbar_store_x::door"
+busbar-hook-x = "busbar_hook_x::door"
+
+[package.metadata.busbar.root-units]
+node = "plane_node"
+"#;
+    let (out, _) = linked_source(manifest, &|_: &str| false);
+    // Each door-root row reads its door, and only its door.
+    for (want, why) in [
+        (
+            "crate::root::linked::linked_transport!(busbar_wire::door)",
+            "the transport row",
+        ),
+        (
+            "plane_doors: &[busbar_plane_x::door, ],",
+            "the plane door row",
+        ),
+        ("secrets: &[busbar_secret_x::door, ],", "the secret row"),
+        (
+            "(\"x-key\", \"busbar-auth-x\", busbar_auth_x::door)",
+            "the auth row",
+        ),
+        (
+            "crate::root::door_root::export_row(busbar_export_x::door)",
+            "the export row",
+        ),
+        (
+            "crate::root::door_root::store_row(busbar_store_x::door, \"busbar-store-x\")",
+            "the store row",
+        ),
+        ("hook_doors: &[busbar_hook_x::door, ],", "the hook row"),
+    ] {
+        assert!(out.contains(want), "{why}: `{want}` not in\n{out}");
+    }
+    for crate_ident in [
+        "busbar_wire",
+        "busbar_plane_x",
+        "busbar_secret_x",
+        "busbar_auth_x",
+        "busbar_export_x",
+        "busbar_store_x",
+        "busbar_hook_x",
+    ] {
+        let reads: Vec<&str> = out
+            .match_indices(&format!("{crate_ident}::"))
+            .map(|(at, _)| &out[at..])
+            .filter(|rest| !rest.starts_with(&format!("{crate_ident}::door")))
+            .collect();
+        assert!(
+            reads.is_empty(),
+            "a door-root crate is read only at its door: {reads:?}\n{out}"
+        );
+    }
+    // Every door-root row is listed for the boot's check, with the name its row states where its
+    // axis names one.
+    for want in [
+        "row: \"busbar-auth-x\", axis: \"auths\", door: busbar_auth_x::door, name: Some(\"busbar-auth-x\")",
+        "row: \"busbar-store-x\", axis: \"stores\", door: busbar_store_x::door, name: None",
+        "row: \"busbar-plane-x\", axis: \"plane-door\", door: busbar_plane_x::door, name: None",
+    ] {
+        assert!(out.contains(want), "`{want}` not in\n{out}");
+    }
+    // A TRANSITIONAL row beside them keeps its crate's items, row by row.
+    assert!(
+        out.contains(
+            "busbar_kernel::preflight::StoreRow(busbar_store_old::linked::STORE).linked()"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "LinkedDoorExport { name: busbar_export_old::NAME, alias: busbar_export_old::ALIAS, \
+             declares: busbar_export_old::DECLARES, door: busbar_export_old::door }"
+        ),
+        "{out}"
+    );
+
+    for broken in [
+        // RED: a door-root door plane naming a kernel-typed axis (its PROTOCOLS).
+        manifest.replace("plane-x = \"plane-door\"", "plane-x = \"plane-door protocols\""),
+        // RED: a door-root row on the plane axis (PLANE_DECLARATION + PLANE_HOOKS).
+        manifest.replace("plane-x = \"plane-door\"", "plane-x = \"plane\""),
+        // RED: a door-root crate with an entry module beside its door.
+        manifest.replace(
+            "busbar-export-old = \"busbar_export_old\"",
+            "busbar-export-old = \"busbar_export_old\"\nbusbar-store-x = \"busbar_store_x::linked\"",
+        ),
+        // RED: a door-root crate with a `declares` path beside its door.
+        manifest.replace(
+            "[package.metadata.busbar.door-root]",
+            "[package.metadata.busbar.linked-declares]\nsecret-x = \"busbar_secret_x::DECLARES\"\n\n\
+             [package.metadata.busbar.door-root]",
+        ),
+        // RED: a door-root row for a crate no linked row links.
+        manifest.replace(
+            "[package.metadata.busbar.root-units]",
+            "busbar-nowhere = \"busbar_nowhere::door\"\n\n[package.metadata.busbar.root-units]",
+        ),
+    ] {
+        let refused = std::panic::catch_unwind(|| linked_source(&broken, &|_: &str| false));
         assert!(refused.is_err(), "must be refused:\n{broken}");
     }
 }

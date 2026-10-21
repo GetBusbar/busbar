@@ -72,6 +72,9 @@ pub mod credentials;
 pub mod dispatch;
 pub mod door_steps;
 pub mod doors;
+// The door-root rows: every linked row whose crate exports only `door`, read off its Statement
+// (status row 195).
+pub mod door_root;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
