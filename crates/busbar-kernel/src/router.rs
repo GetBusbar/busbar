@@ -9,8 +9,8 @@ use axum::Router;
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, egress, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json,
-    limits, oauth_as, observability, operation, plane, plugin_routes, profile, proto, state, store,
+    durable, egress, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits,
+    oauth_as, observability, operation, plane, plugin_routes, profile, proto, state, store,
     telemetry, tls, transport, trust,
 };
 

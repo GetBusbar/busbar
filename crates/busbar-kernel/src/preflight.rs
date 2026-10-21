@@ -15,9 +15,9 @@ use crate::diagnostics::{
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, snapshot, state,
-    store, telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, snapshot, state, store,
+    telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
