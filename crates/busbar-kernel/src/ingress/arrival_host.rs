@@ -6,7 +6,7 @@
 //! living outside core) calls back through. The dialect crate owns the URL parsing (its statement
 //! about its own URL space); core owns the resolution + forward + error shaping, reached here.
 //!
-//! Mirrors `crate::plane_host::EngineHostImpl`: a stateless core object each method drives against the
+//! Mirrors `crate::plane_driver::EngineHostImpl`: a stateless core object each method drives against the
 //! live engine recovered from the opaque [`busbar_kernel::ingress::arrival::ArrivalCtx`] the dialect
 //! threads back. App-retype WEDGE 3 (THE FLIP): the payload the dialect threads back is now the NEUTRAL
 //! [`busbar_kernel::ingress::arrival::ArrivalPayload`] carrying an `Arc<dyn EngineHost>` (minted

@@ -2093,8 +2093,8 @@ fn unauthorized_with_completion_taps(
         // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
         // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
         // group-scope walk folds `&app.groups_registry` in host-side.
-        let host = crate::plane_host::engine_host_value(app);
-        let host: &dyn crate::plane_host::EngineHost = &host;
+        let host = crate::plane_driver::engine_host_value(app);
+        let host: &dyn crate::plane_driver::EngineHost = &host;
         crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,

@@ -53,16 +53,19 @@
 //! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
 //! cancelled; the write itself runs on).
 
+mod answer;
 mod cancel;
 pub mod door;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;
+pub mod host;
 mod money;
 mod needs;
 mod probe;
 pub mod refusal;
 mod route;
+pub mod route_input;
 pub mod route_tables;
 pub mod serve;
 pub mod slots;
@@ -94,6 +97,7 @@ use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
 use tokio::sync::{watch, Notify};
 
+pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
@@ -106,6 +110,10 @@ pub use hooks::{
     UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
+pub use host::{
+    engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
+    standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
+};
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;

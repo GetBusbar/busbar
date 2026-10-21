@@ -17,7 +17,7 @@ use crate::test_support::TestApp;
 use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use busbar_kernel::governance::signing::TokenSigner;
 use busbar_kernel::governance::NewKeySpec;
-use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_kernel::plane_driver::{EngineHost, LiveHostFactory};
 use busbar_kernel::store::BreakerState;
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -343,7 +343,7 @@ impl EngineApp for crate::state::App {
         (router, handle)
     }
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost> {
-        crate::plane_host::engine_host(&self)
+        crate::plane_driver::engine_host(&self)
     }
     fn handle(self: Arc<Self>) -> Arc<dyn EngineHandle> {
         Arc::new(crate::state::AppHandle::new(self))
@@ -374,10 +374,10 @@ fn app_of(app: Arc<dyn EngineApp>) -> Arc<crate::state::App> {
 
 impl EngineHandle for crate::state::AppHandle {
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost> {
-        crate::plane_host::engine_host_from_handle(&self)
+        crate::plane_driver::engine_host_from_handle(&self)
     }
     fn live_host_factory(self: Arc<Self>) -> LiveHostFactory {
-        crate::plane_host::live_host_factory(self)
+        crate::plane_driver::live_host_factory(self)
     }
     fn load(&self) -> Arc<dyn EngineApp> {
         crate::state::AppHandle::load(self)

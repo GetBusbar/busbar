@@ -85,7 +85,7 @@ pub(crate) async fn protocol_dispatch(
         // — so it names no `busbar_kernel::` item and core names no dialect.
         let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
+                host: crate::plane_driver::engine_host(&app),
                 gov,
                 caller_token: consumed.as_ref().and_then(|c| c.caller.clone()),
             },
