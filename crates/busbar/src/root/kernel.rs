@@ -2077,6 +2077,17 @@ pub trait RegisteredUnits: Send + Sync {
         refusal: &Refusal,
     ) -> SeatVerdict<Audit>;
 
+    /// The plane's audit door handed back its facts and pass. See [`Units::audited`]: the unit's
+    /// one record is sealed from them. The default drops both, as the kernel's does.
+    fn audited(
+        &self,
+        _root: &ProductionUnits,
+        _ctx: &UnitCtx,
+        _facts: busbar_contract::caps::AuditFacts,
+        _pass: Pass<Audit>,
+    ) {
+    }
+
     /// The plane's Encode step. See [`Units::encode`].
     fn encode(
         &self,
@@ -2286,6 +2297,14 @@ impl Units for ProductionUnits {
                 refusal.reason(),
             )),
         )
+    }
+
+    /// The audit door's facts and pass go to the plane that claims the unit, which seals its one
+    /// record (THE DESIGN §1, U14). A unit no plane claims keeps the kernel's default: dropped.
+    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            plane.audited(self, ctx, facts, pass);
+        }
     }
 
     fn encode(
