@@ -531,5 +531,5 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
 }
 
 #[cfg(test)]
-#[path = "../tests/rendering_tests.rs"]
+#[path = "../../tests/rendering_tests.rs"]
 mod tests;
