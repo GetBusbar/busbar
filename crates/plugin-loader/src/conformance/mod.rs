@@ -237,6 +237,15 @@ impl Subject {
         Self::of_loaded(door.into(), cdylib_crate, inputs)
     }
 
+    /// [`Subject::new`], by the name the expand step published (status row 194).
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_macro(door: MacroDoor, cdylib_crate: &'static str, inputs: &str) -> Self {
+        Self::new(door, cdylib_crate, inputs)
+    }
+
     /// [`Subject::new`] over a door the loader may enter: a restated one (the suite's RED arms).
     pub(crate) fn of_loaded(door: LoadedDoor, cdylib_crate: &'static str, inputs: &str) -> Self {
         let inputs: serde_json::Value = serde_json::from_str(inputs)

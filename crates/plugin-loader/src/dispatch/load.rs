@@ -170,6 +170,15 @@ impl LinkedRow {
         Self::of_loaded(door.into())
     }
 
+    /// [`LinkedRow::of`], by the name the expand step published (status row 194).
+    ///
+    /// # Errors
+    ///
+    /// As [`LinkedRow::of`].
+    pub fn of_macro(door: MacroDoor) -> Result<Self, LoadError> {
+        Self::of(door)
+    }
+
     /// [`LinkedRow::of`] over a door the loader may enter: a test's or the published suite's
     /// restated door.
     ///
@@ -205,6 +214,15 @@ pub(crate) fn statement_of(door: MacroDoor) -> Result<Statement, LoadError> {
 /// The refusal the door or its Statement earns.
 pub fn rendering_of(door: MacroDoor) -> Result<Vec<u8>, LoadError> {
     rendering_of_loaded(door.into())
+}
+
+/// [`rendering_of`], by the name the expand step published (status row 194).
+///
+/// # Errors
+///
+/// As [`rendering_of`].
+pub fn rendering_of_macro(door: MacroDoor) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door)
 }
 
 /// [`rendering_of`] over a door the loader may enter.
