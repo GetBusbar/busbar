@@ -985,7 +985,7 @@ fn scan_file(rel: &str, text: &str, table: &[Seam]) -> FileScan {
 //    thread on a door crossing: `.wait_done()` (the bridge's wait for a submitted op), or a `.call`
 //    / `.recall` of a LIFECYCLE slot — the slots `dispatch::plugin::is_lifecycle` routes to a
 //    permanent plugin thread through a synchronous handoff (`ffi_thread`), read off that fn's own
-//    body rather than typed here. A request op crossed ticket-less is NOT one: THE DESIGN §11.9
+//    body rather than typed here. A request op crossed ticket-less is NOT one: 
 //    holds a crossing under 1 µs and slow I/O pends, so `plugin.call(slot::VERIFY, …)` alone does
 //    not park a worker. An `async fn` never crosses synchronously in this sense: what it waits on
 //    it awaits.

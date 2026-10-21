@@ -21,7 +21,7 @@
 //!
 //! WHICH PACKAGES: a `git+` package of `cargo metadata` over the root manifest whose name resolves
 //! to one of the seven PLUGIN kinds ([`PLUGIN_KINDS`]) and is not the `-plugin` cdylib twin (a
-//! plugin repo is a logic crate plus the thin cdylib that packages it, §9; the logic crate is the
+//! plugin repo is a logic crate plus the thin cdylib that packages it; the logic crate is the
 //! kind's member, and the twin's four-segment name is the plugin repo's own business). A package is
 //! mounted only where nothing of this tree sits: no crate on disk carries its name, and
 //! `crates/<package>` is not a directory on disk.
@@ -147,7 +147,7 @@ pub(super) fn twin_dir(name: &str) -> String {
 }
 
 /// The checkout directory of `p`'s `-plugin` twin: the sibling directory `<logic dir>-plugin`
-/// whose manifest names the package `<name>-plugin` (a plugin repo's layout, §9). `None` when the
+/// whose manifest names the package `<name>-plugin` (a plugin repo's layout). `None` when the
 /// repo carries no such twin.
 fn twin_of(p: &Pinned) -> Option<PathBuf> {
     let leaf = p.dir.file_name()?.to_str()?;

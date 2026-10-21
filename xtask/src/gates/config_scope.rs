@@ -1,6 +1,6 @@
 //! `cargo xtask gate config-scope` — THE CONFIG-TIME PROOF IS MADE ONLY AT CONFIG TIME.
 //!
-//! THE RULE (`docs/design/BUSBAR-1.6.0.md` THE DESIGN §11.11 R4, as the OWNER amended it
+//! THE RULE (`docs/design/` as the amended it
 //! 2026-10-13): the host-owned bounded disk lane serves the secret kind's file source ONLY at config
 //! time (boot, a config apply, a refresh), and NEVER from a request path. The proof of config time
 //! is a type, `busbar_contract::config_time::ConfigScope`: a resolve that may reach a source reading
@@ -291,8 +291,8 @@ impl Gate for ConfigScopeGate {
                 ROW_SITE,
                 "a ConfigScope is constructed outside the config-time allow-list",
                 format!(
-                    "{} construction(s) outside boot, apply, refresh, pre-flight and validate (THE \
-                     DESIGN §11.11 R4: a request path never holds the proof): {}",
+                    "{} construction(s) outside boot, apply, refresh, pre-flight and validate (a request path \
+                     never holds the proof): {}",
                     outside.len(),
                     outside.join(" | ")
                 ),

@@ -80,7 +80,7 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// Raised as the neutral crates grow; lowered only in a reviewed diff that names the files that
 /// legitimately left.
 ///
-/// Was 1231 on 0fd08ee75d. Lowered by the egress-auth move out of the kernel (5c23d7527): 13
+/// Was 1231 on 0fd08ee75d. Lowered by the egress-auth move out of the kernel: 13
 /// `busbar-kernel/src` files left (`auth_cache.rs`, `egress_auth/{mod,bearer_token,jwt_bearer,
 /// oauth_client_credentials}.rs`, `egress_auth/tests/{bearer_token,helper,jwt_bearer,
 /// oauth_client_credentials,prebuilt_auth}_tests.rs`, `tests/auth_cache_tests.rs`,

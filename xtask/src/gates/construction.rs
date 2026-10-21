@@ -720,7 +720,7 @@ mod tests {
 
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
     /// seven rows the rule never emitted. Every in-tree transport crate gets a row. The transport
-    /// crates live in their own plugin repos now (P5), so a tree with none owes none: the rule's
+    /// crates live in their own plugin repos now, so a tree with none owes none: the rule's
     /// own rows for them run in each plugin repo's CI.
     #[test]
     fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {

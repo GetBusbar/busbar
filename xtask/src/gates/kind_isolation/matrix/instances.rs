@@ -659,7 +659,7 @@ fn without_abi_strings(line: &str) -> std::borrow::Cow<'_, str> {
 ///
 /// Everything else still counts: `m == "header"`, `lookup("header", …)`, `const AUTH_MODULE: &str
 /// = "header"`, a match arm, a list element. The mask only ever LOWERS a cell; it never re-spells
-/// a name (Q81), and a literal spelled any other way (`" header"`, a `concat!`) is not masked.
+/// a name, and a literal spelled any other way (`" header"`, a `concat!`) is not masked.
 pub(super) const COLLIDING_LITERALS: &[&str] = &["header"];
 
 /// How many `"word"` literals on line `at` (0-based) of `lines`, a file at `rel`, are the WORD and
@@ -1245,7 +1245,7 @@ pub fn selftest<'a>(
             format!("{CORE}/src/planted-schema.snapshot.json"),
             schema.to_string(),
         );
-        // qa-names: crates/busbar-auth-header/Cargo.toml -- xtask/src/gates/kind_isolation/matrix/instances.rs -- the header auth plugin's manifest at its census mount: the crate left for GetBusbar/busbar-auth-header (P5) and is read from its pinned checkout, so the plant writes the manifest into the virtual tree only when nothing is there
+        // qa-names: crates/busbar-auth-header/Cargo.toml -- xtask/src/gates/kind_isolation/matrix/instances.rs -- the header auth plugin's manifest at its census mount: the crate left for GetBusbar/busbar-auth-header and is read from its pinned checkout, so the plant writes the manifest into the virtual tree only when nothing is there
         const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
         if !cx.exists(AUTH_HEADER) {
             ov.set(

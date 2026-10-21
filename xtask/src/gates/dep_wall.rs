@@ -49,7 +49,7 @@ const CONFIG: &str = "qa/construction.toml";
 
 /// Crates that are a socket or TLS stack by name. The TLS stacks are every TLS implementation a Rust
 /// crate binds (rustls, and the platform one behind native-tls, openssl and their tokio/hyper
-/// adapters): THE DESIGN §5 "no plugin opens a socket, dials, binds or does TLS". `mio` is not here:
+/// adapters): "no plugin opens a socket, dials, binds or does TLS". `mio` is not here:
 /// it is tokio's `net` reactor, judged as `tokio (net)` and through `socket2` (DECISIONS #40(a)
 /// names those two).
 const BANNED_CRATES: &[&str] = &[
@@ -69,7 +69,7 @@ const BANNED_CRATES: &[&str] = &[
 const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 
 /// The items under a banned path that are VALUES, not a socket: an address literal parsed, held or
-/// printed opens nothing, dials nothing, binds nothing and resolves nothing (THE DESIGN §5 bans the
+/// printed opens nothing, dials nothing, binds nothing and resolves nothing (bans the
 /// socket, not the address). A path through one of these names no banned path; every other item
 /// under `std::net` (`TcpStream`, `TcpListener`, `UdpSocket`, `ToSocketAddrs`, which resolves
 /// names, `Shutdown`, ...), the bare module (`use std::net;`, `use std::net as n;`) and a glob
