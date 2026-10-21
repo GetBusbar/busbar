@@ -484,3 +484,89 @@ fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
         "the default build does not link these plane doors: {missing:?} (shipped = {shipped:?})"
     );
 }
+
+/// EVERY DOOR ROW NAMES ITS `door` AND NOTHING ELSE (BUSBAR-1.6.0.md, the door-only gate): an export
+/// row's name, alias and `declares`, a store row's key and `ephemeral`, and an auth row's door are
+/// read off the door, so the generator emits `<entry>::door` for each. Only a door that does not
+/// state its alias or its `declares` yet has its `linked-alias` / `linked-declares` row's item
+/// emitted beside it; a store row's canonical name is its `linked-canonical` row's literal.
+#[test]
+fn the_generator_emits_door_rows_that_name_only_their_door() {
+    let manifest = r#"
+[dependencies]
+busbar-sink = { path = "../busbar-sink" }
+busbar-sink-old = { path = "../busbar-sink-old" }
+busbar-keep = { path = "../busbar-keep" }
+busbar-pass = { path = "../busbar-pass" }
+
+[features]
+
+[package.metadata.busbar.linked]
+sink = "busbar-sink"
+sink-old = "busbar-sink-old"
+keep = "busbar-keep"
+pass = "busbar-pass"
+
+[package.metadata.busbar.linked-axes]
+sink = "export-doors"
+sink-old = "export-doors"
+keep = "stores"
+pass = "auths"
+
+[package.metadata.busbar.linked-entry]
+busbar-sink = "busbar_sink"
+busbar-sink-old = "busbar_sink_old"
+busbar-keep = "busbar_keep"
+busbar-pass = "busbar_pass"
+
+[package.metadata.busbar.linked-declares]
+sink-old = "busbar_sink_old::DECLARES"
+
+[package.metadata.busbar.linked-alias]
+sink-old = "busbar_sink_old::ALIAS"
+
+[package.metadata.busbar.linked-name]
+pass = "pass"
+
+[package.metadata.busbar.linked-canonical]
+keep = "busbar-keep"
+
+[package.metadata.busbar.root-units]
+node = "plane_node"
+"#;
+    let (out, _) = linked_source(manifest, &|_: &str| false);
+    assert!(
+        out.contains(
+            "crate::root::linked::LinkedDoorExport { door: busbar_sink::door, alias: None, \
+             declares: None }, "
+        ),
+        "an export row whose door states its alias and declares names its door alone: {out}"
+    );
+    assert!(
+        out.contains(
+            "crate::root::linked::LinkedDoorExport { door: busbar_sink_old::door, alias: \
+             Some(busbar_sink_old::ALIAS), declares: Some(busbar_sink_old::DECLARES) }, "
+        ),
+        "a door that states neither yet answers its rows: {out}"
+    );
+    assert!(
+        out.contains(
+            "    stores: &[crate::root::linked::LinkedStoreDoor { door: busbar_keep::door, \
+             canonical: Some(\"busbar-keep\") }, ],\n"
+        ),
+        "a store row names its door and its canonical name: {out}"
+    );
+    assert!(
+        out.contains("    auths: &[(\"pass\", \"pass\", busbar_pass::door), ],\n"),
+        "an auth row names its entry's door: {out}"
+    );
+    for item in [
+        "::NAME",
+        "::STORE",
+        "busbar_sink::ALIAS",
+        "busbar_sink::DECLARES",
+        "::door::door",
+    ] {
+        assert!(!out.contains(item), "`{item}` is emitted: {out}");
+    }
+}
