@@ -2042,7 +2042,7 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
              [String]> = const { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static [String]) \
              {\n    ZZ_CELL_TABLE.with(|c| c.set(rows));\n}\n",
         );
-        let rose = format!("[{}] {key}", &rule["rules.".len()..]);
+        let rose = format!("[{rule}] {key}");
         let counted = format!("counts 0 under `{key}`");
         let mut covers = vec![census::ROW_CENSUS];
         if row != census::ROW_CENSUS {
@@ -2061,6 +2061,69 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
                 "names no PR (`#<n>`), status row (`row <n>`) or file",
             ],
         ));
+    }
+    // 4. a6's THIRD REVIEW OF #1454: two new stores A and B, each with a root caller; A exempted
+    //    here; a word added to `store_cells`; `max_stores` 0 -> 1 under a measured entry with a
+    //    drain. Re-measured with THIS tree's exemptions, A is a stale name at the base and counts 1,
+    //    and B would sit under the 1 as new debt. The base is re-measured with the BASE's exemptions
+    //    and never counts a stale one, so it counts 0 and the entry excuses nothing.
+    let a_store = "crates/busbar-kernel/src/zz_planted_exempted_a.rs";
+    let b_store = "crates/busbar-kernel/src/zz_planted_unlisted_b.rs";
+    let exempted = format!("{a_store}::ZZ_A -- planted: exempted in the same change");
+    let planted = ceilings::set_int(&text, rule, "max_stores", 1)
+        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
+        .and_then(|t| ceilings::add_to_list(&t, rule, "exempt_stores", &[exempted]))
+        .filter(|t| t.contains(&header))
+        .map(|t| {
+            t.replacen(
+                &header,
+                &format!(
+                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
+                     know; drain: row 82\"\n"
+                ),
+                1,
+            )
+        });
+    match planted {
+        Some(planted) => {
+            let mut ov = measured_plant(base, planted);
+            for (file, name, module) in [
+                (a_store, "ZZ_A", "zz_planted_exempted_a"),
+                (b_store, "ZZ_B", "zz_planted_unlisted_b"),
+            ] {
+                ov.set(
+                    file,
+                    format!(
+                        "use std::sync::OnceLock;\n\nstatic {name}: OnceLock<Vec<String>> = \
+                         OnceLock::new();\n\npub fn install(rows: Vec<String>) {{\n    let _ = \
+                         {name}.set(rows);\n}}\n"
+                    ),
+                );
+                ov.set(
+                    format!("crates/busbar/src/root/{module}_root.rs"),
+                    format!(
+                        "pub fn {module}_boot() {{\n    busbar_kernel::{module}::install(PLANTED);\n}}\n"
+                    ),
+                );
+            }
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a new store exempted in the same change is no base debt: the base is re-measured \
+                 with its own exemptions",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "0 -> 1",
+                    "counts 0 under `max_stores`",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] could not take the exempted-store plant, so the \
+             rule that the base is re-measured with its own exemptions is unproven",
+        ),
     }
     r
 }

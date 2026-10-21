@@ -193,7 +193,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 now_deleted.contains(dir) && !cx.abs(dir).exists()
             });
             bad.extend(problems);
-            let remeasure = |table: &str, key: &str| base_remeasure(cx, &base.sha, table, key);
+            let remeasure =
+                |table: &str, key: &str| base_remeasure(cx, &base.sha, &doc, table, key);
             let (measured, problems) = measured_ceilings(&cfg.doc, &doc, &remeasure);
             bad.extend(problems);
             bad.extend(raised_ceilings(
@@ -666,7 +667,9 @@ fn parse_measured(value: &str) -> MeasuredWhy {
 }
 
 /// A drain reference names something a reader can open: a PR (`#1454`), a status row (`row 82`)
-/// or a file (`crates/busbar-kernel/src/preflight.rs`).
+/// or a file (`crates/busbar-kernel/src/preflight.rs`). SYNTAX ONLY, by ruling: it is not looked up
+/// as a PR, a row or a path that exists. The drain is the reviewer's pointer; what keeps a measured
+/// ceiling honest is the base re-measure ([`base_remeasure`]), which no reference can satisfy.
 fn names_a_ref(r: &str) -> bool {
     let digit_at = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_digit());
     let pr = r.match_indices('#').any(|(i, _)| digit_at(&r[i + 1..]));
@@ -696,9 +699,11 @@ fn names_a_ref(r: &str) -> bool {
 ///   * the ceiling was 0 at the base (a ceiling is SET from nothing; a rise from N stays refused);
 ///   * (a) every named detector is a detector key of that rule ([`MEASURABLE`]; never prose, a
 ///     ledger or a ceiling), the base carried it, and its value differs from the base's;
-///   * (b) the figure equals the BASE re-measured with this tree's rule (`remeasure`): the sites
-///     it covers were all at the base, newly seen, so it never covers a site this change adds;
-///   * (c) the reason carries a `drain:` field that names a PR, a row or a file ([`names_a_ref`]).
+///   * (b) the figure equals the BASE re-measured with this tree's rule and the base's own
+///     exemptions, never counting a stale one (`remeasure`): the sites it covers were all at the
+///     base, newly seen, so it never covers a site this change adds;
+///   * (c) the reason carries a `drain:` field that names a PR, a row or a file ([`names_a_ref`],
+///     syntax only).
 /// An entry that fails any condition is RED with every reason it fails, and excuses nothing; the
 /// ledger is add-only against the base.
 fn measured_ceilings(
@@ -875,17 +880,98 @@ fn base_view(cx: &Ctx, sha: &str) -> Result<Ctx, String> {
     Ok(cx.with_overlay(ov))
 }
 
+/// THE LEDGERS A RE-MEASURE READS AS THE BASE HAD THEM (ARCHITECT ruling on a6's third review of
+/// #1454). An exemption this change writes names a store this change may have added: read with this
+/// tree's list, a new store exempted here is a stale name at the base and is counted there, which
+/// lets a second new store sit under the ceiling it set. Read with the base's list, the base's count
+/// is the stores the base held that its own ledger did not name: debt already there.
+const BASE_LEDGERS: &[&str] = &["exempt_stores"];
+
+/// `text` with the list `table.key` replaced by `items`, the rest of the file byte for byte. The
+/// list is read from its `[` to the first `]` outside a quoted string, across lines. `None` when the
+/// table carries no such list.
+fn replace_list(text: &str, table: &str, key: &str, items: &[String]) -> Option<String> {
+    let header = format!("[{table}]\n");
+    let head = if text.starts_with(&header) {
+        0
+    } else {
+        text.find(&format!("\n{header}"))? + 1
+    };
+    let body = head + header.len();
+    let end = text[body..].find("\n[").map_or(text.len(), |i| body + i);
+    let line = format!("\n{key} = [");
+    let at = text[body - 1..end].find(&line)? + body;
+    let open = at + line.len() - 2;
+    let bytes = text.as_bytes();
+    let (mut quote, mut escaped, mut close) = (None::<u8>, false, None);
+    for (i, &c) in bytes.iter().enumerate().skip(open + 1) {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(b'"') if c == b'\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == b'"' || c == b'\'' => quote = Some(c),
+            None if c == b']' => {
+                close = Some(i);
+                break;
+            }
+            None => {}
+        }
+    }
+    let quoted: Vec<String> = items
+        .iter()
+        .map(|i| format!("\"{}\"", i.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    Some(format!(
+        "{}{key} = [{}]{}",
+        &text[..at],
+        quoted.join(", "),
+        &text[close? + 1..]
+    ))
+}
+
 /// THE BASE RE-MEASURED WITH THIS TREE'S RULE: `[table]`'s rule run over [`base_view`] with this
-/// tree's ceilings file, and the count of the rows `key` holds (the most any one of them counts).
-/// Only the rules of [`MEASURABLE`] are run; any other is an error, so nothing it would set is
-/// excused.
-fn base_remeasure(cx: &Ctx, sha: &str, table: &str, key: &str) -> Result<i64, String> {
+/// tree's ceilings file, its [`BASE_LEDGERS`] read as the base had them, and the count of the rows
+/// `key` holds (the most any one of them counts). A stale exemption is never counted: the base is
+/// re-measured for the stores it HOLDS, not for names its ledger lost. Only the rules of
+/// [`MEASURABLE`] are run; any other is an error, so nothing it would set is excused.
+fn base_remeasure(
+    cx: &Ctx,
+    sha: &str,
+    base_doc: &Document,
+    table: &str,
+    key: &str,
+) -> Result<i64, String> {
     let text = cx.read(CEILINGS)?;
-    let probed = set_int(&text, table, key, PROBE)
+    let mut probed = set_int(&text, table, key, PROBE)
         .ok_or_else(|| format!("{CEILINGS} has no `{key}` under [{table}] to probe"))?;
+    for ledger in BASE_LEDGERS {
+        let was = base_doc
+            .table(table)
+            .map(|t| t.list_of(ledger))
+            .unwrap_or_default();
+        if let Some(t) = replace_list(&probed, table, ledger, &was) {
+            probed = t;
+        }
+    }
     let cfg = Cfg {
         doc: crate::toml_doc::parse_str(&probed)?,
     };
+    // Fail closed: a ledger this tree's file could not be rewritten to the base's is not re-measured
+    // with this tree's list instead.
+    for ledger in BASE_LEDGERS {
+        let list = |d: &Document| {
+            d.table(table)
+                .map(|t| t.list_of(ledger))
+                .unwrap_or_default()
+        };
+        if list(&cfg.doc) != list(base_doc) {
+            return Err(format!(
+                "[{table}] {ledger} could not be read as the base had it, so the base is not \
+                 re-measured"
+            ));
+        }
+    }
     let roots = cfg.scan_roots()?;
     let tree = Tree::load(&base_view(cx, sha)?, &roots, &cfg.test_path_fragments()?)?;
     let rows = match table.strip_prefix("rules.").unwrap_or(table) {
@@ -895,7 +981,14 @@ fn base_remeasure(cx: &Ctx, sha: &str, table: &str, key: &str) -> Result<i64, St
     };
     rows.iter()
         .filter(|r| r.threshold == PROBE)
-        .map(|r| r.current)
+        .map(|r| {
+            let stale = r
+                .offenders
+                .iter()
+                .filter(|o| o.starts_with("stale exemption "))
+                .count();
+            r.current - stale as i64
+        })
         .max()
         .ok_or_else(|| format!("no row of [{table}] is held to `{key}`"))
 }
@@ -1519,6 +1612,28 @@ mod tests {
         let (out, problems) = rises_at(wider, other, 2);
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(problems[0].contains("cannot re-measure"), "{problems:?}");
+    }
+
+    /// The base's ledger replaces this tree's in a re-measure, the rest of the file byte for byte,
+    /// across a multi-line list whose items hold brackets and escaped quotes.
+    #[test]
+    fn a_ledger_is_replaced_by_the_base_s_and_nothing_else_moves() {
+        let text = "[rules.k]\nwhy = \"x\"\nexempt_stores = [\n  \"a [u8] \\\" ]\",\n  \
+                    'b]',\n]\nmax_stores = 1\n[rules.z]\nexempt_stores = [\"z\"]\n";
+        let out = replace_list(text, "rules.k", "exempt_stores", &["q\"r".to_string()])
+            .expect("the list is there");
+        assert_eq!(
+            out,
+            "[rules.k]\nwhy = \"x\"\nexempt_stores = [\"q\\\"r\"]\nmax_stores = 1\n[rules.z]\n\
+             exempt_stores = [\"z\"]\n"
+        );
+        let parsed = doc(&out);
+        assert_eq!(
+            parsed.table("rules.k").expect("k").list_of("exempt_stores"),
+            vec!["q\"r"]
+        );
+        assert!(replace_list(text, "rules.y", "exempt_stores", &[]).is_none());
+        assert!(replace_list(text, "rules.k", "debt_stores", &[]).is_none());
     }
 
     /// The drain field names a PR, a row or a file, and nothing else is one.

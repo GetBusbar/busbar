@@ -1544,7 +1544,6 @@ max_debt = 6
 exempt_stores = [
   "crates/busbar-kernel/src/admin/seam.rs::SEAM -- the admin crate's mount seam: two fn pointers (a port) its `install` binds once; holds no table and no identity key (admin is a crate, not a plugin)",
   "crates/busbar-kernel/src/admin/seam.rs::VERB_TABLE -- two fn pointers into the admin crate's closed verb table (a port); keyed by admin operation name, never by plugin identity",
-  "crates/busbar-kernel/src/appbuild.rs::CONFIG_PROJECTION -- one fn pointer the root binds (the config projection); holds no table",
   "crates/busbar-kernel/src/audit/auditlog.rs::AUDIT_LOG -- the process-wide admin audit read model: records appended per action, no installer, no lookup by identity",
   "crates/busbar-kernel/src/audit_ring.rs::AUDIT -- the const-built admin audit ring: records, no lookup by identity",
   "crates/busbar-kernel/src/config/filled.rs::LEDGER -- the env-fill ledger, keyed by config document path, filled by the config walk; no plugin identity",
@@ -1565,8 +1564,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_REGISTERED -- compiled only under test / test-support: the test plane registrations",
   "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
-  "crates/busbar-kernel/src/preflight.rs::AUTH_AXIS -- one opener fn pointer the root binds (the auth axis over a registry); holds no table",
-  "crates/busbar-kernel/src/preflight.rs::TEST_ROOT_HOOK_NAMES -- compiled only under test / test-support: the hook names a root test binary hands in",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
@@ -2362,8 +2359,9 @@ abi = 1
 # <PR, row or file>"`. An entry excuses one rise, from 0, only in the change that writes it, and only
 # when (a) every named detector is a detector key of that rule (never prose, a ledger or a ceiling)
 # that the base carried and this change altered, (b) the figure equals the base re-measured with this
-# tree's rule, so it covers only debt the base already held, and (c) its `drain:` field names a PR,
-# a row or a file. At any base after it, it excuses nothing. Add-only.
+# tree's rule and the base's own exemptions, never counting a stale one, so it covers only debt the
+# base already held, and (c) its `drain:` field names a PR, a row or a file (checked as syntax only:
+# the re-measure is the guard). At any base after it, it excuses nothing. Add-only.
 [gate.census.measured]
 "rules.kernel-no-protocol-registry.max_debt" = "store_cells, store_holds -- status row 82, D2 (#1454): the installed-store row now reads every static spelling, through aliases and fields, every installer shape, and the cells it did not know; the six root-filled stores keyed by plane, protocol or plugin identity it first sees were all at the base (#1408) and are ledgered by name in debt_stores, each with its drain; measured 6 at the base and at this tree; drain: status row 82 (lane-d2-drain-installed-doors: INSTALLED, TABLES, the diagnostics catalogue, then DOORS) and row 159 (a064's drain fixers: ROOT_ROWS and legacy ROWS)"
 
