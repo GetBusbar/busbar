@@ -265,7 +265,7 @@ fn a_pool_that_only_read_readiness_is_parked_by_a_hard_down_through_another() {
 /// any pool not yet asked about would carry. Read-only, the earlier read changes nothing, and the
 /// two pools read alike.
 #[test]
-fn a_readiness_read_creates_no_cell_that_a_later_trip_would_miss() {
+fn a_readiness_read_creates_no_cell_that_a_subsequent_trip_would_miss() {
     let unit = BreakerUnit::new();
     let cfg = consecutive_cfg(100, 10_000);
     let destination = DestinationId::new(11);
