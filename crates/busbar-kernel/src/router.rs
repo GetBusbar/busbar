@@ -1431,8 +1431,8 @@ pub fn build_data_routers(
         request_body_max_bytes,
         server_timing_enabled,
     );
-    let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
     let ungated = data.clone();
+    let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
     // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface +
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
     // `/healthz` bypasses auth so probes work on the admin port too; every `/api/v1/admin/*` route

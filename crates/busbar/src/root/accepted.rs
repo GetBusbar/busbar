@@ -911,7 +911,7 @@ impl Conn {
             Op::Ended => {
                 if let Some(inflow) = self.inflows.remove(&stream) {
                     let drained = inflow.drained.load(std::sync::atomic::Ordering::Acquire);
-                    let _ = drained;
+                    self.closing |= !drained;
                 }
                 true
             }
