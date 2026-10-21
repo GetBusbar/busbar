@@ -1061,23 +1061,21 @@ fn redirect_entries(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut table: Vec<String> = Vec::new();
     let mut in_table = false;
-    let mut multiline: Option<&str> = None;
+    let mut multiline: Option<&'static str> = None;
     for (i, raw) in text.lines().enumerate() {
         let t = raw.trim().trim_start_matches('\u{feff}');
-        if let Some(close) = multiline {
-            if t.matches(close).count() % 2 == 1 {
-                multiline = None;
-            }
+        // THE MULTI-LINE STATE IS READ AS TOML READS IT: a `"""` or `'''` inside a comment or a
+        // single-line string opens nothing (`multiline_after`). A stray one used to be counted
+        // anywhere, and one `# a note with """ in it` hid every line after it, a `[patch]`
+        // header included.
+        let inside = multiline.is_some();
+        multiline = multiline_after(t, multiline);
+        // A HEADER IS CHECKED EVEN INSIDE WHAT READS AS A MULTI-LINE STRING. A line opening with
+        // `[` that names a redirect is reported whatever this reader thinks of the lines before
+        // it: a false string state costs a finding a reviewer reads, never a redirect nobody saw.
+        if inside && !t.starts_with('[') {
             continue;
         }
-        let opens = |q: &str| t.matches(q).count() % 2 == 1;
-        let next_multiline = if opens("\"\"\"") {
-            Some("\"\"\"")
-        } else if opens("'''") {
-            Some("'''")
-        } else {
-            None
-        };
         if t.starts_with('[') {
             let witness = match t.split_once('#') {
                 Some((head, _)) => head.trim(),
@@ -1109,9 +1107,59 @@ fn redirect_entries(text: &str) -> Vec<(usize, String)> {
                 }
             }
         }
-        multiline = next_multiline;
     }
     out
+}
+
+/// The multi-line string state a TOML line leaves behind, starting from `open` (the delimiter of a
+/// multi-line string the line begins inside, `None` outside one). Read as TOML reads it: outside a
+/// string a `#` ends the line, a `"…"` or `'…'` is a single-line string whose quotes open
+/// nothing, and only a `"""` or `'''` outside both opens a multi-line string. Inside one, only
+/// its own delimiter closes it (a basic one honours `\` escapes; up to two quotes beside the
+/// closing delimiter are content, as TOML allows).
+fn multiline_after(line: &str, mut open: Option<&'static str>) -> Option<&'static str> {
+    let b = line.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        if let Some(d) = open {
+            if b[i..].starts_with(d.as_bytes()) {
+                i += d.len();
+                let q = d.as_bytes()[0];
+                let mut extra = 0;
+                while extra < 2 && b.get(i) == Some(&q) {
+                    i += 1;
+                    extra += 1;
+                }
+                open = None;
+            } else if d == "\"\"\"" && b[i] == b'\\' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        match b[i] {
+            b'#' => break,
+            q @ (b'"' | b'\'') => {
+                let triple: &'static str = if q == b'"' { "\"\"\"" } else { "'''" };
+                if b[i..].starts_with(triple.as_bytes()) {
+                    open = Some(triple);
+                    i += 3;
+                    continue;
+                }
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    if q == b'"' && b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    open
 }
 
 /// A TOML key path at the head of `s` — bare, `"quoted"` and `'literal'` segments joined by `.`,
@@ -1628,6 +1676,24 @@ pub fn selftest<'a>(
         )]),
         &["redirect", "source.crates-io", ".cargo/config.toml"],
     ));
+    // …AND A `"""` IN A COMMENT OPENS NO STRING. The reader once counted triple quotes anywhere,
+    // so one in a comment hid every line after it: the `[patch]` header below read as string
+    // content and the redirect reported nothing.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[patch]` header after a comment holding `\"\"\"` is still the redirect",
+        &[ROW_INPUTS],
+        with(&[(
+            "Cargo.toml",
+            format!(
+                "{}\n\n# a note with \"\"\" in it\n[patch.crates-io]\n{patch_line}\n",
+                root.trim_end()
+            )
+            .as_str(),
+        )]),
+        &["redirect", "patch.crates-io", "Cargo.toml"],
+    ));
 
     // XC2#7: THE SPELLINGS THE INCLUDE READER COULD NOT PARSE, AND SKIPPED. A raw string and a
     // macro metavariable are refused; a `path` inside `cfg_attr`, or after a space, is read, and a
@@ -1697,6 +1763,34 @@ pub fn selftest<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_triple_quote_in_a_comment_or_a_string_opens_no_multiline_string() {
+        let text = "# a note with \"\"\" in it\nname = \"x \\\"\\\"\\\" y\"\nnote = '\"\"\"'\n\
+                    [patch.crates-io]\nbusbar-contract = { path = \"crates/busbar-contract\" }\n";
+        let found = super::redirect_entries(text);
+        assert!(
+            found.iter().any(|(i, e)| *i == 3 && e == "patch.crates-io"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_header_inside_what_reads_as_a_multiline_string_is_still_checked() {
+        let text = "description = \"\"\"\nopen\n[patch.crates-io]\nx = 1\n\"\"\"\n";
+        let found = super::redirect_entries(text);
+        assert!(found.iter().any(|(_, e)| e == "patch.crates-io"), "{found:?}");
+    }
+
+    #[test]
+    fn the_multiline_state_closes_on_its_own_delimiter_only() {
+        use super::multiline_after;
+        assert_eq!(multiline_after("a = \"\"\"", None), Some("\"\"\""));
+        assert_eq!(multiline_after("end ''' here", Some("\"\"\"")), Some("\"\"\""));
+        assert_eq!(multiline_after("end \"\"\"\"\" # x", Some("\"\"\"")), None);
+        assert_eq!(multiline_after("k = '''raw'''", None), None);
+        assert_eq!(multiline_after("# '''", None), None);
+    }
+
     use super::*;
 
     /// X-1221 RED: a `[source]` redirect in a `.cargo/config.toml` ON DISK is found. The walk skips
