@@ -1662,21 +1662,19 @@ fn macro_static_names(
     texts: &BTreeMap<&str, String>,
 ) -> Result<(Vec<String>, String), String> {
     let opener = Regex::new(r"\bmacro_rules!\s*([A-Za-z_][A-Za-z0-9_]*)")?;
-    let Some(mac) = lines[..=idx]
-        .iter()
-        .rev()
-        .find_map(|l| {
-            opener
-                .search(l.code_bytes())
-                .and_then(|m| m.str_of(l.code_bytes(), 1))
-        })
-    else {
+    let Some(mac) = lines[..=idx].iter().rev().find_map(|l| {
+        opener
+            .search(l.code_bytes())
+            .and_then(|m| m.str_of(l.code_bytes(), 1))
+    }) else {
         return Ok((Vec::new(), String::new()));
     };
-    let call = Regex::new(&format!(r"(?<![A-Za-z0-9_]){}!\s*[(\[{{]", rx::escape(&mac)))?;
-    let ident = Regex::new(
-        r"(?<![A-Za-z0-9_:$])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])(?!\s*(?:::|!|\())",
-    )?;
+    let call = Regex::new(&format!(
+        r"(?<![A-Za-z0-9_]){}!\s*[(\[{{]",
+        rx::escape(&mac)
+    ))?;
+    let ident =
+        Regex::new(r"(?<![A-Za-z0-9_:$])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])(?!\s*(?:::|!|\())")?;
     const NOT_NAMES: &[&str] = &[
         "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
         "f32", "f64", "bool", "char", "str", "mut", "ref", "dyn", "impl", "const", "static",
@@ -1765,6 +1763,15 @@ fn installed_stores(
     let self_param = Regex::new(r"^\s*&?\s*(?:'[A-Za-z_]+\s+)?(?:mut\s+)?self\b")?;
     let trait_head = Regex::new(
         r"(?:^|[^A-Za-z0-9_])(?:impl\b[^{;]*\bfor\b[^{;]*|trait\s+[A-Za-z_][A-Za-z0-9_]*[^{;]*)\{",
+    )?;
+    // AN INTEGER CELL HOLDING AN ERASED POINTER (a6 on #1454: a ptr/len pair of `AtomicUsize`s). A
+    // static whose type is a pointer-sized atomic integer holds a collection when a fn of its file
+    // names it and launders a pointer through an integer: one way in (`as_ptr`, `into_raw`, `leak`,
+    // an `as *const` cast, `addr`) or the other way out (`from_raw`, `from_raw_parts`). It is then
+    // read as a store, with the same installers as any other.
+    let int_cell = Regex::new(r"\bAtomic(?:Usize|Isize|U64|I64)\b")?;
+    let launder = Regex::new(
+        r"\bas_(?:mut_)?ptr\s*\(|\binto_raw\s*\(|\bfrom_raw(?:_parts)?\s*\(|\bleak\s*\(|\bas\s+\*\s*(?:const|mut)\b|\.addr\s*\(|\bexpose_provenance\s*\(",
     )?;
     let defs = type_defs(tree)?;
     let takes_a_value = |params: &str| {
@@ -1870,8 +1877,9 @@ fn installed_stores(
                 (vec![name], String::new())
             };
             let ty = expand_type(&format!("{ty}{handed}"), rel, context, &defs)?;
-            if !(own_cell || cells.is_match_str(&ty)) || !holds.iter().any(|h| h.is_match_str(&ty))
-            {
+            let celled =
+                (own_cell || cells.is_match_str(&ty)) && holds.iter().any(|h| h.is_match_str(&ty));
+            if !celled && !int_cell.is_match_str(&ty) {
                 continue;
             }
             for name in names {
@@ -1879,14 +1887,17 @@ fn installed_stores(
                     r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])",
                     rx::escape(&name)
                 ))?;
-                let mut installers = Vec::new();
-                if pub_static.is_match(&l.code_bytes()[..m.end.min(l.code.len())]) {
-                    installers.push("pub static".to_string());
-                }
                 let own: Vec<&F> = all_fns
                     .iter()
                     .filter(|x| x.rel == rel.as_str() && body_names(x.rel, x.f, &named, l.no))
                     .collect();
+                if !celled && !own.iter().any(|x| body_names(x.rel, x.f, &launder, 0)) {
+                    continue;
+                }
+                let mut installers = Vec::new();
+                if pub_static.is_match(&l.code_bytes()[..m.end.min(l.code.len())]) {
+                    installers.push("pub static".to_string());
+                }
                 for x in &own {
                     if x.public && x.valued {
                         installers.push(format!("pub fn {}", x.f.name));
@@ -2008,6 +2019,9 @@ fn installed_stores(
 pub fn kernel_no_protocol_registry(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("kernel-no-protocol-registry")?;
     let max_hits = need_int(c, "max_hits", "kernel-no-protocol-registry")?;
+    // Each row holds its own ceiling: a store held under the NAMES row's figure would let a
+    // `ProtocolDecl` back in under the store row's, and the reverse (a6 on #1454).
+    let max_stores = need_int(c, "max_stores", "kernel-no-protocol-registry")?;
     let (names, fn_names) = (c.list_of("names"), c.list_of("fn_names"));
     if names.is_empty() && fn_names.is_empty() {
         return Err("kernel-no-protocol-registry: no `names`, so it bans nothing".into());
@@ -2134,7 +2148,7 @@ pub fn kernel_no_protocol_registry(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, 
     } else {
         format!(
             "{} installed store(s) in the kernel outside the {} named ones, {} stale exemption(s) \
-             (ceiling {max_hits}): {}",
+             (ceiling {max_stores}): {}",
             stores.len(),
             exempt.len(),
             stale.len(),
@@ -2143,12 +2157,12 @@ pub fn kernel_no_protocol_registry(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, 
     };
     let store_row = plain(
         ROW_INSTALLED_STORE,
-        !files.is_empty() && current <= max_hits,
+        !files.is_empty() && current <= max_stores,
         "the kernel holds no installed store beside the named ones: no registry behind a type-erased \
          static",
         detail,
         current,
-        max_hits,
+        max_stores,
         found,
     );
 

@@ -1472,24 +1472,34 @@ NAMES: those spellings, and every alias of them declared anywhere in the workspa
 the kernel's production code; comments are not read. INSTALLED-STORE: the same registry with no \
 name to find, behind a type-erased store, is refused by its shape: a kernel static of any name \
 (plain, `mut`, `thread_local!`, `lazy_static!`, declared by a `macro_rules!`) whose type, read to \
-its top-level end (a `;` inside `[u8; 0]` is the type's own), through every alias and into \
-every field, is a cell holding a collection, a slice, an array or a trait object (`dyn`, `Any`, \
-`AnyMap`), and that code outside the kernel reaches: a `pub static`, a `pub fn` or a trait method \
+its top-level end (a `;` inside `[u8; 0]` or an `=` inside `Iterator<Item = T>` is the type's \
+own), through every alias and into every field, is a cell holding a collection, a slice, an array \
+or a trait object (`dyn`, `Any`, `AnyMap`), or a pointer-sized atomic integer a fn of its file \
+launders a pointer through (`as_ptr`, `into_raw`, `leak`, `from_raw_parts`, an `as *const` cast), \
+and that code outside the kernel reaches: a `pub static`, a `pub fn` or a trait method \
 that takes a value, an accessor returning the cell, or a setter one call away (by path or by the \
 name a `use` imports it under). The stores a root fills keyed by \
 plane, protocol or plugin identity that the kernel still holds are counted DEBT (`debt_stores`, \
 `max_debt`), each with its drain; every other store it holds today is named with why it is not \
-one. A new store is a finding, and a named one that no longer matches is stale."""
+one. A new store is a finding (ceiling `max_stores`), and a named one that no longer matches is \
+stale. Each row holds its own ceiling: NAMES `max_hits`, INSTALLED-STORE `max_stores`, DEBT \
+`max_debt`."""
 scope_globs = ["crates/busbar-kernel/src/*"]
 # Banned as a word, with every alias the workspace declares.
 names = ["ProtocolDecl", "install_protocols"]
 # Banned as a definition (`fn decl_for`); an alias of it is banned as a word.
 fn_names = ["decl_for"]
+# The NAMES row's ceiling: protocol-registry spellings in the kernel's production code.
 max_hits = 0
+# The INSTALLED-STORE row's ceiling, its own (a6 on #1454: under one shared figure a store let in
+# would let a `ProtocolDecl` back in beside it): stores outside the named ones, and stale names.
+max_stores = 0
 # The installed-store shape. A store is a static of any name (plain, `mut`, in a `thread_local!` or a
 # `lazy_static!`) whose type, read through every alias and into every field, names one of
 # `store_cells` (a `static mut` and a `static ref` are their own cell; an `UnsafeCell` wrapper is a
-# cell) and matches one of `store_holds`. The type ends at its first top-level `;` or `=`. A static a
+# cell) and matches one of `store_holds`; or whose type is a pointer-sized atomic integer
+# (`AtomicUsize`, `AtomicIsize`, `AtomicU64`, `AtomicI64`) that a fn of its file naming it launders a
+# pointer through (a ptr/len pair holds a slice). The type ends at its first top-level `;` or `=`. A static a
 # `macro_rules!` declares under a metavariable is each static its invocations name. It is installed
 # when code outside the kernel reaches it: the static is `pub`, a `pub fn` or a trait method (a trait
 # body's or a trait impl's) with a parameter names it, one names it and returns a cell, or one with a
@@ -1499,7 +1509,10 @@ max_hits = 0
 # a non-`mut` static with no interior mutability cannot be written (E0594), so no code outside the
 # kernel puts a row in it, and its rows are what the kernel itself names at compile time, which the
 # NAMES half and the plane-purity rows judge (the kernel's [dependencies] name no plane or plugin crate).
-store_cells = ["OnceLock", "LazyLock", "OnceCell", "Lazy", "Mutex", "RwLock", "RefCell", "UnsafeCell", "SyncUnsafeCell", "ArcSwap", "ArcSwapOption", "AtomicPtr", "DashMap"]
+# `Cell` is a cell: `Cell<&'static [T]>` is set whole through `Cell::set`. The kernel's own
+# `Cell<bool>`, `Cell<u32>`, `Cell<u64>` and `Cell<usize>` thread-locals hold no collection, so they
+# match no `store_holds` and are not stores. `OnceBox` and `AtomicCell` are named so they fail closed.
+store_cells = ["OnceLock", "LazyLock", "OnceCell", "Lazy", "Mutex", "RwLock", "RefCell", "Cell", "UnsafeCell", "SyncUnsafeCell", "ArcSwap", "ArcSwapOption", "AtomicPtr", "AtomicCell", "OnceBox", "DashMap"]
 store_holds = ['\b(Vec|VecDeque|BTreeMap|HashMap|BTreeSet|HashSet|IndexMap|DashMap|FxHashMap|AnyMap)\b', '\[', '\bdyn\b', '\bAny(Map)?\b']
 # The kernel's test kit: compiled only under `test` / `test-support`, never production.
 store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
@@ -1513,7 +1526,7 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # installer shape now, and the stores it sees that a composition root fills with rows keyed by
 # plane, protocol or plugin identity are DEBT, not end state. The ceiling is SET here, from 0, in
 # the change whose detector first makes them visible, to exactly the measured count, and only
-# because `[gate.census.measured]` ledgers it; any later rise is refused (Law 9). Each site names its
+# because `[gate.census.measured]` ledgers it; every rise after it is refused (Law 9). Each site names its
 # drain lane. The drain is the same seam for all: the compose owns the table and lends it to what
 # reads it, so the kernel holds no root-installed static.
 # DRAINED 6 -> 5 (status row 82, D2): config/legacy.rs::ROWS leaves. The root owns its legacy table
@@ -1557,8 +1570,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
   "crates/busbar-kernel/src/preflight.rs::AUTH_AXIS -- one opener fn pointer the root binds (the auth axis over a registry); holds no table",
   "crates/busbar-kernel/src/preflight.rs::TEST_ROOT_HOOK_NAMES -- compiled only under test / test-support: the hook names a root test binary hands in",
-  "crates/busbar-kernel/src/rate_apply.rs::APPLY -- one rate-holder object (a port) the root installs; holds no table",
-  "crates/busbar-kernel/src/rate_apply.rs::EPOCH -- one rate-epoch object (a port) the root installs; holds no table",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
@@ -2349,12 +2360,15 @@ abi = 1
 # was deleted, the status row and the measured value, AND every subject path it named at the base
 # (`root`, `crate`, `allowed_file`) lies under a [gate.census.deleted] directory that is gone from
 # the tree. `ceiling-census` checks each condition; the ledger is add-only.
-# CEILINGS SET BY THE CHANGE THAT FIRST MEASURES THEIR DEBT (ARCHITECT ruling on a6's review of
-# #1454, the #1418 MINTED precedent): `"rules.<table>.<key>" = "<detector key>, … -- why"`. An entry
-# excuses one rise, from 0, only in the change that writes it and only when every named detector key
-# changed in that same diff; at any later base it excuses nothing. Add-only.
+# CEILINGS SET BY THE CHANGE THAT FIRST MEASURES THEIR DEBT (ARCHITECT rulings on a6's reviews of
+# #1454, the #1418 MINTED precedent): `"rules.<table>.<key>" = "<detector key>, … -- <why>; drain:
+# <PR, row or file>"`. An entry excuses one rise, from 0, only in the change that writes it, and only
+# when (a) every named detector is a detector key of that rule (never prose, a ledger or a ceiling)
+# that the base carried and this change altered, (b) the figure equals the base re-measured with this
+# tree's rule, so it covers only debt the base already held, and (c) its `drain:` field names a PR,
+# a row or a file. At any base after it, it excuses nothing. Add-only.
 [gate.census.measured]
-"rules.kernel-no-protocol-registry.max_debt" = "store_cells, store_holds -- status row 82, D2 (#1454): the installed-store row now reads every static spelling, through aliases and fields, every installer shape, and the cells it did not know; the six root-filled stores keyed by plane, protocol or plugin identity it first sees are ledgered by name in debt_stores, each with its drain (INSTALLED, TABLES and the diagnostics catalogue: lane-d2-drain-installed-doors, DOORS stacked on it; ROOT_ROWS and legacy ROWS: a064's drain fixers); measured 6"
+"rules.kernel-no-protocol-registry.max_debt" = "store_cells, store_holds -- status row 82, D2 (#1454): the installed-store row now reads every static spelling, through aliases and fields, every installer shape, and the cells it did not know; the six root-filled stores keyed by plane, protocol or plugin identity it first sees were all at the base (#1408) and are ledgered by name in debt_stores, each with its drain; measured 6 at the base and at this tree; drain: status row 82 (lane-d2-drain-installed-doors: INSTALLED, TABLES, the diagnostics catalogue, then DOORS) and row 159 (a064's drain fixers: ROOT_ROWS and legacy ROWS)"
 
 [gate.census.deleted_rules]
 "rules.no-response-escapes-audit" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the retired engine crate's step directory crates/busbar-llm/src/unit (allowed file audit.rs), was deleted with crates/busbar-llm; measured 0 (max_escapes = 0 at the base): no file under that root exists"
