@@ -704,7 +704,11 @@ const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 /// path can reach outside the plugins directory) and enforce the `.tar.gz`/`.tgz` extension. This
 /// is the one gate every plugin write/delete funnels through, so the plugins directory is the hard
 /// boundary. The filename is STORAGE ONLY — plugin identity always comes from the signed manifest.
-fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
+///
+/// What a tarball filename IS is the root's admission's answer (`App::plugin_admission`). With no
+/// admission installed nothing can be admitted, so no filename is a plugin tarball: the name is
+/// refused (fail-closed), never waved through to a write or delete the admission could not judge.
+fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {
     if file.is_empty() || file.len() > MAX_PLUGIN_FILENAME_LEN {
         return Err(AdminError::Validation(format!(
             "plugin filename must be 1..={MAX_PLUGIN_FILENAME_LEN} chars"
@@ -729,7 +733,7 @@ fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
             ));
         }
     }
-    if !busbar_kernel::plugin_admission::tarball::is_plugin_tarball(file) {
+    if !app.plugin_admission.is_some_and(|a| a.is_tarball(file)) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -747,12 +751,12 @@ async fn probe_transport(
     env: &busbar_kernel::hooks::HookEnv,
 ) -> (Option<bool>, Option<String>) {
     match env.registry.resolve(&cfg.plugin) {
-        Some(p) if p.manifest.kind == "hook" => (Some(true), None),
+        Some(p) if p.kind == "hook" => (Some(true), None),
         Some(p) => (
             Some(false),
             Some(format!(
                 "plugin '{}' resolves to kind '{}', not 'hook'",
-                cfg.plugin, p.manifest.kind
+                cfg.plugin, p.kind
             )),
         ),
         None => (
