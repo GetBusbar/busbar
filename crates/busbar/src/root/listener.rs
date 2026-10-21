@@ -678,15 +678,52 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
     type Error = <TowerToHyperService<Router> as hyper::service::Service<
         hyper::Request<TimeoutBody<hyper::body::Incoming>>,
     >>::Error;
-    type Future = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Future;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
 
     fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
         let timeout = self.timeout;
         let mut req = req.map(|body| TimeoutBody::new(body, timeout));
         req.extensions_mut().insert(self.scheme);
-        self.inner.call(req)
+        let answered = self.inner.call(req);
+        Box::pin(async move {
+            answered
+                .await
+                .map(|resp| resp.map(|body| axum::body::Body::new(NoTrailers(body))))
+        })
+    }
+}
+
+/// AN ANSWER'S BODY WITH NO TRAILER FIELD (`BUSBAR-1.6.0.md` l.731-732, no trailer piece on the
+/// transport ABI; l.4794, the caller output drops trailers, as 1.5.5's did): a root listener writes
+/// the body's data and its end, and a trailer block a handler put after it (a framed claim's
+/// framer's closing block) never reaches the caller, on h1 or h2. Its size and its end are the
+/// body's own, so its framing is unchanged.
+struct NoTrailers(axum::body::Body);
+
+impl Body for NoTrailers {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        loop {
+            match std::task::ready!(Pin::new(&mut this.0).poll_frame(cx)) {
+                Some(Ok(frame)) if frame.is_trailers() => continue,
+                other => return Poll::Ready(other),
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.0.size_hint()
     }
 }
 
