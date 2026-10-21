@@ -1130,10 +1130,12 @@ fn table_leaks(src: &str) -> Vec<String> {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
-        // A SEALED `Lent` of the tables (status row 194) hands safe code no table: it has no
-        // `Deref`, no `get` and no accessor over `HostTables`; only `Services::of`, `Wake::of`
-        // and `Host::of` read it, each tied to the borrow.
-        let unsealed = signature.replace("Lent<'_, HostTables>", "");
+        // The SEALED `Lent` of the tables (status row 194), named by its exact path, hands safe
+        // code no table: it has no `Deref`, no `get` and no accessor over `HostTables`; only
+        // `Services::of`, `Wake::of` and `Host::of` read it, each tied to the borrow. Nothing else
+        // is exempt: another `Lent`, a `Lent` named another way, or a `&HostTables` beside it is
+        // still a leak.
+        let unsealed = signature.replace("-> crate::abi::sdk::Lent<'_, HostTables>", "->");
         if TABLE_TYPES.iter().any(|t| unsealed.contains(t)) {
             out.push(format!("line {}: {signature}", n + 1));
         }
@@ -1156,14 +1158,21 @@ fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
     }
     // A crate-private accessor behind `#[cfg(test)]` is not safe code's to call.
     assert!(table_leaks("#[cfg(test)]\npub fn slots(&self) -> &HostSlots {").is_empty());
-    // GREEN: the sealed lend of the tables is no leak; RED: a bare reference beside it still is.
+    // GREEN: the sealed lend of the tables, at its exact path, is no leak.
     assert!(
         table_leaks("pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {").is_empty()
     );
-    assert_eq!(
-        table_leaks("pub fn lent(&self) -> (Lent<'_, HostTables>, &HostTables) {").len(),
-        1
-    );
+    // RED: a bare reference beside it, a `Lent` named another way, and a `&HostTables` read out
+    // of a `Lent` in any accessor shape are each still found.
+    for planted in [
+        "pub fn lent(&self) -> (crate::abi::sdk::Lent<'_, HostTables>, &HostTables) {",
+        "pub fn lent(&self) -> Lent<'_, HostTables> {",
+        "pub fn tables(&self) -> &HostTables {",
+        "pub fn tables_of<'a>(lent: crate::abi::sdk::Lent<'a, HostTables>) -> &'a HostTables {",
+        "pub fn tables(&self) -> Option<&HostTables> {",
+    ] {
+        assert_eq!(table_leaks(planted).len(), 1, "{planted}");
+    }
 }
 
 #[test]

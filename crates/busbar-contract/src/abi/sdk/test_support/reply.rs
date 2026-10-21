@@ -159,6 +159,10 @@ impl<'h, O: Reply> Called<'h, O> {
 /// `validate` and `open` run on no instance; every other slot but `close` runs on one its door's
 /// `open` answered ([`Called::take_instance`]); `close` is [`close`]'s.
 ///
+/// Its [`Instance`] is `'static`: no host tables are reachable from a [`TestIn`] (only
+/// [`FakeHost::lend_to`](super::fake::FakeHost::lend_to) lends them, through [`call_hosted`]), so
+/// an instance this opens borrows nothing.
+///
 /// SAFE (status rows 159 and 194): `op` is a [`ViewOp`](super::ViewOp), a slot of a door the
 /// contract's macro built, `instance` an [`Instance`] that door's `open` answered, and `input` a
 /// [`TestIn`] whose every pointer borrows memory that outlives the call, so every pointer the slot
