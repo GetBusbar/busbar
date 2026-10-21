@@ -2254,6 +2254,8 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+/// The rate holder and dater a test binary hands in, in place of the root's install record's.
+pub mod rate_holders;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a

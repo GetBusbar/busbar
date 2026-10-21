@@ -135,6 +135,14 @@ pub struct RootInstall {
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
+    /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
+    /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
+    /// apply (a build with no root ledger).
+    pub rate_apply: Option<&'static dyn crate::rate_apply::RateApply>,
+    /// The root's rate dater ([`crate::rate_apply::RateEpoch`]), beside its holder: what a
+    /// metering accrual is dated by and the dated history the ledger reads price through. `None` =
+    /// every instant dates to the opening entry (`0`) and no era has a history.
+    pub rate_epoch: Option<&'static dyn crate::rate_apply::RateEpoch>,
     /// The export axis: every `kind: export` row, opened on the export kind's ABI by the root over
     /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
     /// export module resolves.
@@ -178,6 +186,10 @@ const STAND_IN: RootInstall = RootInstall {
     hook_names: &[],
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
+    // A test build has no root ledger: no holder hears an apply and no dater dates an accrual,
+    // unless a test binary hands its own in (`test_support::rate_holders`).
+    rate_apply: None,
+    rate_epoch: None,
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
     trust_policy: Some(crate::test_support::trust_policy_stand_in),
 };
