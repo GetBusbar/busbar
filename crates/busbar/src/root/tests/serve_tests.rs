@@ -4446,6 +4446,8 @@ async fn serve_configured(
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
+        &(Arc::new(crate::root::egress_ports::NodeClock::new())
+            as Arc<dyn busbar_kernel_egress::ports::Clock>),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )?;
     let live = Arc::clone(&served.planes[0].live);
@@ -6200,6 +6202,162 @@ mod pools_door_walk_and_breaker {
             .parse()
             .expect("whole seconds");
         assert!(wait >= 1, "at least one second: {wait}");
+    }
+
+    /// A CLOCK THE TEST HOLDS: its whole seconds stay where the test put them, so every reading
+    /// the walk takes (an admission, a cooldown it records, the wait a shed advertises) is the same
+    /// instant; its sub-second readings and its sleeps are real, so a bounded wait still ends.
+    struct HeldClock {
+        secs: u64,
+        origin: std::time::Instant,
+    }
+
+    impl HeldClock {
+        /// The door egress's clock, held at `secs`.
+        fn at(secs: u64) -> Arc<dyn busbar_kernel_egress::ports::Clock> {
+            Arc::new(HeldClock {
+                secs,
+                origin: std::time::Instant::now(),
+            })
+        }
+    }
+
+    impl busbar_kernel_egress::ports::Clock for HeldClock {
+        fn now_secs(&self) -> u64 {
+            self.secs
+        }
+
+        fn now_millis(&self) -> u128 {
+            self.origin.elapsed().as_millis()
+        }
+
+        fn now_micros(&self) -> u128 {
+            self.origin.elapsed().as_micros()
+        }
+
+        fn sleep(&self, ms: u64) -> busbar_kernel_egress::ports::BoxFut<'_, ()> {
+            Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
+        }
+    }
+
+    /// The instant the held clock reads: well before the wall clock, so a cooldown recorded on the
+    /// wall clock instead of the walk's reads as years long at it.
+    const HELD_AT: u64 = 1_700_000_000;
+
+    /// ONE FAILURE BELOW THE TRIP AGAINST THE SOLE MEMBER OF POOL `p`, the walk's clock held at
+    /// [`HELD_AT`]: the far end answers `reply` and then would serve. Asserts what 1.5.5 did: the
+    /// cell stays Closed (the default breaker trips on an error rate over at least five outcomes),
+    /// cooling for a cooldown in `band`; the next call is refused 503 without reaching the far end,
+    /// its `Retry-After` the cooldown exactly.
+    async fn benched_once(
+        instance: &'static str,
+        reply: MockResponse,
+        band: std::ops::RangeInclusive<u64>,
+    ) {
+        let _one = ONE_PUBLISHER.lock().await;
+        let _published = Withdrawn(instance);
+        let clock = HeldClock::at(HELD_AT);
+        let (state, server) = mock(vec![reply, MockResponse::default()]).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                clock: Some(&clock),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+
+        let (status, _, _) = rig.chat().await;
+        assert_ne!(status, 200, "{instance}: the far end's one failure");
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                busbar_kernel::store::BreakerState::Closed
+            ),
+            "{instance}: one failure is below the trip"
+        );
+        let cooling = rig.app.store.cooldown_remaining_in("p", 0, HELD_AT);
+        assert!(
+            band.contains(&cooling),
+            "{instance}: the member is benched for 1.5.5's cooldown {band:?}, on the walk's clock: \
+             {cooling}"
+        );
+
+        let (status, head, _) = rig.chat().await;
+        assert_eq!(status, 503, "{instance}: the benched sole member sheds");
+        let wait: u64 = head
+            .get("retry-after")
+            .expect("a Retry-After")
+            .to_str()
+            .expect("text")
+            .parse()
+            .expect("whole seconds");
+        assert_eq!(
+            wait, cooling,
+            "{instance}: the Retry-After is the cooldown, read on the same clock"
+        );
+        assert!(
+            state.next_response().is_some(),
+            "{instance}: the refused call never reached the far end"
+        );
+    }
+
+    /// A SINGLE-MEMBER POOL BENCHES ITS MEMBER ON ONE FAILURE BELOW THE TRIP, AS 1.5.5 DID: one 429
+    /// against the sole member of pool `p` leaves the cell Closed but cooling, and the next call is
+    /// refused 503 naming the cooldown as its `Retry-After` ([`benched_once`]).
+    ///
+    /// The wait, derived from v1.5.5:
+    /// - `crates/busbar/src/store/in_memory/breaker.rs:714-724`: every Closed failure that does not
+    ///   trip stores `now + compute_cooldown_with_retry_after(..)`; there is no single-member arm.
+    /// - `breaker.rs:281-388`: the streak is bumped to 1 first, so the backoff is `15 * 2^1 = 30`,
+    ///   jittered by `±(30 / 10) = ±3` and clamped to `[15, 120]`: 27..=33. A stated wait `W` is a
+    ///   floor over it: `max(27..=33, W)`, so a stated 60 is exactly 60.
+    /// - `crates/busbar/src/proxy/engine/walk.rs:49-64`: the shed advertises the soonest genuine
+    ///   cooldown remaining among the admissible members, at least 1: here the sole member's.
+    ///
+    /// A REGRESSION GUARD of that parity, without and with a stated wait (60 s), on the held clock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
+        benched_once(
+            "rehome-walk-single-bench-unstated",
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: None,
+            },
+            27..=33,
+        )
+        .await;
+        benched_once(
+            "rehome-walk-single-bench-stated",
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: Some(60),
+            },
+            60..=60,
+        )
+        .await;
+    }
+
+    /// THE COOLDOWN A TRANSIENT FAILURE ARMS AND THE WAIT A SHED ADVERTISES READ ONE CLOCK, the
+    /// walk's: one 500 against the sole member of pool `p` is recorded at the walk's `now`, as
+    /// 1.5.5's store took the record's `now_time` (`availability.rs:500-513`), so at the walk's
+    /// clock the member cools for 1.5.5's 27..=33 and the shed names that same wait. RED: the
+    /// failure recorded on the store's own wall-clock read, which at the held clock reads as a
+    /// cooldown years long.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transient_failure_is_benched_on_the_walks_clock() {
+        benched_once(
+            "rehome-walk-single-bench-walk-clock",
+            MockResponse::ServerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: serde_json::json!({ "error": "server error" }),
+            },
+            27..=33,
+        )
+        .await;
     }
 
     /// A SESSION PINNED TO A TRIPPED MEMBER YIELDS (F25 row 187; legacy
