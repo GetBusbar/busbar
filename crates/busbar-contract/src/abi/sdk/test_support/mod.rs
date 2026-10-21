@@ -426,6 +426,19 @@ fn table_in<C: 'static>(index: u32) -> Option<core::any::TypeId> {
     None
 }
 
+// THE PROBE COVERS EVERY SLOT: no kind's table holds more slots than `slot_in_of!` reads (0 to 95).
+// A kind that outgrows it fails to compile here, never skips its check.
+const _: () = {
+    use crate::abi::sdk::door::slot_count;
+    assert!(slot_count::<crate::abi::store::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::secret::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::auth::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::hook::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::export::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::plane::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::transport::Ops>() <= 96);
+};
+
 /// The `in` type of slot `index` of a `T` door: its lifecycle's for a lifecycle slot, its kind's
 /// own otherwise; `None` for a table no kind states (a host's own test double).
 fn slot_in_type<T: KindOps>(index: u32) -> Option<core::any::TypeId> {
