@@ -1511,8 +1511,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
   "crates/busbar-kernel/src/plane_driver/serve.rs::TABLES -- the published serve tables per config snapshot; routes, not plane, dialect or protocol identities",
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
-  "crates/busbar-kernel/src/rate_apply.rs::APPLY -- one rate-holder object (a port) the root installs; holds no table",
-  "crates/busbar-kernel/src/rate_apply.rs::EPOCH -- one rate-epoch object (a port) the root installs; holds no table",
   "crates/busbar-kernel/src/telemetry.rs::SLOTS -- the translation counter slots, built once from the declared dialects by `translation`; counters, no lookup of a dialect's behaviour",
   "crates/busbar-kernel/src/vocabulary.rs::VOCABULARY -- the open-vocabulary interner (bounded, freezes at boot); words, not declarations",
 ]
