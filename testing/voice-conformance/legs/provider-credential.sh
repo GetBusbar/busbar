@@ -6,12 +6,15 @@
 #
 # LEG: provider-credential — the plane never holds the realtime provider's credential.
 #
-# THE DOOR'S HALF (judged, linked AND dropped door): every far request the door answers — the mint,
-# the SDP offer, the sideband socket and the Gemini socket — names the declared OUTBOUND need it rides,
-# under the auth style the kernel binds the provider credential to (`bearer` for OpenAI Realtime,
-# `x-goog-api-key` for Gemini Live) and with the member's address, never a plane config path; no
-# request carries a credential field, and the caller is named only by the kernel's opaque reference.
-# RED arm: a mint that carries the caller's `Authorization` fails.
+# THE DOOR'S HALF (judged, linked AND dropped door): the mint dials nothing — busbar mints the ticket
+# (row 132, BUSBAR-1.6.0.md l.766), so it names the LOCAL route and answers the caller alone; every far
+# request the door answers — the sideband socket and the Gemini socket — names the declared OUTBOUND
+# need it rides, under the auth style the kernel binds the provider credential to (`bearer` for OpenAI
+# Realtime, `x-goog-api-key` for Gemini Live) and with the member's address, never a plane config
+# path; no request carries a credential field. Busbar's own call at the SDP door is judged by the
+# plane's both-ways tests, under a host that serves tickets.
+# RED arms: a far request that carries the caller's `Authorization` fails; a mint that asks the
+# provider (the predev broker) fails.
 #
 # THE COMPOSITION ROOT'S HALF (not the door's): resolving the catalog's secret reference through the
 # deployment's resolver, set-once, an unresolvable reference composing nothing.

@@ -8,13 +8,12 @@
 # Part 3 §12 "The route pump": the walk — pool, member pick, breaker, failover, exhaustion — is the
 # kernel's, and the driver builds no second one).
 #
-# THE DOOR'S HALF (judged, linked AND dropped door, the mint door): it names the session model's DIRECT
-# route (and none with no model configured); each ATTEMPT is answered afresh with the same request on
-# the declared pass need (door::RIDES_REALTIME_PASS) — the host connector dials it; a failing far end
-# reaches the caller with nothing before its last piece, so the walk may still fail over; the next
-# attempt's answer is the caller's whole answer, free of the failed one; and a last attempt that fails
-# is the served plane's 502. The plane opens no socket and holds no breaker or guard. RED arm: a retry
-# that sends a different request fails.
+# THE DOOR'S HALF (judged, linked AND dropped door): the mint names the LOCAL route — busbar mints the
+# ticket and dials nothing (row 132, BUSBAR-1.6.0.md l.766) — and every door that reaches the far end
+# (the SDP door's call, the Gemini Live and telephony sockets) names the session model's DIRECT route
+# (and none with no model configured); a turn's ATTEMPT carries nothing of its own, so each attempt the
+# walk makes dials the same session afresh. The plane opens no socket and holds no breaker or guard.
+# RED arm: an ATTEMPT that carries a frame of its own fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

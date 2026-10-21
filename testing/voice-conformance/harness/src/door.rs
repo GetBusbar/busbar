@@ -557,14 +557,6 @@ pub const fn request(unit: u64, claim: u32, from: u32, flags: u32, bytes: &[u8])
     }
 }
 
-/// The ATTEMPT that opens attempt `n` of request unit `unit` on `claim`.
-pub const fn attempt(unit: u64, claim: u32, n: u32) -> Piece<'static> {
-    Piece {
-        attempt_no: n,
-        ..request(unit, claim, FROM_KERNEL, 0, &[])
-    }
-}
-
 /// A piece of the live session on stream `stream` (claim `claim`).
 pub const fn session(stream: u64, claim: u32, from: u32, flags: u32, bytes: &[u8]) -> Piece<'_> {
     Piece {
