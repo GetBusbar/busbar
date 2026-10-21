@@ -3,7 +3,7 @@
 
 //! EXACTLY ONE PROBER PER MEMBER, proven on the real binary (status row 83, PR 4a; BUSBAR-1.6.0.md
 //! l.1189, F23 l.4641, B item 14): a provider configured `health: { mode: active, interval_secs: 1 }`
-//! is probed once per tick by the kernel's probe unit on the llm door's sealed egress
+//! is probed once per tick by the kernel's probe unit on the provider-pool door's sealed egress
 //! (`root::serve::arm_probes`), as 1.5.5's one health loop probed each lane once per interval. A
 //! second prober (the retired engine's `spawn_probers` running beside the kernel's) doubles the
 //! count, and no prober at all leaves it at zero; this cell reads both failures.
