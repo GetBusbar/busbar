@@ -60,7 +60,7 @@ pub(crate) struct Parked {
     pub(crate) state: Option<Box<dyn Any + Send + Sync>>,
     pub(crate) checkout: Option<Checkout>,
     pub(crate) issued: u32,
-    pub(crate) host: Option<Host>,
+    pub(crate) host: Option<Host<'static>>,
     pub(crate) ticket: Ticket,
 }
 
@@ -78,7 +78,7 @@ impl Drop for Parked {
 pub struct Op<'a> {
     ticket: Ticket,
     resuming: bool,
-    host: Option<&'a Host>,
+    host: Option<&'a Host<'static>>,
     state: Option<Box<dyn Any + Send + Sync>>,
     checkout: Option<Checkout>,
     /// The connector services this op has made, over all its entries.
@@ -121,7 +121,7 @@ impl<'a> Op<'a> {
     /// The door's op for one entry: fresh, or resuming what was parked.
     pub(crate) fn enter(
         ticket: Ticket,
-        host: Option<&'a Host>,
+        host: Option<&'a Host<'static>>,
         parked: Option<Parked>,
         reads: Option<&'a super::wire::ReadBufs>,
     ) -> Self {
@@ -199,7 +199,7 @@ impl<'a> Op<'a> {
 
     /// The host tables `open` was handed; `None` when none.
     #[must_use]
-    pub fn host(&self) -> Option<&Host> {
+    pub fn host(&self) -> Option<&Host<'static>> {
         self.host
     }
 

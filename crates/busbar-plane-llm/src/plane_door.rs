@@ -623,7 +623,7 @@ pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
     units: Mutex<UnitBook<UnitState>>,
-    services: Option<Services>,
+    services: Option<Services<'static>>,
     /// The receivers the `webhooks:` section switched on at open.
     webhooks: Webhooks,
 }
@@ -666,7 +666,7 @@ const UNTICKETED: CompletionHandle = CompletionHandle {
 /// several) and the host's wall clock (`clock.now`, whole seconds). A host that serves neither
 /// answers each one's failure path: no entropy, no clock.
 #[derive(Clone, Copy)]
-struct DoorHost(Option<Services>);
+struct DoorHost(Option<Services<'static>>);
 
 impl busbar_contract::codec::CodecHost for DoorHost {
     fn fill_entropy(&self, out: &mut [u8]) -> bool {

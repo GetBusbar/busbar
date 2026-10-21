@@ -117,23 +117,30 @@ pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
+///
+/// TIED TO THE TABLES (status row 194): `'t` is the lifetime of the host tables it was read from,
+/// carried by a `PhantomData` alone (no field, no layout). A real host's tables are its statics, so
+/// what `open` hands an instance is a `Host<'static>`; a test's
+/// [`FakeHost`](crate::abi::sdk::test_support) lends its tables for as long as it lives, and a
+/// handle read from them cannot outlive it.
 #[derive(Debug, Clone, Copy)]
-pub struct Host {
+pub struct Host<'t> {
     ctx: HostCtx,
     wake: Option<WakeFn>,
     conns: *const ConnectorSlots,
     services: *const HostSlots,
     io: *const crate::abi::host::io::IoSlots,
+    _tables: std::marker::PhantomData<&'t HostTables>,
 }
 
 // SAFETY: the context is an opaque handle and the table plain code addresses, both valid for the
 // instance's life (the mechanism's host-table rule); every call goes through the host's own
 // synchronisation.
-unsafe impl Send for Host {}
+unsafe impl Send for Host<'_> {}
 // SAFETY: as `Send`.
-unsafe impl Sync for Host {}
+unsafe impl Sync for Host<'_> {}
 
-impl Host {
+impl<'t> Host<'t> {
     /// The tables `tables` names: what `open` was handed (`OpenIn::host`), for a kind whose SDK
     /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
     ///
@@ -156,9 +163,9 @@ impl Host {
     /// let _ = Host::of(&tables); // a hand-built table is no `Lent`
     /// ```
     #[must_use]
-    pub fn of(tables: &crate::abi::sdk::lent::Lent<'_, HostTables>) -> Self {
+    pub fn of(tables: &crate::abi::sdk::lent::Lent<'t, HostTables>) -> Self {
         // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
-        // and the mechanism's host-table rule keeps them valid for the instance's life.
+        // valid for `'t` (the mechanism's host-table rule: the instance's life, for a real host).
         unsafe { Self::from_raw(tables.get()) }
     }
 
@@ -183,6 +190,7 @@ impl Host {
             conns: tables.conns,
             services: tables.services,
             io,
+            _tables: std::marker::PhantomData,
         }
     }
 
@@ -207,7 +215,7 @@ impl Host {
     /// The host services table these tables carry (`abi::host::service`), as the SDK's typed
     /// wrappers; `None` when the host offers none.
     #[must_use]
-    pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
+    pub fn services(&self) -> Option<crate::abi::sdk::services::Services<'t>> {
         // SAFETY: these are the fields of host-lent tables (`Host::of`, or `Host::from_raw`'s
         // caller vouched for them), handed on whole.
         unsafe {
@@ -261,7 +269,7 @@ impl Host {
 /// handle on its ticket (the replay rule, above).
 #[derive(Debug)]
 pub struct Connector<'h> {
-    host: &'h Host,
+    host: &'h Host<'h>,
     ticket: Ticket,
     issued: u32,
     budget_ms: Option<u64>,

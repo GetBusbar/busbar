@@ -588,6 +588,19 @@ macro_rules! lend {
             unsafe { self.get().$p.as_ref().map(|v| Lent::new(v)) }
         }
     };
+    (@one $name:ident tables($p:ident) -> $el:ty) => {
+        #[doc = concat!(
+            "The host tables `", stringify!($p), "` points to, if any: the host's own statics, valid ",
+            "for the instance's life (status row 194), so lent for `'static`."
+        )]
+        #[must_use]
+        pub fn $name(self) -> Option<Lent<'static, $el>> {
+            // SAFETY: the mechanism's host-table rule: the tables a host lends `open` (and `ready`)
+            // are its own statics, valid for the instance's whole life, which every handle read
+            // from them is held within.
+            unsafe { self.get().$p.as_ref().map(|v| Lent::new(v)) }
+        }
+    };
     (@one $name:ident buf($p:ident, $n:ident) -> $el:ty) => {
         #[doc = concat!("The HOST buffer `", stringify!($p), "`/`", stringify!($n), "` the call fills.")]
         #[must_use]
@@ -626,11 +639,11 @@ lend! {
     // THE LIFECYCLE (`abi::mechanism::lifecycle`).
     OpenIn {
         list(secrets, secrets_len) -> Blob;
-        one(host) -> HostTables;
+        tables(host) -> HostTables;
         buf(err_buf, err_cap) -> u8;
     }
     RefreshIn { list(secrets, secrets_len) -> Blob; }
-    ReadyIn { one(host) -> HostTables; }
+    ReadyIn { tables(host) -> HostTables; }
     // THE AUTH KIND (`abi::auth`): `verify`'s field lines and strip array, a login's requested
     // scopes and submitted form fields, and the host's identity buffer.
     VerifyIn {

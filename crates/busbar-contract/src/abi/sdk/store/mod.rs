@@ -177,7 +177,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     ///
     /// # Errors
     /// A text naming why the settings do not open a store, carried verbatim to the operator.
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
+    fn open(settings: &[u8], host: Option<Host<'static>>) -> Result<Self, String>;
 
     /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
     /// before the host counts it opened (its backend's first round trip, a schema check). It runs

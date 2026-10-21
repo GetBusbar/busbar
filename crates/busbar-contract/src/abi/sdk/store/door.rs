@@ -221,7 +221,7 @@ impl Text {
 pub struct Served<B> {
     store: B,
     /// The host tables `open` was handed: each op's connector.
-    host: Option<Host>,
+    host: Option<Host<'static>>,
     leases: Mutex<HashMap<u64, Leased>>,
     next_lease: AtomicU64,
     texts: Mutex<VecDeque<Text>>,
@@ -236,7 +236,7 @@ impl<B> std::fmt::Debug for Served<B> {
 }
 
 impl<B: StoreSlots> Served<B> {
-    fn new(store: B, host: Option<Host>) -> Self {
+    fn new(store: B, host: Option<Host<'static>>) -> Self {
         Self {
             store,
             host,

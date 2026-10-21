@@ -432,7 +432,7 @@ pub struct Held<L> {
     life: L,
     leases: Leases,
     reported: Reported,
-    host: Option<Host>,
+    host: Option<Host<'static>>,
 }
 
 impl<L> std::fmt::Debug for Held<L> {
@@ -444,7 +444,7 @@ impl<L> std::fmt::Debug for Held<L> {
 }
 
 impl<L: Life> Held<L> {
-    fn new(life: L, host: Option<Host>) -> Self {
+    fn new(life: L, host: Option<Host<'static>>) -> Self {
         Self {
             life,
             leases: Leases::default(),
@@ -465,7 +465,7 @@ impl<L: Life> Held<L> {
 
     /// The host tables `open` handed this instance (`OpenIn.host`); `None` when it was handed
     /// none. Its connector is `host().map(|h| h.connector(ticket))` (`abi::sdk::conn`).
-    pub const fn host(&self) -> Option<&Host> {
+    pub const fn host(&self) -> Option<&Host<'static>> {
         self.host.as_ref()
     }
 }

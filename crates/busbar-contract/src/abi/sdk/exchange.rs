@@ -464,7 +464,7 @@ impl<T: Send + Sync + 'static> Parks for Instance<'_, T> {
 /// and is re-entered from the top when its wake fires. One exchange per op.
 pub struct Op<'a> {
     on: &'a dyn Parks,
-    host: Option<&'a Host>,
+    host: Option<&'a Host<'a>>,
 }
 
 impl std::fmt::Debug for Op<'_> {
@@ -482,7 +482,7 @@ impl<'a> Op<'a> {
     #[must_use]
     pub fn new<'b: 'a, T: Send + Sync + 'static>(
         instance: &'a Instance<'b, T>,
-        host: Option<&'a Host>,
+        host: Option<&'a Host<'a>>,
     ) -> Self {
         Self { on: instance, host }
     }
@@ -490,7 +490,7 @@ impl<'a> Op<'a> {
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
     /// waits on another ticket's work wakes that ticket with ([`Host::wake`]).
     #[must_use]
-    pub fn host(&self) -> Option<&'a Host> {
+    pub fn host(&self) -> Option<&'a Host<'a>> {
         self.host
     }
 

@@ -114,7 +114,7 @@ struct Plane {
     /// The host's services, when the host offers them: an ATTEMPT is then sent only when the
     /// kernel entitles the unit to `door:echo` and approves the member's `echo` (a service the
     /// host does not serve gates nothing).
-    services: Option<Services>,
+    services: Option<Services<'static>>,
 }
 
 impl Plane {

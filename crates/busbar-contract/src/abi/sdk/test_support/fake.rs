@@ -873,6 +873,47 @@ impl FakeHost {
         }
     }
 
+    /// This host's tables, lent for as long as the host lives (status row 194): what a plugin's
+    /// own test reads its handles from, with no `unsafe` ([`Services::of`], [`Wake::of`],
+    /// [`Host::of`]). Each handle is tied to the borrow, so none outlives the host.
+    ///
+    /// RED: a handle read from the tables is not called after the host is dropped.
+    ///
+    /// ```compile_fail,E0505
+    /// use busbar_contract::abi::mechanism::ticket::Ticket;
+    /// use busbar_contract::abi::sdk::conn::Host;
+    /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+    /// let fake = FakeHost::new();
+    /// let tables = fake.lent();
+    /// let host = Host::of(&tables);
+    /// drop(fake);
+    /// host.wake(Ticket::NONE);
+    /// ```
+    ///
+    /// GREEN, its twin: the call inside the host's life.
+    ///
+    /// ```
+    /// use busbar_contract::abi::mechanism::ticket::Ticket;
+    /// use busbar_contract::abi::sdk::conn::Host;
+    /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+    /// let fake = FakeHost::new();
+    /// let tables = fake.lent();
+    /// let host = Host::of(&tables);
+    /// host.wake(Ticket::NONE);
+    /// drop(fake);
+    /// ```
+    ///
+    /// [`Services::of`]: crate::abi::sdk::services::Services::of
+    /// [`Wake::of`]: crate::abi::sdk::services::Wake::of
+    /// [`Host::of`]: crate::abi::sdk::conn::Host::of
+    #[must_use]
+    pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {
+        // SAFETY: the tables are this host's own, every pointer in them one of its own boxed
+        // tables, all alive and unmoved while `self` is borrowed (`link` points them only when
+        // `self` is owned mutably).
+        unsafe { crate::abi::sdk::Lent::new(&*self.tables) }
+    }
+
     /// The tables, for this crate's own tests of the trampoline (a malformed `in` no SDK path
     /// sends, and the SDK's `Services` over the fake).
     #[cfg(test)]

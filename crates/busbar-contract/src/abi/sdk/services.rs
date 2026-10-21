@@ -14,6 +14,7 @@
 //! set an ESTABLISH takes): every result is a scalar or a view into the caller's own buffers.
 
 use std::ffi::c_void;
+use std::marker::PhantomData;
 use std::mem::size_of;
 use std::task::Poll;
 
@@ -218,19 +219,25 @@ impl<'b> TrustItems<'b> {
 /// THE HOST'S WAKE, as `open` handed it (`HostTables::wake`): an instance holding work of its own
 /// (a plane's session output, named on its driver ticket) wakes a ticket through it, from any
 /// thread. A wake never blocks and never fails; one for a stale ticket is dropped by the host.
+///
+/// TIED TO THE TABLES (status row 194): `'t` is the lifetime of the host tables it was read from,
+/// carried by a `PhantomData` alone (no field, no layout). A real host's tables are its statics, so
+/// what `open` hands an instance is `'static`; a test's [`FakeHost`](super::test_support) lends
+/// its tables for as long as it lives, and a handle read from them cannot outlive it.
 #[derive(Debug, Clone, Copy)]
-pub struct Wake {
+pub struct Wake<'t> {
     ctx: HostCtx,
     wake: WakeFn,
+    _tables: PhantomData<&'t HostTables>,
 }
 
 // SAFETY: the context is an opaque `u64` handle (#74: no host address crosses) and the wake a plain
 // code address; the mechanism states the wake callable from any thread for the instance's life.
-unsafe impl Send for Wake {}
+unsafe impl Send for Wake<'_> {}
 // SAFETY: as above.
-unsafe impl Sync for Wake {}
+unsafe impl Sync for Wake<'_> {}
 
-impl Wake {
+impl<'t> Wake<'t> {
     /// The wake in the tables `open` handed the instance; `None` when the host handed none.
     ///
     /// SEALED (status row 159): the tables arrive as a [`Lent`], which only the SDK makes from the
@@ -252,9 +259,9 @@ impl Wake {
     /// let _ = Wake::of(&tables); // a hand-built table is no `Lent`
     /// ```
     #[must_use]
-    pub fn of(tables: &Lent<'_, HostTables>) -> Option<Self> {
+    pub fn of(tables: &Lent<'t, HostTables>) -> Option<Self> {
         // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
-        // and the mechanism's host-table rule keeps them valid for the instance's life.
+        // valid for `'t` (the mechanism's host-table rule: the instance's life, for a real host).
         unsafe { Self::from_raw(tables.get()) }
     }
 
@@ -269,6 +276,7 @@ impl Wake {
         tables.wake.map(|wake| Self {
             ctx: tables.ctx,
             wake,
+            _tables: PhantomData,
         })
     }
 
@@ -281,19 +289,22 @@ impl Wake {
 }
 
 /// The host services an instance was opened with: its context and the table.
+///
+/// TIED TO THE TABLES (status row 194), as [`Wake`]: `'t` is carried by a `PhantomData` alone.
 #[derive(Debug, Clone, Copy)]
-pub struct Services {
+pub struct Services<'t> {
     ctx: HostCtx,
     table: *const HostSlots,
+    _tables: PhantomData<&'t HostTables>,
 }
 
 // SAFETY: the table is the host's static and the context an opaque `u64` handle (#74); the host
 // states both are usable from any thread for the instance's life.
-unsafe impl Send for Services {}
+unsafe impl Send for Services<'_> {}
 // SAFETY: as above.
-unsafe impl Sync for Services {}
+unsafe impl Sync for Services<'_> {}
 
-impl Services {
+impl<'t> Services<'t> {
     /// The services in the tables `open` handed the instance; `None` when the host offers none.
     ///
     /// SEALED (status row 159): the tables arrive as a [`Lent`], which only the SDK makes from the
@@ -314,9 +325,9 @@ impl Services {
     /// let _ = Services::of(&tables); // a hand-built table is no `Lent`
     /// ```
     #[must_use]
-    pub fn of(tables: &Lent<'_, HostTables>) -> Option<Self> {
+    pub fn of(tables: &Lent<'t, HostTables>) -> Option<Self> {
         // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
-        // and the mechanism's host-table rule keeps them valid for the instance's life.
+        // valid for `'t` (the mechanism's host-table rule: the instance's life, for a real host).
         unsafe { Self::from_raw(tables.get()) }
     }
 
@@ -332,6 +343,7 @@ impl Services {
         (!tables.services.is_null()).then_some(Self {
             ctx: tables.ctx,
             table: tables.services,
+            _tables: PhantomData,
         })
     }
 

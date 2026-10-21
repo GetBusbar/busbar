@@ -328,9 +328,9 @@ struct PoolState {
     /// Established connections: idle plus held by an op.
     live: usize,
     /// Ops waiting for a connection, woken when one comes back.
-    waiters: Vec<(Host, Ticket)>,
+    waiters: Vec<(Host<'static>, Ticket)>,
     /// The host tables the idle connections are closed through when the set goes.
-    host: Option<Host>,
+    host: Option<Host<'static>>,
 }
 
 /// A STORE INSTANCE'S KEPT CONNECTIONS: at most `max` established at once (the store's 1.5.5
@@ -383,7 +383,7 @@ impl Pool {
     }
 
     /// Wake every waiting op (outside the lock).
-    fn wake_all(waiters: Vec<(Host, Ticket)>) {
+    fn wake_all(waiters: Vec<(Host<'static>, Ticket)>) {
         for (h, t) in waiters {
             h.wake(t);
         }
@@ -400,7 +400,7 @@ impl Pool {
     }
 
     /// A held connection comes back idle.
-    fn give_back(&self, idle: Idle, host: Option<Host>) {
+    fn give_back(&self, idle: Idle, host: Option<Host<'static>>) {
         let waiters = {
             let mut st = self.state();
             if st.host.is_none() {
