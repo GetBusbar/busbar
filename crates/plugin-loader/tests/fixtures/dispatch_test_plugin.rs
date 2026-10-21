@@ -126,15 +126,10 @@ const fn s(b: &'static [u8]) -> AbiStr {
         len: b.len(),
     }
 }
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_STR: AbiStr = AbiStr::ZERO;
 const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
     fmt: BLOB_ABSENT,
-    flags: 0,
+    ..Blob::ZERO
 };
 
 const fn family(name: &'static [u8], kind: u8, labels: usize) -> MetricFamily {
@@ -149,7 +144,7 @@ const fn family(name: &'static [u8], kind: u8, labels: usize) -> MetricFamily {
         },
         label_keys_len: labels,
         kind,
-        _reserved: [0; 7],
+        ..MetricFamily::ZERO
     }
 }
 
@@ -175,26 +170,11 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     families_len: 6,
     diag_ids: &DIAG_IDS.0 as *const AbiStr,
     diag_ids_len: 1,
-    kind_tail: std::ptr::null(),
     extensions: NO_BLOB,
-    secret_refs: std::ptr::null(),
-    secret_refs_len: 0,
     settings_schema: NO_BLOB,
-    marks: 0,
-    mark_words: std::ptr::null(),
-    mark_words_len: 0,
-    rewrites: std::ptr::null(),
-    rewrites_len: 0,
-    sections: std::ptr::null(),
-    sections_len: 0,
-    needs: std::ptr::null(),
-    needs_len: 0,
     target_from: NO_STR,
     trust_from: NO_STR,
-    answers: std::ptr::null(),
-    answers_len: 0,
-    claims: std::ptr::null(),
-    claims_len: 0,
+    ..Statement::ZERO
 });
 
 static OPS: Shared<OpsHead> = Shared(OpsHead {
@@ -256,16 +236,15 @@ static METRICS: Shared<[MetricEntry; 5]> = Shared([
 ]);
 static DIAGS: Shared<[Diag; 2]> = Shared([
     Diag {
-        id_idx: 0,
         severity: 1,
-        _reserved: [0; 3],
         text: s(b"answered"),
+        ..Diag::ZERO
     },
     Diag {
         id_idx: 5,
         severity: 1,
-        _reserved: [0; 3],
         text: s(b"no such id"),
+        ..Diag::ZERO
     },
 ]);
 
@@ -376,8 +355,7 @@ unsafe fn gauges(me: &Inst, t: Ticket, out: *mut c_void, values: &[(u32, u32)]) 
         (*out.cast::<OutHead>()).envelope = Envelope {
             metrics: ptr,
             metrics_len: len,
-            diags: std::ptr::null(),
-            diags_len: 0,
+            ..Envelope::ZERO
         };
     }
 }
@@ -606,17 +584,15 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             }
             BAD_TEXT => {
                 (*out.cast::<OutHead>()).error = AbiStr {
-                    ptr: std::ptr::null(),
                     len: 5,
+                    ..AbiStr::ZERO
                 };
                 say(out, Outcome::Failed)
             }
             BAD_ENVELOPE => {
                 (*out.cast::<OutHead>()).envelope = Envelope {
-                    metrics: std::ptr::null(),
                     metrics_len: 3,
-                    diags: std::ptr::null(),
-                    diags_len: 0,
+                    ..Envelope::ZERO
                 };
                 say(out, Outcome::Ready)
             }

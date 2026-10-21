@@ -655,12 +655,15 @@ impl PluginRegistry {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
-    /// Open EVERY loadable transport, in scan order, through its memory-ABI door
-    /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
-    /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
-    /// own instance to the host services). A library with no door is refused: the HOT transport lane
-    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
-    /// first that will not load fails the whole set, naming it.
+    /// Open every loadable transport the configuration `uses` (Law 7), in scan order, through its
+    /// memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one
+    /// dispatcher's door validation and bound with `bind`, labelled with its own plugin name (each
+    /// opened door is its own instance to the host services). Select reads the signed manifest's
+    /// Statement and opens nothing ([`crate::boot::Candidate::serves`]): a transport no configured
+    /// scheme selects is never staged, so its library initialisers never run. A manifest that states
+    /// no Statement is refused unopened, and a library with no door is refused: the HOT transport
+    /// lane is deleted (row 84), and no other lane reads it. Each selected image is staged and
+    /// opened once. The first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -668,6 +671,7 @@ impl PluginRegistry {
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
+        uses: &crate::boot::Uses,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
         let mut entries = TransportEntries::default();
@@ -677,12 +681,31 @@ impl PluginRegistry {
             .filter(|p| p.manifest.kind == kind::TRANSPORT)
         {
             let name = &p.manifest.name;
-            let stated = p.manifest.stated_rendering()?;
+            let Some(stated) = p.manifest.stated_rendering()? else {
+                return Err(format!(
+                    "transport plugin '{name}' states no Statement in its signed manifest, so it \
+                     exports no memory-ABI door (`busbar_plugin_door`) this host admits: a \
+                     transport loads only through its door"
+                ));
+            };
+            let selected = crate::boot::Candidate::from_manifest(
+                stated.clone(),
+                &p.manifest,
+                crate::boot::Origin::Dropped {
+                    file: p.file.clone(),
+                    bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                },
+            )
+            .map_err(|e| format!("transport plugin '{name}': {e}"))?
+            .serves(uses);
+            if !selected {
+                continue;
+            }
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
-                stated.as_deref(),
+                Some(stated.as_slice()),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
                     ..bind.clone()

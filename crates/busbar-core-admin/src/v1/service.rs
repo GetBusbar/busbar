@@ -159,7 +159,7 @@ fn metered_row<'a>(
 
 /// **WHETHER A METERING ROW'S USAGE VIEW CARRIES `classes`.** Only a row a non-pools plane metered
 /// (its `provider` column is that plane's registry key, as [`row_lane`] reads it): the classes that
-/// plane declares are new 1.6.0 surface (the FLIP-A2A ruling). A pools-plane row keeps 1.5.5's
+/// plane declares are new 1.6.0 surface (the PLANE-FLIP ruling). A pools-plane row keeps 1.5.5's
 /// usage shape, the token split alone, though the budget book holds an open class for it (a
 /// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
 /// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The

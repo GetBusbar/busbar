@@ -939,3 +939,226 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
         path.display()
     );
 }
+
+// ── A TICKETED `verify` OVER `records.secret`: the kit's pendable form, through the services double ──
+
+/// THE TICKETED VERIFY (ARCHITECT ruling: the auth kit's `verify` may wait on `records.secret`): a
+/// safe door whose `verify` reads the presented id's secret on its ticket, through the SDK's
+/// `VerifyOp`. The credential lent is `<id>:<proof>`; it identifies `<id>` when the host's secret
+/// for it is live and equals the proof, and rejects anything else. No `unsafe` in the plugin.
+mod ticketed {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::task::Poll;
+    use std::time::Duration;
+
+    use busbar_contract::abi::auth::{AuthPoints, AuthTail};
+    use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
+    use busbar_contract::abi::mechanism::call::{AbiStr, Span};
+    use busbar_contract::abi::sdk::auth_door::{
+        verify_tail, with_credential_kinds, with_tail, Answer, Verdict, VerifyOp, VerifyPlugin,
+        VerifyView,
+    };
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyRequest};
+    use busbar_contract::services::{Later, Ran, Stored};
+    use busbar_contract::Secret;
+
+    use crate::auth_axis::AuthRows;
+    use crate::dispatch::{DispatchConfig, Dispatcher, HostServices};
+    use crate::{LinkedPlugin, PluginRegistry};
+
+    /// The credential kind the door reads.
+    const KIND: &str = "signing-key";
+
+    /// The one live credential the double holds: its id and its secret.
+    const HELD: (&str, &[u8]) = ("AKID", b"open-sesame");
+
+    /// The double's fixed dummy for an id it does not hold.
+    const DUMMY: &[u8] = b"dummy-secret-0000";
+
+    pub(super) struct Proves;
+
+    impl VerifyPlugin for Proves {
+        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+            Ok(Proves)
+        }
+
+        fn verify_ticketed(&self, r: &VerifyView<'_>, op: &VerifyOp) -> Poll<Answer> {
+            let Some((id, proof)) = r
+                .credential()
+                .and_then(|c| std::str::from_utf8(c).ok())
+                .and_then(|c| c.split_once(':'))
+            else {
+                return Poll::Ready(Verdict::Pass.into());
+            };
+            let held = match op.records_secret(KIND, id) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(held)) => held,
+                Poll::Ready(Err(_)) => return Poll::Ready(Verdict::Reject.into()),
+            };
+            // The whole check runs over whatever came back (the dummy for an unknown id); the
+            // live verdict is read last.
+            let matches = held.secret() == proof.as_bytes();
+            Poll::Ready(if matches && held.live() {
+                Verdict::Identity(VerifiedIdentity {
+                    subject: id.to_string(),
+                    ..VerifiedIdentity::default()
+                })
+                .into()
+            } else {
+                Verdict::Reject.into()
+            })
+        }
+    }
+
+    mod door {
+        use super::*;
+
+        const KINDS: &[AbiStr] = &[abi_str(KIND)];
+        const TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), KINDS);
+
+        busbar_contract::auth_verify_door!(
+            Proves,
+            with_tail(statement("proves", "1.0.0", 8), TAIL)
+        );
+    }
+
+    /// THE SERVICES DOUBLE: `records.secret` of [`KIND`] PENDS on every call and completes from
+    /// another thread 20 ms on, `HELD` live with its secret and any other id [`DUMMY`], not live;
+    /// it counts the calls it served.
+    #[derive(Default)]
+    struct SlowSecrets {
+        served: AtomicU64,
+    }
+
+    impl busbar_contract::services::double::ServicesDouble for SlowSecrets {
+        fn records_secret(&self, kind: &str, id: &str, done: Later) -> Ran {
+            assert_eq!(kind, KIND, "the host serves only the declared kind");
+            self.served.fetch_add(1, Ordering::SeqCst);
+            let (bytes, value) = if id == HELD.0 {
+                (HELD.1.to_vec(), SECRET_LIVE)
+            } else {
+                (DUMMY.to_vec(), SECRET_NOT_LIVE)
+            };
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                let mut stored = Stored::ready(value);
+                stored.spans = vec![ItemSpan {
+                    key: Span { offset: 0, len: 0 },
+                    value: Span {
+                        offset: 0,
+                        len: bytes.len() as u32,
+                    },
+                }];
+                stored.bytes = bytes;
+                done(stored);
+            });
+            Ran::Later
+        }
+    }
+
+    fn opened(double: Arc<SlowSecrets>) -> Arc<dyn AuthCalls> {
+        let registry = PluginRegistry::empty()
+            .link(vec![LinkedPlugin::auth_door("proves", door::door)])
+            .expect("the linked door registers");
+        let config = DispatchConfig {
+            workers: 2,
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
+        };
+        let provider: Arc<dyn HostServices> = double;
+        let d = Arc::new(Dispatcher::with_services(config, provider));
+        AuthRows::new(Arc::new(registry), d)
+            .open("proves", "proves", &serde_json::json!({}))
+            .expect("the linked door opens")
+    }
+
+    fn lent(credential: &str) -> VerifyRequest {
+        VerifyRequest {
+            credential: Some(Secret::new(credential.as_bytes().to_vec())),
+            method: "GET".into(),
+            authority: "node.example".into(),
+            path: "/v1/models".into(),
+            ..VerifyRequest::default()
+        }
+    }
+
+    /// A verify that PENDS on `records.secret` and RESUMES READY: on the spot (no ticket) the door
+    /// answers REFUSED without reading anything, so the host submits it; submitted, it pends on the
+    /// double's read, the host's wake re-enters it on the same ticket, and the re-issued handle
+    /// reads the stored secret: identified, with the double served ONCE (nothing ran twice). RED
+    /// before the kit's ticketed form: `VerifyPlugin::verify` had no services and no ticket, so the
+    /// secret could not be read at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_ticketed_verify_pends_on_records_secret_and_resumes_ready() {
+        let double = Arc::new(SlowSecrets::default());
+        let a = opened(double.clone());
+        let request = lent("AKID:open-sesame");
+        assert_eq!(
+            a.verify_now(&request),
+            None,
+            "ticket-less: REFUSED, submit it"
+        );
+        assert_eq!(
+            double.served.load(Ordering::SeqCst),
+            0,
+            "nothing read on the spot"
+        );
+        let answer = Box::into_pin(a.verify(request)).await;
+        let Verified::Identity(id) = answer.verified else {
+            panic!("the resumed verify identifies: {answer:?}");
+        };
+        assert_eq!(id.subject, "AKID");
+        assert_eq!(double.served.load(Ordering::SeqCst), 1, "served once");
+        // A wrong proof over a live credential takes the same path and is rejected.
+        let wrong = Box::into_pin(a.verify(lent("AKID:guess"))).await;
+        assert_eq!(wrong.verified, Verified::Reject);
+        assert_eq!(double.served.load(Ordering::SeqCst), 2);
+    }
+
+    /// AN UNKNOWN ID TAKES THE SAME PATH: it pends on `records.secret` as a held id does, resumes
+    /// READY with the host's dummy, not live, and is rejected after the whole check ran; never an
+    /// error, never a short cut.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unknown_id_pends_and_resumes_on_the_same_path_and_is_rejected() {
+        let double = Arc::new(SlowSecrets::default());
+        let a = opened(double.clone());
+        let request = lent("NOBODY:dummy-secret-0000");
+        assert_eq!(
+            a.verify_now(&request),
+            None,
+            "ticket-less: REFUSED, submit it"
+        );
+        let answer = Box::into_pin(a.verify(request)).await;
+        assert_eq!(answer.verified, Verified::Reject, "the dummy is never live");
+        assert_eq!(
+            double.served.load(Ordering::SeqCst),
+            1,
+            "read once, as a held id"
+        );
+    }
+
+    /// A SYNC `VerifyPlugin` IS UNCHANGED beside the ticketed form, on a dispatcher that serves
+    /// host services: the judge answers on the spot and submitted, reading no service.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sync_verify_plugin_still_answers_on_the_spot_and_submitted() {
+        let double = Arc::new(SlowSecrets::default());
+        let registry = PluginRegistry::empty()
+            .link(vec![LinkedPlugin::auth_door("judge", super::judge::door)])
+            .expect("the linked door registers");
+        let provider: Arc<dyn HostServices> = double.clone();
+        let d = Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            provider,
+        ));
+        let a = AuthRows::new(Arc::new(registry), d)
+            .open("judge", "judge-sync", &serde_json::json!("ok"))
+            .expect("the linked door opens");
+        for (req, want) in super::script() {
+            assert_eq!(a.verify_now(&req), Some(want.clone()), "{req:?}");
+            assert_eq!(Box::into_pin(a.verify(req)).await, want);
+        }
+        assert_eq!(double.served.load(Ordering::SeqCst), 0);
+    }
+}

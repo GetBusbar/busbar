@@ -1,43 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C) — the single-compiled DTO
-//! `busbar-core`'s `appbuild` populates from the already-resolved `RootCfg` and hands to the LLM
-//! plane's `build_runtime` seam (`PlaneDecl::build_runtime`, through `&dyn Any`), so the plane rebuilds
-//! its `Lane`/`WeightedLane`/`PoolRuntime`/`NativeRuntime` tables WITHOUT core naming a single plane
-//! type and WITHOUT a core type crossing the type-erased downcast.
+//! THE KERNEL'S OWN ROUTE-TABLE INPUTS: every resolved lane and pool, flattened from the resolved
+//! `RootCfg` into neutral rows (owned strings, numbers, the neutral upstream-credential mode, the
+//! resolved credential in `busbar_contract::redacted::Secret`) that
+//! [`ConfigTables::of`](super::route_tables::ConfigTables::of) builds the driver's route tables from.
+//! A resolved secret is carried in `Secret`, never as a bare `String`: these rows are formatted on
+//! the build path, so the wrapper is what keeps the credential out of a trace line.
 //!
-//! ## Why every field is a NEUTRAL SCALAR
-//!
-//! The `build_runtime` fn-pointer is stored on the plane's `&'static PlaneDecl`, which — in
-//! `busbar-core`'s own `cfg(test)` binary — is registered through the neutral substrate test seam
-//! against a SECOND, independently-compiled copy of `busbar-core` (the plane crate's normal-dep core,
-//! distinct from the `cfg(test)` core under test). A `busbar_kernel::` type erased to `&dyn Any` in one
-//! and downcast in the other carries a DIFFERENT `TypeId`, so the downcast silently returns `None` —
-//! the dual-compile hazard. This carrier therefore holds NO `busbar_kernel::` type: only owned `String`s,
-//! numbers, `bool`s, `Vec`/`HashMap` of those, and the neutral `busbar_contract::config::UpstreamCreds`. It lives in
-//! `busbar-substrate` (compiled ONCE for the whole workspace) so its own `TypeId` is stable across the
-//! dual compile, and so a zero-plane binary that `git-rm`'d the retired engine crate (the `plane-delete-test --all`
-//! posture) still compiles `appbuild` — which populates this — without naming the plane crate.
-//!
-//! ## What it does NOT carry
-//!
-//! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: the plane cannot
-//! re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card). A
-//! resolved secret is carried in `busbar_contract::redacted::Secret`, never as a bare `String`: this carrier is
-//! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
-//! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
-//! `busbar_kernel::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
-//! cannot be named here and must not cross the downcast — so, exactly as the container-plane gate
-//! rebuild does (`ContainerGateSink`), pool policies stay resolved-and-read core-side behind the
-//! `App::resolve_pool_*` down-facade and never enter this carrier.
+//! The kernel's plane hosting used to hand the same rows on to a registry plane's own runtime build
+//! (`plane_host::build_input`'s `PlaneBuildInput`); no plane builds a runtime that way any more —
+//! a door plane reads its sections behind its door — so that hand-off is deleted with the kernel's
+//! plane hosting (status row 82) and these rows are the route tables' alone.
 
 use std::collections::HashMap;
 
 /// The per-provider outbound AUTH STYLE, a neutral mirror of `Option<busbar_kernel::config::ProviderAuth>`
 /// (`None` ⇒ [`AuthStyleInput::Default`], the protocol's native auth). The plane maps it to the style
 /// its lane's credential is bound under, on the auth plugin that serves that style
-/// ([`PlaneBuildInput::auths`], `busbar_kernel::bound_credential`).
+/// (`busbar_kernel::bound_credential`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AuthStyleInput {
     /// No `auth:` override — the protocol's native auth (its declared egress scheme).
@@ -76,10 +57,8 @@ pub struct HealthInput {
     pub timeout_secs: Option<u64>,
 }
 
-/// ONE resolved lane (one per model), flattened to neutral scalars. Everything the plane's
-/// `build_runtime` needs to reconstruct a `Lane` — including its provider's egress + auth inputs, so
-/// the plane owns the `build_egress_targets` call and its credential's binding (the allowed
-/// plane→core edge) WITHOUT the carrier naming an `EgressTarget` / `CredentialProvider`.
+/// ONE resolved lane (one per model), flattened to neutral scalars — including its provider's
+/// egress + auth inputs, WITHOUT the row naming an `EgressTarget` / `CredentialProvider`.
 #[derive(Clone)]
 pub struct LaneInput {
     /// The model name (config key) — the lane's stable identity and `by_model` key.
@@ -182,7 +161,7 @@ impl std::fmt::Debug for LaneInput {
 pub struct PoolMemberInput {
     /// The member's model name (for the `by_model` → lane-index resolution the plane redoes).
     pub model: String,
-    /// The resolved lane index (into [`PlaneBuildInput::lanes`]).
+    /// The resolved lane index (into the build's lane rows, `lanes[i]` is lane `i`).
     pub lane_idx: usize,
     /// The member weight (config `PoolMember.weight`, default 1).
     pub weight: u32,
@@ -261,8 +240,7 @@ pub struct TripInput {
 
 /// A pool's RESOLVED breaker config — a neutral mirror of the runtime `busbar_kernel::store::BreakerCfg`
 /// (the config `pools.<pool>.breaker:` block already lowered core-side via `BreakerCfg::from`, then
-/// flattened here so the plane's `build_runtime` reconstructs the runtime cfg WITHOUT the carrier
-/// naming a core type). `None` on `PoolInput` ⇒ the pool uses the ADR-0002 defaults.
+/// flattened here, so the row names no core type). `None` on `PoolInput` ⇒ the pool uses the ADR-0002 defaults.
 #[derive(Clone, Debug)]
 pub struct BreakerInput {
     /// Base cooldown after a trip (seconds).
@@ -296,77 +274,6 @@ pub struct PoolInput {
     pub upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The pool's resolved `breaker:` override (`None` ⇒ ADR-0002 defaults).
     pub breaker: Option<BreakerInput>,
-}
-
-/// The client-affecting subset of the resolved limits — the inputs the plane's upstream HTTP client
-/// build reads, and the tuple the warm-pool-reuse compare is keyed on (the plane reuses the prior
-/// generation's warm client iff these are unchanged).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClientSettingsInput {
-    /// The overall streaming request timeout (`limits.upstream_request_timeout_secs`) the warm-pool
-    /// -reuse compare is keyed on: a config apply that CHANGES it must REBUILD the sharded upstream
-    /// client so the new deadline takes effect, not silently reuse the prior client and pin the old
-    /// timeout until restart. Carried here (part of the reuse tuple) as the byte-identical successor to
-    /// the pre-relocation `UpstreamClientSettings.upstream_request_timeout_secs` the compare keyed on.
-    pub upstream_request_timeout_secs: u64,
-    /// Per-host idle connection budget (divided across shards by the plane).
-    pub pool_max_idle_per_host: usize,
-    /// Idle connection keep-alive ceiling in seconds.
-    pub pool_idle_timeout_secs: u64,
-    /// Pin the client to HTTP/1.1 (`advanced.upstream_http1_only`).
-    pub http1_only: bool,
-    /// Assume HTTP/2 prior-knowledge for cleartext upstreams (`advanced.upstream_h2_prior_knowledge`).
-    pub h2_prior_knowledge: bool,
-}
-
-/// THE NEUTRAL LLM-RUNTIME BUILD CARRIER — see the module docs. Populated field-by-field by
-/// `busbar-core`'s `appbuild` from the resolved `RootCfg`, passed as `&dyn Any` to the LLM plane's
-/// `PlaneDecl::build_runtime`, and downcast (single-compiled-safe) in the retired engine crate.
-#[derive(Clone, Debug)]
-pub struct PlaneBuildInput {
-    /// Every lane, in the deterministic sorted-by-model order core assigns indices in (so
-    /// `lanes[i]` IS lane index `i`).
-    pub lanes: Vec<LaneInput>,
-    /// Every pool.
-    pub pools: Vec<PoolInput>,
-    /// The ALL-POOLS upstream-credential default (`pools.upstream_credentials:`).
-    pub upstream_credentials: busbar_contract::config::UpstreamCreds,
-    /// The global metadata-SSRF allow list (`security.allow_metadata_hosts`).
-    pub allow_metadata_hosts: Vec<String>,
-    /// The nuclear metadata-guard disable (`security.allow_all_metadata`).
-    pub allow_all_metadata: bool,
-    /// The operator's extra metadata denylist (`security.blocked_metadata_hosts`).
-    pub blocked_metadata_hosts: Vec<String>,
-    /// The client-affecting resolved limits (warm-pool reuse key + client build inputs).
-    pub client_settings: ClientSettingsInput,
-    /// The cross-protocol translation seam's GLOBAL fallback max-output-tokens (`limits.default_max_tokens`),
-    /// injected when a lane carries no per-lane default. A resolved `u32` primitive the plane stamps onto
-    /// its own runtime — this carrier names it neutrally (prefixed) rather than as bare LLM vocabulary.
-    pub global_default_max_tokens: u32,
-    /// The resolved effort-word → thinking-budget table (`limits.reasoning_effort_budgets`, low→high),
-    /// carried as a plain `[u32; 4]` primitive for the plane to stamp onto its own runtime.
-    pub reasoning_budgets: [u32; 4],
-    /// The GLOBAL-DEFAULT failover config — the fallback for pools that set no `failover:` of their
-    /// own. Production `appbuild` always fills this with the fixed `DEFAULT_FAILOVER_*` constants (there
-    /// is no operator knob for a custom global), so carrying it changes nothing there; it exists so the
-    /// test fixture can drive the whole-App failover deadline the way it always could. `None` ⇒ the
-    /// plane's own fixed default.
-    pub default_failover: Option<FailoverInput>,
-    /// THE BUILD'S AUTH AXIS, whose outbound half binds each lane's credential on the auth plugin
-    /// serving its style. `None` (no axis installed): no style is served,
-    /// and every lane presents no credential (the upstream answers 401).
-    pub auths: Option<AuthReach>,
-}
-
-/// The build's auth axis, as the carrier holds it (a contract trait object; the build trace never
-/// prints it).
-#[derive(Clone)]
-pub struct AuthReach(pub std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>);
-
-impl std::fmt::Debug for AuthReach {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AuthReach")
-    }
 }
 
 /// TRANSITIONAL (row 155 B1b; deleted with the legacy lane carrier, which goes with the legacy llm
@@ -406,5 +313,5 @@ impl LegacyLaneKeys {
 }
 
 #[cfg(test)]
-#[path = "tests/build_input_tests.rs"]
+#[path = "tests/route_input_tests.rs"]
 mod tests;

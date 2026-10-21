@@ -28,7 +28,19 @@ use busbar_contract::unit::RefusalReason;
 /// Every reason has exactly one class, read the same way from each of its three spellings.
 #[test]
 fn p_item_refusal_reason_collapse_every_reason_has_one_class_by_every_spelling() {
-    assert_eq!(ReasonCode::ALL.len(), RefusalCode::ALL.len());
+    // One wire code per reason, and beside them only the walk's unsent codes: kernel-to-plane
+    // piece reasons that are no reason (`reason_of` decodes them to nothing).
+    assert_eq!(
+        ReasonCode::ALL.len(),
+        RefusalCode::ALL.iter().filter(|c| !c.unsent()).count()
+    );
+    for code in RefusalCode::ALL.iter().filter(|c| c.unsent()) {
+        assert_eq!(
+            busbar_contract::abi::plane::reason_of(code.code()),
+            None,
+            "{code:?}"
+        );
+    }
     for reason in ReasonCode::ALL {
         let class = class_of(*reason);
         assert_eq!(wire_code(*reason).class(), class, "{reason:?}");

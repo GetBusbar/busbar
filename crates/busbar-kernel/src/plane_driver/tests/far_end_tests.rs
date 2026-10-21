@@ -2883,3 +2883,208 @@ async fn a_relayed_failure_the_plane_reads_transient_counts_its_upstream_failure
     );
     assert_eq!(failed, vec!["transient"]);
 }
+
+// ── an attempt that leaves nothing on the wire says why ─────────────────────────────────────────
+
+/// One attempt on a fresh unit of `r` (its first member picked first, unless `pick` is false):
+/// whether it was sent, and the reason the walk's exhausted refused piece would then name for
+/// nothing having left (`FarEnd::unsent`). Nothing is ever opened by the attempts these cases
+/// make, and nothing is recorded against their member.
+async fn unsent_after(r: &Rig, pick: bool, request: OutboundRequest) -> Option<RefusalCode> {
+    let t = token();
+    let far = r.egress.unit(route());
+    assert_eq!(far.unsent(&t), None, "no attempt yet, nothing to say");
+    if pick {
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    }
+    assert!(!far.send(&t, request).await, "nothing was sent");
+    far.unsent(&t)
+}
+
+fn one_member() -> Rig {
+    rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    )
+}
+
+/// NO MEMBER IN HAND: a send before the walk picked one leaves nothing on the wire and says so
+/// (`UnsentNoAttempt`). RED: every pre-byte failure was a bare `false`, and the walk's exhausted
+/// refused piece named `BreakerOpen` as if a request had gone out.
+#[tokio::test]
+async fn a_send_with_no_member_in_hand_says_nothing_was_attempted() {
+    let r = one_member();
+    assert_eq!(
+        unsent_after(&r, false, request()).await,
+        Some(RefusalCode::UnsentNoAttempt)
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty());
+}
+
+/// NO ROUTE for the picked member on this node: nothing left (`UnsentNoRoute`).
+#[tokio::test]
+async fn a_member_with_no_route_says_nothing_left() {
+    let mut r = one_member();
+    r.egress.routes.remove(&DestinationId::new(1));
+    assert_eq!(
+        unsent_after(&r, true, request()).await,
+        Some(RefusalCode::UnsentNoRoute)
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty());
+}
+
+/// AN UNBOUND NEED: the far request names a need its member has no binding for; nothing left
+/// (`UnsentNeedUnbound`).
+#[tokio::test]
+async fn an_unbound_need_says_nothing_left() {
+    let mut r = one_member();
+    for route in r.egress.routes.values_mut() {
+        route.rides = vec![(NeedId(3), super::ResponseKeep::default())];
+    }
+    let request = OutboundRequest {
+        need: 9,
+        ..request()
+    };
+    assert_eq!(
+        unsent_after(&r, true, request).await,
+        Some(RefusalCode::UnsentNeedUnbound)
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty());
+}
+
+/// A TARGET THAT IS NOT A PATH: refused before the record, the auth call and the dial; nothing left
+/// (`UnsentTargetNotPath`).
+#[tokio::test]
+async fn a_target_that_is_not_a_path_says_nothing_left() {
+    let r = one_member();
+    let request = OutboundRequest {
+        target: b"@evil.test/x".to_vec(),
+        ..request()
+    };
+    assert_eq!(
+        unsent_after(&r, true, request).await,
+        Some(RefusalCode::UnsentTargetNotPath)
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty());
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+}
+
+/// A FIELD NAME THAT IS NOT A TOKEN: refused before the auth call and the dial; nothing left
+/// (`UnsentFieldName`).
+#[tokio::test]
+async fn a_field_name_that_is_not_a_token_says_nothing_left() {
+    let r = one_member();
+    let mut request = request();
+    request
+        .fields
+        .push((b"authorization:x".to_vec(), b"v".to_vec()));
+    assert_eq!(
+        unsent_after(&r, true, request).await,
+        Some(RefusalCode::UnsentFieldName)
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty());
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+}
+
+/// A journal that cannot write the dispatch record.
+struct Unwritable;
+impl Journal for Unwritable {
+    fn dispatched(&self, _: &Dispatched) -> Result<(), DurabilityUnavailable> {
+        Err(DurabilityUnavailable)
+    }
+    fn abandoned(&self, _: &Dispatched) {}
+}
+
+/// AN UNRECORDABLE DISPATCH: the record could not be made durable before the dial, so nothing is
+/// dialled; nothing left (`UnsentUnrecorded`).
+#[tokio::test]
+async fn an_unrecordable_dispatch_says_nothing_left() {
+    let mut r = one_member();
+    r.egress.journal = Arc::new(Unwritable);
+    assert_eq!(
+        unsent_after(&r, true, request()).await,
+        Some(RefusalCode::UnsentUnrecorded)
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty());
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+}
+
+/// A FAILED AUTH CALL: the member's binding answers no fields; nothing left (`UnsentAuthFailed`).
+#[tokio::test]
+async fn a_failed_auth_call_says_nothing_left() {
+    let r = one_member();
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    assert_eq!(
+        unsent_after(&r, true, request()).await,
+        Some(RefusalCode::UnsentAuthFailed)
+    );
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 1, "the one auth call");
+    assert!(r.table.opened.lock().unwrap().is_empty());
+}
+
+/// A REFUSED OPEN: the connection table would not open the attempt; nothing left
+/// (`UnsentOpenRefused`). The member's transient is recorded as before: the attempt fails over.
+#[tokio::test]
+async fn a_refused_open_says_nothing_left() {
+    let r = rig(&[("a.test", Script::Refused)], OnExhausted::Status503, None);
+    assert_eq!(
+        unsent_after(&r, true, request()).await,
+        Some(RefusalCode::UnsentOpenRefused)
+    );
+    assert_eq!(
+        r.book.observed.lock().unwrap().clone(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )],
+        "the refused dial is the member's transient, as before"
+    );
+}
+
+/// A SENT ATTEMPT THAT FAILS OVER CARRIES NO PRE-BYTE REASON: once any attempt of the walk opened
+/// its connection, the walk's exhaustion names `BreakerOpen` as before, whether the attempt that
+/// left nothing came after it or before it. RED arm: the same refused dial alone says
+/// `UnsentOpenRefused`.
+#[tokio::test]
+async fn a_sent_attempt_that_fails_over_carries_no_pre_byte_reason() {
+    // Sent first (a silent far end, failed over at its cap), then a refused dial.
+    let r = rig(
+        &[("a.test", Script::Silent), ("b.test", Script::Refused)],
+        OnExhausted::Status503,
+        Some(50),
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await, "the first attempt is sent");
+    let p = far.next(&t).await.expect("a piece");
+    assert!(p.fail_over, "{p:?}");
+    assert_eq!(far.unsent(&t), None, "a sent attempt says nothing left");
+    assert!(matches!(far.member(&t, 2).await, Pick::Member { .. }));
+    assert!(!far.send(&t, request()).await, "the refused dial");
+    assert_eq!(
+        far.unsent(&t),
+        None,
+        "a walk that sent an attempt names no pre-byte reason"
+    );
+    // A refused dial first, then the sent attempt.
+    let r = rig(
+        &[("a.test", Script::Refused), ("b.test", Script::Silent)],
+        OnExhausted::Status503,
+        Some(50),
+    );
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(!far.send(&t, request()).await, "the refused dial");
+    assert_eq!(
+        far.unsent(&t),
+        Some(RefusalCode::UnsentOpenRefused),
+        "RED arm: nothing has left yet"
+    );
+    assert!(matches!(far.member(&t, 2).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await, "the second attempt is sent");
+    let p = far.next(&t).await.expect("a piece");
+    assert!(p.fail_over, "{p:?}");
+    assert_eq!(far.unsent(&t), None, "the sent attempt clears it");
+}

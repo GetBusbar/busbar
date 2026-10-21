@@ -162,7 +162,7 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
     use super::{Program, ProgramRefused};
     assert_eq!(
         Program::of_member(&serde_json::json!({
-            "transport": "stdio",
+            "transport": "pipe",
             "command": "/usr/bin/server",
             "args": ["--serve"],
             "env": {"LEVEL": "debug"},

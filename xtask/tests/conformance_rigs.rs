@@ -12,11 +12,10 @@ use xtask::conformance_record::{
     rsa_jwk_from_pkcs8, suite_client_key, OidfClient, OidfSubject, AS_KEY_ID, OIDF_RESOURCE_PATH,
 };
 use xtask::conformance_record::{
-    b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, dev_bin_assets,
-    discriminates, es256_jwk, governance_observed, is_jev_refusal, jev_battery_command,
-    judge_jev_ledger, junit_cases, module_results, provenance_commit, rig_for, tests_passed,
-    CaseResult, H2Run, JevRun, OidfRun, SlsaRun, Status, TlsRun, JEV_PLANE, NEGATIVE_PAIRS,
-    OIDF_SUITES, REPORTED_UNITS,
+    b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, discriminates, es256_jwk,
+    governance_observed, is_jev_refusal, jev_battery_command, judge_jev_ledger, junit_cases,
+    module_results, provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun,
+    SlsaRun, Status, TlsRun, JEV_PLANE, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
 };
 use xtask::conformance_record::{voice_config_command, VOICE_PLANE};
 
@@ -1134,23 +1133,185 @@ fn the_mcp_rig_pins_a_node_its_toolchain_accepts_on_every_runner_platform() {
     );
 }
 
-/// THE ATTESTED BUILD THE RIG FETCHES: busbar's own Actions run on
-/// each push to dev publishes, on busbar-release's dev-bin, the binary and its in-toto provenance
-/// under these names; the rig asks for exactly HEAD's pair on its own architecture, and verifies
-/// it against busbar's repository and branch.
+/// THE ATTESTED BUILD THE RIG FETCHES: busbar's own `slsa-dev-provenance` run on each push to dev
+/// hands the binary and its in-toto provenance off as the run's own artifacts under these names; the
+/// rig asks for exactly HEAD's pair on its own architecture, and verifies it against busbar's
+/// repository and branch.
 #[test]
-fn the_slsa_rig_fetches_heads_attested_pair_from_dev_bin() {
-    let head = "0123456789abcdef0123456789abcdef01234567";
+fn the_slsa_rig_fetches_heads_attested_pair_from_its_own_run() {
+    use xtask::conformance_record::{
+        hand_off, HandOff, PROVENANCE_ARTIFACT, RUN_POLL_SECS, RUN_WAIT_CAP_SECS, SIGNER_REPO,
+        SIGNER_WORKFLOW,
+    };
     assert_eq!(
-        dev_bin_assets("aarch64", head),
-        (
-            format!("busbar-linux-aarch64-{head}"),
-            format!("busbar-linux-aarch64-{head}.intoto.jsonl"),
-        )
+        hand_off("aarch64", HEAD),
+        HandOff {
+            binary_artifact: "busbar-linux-aarch64".into(),
+            binary_file: format!("busbar-linux-aarch64-{HEAD}"),
+            provenance_artifact: "busbar-slsa-provenance".into(),
+            provenance_file: format!("busbar-linux-{HEAD}.intoto.jsonl"),
+        }
     );
+    assert_eq!(SIGNER_REPO, "GetBusbar/busbar");
+    assert_eq!(SIGNER_WORKFLOW, "slsa-dev-provenance.yml");
+    // The workflow uploads exactly the names the rig asks for, with an explicit retention.
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let wf =
+        std::fs::read_to_string(root.join(".github/workflows/slsa-dev-provenance.yml")).unwrap();
+    assert!(wf.contains("name: busbar-linux-${{ matrix.arch }}\n"));
+    assert!(wf.contains("path: out/busbar-linux-${{ matrix.arch }}-${{ github.sha }}\n"));
+    assert!(wf.contains(&format!("name: {PROVENANCE_ARTIFACT}\n")));
+    assert!(wf.contains("path: prov/busbar-linux-${{ github.sha }}.intoto.jsonl\n"));
+    assert_eq!(
+        wf.matches("retention-days: ${{ env.RETENTION_DAYS }}")
+            .count(),
+        2
+    );
+    assert!(!wf.contains("BUSBAR_DEV_BIN_TOKEN") && !wf.contains("busbar-release"));
+    // The wait is bounded and polls at a stated interval.
+    assert_eq!((RUN_POLL_SECS, RUN_WAIT_CAP_SECS), (60, 3600));
     assert_eq!(
         xtask::conformance_record::SOURCE_URI,
         "github.com/GetBusbar/busbar"
     );
     assert_eq!(xtask::conformance_record::SOURCE_BRANCH, "dev");
+}
+
+fn wf_run(id: u64, head: &str, status: &str, conclusion: Option<&str>) -> Value {
+    json!({"id": id, "head_sha": head, "status": status, "conclusion": conclusion})
+}
+
+/// GREEN: a successful run for HEAD is fetched, even beside an older failed attempt.
+#[test]
+fn slsa_run_state_fetches_heads_successful_run() {
+    use xtask::conformance_record::{next_step, run_state, RunState, Step};
+    let runs = json!({"workflow_runs": [
+        wf_run(9, HEAD, "completed", Some("failure")),
+        wf_run(7, HEAD, "completed", Some("success")),
+    ]});
+    assert_eq!(run_state(&runs, HEAD), RunState::Ready(7));
+    assert_eq!(next_step(RunState::Ready(7), 0, HEAD), Step::Fetch(7));
+}
+
+/// RED (not-run): no run for HEAD; a run of another commit is not HEAD's.
+#[test]
+fn slsa_no_run_for_head_is_not_run() {
+    use xtask::conformance_record::{next_step, run_state, RunState, Step};
+    let other = "ffffffffffffffffffffffffffffffffffffffff";
+    for runs in [
+        json!({"workflow_runs": []}),
+        json!({"total_count": 0}),
+        json!({"workflow_runs": [wf_run(3, other, "completed", Some("success"))]}),
+    ] {
+        let s = run_state(&runs, HEAD);
+        let RunState::Refused(why) = &s else {
+            panic!("{s:?}")
+        };
+        assert!(
+            why.contains("no slsa-dev-provenance.yml run for HEAD"),
+            "{why}"
+        );
+        assert!(matches!(next_step(s, 0, HEAD), Step::Stop(_)));
+    }
+}
+
+/// RED (not-run): HEAD's run failed or was cancelled.
+#[test]
+fn slsa_failed_run_is_not_run() {
+    use xtask::conformance_record::{run_state, RunState};
+    for c in ["failure", "cancelled", "startup_failure"] {
+        let runs = json!({"workflow_runs": [wf_run(5, HEAD, "completed", Some(c))]});
+        let RunState::Refused(why) = run_state(&runs, HEAD) else {
+            panic!("{c}")
+        };
+        assert!(why.contains(&format!("concluded `{c}`")), "{why}");
+    }
+}
+
+/// An unfinished run is waited for up to the cap; RED (not-run) at the cap.
+#[test]
+fn slsa_unfinished_run_waits_then_times_out_to_not_run() {
+    use xtask::conformance_record::{next_step, run_state, RunState, Step, RUN_WAIT_CAP_SECS};
+    let runs = json!({"workflow_runs": [wf_run(4, HEAD, "in_progress", None)]});
+    let s = run_state(&runs, HEAD);
+    assert_eq!(s, RunState::Pending(4, "in_progress".into()));
+    assert_eq!(next_step(s.clone(), 0, HEAD), Step::Wait);
+    assert_eq!(
+        next_step(s.clone(), RUN_WAIT_CAP_SECS - 1, HEAD),
+        Step::Wait
+    );
+    let Step::Stop(why) = next_step(s, RUN_WAIT_CAP_SECS, HEAD) else {
+        panic!("the wait is not bounded")
+    };
+    assert!(
+        why.contains("still `in_progress`") && why.contains("60-minute"),
+        "{why}"
+    );
+}
+
+/// GREEN: both named artifacts are found; RED (not-run): one is missing or expired.
+#[test]
+fn slsa_artifacts_missing_or_expired_are_not_run() {
+    use xtask::conformance_record::{artifact_urls, hand_off};
+    let want = hand_off("x86_64", HEAD);
+    let art = |name: &str, expired: bool| {
+        json!({"name": name, "expired": expired,
+               "archive_download_url": format!("https://api.github.com/{name}/zip")})
+    };
+    let both = json!({"artifacts": [
+        art("busbar-linux-x86_64", false),
+        art("busbar-linux-aarch64", false),
+        art("busbar-slsa-provenance", false),
+    ]});
+    assert_eq!(
+        artifact_urls(&both, &want, 7).unwrap(),
+        (
+            "https://api.github.com/busbar-linux-x86_64/zip".to_string(),
+            "https://api.github.com/busbar-slsa-provenance/zip".to_string()
+        )
+    );
+    let no_prov = json!({"artifacts": [art("busbar-linux-x86_64", false)]});
+    let e = artifact_urls(&no_prov, &want, 7).unwrap_err();
+    assert!(e.contains("no artifact `busbar-slsa-provenance`"), "{e}");
+    let no_bin = json!({"artifacts": [art("busbar-slsa-provenance", false)]});
+    let e = artifact_urls(&no_bin, &want, 7).unwrap_err();
+    assert!(e.contains("no artifact `busbar-linux-x86_64`"), "{e}");
+    let expired = json!({"artifacts": [
+        art("busbar-linux-x86_64", true),
+        art("busbar-slsa-provenance", false),
+    ]});
+    let e = artifact_urls(&expired, &want, 7).unwrap_err();
+    assert!(e.contains("expired"), "{e}");
+}
+
+/// RED (not-run): no token, and a token the API refuses (401/403), each name the need.
+#[test]
+fn slsa_token_absent_or_refused_is_not_run() {
+    use xtask::conformance_record::{http_answer, token_from, TOKEN_NEED};
+    assert_eq!(TOKEN_NEED, "a token with actions:read on GetBusbar/busbar");
+    let e = token_from(|_| None).unwrap_err();
+    assert!(e.contains(TOKEN_NEED), "{e}");
+    let e = token_from(|_| Some(String::new())).unwrap_err();
+    assert!(e.contains(TOKEN_NEED), "{e}");
+    assert_eq!(
+        token_from(|k| (k == "GH_TOKEN").then(|| "t".to_string())).unwrap(),
+        ("GH_TOKEN", "t".to_string())
+    );
+    assert_eq!(
+        token_from(|_| Some("t".to_string())).unwrap().0,
+        "BUSBAR_RELEASE_TOKEN"
+    );
+    assert!(http_answer(200, "BUSBAR_RELEASE_TOKEN", "x").is_ok());
+    for code in [401, 403] {
+        let e = http_answer(code, "BUSBAR_RELEASE_TOKEN", "x").unwrap_err();
+        assert!(
+            e.contains("BUSBAR_RELEASE_TOKEN") && e.contains("Actions: read on GetBusbar/busbar"),
+            "{e}"
+        );
+    }
+    assert!(http_answer(404, "BUSBAR_RELEASE_TOKEN", "x").is_err());
+    assert!(http_answer(0, "BUSBAR_RELEASE_TOKEN", "x").is_err());
 }
