@@ -4112,10 +4112,12 @@ impl<'d> DoorFar<'d, '_> {
     }
 }
 
-/// The walk's exhaustion terminal when no egress is composed: every path is spent.
+/// The walk's exhaustion terminal when no egress is composed: every path is spent. It is the
+/// walk's exhaustion, refused as `BreakerOpen` (the route step's `End::Exhausted`), so it wears
+/// that reason's status (1.5.5's pool-exhaustion 503 in the shed's words), not a not-found.
 fn spent() -> Pick {
     Pick::Exhausted {
-        status: refusal_status(ReasonCode::NoDestination),
+        status: refusal_status(ReasonCode::BreakerOpen),
         retry_after: None,
         detail: busbar_kernel_egress::wire::DETAIL_OVERLOADED,
     }

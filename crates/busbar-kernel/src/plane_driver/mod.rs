@@ -215,21 +215,37 @@ pub fn refusal_status(reason: ReasonCode) -> u32 {
 }
 
 /// The kernel's default status for one refusal class.
+///
+/// A POLICY REFUSAL IS A REFUSAL, NOT A SERVER FAULT (ARCHITECT ruling): a class that refuses the
+/// caller's request (its bytes, its authority, its size, its rate, its money, what it named, or a
+/// limit its admission ran into) is a 4xx naming that refusal, so a caller never retries it as
+/// though the node broke; a class that is the node's own state or fault is a 5xx. Each 4xx is the
+/// status the other surfaces already answer for the class (the one classification):
+///
+/// * `Rejected` 400: readable, and not taken as asked (an unbillable name, an unpriced class, a
+///   replayed or superseded idempotency key). 1.5.5's recorded `no rate` refusal, 400
+///   `invalid_request_error`; a plane that restates the class renders it as its request error.
+/// * `Busy` 429: the in-flight table, or the idempotency key's unit, is busy: a limit the
+///   admission ran into, retryable once it frees. 1.5.5's in-flight limit, 429 `rate_limit_error`;
+///   the admin surface's 429 for the class.
+/// * `NotFound` 404: nowhere for the request to go. 1.5.5's model-not-found 404; the admin
+///   surface's 404 for the class.
+///
+/// 402 is no class's status: a spent money cap (`QuotaExhausted`) is 1.5.5's 429
+/// `insufficient_quota`. The node's own states and faults keep their 5xx: a shut way to the
+/// destination and a node that cannot take the unit now (503), a deadline (504), a plane's panic
+/// (502), and an internal fault (503).
 pub const fn class_status(class: RefusalClass) -> u32 {
     match class {
-        RefusalClass::Unreadable => 400,
+        RefusalClass::Unreadable | RefusalClass::Rejected => 400,
         RefusalClass::Unauthenticated => 401,
         RefusalClass::Forbidden => 403,
+        RefusalClass::NotFound => 404,
         RefusalClass::TooLarge => 413,
-        RefusalClass::Throttled | RefusalClass::QuotaExhausted => 429,
+        RefusalClass::Throttled | RefusalClass::Busy | RefusalClass::QuotaExhausted => 429,
         RefusalClass::PlaneFault => 502,
         RefusalClass::Timeout => 504,
-        RefusalClass::Rejected
-        | RefusalClass::Busy
-        | RefusalClass::NotFound
-        | RefusalClass::Unreachable
-        | RefusalClass::Unavailable
-        | RefusalClass::NodeFault => 503,
+        RefusalClass::Unreachable | RefusalClass::Unavailable | RefusalClass::NodeFault => 503,
     }
 }
 

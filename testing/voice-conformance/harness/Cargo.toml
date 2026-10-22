@@ -19,6 +19,10 @@ path = "src/main.rs"
 
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
+# THE KERNEL'S STATUS CHOICE (`plane_driver::refusal_status`): the status the plane driver hands a
+# refusal of a plane that states no row of its own, which the admit-refusal slice renders through
+# the door (a policy refusal answers its 4xx, never `server_error`).
+busbar-kernel = { path = "../../../crates/busbar-kernel", default-features = false }
 # THE PLANE UNDER TEST: its linked door (`busbar_plane_streaming::door::door`) and its codecs, which
 # compute every expectation from the wire, at the rev the root pins (GetBusbar/busbar-plane-streaming,
 # row 106). The dropped-in door is that repo's cdylib twin, `busbar-plane-streaming-plugin`, at the
