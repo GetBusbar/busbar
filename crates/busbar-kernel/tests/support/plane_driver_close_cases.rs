@@ -325,6 +325,10 @@ enum Exit {
     Drained,
     /// Its caller went away with an op in flight.
     GoneMidAnswer,
+    /// Its deadline passed while the op's own done answer was on its way: the answer won.
+    DoneAnswerRacingTheDeadline,
+    /// Its caller went away while the op's own done answer was on its way: the answer won.
+    DoneAnswerRacingAClientDrop,
     /// The walk had no member at all.
     NoMemberLeft,
     /// The far end failed over and the walk ran out.
@@ -337,7 +341,7 @@ enum Exit {
     SessionEnded,
 }
 
-const EXITS: [Exit; 20] = [
+const EXITS: [Exit; 22] = [
     Exit::Completed,
     Exit::AnsweredLocally,
     Exit::RefusedAtArrive,
@@ -353,6 +357,8 @@ const EXITS: [Exit; 20] = [
     Exit::PastTheDeadline,
     Exit::Drained,
     Exit::GoneMidAnswer,
+    Exit::DoneAnswerRacingTheDeadline,
+    Exit::DoneAnswerRacingAClientDrop,
     Exit::NoMemberLeft,
     Exit::UpstreamFailedOver,
     Exit::DialFailed,
@@ -458,6 +464,58 @@ async fn closed_by(exit: Exit) -> u32 {
             drop(units);
             driver.sweep();
             closes(&plane, KEY)
+        }
+        Exit::DoneAnswerRacingTheDeadline | Exit::DoneAnswerRacingAClientDrop => {
+            // Two windows: the first streams, the second (the reply done) is held past the cut.
+            let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+            let (steps, far, caller) = (
+                passing(),
+                cases::Far::new(&["done-late"], &[b"hello ", b"end"]),
+                cases::Caller::default(),
+            );
+            let racing_the_deadline = matches!(exit, Exit::DoneAnswerRacingTheDeadline);
+            let deadline = if racing_the_deadline {
+                now_ns() + 40_000_000
+            } else {
+                0
+            };
+            let units = r.driver.unit(
+                &steps,
+                &far,
+                &caller,
+                cases::arrival("/call", b"x"),
+                deadline,
+            );
+            if racing_the_deadline {
+                let outcome = drive_as(&units, KEY).await;
+                assert!(
+                    matches!(
+                        outcome,
+                        UnitOutcome::Failed(StepName::Route, ReasonCode::DeadlineExceeded)
+                    ),
+                    "{exit:?}: {outcome:?}"
+                );
+            } else {
+                let gone =
+                    tokio::time::timeout(Duration::from_millis(40), drive_as(&units, KEY)).await;
+                assert!(
+                    gone.is_err(),
+                    "{exit:?}: the done answer was still on its way"
+                );
+            }
+            assert_eq!(
+                caller.text(),
+                "hello ",
+                "{exit:?}: the first window streamed"
+            );
+            drop(units);
+            let until = Instant::now() + Duration::from_secs(5);
+            while r.driver.buried() > 0 && Instant::now() < until {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                r.driver.sweep();
+            }
+            r.driver.sweep();
+            closes(&r.plane, KEY)
         }
         Exit::GoneMidAnswer => {
             let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());

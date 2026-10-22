@@ -38,6 +38,7 @@ use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, Checkpoint};
+use super::close::Close;
 use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
 use crate::host_records::Acked;
 use crate::slice::takes_lease;
@@ -704,6 +705,9 @@ pub(crate) struct Pumping<'u> {
     /// The member whose wait the plane stated its refusal answers (`OnPieceOut::wait_member`), on
     /// its answer to the walk's exhausted refused piece.
     wait_member: Option<String>,
+    /// The flags of the piece last pushed (its op's answer is read against them: a refused
+    /// piece's done answer is not the unit's close).
+    piece_flags: u32,
 }
 
 impl<'u> Pumping<'u> {
@@ -731,6 +735,7 @@ impl<'u> Pumping<'u> {
             ended: false,
             cancel_writes: Vec::new(),
             wait_member: None,
+            piece_flags: 0,
         }
     }
 
@@ -753,6 +758,7 @@ impl<'u> Pumping<'u> {
     /// disposition, is awaited before the pump moves on. The driver keeps the deadline itself;
     /// the dispatcher is handed none, so no second cancel races the driver's.
     async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>) {
+        self.piece_flags = p.flags;
         let calls = &self.driver.calls;
         let (input, out) = frame(&mut self.bufs, p, self.ctx.key.get());
         let left = self.left();
@@ -791,6 +797,10 @@ impl<'u> Pumping<'u> {
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
+            // ALREADY CLOSED: the op's own done answer beat the cancel to it (`cross` marked it),
+            // or the plane said the unit's reply was complete before the cut: a `cancel` now would
+            // be its second closing call. It bills as a cancel the plane did not answer.
+            _ if self.lock().close == Close::Closed => None,
             _ => self.cancel_now().map(|c| (c.disposition, c.writes)),
         };
         // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
@@ -922,21 +932,24 @@ impl Drop for Pumping<'_> {
         // THE CALLER WENT AWAY. No crossing here: an op still in flight is handed to the
         // dispatcher's client-drop path by message and buried until it settles; a unit between
         // ops is buried for the sweep's ticketless `cancel`.
-        let flight = match self.flight.take() {
+        let (flight, done) = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
-                Some(_settled) => None,
+                // The op ended on its own: its answer may have closed the unit.
+                Some(settled) => (None, answered_done(&settled, &*flight, self.piece_flags)),
                 None => {
                     self.driver.calls.drop_client(self.ticket);
-                    Some(flight)
+                    (Some(flight), false)
                 }
             },
-            None => None,
+            None => (None, false),
         };
-        // The buried unit's `cancel` (the client-drop path's, or the sweep's) is its closing call.
-        let (facts, principal) = {
+        // The buried unit's `cancel` (the client-drop path's, or the sweep's) is its closing call,
+        // unless it is closed already: a done answer, or a cancel that crossed before the drop.
+        let (facts, principal, closed) = {
             let mut st = self.lock();
+            let closed = done || st.close == Close::Closed;
             st.close.closed();
-            (st.facts.clone(), st.principal.clone())
+            (st.facts.clone(), st.principal.clone(), closed)
         };
         self.driver.bury(Buried {
             ctx: self.ctx.clone(),
@@ -944,8 +957,24 @@ impl Drop for Pumping<'_> {
             facts,
             flight,
             principal,
+            closed,
+            piece_flags: self.piece_flags,
         });
     }
+}
+
+/// Whether an op that ended on its own (`settled`, its `flight`) closed its unit: a READY answer
+/// that says the unit's reply is complete, its last window, to a piece that was not the refused
+/// piece (`piece_flags`).
+pub(crate) fn answered_done(
+    settled: &Answered,
+    flight: &dyn PieceInFlight,
+    piece_flags: u32,
+) -> bool {
+    settled.outcome == AbiOutcome::Ready
+        && flight.out().is_some_and(|o| {
+            o.flags & EMIT_DONE != 0 && o.more == 0 && piece_flags & PIECE_REFUSED == 0
+        })
 }
 
 /// Await `fut`, unless the plane's generation is reloaded or the deadline passes first.

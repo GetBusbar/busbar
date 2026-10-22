@@ -63,8 +63,13 @@ impl PlaneDriver {
     /// it carried (the instance's ticketless crossing, so none is held past it), its record writes
     /// written. Called by [`PlaneDriver::sweep`]; never inside a `Drop`, never under a lock.
     pub(crate) fn close_owed(&self) {
-        let owed = std::mem::take(&mut *self.lock_owed());
-        for Owed { unit, principal } in owed {
+        // One at a time, the lock let go before each crossing: a crossing that unwinds leaves the
+        // rest owed, for the next sweep, never dropped.
+        loop {
+            let next = self.lock_owed().pop();
+            let Some(Owed { unit, principal }) = next else {
+                return;
+            };
             let ticket = self.calls.mint();
             let cancelled = self.cancel_now(ticket.unwrap_or(Ticket::NONE), unit);
             if let Some(t) = ticket {

@@ -507,6 +507,12 @@ impl Double {
                     self.count(stat::HOST_CALLS);
                     hold = Hold::For(Duration::from_millis(30));
                 }
+                // An answer whose last window (its reply done) comes LATE (mode `done-late`): the
+                // second far-end piece's answer is held, so a deadline, a drain or the caller
+                // going away reaches the op before its own done answer does.
+                b"done-late" if u.far_pieces == 2 => {
+                    hold = Hold::For(DONE_LATE);
+                }
                 b"retry" => {
                     o.verdict = VERDICT_RETRY;
                     return (ready(Outcome::Ready), Hold::No);
@@ -672,6 +678,9 @@ enum Hold {
     /// what the driver lent it.
     Wedge,
 }
+
+/// How long a `done-late` unit's last answer is held.
+pub(crate) const DONE_LATE: Duration = Duration::from_millis(120);
 
 /// How long a wedged crossing runs on after its FAULT answer.
 pub(crate) const WEDGE: Duration = Duration::from_millis(300);
