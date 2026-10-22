@@ -13,3 +13,16 @@ merge_drivers:
     run: "cargo xtask ledger-merge %O %A %B"
     timeout: 15m
 
+
+# regenerate: a conflict whose files all have an entry takes the target's side of them and runs
+# `run` on the merged tree; the result is committed and tested in full. Before an entry settles
+# a conflict, its command must reproduce each side's committed files byte for byte, so it only
+# settles files the tree derives.
+#
+# Cargo.lock: `cargo update --workspace --offline` re-resolves the workspace members against the
+# locked versions and leaves the dependency pins as they are (it reproduces dev's Cargo.lock
+# unchanged).
+regenerate:
+  - files: [Cargo.lock]
+    run: "cargo update --workspace --offline"
+    timeout: 30m
