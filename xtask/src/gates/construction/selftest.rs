@@ -546,26 +546,145 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // A PATTERN BINDING IS READ IN ITS OWN FN (the coordinator's review of #1408): `if let Some(money)
-    // = cash` binds `money` with no type, so the call on it is unread and counted, whatever another
-    // fn of the same file declares a `money` as (here a `Node` argument).
+    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
+    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
+    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
+    // why this rule exists; each of the three spellings is on its own line and each is named.
     let mut ov = on(base);
     ov.set(
-        "crates/busbar/src/root/zz_probe_binding.rs",
-        "use crate::root::plane_node::Node;\nuse busbar_kernel::plane_driver::PlaneMoney;\n\
-         fn zz_probe_node(money: &Node) { let _ = money; }\n\
-         fn zz_probe_third_caller(cash: Option<&PlaneMoney>) {\n    \
-         if let Some(money) = cash { money.settle_end(unit, 200); }\n}\n",
+        "crates/busbar-kernel/src/proto/mod.rs",
+        "use std::sync::OnceLock;\n\nstatic PROTOCOLS: OnceLock<ProtocolDecl> = \
+         OnceLock::new();\n\npub fn install_protocols(decls: Planted) {\n    let _ = \
+         PROTOCOLS.set(decls.into());\n}\n\npub fn decl_for(name: &str) -> Option<String> {\n    \
+         PROTOCOLS.get().map(|_| name.to_string())\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_protocols.rs",
+        "pub fn zz_planted_register_protocols() {\n    \
+         busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a terminal called on a pattern binding is counted, whatever another fn of the file \
-         declares the same name as",
-        &["single-terminal"],
+        "a protocol registry grown back in the kernel, installed by the root",
+        &["kernel-no-protocol-registry"],
         ov,
-        &["zz_probe_third_caller", "zz_probe_binding.rs"],
+        &[
+            "crates/busbar-kernel/src/proto/mod.rs:3",
+            "crates/busbar-kernel/src/proto/mod.rs:5",
+            "crates/busbar-kernel/src/proto/mod.rs:9",
+        ],
     ));
+
+    // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
+    // `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel spells
+    // neither banned word. The aliases are read across the workspace and banned in the kernel too.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-contract/src/zz_planted_alias.rs",
+        "pub type Dialect = crate::protocol::ProtocolDecl;\npub use crate::protocol::decl_for as \
+         find_dialect;\n",
+    );
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_alias_use.rs",
+        "use busbar_contract::zz_planted_alias::Dialect;\n\npub fn zz_planted_lookup(name: &str) -> \
+         Option<&'static str> {\n    busbar_contract::zz_planted_alias::find_dialect(name)\n}\n\n\
+         pub fn zz_planted_kind(_: &Dialect) {}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a protocol registry the kernel reaches through workspace aliases of its banned names",
+        &["kernel-no-protocol-registry"],
+        ov,
+        &[
+            "Dialect",
+            "find_dialect",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
+        ],
+    ));
+
+    // THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
+    // `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
+    // calling it. Refused by its shape.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_erased.rs",
+        "use std::any::Any;\nuse std::sync::OnceLock;\n\nstatic ZZ_TABLE: OnceLock<Box<dyn Any + \
+         Send + Sync>> = OnceLock::new();\n\npub fn zz_planted_wire(table: Box<dyn Any + Send + \
+         Sync>) {\n    let _ = ZZ_TABLE.set(table);\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_wire.rs",
+        "pub fn zz_planted_boot() {\n    busbar_kernel::zz_planted_erased::zz_planted_wire(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind a type-erased kernel static that the root fills",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
+            "zz_planted_wire",
+        ],
+    ));
+
+    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores: a
+    // store drained without striking its row (the count falls under the ceiling, and the row is
+    // stale), and the list grown past its ceiling.
+    let rule_cfg = ConstructionGate::cfg(cx).ok();
+    let debt: Vec<String> = rule_cfg
+        .as_ref()
+        .and_then(|c| c.rule("kernel-no-protocol-registry").ok())
+        .map(|t| t.list_of("debt_stores"))
+        .unwrap_or_default();
+    match debt
+        .first()
+        .and_then(|d| d.split(" -- ").next()?.split_once("::"))
+    {
+        Some((file, name)) => {
+            let mut ov = on(base);
+            if let Ok(text) = cx.read(file) {
+                ov.set(file, text.replace(name, &format!("{name}_ZZ_DRAINED")));
+            }
+            r.push(prove_red(
+                cx,
+                gate,
+                "a debt store drained without its row struck and its ceiling lowered",
+                &[rules2::ROW_STORE_DEBT],
+                ov,
+                &["drained debt", name],
+            ));
+        }
+        None => r.push(Case {
+            name: "a debt store drained without its row struck and its ceiling lowered".to_string(),
+            covers: strings(&[rules2::ROW_STORE_DEBT]),
+            expected: Expect::Red { naming: vec![] },
+            got: Expect::Skipped,
+        }),
+    }
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        if let Some(grown) = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "debt_stores",
+            &["crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string()],
+        ) {
+            ov.set(CEILINGS, grown);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "the debt list grown past its ceiling",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["may not grow"],
+        ));
+    }
 
     // A `use … as` RENAME IS FOLLOWED (the approval desk's plant on #1276): `PlaneMoney` renamed to
     // `Node`, the name of the other type that defines `settle_end`, at module level (A), inside the
@@ -696,6 +815,27 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             &["single-terminal"],
         ));
     }
+
+    // A PATTERN BINDING IS READ IN ITS OWN FN (the coordinator's review of #1408): `if let Some(money)
+    // = cash` binds `money` with no type, so the call on it is unread and counted, whatever another
+    // fn of the same file declares a `money` as (here a `Node` argument).
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_probe_binding.rs",
+        "use crate::root::plane_node::Node;\nuse busbar_kernel::plane_driver::PlaneMoney;\n\
+         fn zz_probe_node(money: &Node) { let _ = money; }\n\
+         fn zz_probe_third_caller(cash: Option<&PlaneMoney>) {\n    \
+         if let Some(money) = cash { money.settle_end(unit, 200); }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called on a pattern binding is counted, whatever another fn of the file \
+         declares the same name as",
+        &["single-terminal"],
+        ov,
+        &["zz_probe_third_caller", "zz_probe_binding.rs"],
+    ));
 
     // AN UNRELATED `fn settle_end` ON ANOTHER TYPE IS NEITHER COUNTED NOR ALLOWED: the terminal is
     // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
