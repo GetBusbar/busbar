@@ -134,6 +134,11 @@ fn every_plugin_digest_row_parses_and_the_sans_io_plugins_are_pinned_on_the_1_6_
 /// message where no buffer is. 97c0d9c2ad builds against busbar 4abda5b63e (2026-10-02, before the
 /// edit); the hook-webrequest dev head 884996ccd2 builds against 7263f4e61b (2026-10-19, after it),
 /// its logic byte-identical to 97c0d9c2ad (only CI, tests and the contract pin moved).
+///
+/// RED (oracle `webrequest|gate|sidecar-500-reject`: a 503 where 1.5.5 served the chat): the pin
+/// must also be a build whose `decide` abstains on a failed forward, as the 1.5.5 forwarder (v1.0.6)
+/// did, so a far-end error never reaches the operator's `on_error` (BUSBAR-1.6.0.md §11.7, #85).
+/// 884996ccd2 answered FAILED; b0820e4b7b (hook-webrequest #34, against busbar a3748f7932) abstains.
 #[test]
 fn the_webrequest_hook_1_6_pin_speaks_the_hosts_hook_abi() {
     let tsv = Ctx::workspace().unwrap().read(PLUGIN_DIGESTS).unwrap();
@@ -143,7 +148,7 @@ fn the_webrequest_hook_1_6_pin_speaks_the_hosts_hook_abi() {
         .collect();
     assert_eq!(
         pins,
-        ["webrequest-hook\tsrc:884996ccd2998dcd8ee495b1eb70c80fd9496156\tbuild:busbar-hook-webrequest\t-\t1.6"],
+        ["webrequest-hook\tsrc:b0820e4b7ba69a7667152c027f5445b3523e1049\tbuild:busbar-hook-webrequest\t-\t1.6"],
         "the webrequest-hook 1.6 build pin predates the hook ABI's appended RequestView::session"
     );
 }

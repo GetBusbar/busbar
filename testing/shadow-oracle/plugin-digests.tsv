@@ -65,5 +65,5 @@ hashicorp-vault	src:4a6316fc2e7fd9d1e9f06aebd650dda7fee9d7f1	build:busbar-secret
 auth-oidc	src:cc59d737972c1b881a164b437d63c4f29f6a15c1	build:busbar-auth-oidc	-	1.6
 auth-github	src:96cf0d401dc7a70a235d5abdc5eec911cd2696ed	build:busbar-auth-github	-	1.6
 auth-ldap	src:52ff062381f984791e7da2e27b3d80d4c1cec85b	build:busbar-auth-ldap	-	1.6
-webrequest-hook	src:884996ccd2998dcd8ee495b1eb70c80fd9496156	build:busbar-hook-webrequest	-	1.6
+webrequest-hook	src:b0820e4b7ba69a7667152c027f5445b3523e1049	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
