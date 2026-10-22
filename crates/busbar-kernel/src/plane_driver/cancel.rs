@@ -177,8 +177,9 @@ pub(crate) struct Buried {
 impl PlaneDriver {
     /// Finish every buried unit that can be finished: an in-flight op that has settled, and a unit
     /// with no op in flight, which gets its ticketless `cancel` here. Each is billed through the
-    /// money seam and its ticket recycled. Called at the start of every unit and by the kernel's
-    /// tick; never inside a `Drop`, and never under a lock (the plane is called with none held).
+    /// money seam and its ticket recycled. Then every close a unit dropped open is owed
+    /// (`plane_driver/close.rs`). Called at the start of every unit (its decode, and its route
+    /// leg); never inside a `Drop`, and never under a lock (the plane is called with none held).
     pub fn sweep(&self) {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
@@ -215,6 +216,8 @@ impl PlaneDriver {
             self.calls.recycle(unit.ticket);
         }
         self.lock_buried().extend(unsettled);
+        // The units dropped while their plane still held them: their owed close.
+        self.close_owed();
     }
 
     /// How many buried units are still waiting (a witness for the tests and the tick).

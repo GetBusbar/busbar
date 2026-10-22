@@ -839,6 +839,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-streaming-plugin"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=1d6313005a223acd630ce4edf1261f0a5fb4a90a#1d6313005a223acd630ce4edf1261f0a5fb4a90a"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-streaming",
+]
+
+[[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
@@ -947,7 +956,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=23b8fa8031ed969f66c08289bfe2415f25a16236#23b8fa8031ed969f66c08289bfe2415f25a16236"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=70c6ce925e45022cc7bdbc5f2b011f009189c2ae#70c6ce925e45022cc7bdbc5f2b011f009189c2ae"
 dependencies = [
  "busbar-contract",
 ]
@@ -972,7 +981,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=90c7d4b311e73439ac60c1412e24a23a75604562#90c7d4b311e73439ac60c1412e24a23a75604562"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=ba08e0e0185742b3946fcf08c0967749c52c9c27#ba08e0e0185742b3946fcf08c0967749c52c9c27"
 dependencies = [
  "aes",
  "busbar-contract",
@@ -3999,7 +4008,9 @@ name = "voice-conformance-harness"
 version = "0.0.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel",
  "busbar-plane-streaming",
+ "busbar-plane-streaming-plugin",
  "busbar-plugin-loader",
  "bytes",
  "serde_json",
