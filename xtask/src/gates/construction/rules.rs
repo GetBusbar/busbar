@@ -814,10 +814,27 @@ fn past_visibility(text: &str) -> &str {
 }
 
 /// The type aliases a file declares: `type X = Y;` maps `X` to `Y`'s type (its last path segment,
-/// past a reference, a lifetime and generics). An alias the file gives two different targets, or a
+/// past a reference, a lifetime and generics), and every `use … Y as X` rename (module-level, inside
+/// a fn, or in a `use` group broken over lines; read by [`crate::gates::tracing::renames`]) maps `X`
+/// to `Y`, its source path's last segment. An alias the file gives two different targets, or a
 /// target this cannot read off its line, maps to `None`: unresolved.
 fn type_aliases(lines: &[Line]) -> BTreeMap<String, Option<String>> {
     let mut out: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let code: String = lines
+        .iter()
+        .filter(|l| !l.intest)
+        .map(|l| l.blank.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (from, to) in crate::gates::tracing::renames(&code) {
+        let resolved = is_ident(&from).then_some(from);
+        let entry = if out.get(&to).is_some_and(|seen| *seen != resolved) {
+            None
+        } else {
+            resolved
+        };
+        out.insert(to, entry);
+    }
     for l in lines {
         let Some(rest) = past_visibility(&l.code).strip_prefix("type") else {
             continue;
@@ -1044,6 +1061,7 @@ fn calls_terminal(
     at: usize,
     t: &Terminal,
     owners: &[String],
+    shadowed: &[String],
 ) -> bool {
     let Some(ty) = &t.ty else {
         return true;
@@ -1055,7 +1073,21 @@ fn calls_terminal(
         return true;
     };
     let no = lines[idx].no;
-    let aliases = type_aliases(lines);
+    let mut aliases = type_aliases(lines);
+    // A NAME BOUND TWO WAYS IS UNRESOLVED: an alias spelled as a type that itself defines the
+    // terminal's name (`use … PlaneMoney as Node;` beside the real `Node`) is read as neither, so a
+    // call through it is counted (fail-closed).
+    for (name, target) in &mut aliases {
+        if owners.contains(name) && target.as_deref() != Some(name.as_str()) {
+            *target = None;
+        }
+    }
+    // ... AND A NAME ANY FILE BINDS TWO WAYS IS UNRESOLVED IN EVERY FILE: a re-export (`pub use …
+    // PlaneMoney as Node;`) reaches its importers by a plain `use` or a glob, which this file's
+    // own renames do not show (fail-closed, tree-wide).
+    for name in shadowed {
+        aliases.insert(name.clone(), None);
+    }
     match receiver_of(lines, idx, at) {
         Some(Receiver::Path(path_ty)) => {
             let named = if path_ty == "Self" {
@@ -1079,6 +1111,21 @@ fn calls_terminal(
     }
 }
 
+/// The names of `owners` (the types that define a terminal's name) that some production file binds
+/// to anything but itself, by a `use … as` rename or a `type` alias: such a name is unresolved in
+/// every file, since a re-export reaches its importers by a plain `use` or a glob.
+fn shadowed_owners(tree: &Tree, owners: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for lines in tree.files.values() {
+        for (name, target) in type_aliases(lines) {
+            if owners.contains(&name) && target.as_deref() != Some(name.as_str()) {
+                out.push(name);
+            }
+        }
+    }
+    sorted_unique(&out)
+}
+
 pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("single-terminal")?;
     let ceiling = need_int(c, "max_extra_sites", "single-terminal")?;
@@ -1097,6 +1144,7 @@ pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             .collect();
         let owners: Vec<String> =
             sorted_unique(&defined.iter().map(|(o, _)| o.clone()).collect::<Vec<_>>());
+        let shadowed = shadowed_owners(tree, &owners);
         let mut seen = Vec::new();
         for (rel, l) in tree.grep(&call_rx, true, None) {
             if defn_rx.is_match(l.code_bytes()) {
@@ -1109,7 +1157,7 @@ pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
                 continue;
             };
             for m in call_rx.find_iter(l.code_bytes()) {
-                if !calls_terminal(tree, rel, idx, m.start, t, &owners) {
+                if !calls_terminal(tree, rel, idx, m.start, t, &owners, &shadowed) {
                     continue;
                 }
                 let (qualified, bare) = tree.enclosing_fn(rel, l.no).map_or_else(
