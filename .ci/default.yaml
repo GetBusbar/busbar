@@ -72,7 +72,7 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, test-docs, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [preflight, gates, clippy, compile, test, test-docs-run, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
   manual: [oracle-record, oracle]
 env:
   RUSTFLAGS: "-D warnings"
@@ -450,7 +450,13 @@ checks:
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
-  test-docs:
+  test-docs-run:
+    # Was `test-docs` (2026-10-22, ModernCI coordinator): its run limit is learned from its runs, and
+    # nearly all of them are the fast "touches no docs" exit (~20 s), so a change that touches docs
+    # and runs the build and suite whole was killed at a learned 60 s (#1414, #1427). A new name
+    # starts a fresh history (the branch deadline until five runs, then twice the slowest of the
+    # last 50, which a whole run now sets). The engine fix (a kill at a learned limit judges nothing
+    # once and runs again at the deadline) replaces this rename.
     # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
     env_from_run: [MODERNCI_TO_SHA]
     # `test` runs with `scope: affected`, and ModernCI's scoper reads docs/ and every *.md as no
