@@ -531,61 +531,60 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // AN UNTYPED BINDING IS NOT ATTRIBUTED BY A SAME-NAMED FIELD ELSEWHERE (a6's review of #1401):
-    // `let money = …;` declares no type, so the call on it is unread and counted. A field `money`
-    // of the node's type in another file says nothing about this local; reading it there would let
-    // a third door through as the node's own `settle_end`.
+    // A RECEIVER THE RULE CANNOT PIN TO ANOTHER TYPE IS COUNTED (ARCHITECT ruling: fail-safe).
+    // `settle_end` is defined on PlaneMoney and on Node, so its calls are attributed by receiver;
+    // each of these spells the terminal's own type in a way a literal name match does not read,
+    // and each is a caller the config does not name: a typed argument (the control), `Self::` inside
+    // `impl PlaneMoney`, a same-file alias of PlaneMoney, and an untyped binding whose name another
+    // file declares as a `Node` field (a tree-wide name collision is never a type).
     let mut ov = on(base);
     ov.set(
-        "crates/busbar/src/root/zz_planted_field_elsewhere.rs",
-        "pub struct ZzHolder {\n    pub money: Node,\n}\n",
+        "crates/busbar/src/root/zz_planted_receivers.rs",
+        "type ZzMoney = PlaneMoney;\n\npub fn zz_planted_control_caller(money: &PlaneMoney) {\n    \
+         money.settle_end(unit, 200);\n}\n\nimpl PlaneMoney {\n    fn \
+         zz_planted_self_path_caller(&self) {\n        Self::settle_end(self, unit, 200);\n    \
+         }\n}\n\npub fn zz_planted_alias_caller(money: &ZzMoney) {\n    \
+         ZzMoney::settle_end(money, unit, 200);\n}\n\npub fn zz_planted_untyped_caller() {\n    \
+         let zz_held = zz_make_money();\n    zz_held.settle_end(unit, 200);\n}\n",
     );
     ov.set(
-        "crates/busbar/src/root/zz_planted_untyped_binding.rs",
-        "impl DataRoutes {\n    fn zz_planted_untyped_binding(&self, served: &ServedPlane) {\n        \
-         let money = &served.money;\n        money.settle_end(unit, 200);\n    }\n}\n",
+        "crates/busbar/src/root/zz_planted_node_holder.rs",
+        "pub struct ZzNodeHolder {\n    zz_held: Node,\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a terminal called on an untyped binding is counted, whatever a same-named field elsewhere \
-         is declared as",
+        "a terminal call through a typed argument, `Self::`, a type alias or an untyped binding \
+         named like a `Node` field elsewhere",
         &["single-terminal"],
         ov,
         &[
-            "DataRoutes::zz_planted_untyped_binding",
-            "zz_planted_untyped_binding.rs",
+            "zz_planted_control_caller",
+            "PlaneMoney::zz_planted_self_path_caller",
+            "zz_planted_alias_caller",
+            "zz_planted_untyped_caller",
         ],
     ));
 
-    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
-    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
-    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
-    // why this rule exists; each of the three spellings is on its own line and each is named.
+    // A PATTERN BINDING IS READ IN ITS OWN FN (the coordinator's review of #1408): `if let Some(money)
+    // = cash` binds `money` with no type, so the call on it is unread and counted, whatever another
+    // fn of the same file declares a `money` as (here a `Node` argument).
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-kernel/src/proto/mod.rs",
-        "use std::sync::OnceLock;\n\nstatic PROTOCOLS: OnceLock<ProtocolDecl> = \
-         OnceLock::new();\n\npub fn install_protocols(decls: Planted) {\n    let _ = \
-         PROTOCOLS.set(decls.into());\n}\n\npub fn decl_for(name: &str) -> Option<String> {\n    \
-         PROTOCOLS.get().map(|_| name.to_string())\n}\n",
-    );
-    ov.set(
-        "crates/busbar/src/root/zz_planted_protocols.rs",
-        "pub fn zz_planted_register_protocols() {\n    \
-         busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
+        "crates/busbar/src/root/zz_probe_binding.rs",
+        "use crate::root::plane_node::Node;\nuse busbar_kernel::plane_driver::PlaneMoney;\n\
+         fn zz_probe_node(money: &Node) { let _ = money; }\n\
+         fn zz_probe_third_caller(cash: Option<&PlaneMoney>) {\n    \
+         if let Some(money) = cash { money.settle_end(unit, 200); }\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a protocol registry grown back in the kernel, installed by the root",
-        &["kernel-no-protocol-registry"],
+        "a terminal called on a pattern binding is counted, whatever another fn of the file \
+         declares the same name as",
+        &["single-terminal"],
         ov,
-        &[
-            "crates/busbar-kernel/src/proto/mod.rs:3",
-            "crates/busbar-kernel/src/proto/mod.rs:5",
-            "crates/busbar-kernel/src/proto/mod.rs:9",
-        ],
+        &["zz_probe_third_caller", "zz_probe_binding.rs"],
     ));
 
     // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
@@ -2042,7 +2041,7 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
              [String]> = const { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static [String]) \
              {\n    ZZ_CELL_TABLE.with(|c| c.set(rows));\n}\n",
         );
-        let rose = format!("[{}] {key}", &rule["rules.".len()..]);
+        let rose = format!("[{rule}] {key}");
         let counted = format!("counts 0 under `{key}`");
         let mut covers = vec![census::ROW_CENSUS];
         if row != census::ROW_CENSUS {
@@ -2061,6 +2060,139 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
                 "names no PR (`#<n>`), status row (`row <n>`) or file",
             ],
         ));
+    }
+    // 4. a6's THIRD REVIEW OF #1454: two new stores A and B, each with a root caller; A exempted
+    //    here; a word added to `store_cells`; `max_stores` 0 -> 1 under a measured entry with a
+    //    drain. Re-measured with THIS tree's exemptions, A is a stale name at the base and counts 1,
+    //    and B would sit under the 1 as new debt. The base is re-measured with the BASE's exemptions
+    //    and never counts a stale one, so it counts 0 and the entry excuses nothing.
+    let a_store = "crates/busbar-kernel/src/zz_planted_exempted_a.rs";
+    let b_store = "crates/busbar-kernel/src/zz_planted_unlisted_b.rs";
+    let exempted = format!("{a_store}::ZZ_A -- planted: exempted in the same change");
+    let planted = ceilings::set_int(&text, rule, "max_stores", 1)
+        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
+        .and_then(|t| ceilings::add_to_list(&t, rule, "exempt_stores", &[exempted]))
+        .filter(|t| t.contains(&header))
+        .map(|t| {
+            t.replacen(
+                &header,
+                &format!(
+                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
+                     know; drain: row 82\"\n"
+                ),
+                1,
+            )
+        });
+    match planted {
+        Some(planted) => {
+            let mut ov = measured_plant(base, planted);
+            for (file, name, module) in [
+                (a_store, "ZZ_A", "zz_planted_exempted_a"),
+                (b_store, "ZZ_B", "zz_planted_unlisted_b"),
+            ] {
+                ov.set(
+                    file,
+                    format!(
+                        "use std::sync::OnceLock;\n\nstatic {name}: OnceLock<Vec<String>> = \
+                         OnceLock::new();\n\npub fn install(rows: Vec<String>) {{\n    let _ = \
+                         {name}.set(rows);\n}}\n"
+                    ),
+                );
+                ov.set(
+                    format!("crates/busbar/src/root/{module}_root.rs"),
+                    format!(
+                        "pub fn {module}_boot() {{\n    busbar_kernel::{module}::install(PLANTED);\n}}\n"
+                    ),
+                );
+            }
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a new store exempted in the same change is no base debt: the base is re-measured \
+                 with its own exemptions",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "0 -> 1",
+                    "counts 0 under `max_stores`",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] could not take the exempted-store plant, so the \
+             rule that the base is re-measured with its own exemptions is unproven",
+        ),
+    }
+    // 5. a6's FOURTH REVIEW OF #1454: a key smuggled to the re-measure behind a comment. The
+    //    list's opening line is `exempt_stores = [ # ] store_holds = ['.',`, which a text editor
+    //    that closes the list at the first `]` reads as a `store_holds` matching every type; with
+    //    "Exclusive" in store_cells, `max_stores` 0 -> 13 and 13 new registries, the base then
+    //    counted 13. The re-measure edits the PARSED file, where that is a comment, so the base
+    //    counts 0 and the entry excuses nothing.
+    let smuggle_file = "crates/busbar-kernel/src/zz_planted_smuggled.rs";
+    let opener = "exempt_stores = [\n";
+    let registry_at = text.find(&format!("[{rule}]\n"));
+    let planted = registry_at
+        .and_then(|at| {
+            let rest = &text[at..];
+            let o = rest.find(opener)?;
+            Some(format!(
+                "{}{}exempt_stores = [ # ] store_holds = ['.',\n{}",
+                &text[..at],
+                &rest[..o],
+                &rest[o + opener.len()..]
+            ))
+        })
+        .and_then(|t| ceilings::set_int(&t, rule, "max_stores", 13))
+        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
+        .filter(|t| t.contains(&header))
+        .map(|t| {
+            t.replacen(
+                &header,
+                &format!(
+                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
+                     know; drain: row 82\"\n"
+                ),
+                1,
+            )
+        });
+    match planted {
+        Some(planted) => {
+            let mut ov = measured_plant(base, planted);
+            let mut kernel = String::from("use std::sync::OnceLock;\n\n");
+            let mut setter = String::from("pub fn install(rows: Vec<String>) {\n");
+            for i in 0..13 {
+                kernel.push_str(&format!(
+                    "static ZZ_SMUGGLED_{i}: OnceLock<Vec<String>> = OnceLock::new();\n"
+                ));
+                setter.push_str(&format!("    let _ = ZZ_SMUGGLED_{i}.set(rows.clone());\n"));
+            }
+            setter.push_str("}\n");
+            ov.set(smuggle_file, format!("{kernel}\n{setter}"));
+            ov.set(
+                "crates/busbar/src/root/zz_planted_smuggled_root.rs",
+                "pub fn zz_planted_smuggled_boot() {\n    \
+                 busbar_kernel::zz_planted_smuggled::install(PLANTED);\n}\n",
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a store_holds smuggled to the re-measure behind a comment `]` is a comment: the \
+                 base counts 0 of 13 new registries",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "0 -> 13",
+                    "counts 0 under `max_stores`",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] could not take the comment-smuggle plant, so the \
+             rule that the re-measure reads the parsed file is unproven",
+        ),
     }
     r
 }

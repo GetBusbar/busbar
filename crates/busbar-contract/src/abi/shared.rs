@@ -34,6 +34,61 @@ impl DeclStr {
             len: s.len(),
         }
     }
+
+    /// A stated string that lives for the program: [`DeclStr::new`], named as
+    /// [`AbiStr::of`](crate::abi::mechanism::call::AbiStr::of) is (status row 194).
+    #[must_use]
+    pub const fn of(s: &'static str) -> Self {
+        Self::new(s)
+    }
+
+    /// The range `len` bytes at `ptr` name (NULL = absent), unchecked: the host's and the
+    /// loader's door for the memory they lend one call (status row 194).
+    ///
+    /// # Safety
+    ///
+    /// Every read of the range finds `len` readable bytes at a non-NULL `ptr`, alive and unwritten
+    /// for as long as that read.
+    #[must_use]
+    pub const unsafe fn from_raw_parts(ptr: *const u8, len: usize) -> Self {
+        DeclStr { ptr, len }
+    }
+
+    /// The pointer (NULL = absent). Reading it is safe; reading through it is not.
+    #[must_use]
+    pub const fn ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// The length in bytes.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the range is empty (absent or zero-length).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Whether the range is absent (NULL).
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
+        self.ptr.is_null()
+    }
+
+    /// The bytes; empty when absent.
+    ///
+    /// # Safety
+    ///
+    /// The range names `len` readable bytes, alive and unwritten for `'a`: one made by
+    /// [`DeclStr::new`] always does.
+    #[must_use]
+    pub unsafe fn bytes<'a>(&self) -> &'a [u8] {
+        // SAFETY: the caller's contract.
+        unsafe { crate::abi::abi_slice(self.ptr, self.len) }
+    }
 }
 
 // SAFETY: a `DeclStr` is a borrowed range into the plugin image's own read-only bytes — the same

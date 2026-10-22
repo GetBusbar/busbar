@@ -251,6 +251,7 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         Arc::new(Shut),
         &routes,
         Arc::new(Unwritten),
+        Arc::new(crate::root::egress_ports::NodeClock::new()),
         600,
     )
     .expect("the pools seal");

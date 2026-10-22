@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The dated history and the lookup over it: appending never rewrites, the resolution rule takes
-//! the highest covering seq, a snapshot answers the same way forever, a hole is a refusal, and a
-//! cached figure never wins over a lookup.
+//! the highest covering seq, a snapshot answers the same way forever, a hole is a refusal, and the
+//! current view of an empty history names no snapshot.
 
 use super::*;
 use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
@@ -115,6 +115,29 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
     let above = history.snapshot(HistorySeq(99));
     assert_eq!(above.entries().len(), 3);
     assert_eq!(above.card_at(120).expect("covered").0, HistorySeq(2));
+}
+
+/// The current view of a history nothing has been appended to names no snapshot. Zero is the seq of
+/// a real opening entry, and a view that answered it for an empty history would put a snapshot on
+/// the face of a statement that no entry stands behind.
+#[test]
+fn the_current_view_of_an_empty_history_names_no_snapshot() {
+    let empty = History::new();
+    assert_eq!(empty.current().seq(), None);
+    assert!(empty.current().is_empty());
+
+    let opened = History::opening(card_at(1.0), 0);
+    assert_eq!(opened.current().seq(), Some(HistorySeq::OPENING));
+    assert_eq!(
+        overlapping_history().current().seq(),
+        Some(HistorySeq(2)),
+        "the current view is the head's snapshot"
+    );
+    assert_eq!(
+        overlapping_history().snapshot(HistorySeq(1)).seq(),
+        Some(HistorySeq(1)),
+        "a named snapshot keeps the seq it was named at"
+    );
 }
 
 /// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (#79): the entry pricing every

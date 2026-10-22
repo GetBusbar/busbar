@@ -62,7 +62,7 @@ impl ArrivalCtx {
 pub struct ArrivalPayload {
     /// The neutral engine host, minted core-side over the live `App` — the seam every reader (core's
     /// `ArrivalHost` impl and the LLM plane's ingress) drives instead of naming `Arc<App>`.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The resolved per-request governance context (public `busbar_contract` type).
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, as a REF the host presents upstream for a `passthrough`

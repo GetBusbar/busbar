@@ -88,6 +88,18 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
+  1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect from a public host to a private or loopback address, and any such redirect to a cloud metadata or IPv6 link-local host.
+  1.5.5 followed up to 10 https redirects with no address check. The refusal names the URL that was
+  asked: `request to {asked URL} failed: a redirect to a private or loopback address is not allowed`
+  or `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed`. The
+  check reads the literal hosts only, with no DNS lookup. An identity provider addressed by a private
+  IP may still redirect to a private IP. One reached by a DNS name (e.g. `keycloak.corp`) counts as
+  public, so its redirect to a private IP literal is now refused where 1.5.5 followed it. A redirect
+  to a DNS name that resolves to a private or metadata address is followed, and the dial guard judges
+  it. A public-to-public https redirect is still followed, and every other error text is 1.5.5's
+  (owner-approved 2026-10-21).
+
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
   and both halves are caller-supplied free text: rotating `a:b` under header `c` and rotating `a`
@@ -191,6 +203,11 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The SigV4 auth plugin signs the request it sends.** 1.6.0 Changed: the SigV4 auth plugin signs the real method, query string and content type of each outbound request it signs; a POST of `application/json` with no query string signs byte-for-byte as 1.5.5 did.
+  1.5.5 only ever signed that one shape. The query is canonicalised as SigV4 requires, and a repeated
+  header name is comma-merged as the AWS spec says (owner-approved 2026-10-21).
+- **A configuration apply's limits go live with it.** A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits. 1.5.5 put them in force before
+  validating them, for the length of the build.
 - **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
   it.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
@@ -415,10 +432,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly nine entries of kind `breaking`
+The accepted-differences register for this release has exactly eight entries of kind `breaking`
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
-unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
-removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
+unchanged in both), one field removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
 endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
 history so a card's own effective date bounds what it reprices, one provider credential that no
 longer degrades to an empty key, and one Bedrock budget refusal that now answers an error Converse
@@ -428,7 +444,7 @@ instead, because each waives only a caller-additive or documentation-only surfac
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find eleven, not nine. One
+changed. A reader counting `kind: breaking` rows in the register will find eleven, not eight. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
 provider that answered 401 now authenticating.)
@@ -461,15 +477,6 @@ minted secret carries over.
   opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
   capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
   recorded spend to rise to what they actually used; no config change is needed.
-- 1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both
-  the buffered and the streamed path. Cohere reports usage twice — a raw `usage.tokens` bucket and
-  a separately-metered `usage.billed_units` bucket, and `billed_units` is what the operator is
-  invoiced upstream. 1.5.5 read only `tokens` and billed those; 1.6.0 bills `billed_units` where
-  the backend reports it, and now does so identically whether the completion was served buffered or
-  streamed (the two answers for one completion previously differed). Only Cohere populates these
-  fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
-  Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
-  token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
 - 1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google
   charges for. Vertex reports `usageMetadata.toolUsePromptTokenCount` beside `promptTokenCount`,
   not inside it — on a real `gemini-2.5-flash` capture the field is `32` while the entire
