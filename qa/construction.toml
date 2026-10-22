@@ -1569,7 +1569,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_MEMO -- compiled only under test / test-support: the fold memo of test registrations",
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_REGISTERED -- compiled only under test / test-support: the test plane registrations",
   "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
-  "crates/busbar-kernel/src/plane_driver/serve.rs::TABLES -- the published serve tables per config snapshot; routes, not plane, dialect or protocol identities",
   "crates/busbar-kernel/src/plane_driver/slots.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
