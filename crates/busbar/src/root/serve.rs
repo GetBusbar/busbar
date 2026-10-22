@@ -633,11 +633,21 @@ impl DoorApply {
                     );
                 }
             }
-            Err(e) => tracing::warn!(
-                plane = self.facts.plane.as_str(),
-                error = %e,
-                "door plane kept its generation across a config apply"
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    plane = self.facts.plane.as_str(),
+                    error = %e,
+                    "door plane kept its generation across a config apply"
+                );
+                // A REFUSED GENERATION IS RETIRED (THE DESIGN section 6: a refused reload leaves
+                // the running generation serving): the plane may have refreshed onto it before
+                // its pools or egress were refused here, and a plane answers from the newest
+                // generation it holds.
+                crate::root::loader::dispatch::kinds::plane::retire_door(
+                    &self.plugin,
+                    now.generation + 1,
+                );
+            }
         }
     }
 
@@ -804,6 +814,10 @@ impl DoorAppliers {
                 &p.plugin, &settings, &owned, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
+                // A plane that answered READY may hold the generation whose snapshot the host's
+                // checks refused: retire it, so the plane answers from the one the host keeps
+                // serving.
+                crate::root::loader::dispatch::kinds::plane::retire_door(&p.plugin, next);
                 continue;
             }
             match seal_live(
@@ -826,6 +840,9 @@ impl DoorAppliers {
                 }
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane's new configuration did not seal; it keeps serving the previous one");
+                    // The plane refreshed onto the generation the host refused: retire it, so
+                    // the plane answers from the one the host keeps serving.
+                    crate::root::loader::dispatch::kinds::plane::retire_door(&p.plugin, next);
                     continue;
                 }
             }
@@ -1219,6 +1236,8 @@ struct LiveHooks {
     host: busbar_kernel::plane_driver::GenerationHost,
     gov: Arc<busbar_kernel::governance::GovState>,
     dialects: Vec<String>,
+    /// The plane's registry key: its section's own `hooks:` attach is filed under it.
+    plane_key: String,
 }
 
 impl LiveHooks {
@@ -1232,6 +1251,7 @@ impl LiveHooks {
                 gov: Arc::clone(&self.gov),
             }),
             dialects: self.dialects.clone(),
+            plane_key: self.plane_key.clone(),
         }
     }
 }
@@ -1267,14 +1287,21 @@ impl HookStage {
         Self { host, gov }
     }
 
-    /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
-    /// deployment's global and per-pool hooks, bound per unit off the current generation (U22,
-    /// ARCHITECT rulings 2026-10-05).
-    fn routed(&self, dialects: &[&str]) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+    /// The ROUTED-ORDER binder of the plane registered under `plane_key` whose dialects are
+    /// `dialects`, in its tail's order: the deployment's global and per-pool hooks, and the
+    /// plane's own section-level attach (`<section>.hooks:`, filed under its registry key), bound
+    /// per unit off the current generation (U22, ARCHITECT rulings 2026-10-05; THE DESIGN section 1:
+    /// every plane gets every capability).
+    fn routed(
+        &self,
+        plane_key: &str,
+        dialects: &[&str],
+    ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
         Arc::new(LiveHooks {
             host: Arc::clone(&self.host),
             gov: Arc::clone(&self.gov),
             dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
+            plane_key: plane_key.to_string(),
         })
     }
 
@@ -1682,7 +1709,7 @@ pub(crate) fn compose_planes_over(
             // Every other plane runs the routed order (U22): the deployment's global and per-pool
             // hooks, bound per unit off the live generation, reach its request stage and its
             // in-session stage (`hook.call`, `content.scan`).
-            Some(stage) => driver.with_hooks(stage.routed(&served_facts.dialects)),
+            Some(stage) => driver.with_hooks(stage.routed(plugin.name(), &served_facts.dialects)),
             None => driver,
         };
         // A plane whose tail takes a refusal as a piece first is handed it on the unit's own

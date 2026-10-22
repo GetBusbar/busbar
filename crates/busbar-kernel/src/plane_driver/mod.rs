@@ -1268,7 +1268,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 self.response_tap(true, veto.status);
                 ReasonCode::HookVeto
             }
-            hooks::Stopped::Unreadable => {
+            hooks::Stopped::Unreadable | hooks::Stopped::Unparseable => {
                 // 1.5.5 answered an unreadable request a rewrite hook had to see as a gate's
                 // refusal: the response tap reports it so.
                 let status = self.status_for(ReasonCode::DecodeFailed);
