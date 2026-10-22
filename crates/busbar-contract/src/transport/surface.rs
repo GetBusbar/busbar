@@ -41,7 +41,7 @@ use core::fmt;
 /// Load-bearing on both sides. A transport reads it to decide whether the response leaves as a
 /// single body or as a stream that stays open, and the loop reads it to decide whether the unit is
 /// complete in one frame or holds its direction open. A protocol that got this wrong for one
-/// operation would answer a streaming call with a closed body — the client waits for events on a
+/// operation would answer an open-ended call with a closed body — the client waits for events on a
 /// connection nothing will write to again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Answering {
