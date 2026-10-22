@@ -1448,3 +1448,7 @@ fn contract(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/conformance_auth_form_tests.rs"]
+mod form_tests;
