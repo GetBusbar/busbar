@@ -944,6 +944,30 @@ impl Instance {
         crossed
     }
 
+    /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
+    /// abandoned with no worker to resume it on (a replaced worker's orphan): a TICKET-LESS crossing,
+    /// listed in [`Instance::calls`] so the watchdog judges one that hangs, made on a permanent FFI
+    /// worker ([`crate::ffi_thread`]) since its caller's thread retires. The kind's own frame, as
+    /// the worker's `cancel` sends it.
+    pub(crate) fn cancel_abandoned(
+        &self,
+        ticket: Ticket,
+        class: DeadlineClass,
+        unit: Option<u64>,
+    ) -> Outcome {
+        let mut frame = (self.cancel_frame)();
+        frame.name_unit(unit.unwrap_or(0));
+        let (input, out, out_size) = frame.prepare(ticket, class as u8);
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
+        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
+            self.cross(slot::CANCEL, input, out, out_size)
+        });
+        self.lock_calls().retain(|c| c.0 != id);
+        crossed.map_or(Outcome::Fault, |c| c.outcome)
+    }
+
     /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
     /// so it freed nothing and holds a live box, but the op is over (no RESUME will come). The host
     /// sends it `close` (the `close` a half-open box admits), so nothing dangles and nothing leaks.
