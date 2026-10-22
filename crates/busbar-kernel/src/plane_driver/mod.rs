@@ -55,6 +55,7 @@
 
 mod answer;
 mod cancel;
+mod close;
 pub mod door;
 mod epoch;
 mod far_end;
@@ -257,6 +258,9 @@ pub struct PlaneDriver {
     config: DriverConfig,
     money: Arc<dyn MoneySeam>,
     buried: Mutex<Vec<cancel::Buried>>,
+    /// The units dropped while their plane still held them: the close each is owed
+    /// ([`close`]), paid by the sweep.
+    owed: Mutex<Vec<close::Owed>>,
     reload: watch::Sender<bool>,
     /// The kernel's record write path and the instance the plane's writes are keyed by.
     records: Option<(Arc<KernelServices>, Caller)>,
@@ -412,6 +416,7 @@ impl PlaneDriver {
             config,
             money,
             buried: Mutex::new(Vec::new()),
+            owed: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,
             driver,
@@ -753,6 +758,8 @@ pub struct Rendered {
 pub(crate) struct UnitState {
     /// The unit's kernel-minted key, once decode has run.
     unit: u64,
+    /// Where the unit stands with its plane's closing call, from `arrive` on ([`close`]).
+    close: close::Close,
     decoded: Option<Decoded>,
     /// A REFUSED `arrive`'s own code and 4xx status.
     declined: Option<(u32, u32)>,
@@ -908,6 +915,13 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             ..blank_in()
         };
         let mut o: ArriveOut = blank_out();
+        // FROM HERE THE PLANE HOLDS THE UNIT, whatever `arrive` answers: it is owed exactly one
+        // closing call ([`close`]).
+        {
+            let mut st = self.lock();
+            st.unit = unit;
+            st.close = close::Close::Open;
+        }
         let outcome = self
             .driver
             .calls
@@ -1042,7 +1056,10 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             input.hook = AbiStr::over(hook.as_bytes());
         }
         let principal = self.lock().principal.clone();
-        self.driver.render_refusal(input, principal.as_ref())
+        let rendered = self.driver.render_refusal(input, principal.as_ref());
+        // The `refusal` that names the unit is its closing call.
+        self.lock().close.closed();
+        rendered
     }
 }
 
@@ -1578,6 +1595,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+        // Every arrival first pays what the units before it left owing ([`close`]), so a plane
+        // whose units are all refused before their route still has its dropped units closed.
+        self.driver.sweep();
         self.lock().unit = ctx.key.get();
         let decoded = self.arrive(ctx.key.get());
         let classes = &self.driver.config.op_classes;

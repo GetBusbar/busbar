@@ -1640,6 +1640,10 @@ impl CancelFrame for PlaneCancel {
         self.frame.out.cancel.disposition
     }
 
+    fn name_unit(&mut self, unit: u64) {
+        self.frame.input.unit = unit;
+    }
+
     fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
         let arena = (self.frame.out.arena_written as usize).min(self.arena.len());
         busbar_contract::plane_calls::CancelWrite::owned(

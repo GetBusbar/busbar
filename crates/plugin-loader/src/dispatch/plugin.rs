@@ -502,7 +502,7 @@ pub(crate) struct Instance {
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
-    unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    pub(crate) unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
     /// [`Kind::cancel_frame`] of the bound kind.
     pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
