@@ -1310,7 +1310,7 @@ impl Gate for DepWallGate {
             "a plugin that reaches a socket through a grouped import is a new offender",
             &[ROW_NEW],
             ov,
-            &["new-offender", "busbar-plane-decisions", "std::net"],
+            &["new-offender", "busbar-plane-llm", "std::net"],
         ));
         // A TEST MARK ON A GENERIC PARAMETER must hide that parameter only, never the body.
         for (what, src) in [
