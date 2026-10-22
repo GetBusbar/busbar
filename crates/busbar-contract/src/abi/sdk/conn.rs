@@ -119,6 +119,12 @@ pub struct DiskFailure {
 /// A `disk.append`'s answer.
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
+/// `Host` as an instance holds it for its life (status row 194): the host's own tables, read at
+/// `open`. #1471 ties `Host` to the tables it was read from (`Host<'t>`) and states this alias as
+/// `Host<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
+/// the same spelling compiles before and after.
+pub type StaticHost = Host;
+
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
 #[derive(Debug, Clone, Copy)]
@@ -155,6 +161,20 @@ impl Host {
             services: tables.services,
             io,
         }
+    }
+
+    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
+    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
+    /// caller that names it here compiles there too.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub const unsafe fn from_raw(tables: &HostTables) -> Self {
+        Self::of(tables)
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
