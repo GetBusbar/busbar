@@ -15,6 +15,11 @@ on_green: merge
 approve: true
 # 8h: plane-delete --all (40-90 min), two LTO release builds and the workspace tests do not fit in 6h.
 deadline: 8h
+# Every check runs past a red (ModernCI's complete red), so each dev head reports all of them: a red
+# q128-audit (red until the final audit) or gates no longer leaves oracle and verify-done "not run:
+# doomed". A red need still holds back only a check that takes its outputs: oracle-record's
+# recording, which oracle and conformance judge.
+complete_red: true
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -162,7 +167,7 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
-  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [gates, oracle-record, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
 checks:
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
@@ -174,30 +179,20 @@ checks:
       cargo xtask gate --all --format=tsv
     # The base-relative rules read history: only a backend with the repo's history runs this check.
     requires: [cc, git-history]
-  oracle:
+  oracle-record:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
-    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
-    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
-    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
-    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
-    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
-    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
-    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
-    # then the candidate's release binary is recorded over the corpus and replayed against the
-    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
-    # accepted difference.
+    # The candidate recording, apart from its judgement so a strict replay's red never holds back the
+    # checks that judge the recording (oracle and conformance's llm rigs, by `needs:
+    # [oracle-record]`): the candidate's release binary is recorded over the corpus. The recording is
+    # content-addressed and laid into the needing check's slot on any machine, a reused result
+    # included. No check leans on a file another left on a host. bin/oracle obtains the recorder as
+    # the oracle check below obtains the judge (BUSBAR_RELEASE_TOKEN).
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       ./bin/oracle tool-dir >/dev/null
-      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
-        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
-      else
-        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
-      fi
       cargo build --locked --release -p busbar --bin busbar
-      ./bin/oracle fetch-golden
       # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
       # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
       # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
@@ -210,14 +205,36 @@ checks:
       trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
       . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
       bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
-      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
+      rm -rf target/oracle/recordings/candidate
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
-      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
-    needs: [gates]
-    # The candidate recording is handed to the checks that judge it (conformance's llm rigs, by
-    # `needs: [oracle]`): content-addressed and laid into the needing check's slot on any machine,
-    # a reused oracle result included. No check leans on a file another left on a host.
     outputs: [target/oracle/recordings]
+  oracle:
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then oracle-record's recording of the candidate is replayed against the committed 1.5.5
+    # golden, strict: green is every cell byte-green or forgiven by an owner-signed accepted
+    # difference.
+    requires: [cc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      ./bin/oracle tool-dir >/dev/null
+      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      else
+        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+      fi
+      ./bin/oracle fetch-golden
+      rm -rf target/oracle/reports/dev
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [oracle-record]
+    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
+    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
+    outputs: [target/oracle/reports/]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.
@@ -295,7 +312,7 @@ checks:
       docker buildx version
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
       cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
-    needs: [oracle]
+    needs: [oracle-record]
     # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
     # backend probed to have all of these, and says which one is missing otherwise.
     # playwright-deps: the browser libraries webrtc-browser's chromium and firefox load (a backend
@@ -321,10 +338,18 @@ checks:
     # tree, or none, is a BLOCK.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      cargo xtask q128 audit
-    needs: [gates]
-    # The audit is judged against this commit's history: full history and tags.
+      # Every audit-ledger scope's state (clean, open or stale at its tree_hash) first, kept whatever
+      # it says (its red is q128's to judge, never a reason to skip it), then the Q128 judgement,
+      # whose exit is the check's.
+      mkdir -p target/audit
+      cargo xtask ledger --check > target/audit/ledger-check.txt 2>&1 || true
+      cat target/audit/ledger-check.txt
+      cargo xtask q128 audit --out target/audit/q128-audit.json
+    # No `needs`: it reads the ledger and the record, not the gates' results, so it reports minutes
+    # after a dev head. The audit is judged against this commit's history: full history and tags.
     requires: [cc, git-history]
+    # Each scope's state and every finding, red or green: `modernci call artifact --check q128-audit`.
+    outputs: [target/audit/]
   test-gated:
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
     # only. A, the busbar/kernel/core-admin gates at once (test-harness,
