@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 use busbar_contract::abi::mechanism::door::DoorFn;
 
 use super::{check, check_statements, read, store_row, DoorRoot, Stated};
+use busbar_plugin_loader::root_door_fixtures as busbar_plugin_loader_fixtures;
 
 /// The cells the rows below read their doors into, one per row: a test owns its own range.
 static CELLS: [OnceLock<Stated>; 64] = [const { OnceLock::new() }; 64];
@@ -212,21 +213,46 @@ fn a_door_root_row_whose_kind_carries_declares_must_state_them() {
     assert!(held > 0, "a declares-carrying family is held to it");
 }
 
-/// GREEN: THIS BUILD'S OWN DOOR-ROOT ROWS boot: each crate's door admitted by the loader
-/// (`open_linked`, the `dlopen` path's checks) and its Statement agreeing with its row.
+/// The loader's admission of the door-root fixture `wire`'s sealed door (its door macro's
+/// `LINKED_DOOR`), through the safe entry every door-root row is admitted by.
+fn wire_admission() -> Option<String> {
+    crate::root::loader::dispatch::admit_linked(busbar_plugin_loader_fixtures::wire::LINKED_DOOR)
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// The loader's admission of the fixture `bad_piece`, a transport whose tail states another frame
+/// piece than the host's (row 167).
+fn bad_piece_admission() -> Option<String> {
+    crate::root::loader::dispatch::admit_linked(
+        busbar_plugin_loader_fixtures::bad_piece::LINKED_DOOR,
+    )
+    .err()
+    .map(|e| e.to_string())
+}
+
+/// GREEN: A DOOR-ROOT ROW BOOTS: its sealed door admitted by the loader (`admit_linked`:
+/// `open_linked`, the `dlopen` path's checks) and its Statement agreeing with its row.
 #[test]
-fn this_builds_door_root_rows_are_admitted_and_agree_with_their_rows() {
-    let rows = crate::LINKED.door_roots;
-    assert!(!rows.is_empty(), "this build links a door-root crate");
-    assert_eq!(check(rows), Ok(()));
-    for root in rows {
-        assert_eq!(
-            (root.admission)(),
-            None,
-            "`{}` is admitted by the loader",
-            root.row
-        );
-    }
+fn a_door_root_row_is_admitted_and_agrees_with_its_row() {
+    assert_eq!(
+        wire_admission(),
+        None,
+        "the loader admits the fixture's sealed door"
+    );
+    assert_eq!(
+        check(&[DoorRoot {
+            row: "door-root-wire",
+            admission: wire_admission,
+            ..row(
+                36,
+                "transport",
+                busbar_plugin_loader_fixtures::wire::door,
+                None
+            )
+        }]),
+        Ok(())
+    );
 }
 
 /// RED: A DOOR WHOSE STATEMENT IS NOT ITS AXIS'S KIND refuses the boot: a secret source's door on
@@ -266,28 +292,23 @@ fn a_door_root_row_on_a_kernel_typed_axis_is_refused() {
     assert!(refused.contains("`protocols`"), "{refused}");
 }
 
-/// A door function that answers no door: what the loader's safe entry refuses as `NullDoor`.
-extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
-}
-
-/// The loader's refusal of [`no_door`], through the safe entry every door-root row is admitted by.
-fn no_door_refused() -> Option<String> {
-    crate::root::loader::dispatch::admit_linked(no_door)
-        .err()
-        .map(|e| e.to_string())
-}
-
 /// RED: A DOOR THE LOADER REFUSES refuses the boot with the loader's words, before its Statement is
-/// read: the row's admission (`admit_linked`, `open_linked`'s checks) answers the refusal.
+/// read: the row's admission (`admit_linked` over the door macro's sealed `LINKED_DOOR`,
+/// `open_linked`'s checks) answers the refusal.
 #[test]
 fn a_door_root_row_the_loader_refuses_is_refused() {
-    let loader = no_door_refused().expect("the loader refuses a door that answers none");
+    let loader = bad_piece_admission().expect("the loader refuses another frame piece");
+    assert!(loader.contains("door-root-bad-piece"), "{loader}");
     let refused = check(&[DoorRoot {
-        row: "door-root-refused",
-        admission: no_door_refused,
-        ..row(35, "secret-doors", no_door, None)
+        row: "door-root-bad-piece",
+        admission: bad_piece_admission,
+        ..row(
+            35,
+            "transport",
+            busbar_plugin_loader_fixtures::bad_piece::door,
+            None,
+        )
     }])
     .expect_err("the loader refused the door");
-    assert_eq!(refused, format!("plugin 'door-root-refused': {loader}"));
+    assert_eq!(refused, format!("plugin 'door-root-bad-piece': {loader}"));
 }

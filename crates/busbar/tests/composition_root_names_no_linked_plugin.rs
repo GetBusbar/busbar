@@ -425,13 +425,13 @@ auth-x = "busbar-auth-x"
 node = "plane_node"
 
 [package.metadata.busbar.door-root]
-busbar-wire = "busbar_wire::door"
-busbar-plane-x = "busbar_plane_x::door"
-busbar-secret-x = "busbar_secret_x::door"
-busbar-auth-x = "busbar_auth_x::door"
-busbar-export-x = "busbar_export_x::door"
-busbar-store-x = "busbar_store_x::door"
-busbar-hook-x = "busbar_hook_x::door"
+busbar-wire = "busbar_wire::LINKED_DOOR"
+busbar-plane-x = "busbar_plane_x::LINKED_DOOR"
+busbar-secret-x = "busbar_secret_x::LINKED_DOOR"
+busbar-auth-x = "busbar_auth_x::LINKED_DOOR"
+busbar-export-x = "busbar_export_x::LINKED_DOOR"
+busbar-store-x = "busbar_store_x::LINKED_DOOR"
+busbar-hook-x = "busbar_hook_x::LINKED_DOOR"
 "#;
     let (out, _) = linked_source(manifest, &|_: &str| false);
     // Each door-root row holds the forwarder of the door the loader admitted, and nothing else.
@@ -456,7 +456,7 @@ busbar-hook-x = "busbar_hook_x::door"
         ),
         ("hook_doors: &[crate::__door_root_busbar_hook_x, ],", "the hook row"),
         (
-            "ADMITTED.get_or_init(|| crate::root::loader::dispatch::admit_linked(::busbar_wire::door))",
+            "ADMITTED.get_or_init(|| crate::root::loader::dispatch::admit_linked(::busbar_wire::LINKED_DOOR))",
             "the transport row's forwarder",
         ),
     ] {
@@ -474,7 +474,7 @@ busbar-hook-x = "busbar_hook_x::door"
         let reads: Vec<&str> = out
             .match_indices(&format!("{crate_ident}::"))
             .map(|(at, _)| &out[at..])
-            .filter(|rest| !rest.starts_with(&format!("{crate_ident}::door)")))
+            .filter(|rest| !rest.starts_with(&format!("{crate_ident}::LINKED_DOOR)")))
             .collect();
         assert!(
             reads.is_empty() && !out.contains(&format!("extern crate {crate_ident} ")),
@@ -545,13 +545,13 @@ busbar-hook-x = "busbar_hook_x::door"
             manifest.replace("busbar-hook-x = { path = \"../busbar-hook-x\" }\n", ""),
             "linked feature `hook-x` is not declared under [features]",
         ),
-        // RED: a door-root table naming anything but the crate's root `door`.
+        // RED: a door-root table naming anything but the crate's sealed `LINKED_DOOR`.
         (
             manifest.replace(
+                "busbar-hook-x = \"busbar_hook_x::LINKED_DOOR\"",
                 "busbar-hook-x = \"busbar_hook_x::door\"",
-                "busbar-hook-x = \"busbar_hook_x::linked::door\"",
             ),
-            "a door-root crate's door is `busbar_hook_x::door`, its only public item",
+            "a door-root crate's door is its door macro's sealed `busbar_hook_x::LINKED_DOOR`",
         ),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|_: &str| false))

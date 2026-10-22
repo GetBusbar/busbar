@@ -224,6 +224,16 @@ pub mod held_down {
 /// tests read what the door states and open it, and never carry a byte through it.
 macro_rules! door_root {
     ($module:ident, $name:literal, $claim:literal, [$($layer:literal),*], $session:literal) => {
+        door_root!(
+            $module,
+            $name,
+            $claim,
+            [$($layer),*],
+            $session,
+            busbar_contract::abi::transport::FRAME_PIECE_SIZE
+        );
+    };
+    ($module:ident, $name:literal, $claim:literal, [$($layer:literal),*], $session:literal, $piece:expr) => {
         pub mod $module {
             mod door {
                 use std::marker::PhantomData;
@@ -237,7 +247,7 @@ macro_rules! door_root {
                     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
                     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramingIn, IngestIn,
                     IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn,
-                    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAME_PIECE_SIZE, FRAMING_STREAM,
+                    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM,
                     ROLE_CARRIER, ROLE_FRAMER, UNIT0_FIRST_BYTES,
                 };
                 use busbar_contract::abi::mechanism::call::OutHead;
@@ -275,7 +285,7 @@ macro_rules! door_root {
                     composes_over_len: LAYERS.len(),
                     claim_rows: CLAIMS.as_ptr(),
                     claim_rows_len: CLAIMS.len(),
-                    frame_piece_size: FRAME_PIECE_SIZE,
+                    frame_piece_size: $piece,
                     ..TransportTail::ZERO
                 };
 
@@ -343,7 +353,7 @@ macro_rules! door_root {
             }
 
             /// THE CRATE'S ONE PUBLIC ITEM (BUSBAR-1.6.0.md l.3560): its door.
-            pub use door::door;
+            pub use door::{door, LINKED_DOOR};
         }
     };
 }
@@ -361,3 +371,12 @@ door_root!(
 );
 // A door whose Statement is named one thing and whose own claim is another.
 door_root!(misnamed, "door-root-named", "door-root-claimed", [], 1);
+// A door the loader refuses: its tail states another frame piece than the host's (row 167).
+door_root!(
+    bad_piece,
+    "door-root-bad-piece",
+    "door-root-bad-piece",
+    [],
+    1,
+    busbar_contract::abi::transport::FRAME_PIECE_SIZE - 8
+);

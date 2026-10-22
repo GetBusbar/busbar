@@ -185,8 +185,7 @@ impl LoadedDoor {
 /// `door` is the `door` a `plugin_door!` (or a kind's door macro) expanded in a crate this binary
 /// links and the root manifest's `[package.metadata.busbar.door-root]` table names: `'static`
 /// code answering NULL or a `'static` door, as the symbol `dlsym` resolves in a library held open
-/// is. [`admit_linked`], the safe entry the composition root's generated table calls, is the one
-/// caller.
+/// is. [`admit_linked`], over a sealed `LinkedDoor` the door macro emitted, is the one caller.
 ///
 /// # Errors
 ///
@@ -199,22 +198,26 @@ pub(crate) unsafe fn open_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> 
     Ok(unsafe { LoadedDoor::from_raw(door) })
 }
 
-/// THE LINKED DOOR'S SAFE ENTRY (status row 195; ARCHITECT ruling: the composition root generates
-/// the linked table and alone depends on the plugin crates; the loader names none): a compiled-in
-/// crate's `door`, handed by the root's generated table, admitted through [`open_linked`] (the
-/// `dlopen` path's own checks, the one reviewed `unsafe` beside the `dlopen` call), as a
-/// [`LoadedDoor`]. A refusal is the same [`LoadError`] the dropped-in door earns.
+/// THE LINKED DOOR'S SAFE ENTRY (status row 195; ARCHITECT rulings: the composition root generates
+/// the linked table and alone depends on the plugin crates, the loader names none; and the entry
+/// takes a SEALED door): a compiled-in crate's [`LinkedDoor`], which only the contract's door macro
+/// builds (beside the door it generates), admitted through [`open_linked`] (the `dlopen` path's own
+/// checks, the one reviewed `unsafe` beside the `dlopen` call), as a [`LoadedDoor`]. A refusal is the
+/// same [`LoadError`] the dropped-in door earns.
+///
+/// [`LinkedDoor`]: busbar_contract::abi::sdk::door::LinkedDoor
 ///
 /// # Errors
 ///
 /// The refusal the door, its table or its Statement earns.
-pub fn admit_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
-    // SAFETY: the composition root's generated linked table is this entry's caller: `door` is the
-    // `door` a plugin crate the root depends on expanded through the contract's door macro, `'static`
-    // code answering a `'static` door (BUSBAR-1.6.0.md Part 4 A.1, l.3560: its only public item).
-    // A DoorFn is a function the mechanism types; `open_linked` checks what it answers before any of
-    // it is used.
-    unsafe { open_linked(door) }
+pub fn admit_linked(
+    door: busbar_contract::abi::sdk::door::LinkedDoor,
+) -> Result<LoadedDoor, LoadError> {
+    // SAFETY: a `LinkedDoor` is built only by the contract's door macro, from the `door` it expanded
+    // beside it (`LinkedDoor::__from_door_macro` is `unsafe` and `#[doc(hidden)]`; its field is
+    // private): `'static` code answering the `'static` door the SDK laid out (BUSBAR-1.6.0.md Part 4
+    // A.1, l.3560). `open_linked` checks what it answers before any of it is used.
+    unsafe { open_linked(door.door_fn()) }
 }
 
 /// [`validate_door`] over the kind the door itself states: the door checks every origin runs,

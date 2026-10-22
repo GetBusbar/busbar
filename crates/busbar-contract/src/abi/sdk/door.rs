@@ -875,6 +875,50 @@ impl MacroDoor {
     }
 }
 
+/// A LINKED DOOR (status row 195, ARCHITECT ruling on `admit_linked`): a plugin's `door` as the door
+/// macro emitted it, SEALED. Its field is private, and its one constructor is the `#[doc(hidden)]`
+/// `unsafe` path [`plugin_door!`](crate::plugin_door) calls beside the door it generates
+/// (`LINKED_DOOR`), so no safe code builds one from an arbitrary function pointer: the loader's safe
+/// `admit_linked` takes this, never a raw `DoorFn`.
+///
+/// A raw function pointer is no linked door, outside the macro:
+///
+/// ```compile_fail
+/// extern "C" fn fake() -> *const busbar_contract::abi::mechanism::door::Door {
+///     std::ptr::null()
+/// }
+/// let _ = busbar_contract::abi::sdk::door::LinkedDoor(fake);
+/// ```
+///
+/// ```compile_fail
+/// extern "C" fn fake() -> *const busbar_contract::abi::mechanism::door::Door {
+///     std::ptr::null()
+/// }
+/// let _ = busbar_contract::abi::sdk::door::LinkedDoor::__from_door_macro(fake);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct LinkedDoor(DoorFn);
+
+impl LinkedDoor {
+    /// The door macro's plumbing: the one constructor, named only in its expansion.
+    ///
+    /// # Safety
+    ///
+    /// As [`MacroDoor::__from_door_macro`]: `door` is the function the door macro expanded beside
+    /// this call, answering the `'static`, fully initialised `Door` the SDK laid out.
+    #[doc(hidden)]
+    #[must_use]
+    pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
+        Self(door)
+    }
+
+    /// The door function.
+    #[must_use]
+    pub const fn door_fn(self) -> DoorFn {
+        self.0
+    }
+}
+
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
 ///
@@ -1077,6 +1121,14 @@ macro_rules! plugin_door {
             // that its counts match its storage is closed by the root unsafe-ABI change on branch
             // `lane-row159-abi-unsafe-fn`.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
+
+        /// This plugin's door, sealed, as a composition root links it (`LinkedDoor`): the one value
+        /// the loader's safe `admit_linked` admits.
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        pub const LINKED_DOOR: $crate::abi::sdk::door::LinkedDoor =
+            // SAFETY: as `MACRO_DOOR` above: `door` is the function this macro expanded just above.
+            unsafe { $crate::abi::sdk::door::LinkedDoor::__from_door_macro(door) };
     };
 }
 

@@ -159,9 +159,10 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 }
 
 /// THE DOOR-ROOT TABLE (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic
-/// crate has `fn door()` as its only public item): `<plugin crate> = "<its door>"`. A crate named
-/// here is DOOR-ROOT: the generated tables read its `door` and nothing else of the crate's, hand it
-/// to the loader's safe entry (`admit_linked`, which admits it through `open_linked`, the `dlopen`
+/// crate has `fn door()` as its only public item): `<plugin crate> = "<crate>::LINKED_DOOR"`, the
+/// sealed `LinkedDoor` its door macro emits beside `door` (ARCHITECT ruling on `admit_linked`). A
+/// crate named here is DOOR-ROOT: the generated tables read that and nothing else of the crate's,
+/// hand it to the loader's safe entry (`admit_linked`, which admits it through `open_linked`, the `dlopen`
 /// path's own checks beside the one reviewed `unsafe`), hold a forwarder of the admitted door (see
 /// [`door_root_forwarder`]), and read every fact its axis needs off that door's Statement
 /// (`crate::root::door_root`). A crate not named here is TRANSITIONAL and keeps its entry's reads
@@ -277,13 +278,13 @@ pub(crate) fn door_of(manifest: &str, krate: &str, entry: &str) -> (String, bool
         .find(|(k, _)| k == krate)
     {
         Some((_, door)) => {
-            // A door-root crate's only public item is `door`, at its root (l.3560): the table names
-            // exactly that, and nothing else of the crate.
+            // A door-root crate's door is named by the sealed `LinkedDoor` its door macro emits beside
+            // it (`LINKED_DOOR`, ARCHITECT ruling on `admit_linked`): the table names exactly that.
             assert_eq!(
                 door,
-                format!("{}::door", ident(krate)),
+                format!("{}::LINKED_DOOR", ident(krate)),
                 "Cargo.toml: `[{DOOR_ROOT}]` names `{door}` for `{krate}`; a door-root crate's \
-                 door is `{}::door`, its only public item",
+                 door is its door macro's sealed `{}::LINKED_DOOR`",
                 ident(krate)
             );
             (format!("crate::{}", door_root_fn(krate)), true)

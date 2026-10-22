@@ -153,8 +153,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
-# transport-door axis. A DOOR-ROOT crate (`[package.metadata.busbar.door-root]`): the root reads its
-# `door` alone and hands it to the loader's safe `admit_linked`.
+# transport-door axis. Its row reads its crate root's `door` and everything else off its Statement.
 busbar-transport-grpc = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
@@ -462,10 +461,15 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
+# A transport whose door is its crate root's one public item (transitional until it exports its
+# `LINKED_DOOR`): the row reads `door` and everything else off its Statement (`linked_transport!`).
+busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming::door"
 
 # THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
-# has `fn door()` as its only public item): `<plugin crate> = "<its door>"`. A crate named here is
+# has `fn door()` as its only public item): `<plugin crate> = "<crate>::LINKED_DOOR"`, the sealed
+# `LinkedDoor` its door macro emits beside `door` (a crate exports it beside `door` to go door-root:
+# busbar-transport-grpc at its pinned rev does not yet, so it links transitionally). A crate named here is
 # linked by its door alone: the generated tables read that door and nothing else, hand it to the
 # loader's safe `admit_linked` (which admits it through `open_linked`, the dlopen path's own checks),
 # and read every fact its axis needs (a transport's key, layers and session; an auth or store row's
@@ -477,7 +481,6 @@ plane-streaming = "busbar_plane_streaming::door"
 # (row 195; l.272-274): this root generates the linked table and alone depends on the plugin crates;
 # the loader names none; this root stays `forbid(unsafe_code)`.
 [package.metadata.busbar.door-root]
-busbar-transport-grpc = "busbar_transport_grpc::door"
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
