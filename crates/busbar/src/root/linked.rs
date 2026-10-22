@@ -350,6 +350,7 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            secret_admit: Some(crate::root::boot::admit_secrets),
             // The root's card repricer is the kernel's rate holder and dater (the node unit, in
             // every build's root-unit table, arms its journal before the boot resolution:
             // `crate::root::kernel::install_card_repricer`).
@@ -385,7 +386,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
 
 /// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
 /// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
-/// ones each registry build replaces (`root::boot::registry`).
+/// ones each app build and boot's scan replace (`root::boot::admit_secrets`).
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
     std::sync::OnceLock::new();
 
