@@ -9,7 +9,9 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::abi::mechanism::call::{Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT};
+use crate::abi::mechanism::call::{
+    Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT, FLAG_RESUME,
+};
 use crate::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn,
     TickIn, TickOut, ValidateIn,
@@ -69,6 +71,8 @@ const CLOSE_LEASES_ERROR: u32 = 8;
 const DRIVE_LOCAL_LEASE: u32 = 0x100;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from the instance's table.
 const DRIVE_STATE_LEASE: u32 = 0x200;
+/// What a ticketed `release` parks across its PENDING.
+const PARKED: u64 = 0x5afe;
 
 mod plugin {
     use super::*;
@@ -164,8 +168,18 @@ mod plugin {
     safe_slot!(Cancel, Probe, CancelIn, CancelOut, |_i, _input, _o| {
         Outcome::Ready
     });
-    safe_slot!(Release, Probe, ReleaseIn, OutHead, |_i, _input, _o| {
-        Outcome::Ready
+    // A ticketed fresh entry parks [`PARKED`] and answers PENDING; its RESUME answers READY
+    // having found it, or FAILED.
+    safe_slot!(Release, Probe, ReleaseIn, OutHead, |i, _input, _o| {
+        if i.ticket().is_none() {
+            Outcome::Ready
+        } else if !i.resuming() {
+            i.park(PARKED);
+            Outcome::Pending
+        } else {
+            // It takes nothing back: the SDK drops what was parked on the way out.
+            Outcome::Ready
+        }
     });
     safe_slot!(Close, Probe, InHead, OutHead, |i, input, o| {
         if input.flags == CLOSE_FAILS {
@@ -471,4 +485,80 @@ fn red_a_ready_close_names_no_memory_its_freed_state_owned() {
         "no reason names the freed box"
     );
     assert!(out.extensions.ptr.is_null(), "nor does any payload");
+}
+
+/// `release` on `ticket` with `flags`: a fresh entry parks and pends, a RESUME answers READY.
+fn release(instance: *mut c_void, ticket: Ticket, flags: u32) -> Outcome {
+    let mut input: ReleaseIn = zeroed();
+    input.head = in_head::<ReleaseIn>(slot::RELEASE);
+    input.head.ticket = ticket;
+    input.head.flags = flags;
+    let mut out = out_head::<OutHead>();
+    call(table().head.release, instance, &input, &mut out)
+}
+
+/// A NOT-READY CONTINUATION COMES FROM A RECYCLED POOL (BUSBAR-1.6.0.md A.8, decision #30: "no
+/// allocation and no blocking on the hot path"). Once an instance has parked on a ticket, a later
+/// PENDING, RESUME, READY cycle on a recycled ticket reuses the continuation's allocation: the
+/// crossing pair allocates nothing.
+#[test]
+fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    for generation in 1..=2 {
+        let t = Ticket {
+            slot: 3,
+            generation,
+        };
+        assert_eq!(release(inst, t, 0), Outcome::Pending);
+        assert_eq!(release(inst, t, FLAG_RESUME), Outcome::Ready);
+    }
+    // The ticket's slot, recycled: a new generation.
+    let recycled = Ticket {
+        slot: 3,
+        generation: 3,
+    };
+    crate::abi::CountingAlloc::reset();
+    let parked = release(inst, recycled, 0);
+    let resumed = release(inst, recycled, FLAG_RESUME);
+    let allocations = crate::abi::CountingAlloc::count();
+    assert_eq!((parked, resumed), (Outcome::Pending, Outcome::Ready));
+    assert_eq!(allocations, 0, "a warm PENDING, RESUME, READY cycle allocated");
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// A CROSSING ON ONE TICKET NEVER WAITS ON ANOTHER TICKET'S CONTINUATION (decision #30: no
+/// blocking on the hot path; A.8: zero contended atomics). With ticket A parked and its table held,
+/// a READY crossing on ticket B still completes.
+#[test]
+fn red_a_ready_crossing_completes_while_another_ticket_is_parked_and_held() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    let a = Ticket {
+        slot: 5,
+        generation: 1,
+    };
+    assert_eq!(release(inst, a, 0), Outcome::Pending);
+    // SAFETY: the instance the SDK minted above, alive until the `close` below.
+    let h = unsafe { super::head(inst) }.expect("an open instance has a head");
+    let held = h.parked();
+    let at = inst as usize;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let b = Ticket {
+            slot: 6,
+            generation: 1,
+        };
+        let _ = tx.send(release(at as *mut c_void, b, FLAG_RESUME));
+    });
+    let answered = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    worker.join().expect("the worker returns");
+    assert_eq!(
+        answered.ok(),
+        Some(Outcome::Ready),
+        "a READY crossing on ticket B waited on ticket A's parked continuation"
+    );
+    assert_eq!(release(inst, a, FLAG_RESUME), Outcome::Ready);
+    assert_eq!(close(inst, 0), Outcome::Ready);
 }
