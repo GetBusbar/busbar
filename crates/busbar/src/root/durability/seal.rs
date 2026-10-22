@@ -295,7 +295,6 @@ impl Durability {
         // Signed and on the journal: only now does the book let go of what the seal left out.
         if outcome.is_ok() {
             self.retire_left_out(&retiring);
-            self.note_retired(checkpoint_seq, &retiring);
         }
         cadence.sealed_through = self.journal.next_seq();
         cadence.sealed_at = now;
