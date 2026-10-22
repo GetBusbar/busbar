@@ -536,7 +536,10 @@ fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing(
     let resumed = release(inst, recycled, FLAG_RESUME);
     let allocations = crate::abi::CountingAlloc::count();
     assert_eq!((parked, resumed), (Outcome::Pending, Outcome::Ready));
-    assert_eq!(allocations, 0, "a warm PENDING, RESUME, READY cycle allocated");
+    assert_eq!(
+        allocations, 0,
+        "a warm PENDING, RESUME, READY cycle allocated"
+    );
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
 
