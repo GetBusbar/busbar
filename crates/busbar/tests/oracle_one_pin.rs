@@ -132,13 +132,14 @@ fn the_fetched_judge_is_the_pinned_digests_or_none() {
     );
 }
 
-/// A CANDIDATE NEVER GRADES ITSELF (the DEV-GREEN move onto qa a71b21e, 1.5.5, which holds no
-/// oracle-rust.pin and no golden/1.5.5: the shim read the candidate's own pin and the yaml's
-/// golden-guard held nothing). `bin/oracle base-selftest` proves, offline, over a fixture history:
-/// under ModernCI the judge's pin is a fixed base's (the target's, else `$MODERNCI_HEAD~1`, else
-/// HEAD~1, never HEAD), none is no judge, and a replay holds the golden add-only to the fixed base's
-/// before any cell is judged, refusing when no fixed base holds one or the checkout edited it.
-/// RED against the parent revision's shim (`bin/oracle base-selftest <old shim>`): every arm fails.
+/// A CANDIDATE NEVER GRADES ITSELF (architect ruling, the #1556 review). Under ModernCI the judge is
+/// ModernCI's protected config only (BUSBAR_ORACLE_RELEASE_REPO / _REF / _SHA256_LINUX_X86_64 /
+/// _SHA256_LINUX_AARCH64 / _CRATE / _BIN), any one missing is NO JUDGE, and every field of the
+/// candidate's oracle-rust.pin must equal it; the 1.5.5 golden is BUSBAR_GOLDEN_1_5_5_TREE read from
+/// the object database, never the worktree, and the candidate's golden/1.5.5 tree must equal it. No
+/// commit of the candidate's history is a source: a two-commit candidate whose first commit forges
+/// the pin and the golden is red, fast-forward or merged. `bin/oracle base-selftest` proves it offline
+/// with a GREEN twin (config equals candidate); RED against the parent revision's shim.
 #[test]
 fn a_candidate_never_grades_itself() {
     let shim = repo_root().join("bin/oracle");
