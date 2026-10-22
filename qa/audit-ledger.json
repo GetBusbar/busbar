@@ -1791,7 +1791,7 @@
    "paths": [
     "crates/busbar-kernel-wal/src"
    ],
-   "tree_hash": "7b3a8d198750f21fd1cb99a7af6b4138c77630651b7587c7d17fc222e586d532",
+   "tree_hash": "4f934141d3a1f5ad362196b6bd8bf3a519a2b62b18649e6c5c040dd6fd578b4e",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 4,
    "result": "findings",
@@ -1803,7 +1803,7 @@
    },
    "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart, only the unacknowledged last commit is cut, and corrupt remainders are copied durably before any cut. A failed sync cuts the batch and opens the next segment at once. Gaps: an unverified identity from a frame whose header fails its check moves the numbering, up to a saturation where every following record is silently passed over. On a disk, the store's catch-up queue drops records past its bound and forgets all of them at a restart. Some prose and accessors are stale. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": "66b359b16b758573aba024b130c71b5908298fbc",
+   "fixed_at": "da31d395d40aefd9a285b77adbb10f7ebb09ce24",
    "exclude": [
     "crates/busbar-kernel-wal/src/tests"
    ],

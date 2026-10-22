@@ -182,7 +182,11 @@ fn a_restart_over_a_store_that_took_everything_offers_the_same_records_in_order(
         !wal.owes_store_from_medium(),
         "and owes nothing once the store took it"
     );
-    assert_eq!(wal.store_debt_dropped(), 0);
+    assert_eq!(
+        wal.store_debt_on_medium(),
+        0,
+        "and left nothing on the medium past the bound"
+    );
 }
 
 /// GREEN twin: a fresh log owes the store nothing at open and ships nothing until it commits.
