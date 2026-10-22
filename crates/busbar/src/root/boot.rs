@@ -659,7 +659,7 @@ fn transport_uses() -> Uses {
     uses.schemes.extend(
         crate::LINKED_TRANSPORT_DOORS
             .iter()
-            .filter_map(|(_, door)| Candidate::linked(*door).ok())
+            .filter_map(|door| Candidate::linked(*door).ok())
             .flat_map(|c| c.schemes),
     );
     uses
