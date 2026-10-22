@@ -82,9 +82,9 @@ fn race1_a_fresh_trip_is_never_read_with_a_stale_cooldown() {
     let now = busbar_kernel::store::now();
     let bad = race(
         &store,
-        |s| s.recover_lane(0),
+        |s| s.recover_lane(0, HealthState::now_secs()),
         |s| {
-            let _ = s.record_hard_down_all_cells(0, "race1");
+            let _ = s.record_hard_down_all_cells(0, "race1", HealthState::now_secs());
         },
         move |s| matches!(s.lane_breaker_state(0, now), BreakerState::Open { until } if until <= now),
         false,
@@ -106,7 +106,7 @@ fn race2_a_just_closed_cell_is_never_denied() {
     let bad = race(
         &store,
         |s| s.force_open_in("p", 0, 0),
-        |s| s.recover_lane(0),
+        |s| s.recover_lane(0, HealthState::now_secs()),
         move |s| s.try_admit_breaker("p", 0, now).is_err(),
         true,
         CYCLES,
@@ -129,7 +129,7 @@ fn race3_a_refusal_carries_the_cooldown_that_refused_it() {
         &store,
         |s| s.force_open_in("p", 0, 0),
         |s| {
-            let _ = s.record_hard_down_all_cells(0, "race3");
+            let _ = s.record_hard_down_all_cells(0, "race3", HealthState::now_secs());
         },
         move |s| match s.try_admit_breaker("p", 0, now) {
             Ok(_) => false,
