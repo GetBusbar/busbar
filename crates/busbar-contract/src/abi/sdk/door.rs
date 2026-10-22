@@ -627,8 +627,12 @@ pub const fn door<T: KindOps>(
 /// THE SAFE SURFACE OF THE TEST SUPPORT, PROVED IN PAIRS. Each `compile_fail` below has a twin
 /// that differs from it in the one forbidden spelling and MUST compile, so the failure is the
 /// guard's and nothing else's (stable rustdoc checks no error code). They sit here, on an item
-/// every build compiles; the twins naming `test_support` compile only with the dev-only
-/// `test-seal` feature on, so they also prove the doctest build has it.
+/// every build compiles. The pairs naming `test_support` run only where the dev-only `test-seal`
+/// feature is on (the workspace doctest run, where a dev edge turns it on): the kit is not
+/// compiled without it, so there a `compile_fail` would fail on the missing module rather than
+/// on the guard, and its twin could not build at all. Without the feature their fences read
+/// `ignore`, as the caps module docs do (`caps/hold.rs`), and `cargo test -p busbar-contract`
+/// runs every other doctest here.
 ///
 /// A literal is refused (its field is private); the macro's own value is not:
 ///
@@ -748,7 +752,8 @@ pub const fn door<T: KindOps>(
 ///
 /// `DoorView` reads no forged door function; the macro's door it reads:
 ///
-/// ```compile_fail
+#[cfg_attr(feature = "test-seal", doc = "```compile_fail")]
+#[cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -776,7 +781,8 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
-/// ```
+#[cfg_attr(feature = "test-seal", doc = "```")]
+#[cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
 /// # impl Life for P {
@@ -806,7 +812,8 @@ pub const fn door<T: KindOps>(
 ///
 /// A fake host hands safe code no table; it lends its tables to an `open` alone:
 ///
-/// ```compile_fail
+#[cfg_attr(feature = "test-seal", doc = "```compile_fail")]
+#[cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
 /// fn main() {
@@ -815,7 +822,8 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
-/// ```
+#[cfg_attr(feature = "test-seal", doc = "```")]
+#[cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
 /// fn main() {
@@ -826,7 +834,8 @@ pub const fn door<T: KindOps>(
 ///
 /// What a fake host lent cannot outlive it; dropped first, it can:
 ///
-/// ```compile_fail
+#[cfg_attr(feature = "test-seal", doc = "```compile_fail")]
+#[cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
 /// fn main() {
@@ -837,7 +846,8 @@ pub const fn door<T: KindOps>(
 /// }
 /// ```
 ///
-/// ```
+#[cfg_attr(feature = "test-seal", doc = "```")]
+#[cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 /// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
 /// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
 /// fn main() {
