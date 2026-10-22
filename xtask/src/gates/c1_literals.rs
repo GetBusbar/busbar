@@ -100,6 +100,25 @@ pub const MASKS: &[&str] = &[
     "unix_ms",
     "unix seconds",
     "on unix",
+    // FROZEN 1.5.5 OPERATOR TEXT the kernel and loader still emit byte for byte (customer-visible
+    // = v1.5.5; BUSBAR-1.6.0.md Law 0). Each is the exact run of one source line of the 1.5.5
+    // message, so the vocabulary word inside it is that message's, and a bare word beside it in
+    // the same literal still reds.
+    // v1.5.5:crates/busbar/src/main.rs:3146 (the deprecated env var's warning).
+    "`advanced.upstream_h2_prior_knowledge` in config.yaml",
+    // v1.5.5:crates/busbar/src/breaker.rs:90 (an unrecognised error_map class).
+    "classification falls through to HTTP status",
+    // v1.5.5 plugin-loader registry name conflict, pinned by
+    // crates/plugin-loader/tests/fixtures/conflict_messages.txt.
+    "you can't use valkey and a third-party valkey",
+    // v1.5.5:crates/busbar/src/config_validate/mod.rs boot errors (the ranking hook compiled out,
+    // the on_error chain, and the hosted-login public base).
+    "built WITHOUT the `hooks-ranking`",
+    "WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent",
+    "bottom out on nothing|weighted|reject|first or a ranking strategy",
+    "reserved terminal (nothing|weighted|reject|first), a ranking strategy, or another",
+    "reference an external ranking hook",
+    "`public_url: https://<busbar-host>`",
 ];
 
 pub const SPEC: Spec = Spec {
@@ -135,10 +154,11 @@ fn in_scope(name: &str) -> bool {
 
 /// Every vocabulary word `text` spells, each once.
 pub fn words_in(text: &str) -> Vec<&'static str> {
-    let masked = MASKS
-        .iter()
-        .fold(text.to_string(), |t, mask| t.replace(mask, " "));
-    let lower = masked.to_ascii_lowercase();
+    // A mask is matched without regard to case, so a sentence that opens on it ("On unix ...")
+    // reads as the same exact string; it never widens into a word or a pattern.
+    let lower = MASKS.iter().fold(text.to_ascii_lowercase(), |t, mask| {
+        t.replace(&mask.to_ascii_lowercase(), " ")
+    });
     let tokens: Vec<&str> = lower
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|t| !t.is_empty())
@@ -190,9 +210,12 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         };
         for f in &files {
             let rel = f.rel_str();
+            // The literal text of every line from the file-wide lexer, so a word on the inner
+            // line of a continued literal is read like any other.
+            let runs = crate::scan::literal_runs(&f.text);
             for sl in one_abi::production(&f.text) {
-                for lit in one_abi::literals(&sl) {
-                    for w in words_in(&lit) {
+                for lit in runs.get(sl.no - 1).into_iter().flatten() {
+                    for w in words_in(lit) {
                         findings.push(Finding::new(ROW_LITERAL, &rel, w, sl.no));
                     }
                 }
@@ -251,7 +274,23 @@ impl Gate for C1LiteralsGate {
              pub const C: &str = \"BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE\";\n\
              pub const D: &str = \"quarantine-{unix_ms}\";\n\
              pub const E: &str = \"a timestamp in unix seconds\";\n\
-             pub const F: &str = \"SIGTERM on unix\";\n",
+             pub const F: &str = \"SIGTERM on unix\";\n\
+             pub const G: &str = \"opens a sentence: \\\n    On unix each worker runs its loop\";\n\
+             pub const H: &str = \"an error_map class \\\n    classification falls through to HTTP status.\";\n",
+        );
+        // A FROZEN 1.5.5 MASK ON A CONTINUED LINE hides only its own exact text: a bare word
+        // beside it on the same inner line still reds.
+        let mut frozen_beside = Overlay::new();
+        frozen_beside.set(
+            file,
+            "pub const PLANTED: &str = \"a refusal \\\n    classification falls through to HTTP status via grpc\";\n",
+        );
+        // A LITERAL CONTINUED OVER LINES: the word sits on the inner line, where the first quote
+        // the line carries is the literal's CLOSE.
+        let mut continued = Overlay::new();
+        continued.set(
+            file,
+            "pub const PLANTED: &str = \"a refusal that runs \\\n    on: you can't use valkey here\";\n",
         );
         let mut comment = Overlay::new();
         comment.set(
@@ -293,12 +332,24 @@ impl Gate for C1LiteralsGate {
                     beside,
                     vec![file, "grpc"],
                 ),
+                (
+                    ROW_LITERAL,
+                    "a word on the inner line of a continued literal is RED",
+                    continued,
+                    vec![file, "valkey"],
+                ),
+                (
+                    ROW_LITERAL,
+                    "a scheme beside a frozen 1.5.5 mask on a continued line is still RED",
+                    frozen_beside,
+                    vec![file, "grpc"],
+                ),
             ],
         );
         report.push(crate::gates::prove_rows_green(
             cx,
             self,
-            "the masked strings (identifier URIs, the 1.5.5 env var, unix time and OS) are not a scheme",
+            "the masked strings (identifier URIs, the 1.5.5 env var and operator text, unix time and OS, in any case) are not a scheme",
             &[ROW_LITERAL],
             masked,
         ));
