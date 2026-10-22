@@ -7622,14 +7622,24 @@ mod pools_door_refusals {
         let (direct_status, direct_kind, direct_message, _) =
             busbar_kernel::ingress::limit_refusal("", &blocked);
 
+        // The over-quota kind is OpenAI's own `insufficient_quota`, which the chat dialect's native
+        // envelope carries as both its `type` and its `code` (1.5.5's pairing, never a null code).
+        assert_eq!(direct_kind, "insufficient_quota");
+
         let (status, _, body) = rig.chat().await;
         let text = String::from_utf8_lossy(&body);
         assert_eq!(status, direct_status.as_u16(), "{text}");
-        assert!(
-            text.contains(&direct_message),
-            "{direct_message:?} in {text}"
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
+        assert_eq!(
+            answer,
+            serde_json::json!({ "error": {
+                "message": direct_message,
+                "type": direct_kind,
+                "param": null,
+                "code": direct_kind,
+            } }),
+            "the whole refusal is the direct admission's, nothing reworded or added: {text}"
         );
-        assert!(text.contains(direct_kind), "{direct_kind:?} in {text}");
         assert_eq!(far.served(), 0);
     }
 }
@@ -9668,7 +9678,9 @@ mod pools_door_counts_and_routes {
             .await
             .expect("the request reaches its far end");
         let epoch_before = rig.app.store.probe_epoch_in("p", 0);
-        rig.app.store.record_success_in("p", 0);
+        rig.app
+            .store
+            .record_success_in("p", 0, busbar_kernel::store::now());
         rig.app.store.force_open_in("p", 0, 0);
         assert!(
             rig.app
@@ -9838,7 +9850,9 @@ mod pools_door_counts_and_routes {
             .store
             .record_transient_in("p", 0, "test", &cfg, None);
         for _ in 0..3 {
-            rig.app.store.record_success_in("p", 0);
+            rig.app
+                .store
+                .record_success_in("p", 0, busbar_kernel::store::now());
         }
         let _ = rig.chat().await;
         let bag = bag_of(&rig, "m0");

@@ -2689,10 +2689,10 @@ pub struct PlaneCancelIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
-    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), on the
-    /// host's own cancel of a unit, so a plane that keys its units from `arrive` finds one whose
-    /// ticket no piece ever carried (audit P-M7). `0` for the instance's driver ticket and for
-    /// a cancel of an op in flight, whose own `in` names its unit.
+    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), so a
+    /// plane that keys its units from `arrive` frees it by that key: on the host's own cancel of a
+    /// unit, one whose ticket no piece ever carried included (audit P-M7), and on the cancel of an
+    /// op in flight, the unit that op's own `in` names. `0` for the instance's driver ticket.
     pub unit: u64,
 }
 
@@ -2708,6 +2708,36 @@ pub struct PlaneCancelOut {
     pub _reserved: u32,
     /// Bytes written to `arena_buf`.
     pub arena_written: u64,
+}
+
+/// The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite
+/// gate's `reject(500, ..)` when the validated body could not be materialized for the rewrite pass).
+pub const PROJECT_FAULT_STATUS: u16 = 500;
+
+/// The words a FAULT `project` answers the caller with, byte for byte 1.5.5's.
+pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
+
+/// `project`'s outcomes, and what the kernel makes of each where a rewrite hook is configured for
+/// the unit (v1.5.5 `proxy/engine/mod.rs:728`: the document is materialized, `:749`, before any
+/// hook runs, so the unit's first `project` is made before any rewrite hook is invoked) or the call
+/// carried a rewrite ([`ProjectIn::rewrite`] present):
+///
+/// * READY: the view (and the rewritten body, when the plane applied the rewrite).
+/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. That is the
+///   rewriting hook's own failure, answered by its `on_error` (a load-bearing hook refuses the
+///   unit; any other proceeds with the request as it stood).
+/// * FAULT: the plane could not apply a rewrite it must not leave unapplied (a redaction whose
+///   document the body does not parse into). The kernel ALWAYS answers
+///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
+///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
+///
+/// A FAULT answered to a `project` where no rewrite hook is configured and no rewrite was carried
+/// stops the unit as unreadable, as any refused `project` does.
+///
+/// This is the one home of the mapping; the kernel holds no status or words of its own for it.
+#[must_use]
+pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable: bool) -> bool {
+    faultable && matches!(outcome, super::mechanism::call::Outcome::Fault)
 }
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
