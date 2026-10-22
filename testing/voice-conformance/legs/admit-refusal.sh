@@ -12,7 +12,12 @@
 # the realtime dialects' error envelope (the kernel's status kept, `content-type: application/json`,
 # no record row); a refused unit's stream has no session (its far-end piece and its collection are
 # refused, `drive` names nothing), while an admitted control on the same door dials (its frame rides
-# the realtime socket need). RED arm: a door that renders the budget refusal as a server error fails.
+# the realtime socket need). Every policy refusal (each reason of the unreadable, rejected,
+# unauthenticated, forbidden, too-large, throttled, busy, quota-exhausted and not-found classes) is
+# rendered with the status the kernel's plane driver chooses for it (`refusal_status`; the plane
+# states no row of its own): a 4xx in the dialect's refusal envelope, never `server_error` (ARCHITECT
+# ruling: a policy refusal is a refusal, not a server fault). RED arm: a door that renders the budget
+# refusal as a server error, or a policy refusal collapsed into a 503 `server_error`, fails.
 #
 # THE KERNEL'S HALF (not the door's, so not judged here): reading the caller's budget chain dry and
 # refusing before any hold or ledger posting — the admit step, proven on the served leg by

@@ -146,6 +146,9 @@ impl TakesHost for crate::abi::plane::PlaneOpenIn {}
 #[derive(Debug)]
 pub struct LentIn<'h, I> {
     pub(crate) input: I,
+    /// The lists a [`TestIn`](super::test_in::TestIn) lent with it made ([`FakeHost::lend_in`]),
+    /// kept for as long as the `in` names them.
+    _held: Vec<Box<dyn core::any::Any>>,
     host: PhantomData<&'h FakeHost>,
 }
 
@@ -865,8 +868,59 @@ impl FakeHost {
         *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
         LentIn {
             input,
+            _held: Vec::new(),
             host: PhantomData,
         }
+    }
+
+    /// [`FakeHost::lend_to`] over a [`TestIn`](super::test_in::TestIn) (status row 194): the `in`
+    /// a test built through its builders, every byte it names borrowed for `'h`, lent this
+    /// host's tables. The [`LentIn`] borrows both, so it outlives neither; it goes to
+    /// [`super::reply::call_hosted_in`]. #1471 keeps this name beside its own `lend_to`, so
+    /// `host.lend_in(input)` compiles before and after.
+    pub fn lend_in<'h, I: TakesHost + super::AllZero>(
+        &'h self,
+        input: super::test_in::TestIn<'h, I>,
+    ) -> LentIn<'h, I> {
+        input.check();
+        let super::test_in::TestIn {
+            mut input, held, ..
+        } = input;
+        *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
+        LentIn {
+            input,
+            _held: held,
+            host: PhantomData,
+        }
+    }
+
+    /// This host's tables, lent for as long as the host lives (status row 194): what a plugin's
+    /// own test reads its handles from (`Services::of(&tables)`, `Wake::of(&tables)`,
+    /// `Host::of(&tables)`). Each `of` takes the tables by reference, so the `Lent` reaches it
+    /// through its `Deref` here and by value once #1469 and #1471 make `of` take the `Lent`
+    /// itself; the same `X::of(&tables)` compiles on both.
+    ///
+    /// SOUND here, where a `Lent` still has its `Deref` (#1471 removes it): through it safe code
+    /// reaches the tables, but every entry of them is a raw pointer (the services, connector and
+    /// I/O tables) or the wake the test itself installed, so calling into the host still needs
+    /// `unsafe`. The leak scan (`table_leaks`) admits this one return type at its exact path.
+    ///
+    /// ```
+    /// use busbar_contract::abi::mechanism::ticket::Ticket;
+    /// use busbar_contract::abi::sdk::conn::Host;
+    /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+    /// let fake = FakeHost::new();
+    /// let tables = fake.lent();
+    /// let host = Host::of(&tables);
+    /// host.wake(Ticket::NONE);
+    /// drop(fake);
+    /// ```
+    #[must_use]
+    pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {
+        // SAFETY: the tables are this host's own, every pointer in them one of its own boxed
+        // tables, all alive and unmoved while `self` is borrowed (`link` points them only when
+        // `self` is owned mutably).
+        unsafe { crate::abi::sdk::Lent::new(&*self.tables) }
     }
 
     /// The tables, for this crate's own tests of the trampoline (a malformed `in` no SDK path

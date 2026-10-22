@@ -148,3 +148,50 @@ fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
          across plugin code"
     );
 }
+
+/// LAW 7 FOR A PLANE'S REGISTRY ROW (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its
+/// configuration section is present. No verb configured → that plugin is never loaded."; ARCHITECT
+/// ruling 2026-10-20: reading a row's static declaration, its kind tail included, is reading, not
+/// loading).
+///
+/// RED before a linked door's registry row was read off its `'static` Statement: the row's facts
+/// were read off a probe instance bound at registration, so every discovered plane was bound at boot
+/// whatever the document wrote. Now the row binds nothing; the first judge of its section binds the
+/// one probe that answers it.
+#[test]
+fn a_linked_plane_registry_row_binds_no_probe_until_its_section_is_judged() {
+    use std::sync::atomic::AtomicUsize;
+    let door = crate::plane_door_plugin::door;
+    let binds = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&binds);
+    let inner = linked_probe(door, "the-probe");
+    let bind: ProbeBind = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        inner()
+    });
+    let candidate = crate::boot::Candidate::linked(door).expect("a linked door states itself");
+    let reg = stated_registration(&candidate, bind).expect("the plane registers");
+    assert_eq!(
+        binds.load(Ordering::SeqCst),
+        0,
+        "registering a linked plane's row bound a probe instance of it"
+    );
+    let bound = registration(linked_probe(door, "the-probe")).expect("the plane binds");
+    assert_eq!(
+        reg.key, bound.key,
+        "the stated row names the plane its bind does"
+    );
+    assert_eq!(reg.section, bound.section);
+    assert_eq!(reg.owns, bound.owns);
+    assert_eq!(reg.consumes, bound.consumes);
+    assert_eq!(reg.requires, bound.requires);
+    assert_eq!(reg.dialects, bound.dialects);
+    assert_eq!(reg.admin_routes.len(), bound.admin_routes.len());
+    let _ = (reg.validate)(b"");
+    let _ = (reg.validate)(b"");
+    assert_eq!(
+        binds.load(Ordering::SeqCst),
+        1,
+        "judging its section binds the one probe that answers every judge"
+    );
+}

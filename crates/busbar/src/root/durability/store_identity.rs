@@ -790,8 +790,9 @@ pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, Str
 pub struct StoredWalk {
     /// The node ids whose chains were walked.
     pub chains: Vec<u64>,
-    /// What did not hold: a chain that does not verify, an audit record whose digest or link does
-    /// not hold, or whose signature does not verify under the deployment keyset.
+    /// What did not hold: a chain that does not verify, an audit record that does not decode, whose
+    /// digest or link does not hold, or whose signature does not verify under the deployment
+    /// keyset, and an unsigned one journalled after its chain's `Bootstrap`.
     pub findings: Vec<String>,
 }
 
@@ -841,16 +842,42 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
                     continue;
                 }
             };
-            let audits: Vec<AuditRecord> = decoded
-                .iter()
-                .filter_map(|r| super::decode_audit(r).ok().flatten())
-                .collect();
+            // As the boot resumes a chain (`resume_audit`): a record that will not read back is a
+            // finding, and the first record journalled after this chain's `Bootstrap` is where
+            // its signatures start.
+            let mut audits: Vec<AuditRecord> = Vec::new();
+            let mut keyed = false;
+            let mut signed_from = None;
+            for record in &decoded {
+                keyed |= record.class == busbar_kernel_wal::RecordClass::Bootstrap;
+                match super::decode_audit(record) {
+                    Ok(Some(audit)) => {
+                        if keyed && signed_from.is_none() {
+                            signed_from = Some(audit.seq);
+                        }
+                        audits.push(audit);
+                    }
+                    Ok(None) => {}
+                    Err(why) => walk
+                        .findings
+                        .push(format!("node {node}: record {}: {why}", record.node_seq)),
+                }
+            }
             if let Err(broken) = AuditChain::verify_window(&audits) {
                 walk.findings
                     .push(format!("node {node}: audit chain: {broken:?}"));
             }
             for record in &audits {
                 let Some(key_id) = record.key_id.as_deref() else {
+                    // The signature is not in the digest: stripped, it leaves the chain whole and
+                    // only this rule sees it.
+                    if signed_from.is_some_and(|from| record.seq >= from) {
+                        walk.findings.push(format!(
+                            "node {node}: audit record {} is unsigned, sealed after the keyset \
+                             was bound",
+                            record.seq
+                        ));
+                    }
                     continue;
                 };
                 let verified = keys

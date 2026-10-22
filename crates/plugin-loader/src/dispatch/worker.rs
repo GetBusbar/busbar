@@ -1418,9 +1418,20 @@ impl Worker {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
                     return Some(st);
                 }
+                // THE UNIT THE CANCELLED OP SERVES, read off the op's own `in` (`Kind::unit_of`): a
+                // plane keys its units from `arrive` and frees the one its `cancel` names
+                // (`PlaneCancelIn::unit`), so the client-drop path names it too, never `0`.
+                let unit = match cur.job.as_mut() {
+                    Some(job) => {
+                        let (input, _, _) = job.heads();
+                        (inst.unit_of)(op_slot, input.cast_const(), cur.meta.in_size as usize)
+                    }
+                    None => None,
+                };
                 // `cancel` may not pend: its head carries NONE; the cancelled ticket is its field.
                 // The kind's own frame (a plane's lends record buffers, SEAM-L(r)).
                 let mut frame = (inst.cancel_frame)();
+                frame.name_unit(unit.unwrap_or(0));
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;

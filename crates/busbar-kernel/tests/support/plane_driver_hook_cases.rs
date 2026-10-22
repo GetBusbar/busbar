@@ -353,3 +353,525 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
     );
     assert!(far.sent().is_empty(), "no attempt was made");
 }
+
+// ── a rewrite the plane refuses to apply ────────────────────────────────────────────────────────
+
+/// The `prompt: rw` gate `rw` with `on_error`, resolved through the kernel's own rewrite resolver
+/// over the hook double (which answers every `transform` with a rewrite), so the chain entry is the
+/// one a deployment's configuration produces, its `on_error` disposition and all.
+fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
+    let env = busbar_kernel::test_support::test_hook_env(
+        &["test-hook"],
+        busbar_plugin_loader::sign::HookNeeds {
+            prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
+            user: busbar_plugin_loader::sign::NeedLevel::Ro,
+        },
+    );
+    let hook: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
+        "prompt": "rw",
+        "on_error": on_error,
+        "global": true,
+        "timeout_ms": 5000,
+    }))
+    .expect("a prompt: rw gate");
+    let hooks = std::collections::HashMap::from([("rw".to_string(), hook)]);
+    let chain = busbar_kernel::hooks::resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
+    assert_eq!(
+        chain.len(),
+        1,
+        "the rw gate resolves into the rewrite chain"
+    );
+    chain
+}
+
+/// RED (coordinator ruling, row 159): a plane that REFUSES to apply a request-stage hook's rewrite
+/// (the rewrite names a model other than the routed one, say) has met that hook's failure, and the
+/// hook's own `on_error` answers it, never a unit failure and never a silent provider switch:
+/// - `on_error: weighted` (and `first`): the unit proceeds with the body and view it had before
+///   that rewrite, as 1.5.5 relayed a rewrite it could not apply (the request unmodified);
+/// - `on_error: reject`: the unit is refused with the shared retryable 503 and its words, the
+///   refusal a failed call of that hook answers, before any attempt.
+///
+/// RED before: the refused re-projection stopped the unit as unreadable (`DecodeFailed`, 400)
+/// whatever the hook's `on_error` said.
+#[tokio::test]
+async fn a_rewrite_the_plane_refuses_is_the_hooks_failure_answered_by_its_on_error() {
+    for on_error in ["weighted", "first"] {
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(resolved_rewrite(on_error), Vec::new())),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/refuses-rewrite", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Completed),
+            "on_error: {on_error}: {outcome:?}"
+        );
+        let projects = r.projects();
+        assert_eq!(
+            projects.len(),
+            2,
+            "on_error: {on_error}: the view, then the refused rewrite"
+        );
+        assert!(
+            !projects[1].1.is_empty(),
+            "on_error: {on_error}: the rewrite crossed"
+        );
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "on_error: {on_error}: one attempt");
+        assert_eq!(
+            sent[0].body, b"user:hello",
+            "on_error: {on_error}: the request proceeds unmodified"
+        );
+    }
+
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(bound(resolved_rewrite("reject"), Vec::new())),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        arrival("/refuses-rewrite", b"user:hello"),
+        0,
+    );
+    let outcome = drive(&units).await;
+    assert!(
+        matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+        "on_error: reject: {outcome:?}"
+    );
+    let rendered = units.take_rendered().expect("the plane rendered the veto");
+    assert_eq!(
+        rendered.status,
+        u32::from(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS)
+    );
+    assert_eq!(
+        rendered.body,
+        format!(
+            "refused:503:{}",
+            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+        )
+        .into_bytes(),
+    );
+    assert!(far.sent().is_empty(), "no attempt was made");
+}
+
+/// A gate-first binder attaching `rewrites` (and no gate) to every entry.
+struct GatedRewrites {
+    rewrites: Vec<(Duration, Arc<dyn RoutingPolicy>)>,
+}
+
+impl busbar_kernel::plane_driver::HookBinder for GatedRewrites {
+    fn bind(
+        &self,
+        _bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        panic!("a gate-first plane binds no routed hooks")
+    }
+
+    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
+        busbar_kernel::plane_driver::HookOrder::Gated
+    }
+
+    fn bind_gated(
+        &self,
+        _container: &str,
+        _principal: Option<&str>,
+    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
+        Some(busbar_kernel::plane_driver::GatedHooks {
+            request_id: 7,
+            gates: Vec::new(),
+            rewrites: self.rewrites.clone(),
+            key: None,
+            scan: None,
+        })
+    }
+}
+
+/// RED, the gate-first twin: the entry's rewrite the plane refuses to apply is the rewriting
+/// hook's failure. `on_error: weighted` serves the unit with its own body; `on_error: reject`
+/// refuses it at the screen with the shared 503, named for the hook, nothing sent. RED before:
+/// both were refused as unreadable.
+#[tokio::test]
+async fn a_gate_first_rewrite_the_plane_refuses_is_answered_by_the_hooks_on_error() {
+    let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+    let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+        rewrites: resolved_rewrite("weighted"),
+    }));
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        arrival("/refuses-rewrite", b"user:hello"),
+        0,
+    );
+    let outcome = drive(&units).await;
+    assert!(
+        !matches!(outcome, Outcome::Refused(..) | Outcome::Failed(..)),
+        "on_error: weighted: {outcome:?}"
+    );
+    let sent = far.sent();
+    assert!(
+        !sent.is_empty(),
+        "on_error: weighted: the far end was reached"
+    );
+    for request in &sent {
+        assert_eq!(
+            request.body, b"user:hello",
+            "on_error: weighted: the request proceeds unmodified"
+        );
+    }
+
+    let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+    let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+        rewrites: resolved_rewrite("reject"),
+    }));
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        arrival("/refuses-rewrite", b"user:hello"),
+        0,
+    );
+    let outcome = drive(&units).await;
+    assert!(
+        matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+        "on_error: reject: {outcome:?}"
+    );
+    let rendered = units.take_rendered().expect("the veto is rendered");
+    assert_eq!(
+        rendered.status,
+        u32::from(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS)
+    );
+    assert!(far.sent().is_empty(), "nothing reached the far end");
+}
+
+/// RED: a plane that answers FAULT to a `project` carrying a request-stage hook's
+/// rewrite (a redaction it cannot apply) is answered with the shared 500 and its words under EVERY
+/// `on_error`, never the hook's disposition, and the far end is never dialled.
+#[tokio::test]
+async fn a_faulted_rewrite_project_is_always_the_shared_500_under_every_on_error() {
+    let words = format!(
+        "refused:500:{}",
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+    )
+    .into_bytes();
+    for on_error in ["weighted", "first", "reject"] {
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(resolved_rewrite(on_error), Vec::new())),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/faults-rewrite", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+            "on_error: {on_error}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the plane rendered the 500");
+        assert_eq!(rendered.status, 500, "on_error: {on_error}");
+        assert_eq!(rendered.body, words, "on_error: {on_error}");
+        assert!(far.sent().is_empty(), "on_error: {on_error}: never dialled");
+    }
+}
+
+/// The gate-first twin of the above: the entry's rewrite whose project FAULTs is the shared 500
+/// under every `on_error`, nothing sent.
+#[tokio::test]
+async fn a_gate_first_faulted_rewrite_project_is_always_the_shared_500() {
+    let words = format!(
+        "refused:500:{}",
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+    )
+    .into_bytes();
+    for on_error in ["weighted", "first", "reject"] {
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+            rewrites: resolved_rewrite(on_error),
+        }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/faults-rewrite", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+            "on_error: {on_error}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the 500 is rendered");
+        assert_eq!(rendered.status, 500, "on_error: {on_error}");
+        assert_eq!(rendered.body, words, "on_error: {on_error}");
+        assert!(far.sent().is_empty(), "on_error: {on_error}: never dialled");
+    }
+}
+
+/// A rewrite hook that counts its invocations and abstains, fails or rejects as told: whichever it
+/// does, it must never run over a body the plane could not parse.
+struct CountingRewriter {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    answer: fn() -> TransformOutcome,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for CountingRewriter {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "counting-rewriter"
+    }
+    async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (self.answer)()
+    }
+}
+
+type Answers = [(&'static str, fn() -> TransformOutcome); 3];
+
+/// How a configured rewrite hook may answer: abstain, fail, reject.
+const ANSWERS: Answers = [
+    ("abstains", || TransformOutcome::Abstain),
+    ("fails", || TransformOutcome::Failed {
+        message: "down".to_string(),
+    }),
+    ("rejects", || TransformOutcome::Reject {
+        status: 403,
+        message: "no".to_string(),
+    }),
+];
+
+/// A counting rewrite chain: its invocation count, and the chain.
+type Counted = (
+    Arc<std::sync::atomic::AtomicUsize>,
+    Vec<(Duration, Arc<dyn RoutingPolicy>)>,
+);
+
+fn counting(answer: fn() -> TransformOutcome) -> Counted {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook: Arc<dyn RoutingPolicy> = Arc::new(CountingRewriter {
+        calls: calls.clone(),
+        answer,
+    });
+    (calls, vec![(Duration::from_millis(500), hook)])
+}
+
+fn shared_500() -> Vec<u8> {
+    format!(
+        "refused:500:{}",
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+    )
+    .into_bytes()
+}
+
+/// RED (v1.5.5 `proxy/engine/mod.rs:728`, `:749`): a rewrite hook CONFIGURED for the route has the
+/// document materialized before any hook runs, so a body that will not parse is the shared 500 even
+/// when the hook would have abstained, failed or rejected: the hook is never invoked and nothing is
+/// dialled.
+#[tokio::test]
+async fn an_unparseable_body_with_a_configured_rewrite_hook_is_the_shared_500_and_no_hook_runs() {
+    for (how, answer) in ANSWERS {
+        let (calls, chain) = counting(answer);
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(chain, Vec::new())),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+            "{how}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the plane rendered the 500");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{how}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{how}: no hook ran"
+        );
+        assert!(far.sent().is_empty(), "{how}: never dialled");
+    }
+}
+
+/// RED: the same for a rewrite the POOL configures, with no global rewrite hook. The far end names
+/// its pool to the hooks, as the kernel's egress walk does: a pool's hooks bind only so.
+#[tokio::test]
+async fn an_unparseable_body_with_a_pool_rewrite_is_the_shared_500() {
+    for (how, answer) in ANSWERS {
+        let (calls, chain) = counting(answer);
+        let mut hooks = bound(Vec::new(), Vec::new());
+        hooks.pool_rewrites.insert("pool-a".to_string(), chain);
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(hooks),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]).naming_its_pool(),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+            "{how}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the plane rendered the 500");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{how}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{how}");
+        assert!(far.sent().is_empty(), "{how}: never dialled");
+    }
+}
+
+/// The gate-first twin: the entry's configured rewrite hook, the first `project` FAULTs, no hook
+/// runs, the shared 500, nothing dialled.
+#[tokio::test]
+async fn a_gate_first_unparseable_body_with_a_configured_rewrite_is_the_shared_500() {
+    for (how, answer) in ANSWERS {
+        let (calls, chain) = counting(answer);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r
+            .driver
+            .with_hooks(Arc::new(GatedRewrites { rewrites: chain }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+            "{how}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the 500 is rendered");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{how}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{how}");
+        assert!(far.sent().is_empty(), "{how}: never dialled");
+    }
+}
+
+/// GREEN twin: no rewrite hook configured (nothing bound at all), so `project` is not called up
+/// front and the body passes through to the far end.
+#[tokio::test]
+async fn with_no_rewrite_configured_project_is_not_called_up_front() {
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(bound(Vec::new(), Vec::new())),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        arrival("/unparseable", b"user:hello"),
+        0,
+    );
+    let outcome = drive(&units).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert!(r.projects().is_empty(), "project was never asked");
+    assert_eq!(far.sent().len(), 1, "the body went through");
+}
