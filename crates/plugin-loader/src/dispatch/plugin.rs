@@ -1961,3 +1961,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
 #[cfg(test)]
 #[path = "../tests/instance_id_tests.rs"]
 mod instance_id_tests;
+
+#[cfg(test)]
+#[path = "../tests/envelope_array_tests.rs"]
+mod envelope_array_tests;
