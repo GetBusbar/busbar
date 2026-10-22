@@ -3545,3 +3545,34 @@ fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
         "the client-drop cancel named the unit its op serves"
     );
 }
+
+/// RED (audit loader-src PL1#6; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.12, "the host never
+/// runs a service twice", and l.1509, "a late wake cannot resume a slot the host has since recycled
+/// to a different call"): the results an op on an INLINE ticket kept are that op's own. A resume
+/// reads them; the next NEW op on the ticket, whose handles count from 0 again, starts with none,
+/// and a dropped inline ticket takes them with it. RED: nothing forgot an inline ticket's results,
+/// so the next op on a carrier's connection side redeemed the last op's answer on its handle 0 (the
+/// same random bytes, a stale verdict), and the entries outlived the ticket.
+#[test]
+fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let side = d.inline_ticket().expect("an inline ticket");
+    let t = side.ticket();
+    d.services().keep(t, 0);
+    let _ = p.call_inline(t, true, TICK, &mut frame(answer(1)));
+    assert_eq!(d.services().held(), 1, "a resume reads what its op kept");
+    let _ = p.call_inline(t, false, TICK, &mut frame(answer(1)));
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a new op on an inline ticket redeems the last op's kept results"
+    );
+    d.services().keep(t, 0);
+    drop(side);
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a dropped inline ticket's kept results outlive it"
+    );
+}
