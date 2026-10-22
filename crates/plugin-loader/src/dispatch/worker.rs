@@ -1595,6 +1595,74 @@ impl Worker {
         st.free.clear();
         std::mem::take(&mut st.entries)
     }
+
+    /// Of `gone`, the entries this worker held when it was replaced, the ORPHANS: an op of a
+    /// healthy instance (not `wedged`, the one whose crossing hung, and not faulted) that answered
+    /// PENDING and was waiting to be resumed, on a request ticket. Its plugin still holds the op's
+    /// state and may still read the memory it was lent, so it is sent `cancel` before its frame and
+    /// lent memory go ([`Orphan::cancel`]). The rest go with their `Meta`s' FAULT as before.
+    pub(crate) fn orphans(
+        &self,
+        gone: Vec<Entry>,
+        wedged: &Arc<Instance>,
+    ) -> (Vec<Orphan>, Vec<Entry>) {
+        let mut orphans = Vec::new();
+        let mut rest = Vec::new();
+        for (idx, e) in gone.into_iter().enumerate() {
+            let pending = e.driver.is_none()
+                && e.current.as_ref().is_some_and(|c| {
+                    c.pending
+                        && c.job.is_some()
+                        && !Arc::ptr_eq(&c.meta.instance, wedged)
+                        && !c.meta.instance.faulted.load(Ordering::Acquire)
+                });
+            if pending {
+                let ticket = self.ticket(idx as u32, e.generation);
+                orphans.push(Orphan { ticket, entry: e });
+            } else {
+                rest.push(e);
+            }
+        }
+        (orphans, rest)
+    }
+}
+
+/// A healthy instance's PENDING op on a worker that was replaced ([`Worker::orphans`]).
+pub(crate) struct Orphan {
+    ticket: Ticket,
+    entry: Entry,
+}
+
+impl Orphan {
+    /// Tell the plugin its op on the replaced worker ended: `cancel` of the op's ticket, a watched
+    /// ticket-less crossing ([`Instance::cancel_abandoned`]). Only once it has returned is the op's
+    /// frame, with the memory it lent the plugin, dropped, and its caller answered FAULT (THE DESIGN
+    /// `BUSBAR-1.6.0.md` l.324-325: "The memory a call lends a plugin lives until that call
+    /// completes, abandoned or not, for every kind").
+    pub(crate) fn cancel(mut self) {
+        if let Some(cur) = self.entry.current.as_mut() {
+            let unit = cur.job.as_mut().and_then(|job| {
+                let (input, _, _) = job.heads();
+                (cur.meta.instance.unit_of)(
+                    cur.meta.slot,
+                    input.cast_const(),
+                    cur.meta.in_size as usize,
+                )
+            });
+            let outcome = cur
+                .meta
+                .instance
+                .cancel_abandoned(self.ticket, cur.meta.class, unit);
+            if outcome != Outcome::Ready {
+                tracing::warn!(
+                    plugin = %cur.meta.instance.name(),
+                    outcome = ?outcome,
+                    "the cancel of an op orphaned by a replaced worker did not answer READY"
+                );
+            }
+        }
+        drop(self.entry);
+    }
 }
 
 /// A slot's mint counter after `count`; `None` once it is spent (#74): the generation is a
