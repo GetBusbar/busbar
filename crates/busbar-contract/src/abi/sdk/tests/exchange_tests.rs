@@ -680,3 +680,107 @@ fn a_limit_above_reply_max_clamps() {
     assert_eq!(req().reply_limit(usize::MAX).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(7).reply_ceiling, 7);
 }
+
+/// A buffer whose TYPE wipes it on drop: the bound is the proof, checked at compile time.
+fn wipes_on_drop<T: zeroize::ZeroizeOnDrop + ?Sized>(_: &T) {}
+
+/// A type a plugin can wipe (`zeroize::Zeroizing::new(value)`).
+fn wipeable<T: Zeroize>() {}
+
+/// Every buffer an exchange holds of the request or the reply wipes on drop: the head it frames,
+/// the body it sends, the raw bytes a send carries, the read buffer and the reply it gathers. The
+/// request, reply and ack a plugin hands in or is handed back are wipeable.
+#[test]
+fn every_buffer_an_exchange_holds_wipes_on_drop() {
+    wipeable::<Request>();
+    wipeable::<ExchangeResponse>();
+    wipeable::<Ack>();
+    let framed = Exchange::request(post()).expect("a request");
+    let Sending::Framed { head, body, .. } = &framed.sending else {
+        panic!("a request is framed");
+    };
+    wipes_on_drop(head);
+    wipes_on_drop(body);
+    wipes_on_drop(&framed.buf);
+    wipes_on_drop(&framed.reply);
+    let raw = Exchange::send(b"ping".to_vec());
+    let Sending::Raw(bytes) = &raw.sending else {
+        panic!("a send is raw");
+    };
+    wipes_on_drop(bytes);
+}
+
+/// RED: the read buffer is reused for every piece of the reply (and every replay of one); once the
+/// exchange completes it holds no byte of the reply, while the reply itself arrived whole.
+#[test]
+fn the_reused_read_buffer_keeps_no_reply_bytes() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    let reply = r.answered.expect("the exchange completes");
+    assert_eq!(reply.body, b"hello world");
+    assert_eq!(reply.reason.as_deref(), Some(&b"Totally Fine"[..]));
+    assert!(
+        r.state.buf.iter().all(|&b| b == 0),
+        "the read buffer still holds reply bytes"
+    );
+}
+
+/// The head is allocated once at its exact length: no outgrown allocation holds a copy of a field.
+#[test]
+fn the_head_is_framed_into_one_exact_allocation() {
+    let ex = Exchange::request(post()).expect("a request");
+    let Sending::Framed { head, .. } = &ex.sending else {
+        panic!("a request is framed");
+    };
+    assert_eq!(head.capacity(), head.len());
+    assert_eq!(
+        &head[..],
+        &b"POST/hook?x=1content-type: application/json\r\nx-busbar: 1\r\n"[..]
+    );
+}
+
+/// The reply body grows as `Vec` grows it (the same capacities, so the same allocations), and
+/// holds the same bytes.
+#[test]
+fn the_reply_body_grows_as_a_vec_grows() {
+    let mut wiped = Vec::new();
+    let mut plain = Vec::new();
+    for n in [1usize, 3, 5, 16, 1, 100, 7, 300, 0, 4096] {
+        let chunk = vec![u8::try_from(n % 251).unwrap(); n];
+        extend_wiping(&mut wiped, &chunk);
+        plain.extend_from_slice(&chunk);
+        assert_eq!(wiped.capacity(), plain.capacity(), "after {n}");
+    }
+    assert_eq!(wiped, plain);
+}
+
+/// What the request, reply and ack carried is gone once a plugin wipes them.
+#[test]
+fn a_request_a_reply_and_an_ack_wipe_to_empty() {
+    let mut request = post();
+    request.timeout_ms = 9;
+    request.zeroize();
+    assert_eq!(request, Request::default());
+    let mut reply = ExchangeResponse {
+        status: 200,
+        reason: Some(b"OK".to_vec()),
+        fields: vec![(b"set-cookie".to_vec(), b"s=1".to_vec())],
+        body: b"token".to_vec(),
+    };
+    reply.zeroize();
+    assert_eq!(reply, ExchangeResponse::default());
+    let mut ack = Ack {
+        code: 250,
+        reason: b"queued".to_vec(),
+    };
+    ack.zeroize();
+    assert_eq!(ack, Ack::default());
+}
