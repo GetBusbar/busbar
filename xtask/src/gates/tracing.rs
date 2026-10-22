@@ -278,7 +278,29 @@ struct SpanRule {
     rebound: Vec<String>,
 }
 
-/// The identifiers of blanked code, in order.
+/// `code` with every raw-identifier prefix (`r#name`) stripped, so `r#Node` reads as `Node`.
+pub(crate) fn unraw(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut prev: Option<char> = None;
+    let mut chars = code.chars().peekable();
+    while let Some(c) = chars.next() {
+        let starts_word = prev.is_none_or(|p| !(p.is_alphanumeric() || p == '_'));
+        if c == 'r' && starts_word && chars.peek() == Some(&'#') {
+            let mut ahead = chars.clone();
+            ahead.next();
+            if ahead.peek().is_some_and(|n| n.is_alphabetic() || *n == '_') {
+                chars.next();
+                prev = Some('#');
+                continue;
+            }
+        }
+        out.push(c);
+        prev = Some(c);
+    }
+    out
+}
+
+/// The identifiers of blanked code, in order (a raw identifier's `r#` is not part of it).
 fn idents(code: &str) -> impl DoubleEndedIterator<Item = &str> {
     code.split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|w| !w.is_empty())
@@ -288,7 +310,9 @@ fn idents(code: &str) -> impl DoubleEndedIterator<Item = &str> {
 /// so a `use` group broken over lines is read whole; a cast (`n as u64`) renames nothing a span
 /// macro is called by, so reading one too costs nothing.
 pub(crate) fn renames(code: &str) -> Vec<(String, String)> {
-    let words: Vec<&str> = idents(code).collect();
+    // A raw identifier (`r#Node`) is the identifier itself: its `r#` is stripped before reading.
+    let code = unraw(code);
+    let words: Vec<&str> = idents(&code).collect();
     words
         .windows(3)
         .filter(|w| w[1] == "as")
