@@ -1559,7 +1559,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key; the principal itself never enters a plane input.
+    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
+    /// itself never enters a plane input.
     ///
     /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
     /// unit, so a driver whose book lends references never lends an empty one to a governed
