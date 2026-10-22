@@ -34,7 +34,9 @@
 #              cells from BUSBAR_GOLDEN_DIR (busbar's testing/shadow-oracle/golden at the pin), never a copy.
 #   macos      build and the macOS test command (the plugin's own choice of what runs without a
 #              Linux service container; postgres and valkey are provisioned from Homebrew).
-#   coverage   informational only (llvm-cov; uploaded when CODECOV_TOKEN is present).
+#   coverage   llvm-cov over the same tests, with the same busbar checkout. A failing test FAILS this job
+#              (only a plugin that needs a service container, which this job does not provision, runs
+#              with --ignore-run-fail); the upload is made when CODECOV_TOKEN is present.
 #
 # The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: ModernCI's compile
 # and test checks (.ci/default.yaml, .ci/dev.yaml) build the linked plugins on every busbar move.
@@ -101,7 +103,7 @@ on:
         default: ""
     secrets:
       CODECOV_TOKEN:
-        description: "Codecov upload token; the coverage job is informational and skips the upload without it."
+        description: "Codecov upload token; the coverage job skips the upload without it."
         required: false
 
 permissions:
@@ -682,11 +684,10 @@ jobs:
           [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
 
   coverage:
-    name: coverage (informational)
+    name: coverage
     needs: pin
     # Rust only: a C plugin's lines are not llvm-cov's to count.
     if: inputs.plugin_lang != 'c' && (github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref))
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -722,9 +723,15 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
-      - name: collect (live-service cases without a service fail and are ignored here; linux is the gate)
+      - name: collect (a failing test fails the job; a plugin that needs a service container ignores run failures here, linux is its gate)
         working-directory: plugin
-        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$SERVICE" != none ]; then flags+=(--ignore-run-fail); fi
+          cargo llvm-cov --workspace --locked "${flags[@]}" --lcov --output-path lcov.info
       - name: upload
         if: env.HAS_CODECOV_TOKEN == 'true'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
