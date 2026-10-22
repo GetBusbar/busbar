@@ -309,9 +309,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "G-trust-parameterised".into(),
             tag: "TRUST-MACHINE-FORK".into(),
             owner: "crates/busbar-plane-a2a/src/card_trust.rs (CardPin, the artifact, plus the one plane-specific refusal, jws_refusal) + the kernel's HostSlots trust.* service (the verbs a plane calls; BUSBAR-1.6.0.md Part 3 §4)".into(),
-            // The a2a door-root (GetBusbar/busbar-plane-a2a #41) moves the purity test into the
-            // crate's own `src/tests/` (BUSBAR-1.6.0.md l.3567: tests needing internals live there).
-            class_test: "crates/busbar-plane-a2a/src/tests/purity.rs::the_a2a_plane_declares_no_trust_state_of_its_own".into(),
+            class_test: "crates/busbar-plane-a2a/tests/purity.rs::the_a2a_plane_declares_no_trust_state_of_its_own".into(),
             remedy: "declare the facts (identity, registration state, artifact outcome) and let the kernel's Approve (TrustBook::judge) decide; a plane may narrow the kernel's verdict, never assert Allow over it".into(),
             rules: Vec::new(),
             why: "two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined".into(),
