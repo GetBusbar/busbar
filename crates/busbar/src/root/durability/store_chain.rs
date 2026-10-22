@@ -31,6 +31,9 @@
 //! away, the journal retains that batch and re-offers it on its next append (the log's own retained
 //! batch), and the node FAILS CLOSED — a new money-bearing unit is refused 503 with the reason
 //! ([`JournalLane::refuses_money`]) until the store takes what is queued. No record is dropped.
+//! The batch the journal retains grows with what the closed node still writes, past the bound if
+//! the outage is long enough, so an EMPTY lane takes a batch whole whatever its size: it is in
+//! memory either way, and the lane stays full until the store took it below the bound.
 //!
 //! ## The read
 //!
@@ -663,7 +666,13 @@ impl Shipper<Record> for LaneShipper {
         }
         let lane = &self.0.lane;
         let mut state = lane.lock();
-        if state.queue.len().saturating_add(records.len()) > lane.capacity {
+        // An empty lane takes any batch whole. The journal re-offers what it retained as one batch,
+        // which a long outage grows past the bound (admin units, the checkpoint cadence and accruals
+        // still append while money is refused); turned away by an empty lane too, it would never
+        // drain and the node would refuse money until a restart lost it (audit root r4 B-3).
+        if !state.queue.is_empty()
+            && state.queue.len().saturating_add(records.len()) > lane.capacity
+        {
             state.turned_away = true;
             lane.set_full(&state);
             return Err(ShipError::Unavailable(format!(
