@@ -3103,6 +3103,356 @@
       "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-webrequest` ships as `busbar-hook-webrequest`. CELL: boot.warning|BOOT-W22|boot. BYTES MOVED (golden -> candidate): body.text trust WARN line `plugin=busbar-webrequest file=busbar-webrequest-` -> `plugin=busbar-hook-webrequest file=busbar-hook-webrequest-`. The transform rewrites only those name bytes back to the 1.5.5 name."
     },
     {
+      "id": "N34-STORE-BOOT-POSTGRES plugin name busbar-store-postgres-plugin -> busbar-store-postgres",
+      "kind": "breaking",
+      "cells": "^store\\.boot\\|postgres\\|(key-value|localhost|loopback|multi-host|sslmode-disable|sslmode-require|url-options)$",
+      "expected_cells": 7,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "plugin load failed: plugin 'busbar-store-postgres' open failed: ",
+            "plugin load failed: plugin 'busbar-store-postgres-plugin' open failed: "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "store.boot|postgres|localhost",
+        "body_contains": "plugin 'busbar-store-postgres' open failed: "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-store-postgres-plugin` ships as `busbar-store-postgres`; the same rename N34-BOOT-171 accepts for sqlite. CELLS: the seven store.boot|postgres cells whose 1.5.5 golden carries the plugin's open-failure line (key-value, localhost, loopback, multi-host, sslmode-disable, sslmode-require, url-options; loopback-validate and private-validate carry no plugin name and are not matched). BYTES MOVED (golden -> candidate): body.json log line `plugin load failed: plugin 'busbar-store-postgres-plugin' open failed: ` -> `plugin load failed: plugin 'busbar-store-postgres' open failed: `. The transform rewrites only those name bytes back to the 1.5.5 name; any other byte of the log, the upstream capture or the exit stays a divergence."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-auth-github plugin name busbar-auth-github-plugin -> busbar-auth-github",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|auth-github$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-auth-github-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-auth-github-plugin-\\1 "
+          ],
+          [
+            " busbar-auth-github       github ",
+            " busbar-auth-github-plugin github "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|auth-github",
+        "body_contains": " busbar-auth-github       github "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-auth-github-plugin` ships as `busbar-auth-github` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|auth-github. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-auth-github-plugin-` -> `busbar-auth-github-`; the NAME column `busbar-auth-github-plugin` -> `busbar-auth-github` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-auth-ldap plugin name busbar-auth-ldap-plugin -> busbar-auth-ldap",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|auth-ldap$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-auth-ldap-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-auth-ldap-plugin-\\1 "
+          ],
+          [
+            " busbar-auth-ldap         ldap ",
+            " busbar-auth-ldap-plugin  ldap "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|auth-ldap",
+        "body_contains": " busbar-auth-ldap         ldap "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-auth-ldap-plugin` ships as `busbar-auth-ldap` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|auth-ldap. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-auth-ldap-plugin-` -> `busbar-auth-ldap-`; the NAME column `busbar-auth-ldap-plugin` -> `busbar-auth-ldap` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-auth-oidc plugin name busbar-auth-oidc-plugin -> busbar-auth-oidc",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|auth-oidc$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-auth-oidc-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-auth-oidc-plugin-\\1 "
+          ],
+          [
+            " busbar-auth-oidc         oidc ",
+            " busbar-auth-oidc-plugin  oidc "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|auth-oidc",
+        "body_contains": " busbar-auth-oidc         oidc "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-auth-oidc-plugin` ships as `busbar-auth-oidc` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|auth-oidc. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-auth-oidc-plugin-` -> `busbar-auth-oidc-`; the NAME column `busbar-auth-oidc-plugin` -> `busbar-auth-oidc` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-hashicorp-vault plugin name busbar-hashicorp-vault -> busbar-secret-vault",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|hashicorp-vault$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-secret-vault-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-hashicorp-vault-\\1 "
+          ],
+          [
+            " busbar-secret-vault      vault ",
+            " busbar-hashicorp-vault   vault "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|hashicorp-vault",
+        "body_contains": " busbar-secret-vault      vault "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-hashicorp-vault` ships as `busbar-secret-vault` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|hashicorp-vault. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-hashicorp-vault-` -> `busbar-secret-vault-`; the NAME column `busbar-hashicorp-vault` -> `busbar-secret-vault` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-mysql plugin name busbar-store-mysql-plugin -> busbar-store-mysql",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-mysql$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-mysql       mysql ",
+            " busbar-store-mysql-plugin mysql "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-mysql",
+        "body_contains": " busbar-store-mysql       mysql "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-mysql-plugin` ships as `busbar-store-mysql` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-mysql. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-mysql-plugin` -> `busbar-store-mysql` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-postgres plugin name busbar-store-postgres-plugin -> busbar-store-postgres",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-postgres$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-postgres    postgres ",
+            " busbar-store-postgres-plugin postgres "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-postgres",
+        "body_contains": " busbar-store-postgres    postgres "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-postgres-plugin` ships as `busbar-store-postgres` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-postgres. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-postgres-plugin` -> `busbar-store-postgres` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-sqlite plugin name busbar-store-sqlite-plugin -> busbar-store-sqlite",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-sqlite$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-sqlite      sqlite ",
+            " busbar-store-sqlite-plugin sqlite "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-sqlite",
+        "body_contains": " busbar-store-sqlite      sqlite "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-sqlite-plugin` ships as `busbar-store-sqlite` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-sqlite. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-sqlite-plugin` -> `busbar-store-sqlite` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-valkey plugin name busbar-store-valkey-plugin -> busbar-store-valkey",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-valkey$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-valkey      valkey ",
+            " busbar-store-valkey-plugin valkey "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-valkey",
+        "body_contains": " busbar-store-valkey      valkey "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-valkey-plugin` ships as `busbar-store-valkey` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-valkey. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-valkey-plugin` -> `busbar-store-valkey` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-webrequest-hook plugin name busbar-webrequest -> busbar-hook-webrequest",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|webrequest-hook$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-hook-webrequest-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-webrequest-\\1 "
+          ],
+          [
+            " busbar-hook-webrequest   webrequest ",
+            " busbar-webrequest        webrequest "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|webrequest-hook",
+        "body_contains": " busbar-hook-webrequest   webrequest "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-webrequest` ships as `busbar-hook-webrequest` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|webrequest-hook. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-webrequest-` -> `busbar-hook-webrequest-`; the NAME column `busbar-webrequest` -> `busbar-hook-webrequest` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
       "id": "FID-CHAT translated Chat answers and requests carry the Chat members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Chat answer carries a model refusal in `message.refusal` / `delta.refusal` and the serving `service_tier`, an image answer omits `created` when the upstream sent none, and a translated request keeps a `developer` system prompt in the `developer` role.",
