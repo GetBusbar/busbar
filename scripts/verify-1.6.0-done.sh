@@ -872,7 +872,7 @@ PY
 parity_resolve_judge() {  # $1 = the pinned busbar-release ref
   local ref="${1:-}"
   [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
-  if ./bin/oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
+  if "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
   tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
   echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
   echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it). On Linux the"
@@ -893,7 +893,7 @@ parity_install_golden() {  # $1 = committed golden dir ; $2 = destination
 assert_never_rerecords_golden() {  # $1 = file to scan
   local hits
   [ -f "${1:-}" ] || { echo "nothing to scan at ${1:-<empty>} — refusing"; return 1; }
-  hits="$(grep -nE '^[^#]*oracle[[:space:]]+record([[:space:]]|$)' "$1" \
+  hits="$(grep -nE '^[^#]*oracle[}"]*[[:space:]]+record([[:space:]]|$)' "$1" \
           | grep -iE -- '--out[[:space:]]+"?[^[:space:]]*golden|busbar-oracle/[^[:space:]]*/busbar|PARITY_BASELINE_VERSION/busbar' || true)"
   if [ -n "$hits" ]; then
     echo "this run would RE-RECORD its own reference on the machine under test:"
@@ -1095,8 +1095,11 @@ if [ "$SELFTEST" -eq 1 ]; then
   # The planted line goes through %s so it is not itself a record line the real scan finds.
   printf '  step x ./bin/oracle %s --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"\n' record > "$st_tmp/rerecord.sh"
   printf '  step x ./bin/oracle %s --bin "$PARITY_BIN" --plane all --out "$CAND"\n' record > "$st_tmp/candidate-only.sh"
+  # The trusted shim's spelling (ModernCI's BUSBAR_ORACLE_SHIM) is scanned the same way.
+  printf '  step x "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" %s --out "$GOLDEN"\n' record > "$st_tmp/rerecord-shim.sh"
   st_expect refuse "a DONE run that re-records its own golden on the machine under test" assert_never_rerecords_golden "$st_tmp/rerecord.sh"
   st_expect accept "a DONE run that records only the candidate"                          assert_never_rerecords_golden "$st_tmp/candidate-only.sh"
+  st_expect refuse "a re-record of the golden through the trusted shim's spelling"       assert_never_rerecords_golden "$st_tmp/rerecord-shim.sh"
   st_expect accept "THIS file never re-records the golden"                               assert_never_rerecords_golden "$SELF"
   mkdir -p "$st_tmp/g-whole/cells" "$st_tmp/g-short/cells" "$st_tmp/g-empty/cells" "$st_tmp/g-nocell/cells"
   for st_g in g-whole g-short g-nocell; do
@@ -1583,7 +1586,7 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
   sed 's/^/          /' /tmp/done-parity-env.$$
   rm -f /tmp/done-parity-env.$$
   CUR_RED=1; CUR_FIRST_NOTE="bless/repoint env not empty (parity)"
-elif [ -x bin/oracle ]; then
+elif [ -x "${BUSBAR_ORACLE_SHIM:-bin/oracle}" ]; then
   rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
   # THE JUDGE FIRST, ONCE. Every oracle step below runs the engine bin/oracle builds from its pinned
@@ -1593,13 +1596,13 @@ elif [ -x bin/oracle ]; then
   PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
   step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched at the pin's sha256" \
     parity_resolve_judge "$PARITY_JUDGE_REF"
-  step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
+  step "replay-selftest (the differ can see a diff)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
-  step "enumerate-cells --check (cells.json is what the generator derives)" ./bin/oracle cells --check
+  step "enumerate-cells --check (cells.json is what the generator derives)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" cells --check
   # THE PUBLISHED BINARY, fetched by pinned digest (idempotent: a verified cache is a no-op).
-  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" ./bin/oracle fetch-golden
+  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" fetch-golden
   ORACLE_DIR="target/oracle"
   GOLDEN="$ORACLE_DIR/recordings/golden"
   # THE REFERENCE: the committed recording, copied in fresh and checked whole — never re-recorded on
@@ -1661,14 +1664,14 @@ elif [ -x bin/oracle ]; then
     fi
     PARITY_LEG_SHAS="$PARITY_LEG_SHAS $PARITY_LEG=$PARITY_SHA"
     if [ "$PARITY_SUBJECT_OK" -eq 1 ]; then
-      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" ./bin/oracle record --bin "$PARITY_BIN" --plane all --out "$CAND"
+      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" record --bin "$PARITY_BIN" --plane all --out "$CAND"
       step "[$PARITY_LEG] the recording names the binary this run built" \
         assert_recorded_subject "$CAND" "$PARITY_SHA" "the $PARITY_LEG candidate recording"
       # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
       # exits 0 whatever they say — including when the selection matched nothing.
       #
       step "[$PARITY_LEG] replay: candidate vs golden (strict)" \
-        ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
+        "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
       # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
       # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
       step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
