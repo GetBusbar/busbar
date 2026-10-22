@@ -675,6 +675,16 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             &["crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string()],
         ) {
             ov.set(CEILINGS, grown);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "the debt list grown past its ceiling",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["may not grow"],
+        ));
+    }
 
     // A `use … as` RENAME IS FOLLOWED (the approval desk's plant on #1276): `PlaneMoney` renamed to
     // `Node`, the name of the other type that defines `settle_end`, at module level (A), inside the
@@ -768,11 +778,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         r.push(prove_red(
             cx,
             gate,
-            "the debt list grown past its ceiling",
-            &[rules2::ROW_STORE_DEBT],
-            ov,
-            &["may not grow"],
-
             &format!(
                 "a terminal called through a rename its file does not show ({caller}) is counted"
             ),
