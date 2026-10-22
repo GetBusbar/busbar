@@ -6,11 +6,12 @@
 //! and reaches the same `'static` table a dropped-in copy does; coordinator ruling (a), l.272-274:
 //! this root is `forbid(unsafe_code)`, and the loader holds the one `unsafe` entry).
 //!
-//! A DOOR-ROOT crate is the one the loader's `[package.metadata.busbar.door-root]` table names: its
-//! edge is the loader's, which admits its door through `open_linked` (the `dlopen` path's own
-//! checks) and hands this root only the admitted door (`crate::root::loader::linked`). The root
-//! names nothing of the crate: the generated tables hold a forwarder of the admitted door
-//! (`src/linked_gen.rs`), and every fact a row's axis needs is read here, off that door's Statement
+//! A DOOR-ROOT crate is the one this crate's `[package.metadata.busbar.door-root]` table names
+//! (ARCHITECT ruling, row 195: the root generates the linked table and alone depends on the plugin
+//! crates; the loader names none). The generated table reads its `door` alone and hands it to the
+//! loader's safe entry (`crate::root::loader::dispatch::admit_linked`: `open_linked`, the `dlopen`
+//! path's own checks beside the loader's one reviewed `unsafe`); the tables hold a forwarder of the
+//! admitted door (`src/linked_gen.rs`), and every fact a row's axis needs is read here, off that door's Statement
 //! (A.2, l.3564-3577), through the loader's validation ([`LinkedRow::of`]) and the one rendering
 //! reader (`rendering::read`), the reader a dropped-in copy's signed Statement is read by:
 //!
@@ -143,6 +144,8 @@ pub struct DoorRoot {
     pub door: DoorFn,
     /// The cell its door's Statement is read into, once.
     pub facts: &'static OnceLock<Stated>,
+    /// The loader's refusal of its door (`admit_linked`, read once), or `None`: admitted.
+    pub admission: fn() -> Option<String>,
     /// The name its row states, which its Statement must state.
     pub name: Option<&'static str>,
 }
@@ -181,16 +184,17 @@ fn kind_of(axis: &str) -> Option<KindCode> {
 }
 
 /// THE BOOT'S CHECK OF EVERY DOOR-ROOT ROW (`main.rs` runs it before anything registers): its
-/// crate's door admitted by the loader (`crate::root::loader::linked::door`: `open_linked`, the
-/// `dlopen` path's checks, and the same refusal word for word), then [`check_statements`].
+/// crate's door admitted by the loader (`admit_linked`: `open_linked`, the `dlopen` path's checks,
+/// and the same refusal word for word), then [`check_statements`].
 ///
 /// # Errors
 ///
 /// The first row the loader refuses, with the loader's refusal, or [`check_statements`]' refusal.
 pub fn check(rows: &[DoorRoot]) -> Result<(), String> {
     for row in rows {
-        crate::root::loader::linked::door(row.row)
-            .map_err(|e| format!("plugin '{}': {e}", row.row))?;
+        if let Some(refused) = (row.admission)() {
+            return Err(format!("plugin '{}': {refused}", row.row));
+        }
     }
     check_statements(rows)
 }

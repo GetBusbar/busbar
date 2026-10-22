@@ -57,11 +57,7 @@ busbar-plane-mcp = { workspace = true, optional = true }
 # (`plane-a2a-door`, see that feature).
 busbar-plane-a2a = { workspace = true, optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
-# The loader, and through it every DOOR-ROOT crate (its `[package.metadata.busbar.door-root]`, status
-# row 195): their edges are the loader's, each behind its implicit feature (the crate's name),
-# forwarded here; the root
-# reaches their doors only as the loader admits them, and names none of them.
-busbar-plugin-loader = { path = "../plugin-loader", features = ["busbar-transport-grpc"] }
+busbar-plugin-loader = { path = "../plugin-loader" }
 
 # ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────
 # The binary is the one place entitled to name the kernel, the units, the planes and the transports
@@ -157,8 +153,9 @@ busbar-export-otlp = { workspace = true, optional = true }
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
-# transport-door axis. A DOOR-ROOT crate: its edge is the loader's (`busbar-plugin-loader/busbar-transport-grpc`,
-# forwarded on the loader edge above), not the root's.
+# transport-door axis. A DOOR-ROOT crate (`[package.metadata.busbar.door-root]`): the root reads its
+# `door` alone and hands it to the loader's safe `admit_linked`.
+busbar-transport-grpc = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
@@ -466,6 +463,21 @@ busbar-export-otlp = "busbar_export_otlp::door"
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
 plane-streaming = "busbar_plane_streaming::door"
+
+# THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
+# has `fn door()` as its only public item): `<plugin crate> = "<its door>"`. A crate named here is
+# linked by its door alone: the generated tables read that door and nothing else, hand it to the
+# loader's safe `admit_linked` (which admits it through `open_linked`, the dlopen path's own checks),
+# and read every fact its axis needs (a transport's key, layers and session; an auth or store row's
+# name; a store's `ephemeral`; an export's name, alias and `declares`; a secret or plane door's
+# `declares`) off the admitted door's Statement (`root::door_root`). A crate not named here is
+# TRANSITIONAL: it keeps its `linked-entry` (else `<crate>::linked`) reads until its own door-root round
+# names it here, and the transitional arm is deleted once every crate is (#1495). A door-root row may
+# name only axes that read its door, and no `linked-entry` or `linked-declares` row. ARCHITECT ruling
+# (row 195; l.272-274): this root generates the linked table and alone depends on the plugin crates;
+# the loader names none; this root stays `forbid(unsafe_code)`.
+[package.metadata.busbar.door-root]
+busbar-transport-grpc = "busbar_transport_grpc::door"
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.

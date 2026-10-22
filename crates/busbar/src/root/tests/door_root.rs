@@ -28,6 +28,7 @@ fn row(at: usize, axis: &'static str, door: DoorFn, name: Option<&'static str>) 
         axis,
         door,
         facts: &CELLS[at],
+        admission: || None,
         name,
     }
 }
@@ -219,9 +220,10 @@ fn this_builds_door_root_rows_are_admitted_and_agree_with_their_rows() {
     assert!(!rows.is_empty(), "this build links a door-root crate");
     assert_eq!(check(rows), Ok(()));
     for root in rows {
-        assert!(
-            crate::root::loader::linked::linked().contains(&root.row),
-            "`{}` is linked through the loader's door-root table",
+        assert_eq!(
+            (root.admission)(),
+            None,
+            "`{}` is admitted by the loader",
             root.row
         );
     }
@@ -264,16 +266,28 @@ fn a_door_root_row_on_a_kernel_typed_axis_is_refused() {
     assert!(refused.contains("`protocols`"), "{refused}");
 }
 
-/// RED: A ROW NAMING A CRATE THE LOADER DOES NOT LINK is refused at boot with the loader's words.
+/// A door function that answers no door: what the loader's safe entry refuses as `NullDoor`.
+extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+/// The loader's refusal of [`no_door`], through the safe entry every door-root row is admitted by.
+fn no_door_refused() -> Option<String> {
+    crate::root::loader::dispatch::admit_linked(no_door)
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// RED: A DOOR THE LOADER REFUSES refuses the boot with the loader's words, before its Statement is
+/// read: the row's admission (`admit_linked`, `open_linked`'s checks) answers the refusal.
 #[test]
-fn a_door_root_row_the_loader_does_not_link_is_refused() {
+fn a_door_root_row_the_loader_refuses_is_refused() {
+    let loader = no_door_refused().expect("the loader refuses a door that answers none");
     let refused = check(&[DoorRoot {
-        row: "door-root-not-linked",
-        ..row(35, "secret-doors", crate::LINKED.secrets[0], None)
+        row: "door-root-refused",
+        admission: no_door_refused,
+        ..row(35, "secret-doors", no_door, None)
     }])
-    .expect_err("the loader links no such crate");
-    assert!(
-        refused.contains("plugin 'door-root-not-linked'") && refused.contains("no door-root crate"),
-        "{refused}"
-    );
+    .expect_err("the loader refused the door");
+    assert_eq!(refused, format!("plugin 'door-root-refused': {loader}"));
 }

@@ -3533,6 +3533,11 @@ fn open_linked_refuses_another_kind_abi_as_the_dropped_in_door_is_refused() {
         // SAFETY: the cell's door function answers a `'static` door (a restated real door).
         let linked = unsafe { crate::dispatch::load::open_linked(door) }
             .expect_err("a linked door at another kind ABI is refused");
+        // The safe entry the composition root's generated table calls is the same entry.
+        assert_eq!(
+            crate::dispatch::load::admit_linked(door).expect_err("the safe entry refuses it alike"),
+            linked
+        );
         let Err(dropped) = crate::dispatch::load::validate::<TestKind>(door) else {
             panic!("the dropped-in door at another kind ABI is refused");
         };

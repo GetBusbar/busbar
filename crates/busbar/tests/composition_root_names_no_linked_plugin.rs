@@ -23,7 +23,7 @@ use std::path::Path;
 mod generator {
     include!("../src/linked_gen.rs");
 }
-use generator::{ident, linked_source, metadata_map, with_door_root_table};
+use generator::{ident, linked_source, metadata_map};
 
 /// Every name the manifest's linked tables list, in each spelling code could use it by: a linked
 /// crate as its identifier and as its package name, a root unit module by its module name, and an
@@ -115,12 +115,6 @@ fn named(code: &str, names: &[String]) -> Vec<(usize, String)> {
 fn read(rel: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
-}
-
-/// The manifest the build's generator reads: this crate's, with the loader's door-root table
-/// appended (`build.rs`, status row 195).
-fn generated_manifest() -> String {
-    with_door_root_table(&read("Cargo.toml"), &read("../plugin-loader/Cargo.toml"))
 }
 
 #[test]
@@ -369,22 +363,27 @@ host = "unit"
     }
 }
 
-/// DOOR-ROOT ROWS OF EVERY KIND (status row 195; BUSBAR-1.6.0.md l.3560-3561; coordinator ruling
-/// (a), l.272-274): a crate the door-root table names (the loader's table, which `build.rs` appends
-/// to the manifest it hands the generator) is the LOADER's edge, linked where the root's loader edge
-/// turns on its implicit feature (the crate's own name). The root names nothing of it: no `extern crate`, no item
-/// path. Each of its rows, on every axis a door can carry (transport, plane door, secret, auth,
-/// export, store, hook), holds a generated forwarder of the door the loader admitted
-/// (`busbar_plugin_loader::linked::door`), reads its facts off that door's Statement at boot
-/// (`root::door_root`), and is listed for the boot's check. A crate the table does not name keeps its
-/// transitional reads beside it, row by row. RED: a door-root row naming a kernel-typed axis, an
-/// entry module or a `declares` path is refused; so is a door-root row for a crate no row links, and
-/// a door-root crate whose loader feature the root never turns on.
+/// DOOR-ROOT ROWS OF EVERY KIND (status row 195; BUSBAR-1.6.0.md l.3560-3561; ARCHITECT ruling,
+/// l.272-274: the root generates the linked table and alone depends on the plugin crates, the loader
+/// names none): a crate the root's door-root table names is read at its `door` alone, handed to the
+/// loader's safe `admit_linked` once, and held through a generated forwarder of the admitted door,
+/// on every axis a door can carry (transport, plane door, secret, auth, export, store, hook). Each
+/// row reads its facts off that door's Statement at boot (`root::door_root`) and is listed, with its
+/// admission, for the boot's check. A crate the table does not name keeps its transitional reads
+/// beside it, row by row. RED: a door-root row naming a kernel-typed axis, an entry module or a
+/// `declares` path is refused; so is a door-root row for a crate no row links, a door-root crate the
+/// root does not depend on, and a door other than the crate's root `door`.
 #[test]
 fn the_generator_links_a_door_root_row_of_every_kind_by_its_door_alone() {
     let manifest = r#"
 [dependencies]
-busbar-plugin-loader = { path = "../plugin-loader", features = ["busbar-wire", "busbar-plane-x", "busbar-secret-x", "busbar-auth-x", "busbar-export-x", "busbar-store-x", "busbar-hook-x"] }
+busbar-wire = { path = "../busbar-wire" }
+busbar-plane-x = { path = "../busbar-plane-x" }
+busbar-secret-x = { path = "../busbar-secret-x" }
+busbar-auth-x = { path = "../busbar-auth-x" }
+busbar-export-x = { path = "../busbar-export-x" }
+busbar-store-x = { path = "../busbar-store-x" }
+busbar-hook-x = { path = "../busbar-hook-x" }
 busbar-store-old = { path = "../busbar-store-old" }
 busbar-export-old = { path = "../busbar-export-old" }
 
@@ -457,7 +456,7 @@ busbar-hook-x = "busbar_hook_x::door"
         ),
         ("hook_doors: &[crate::__door_root_busbar_hook_x, ],", "the hook row"),
         (
-            "extern \"C\" fn __door_root_busbar_wire() -> *const ::busbar_contract::abi::mechanism::door::Door {\n    crate::root::loader::linked::door(\"busbar-wire\")",
+            "ADMITTED.get_or_init(|| crate::root::loader::dispatch::admit_linked(::busbar_wire::door))",
             "the transport row's forwarder",
         ),
     ] {
@@ -472,18 +471,22 @@ busbar-hook-x = "busbar_hook_x::door"
         "busbar_store_x",
         "busbar_hook_x",
     ] {
+        let reads: Vec<&str> = out
+            .match_indices(&format!("{crate_ident}::"))
+            .map(|(at, _)| &out[at..])
+            .filter(|rest| !rest.starts_with(&format!("{crate_ident}::door)")))
+            .collect();
         assert!(
-            !out.contains(&format!("{crate_ident}::"))
-                && !out.contains(&format!("extern crate {crate_ident} ")),
-            "the root names nothing of door-root crate `{crate_ident}`:\n{out}"
+            reads.is_empty() && !out.contains(&format!("extern crate {crate_ident} ")),
+            "a door-root crate is read only at its door, by the loader's admission: {reads:?}\n{out}"
         );
     }
     // Every door-root row is listed for the boot's check, with the name its row states where its
     // axis names one.
     for want in [
-        "row: \"busbar-auth-x\", axis: \"auths\", door: crate::__door_root_busbar_auth_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_AUTH_X, name: Some(\"x-key\")",
-        "row: \"busbar-store-x\", axis: \"stores\", door: crate::__door_root_busbar_store_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_STORE_X, name: None",
-        "row: \"busbar-plane-x\", axis: \"plane-door\", door: crate::__door_root_busbar_plane_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_PLANE_X, name: None",
+        "row: \"busbar-auth-x\", axis: \"auths\", door: crate::__door_root_busbar_auth_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_AUTH_X, admission: || crate::__door_root_admitted_busbar_auth_x().as_ref().err().map(ToString::to_string), name: Some(\"x-key\")",
+        "row: \"busbar-store-x\", axis: \"stores\", door: crate::__door_root_busbar_store_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_STORE_X, admission: || crate::__door_root_admitted_busbar_store_x().as_ref().err().map(ToString::to_string), name: None",
+        "row: \"busbar-plane-x\", axis: \"plane-door\", door: crate::__door_root_busbar_plane_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_PLANE_X, admission: || crate::__door_root_admitted_busbar_plane_x().as_ref().err().map(ToString::to_string), name: None",
     ] {
         assert!(out.contains(want), "`{want}` not in\n{out}");
     }
@@ -536,10 +539,10 @@ busbar-hook-x = "busbar_hook_x::door"
             format!("{manifest}busbar-nowhere = \"busbar_nowhere::door\"\n"),
             "names `busbar-nowhere`, which no linked row links",
         ),
-        // RED: a door-root crate whose loader feature the root never turns on, under no feature
-        // of its own: a row no build links.
+        // RED: a door-root crate that is no dependency of the root, under no feature of its own: a
+        // row no build links.
         (
-            manifest.replace(", \"busbar-hook-x\"", ""),
+            manifest.replace("busbar-hook-x = { path = \"../busbar-hook-x\" }\n", ""),
             "linked feature `hook-x` is not declared under [features]",
         ),
         // RED: a door-root table naming anything but the crate's root `door`.
@@ -600,7 +603,7 @@ door = "unit"
 /// compiled-in plane is bound through the loader's one load, the same table its dropped-in build is.
 #[test]
 fn the_manifest_links_a_plane_through_its_door() {
-    let manifest = generated_manifest();
+    let manifest = read("Cargo.toml");
     let (all, _) = linked_source(&manifest, &|_: &str| true);
     let doors = all
         .lines()
@@ -619,7 +622,7 @@ fn the_manifest_links_a_plane_through_its_door() {
 /// RED: a `-on-driver` switch back in `[features]`, or a plane's switch taken out of `default`.
 #[test]
 fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
-    let manifest = generated_manifest();
+    let manifest = read("Cargo.toml");
     let default: Vec<String> = manifest
         .lines()
         .find_map(|l| l.trim().strip_prefix("default = ["))
