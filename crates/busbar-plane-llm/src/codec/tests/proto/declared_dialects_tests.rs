@@ -123,7 +123,7 @@ fn the_doors_dialects_are_the_codec_dialects() {
 /// streams a framing the section does not state has its lengthed replies sent whole by the host.
 #[test]
 fn the_declared_stream_media_are_the_writers_streaming_content_types() {
-    let declares: Value =
+    let declares: serde_json::Value =
         serde_json::from_str(crate::DECLARES).expect("the declares section is JSON");
     let declared: Vec<&str> = strs(&declares["stream_media"]);
     let mut written: Vec<&str> = decls()
@@ -150,7 +150,7 @@ fn the_declared_stream_media_are_the_writers_streaming_content_types() {
 /// edited away from a codec's claim (or a codec's claim moved) answers one path two ways.
 #[test]
 fn the_declared_auth_labels_are_the_codecs_residual_claims() {
-    let declares: Value =
+    let declares: serde_json::Value =
         serde_json::from_str(crate::DECLARES).expect("the declares section is JSON");
     let labels = &declares["auth_labels"];
     let rules = labels["rules"].as_array().expect("auth_labels.rules");
