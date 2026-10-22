@@ -12,9 +12,9 @@
 // (DECISIONS #38): a KIND is a match-arm, not a crate, so the transport half lives here as one
 // module tree rather than a sibling crate the contract depended on.
 pub mod dest;
-pub mod driver;
 pub mod registry;
-// THE TWO TRANSPORT ROLES (TRANSPORT-STACK): a transport plugin is a carrier or a framer.
+// THE TWO TRANSPORT ROLES (TRANSPORT-STACK): a transport plugin is a carrier or a framer. Which one
+// is the export its door makes, never a derivation from what it composes over.
 pub mod stack;
 pub mod surface;
 // The transport-axis enum (`Transport`) keeps its own file name from the folded
@@ -26,8 +26,8 @@ pub mod trust;
 pub mod wire;
 
 pub use stack::{
-    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed,
-    Framer, FramerOut, HostTime, Located, Role, Side, TransportRow,
+    BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed, Framer,
+    FramerOut, HostTime, Located, Side, TransportRow,
 };
 
 use crate::ids::StreamId;
@@ -80,12 +80,6 @@ pub use surface::{
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
     MAX_CAPTURES,
 };
-
-/// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
-///
-/// Re-exported for the one reader who is neither a transport author nor a plugin author: the
-/// composition root IMPLEMENTS this, and it reaches the transport contract through this module.
-pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 
 /// Where a dial lands, as the transport family that dials it spells it — named at the transport
 /// module root because a plane builds one when it says where a unit wants to go.
@@ -143,8 +137,8 @@ pub trait TransportMeta {
     ///
     /// The other half of [`TransportMeta::STATUS_CLASS`]: that says WHICH FRAME carries the status,
     /// this says WHICH VOCABULARY wrote it. A number without its numbering is unreadable — `14` is
-    /// `UNAVAILABLE` in gRPC's and is not a status at all in HTTP's — and every
-    /// [`crate::wire::WireStatus`] a transport reports takes its namespace from here, so the
+    /// `UNAVAILABLE` in a trailer numbering and is not a status at all in a status-line one — and
+    /// every [`crate::wire::WireStatus`] a transport reports takes its namespace from here, so the
     /// declaration and the frames cannot disagree. `None` for a transport that reports no number,
     /// which is every transport whose `STATUS_CLASS` is `None`.
     const STATUS_NAMESPACE: Option<&'static str>;
@@ -155,8 +149,8 @@ pub trait TransportMeta {
     /// against the operator's binding config: `TLS`-configured binding + a transport that declares
     /// this `true` ⇒ it is handed a real rustls-backed wrap; `TLS`-configured binding + a transport
     /// that leaves this at the default `false` ⇒ the binding fails closed at boot rather than being
-    /// silently served in plaintext. A transport with no byte stream to wrap at all (stdio) simply
-    /// never overrides the default.
+    /// silently served in plaintext. A transport with no byte stream to wrap at all (one that talks
+    /// to a child process over its pipes) simply never overrides the default.
     const WRAPPABLE_BYTE_STREAM: bool = false;
     /// EVERY SCHEME THIS ENTRY ANSWERS FOR ([`Claim`]), in order; the first is the entry's own. A
     /// transport that answers for its own key alone makes the one claim its per-scheme constants

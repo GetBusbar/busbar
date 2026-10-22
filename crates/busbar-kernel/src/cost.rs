@@ -38,8 +38,9 @@ use crate::config::groups::{AdmissionMode, LimitMetric};
 /// naming the ledger crate. Each name is the ledger's own item re-exported as it is: the same type
 /// and the same function, so a figure priced through this path is the ledger's figure.
 pub use busbar_kernel_ledger::cost::{
-    plane_fee_lane, price_ledger, Author, CardEntryDraft, History, HistorySeq, HistoryView,
-    LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard, TierRates, PER_SESSION,
+    budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, History,
+    HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard, TierRates,
+    PER_SESSION,
 };
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
@@ -534,9 +535,7 @@ impl CostModel {
     /// Whether a rate card is configured (token pricing active).
     ///
     /// `pub` (was crate-private): the first of the two questions the pre-admission pricing guard
-    /// asks, answered for a plane through the
-    /// [`BudgetHost::cost_pricing_enabled`](busbar_kernel::plane_host::BudgetHost::cost_pricing_enabled)
-    /// seam, which downcasts the opaque cost handle and drives this same read.
+    /// asks.
     pub fn pricing_enabled(&self) -> bool {
         self.card.pricing_enabled()
     }
@@ -577,8 +576,7 @@ impl CostModel {
     }
 
     /// PRICE a neutral [`busbar_contract::billing::Usage`] for `model` into nano-units — the
-    /// host-side entry point the [`MeteringHost::price_usage`](busbar_kernel::plane_host::MeteringHost::price_usage)
-    /// seam a live carrier drives folds through.
+    /// kernel's one pricing entry point.
     ///
     /// **THE ONE FUNCTION** over one row at this card: `None` is every refusal it can give — a
     /// present card that does not name the model, a hit class it cannot price (#42), an overflow
@@ -628,9 +626,7 @@ impl CostModel {
     /// consistent with the completeness rule: you either price nothing or price everything.
     ///
     /// `pub` (was crate-private): the second of the pricing guard's two questions, answered for a
-    /// plane through the
-    /// [`BudgetHost::cost_model_unpriced`](busbar_kernel::plane_host::BudgetHost::cost_model_unpriced)
-    /// seam over the same opaque handle.
+    /// plane over the same card.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
         self.card.lane_unpriced(model)

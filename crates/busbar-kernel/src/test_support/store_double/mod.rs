@@ -15,7 +15,7 @@
 //! own tests need lives HERE, as a test-support module of the crate under test, LINKED only — not a
 //! workspace crate, not an example plugin, and not the shipped plugin taken under another name.
 //!
-//! What it copies is the shipped RAM store at the rev the root pins (`848851e63a`): the same record
+//! What it copies is the shipped RAM store, at whatever rev the root pins: the same record
 //! verbs and their preconditions, the same retention sweep, the same v3 slots (dedupe, caps,
 //! slices, ledger chains, sessions), the same tail and `max_inflight`. Its Statement name and its
 //! canonical name are its OWN ([`NAME`]), never the plugin's: the kernel spells no plugin name, not
@@ -927,5 +927,8 @@ pub const STORE: crate::preflight::LinkedStore = (MIGRATED_STORE_MODULE, true, d
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`) — what [`STORE`] registers,
 /// and what boot opens through the stand-in store axis.
 pub use v3::door;
+
+/// The same door as the `MACRO_DOOR` `store_door!` expands beside it (status rows 159 and 194).
+pub use v3::MACRO_DOOR;
 
 mod v3;

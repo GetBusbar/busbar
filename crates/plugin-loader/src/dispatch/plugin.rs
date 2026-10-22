@@ -406,6 +406,16 @@ impl Instance {
 /// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
 /// worker, after the wake that carried it returned).
 pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    quarantine(
+        wake,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined",
+    );
+}
+
+/// The instance whose handle `wake` is, quarantined for the plugin fault `why`, as
+/// [`quarantine_crossing`] quarantines a crossing's: faulted, never called again on any worker, its
+/// connections gone, its handle naming nothing any more.
+pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
     wake.revoked.store(true, Ordering::Release);
     let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
         return;
@@ -414,10 +424,7 @@ pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
     if let Some((id, table)) = inst.wake.conn.get() {
         super::conn_services::purge(*id, table);
     }
-    tracing::warn!(
-        plugin = %inst.name,
-        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
-    );
+    tracing::warn!(plugin = %inst.name, "{why}");
 }
 
 /// One family's shape, copied from the Statement: its kind and its label count.
@@ -495,7 +502,7 @@ pub(crate) struct Instance {
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
-    unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    pub(crate) unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
     /// [`Kind::cancel_frame`] of the bound kind.
     pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
@@ -736,8 +743,8 @@ impl Instance {
                 continue;
             }
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
-            // registration that names a program is a member, its `command`/`args`/`env` its
+            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5, the member-program upstream ruling (A)):
+            // each registration that names a program is a member, its `command`/`args`/`env` its
             // program (every other key its own), sealed per member: the table keeps one long-lived
             // program per member, and a re-declaration retires a member that changed or is gone.
             if busbar_contract::section::member_program(&need.target_from) {
@@ -772,9 +779,13 @@ impl Instance {
     /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
     /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
     /// under the key, rotated at the `rotate_mb` (the host's rotation key,
-    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
-    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
-    /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it as the host's
+    /// [`busbar_contract::services::DiskRotate`] for the key: from the archives the manifest
+    /// declares it keeps (`declares.keep`: `0` truncates in place, as 1.5.5's request-log sink did;
+    /// `n` renames keeping `n`), else the host's default
+    /// ([`busbar_contract::services::DISK_ROTATE_UNDECLARED`]). A key the settings leave unset is
+    /// not bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the
+    /// file.
     fn bind_destinations(&self, settings: Blob) {
         let Some(keys) = self.wake.destinations.get() else {
             return;
@@ -799,7 +810,12 @@ impl Instance {
                         key: key.clone(),
                         path: path.to_owned(),
                         rotate_at,
-                        keep: busbar_contract::services::DISK_KEEP,
+                        // 1.5.5 parity: the request-log file sink truncated in place at
+                        // `rotate_mb` (Q128 arch u50). The data-keeping rename, PENDING OWNER, is
+                        // `DiskRotate::Rename { keep: DISK_KEEP }`.
+                        rotate: busbar_contract::services::DiskRotate::declared(
+                            self.wake.keep.get().and_then(|k| k.get(key)).copied(),
+                        ),
                     }
                 })
             })
@@ -1642,11 +1658,17 @@ impl<K: Kind> Plugin<K> {
     }
 
     /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
-    /// file the host appends to for it, `declares.destinations`), before it opens: its `open` and
-    /// `refresh` bind each to the path its settings give, and `disk.append` serves it those only.
-    /// Granted once; a second grant is ignored.
-    pub fn grant_destinations(&self, keys: &[String]) {
-        let _ = self.inner.wake.destinations.set(keys.to_vec());
+    /// file the host appends to for it, `declares.destinations`, each with the retention
+    /// `declares.keep` states for it), before it opens: its `open` and `refresh` bind each to the
+    /// path its settings give, and `disk.append` serves it those only. Granted once; a second
+    /// grant is ignored.
+    pub fn grant_destinations(&self, declares: &crate::sign::Declares) {
+        let _ = self.inner.wake.keep.set(declares.keep.clone());
+        let _ = self
+            .inner
+            .wake
+            .destinations
+            .set(declares.destinations.clone());
     }
 
     /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.
