@@ -18,6 +18,11 @@ guarded:
   - "qa/*.status"
   # The kind-isolation standing list (#1262's last path the globs above did not cover).
   - "qa/kind-isolation.standing.txt"
+  # The oracle's shim, its judge pin and the 1.5.5 golden: a lane that rewrites them from its own
+  # tree would grade itself (the #1556 review).
+  - "bin/oracle"
+  - "testing/shadow-oracle/oracle-rust.pin"
+  - "testing/shadow-oracle/golden/**"
   - "xtask/src/gates/**"
 # Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
 # its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
@@ -64,13 +69,23 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [preflight, gates, clippy, compile, test, test-docs, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
   manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
+  # THE JUDGE, AS PROTECTED CONFIG (busbar ruling 2026-10-22): bin/oracle reads the judge only from
+  # these, never from the tree it judges. Verified against dev 17d824b657's
+  # testing/shadow-oracle/oracle-rust.pin (blob caf1786da0) and its golden/1.5.5 tree.
+  BUSBAR_ORACLE_RELEASE_REPO: "https://github.com/GetBusbar/busbar-release.git"
+  BUSBAR_ORACLE_RELEASE_REF: "151ad095a21819dca97e8bdb3384c3c3eb2eb806"
+  BUSBAR_ORACLE_SHA256_LINUX_X86_64: "0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8"
+  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: "188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4"
+  BUSBAR_GOLDEN_1_5_5_TREE: "92c7d7f72af5a9e05195817ffa0523c13705c146"
+  BUSBAR_ORACLE_CRATE: "busbar-release-oracle"
+  BUSBAR_ORACLE_BIN: "busbar-oracle"
   BUSBAR_TOOL_SH: |
     # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
     # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
@@ -214,6 +229,7 @@ env:
     done
 checks:
   preflight:
+    env_from_run: []
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
@@ -224,6 +240,7 @@ checks:
       cargo xtask gate abi-header --write
       git diff --exit-code -- crates/busbar-contract/include
   gates:
+    env_from_run: [MODERNCI_TO_SHA]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
@@ -236,14 +253,15 @@ checks:
     requires: [cc, git-history]
     needs: [preflight]
   clippy:
+    env_from_run: []
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
     baseline: target
-    needs: [gates]
   compile:
+    env_from_run: []
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
@@ -252,8 +270,8 @@ checks:
       cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
       cargo check --release -p busbar --bin busbar --locked
     baseline: target
-    needs: [gates]
   test:
+    env_from_run: [MODERNCI_ONLY]
     # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
     # dropped-in plugins the tests dlopen, then one build and one nextest run.
     run: |
@@ -293,13 +311,27 @@ checks:
     baseline: target
     # The selftests run the gates over the real tree, merge-base included.
     requires: [cc, git-history]
-    needs: [gates]
   test-gated:
+    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
+    env_from_run: [MODERNCI_TO_SHA]
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
     # only. A, the busbar/kernel/core-admin gates at once (test-harness,
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
     # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
     run: |
+      # Check selection (PRs): the gated suites build and read nothing under
+      # xtask/, qa/, docs/ or .github/, nor a top-level *.md; a change
+      # touching only xtask/, qa/, docs/, .github/ or a top-level *.md cannot change this result. The change is every
+      # path changed between the target and the judged commit since their merge-base (TO_SHA...HEAD,
+      # renames as delete plus add). Anything else, the target's own run (an empty diff), an octopus
+      # merge (a train), or a base that is unset or not in the checkout runs it whole.
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
+        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
+        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -Ev '^(xtask|qa|docs|\.github)/|^[^/]*\.md$' >/dev/null; then
+        echo "test-gated: this change touches only xtask/, qa/, docs/, .github/ or a top-level *.md; nothing here builds or reads them"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
@@ -333,7 +365,58 @@ checks:
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
+  test-docs:
+    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
+    env_from_run: [MODERNCI_TO_SHA]
+    # `test` runs with `scope: affected`, and ModernCI's scoper reads docs/ and every *.md as no
+    # crate's code: a change to them alone skips `test`, and a mixed change runs only the crates its
+    # code reaches. Tests do read those files (qa/*.md bindings, docs/design, READMEs), so whenever
+    # the change touches docs/ or any *.md this runs `test`'s build and suite whole; else it has
+    # nothing to add. The target's own run (an empty diff), an octopus merge or an unreadable base runs it.
+    requires: [cc, git-history]
+    run: |
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
+        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
+        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -E '^docs/|\.md$' >/dev/null; then
+        echo "test-docs: this change touches no docs/ path and no *.md; test covers it"
+        exit 0
+      fi
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+      # door and the other door fixtures, which busbar's and the connector's tests load too) and
+      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+      # test whose fixture is absent fails rather than skips; no variable tells this step the
+      # affected set, so the build does not wait on one.
+      cargo build --locked -p busbar-plugin-loader --examples
+      cargo build --locked -p busbar --examples
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+      cargo build --workspace --locked
+      # The nextest limit: every test is cut at five minutes. Every registered gate's RED proof runs
+      # in the selftest-1..4 checks (`cargo xtask selftest --shard=K/4`), on every move.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
+      # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
+      cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg"
+    baseline: target
   doctest:
+    env_from_run: []
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
@@ -341,18 +424,32 @@ checks:
       cargo test --workspace --doc --locked --no-fail-fast
     scope: affected
     baseline: target
-    needs: [test]
   deletion-matrix:
+    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
+    env_from_run: [MODERNCI_TO_SHA]
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
+      # Check selection (PRs): the kernel and contract feature builds read
+      # nothing under xtask/, qa/, docs/ or .github/, nor a top-level *.md; a change
+      # touching only xtask/, qa/, docs/, .github/ or a top-level *.md cannot change this result. The change is every
+      # path changed between the target and the judged commit since their merge-base (TO_SHA...HEAD,
+      # renames as delete plus add). Anything else, the target's own run (an empty diff), an octopus
+      # merge (a train), or a base that is unset or not in the checkout runs it whole.
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
+        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
+        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -Ev '^(xtask|qa|docs|\.github)/|^[^/]*\.md$' >/dev/null; then
+        echo "deletion-matrix: this change touches only xtask/, qa/, docs/, .github/ or a top-level *.md; nothing here builds or reads them"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --locked
     baseline: target
-    needs: [gates]
   deny:
+    env_from_run: []
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny; fi || exit 1
       cargo deny check
@@ -369,33 +466,41 @@ checks:
   # name. The ceilings and ledgers the batteries plant against read the merge-base, as the gates
   # check does. Absolute on dev's head in .ci/dev.yaml (DEV-GREEN); here on demand.
   selftest-1:
+    env_from_run: []
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=1/4
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
   selftest-2:
+    env_from_run: []
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=2/4
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
   selftest-3:
+    env_from_run: []
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=3/4
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
   selftest-4:
+    env_from_run: []
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=4/4
     baseline: target
     requires: [cc, git-history]
@@ -403,6 +508,7 @@ checks:
   # On every move (above): the same judge as the dev -> qa oracle (.ci/dev.yaml), here no worse than
   # dev, so a lane cannot land a customer-visible change the 1.5.5 golden does not forgive.
   oracle:
+    env_from_run: [MODERNCI_TO_SHA]
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
@@ -434,7 +540,7 @@ checks:
       # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
       # backends up for this run (testing/shadow-oracle/scripts/oracle-box-store-services.sh), under
       # run-unique names on free ports, export the three URLs, and remove them when the check ends.
-      sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+      sfx="$(git rev-parse --short=12 HEAD)-$$"
       free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
       export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
       export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
