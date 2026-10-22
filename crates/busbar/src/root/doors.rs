@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
-    OutFrame, Plugin,
+    OutFrame, Plugin, PluginLogConfig,
 };
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -53,6 +53,29 @@ pub fn dispatcher() -> &'static Dispatcher {
     })
 }
 
+/// Where a linked row's plugin log file is opened: the composition root's `plugins.logs`, read at
+/// each bind ([`install_plugin_logs`]).
+static LOGS: OnceLock<fn() -> &'static PluginLogConfig> = OnceLock::new();
+
+/// Hand the doors the composition root's reader of the configured `plugins.logs` (`root::boot`),
+/// before any linked row binds; the first install stands. A mount of this file with no composition
+/// root (a test, the conformance subject) logs under the defaults.
+pub fn install_plugin_logs(logs: fn() -> &'static PluginLogConfig) {
+    let _ = LOGS.set(logs);
+}
+
+/// The `plugins.logs` a linked row's plugin log file is opened under.
+fn plugin_logs() -> &'static PluginLogConfig {
+    static DEFAULTS: OnceLock<PluginLogConfig> = OnceLock::new();
+    match LOGS.get() {
+        Some(logs) => logs(),
+        None => DEFAULTS.get_or_init(|| {
+            PluginLogConfig::from_words(None, None, &std::collections::BTreeMap::new(), None, None)
+                .expect("the plugins.logs defaults resolve")
+        }),
+    }
+}
+
 /// What a transport door is bound to. The instance label is the transport lane's own; every door
 /// is relabelled as it opens: a linked row with its row name ([`row_bind`]), a dropped-in door
 /// with its plugin's name (the registry), so the label is unique per instance.
@@ -79,7 +102,7 @@ pub fn bind() -> Bind {
 /// The row's plugin log file cannot be opened.
 pub fn row_bind(row: &str) -> Result<Bind, String> {
     let bound = bind();
-    let sink = crate::root::boot::plugin_logs().sink(
+    let sink = plugin_logs().sink(
         row,
         busbar_contract::abi::mechanism::KindCode::Transport,
         bound.sink.clone(),
