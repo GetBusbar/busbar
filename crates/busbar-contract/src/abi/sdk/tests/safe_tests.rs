@@ -73,6 +73,10 @@ const DRIVE_LOCAL_LEASE: u32 = 0x100;
 const DRIVE_STATE_LEASE: u32 = 0x200;
 /// What a ticketed `release` parks across its PENDING.
 const PARKED: u64 = 0x5afe;
+/// A `release` ticket in this slot takes its continuation back by value in its RESUME.
+const RESUME_TAKES: u32 = 7;
+/// A `release` ticket in this slot takes its continuation back boxed in its RESUME.
+const RESUME_BOXES: u32 = 9;
 
 mod plugin {
     use super::*;
@@ -177,8 +181,17 @@ mod plugin {
             i.park(PARKED);
             Outcome::Pending
         } else {
-            // It takes nothing back: the SDK drops what was parked on the way out.
-            Outcome::Ready
+            let found = match i.ticket().slot {
+                RESUME_TAKES => i.resume_value::<u64>(),
+                RESUME_BOXES => i.resume::<u64>().map(|b| *b),
+                // It takes nothing back: the SDK drops what was parked on the way out.
+                _ => return Outcome::Ready,
+            };
+            if found == Some(PARKED) {
+                Outcome::Ready
+            } else {
+                Outcome::Failed
+            }
         }
     });
     safe_slot!(Close, Probe, InHead, OutHead, |i, input, o| {
@@ -560,5 +573,68 @@ fn red_a_ready_crossing_completes_while_another_ticket_is_parked_and_held() {
         "a READY crossing on ticket B waited on ticket A's parked continuation"
     );
     assert_eq!(release(inst, a, FLAG_RESUME), Outcome::Ready);
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// One warm PENDING, RESUME, READY cycle on `slot`'s recycled ticket: the allocations it made.
+fn warm_cycle_allocations(instance: *mut c_void, slot: u32) -> u64 {
+    for generation in 1..=2 {
+        let t = Ticket { slot, generation };
+        assert_eq!(release(instance, t, 0), Outcome::Pending);
+        assert_eq!(release(instance, t, FLAG_RESUME), Outcome::Ready);
+    }
+    let recycled = Ticket {
+        slot,
+        generation: 3,
+    };
+    crate::abi::CountingAlloc::reset();
+    let parked = release(instance, recycled, 0);
+    let resumed = release(instance, recycled, FLAG_RESUME);
+    let allocations = crate::abi::CountingAlloc::count();
+    assert_eq!((parked, resumed), (Outcome::Pending, Outcome::Ready));
+    allocations
+}
+
+/// The GREEN twin: a RESUME that takes its continuation back by value leaves its allocation in the
+/// instance's pool, so the warm cycle allocates nothing either.
+#[test]
+fn a_warm_cycle_that_takes_its_continuation_back_allocates_nothing() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(warm_cycle_allocations(inst, RESUME_TAKES), 0);
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// The control: the counter sees an allocation when one happens. A RESUME that takes its
+/// continuation back boxed makes exactly the one fresh box.
+#[test]
+fn the_counter_sees_the_box_a_boxed_resume_hands_back() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(warm_cycle_allocations(inst, RESUME_BOXES), 1);
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// More tickets parked at once than one segment holds: the table grows, and every ticket resumes
+/// its own continuation and frees its slot.
+#[test]
+fn the_parked_table_grows_past_a_segment_and_every_ticket_resumes_its_own() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // SAFETY: the instance the SDK minted above, alive until the `close` below.
+    let h = unsafe { super::head(inst) }.expect("an open instance has a head");
+    let many = 3 * super::SEGMENT as u32 + 1;
+    let ticket = |generation| Ticket {
+        slot: RESUME_TAKES,
+        generation,
+    };
+    for g in 1..=many {
+        assert_eq!(release(inst, ticket(g), 0), Outcome::Pending);
+    }
+    assert_eq!(h.count(), many as usize, "every ticket holds its own slot");
+    for g in 1..=many {
+        assert_eq!(release(inst, ticket(g), FLAG_RESUME), Outcome::Ready);
+    }
+    assert_eq!(h.count(), 0, "every slot is free again");
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
