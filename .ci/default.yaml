@@ -240,7 +240,6 @@ checks:
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
     baseline: target
-    needs: [gates]
   compile:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
@@ -250,7 +249,6 @@ checks:
       cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
       cargo check --release -p busbar --bin busbar --locked
     baseline: target
-    needs: [gates]
   test:
     # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
     # dropped-in plugins the tests dlopen, then one build and one nextest run.
@@ -292,7 +290,6 @@ checks:
     baseline: target
     # The selftests run the gates over the real tree, merge-base included.
     requires: [cc, git-history]
-    needs: [gates]
   test-gated:
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
     # only. A, the busbar/kernel/core-admin gates at once (test-harness,
@@ -349,7 +346,6 @@ checks:
       cargo test --workspace --doc --locked --no-fail-fast
     scope: affected
     baseline: target
-    needs: [test]
   deletion-matrix:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
@@ -368,7 +364,6 @@ checks:
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --locked
     baseline: target
-    needs: [gates]
   deny:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny; fi || exit 1
@@ -387,6 +382,15 @@ checks:
   # check does. Absolute on dev's head in .ci/dev.yaml (DEV-GREEN); here on demand.
   selftest-1:
     run: |
+      # Check selection (PRs): a red proof plants its cases against the gate code (xtask/), the
+      # ledgers and rules (qa/) and this config (.ci/); a change touching none of them cannot change
+      # this result, so it runs only when one of those changed. The target's own run (an empty
+      # diff), a diff that cannot be read, and dev's move into qa (.ci/dev.yaml) run it whole.
+      if changed=$(git diff --name-only "$MODERNCI_TO_SHA" HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -E '^(xtask|qa|\.ci)/' >/dev/null; then
+        echo "selftest-1: this change touches nothing under xtask/, qa/ or .ci/; its red proofs are unchanged"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=1/4
@@ -395,6 +399,15 @@ checks:
     needs: [gates]
   selftest-2:
     run: |
+      # Check selection (PRs): a red proof plants its cases against the gate code (xtask/), the
+      # ledgers and rules (qa/) and this config (.ci/); a change touching none of them cannot change
+      # this result, so it runs only when one of those changed. The target's own run (an empty
+      # diff), a diff that cannot be read, and dev's move into qa (.ci/dev.yaml) run it whole.
+      if changed=$(git diff --name-only "$MODERNCI_TO_SHA" HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -E '^(xtask|qa|\.ci)/' >/dev/null; then
+        echo "selftest-2: this change touches nothing under xtask/, qa/ or .ci/; its red proofs are unchanged"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=2/4
@@ -403,6 +416,15 @@ checks:
     needs: [gates]
   selftest-3:
     run: |
+      # Check selection (PRs): a red proof plants its cases against the gate code (xtask/), the
+      # ledgers and rules (qa/) and this config (.ci/); a change touching none of them cannot change
+      # this result, so it runs only when one of those changed. The target's own run (an empty
+      # diff), a diff that cannot be read, and dev's move into qa (.ci/dev.yaml) run it whole.
+      if changed=$(git diff --name-only "$MODERNCI_TO_SHA" HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -E '^(xtask|qa|\.ci)/' >/dev/null; then
+        echo "selftest-3: this change touches nothing under xtask/, qa/ or .ci/; its red proofs are unchanged"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=3/4
@@ -411,6 +433,15 @@ checks:
     needs: [gates]
   selftest-4:
     run: |
+      # Check selection (PRs): a red proof plants its cases against the gate code (xtask/), the
+      # ledgers and rules (qa/) and this config (.ci/); a change touching none of them cannot change
+      # this result, so it runs only when one of those changed. The target's own run (an empty
+      # diff), a diff that cannot be read, and dev's move into qa (.ci/dev.yaml) run it whole.
+      if changed=$(git diff --name-only "$MODERNCI_TO_SHA" HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -E '^(xtask|qa|\.ci)/' >/dev/null; then
+        echo "selftest-4: this change touches nothing under xtask/, qa/ or .ci/; its red proofs are unchanged"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=4/4
