@@ -30,9 +30,11 @@ use std::sync::Arc;
 use crate::audit::journal::NeutralBody;
 use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
-use crate::plane_host::USAGE_RESIDUAL_ACTION;
 use crate::store::plane_view::{decode, PlaneStore, KIND_RESIDUAL};
 use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResult};
+
+/// The audit action of a residual row ([`emit`]): counts reported, never billed.
+pub const USAGE_RESIDUAL_ACTION: &str = "usage.residual";
 
 /// The host-assigned `kind_id` the residual stream is registered under. Distinct from the
 /// `task_event` (1), `call` (2) and admin `audit` (3) streams; process-global.
@@ -432,8 +434,7 @@ pub(crate) fn settle(
     Some(log.record_hostless(principal, input))
 }
 
-/// THE PRODUCTION EMITTER behind [`crate::plane_host::JournalHost::settle_residual`]: settle on
-/// [`RESIDUALS`] and report the result. A failure is raised at `error!` on the transition into
+/// THE EMITTER: settle on [`RESIDUALS`] and report the result. A failure is raised at `error!` on the transition into
 /// failing (then held at `debug!` until a write succeeds), never swallowed silently and never
 /// failing the request.
 pub fn emit(
@@ -547,3 +548,7 @@ impl ResidualTestHarness {
         self.log.restore_from_store(store)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/residual_log_tests.rs"]
+mod residual_log_tests;

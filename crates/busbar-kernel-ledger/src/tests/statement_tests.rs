@@ -12,7 +12,7 @@ use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCa
 use busbar_contract::caps::MeterClassId;
 
 use crate::cost::HistoryView;
-use crate::recompute::{Divergence, Posting, PostingOrigin, PricedLine};
+use crate::recompute::{Divergence, Posting, PricedLine};
 use crate::totals::{totals_as_of, WindowStart};
 
 use super::fixtures::key;
@@ -99,7 +99,6 @@ fn line(node_seq: u64, arrived_ms: u64) -> Posting {
         fee_count: 1,
         tier_bp: TIER_BP,
         arrived_ms,
-        origin: PostingOrigin::Client,
     }
 }
 
@@ -125,8 +124,8 @@ fn a_statement_is_cut_as_of_a_snapshot_and_two_snapshots_differ_by_the_lines_the
         lines.iter(),
     );
 
-    assert_eq!(before.history_seq, HistorySeq::OPENING);
-    assert_eq!(after.history_seq, HistorySeq(1));
+    assert_eq!(before.history_seq, Some(HistorySeq::OPENING));
+    assert_eq!(after.history_seq, Some(HistorySeq(1)));
     assert!(
         after.row(&key("b")).priced_nanos > before.row(&key("b")).priced_nanos,
         "the amendment doubled the rate on the early line"
@@ -306,4 +305,59 @@ fn with_no_card_at_all_nothing_is_unpriceable() {
     let statement = totals_as_of(&view, WINDOW, lines.iter());
     assert!(statement.unpriceable.is_empty());
     assert_eq!(statement.row(&key("b")).lines, 2);
+}
+
+/// **A STATEMENT SUM PAST WHAT A ROW HOLDS REFUSES; IT NEVER PINS.**
+///
+/// Each line here prices near the most one line can, and enough of them carry the balance past
+/// `i128::MAX`. The sum used to saturate there and serve the ceiling as the balance's figure — a
+/// figure nobody posted. Now the line that would carry it past is listed as an overflow and moves
+/// no row, as every other money reader in the crate refuses, and the row keeps the exact sum of the
+/// lines before it.
+#[test]
+fn a_statement_sum_past_the_row_refuses_the_line_rather_than_pinning() {
+    use crate::recompute::price_line;
+    use crate::totals::Unpriced;
+
+    let history = History::opening(
+        RateCard::from_nano_rates([(LaneClass::new(LANE, "tokens_in"), 8_000_000_000_000)], 0),
+        0,
+    );
+    let view = history.current();
+    let mut huge = line(1, EARLY_MS);
+    huge.tier_bp = crate::recompute::BASIS_POINTS;
+    huge.fee_count = 0;
+    huge.lines = vec![PricedLine {
+        class: MeterClassId::new("tokens_in"),
+        quantity: u64::MAX,
+    }];
+    let each = price_line(&huge, &view, huge.tier_bp)
+        .expect("one line prices")
+        .priced_nanos;
+    let fit = u128::try_from(i128::MAX).expect("positive") / each;
+    let fit = usize::try_from(fit).expect("a count of lines");
+    assert!(
+        fit < 2_000_000,
+        "the fixture stays a test, not a soak: {fit}"
+    );
+
+    let statement = totals_as_of(&view, WINDOW, std::iter::repeat_n(&huge, fit + 1));
+
+    assert_eq!(
+        statement.unpriceable,
+        vec![Unpriced {
+            node: huge.node,
+            node_seq: huge.node_seq,
+            why: Divergence::Overflow,
+        }],
+        "the line past the row is listed, once"
+    );
+    let row = statement.row(&key("b"));
+    assert_ne!(row.priced_nanos, i128::MAX, "the sum pinned at the ceiling");
+    assert_eq!(
+        u128::try_from(row.priced_nanos).expect("positive"),
+        each * u128::try_from(fit).expect("fits"),
+        "the row is the exact sum of the lines it holds"
+    );
+    assert_eq!(row.lines, u64::try_from(fit).expect("fits"));
 }

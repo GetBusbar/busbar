@@ -105,14 +105,14 @@ use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
 };
 use busbar_kernel_ledger::checkpoint::{
-    AnchoredHead, Checkpoint, CheckpointAnchor, SelfAttestingAnchor,
+    AnchoredHead, Checkpoint, CheckpointAnchor, CheckpointHead, SelfAttestingAnchor,
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
 use busbar_kernel_ledger::migration::OPENING_CHECKPOINT_SEQ;
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
-    BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
+    past_retention, BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
 };
 use busbar_kernel_wal::{
     BodyReader, BodyWriter, Entry, Journal, JournalAck, JournalRecord, Mode, OpenError,
@@ -125,8 +125,28 @@ use busbar_kernel_wal::{
 /// that are part of this module's own public surface are re-exported below so no caller's path
 /// changes.
 mod replay;
-use replay::{apply_opened, replay_into, same_movement, Replayed};
+use replay::{apply_opened, replay_into, same_movement, Replayed, Replayer};
+
+/// The checkpoints this node holds, re-derived from the chain for a reader (Q128 kernel-ledger
+/// HIGH 1, ARCHITECT ruling A1). Split out for `structure-lint`.
+mod held;
+// Its readers are the admin units (`root-admin`) and the tests.
+#[cfg(any(test, feature = "root-admin"))]
+pub use held::CheckpointUnreadable;
 pub use replay::{JournalDisagreement, Recoverable};
+
+/// WHAT A HELD SEAL CARRIED PAST THE 31-DAY HORIZON (row 159's retirement under Q128 A1's
+/// head-only ring). The book lets a window go only once it is past the horizon, so at a seal every
+/// window past the horizon is either in the seal or gone from the book: the seal's balances are the
+/// chain's minus every window past `at` that is not in `kept`. The walk re-derives a held seal by
+/// that rule, which needs no record of the windows retired, only of the few the seal still held.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct SealHorizon {
+    /// The instant the horizon is measured from: the latest seal instant up to this seal.
+    pub(super) at: u64,
+    /// The windows past the horizon at `at` that the seal still carried.
+    pub(super) kept: std::collections::BTreeSet<WindowStart>,
+}
 
 /// The journal kept in the configured store: its schema and keys, the boot's read-back and the
 /// host's write-behind lane. A private child module; its public items are re-exported here.
@@ -142,10 +162,7 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 /// Who a node is and the key it signs with, kept in the configured store: the node registry, the
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;
-pub use store_identity::{
-    hold_lease, host_identity, keep_keyset, persisted_node, refresh_held_lease, release_held_lease,
-    stored_keyset, take_node,
-};
+pub use store_identity::{host_identity, keep_keyset, persisted_node, stored_keyset, take_node};
 // The host registry's own id, read by the boot through `take_node`; the tests reach it directly.
 #[cfg(test)]
 pub use store_identity::node_id;
@@ -176,6 +193,12 @@ pub use seal::{keyset_of, KeySetVerifier};
 /// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
 /// module, as `replay` is; its methods are `Durability`'s own.
 mod audit;
+
+/// The three disaster-recovery verbs over the node's journal and the configured store (status row
+/// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
+/// A private child module, as `replay` is; its public items are re-exported here.
+mod recovery;
+pub use recovery::{boot_recovery, node_verb_store};
 
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
@@ -213,13 +236,14 @@ pub struct Durability {
     pub ledger: Ledger,
     /// The new fixed record's chain.
     pub record: AuditChain,
-    /// The seals this node made, oldest first.
+    /// The seals this node made, oldest first, each WITHOUT its balances ([`CheckpointHead`]).
     ///
-    /// Retained here rather than re-read off the journal, because the journal does not keep enough
-    /// to rebuild one: [`checkpoint_body`] carries the seal's digest and its shape — how many
-    /// balances, which watermarks — and deliberately not the balances themselves, so a chain that
-    /// verifies stays a fixed size per seal. A reader wanting the sealed figures has to be handed
-    /// the checkpoint, so the node keeps the checkpoints it sealed.
+    /// The journal does not keep the balances: [`checkpoint_body`] carries the seal's digest and its
+    /// shape — how many balances, which watermarks — so a chain that verifies stays a fixed size
+    /// per seal. Nor does this ring (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1): a full copy of
+    /// the book per kept seal is what grew memory with uptime. A reader re-derives the sealed figures
+    /// from the chain ([`Durability::each_held_checkpoint`]) and the body digest says whether they
+    /// are the ones that were sealed.
     ///
     /// Appended by [`Durability::journal_checkpoint`] and by nothing else, and only after the
     /// journal has taken the record: a seal this node kept but never got onto the chain would be a
@@ -230,7 +254,24 @@ pub struct Durability {
     /// unbounded list is memory that grows for the life of the process. The journal is the durable
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
-    pub checkpoints: Vec<Checkpoint>,
+    pub checkpoints: Vec<CheckpointHead>,
+    /// THE NEWEST SEAL THIS NODE KEPT, WITH ITS BALANCES: the one resident sealed copy the A1
+    /// bound allows. The book's retirement measures against it (row 159: a window past 1.5.5's
+    /// 31-day horizon goes only once a kept seal holds it at the book's own figures,
+    /// `Ledger::retirable`), so it is replaced by every seal and never accumulates. `None` until
+    /// this process has sealed once: a restarted node retires nothing before its first seal.
+    last_sealed: Option<Checkpoint>,
+    /// WHAT EACH HELD SEAL KEPT PAST THE 31-DAY HORIZON, by its sequence number: what the walk
+    /// needs to re-derive it across the book's retirement ([`SealHorizon`]). One entry per seal the
+    /// ring holds, pruned with the ring; each holds only the windows that seal carried past its
+    /// horizon (one the retirement could not take yet: figures that moved since the seal before, an
+    /// open hold, an unconfirmed settlement, the first seal after a boot, or a wall clock that
+    /// stepped back behind `retire_clock`, since the retirement asks at the seal's own instant).
+    /// Never balances.
+    seal_horizons: std::collections::BTreeMap<u64, SealHorizon>,
+    /// The latest seal instant this process has sealed at: every horizon is measured from it, so
+    /// a clock that steps back never brings a retired window inside the horizon of a seal after it.
+    retire_clock: u64,
     /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
     /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
     pub audit_records: Vec<AuditRecord>,
@@ -288,9 +329,9 @@ pub struct Durability {
     /// and answers the same set either side of a restart.
     ///
     /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
-    /// The book retires no window today — `Book::retain_from` has no production caller, and the
-    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
-    /// counted units this node's chain holds, as the chain itself does.
+    /// Each seal retires the windows the last kept checkpoint holds once 1.5.5's thirty-one-day
+    /// horizon has passed them, and their lines with them (`seal.rs`); the boot rebuilds every
+    /// window the chain carries, and the first seals after it bound them again.
     counted: Vec<CountedLine>,
     /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
     /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
@@ -430,19 +471,15 @@ impl Durability {
     }
 
     /// What `/admin/verify` needs to walk every chain the store keeps, taken under the book's lock
-    /// so the walk itself runs without it: the store's calls, this node's id and the keys this
+    /// so the walk itself runs without it: the lane to the store, this node's id and the keys this
     /// node signs with. `None` on a book with no store behind it.
     #[must_use]
     pub fn stored_walk_inputs(
         &self,
-    ) -> Option<(
-        std::sync::Arc<dyn busbar_contract::store_calls::StoreCalls>,
-        u64,
-        busbar_kernel_audit::AuditKeySet,
-    )> {
+    ) -> Option<(JournalLane, u64, busbar_kernel_audit::AuditKeySet)> {
         let lane = self.lane.as_ref()?;
         Some((
-            lane.calls(),
+            lane.clone(),
             self.journal.node(),
             seal::keyset_of(&self.record),
         ))
@@ -532,11 +569,76 @@ impl Durability {
         self.next_checkpoint_seq = self
             .next_checkpoint_seq
             .max(checkpoint.checkpoint_seq.saturating_add(1));
-        self.checkpoints.push(checkpoint.clone());
-        // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
+        self.checkpoints.push(checkpoint.head());
+        // What the seal carried past its horizon: the walk's whole record of the retirement.
+        self.retire_clock = self.retire_clock.max(checkpoint.wall);
+        let at = self.retire_clock;
+        let horizon = SealHorizon {
+            at,
+            kept: checkpoint
+                .totals
+                .keys()
+                .map(|(_, window)| *window)
+                .filter(|window| past_retention(*window, at))
+                .collect(),
+        };
+        self.seal_horizons
+            .insert(checkpoint.checkpoint_seq, horizon);
+        self.last_sealed = Some(checkpoint.clone());
+        // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held, and what it
+        // carried past its horizon goes with it.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
         self.checkpoints.drain(..over);
+        if let Some(oldest) = self.checkpoints.first().map(|head| head.checkpoint_seq) {
+            self.seal_horizons.retain(|seq, _| *seq >= oldest);
+        }
         Ok(ack)
+    }
+
+    /// HOW MANY SEALED BALANCES THIS NODE HOLDS IN MEMORY beside its live book: every balance of
+    /// every checkpoint it keeps. The measure of the bound the Q128 kernel-ledger ruling sets (A1):
+    /// one live book, the unsealed deltas, and one resident sealed copy. A [`CheckpointHead`]
+    /// carries no balances, so the ring holds none; the one resident sealed copy is the newest kept
+    /// seal the retirement measures against, never more balances than that seal took from the book.
+    #[cfg(test)]
+    pub(crate) fn sealed_balances_held(&self) -> usize {
+        self.last_sealed
+            .as_ref()
+            .map_or(0, |sealed| sealed.totals.len())
+    }
+
+    /// HOW MANY HELD SEALS THIS NODE KEEPS A HORIZON FOR: never more than the ring holds, since a
+    /// seal's horizon leaves with it.
+    #[cfg(test)]
+    pub(crate) fn seal_horizons_held(&self) -> usize {
+        self.seal_horizons.len()
+    }
+
+    /// HOW MANY WINDOW INSTANTS THIS NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS across the book's
+    /// retirement: the bound the 31-day horizon sets on that memory (per held seal; see
+    /// [`Durability::seal_horizons_held`] for how many seals it keeps one for).
+    #[cfg(test)]
+    pub(crate) fn retirement_windows_held(&self) -> usize {
+        self.seal_horizons
+            .values()
+            .map(|horizon| horizon.kept.len())
+            .sum()
+    }
+
+    /// The windows the walk lets go of at the held seal `checkpoint_seq`: those in `book` past the
+    /// seal's horizon that the seal did not carry. Empty for a seal the node holds no horizon for.
+    pub(super) fn left_behind_at(
+        &self,
+        checkpoint_seq: u64,
+        book: &busbar_kernel_ledger::totals::Book,
+    ) -> std::collections::BTreeSet<WindowStart> {
+        let Some(horizon) = self.seal_horizons.get(&checkpoint_seq) else {
+            return std::collections::BTreeSet::new();
+        };
+        book.iter()
+            .map(|((_, window), _)| *window)
+            .filter(|window| past_retention(*window, horizon.at) && !horizon.kept.contains(window))
+            .collect()
     }
 
     /// The newest migration marker on the chain, if this deployment has migrated.
@@ -1513,8 +1615,9 @@ pub struct CountedLine {
 impl CountedLine {
     /// The line as the ledger's booked line, written by `node`. `None` for a line no booked line
     /// can carry: a class nobody declared, or one this image's vocabulary does not hold. The tier
-    /// is the standard one and the origin a client, which is what every counted posting is priced
-    /// at when it settles ([`price_counts`]), so the read prices the same quantities the same way.
+    /// is the standard one and the fee count the line's own, which is what every counted posting is
+    /// priced at when it settles ([`price_counts`]), so the read prices the same quantities the
+    /// same way.
     #[must_use]
     pub fn booked(&self, node: u64) -> Option<busbar_kernel_ledger::Posting> {
         if self.undeclared {
@@ -1541,7 +1644,6 @@ impl CountedLine {
             fee_count: self.counts.fee_count,
             tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
             arrived_ms: self.arrived_ms,
-            origin: busbar_kernel_ledger::PostingOrigin::Client,
         })
     }
 }
@@ -2578,10 +2680,9 @@ pub struct NodeBook {
     /// The previous release's rows, as the dual write fills them. The write half is inside the
     /// ledger; this is the same value, kept so a view has somewhere to read them from.
     pub rows: std::sync::Arc<SummedRows>,
-    /// The configured store, behind the published ABI, as the admin verbs unit reaches it: the SAME
-    /// loader adapter boot shipped this book's batches through (`StoreAdapter::verb_store`), so the
-    /// disaster-recovery verbs land on the store the book is shipped to. `None` on a node with no
-    /// configured store (row 113, ruling (B)).
+    /// The disaster-recovery verbs' store, as the admin verbs unit reaches it ([`node_verb_store`]):
+    /// this book's journal for the chain break and the store the book is shipped to for the epoch
+    /// floor (row 187). `None` on a node with no configured store (row 113, ruling (B)).
     pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 
@@ -2778,6 +2879,9 @@ fn build_inner(
             busbar_kernel::door::node()
         }),
         checkpoints: Vec::new(),
+        last_sealed: None,
+        seal_horizons: std::collections::BTreeMap::new(),
+        retire_clock: 0,
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
         audit_signed_from: None,
