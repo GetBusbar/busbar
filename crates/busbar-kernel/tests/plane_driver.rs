@@ -30,7 +30,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{MessageView, RequestView};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
@@ -960,7 +960,12 @@ impl PlaneCalls for Double {
     /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project, and
     /// `/refuses-rewrite` refuses to project with a rewrite (one naming a model other than the
     /// routed one, say) while it projects the caller's own request; `/faults-rewrite` answers FAULT
-    /// to a project with a rewrite (a redaction the plane cannot apply). The
+    /// to a project with a rewrite (a redaction the plane cannot apply), and `/unparseable` to every
+    /// project (a body whose document does not parse), marked `PROJECT_FAULT_UNPARSEABLE`;
+    /// `/fault-unmarked` answers FAULT without the mark, `/panics` as a panicking slot's door does,
+    /// `/no-crossing` as the host does for a refused frame or a quarantined instance, and
+    /// `/broken-answer` is a FAULT the host minted over a READY answer that broke the kind's rule.
+    /// The
     /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
     /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
     /// gate for it.
@@ -978,7 +983,35 @@ impl PlaneCalls for Double {
             .unwrap()
             .push((body.clone(), rewrite.clone()));
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
+            // The plane's own FAULT over a body it could not parse: its door mirrors the outcome
+            // into the `out` head, and the plane marks the body unparseable.
+            out.head.outcome = RawOutcome::of(Outcome::Fault);
+            out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
             return Outcome::Fault;
+        }
+        match target.as_slice() {
+            // A FAULT the plane answered without the mark.
+            b"/fault-unmarked" => {
+                out.head.outcome = RawOutcome::of(Outcome::Fault);
+                return Outcome::Fault;
+            }
+            // A slot that panicked: the door's catcher writes nothing but `outcome = FAULT`.
+            b"/panics" => {
+                out.head.outcome = RawOutcome::of(Outcome::Fault);
+                return Outcome::Fault;
+            }
+            // A frame refused before the crossing, or a quarantined instance: the host answers
+            // FAULT and the `out` is as the host lent it.
+            b"/no-crossing" => return Outcome::Fault,
+            // The plane answered READY (the mark's bit set among its view flags, even) and the
+            // loader's check of that answer against its kind's rule refused it: a FAULT the host
+            // minted.
+            b"/broken-answer" => {
+                out.head.outcome = RawOutcome::of(Outcome::Ready);
+                out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
+                return Outcome::Fault;
+            }
+            _ => {}
         }
         if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {
             return Outcome::Refused;
