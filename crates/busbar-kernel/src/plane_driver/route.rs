@@ -769,12 +769,13 @@ impl<'u> Pumping<'u> {
     /// the dispatcher is handed none, so no second cancel races the driver's.
     async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>) {
         self.piece_flags = p.flags;
-        // THE ANSWER'S FINAL MARK, as the plane is told it: on an answer's first piece (its
-        // status), and none yet on a new attempt.
+        // THE ANSWER'S FINAL MARK, as the plane is told it: on the answer's head piece alone (a
+        // trailer's status is no head, and its `PIECE_FINAL` would be read off a piece the far end
+        // never relays), and none yet on a new attempt.
         if p.from == FROM_KERNEL && p.attempt_no > 0 {
             self.final_answer = false;
         }
-        if p.flags & PIECE_HAS_STATUS != 0 {
+        if p.head {
             self.final_answer = p.flags & PIECE_FINAL != 0;
         }
         let calls = &self.driver.calls;

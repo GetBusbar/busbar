@@ -498,7 +498,9 @@ impl Double {
         if i.from == FROM_FAR_END && (!piece.is_empty() || i.flags != 0) {
             u.far_answered = true;
             u.far_pieces += 1;
-            if i.flags & PIECE_HAS_STATUS != 0 {
+            // The answer's head (its status, not a trailer's) carries the final mark; a new attempt
+            // starts with none (the ATTEMPT piece resets the unit above).
+            if i.flags & PIECE_HAS_STATUS != 0 && i.flags & PIECE_FIELDS == 0 {
                 u.final_answer = i.flags & PIECE_FINAL != 0;
             }
             u.saw_last |= i.flags & PIECE_LAST != 0;
