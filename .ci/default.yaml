@@ -413,6 +413,12 @@ checks:
     # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
     # or forgiven by an owner-signed accepted difference.
     run: |
+      # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
+      # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
+      # that is not is fetched; one that still is not is red, never a silent fall-back to this tree.
+      [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       ./bin/oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
@@ -439,5 +445,6 @@ checks:
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
     # The candidate recording, handed to any check that `needs: [oracle]` (content-addressed, laid
-    # into the needing check's slot on any machine).
-    outputs: [target/oracle/recordings]
+    # into the needing check's slot on any machine), and the judge's report (diverging.txt and the
+    # per-cell diffs), kept green or red: `modernci call artifact --check oracle`.
+    outputs: [target/oracle/recordings, target/oracle/reports/]

@@ -190,6 +190,12 @@ checks:
     # included. No check leans on a file another left on a host. bin/oracle obtains the recorder as
     # the oracle check below obtains the judge (BUSBAR_RELEASE_TOKEN).
     run: |
+      # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
+      # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
+      # that is not is fetched; one that still is not is red, never a silent fall-back to this tree.
+      [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle-record: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle-record: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       ./bin/oracle tool-dir >/dev/null
       cargo build --locked --release -p busbar --bin busbar
@@ -221,6 +227,12 @@ checks:
     # difference.
     requires: [cc]
     run: |
+      # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
+      # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
+      # that is not is fetched; one that still is not is red, never a silent fall-back to this tree.
+      [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       ./bin/oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
@@ -319,11 +331,18 @@ checks:
     # capability; until a backend has it the check waits and says why, never runs without it).
     requires: [cc, docker, docker-compose, docker-amd64, playwright-deps, python3-venv, curl, git]
     # The rig logs, fetched with `modernci call artifact --check conformance` (a red suite's reason).
-    outputs: [target/conformance-record]
+    # testing/ws-conformance/reports: the websocket suite's reports (row 97).
+    outputs: [target/conformance-record, testing/ws-conformance/reports]
   verify-done:
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
     run: |
+      # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
+      # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
+      # that is not is fetched; one that still is not is red, never a silent fall-back to this tree.
+      [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "verify-done: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "verify-done: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       bash scripts/verify-1.6.0-done.sh
     needs: [gates]
