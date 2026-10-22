@@ -618,7 +618,15 @@ pub(crate) fn linked_source(
     for (axis, field, item) in AXES {
         out.push_str(&format!("    {field}: &["));
         for e in on_axis(axis) {
-            out.push_str(&format!("{e}::{item}, "));
+            if *field == "stores" {
+                // A store crate's `STORE` in either shape (`busbar_kernel::preflight::StoreRow`):
+                // its door function, or its `MACRO_DOOR` (status rows 159 and 194).
+                out.push_str(&format!(
+                    "busbar_kernel::preflight::StoreRow({e}::{item}).linked(), "
+                ));
+            } else {
+                out.push_str(&format!("{e}::{item}, "));
+            }
         }
         out.push_str("],\n");
     }
