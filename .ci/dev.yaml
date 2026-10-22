@@ -20,6 +20,9 @@ deadline: 8h
 # doomed". A red need still holds back only a check that takes its outputs: oracle-record's
 # recording, which oracle and conformance judge.
 complete_red: true
+# A started judgement of a dev head runs to its end: a newer dev head queues behind it instead of
+# cancelling it, so DEV-GREEN is always measured on some whole head.
+supersede: finish
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -167,8 +170,17 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
-  move: [gates, oracle-record, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [pin, gates, oracle-record, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
 checks:
+  # STOPGAP until ModernCI's `absolute: true` (engine fix 9), which replaces it. A check given a
+  # need's outputs is never compared with the target, so its red can never pass as "standing" (red
+  # on qa too). qa (1.5.5) has test names test-gated runs and rows gates judges, so those two need
+  # `pin`. The others have no counterpart on qa and stay parallel (a check needing outputs runs on
+  # the move's own lease, one after another). It does not cover Flaky, Quarantined or SameOnTarget.
+  pin:
+    run: |
+      mkdir -p target/dev-green-pin && git rev-parse HEAD > target/dev-green-pin/head
+    outputs: [target/dev-green-pin]
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
     # green, not "no worse than qa"). The base-relative rules (new edges, minted rows) take dev's
@@ -179,6 +191,7 @@ checks:
       cargo xtask gate --all --format=tsv
     # The base-relative rules read history: only a backend with the repo's history runs this check.
     requires: [cc, git-history]
+    needs: [pin]
   oracle-record:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
@@ -408,7 +421,7 @@ checks:
     # Absolute at this rung, as every check of this move (no `baseline`: qa holds no suites to be
     # measured against).
     requires: [cc, git-history]
-    needs: [gates]
+    needs: [gates, pin]
   # EVERY REGISTERED GATE'S RED PROOF on dev's head (row 191), ABSOLUTE like `gates`: a gate that
   # cannot be shown to go RED proves nothing when it is green. `cargo xtask selftest --shard=K/4`
   # is the K-th of 4 round-robin slices of the registry (every gate in exactly one), one `xtask
