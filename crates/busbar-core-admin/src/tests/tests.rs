@@ -11738,7 +11738,8 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let store = &json["settings"]["store"];
     assert_eq!(
-        store["module"], migrated_store_module(),
+        store["module"],
+        migrated_store_module(),
         "the non-secret shape still introspects: {json}"
     );
     assert_eq!(

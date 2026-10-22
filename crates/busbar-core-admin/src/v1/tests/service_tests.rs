@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/v1/service.rs`.
 
 use super::*;
-use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess, migrated_store_module};
+use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
