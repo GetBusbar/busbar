@@ -1349,8 +1349,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "plane"
-count = "82"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 210 -> 146: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 146 -> 82: the operation, records, vocab, civil, duration, config and IR prose names a plane kind, never an instance (law0 P08, measured; law0-slack)"
+count = "81"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 210 -> 146: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 146 -> 145 (law0 P07): the open-body rule in transport/surface.rs is stated without the plane's name (law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1361,8 +1361,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "transport"
-count = "153"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 226 -> 225 at lane-integration-w2: the gate's measure of the merged tree (80d5f031e4) (law0-slack); LOWERED 225 -> 184: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 184 -> 183: WireStatus::http and WireStatus::grpc are deleted, a status is read in the numbering its transport declares (Q128 contract part 13 finding 1; law0-slack); LOWERED 183 -> 149: the event-stream prose, the ruling cites and the driver, claim, member-program and secret-carrier test doubles name no transport instance (law0 P08, measured; law0-slack); RAISED 149 -> 153 to the measured count, still under dev's 183: the 149 summed P08's drain of the four instance words in tests/unit_driver.rs (183 -> 149) with dev's own deletion of that file (Q128 contract part 13, second inbound seam), so the same four hits were taken out twice; they are gone from the merged tree and there is no line left to rename)"
+count = "29"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 226 -> 225 at lane-integration-w2: the gate's measure of the merged tree (80d5f031e4) (law0-slack); LOWERED 225 -> 184: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 184 -> 183: WireStatus::http and WireStatus::grpc are deleted, a status is read in the numbering its transport declares (Q128 contract part 13 finding 1; law0-slack); LOWERED 183 -> 61 (law0 P07): the contract's transport fixtures compose, hand off and bind neutral keys (base, sealed, request, events, duplex, call, piped), the wire-status tests are invariants over status_ns::RESERVED, the unread instance-named WireStatus accessors are gone (in_namespace is the one reader), and the transport module's prose states each invariant without naming an instance (law0-slack); LOWERED 61 -> 59: the gate's measure of the tree merged with dev 9791fbba72 (law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
