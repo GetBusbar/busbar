@@ -647,6 +647,41 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ));
     }
 
+    // AN UNTYPED BINDING IS READ IN ITS OWN FN ONLY (the approval desk's review of #1382): `let n =
+    // m; n.settle_end(..)` binds `n` with no type, and another fn of the same file declaring
+    // `n: &Node` says nothing about it, so the call is counted. The GREEN twin declares `n: &Node`
+    // in the calling fn itself, with the other fn holding a `PlaneMoney` of that name: the node's own.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_untyped_other_fn.rs",
+        "use crate::root::plane_node::Node;\n\nfn zz_other_fn(n: &Node) {\n    let _ = n;\n}\n\n\
+         pub fn zz_untyped_other_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    let n = \
+         m;\n    n.settle_end(k, 200);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called on an untyped binding is counted, whatever another fn of its file \
+         declares the name as",
+        &["single-terminal"],
+        ov,
+        &["zz_untyped_other_fn"],
+    ));
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_typed_own_fn.rs",
+        "use crate::root::plane_node::Node;\n\nfn zz_other_fn(n: &crate::plane_driver::PlaneMoney) \
+         {\n    let _ = n;\n}\n\npub fn zz_typed_own_fn(m: &Node) {\n    let n: &Node = m;\n    \
+         n.settle_end();\n}\n",
+    );
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "a binding declared in its own fn as the real `Node` is the node's own, whatever another fn \
+         declares the name as",
+        &["single-terminal"],
+    ));
+
     // ... AND THE REAL TYPE STAYS ITS OWN (the green twins): the same shapes naming the real `Node`,
     // imported plainly, are the node's own `settle_end` and are not the terminal.
     for (file, body) in [
