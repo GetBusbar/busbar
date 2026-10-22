@@ -96,7 +96,7 @@ impl Durability {
     }
 
     /// What re-deriving the held checkpoints needs, taken under the book's lock so the chain is read
-    /// without it ([`HeldWalk::each`]): the ring's heads, the windows each seal's book let go, the
+    /// without it ([`HeldWalk::each`]): the ring's heads, what each held seal kept past the horizon, the
     /// pinned history and the chain as of this moment ([`Durability::chain_at`]). On a node resumed
     /// from the store the chain is the store's, and reading it under the lock every unit's settle
     /// takes would stall serving for the whole walk (THE DESIGN §11.2).
@@ -106,7 +106,7 @@ impl Durability {
             // No checkpoint held, nothing to re-derive: the chain is not read.
             chain: (!self.checkpoints.is_empty()).then(|| self.chain_at()),
             checkpoints: self.checkpoints.clone(),
-            retired_at: self.retired_at.clone(),
+            seal_horizons: self.seal_horizons.clone(),
             pinned: (self.history)(),
         }
     }
@@ -116,7 +116,7 @@ impl Durability {
 /// ([`Durability::held_walk`]). Heads only: no balances are copied.
 pub struct HeldWalk {
     checkpoints: Vec<CheckpointHead>,
-    retired_at: std::collections::BTreeMap<u64, std::collections::BTreeSet<WindowStart>>,
+    seal_horizons: std::collections::BTreeMap<u64, SealHorizon>,
     pinned: Option<PinnedHistory>,
     /// The chain as of the hold; `None` when no checkpoint is held.
     chain: Option<ChainAt>,
@@ -136,7 +136,7 @@ impl HeldWalk {
     pub fn each(self, each: &mut dyn FnMut(&Checkpoint)) -> Result<(), CheckpointUnreadable> {
         let HeldWalk {
             checkpoints,
-            retired_at,
+            seal_horizons,
             pinned,
             chain,
         } = self;
@@ -180,13 +180,13 @@ impl HeldWalk {
                 }
                 if record_checkpoint_seq(record) == Some(head.checkpoint_seq) {
                     // The chain still carries every window the book let go; the book this
-                    // seal was taken from did not (row 159's retirement).
-                    let mut totals = scratch.book().snapshot();
-                    let retired = retired_through(&retired_at, head.checkpoint_seq);
-                    if !retired.is_empty() {
-                        totals.retain(|(_, window), _| !retired.contains(window));
-                    }
-                    let checkpoint = head.with_totals(totals);
+                    // seal was taken from did not (row 159's retirement). They leave the scratch
+                    // book here, at the seal that left them out, as they left the book; a posting
+                    // on one after that rebuilds it from that posting alone, as it did the book's.
+                    let left_behind =
+                        left_behind_at(&seal_horizons, head.checkpoint_seq, scratch.book());
+                    scratch.retire_windows(&left_behind);
+                    let checkpoint = head.with_totals(scratch.book().snapshot());
                     if !checkpoint.body_hash_verifies() {
                         return Err(CheckpointUnreadable::Diverged {
                             checkpoint_seq: head.checkpoint_seq,
@@ -208,15 +208,18 @@ impl HeldWalk {
     }
 }
 
-/// Every window this process retired at or before the seal `checkpoint_seq`: the windows the
-/// book that seal was taken from no longer held, though the chain still carries them. Over the
-/// windows a [`HeldWalk`] copied.
-fn retired_through(
-    retired_at: &std::collections::BTreeMap<u64, std::collections::BTreeSet<WindowStart>>,
+/// The windows the walk lets go of at the held seal `checkpoint_seq`: those in `book` past the
+/// seal's horizon that the seal did not carry. Empty for a seal the walk holds no horizon for.
+fn left_behind_at(
+    seal_horizons: &std::collections::BTreeMap<u64, SealHorizon>,
     checkpoint_seq: u64,
+    book: &busbar_kernel_ledger::totals::Book,
 ) -> std::collections::BTreeSet<WindowStart> {
-    retired_at
-        .range(..=checkpoint_seq)
-        .flat_map(|(_, windows)| windows.iter().copied())
+    let Some(horizon) = seal_horizons.get(&checkpoint_seq) else {
+        return std::collections::BTreeSet::new();
+    };
+    book.iter()
+        .map(|((_, window), _)| *window)
+        .filter(|window| past_retention(*window, horizon.at) && !horizon.kept.contains(window))
         .collect()
 }
