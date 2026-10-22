@@ -24,7 +24,7 @@ libfuzzer-sys = "0.4"
 # the real JSON/wire decode of an untrusted request body. The plane lives in its own repo (rows
 # 106/107): this is the rev the root `Cargo.toml` pins, built with the busbar-contract that rev pins
 # (the harness names no contract of its own, so no `[patch]` redirects one).
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "6d783b45759121c10c21185d3179a528060ec6db", features = ["test-support"] }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "fb40979f0b881e5bf2ccf5dc3bb3ac532a44db54", features = ["test-support"] }
 
 # Fuzz harnesses are not doctested/benchmarked and must not be picked up as workspace tests.
 [[bin]]

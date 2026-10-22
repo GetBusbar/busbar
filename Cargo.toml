@@ -145,8 +145,8 @@ busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-stre
 # plane's door row (`plane-llm-door`, `busbar_plane_llm::plane_door::door`), whose own root cells and
 # driver proofs (`tests/on_driver`, run by the root's `hook_parity_driver`) it states under its
 # `links` name. Its dropped-in cdylib twin (`busbar-plane-llm-plugin`) and its gates live in that
-# repo's plugin CI. At GetBusbar/busbar-plane-llm#29's head (dev's #1207/#1347/D2 row 82 changes, on #28).
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "6d783b45759121c10c21185d3179a528060ec6db" }
+# repo's plugin CI. At GetBusbar/busbar-plane-llm#31's head (dev 8792bef1ba's changes, on #29).
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "fb40979f0b881e5bf2ccf5dc3bb3ac532a44db54" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
