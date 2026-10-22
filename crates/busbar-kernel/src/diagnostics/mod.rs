@@ -710,59 +710,6 @@ pub const SELF_SUBJECT_UNSAFE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A minted token contains bytes invalid for a header value: the auth plugin that mints it omits
-/// the header and raises this code, at warn, when such a token is minted.
-pub const EGRESS_OAUTH_TOKEN_INVALID_BYTES: Diagnostic = Diagnostic {
-    code: 4014,
-    class: Class::Auth,
-    slug: "egress-oauth-token-invalid-bytes",
-    title: "Minted OAuth token contains invalid header bytes (auth header omitted)",
-    severity: Severity::Actionable,
-    summary: "A token minted for egress contains bytes invalid in a header value, so the `Bearer` \
-              auth header is omitted and the upstream rejects the request with 401. It is raised \
-              when such a token is minted.",
-    action: "Investigate the token endpoint: a minted token with a control character in it is \
-             malformed. Egress to that upstream 401s until a well-formed token is minted.",
-    since: "1.6.0",
-    retired: false,
-};
-
-/// The OAuth token endpoint returned a 200 with an empty access_token. Warn-once (latched).
-pub const EGRESS_OAUTH_EMPTY_TOKEN: Diagnostic = Diagnostic {
-    code: 4015,
-    class: Class::Auth,
-    slug: "egress-oauth-empty-token",
-    title: "OAuth token endpoint returned a 200 with an empty access_token",
-    severity: Severity::Actionable,
-    summary: "The upstream OAuth token endpoint answered 200 but with an EMPTY access_token. busbar \
-              treats it as a (retryable) mint failure rather than storing it, because an empty \
-              token collides with the pre-first-mint sentinel and would wedge the lane permanently. \
-              It retries on the refresh cadence.",
-    action: "Investigate the OAuth token endpoint / client-credentials configuration — a 200 with \
-             no token usually means a misconfigured client, scope, or audience. Egress to that \
-             upstream 401s until a non-empty token is minted.",
-    since: "1.6.0",
-    retired: false,
-};
-
-/// An OAuth token mint (background refresh) failed; busbar keeps the current token and retries.
-pub const EGRESS_OAUTH_MINT_FAILED: Diagnostic = Diagnostic {
-    code: 4016,
-    class: Class::Auth,
-    slug: "egress-oauth-mint-failed",
-    title: "OAuth token mint (refresh) failed; retrying",
-    severity: Severity::Actionable,
-    summary: "The background OAuth token refresh failed to mint a new token. busbar keeps serving \
-              the current token and retries soon; if retries keep failing past expiry, egress \
-              requests carry a stale/empty token and the upstream 401s. Fires on the refresh \
-              cadence, not per request.",
-    action: "Investigate the OAuth token endpoint — a transient outage self-heals on the next \
-             retry; sustained failures mean a credential/endpoint/network problem that will 401 \
-             egress once the current token expires.",
-    since: "1.6.0",
-    retired: false,
-};
-
 /// A scheduled trust sweep could not be ATTEMPTED for a subject; its trust state is unchanged.
 pub const TRUST_SWEEP_NOT_ATTEMPTED: Diagnostic = Diagnostic {
     code: 4017,
@@ -2865,9 +2812,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &ADMIN_FORBIDDEN_SUPPRESSED,
     &KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
     &SELF_SUBJECT_UNSAFE,
-    &EGRESS_OAUTH_TOKEN_INVALID_BYTES,
-    &EGRESS_OAUTH_EMPTY_TOKEN,
-    &EGRESS_OAUTH_MINT_FAILED,
     &TRUST_SWEEP_NOT_ATTEMPTED,
     &TRUST_SWEEP_CONTACT_FAILED,
     &TRUST_UPSTREAM_DRIFTED,

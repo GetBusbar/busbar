@@ -1048,7 +1048,8 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
     use busbar_contract::diagnostic::Severity;
     use tracing_subscriber::layer::SubscriberExt as _;
     let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
-    // 4013 and 7087 are the header plugin's own declared entries, installed as boot installs them.
+    // 4013 and 7087 are the header plugin's own declared entries and 4014..4016 the oauth plugin's,
+    // installed as boot installs them.
     crate::root::linked::install_catalogue_once();
     for code in [4013u16, 4014, 4015, 4016, 7087] {
         let entry = busbar_kernel::diagnostics::by_code(code)

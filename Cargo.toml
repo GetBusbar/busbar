@@ -92,8 +92,10 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
-# sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936" }
+# sealed-Secret port (#1021, Part 2 #54: its credentials are `Secret<_, Own>` under its own seal), at
+# auth-oauth#27's door-root head: `door` is its one public item and its whole `declares` document,
+# BUSBAR-4014..4016 included, rides its Statement.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "5ccf39529e53d36b4be9b1ef25a8a8b2b996263f" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret is a private `Held`.
