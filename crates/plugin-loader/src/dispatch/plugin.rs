@@ -406,6 +406,16 @@ impl Instance {
 /// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
 /// worker, after the wake that carried it returned).
 pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    quarantine(
+        wake,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined",
+    );
+}
+
+/// The instance whose handle `wake` is, quarantined for the plugin fault `why`, as
+/// [`quarantine_crossing`] quarantines a crossing's: faulted, never called again on any worker, its
+/// connections gone, its handle naming nothing any more.
+pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
     wake.revoked.store(true, Ordering::Release);
     let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
         return;
@@ -414,10 +424,7 @@ pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
     if let Some((id, table)) = inst.wake.conn.get() {
         super::conn_services::purge(*id, table);
     }
-    tracing::warn!(
-        plugin = %inst.name,
-        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
-    );
+    tracing::warn!(plugin = %inst.name, "{why}");
 }
 
 /// One family's shape, copied from the Statement: its kind and its label count.
@@ -495,7 +502,7 @@ pub(crate) struct Instance {
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
-    unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    pub(crate) unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
     /// [`Kind::cancel_frame`] of the bound kind.
     pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.

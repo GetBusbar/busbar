@@ -1778,6 +1778,21 @@ impl TestApp {
                     m.insert(decl.key, gates);
                 }
             }
+            // Every other plane a test-kit attached hooks for (a door plane's section-level
+            // `hooks:`, keyed by its registry key), resolved the same way.
+            for (&key, (containers, section_hooks)) in &self.container_hooks {
+                if m.contains_key(key) {
+                    continue;
+                }
+                let gates = crate::hooks::resolve_container_gates(
+                    containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
+                    section_hooks,
+                    &self.hook_registry,
+                    &hook_env,
+                    0,
+                );
+                m.insert(key, gates);
+            }
             m
         };
         // THE TAP twin of `plane_gates_map`, resolved the same way from the same per-plane container
@@ -1804,6 +1819,19 @@ impl TestApp {
                     );
                     m.insert(decl.key, rewrites);
                 }
+            }
+            for (&key, (containers, section_hooks)) in &self.container_hooks {
+                if m.contains_key(key) {
+                    continue;
+                }
+                let rewrites = crate::hooks::resolve_container_rewrites(
+                    containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
+                    section_hooks,
+                    &self.hook_registry,
+                    &hook_env,
+                    0,
+                );
+                m.insert(key, rewrites);
             }
             m
         };
