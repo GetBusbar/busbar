@@ -16,6 +16,8 @@ guarded:
   - "qa/*.allow"
   - "qa/*.missing"
   - "qa/*.status"
+  # The kind-isolation standing list (#1262's last path the globs above did not cover).
+  - "qa/kind-isolation.standing.txt"
   - "xtask/src/gates/**"
 # Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
 # its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
@@ -62,8 +64,8 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
-  manual: [oracle, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -282,10 +284,9 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The nextest limits: every test is cut at five minutes, except the whole-registry gate run
-      # and the kind-isolation battery, which get twelve and start first. Every registered gate's
-      # RED proof runs in the selftest-1 and selftest-2 checks, one process per gate.
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree) | test(the_kind_isolation_gate_proves_red_in_its_selftest)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
+      # The nextest limit: every test is cut at five minutes. Every registered gate's RED proof runs
+      # in the selftest-1..4 checks (`cargo xtask selftest --shard=K/4`), on every move.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
     scope: affected
@@ -413,6 +414,12 @@ checks:
     # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
     # or forgiven by an owner-signed accepted difference.
     run: |
+      # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
+      # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
+      # that is not is fetched; one that still is not is red, never a silent fall-back to this tree.
+      [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       ./bin/oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
@@ -439,5 +446,6 @@ checks:
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
     # The candidate recording, handed to any check that `needs: [oracle]` (content-addressed, laid
-    # into the needing check's slot on any machine).
-    outputs: [target/oracle/recordings]
+    # into the needing check's slot on any machine), and the judge's report (diverging.txt and the
+    # per-cell diffs), kept green or red: `modernci call artifact --check oracle`.
+    outputs: [target/oracle/recordings, target/oracle/reports/]
