@@ -791,7 +791,10 @@ fn a_completed_exchange_closes_its_stream_once() {
         None,
         |c, st| exchange(c, st, 0, None),
     );
-    assert_eq!(r.answered.as_ref().expect("the exchange completes").status, 200);
+    assert_eq!(
+        r.answered.as_ref().expect("the exchange completes").status,
+        200
+    );
     assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
     assert_eq!(r.ops.last(), Some(&service::CLOSE));
     assert_eq!(r.state.stream(), None);
