@@ -176,19 +176,6 @@ pub trait EngineHost: Send + Sync {
         kind: &str,
         message: &str,
     ) -> axum::response::Response;
-
-    /// NOT-CHARGED (pre-charge turn-away) finish: emit metrics + the request-log webhook with NO
-    /// refund, for a request rejected BEFORE the admission charge ran. Identical to
-    /// `busbar_kernel::ingress::finish_rejected` over the bound snapshot + `gov` scope.
-    fn finish_rejected(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-    ) -> axum::response::Response;
 }
 
 impl EngineHost for EngineHostImpl {
@@ -333,26 +320,6 @@ impl EngineHost for EngineHostImpl {
         message: &str,
     ) -> axum::response::Response {
         crate::fallback_error_response(&self.app.planes, path, status, kind, message)
-    }
-
-    fn finish_rejected(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-    ) -> axum::response::Response {
-        crate::ingress::finish_rejected(
-            &self.app,
-            gov,
-            ingress_protocol,
-            pool,
-            started,
-            charged_at,
-            resp,
-        )
     }
 }
 
