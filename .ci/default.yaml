@@ -16,6 +16,8 @@ guarded:
   - "qa/*.allow"
   - "qa/*.missing"
   - "qa/*.status"
+  # The kind-isolation standing list (#1262's last path the globs above did not cover).
+  - "qa/kind-isolation.standing.txt"
   - "xtask/src/gates/**"
 # Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
 # its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
