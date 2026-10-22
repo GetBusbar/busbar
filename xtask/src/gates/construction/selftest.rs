@@ -531,61 +531,60 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // AN UNTYPED BINDING IS NOT ATTRIBUTED BY A SAME-NAMED FIELD ELSEWHERE (a6's review of #1401):
-    // `let money = …;` declares no type, so the call on it is unread and counted. A field `money`
-    // of the node's type in another file says nothing about this local; reading it there would let
-    // a third door through as the node's own `settle_end`.
+    // A RECEIVER THE RULE CANNOT PIN TO ANOTHER TYPE IS COUNTED (ARCHITECT ruling: fail-safe).
+    // `settle_end` is defined on PlaneMoney and on Node, so its calls are attributed by receiver;
+    // each of these spells the terminal's own type in a way a literal name match does not read,
+    // and each is a caller the config does not name: a typed argument (the control), `Self::` inside
+    // `impl PlaneMoney`, a same-file alias of PlaneMoney, and an untyped binding whose name another
+    // file declares as a `Node` field (a tree-wide name collision is never a type).
     let mut ov = on(base);
     ov.set(
-        "crates/busbar/src/root/zz_planted_field_elsewhere.rs",
-        "pub struct ZzHolder {\n    pub money: Node,\n}\n",
+        "crates/busbar/src/root/zz_planted_receivers.rs",
+        "type ZzMoney = PlaneMoney;\n\npub fn zz_planted_control_caller(money: &PlaneMoney) {\n    \
+         money.settle_end(unit, 200);\n}\n\nimpl PlaneMoney {\n    fn \
+         zz_planted_self_path_caller(&self) {\n        Self::settle_end(self, unit, 200);\n    \
+         }\n}\n\npub fn zz_planted_alias_caller(money: &ZzMoney) {\n    \
+         ZzMoney::settle_end(money, unit, 200);\n}\n\npub fn zz_planted_untyped_caller() {\n    \
+         let zz_held = zz_make_money();\n    zz_held.settle_end(unit, 200);\n}\n",
     );
     ov.set(
-        "crates/busbar/src/root/zz_planted_untyped_binding.rs",
-        "impl DataRoutes {\n    fn zz_planted_untyped_binding(&self, served: &ServedPlane) {\n        \
-         let money = &served.money;\n        money.settle_end(unit, 200);\n    }\n}\n",
+        "crates/busbar/src/root/zz_planted_node_holder.rs",
+        "pub struct ZzNodeHolder {\n    zz_held: Node,\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a terminal called on an untyped binding is counted, whatever a same-named field elsewhere \
-         is declared as",
+        "a terminal call through a typed argument, `Self::`, a type alias or an untyped binding \
+         named like a `Node` field elsewhere",
         &["single-terminal"],
         ov,
         &[
-            "DataRoutes::zz_planted_untyped_binding",
-            "zz_planted_untyped_binding.rs",
+            "zz_planted_control_caller",
+            "PlaneMoney::zz_planted_self_path_caller",
+            "zz_planted_alias_caller",
+            "zz_planted_untyped_caller",
         ],
     ));
 
-    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
-    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
-    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
-    // why this rule exists; each of the three spellings is on its own line and each is named.
+    // A PATTERN BINDING IS READ IN ITS OWN FN (the coordinator's review of #1408): `if let Some(money)
+    // = cash` binds `money` with no type, so the call on it is unread and counted, whatever another
+    // fn of the same file declares a `money` as (here a `Node` argument).
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-kernel/src/proto/mod.rs",
-        "use std::sync::OnceLock;\n\nstatic PROTOCOLS: OnceLock<ProtocolDecl> = \
-         OnceLock::new();\n\npub fn install_protocols(decls: Planted) {\n    let _ = \
-         PROTOCOLS.set(decls.into());\n}\n\npub fn decl_for(name: &str) -> Option<String> {\n    \
-         PROTOCOLS.get().map(|_| name.to_string())\n}\n",
-    );
-    ov.set(
-        "crates/busbar/src/root/zz_planted_protocols.rs",
-        "pub fn zz_planted_register_protocols() {\n    \
-         busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
+        "crates/busbar/src/root/zz_probe_binding.rs",
+        "use crate::root::plane_node::Node;\nuse busbar_kernel::plane_driver::PlaneMoney;\n\
+         fn zz_probe_node(money: &Node) { let _ = money; }\n\
+         fn zz_probe_third_caller(cash: Option<&PlaneMoney>) {\n    \
+         if let Some(money) = cash { money.settle_end(unit, 200); }\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a protocol registry grown back in the kernel, installed by the root",
-        &["kernel-no-protocol-registry"],
+        "a terminal called on a pattern binding is counted, whatever another fn of the file \
+         declares the same name as",
+        &["single-terminal"],
         ov,
-        &[
-            "crates/busbar-kernel/src/proto/mod.rs:3",
-            "crates/busbar-kernel/src/proto/mod.rs:5",
-            "crates/busbar-kernel/src/proto/mod.rs:9",
-        ],
+        &["zz_probe_third_caller", "zz_probe_binding.rs"],
     ));
 
     // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares

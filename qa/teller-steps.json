@@ -24,7 +24,7 @@
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the SHIPPED path: the",
     "step proven where a conformance rig drives the plane as an operator would. Every plane now",
     "also runs through the composition root -- root-llm (the llm door's served leg, behind plane-llm) / root-streaming / root-admin behind their",
-    "features, root-mcp / root-a2a on their planes' doors served by the root's serve path, root-decisions on the decision plane's door served by the root's serve path -- and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
+    "features, root-mcp / root-a2a on the kernel-loop rider every linked one-shot plane is served through, root-decisions on the decision plane's door served by the root's serve path -- and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
     "So every cell carries a SECOND verdict over its plane's root leg:",
     "  proven -- with `test`: a `<the leg's own file under crates/busbar/src/root/>::<test fn>` cell that drives the",
     "            step through the loop. The check verifies the file is the leg's own and the fn is in",
@@ -120,8 +120,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_times_and_attributes_a_served_unit",
-          "note": "one chat arrives at the pools door's claim as one unit, is served 200 and is counted, timed and attributed under its pool and member on the scrape"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_malformed_body",
+          "note": "on the llm door's served leg: a chat whose body is not JSON is refused 400 at its arrival, before any route exists, and the refusal is counted under the unresolved pool"
         }
       },
       "decode": {
@@ -131,8 +131,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_malformed_body",
-          "note": "a chat whose body is not JSON is refused 400 by the plane's decode before routing, and the refusal is counted under the unresolved pool"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_an_unresolvable_invoke_body",
+          "note": "on the llm door's served leg: an invoke on the converse dialect's model path whose body matches no shape the plane decodes is refused 400 and counted as the caller's error"
         }
       },
       "authenticate": {
@@ -143,7 +143,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_wrong_key_in_every_dialects_own_envelope",
-          "note": "a wrong key is refused on every dialect's path in that dialect's own envelope, before anything is routed"
+          "note": "on the llm door's served leg: a wrong key is refused before routing in each dialect's own envelope and status (generate 400, messages and chat 401, converse 403), nothing dialled"
         }
       },
       "verify": {
@@ -153,8 +153,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_an_ad_hoc_route_naming_the_wrong_provider",
-          "note": "an ad-hoc route naming a provider that is not the model's is refused 400 in the caller's envelope, and neither far end is dialled"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_pool_refusal_and_charges_no_fee",
+          "note": "on the llm door's served leg: a key allowed only another pool is refused 403 on the pool it named, no far end dialled, the refusal counted and no fee charged to its ledger"
         }
       },
       "approve": {
@@ -164,8 +164,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_pool_refusal_and_charges_no_fee",
-          "note": "a key allowed only another pool is refused 403 on the pool it named, the refusal is counted, and its ledger takes no fee"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee",
+          "note": "on the llm door's served leg: a gate's veto answers the gate's own status and dials nothing, while the unit keeps its admitted request and its flat fee is refunded, as 1.5.5 left it"
         }
       },
       "admit": {
@@ -176,7 +176,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_spent_budget_without_charging_anything",
-          "note": "a group whose budget is spent refuses its key 429 at Admit (sealed OverBudget), no counter moves, and the far end is never dialled"
+          "note": "on the llm door's served leg: a key whose group budget is spent is refused 429 at the Admit step, sealed OverBudget, and no bucket, durable row or key ledger moves"
         }
       },
       "route": {
@@ -186,8 +186,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_tries_each_member_once_before_its_terminal",
-          "note": "the walk tries each member of the pool once before its terminal answer, through the one route seam"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_reroutes_a_tripped_primary_to_its_twin_without_dialling_it",
+          "note": "on the llm door's served leg: a pool whose primary's breaker is already open is served by its twin, and the tripped primary's far end never receives the request"
         }
       },
       "meter": {
@@ -197,8 +197,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_bills_a_whole_answer_its_own_usage_once",
-          "note": "a whole answer's own reported usage is billed exactly once on the presenting key"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it",
+          "note": "on the llm door's served leg: a streamed unit accrues its reported 18 tokens and writes one metering row, while a failed unit keeps its admitted request and writes none"
         }
       },
       "audit": {
@@ -209,7 +209,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_an_error_end_as_one_error_record",
-          "note": "an error end seals exactly ONE audit record under its operation class, its finish Error"
+          "note": "on the llm door's served leg: a far end that cuts its whole answer becomes a 502 in the caller's envelope and seals exactly one audit record, finished as an error"
         }
       },
       "encode": {
@@ -219,8 +219,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_a_2xx_stream_with_the_end_its_tap_saw",
-          "note": "a 2xx stream is sealed with the end its tap saw (Partial or Error), never with the end its status line claims"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_bills_a_whole_answer_its_own_usage_once",
+          "note": "on the llm door's served leg: a same-dialect whole answer reaches the caller as the very bytes the far end sent, its usage billed once and the unit ending Complete"
         }
       }
     },

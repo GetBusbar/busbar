@@ -460,6 +460,7 @@ dependencies = [
  "hex",
  "http",
  "hyper",
+ "idna",
  "indexmap",
  "jsonschema",
  "libc",
@@ -771,7 +772,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=004f750f9323a6a77153dc3aa604cc5034ef6d59#004f750f9323a6a77153dc3aa604cc5034ef6d59"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=cf0b6e001cf9cca6eca283f3168ca41e816329a4#cf0b6e001cf9cca6eca283f3168ca41e816329a4"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",

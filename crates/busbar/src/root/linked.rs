@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use busbar_kernel::plane_driver::row::PlaneDecl;
 use busbar_kernel::plane_driver::row::PlaneDeclaration;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -118,7 +118,7 @@ pub mod node {
     use std::sync::Arc;
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
+    use busbar_kernel::plane_driver::PlaneAnswer;
     use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where

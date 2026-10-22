@@ -407,6 +407,17 @@ impl LaneRuntime for HealthState {
         self.record_failure_for(pool, lane, Self::now_secs(), cfg, retry_after)
     }
 
+    fn record_transient_in_at(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
+        cfg: &BreakerCfg,
+        retry_after: Option<u64>,
+    ) -> bool {
+        self.record_failure_for(pool, lane, now, cfg, retry_after)
+    }
+
     fn record_rate_limit_in(
         &self,
         pool: &str,

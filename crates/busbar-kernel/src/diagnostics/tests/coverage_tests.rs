@@ -54,7 +54,6 @@ const MIGRATED_FILES: &[&str] = &[
     // enforces this); each plane crate enforces its own uncoded-diagnostic floor. So none of those
     // plugin sources are listed here.
     "src/ir/mod.rs",
-    "src/proto/mod.rs",
     // `plane/approvals.rs` is DELETED (status row 82): the spent-approval ledger redeemed nothing,
     // and approval redemption is `records.claim` alone, so no diagnostic of it moved anywhere.
     "src/trust/demotion.rs",
