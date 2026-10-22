@@ -97,12 +97,12 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `plane_host/tests/{build_input,mod,plane_answer,residual}_tests.rs`) and adds 7
 /// (`plane_driver/{answer,host,route_input}.rs`, `plane_driver/tests/{answer,host,route_input}_tests.rs`,
 /// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234.
-/// Lowered 1234 -> 1230 by row 159 (kernel-egress, GetBusbar/busbar#1414): the uncalled
+/// Set 1234 -> 1237 by row 159 (kernel-egress, GetBusbar/busbar#1414): the uncalled
 /// query-parameter auth helpers and the uncalled second address guard's suites are deleted
 /// (`busbar-kernel-egress/src/query_auth.rs` and its tests, `trust/tests/dial_table_tests.rs`,
-/// `busbar-kernel/src/tests/members/egress/trust_net_tests.rs`); the gate measured 1230 on this
-/// branch merged with dev 90a48a03c3.
-pub const MIN_FILES: usize = 1230;
+/// `busbar-kernel/src/tests/members/egress/trust_net_tests.rs`); measured 1237 on this branch
+/// merged with dev 17d824b657.
+pub const MIN_FILES: usize = 1237;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
