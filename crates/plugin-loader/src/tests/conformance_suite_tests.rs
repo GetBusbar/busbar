@@ -1782,3 +1782,34 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
         linked_macro.linked()[0].door().map(|d| d as usize)
     );
 }
+
+/// THE SUITE'S DROPPED LEG LOADS AS PRODUCTION LOADS (THE DESIGN §11.4: one conformance suite runs
+/// the compiled-in build and the dropped-in build through the same table; status row 2: one loading
+/// path). Every production caller loads a dropped plugin from its verified bytes, staged by the
+/// loader's one staging path (`load_dropped_bytes`: a sealed `memfd` on Linux, a private `0700`
+/// copy elsewhere); the suite's dropped leg must run that staging too, never `dlopen` the build
+/// path. RED before: [`super::load`]'s dropped leg called `load_dropped` on the cdylib's path, and
+/// nothing was staged.
+#[test]
+fn the_dropped_leg_loads_the_cdylib_through_the_staging_production_uses() {
+    use super::{dispatcher, load, Leg, Subject};
+    use crate::dispatch::kinds::hook::Hook;
+    use crate::stage::STAGED_HERE;
+    crate::both_ways::example_cdylib("hook_door");
+    let s = Subject::new(
+        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+        "hook_door",
+        "{}",
+    );
+    let d = dispatcher();
+    let before = STAGED_HERE.with(std::cell::Cell::get);
+    let plugin = load::<Hook>(&s, Leg::Dropped, s.bind(&d, "staged-dropped"))
+        .expect("the dropped leg loads the honest library");
+    let staged = STAGED_HERE.with(std::cell::Cell::get) - before;
+    assert_eq!(
+        staged, 1,
+        "the suite's dropped leg staged {staged} library(ies): it opened the build path, not the \
+         verified bytes through the staging every production load runs"
+    );
+    drop(plugin);
+}
