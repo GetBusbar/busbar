@@ -754,17 +754,17 @@ mod tests {
         );
     }
 
-    /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `settle_end_as` in its
+    /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `finish_inner` in its
     /// one home leaves zero call sites of the configured name; the rule used to count that as zero
     /// extra sites and PASS while printing `allowed callers seen: []`.
     #[test]
     fn single_terminal_refuses_a_terminal_that_no_longer_resolves() {
         let cx = Ctx::workspace().expect("workspace");
         let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
-        let home = "crates/busbar-kernel/src/plane_driver/money.rs";
+        let home = "crates/busbar-kernel/src/ingress/mod.rs";
         let text = cx.read(home).expect("the terminal's home");
         assert!(
-            text.contains("fn settle_end_as("),
+            text.contains("fn finish_inner("),
             "the control needs the terminal on disk"
         );
         let load = |cx: &Ctx| {
@@ -781,7 +781,7 @@ mod tests {
         let mut ov = crate::ctx::Overlay::new();
         ov.set(
             home,
-            text.replace("settle_end_as", "settle_end_as_renamed_away"),
+            text.replace("finish_inner", "finish_inner_renamed_away"),
         );
         let pcx = cx.with_overlay(ov);
         let rows = rules::single_terminal(&load(&pcx), &cfg).expect("the rule runs");
