@@ -230,7 +230,8 @@ pub fn write_error_envelope(
     )
 }
 
-/// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY.
+/// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY — the string the composition root files the plane
+/// under and the same string the LLM native plane reports as its capability key.
 ///
 /// Named ONCE, here, on the pure side of the split, so every reader of the plane's key references
 /// the SAME literal and a swap cannot drift onto two. It agrees

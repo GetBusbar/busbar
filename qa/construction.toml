@@ -706,7 +706,10 @@ max_legacy_sites = 0
 why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \
 A third is a second selection policy growing beside the first."""
 verb = "pick_among"
-max_sites = 2
+# LOWERED 2 -> 1, the measured count (Law 9): one production call site of `pick_among(`
+# (crates/busbar-kernel-egress/src/walk.rs); the row is green and is struck from
+# CONSTRUCTION_STANDING_REDS in the same commit.
+max_sites = 1
 
 # ── 14. no-unit-crates (BUSBAR-1.6.0.md THE DESIGN, §1; fold F14) ──────────────────────────────────
 # The section 1.1 LINE-COUNT ceilings that lived here (`kernel_ceiling`, `caps_contract_ceiling`,
@@ -980,7 +983,9 @@ known_sites = [
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
   "crates/busbar-kernel/src/snapshot/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
   "crates/busbar-kernel/src/snapshot/money.rs :: model",
-  "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
+  # was the kernel plane host's build_input.rs (the lane row's `Debug` field name, (c)):
+  # the row moved with the route tables' inputs to the plane driver (status row 82, D2).
+  "crates/busbar-kernel/src/plane_driver/route_input.rs :: model",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
@@ -1282,7 +1287,7 @@ known_sites = [
   "crates/busbar-contract/src/abi/transport/route.rs::intern",
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
-  "crates/busbar-kernel/src/plane_host/breaker.rs",
+  # The plane host's breaker file STRUCK (status row 82, D2): deleted with the plane-side breaker.
   # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
   # was crates/busbar-core/src/plane/registry.rs (R099), then crates/busbar-kernel/src/plane/registry.rs;
   # its one escape (the test-support set's leak-once memo, `Box::leak` per distinct folded set) moved
@@ -1294,12 +1299,13 @@ known_sites = [
   # crates/busbar-kernel/src/plane/handle_engine.rs::sweep (D2 item 15, a rename); `sweep` is still the
   # enclosing function — the escape is at :858, the fn opens at :820.
   "crates/busbar-kernel/src/host_work/handle_engine.rs::sweep",
-  # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
-  # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
-  "crates/busbar-kernel/src/plane_host/mod.rs",
-  # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
-  # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
-  "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
+  # was the substrate plane host's mod.rs — MERGED into the core-descended kernel file
+  # of the same name by 5fa320208 (+1775 lines). Its one escape (substrate's `runtime_slot_key`
+  # interner, the leak-once shape of vocabulary.rs `key` above) moved with the function to the plane
+  # driver when the kernel's plane hosting was deleted (status row 82, D2); named BY FUNCTION now, so
+  # the rest of that file is held to the rule.
+  "crates/busbar-kernel/src/plane_driver/slots.rs::runtime_slot_key",
+  # The plane host's arena `reclaim_all` STRUCK (status row 82, D2): deleted with its last rider.
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
@@ -1576,7 +1582,7 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_MEMO -- compiled only under test / test-support: the fold memo of test registrations",
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_REGISTERED -- compiled only under test / test-support: the test plane registrations",
   "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
-  "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
+  "crates/busbar-kernel/src/plane_driver/slots.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
@@ -2372,8 +2378,9 @@ abi = 1
 # <PR, row or file>"`. An entry excuses one rise, from 0, only in the change that writes it, and only
 # when (a) every named detector is a detector key of that rule (never prose, a ledger or a ceiling)
 # that the base carried and this change altered, (b) the figure equals the base re-measured with this
-# tree's rule, so it covers only debt the base already held, and (c) its `drain:` field names a PR,
-# a row or a file. At any base after it, it excuses nothing. Add-only.
+# tree's rule and the base's own exemptions, never counting a stale one, so it covers only debt the
+# base already held, and (c) its `drain:` field names a PR, a row or a file (checked as syntax only:
+# the re-measure is the guard). At any base after it, it excuses nothing. Add-only.
 [gate.census.measured]
 "rules.kernel-no-protocol-registry.max_debt" = "store_cells, store_holds -- status row 82, D2 (#1454): the installed-store row now reads every static spelling, through aliases and fields, every installer shape, and the cells it did not know; the six root-filled stores keyed by plane, protocol or plugin identity it first sees were all at the base (#1408) and are ledgered by name in debt_stores, each with its drain; measured 6 at the base and at this tree; drain: status row 82 (lane-d2-drain-installed-doors: INSTALLED, TABLES, the diagnostics catalogue, then DOORS) and row 159 (a064's drain fixers: ROOT_ROWS and legacy ROWS)"
 

@@ -20,12 +20,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
-use crate::gates::construction::ceilings::{base_ref, set_int, Base};
+use crate::gates::construction::ceilings::{base_ref, Base};
 use crate::gates::construction::model::{plain, py_list, CRow, Cfg};
 use crate::gates::construction::rules2;
 use crate::gates::construction::tree::Tree;
 use crate::gates::construction::{dirs_for_globs, CEILINGS};
-use crate::toml_doc::Document;
+use crate::toml_doc::{Document, Value};
 
 pub const ROW_CENSUS: &str = "ceiling-census";
 
@@ -193,7 +193,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 now_deleted.contains(dir) && !cx.abs(dir).exists()
             });
             bad.extend(problems);
-            let remeasure = |table: &str, key: &str| base_remeasure(cx, &base.sha, table, key);
+            let remeasure =
+                |table: &str, key: &str| base_remeasure(cx, &cfg.doc, &base.sha, &doc, table, key);
             let (measured, problems) = measured_ceilings(&cfg.doc, &doc, &remeasure);
             bad.extend(problems);
             bad.extend(raised_ceilings(
@@ -666,7 +667,9 @@ fn parse_measured(value: &str) -> MeasuredWhy {
 }
 
 /// A drain reference names something a reader can open: a PR (`#1454`), a status row (`row 82`)
-/// or a file (`crates/busbar-kernel/src/preflight.rs`).
+/// or a file (`crates/busbar-kernel/src/preflight.rs`). SYNTAX ONLY, by ruling: it is not looked up
+/// as a PR, a row or a path that exists. The drain is the reviewer's pointer; what keeps a measured
+/// ceiling honest is the base re-measure ([`base_remeasure`]), which no reference can satisfy.
 fn names_a_ref(r: &str) -> bool {
     let digit_at = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_digit());
     let pr = r.match_indices('#').any(|(i, _)| digit_at(&r[i + 1..]));
@@ -696,9 +699,11 @@ fn names_a_ref(r: &str) -> bool {
 ///   * the ceiling was 0 at the base (a ceiling is SET from nothing; a rise from N stays refused);
 ///   * (a) every named detector is a detector key of that rule ([`MEASURABLE`]; never prose, a
 ///     ledger or a ceiling), the base carried it, and its value differs from the base's;
-///   * (b) the figure equals the BASE re-measured with this tree's rule (`remeasure`): the sites
-///     it covers were all at the base, newly seen, so it never covers a site this change adds;
-///   * (c) the reason carries a `drain:` field that names a PR, a row or a file ([`names_a_ref`]).
+///   * (b) the figure equals the BASE re-measured with this tree's rule and the base's own
+///     exemptions, never counting a stale one (`remeasure`): the sites it covers were all at the
+///     base, newly seen, so it never covers a site this change adds;
+///   * (c) the reason carries a `drain:` field that names a PR, a row or a file ([`names_a_ref`],
+///     syntax only).
 /// An entry that fails any condition is RED with every reason it fails, and excuses nothing; the
 /// ledger is add-only against the base.
 fn measured_ceilings(
@@ -875,16 +880,88 @@ fn base_view(cx: &Ctx, sha: &str) -> Result<Ctx, String> {
     Ok(cx.with_overlay(ov))
 }
 
-/// THE BASE RE-MEASURED WITH THIS TREE'S RULE: `[table]`'s rule run over [`base_view`] with this
-/// tree's ceilings file, and the count of the rows `key` holds (the most any one of them counts).
-/// Only the rules of [`MEASURABLE`] are run; any other is an error, so nothing it would set is
-/// excused.
-fn base_remeasure(cx: &Ctx, sha: &str, table: &str, key: &str) -> Result<i64, String> {
-    let text = cx.read(CEILINGS)?;
-    let probed = set_int(&text, table, key, PROBE)
-        .ok_or_else(|| format!("{CEILINGS} has no `{key}` under [{table}] to probe"))?;
+/// THE LEDGERS A RE-MEASURE READS AS THE BASE HAD THEM (ARCHITECT ruling on a6's third review of
+/// #1454). An exemption this change writes names a store this change may have added: read with this
+/// tree's list, a new store exempted here is a stale name at the base and is counted there, which
+/// lets a second new store sit under the ceiling it set. Read with the base's list, the base's count
+/// is the stores the base held that its own ledger did not name: debt already there.
+const BASE_LEDGERS: &[&str] = &["exempt_stores"];
+
+/// THE RULE TABLE A RE-MEASURE RUNS WITH: this tree's PARSED ceilings file with `table.key` set to
+/// [`PROBE`] and each of [`BASE_LEDGERS`] set to the base's PARSED value (an empty list when the
+/// base has none). Edited as values, never as text: a comment in the file (`exempt_stores = [ # ]
+/// store_holds = ['.',`) is a comment to the parser, so no key can be smuggled into the re-measure.
+/// And it FAILS CLOSED unless every other key of that table equals this tree's parsed value, so the
+/// re-measure runs this tree's rule and nothing else.
+fn probed_doc(
+    now_doc: &Document,
+    base_doc: &Document,
+    table: &str,
+    key: &str,
+) -> Result<Document, String> {
+    let now_t = now_doc
+        .table(table)
+        .ok_or_else(|| format!("this tree has no [{table}] to re-measure"))?;
+    if now_t.int_of(key).is_none() {
+        return Err(format!("[{table}] has no integer `{key}` to probe"));
+    }
+    let mut doc = now_doc.with_value(table, key, Value::Int(PROBE));
+    for ledger in BASE_LEDGERS {
+        let was = base_doc
+            .table(table)
+            .and_then(|t| t.get(ledger))
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        let strings = was
+            .as_array()
+            .is_some_and(|items| items.iter().all(|v| v.as_str().is_some()));
+        if !strings {
+            return Err(format!(
+                "the base's [{table}] {ledger} is not a list of strings, so the base is not \
+                 re-measured"
+            ));
+        }
+        doc = doc.with_value(table, ledger, was);
+    }
+    let probed_t = doc
+        .table(table)
+        .ok_or_else(|| format!("[{table}] left the probed file"))?;
+    let skipped = |k: &str| k == key || BASE_LEDGERS.contains(&k);
+    let moved: Vec<&String> = probed_t
+        .keys()
+        .iter()
+        .chain(now_t.keys().iter())
+        .filter(|k| !skipped(k.as_str()) && probed_t.get(k) != now_t.get(k))
+        .collect();
+    if !moved.is_empty() {
+        return Err(format!(
+            "the re-measure's [{table}] differs from this tree's at {}, so it would not run this \
+             tree's rule",
+            moved
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(doc)
+}
+
+/// THE BASE RE-MEASURED WITH THIS TREE'S RULE: `[table]`'s rule run over [`base_view`] with
+/// [`probed_doc`] (this tree's parsed ceilings, the base's own exemptions), and the count of the
+/// rows `key` holds (the most any one of them counts). A stale exemption is never counted: the base
+/// is re-measured for the stores it HOLDS, not for names its ledger lost. Only the rules of
+/// [`MEASURABLE`] are run; any other is an error, so nothing it would set is excused.
+fn base_remeasure(
+    cx: &Ctx,
+    now_doc: &Document,
+    sha: &str,
+    base_doc: &Document,
+    table: &str,
+    key: &str,
+) -> Result<i64, String> {
     let cfg = Cfg {
-        doc: crate::toml_doc::parse_str(&probed)?,
+        doc: probed_doc(now_doc, base_doc, table, key)?,
     };
     let roots = cfg.scan_roots()?;
     let tree = Tree::load(&base_view(cx, sha)?, &roots, &cfg.test_path_fragments()?)?;
@@ -895,7 +972,14 @@ fn base_remeasure(cx: &Ctx, sha: &str, table: &str, key: &str) -> Result<i64, St
     };
     rows.iter()
         .filter(|r| r.threshold == PROBE)
-        .map(|r| r.current)
+        .map(|r| {
+            let stale = r
+                .offenders
+                .iter()
+                .filter(|o| o.starts_with("stale exemption "))
+                .count();
+            r.current - stale as i64
+        })
         .max()
         .ok_or_else(|| format!("no row of [{table}] is held to `{key}`"))
 }
@@ -1519,6 +1603,38 @@ mod tests {
         let (out, problems) = rises_at(wider, other, 2);
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(problems[0].contains("cannot re-measure"), "{problems:?}");
+    }
+
+    /// The base's ledger replaces this tree's in a re-measure ON THE PARSED DOCUMENT: a `]` in a
+    /// comment closes nothing (a6's third review: `exempt_stores = [ # ] store_holds = ['.',`), and
+    /// every other key of the table is this tree's.
+    #[test]
+    fn a_ledger_is_replaced_on_the_parsed_document_and_nothing_else_moves() {
+        let now = doc(
+            "[rules.k]\nwhy = \"x\"\nstore_holds = ['Vec']\nexempt_stores = [ # ] store_holds = \
+             ['.',\n  \"new [u8] ]\",\n]\nmax_stores = 13\n",
+        );
+        let base = doc("[rules.k]\nstore_holds = ['Vec']\nexempt_stores = [\"was\"]\n");
+        let t = now.table("rules.k").expect("k");
+        assert_eq!(t.list_of("store_holds"), vec!["Vec"]);
+        assert_eq!(t.list_of("exempt_stores"), vec!["new [u8] ]"]);
+        let probed = probed_doc(&now, &base, "rules.k", "max_stores").expect("probed");
+        let p = probed.table("rules.k").expect("k");
+        assert_eq!(p.int_of("max_stores"), Some(PROBE));
+        assert_eq!(p.list_of("exempt_stores"), vec!["was"]);
+        assert_eq!(p.list_of("store_holds"), vec!["Vec"]);
+        assert_eq!(p.str_of("why"), Some("x"));
+        // A base with no ledger is an empty one; a base ledger that is not a list is refused.
+        let bare = probed_doc(&now, &doc("[rules.k]\n"), "rules.k", "max_stores").expect("bare");
+        assert!(bare
+            .table("rules.k")
+            .expect("k")
+            .list_of("exempt_stores")
+            .is_empty());
+        let odd = doc("[rules.k]\nexempt_stores = 3\n");
+        assert!(probed_doc(&now, &odd, "rules.k", "max_stores").is_err());
+        assert!(probed_doc(&now, &base, "rules.k", "max_debt").is_err());
+        assert!(probed_doc(&now, &base, "rules.y", "max_stores").is_err());
     }
 
     /// The drain field names a PR, a row or a file, and nothing else is one.

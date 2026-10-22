@@ -440,69 +440,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // produce a breaker that either never protects the backend or trips it open on the first
         // hiccup, defeating the failure-handling guarantee. Reject them at startup (fail-loud).
         if let Some(breaker) = &pool_cfg.breaker {
-            // A `base_cooldown_secs: 0` or `max_cooldown_secs: 0` parses fine but yields a degenerate
-            // breaker with NO cooldown: when the breaker trips open it would re-admit the failing
-            // backend immediately (the cooldown window is zero seconds), defeating the back-off the
-            // breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-floor
-            // guards below (min_requests/window_s/n >= 1) — reject a zero floor on EITHER cooldown
-            // field at boot rather than ship a breaker that never actually pauses the backend. (The
-            // inversion check below additionally requires max >= base; the two together pin both
-            // fields to >= 1 with max >= base.)
-            if breaker.base_cooldown_secs == 0 {
-                errors.push(format!(
-                    "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-                ));
-            }
-            if breaker.max_cooldown_secs == 0 {
-                errors.push(format!(
-                    "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-                ));
-            }
-            // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
-            // pin every cooldown below the configured base — reject the inversion.
-            if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
-                errors.push(format!(
-                    "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
-                    pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
-                ));
-            }
-            if let Some(trip) = &breaker.trip {
-                // min_requests is the floor below which error-rate trips are suppressed; 0 makes the
-                // floor vacuous so a single error in an otherwise-empty window can trip.
-                if trip.min_requests == 0 {
-                    errors.push(format!(
-                        "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
-                    ));
-                }
-                // window_s is the sliding-window length; a 0 window holds no outcomes so the
-                // count is always below min_requests and the error-rate breaker never trips.
-                if trip.window_secs == 0 {
-                    errors.push(format!(
-                        "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
-                    ));
-                }
-                match trip.mode {
-                    crate::config::BreakerTripMode::ErrorRate => {
-                        // threshold is an error-rate fraction; the rate is capped at 1.0, so a
-                        // threshold > 1.0 can never trip and <= 0.0 trips on the first error.
-                        if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
-                            errors.push(format!(
-                                "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
-                                pool_name, trip.threshold
-                            ));
-                        }
-                    }
-                    crate::config::BreakerTripMode::Consecutive => {
-                        // n is the consecutive-failure streak length; n == 0 makes `streak >= 0`
-                        // always true so the lane trips on every evaluation.
-                        if trip.consecutive_n == 0 {
-                            errors.push(format!(
-                                "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
-                            ));
-                        }
-                    }
-                }
-            }
+            check_pool_breaker(pool_name, breaker, &mut errors);
         }
 
         // Rule 6b: Validate the per-pool failover budget. `failover.timeout_secs == 0` is the exact
@@ -642,6 +580,16 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     ));
                 }
             }
+        }
+    }
+
+    // Rule 6, EVERY PLANE'S POOLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+    // functionality"): a pool written under another plane's section (`<verb>.pools`) is not in
+    // `pools`, but it carries the same `breaker:` block, so it is held to the same rules in the same
+    // words.
+    for (pool_name, pool_cfg) in cfg.plane_pools.values().flat_map(|pools| pools.iter()) {
+        if let Some(breaker) = &pool_cfg.breaker {
+            check_pool_breaker(pool_name, breaker, &mut errors);
         }
     }
 
@@ -1293,6 +1241,79 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+/// Rule 6, for one pool's `breaker:` block: the pathological-but-parseable values that ship a
+/// breaker which never protects the backend or trips on the first hiccup. One body for every
+/// plane's pools, so a refusal reads the same whichever plane the pool belongs to.
+fn check_pool_breaker(
+    pool_name: &str,
+    breaker: &crate::config::BreakerCfg,
+    errors: &mut Vec<String>,
+) {
+    // A `base_cooldown_secs: 0` or `max_cooldown_secs: 0` parses fine but yields a degenerate
+    // breaker with NO cooldown: when the breaker trips open it would re-admit the failing
+    // backend immediately (the cooldown window is zero seconds), defeating the back-off the
+    // breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-floor
+    // guards below (min_requests/window_s/n >= 1) — reject a zero floor on EITHER cooldown
+    // field at boot rather than ship a breaker that never actually pauses the backend. (The
+    // inversion check below additionally requires max >= base; the two together pin both
+    // fields to >= 1 with max >= base.)
+    if breaker.base_cooldown_secs == 0 {
+        errors.push(format!(
+            "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+        ));
+    }
+    if breaker.max_cooldown_secs == 0 {
+        errors.push(format!(
+            "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+        ));
+    }
+    // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
+    // pin every cooldown below the configured base — reject the inversion.
+    if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
+        errors.push(format!(
+            "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
+            pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
+        ));
+    }
+    if let Some(trip) = &breaker.trip {
+        // min_requests is the floor below which error-rate trips are suppressed; 0 makes the
+        // floor vacuous so a single error in an otherwise-empty window can trip.
+        if trip.min_requests == 0 {
+            errors.push(format!(
+                "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
+            ));
+        }
+        // window_s is the sliding-window length; a 0 window holds no outcomes so the
+        // count is always below min_requests and the error-rate breaker never trips.
+        if trip.window_secs == 0 {
+            errors.push(format!(
+                "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
+            ));
+        }
+        match trip.mode {
+            crate::config::BreakerTripMode::ErrorRate => {
+                // threshold is an error-rate fraction; the rate is capped at 1.0, so a
+                // threshold > 1.0 can never trip and <= 0.0 trips on the first error.
+                if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
+                    errors.push(format!(
+                        "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
+                        pool_name, trip.threshold
+                    ));
+                }
+            }
+            crate::config::BreakerTripMode::Consecutive => {
+                // n is the consecutive-failure streak length; n == 0 makes `streak >= 0`
+                // always true so the lane trips on every evaluation.
+                if trip.consecutive_n == 0 {
+                    errors.push(format!(
+                        "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
+                    ));
+                }
+            }
+        }
     }
 }
 

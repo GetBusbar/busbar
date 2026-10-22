@@ -52,6 +52,40 @@ pub type LinkedStore = (
     busbar_contract::abi::mechanism::door::DoorFn,
     &'static str,
 );
+
+/// A linked STORE's entry as a store crate states it with its `MACRO_DOOR` (status rows 159 and
+/// 194): `(key, ephemeral, MACRO_DOOR, canonical)`, #1469's [`LinkedStore`] shape. A store crate's
+/// `linked::STORE` moves to this shape first; the root's store axis reads either shape through
+/// [`StoreRow`], so the same `STORE` compiles before and after #1469.
+pub type LinkedStoreDoor = (
+    &'static str,
+    bool,
+    busbar_contract::abi::sdk::door::MacroDoor,
+    &'static str,
+);
+
+/// ONE STORE-AXIS ROW as the store crate states it (status rows 159 and 194): its `linked::STORE`
+/// in either shape, a [`LinkedStore`] or a [`LinkedStoreDoor`], read as the [`LinkedStore`] the
+/// root's install carries. The composition root's generated table wraps every `STORE` in it.
+#[derive(Debug, Clone, Copy)]
+pub struct StoreRow<T>(pub T);
+
+impl StoreRow<LinkedStore> {
+    /// The row itself.
+    #[must_use]
+    pub const fn linked(self) -> LinkedStore {
+        self.0
+    }
+}
+
+impl StoreRow<LinkedStoreDoor> {
+    /// The row, its `MACRO_DOOR` read as the door function it names.
+    #[must_use]
+    pub const fn linked(self) -> LinkedStore {
+        let (key, ephemeral, door, canonical) = self.0;
+        (key, ephemeral, door.door_fn(), canonical)
+    }
+}
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
 /// one dispatcher and opened through the store v3 table.
 pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
@@ -62,6 +96,16 @@ use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, Plugin
 /// of it, each step noted so the preflight's log lines keep their order.
 pub type RegistryBuild =
     fn(RegistryIn<'_>, &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String>;
+
+/// THE ROOT'S SECRET ADMISSION (BUSBAR-1.6.0.md §3, stages 3a/3e: the secret plugins are opened in
+/// stage 3): the dropped-in secret plugins `registry` admitted, put on the root's secret axis. The
+/// kernel calls it from the app build alone, never from the registry build (stage 1), which
+/// `--validate` and every dry run share and which must leave the running node's secret plugins as
+/// they are (l.456-457).
+///
+/// # Errors
+/// A dropped-in secret plugin that claims a word another plugin answers to, naming both.
+pub type SecretAdmit = fn(&PluginRegistry) -> Result<(), String>;
 
 /// What the root's registry build reads: the build's linked rows and, unless only those are
 /// wanted, the `plugins:` block (its trust, its directory, whether it is on) and the fleet data dir
@@ -141,6 +185,9 @@ pub struct RootInstall {
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
+    /// The root's secret admission ([`SecretAdmit`]): what puts a build's dropped-in secret
+    /// plugins on [`Self::secret_axis`]. `None` = no dropped-in secret plugin joins the axis.
+    pub secret_admit: Option<SecretAdmit>,
     /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
     /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
     /// apply (a build with no root ledger).
@@ -226,6 +273,7 @@ impl RootInstall {
         hook_names: &[],
         store_axis: Some(crate::test_support::store_axis_stand_in),
         secret_axis: Some(&crate::test_support::SecretsStandIn),
+        secret_admit: None,
         // A test build has no root ledger: no holder hears an apply and no dater dates an accrual,
         // unless a test lends a record carrying its own.
         rate_apply: None,
@@ -1408,3 +1456,7 @@ mod root_install_lent_tests;
 #[cfg(test)]
 #[path = "tests/root_install_seams_tests.rs"]
 mod root_install_seams_tests;
+
+#[cfg(test)]
+#[path = "tests/store_row_tests.rs"]
+mod store_row_tests;

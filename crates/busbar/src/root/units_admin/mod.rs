@@ -1245,9 +1245,14 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
             let principal = &self.attribution.principal;
-            return adjust::adjust_effect(request, scope, principal, &*self.pools, |amends| {
-                self.ledger.recorded_counts(amends)
-            })
+            return adjust::adjust_effect(
+                request,
+                scope,
+                principal,
+                &*self.pools,
+                self.amendments.as_deref(),
+                |amends| self.ledger.recorded_counts(amends),
+            )
             .map(|answer| answer.pack());
         }
         // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit — scope
@@ -1542,7 +1547,10 @@ fn amend_rate_history_effect(
     // principal that submitted it and the canonical bytes of the correction.
     //
     // AHEAD, not after: an amendment the journal will not take is REFUSED (`Store`) and the history
-    // is not touched, so no correction can price a window without its durable record. A history with
+    // is not touched, so no correction can price a window without its durable record. And the
+    // converse: a record the journal chained but could not keep yet is retained and lands ahead of
+    // the next append (`AmendmentJournal::seal_policy`), so its correction is applied as the chain
+    // will hold it (#79) and answered 503 "do not re-submit" below. A history with
     // no opening entry is refused first, so a record is never written for a correction that would
     // then not apply (the holder never returns to empty once resolved).
     //
@@ -1896,7 +1904,7 @@ impl AmendmentJournal {
     ///
     /// # Errors
     ///
-    /// `Store` when the journal could not make the record durable — the caller then refuses the
+    /// `Store` when the record can never land ([`Self::seal_policy`]) — the caller then refuses the
     /// amendment rather than applying a correction nothing recorded.
     pub fn record(
         &self,
@@ -1929,17 +1937,33 @@ impl AmendmentJournal {
     /// record before it), at most [`crate::root::durability::ACK_DEADLINE`], without the book's
     /// lock. A journal on a disk answers at once: the disk took it.
     ///
+    /// A record the log still OWES is not kept, on a disk or in the store: its write, its sync or
+    /// its hand-over to the store failed, and the log retained it to write ahead of the next append
+    /// ([`Self::seal_policy`]).
+    ///
     /// # Errors
     ///
-    /// The store refused or did not answer in time. The record stays on the chain and is offered
-    /// again.
+    /// The log still owes the record, or the store refused or did not answer in time. The record
+    /// stays on the chain and is offered again.
     pub fn acked(&self, node_seq: u64) -> Result<(), String> {
         let (lane, node) = {
             let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+            let node = durability.journal.node();
+            let owed = durability.journal.log().owed().iter().any(|record| {
+                let (of, seq) = record.identity();
+                of == node && seq <= node_seq
+            });
+            if owed {
+                return Err(
+                    "the journal could not make the record durable; it is retained on \
+                     this node's journal and written ahead of the next record"
+                        .to_string(),
+                );
+            }
             if !durability.durable_in_store() {
                 return Ok(());
             }
-            (durability.lane().cloned(), durability.journal.node())
+            (durability.lane().cloned(), node)
         };
         lane.map_or(Ok(()), |lane| {
             lane.wait_acked(node, node_seq, crate::root::durability::ACK_DEADLINE)
@@ -1949,9 +1973,17 @@ impl AmendmentJournal {
     /// Append one `Policy`-class record whose body the caller built, dated `wall_secs`, and answer
     /// with its node sequence and chain hash — the position an operator cites it by.
     ///
+    /// SEALED IS SEALED, KEPT OR NOT (#79). The journal chains the record before the log is asked to
+    /// take it, and a log that could not make it durable RETAINS it and writes it ahead of the next
+    /// append (`busbar-kernel-wal` `Journal::append`, `Wal::append_batch`): it reaches the chain a
+    /// restart rebuilds from. So a `DurabilityLost` the log holds or owes the record for answers
+    /// its position like any other seal — the caller applies what it records and asks
+    /// [`Self::acked`], which says it is not kept yet.
+    ///
     /// # Errors
     ///
-    /// `Store` when the journal could not make the record durable; the caller then refuses.
+    /// `Store` when the log neither holds nor owes the record, so it can never land; the caller
+    /// then refuses. A log that retains on every arm never answers it.
     pub fn seal_policy(
         &self,
         body: Vec<u8>,
@@ -1960,19 +1992,46 @@ impl AmendmentJournal {
         let entry = busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, body)
             .at(wall_secs, 0);
         let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        let ack = durability
+        match durability.journal.append(
+            &self.token,
+            busbar_contract::caps::StepName::Route,
+            &[entry],
+        ) {
+            Ok(ack) => {
+                let sealed = ack
+                    .sealed
+                    .last()
+                    .ok_or(busbar_core_admin::GovernanceError::Store)?;
+                Ok((sealed.node_seq, sealed.hash))
+            }
+            Err(_lost) => {
+                // The record was sealed last, so it is the number just below the journal's next
+                // and the chain's head.
+                let journal = &durability.journal;
+                let sealed = (journal.node(), journal.next_seq().saturating_sub(1));
+                let log = journal.log();
+                if log.holds(sealed.0, sealed.1)
+                    || log.owed().iter().any(|r| r.identity() == sealed)
+                {
+                    Ok((sealed.1, journal.head()))
+                } else {
+                    Err(busbar_core_admin::GovernanceError::Store)
+                }
+            }
+        }
+    }
+
+    /// The node sequence of the newest record on this journal: at or past every record sealed on it
+    /// before the call — an amendment the node amendment journal's sink put on this book as it was
+    /// sealed included (`durability::bind_amendments`).
+    #[must_use]
+    pub fn sealed_through(&self) -> u64 {
+        self.book
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .journal
-            .append(
-                &self.token,
-                busbar_contract::caps::StepName::Route,
-                &[entry],
-            )
-            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
-        let sealed = ack
-            .sealed
-            .last()
-            .ok_or(busbar_core_admin::GovernanceError::Store)?;
-        Ok((sealed.node_seq, sealed.hash))
+            .next_seq()
+            .saturating_sub(1)
     }
 }
 

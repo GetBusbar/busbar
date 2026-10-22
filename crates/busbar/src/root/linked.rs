@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use busbar_kernel::plane_driver::row::PlaneDecl;
 use busbar_kernel::plane_driver::row::PlaneDeclaration;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -118,7 +118,7 @@ pub mod node {
     use std::sync::Arc;
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
+    use busbar_kernel::plane_driver::PlaneAnswer;
     use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
@@ -395,6 +395,7 @@ pub fn register_stores(linked: &Linked) -> RootInstall {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            secret_admit: Some(crate::root::boot::admit_secrets),
             // The root's card repricer is the kernel's rate holder and dater (the node unit, in
             // every build's root-unit table, arms its journal before the boot resolution:
             // `crate::root::kernel::install_card_repricer`).
@@ -449,7 +450,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
 
 /// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
 /// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
-/// ones each registry build replaces (`root::boot::registry`).
+/// ones each app build and boot's scan replace (`root::boot::admit_secrets`).
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
     std::sync::OnceLock::new();
 
@@ -657,12 +658,12 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
         .iter()
         .map(|candidate| {
             let name = candidate.name.clone();
-            let candidate = candidate.clone();
+            let bound = candidate.clone();
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
-                        std::slice::from_ref(&candidate),
+                        std::slice::from_ref(&bound),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),
                         probe.adopter(),
@@ -672,11 +673,11 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                     .into_iter()
                     .next()
                     .map(|(_, plane)| plane)
-                    .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
+                    .ok_or_else(|| format!("{}: the door bound nothing", bound.name))
                 });
             Ok((
                 name,
-                crate::root::loader::dispatch::kinds::plane::registration(bind)?,
+                crate::root::loader::dispatch::kinds::plane::stated_registration(candidate, bind)?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;

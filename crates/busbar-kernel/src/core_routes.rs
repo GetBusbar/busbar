@@ -164,7 +164,12 @@ impl CoreRouteTable {
     /// the plane's statement per claim now carries the same dialect, and the kernel names none.
     /// `None` when no door route matches the path.
     pub(crate) fn refusal_dialect(&self, path: &str, method: &Method) -> Option<&'static str> {
-        let rm = route_method_of(method);
+        // HEAD is a verb no door route takes (the doc above): `route_method_of` folds it onto GET for the
+        // plugin routes axum serves it through, which would let a catch-all GET claim beat the
+        // specific route the path names.
+        let rm = (method != Method::HEAD)
+            .then(|| route_method_of(method))
+            .flatten();
         let most_specific = |at_method: bool| {
             self.door_refusals
                 .iter()

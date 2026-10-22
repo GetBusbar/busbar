@@ -324,6 +324,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: vec!["b".to_string(), "a".to_string()],
                 repeatable: vec!["read".to_string()],
+                breaker: None,
             },
         )]
         .into();
@@ -348,6 +349,53 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
     );
     assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
     assert_eq!(handed["a"], section["a"], "every other key as written");
+}
+
+/// A PLANE'S POOL CARRIES ITS `breaker:` BLOCK TO ITS DOOR'S EGRESS, AND ONLY THERE (BUSBAR-1.6.0.md
+/// THE DESIGN §1: "Any plugin gets all functionality"; §5: the breaker is the host's valve). The
+/// root writes the pool's block beside its members, the door's egress reads it back as the same
+/// block, and the plane is handed its section without it — byte-identical to a pool that states
+/// none. A pool with no block reads `None`, the defaults every default config runs under.
+#[test]
+fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
+    let block = busbar_kernel::config::BreakerCfg {
+        base_cooldown_secs: 30,
+        max_cooldown_secs: 300,
+        ..Default::default()
+    };
+    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [
+        (
+            "tuned".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: Some(block.clone()),
+            },
+        ),
+        (
+            "plain".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: None,
+            },
+        ),
+    ]
+    .into();
+    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    crate::root::serve::pools_into(&mut section, &stated);
+    let p = DoorPools::of(&section).expect("the pools");
+    assert_eq!(
+        p.breaker("tuned"),
+        Some(&block),
+        "the pool's own block, as stated"
+    );
+    assert_eq!(p.breaker("plain"), None, "no block: the defaults");
+    let handed = crate::root::serve::plane_settings(&section);
+    assert_eq!(
+        handed["pools"]["tuned"], handed["pools"]["plain"],
+        "the plane is handed the same pool whether or not the host tunes its breaker"
+    );
 }
 
 /// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
@@ -2556,6 +2604,10 @@ pub(crate) mod tool_door {
                     wall: Arc::clone(&wall),
                 }),
             ));
+            // The transport doors bind on this dispatcher and reach its host services (the clock
+            // the program carrier supervises a member's program by), as main.rs hands the process's
+            // one dispatcher to `root::doors` before any door binds.
+            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -2662,7 +2714,7 @@ pub(crate) mod tool_door {
                 host: {
                     let live_app = Arc::clone(&live_app);
                     Arc::new(move || {
-                        busbar_kernel::plane_host::engine_host(
+                        busbar_kernel::plane_driver::engine_host(
                             live_app
                                 .get()
                                 .expect("the rig's App is built before any unit"),
@@ -2707,7 +2759,7 @@ pub(crate) mod tool_door {
             // attaches it over its live snapshot.
             if let Some(kernel) = late.kernel() {
                 let _attached = kernel
-                    .attach_standing(busbar_kernel::plane_host::standing_over(Arc::clone(&app)));
+                    .attach_standing(busbar_kernel::plane_driver::standing_over(Arc::clone(&app)));
             }
             // Its tick schedule and ready-session fan-out, as the process spawns them.
             served.spawn_ticks();
@@ -6870,12 +6922,17 @@ pub(crate) mod program_member {
 
     /// The section: one registration that is the program above, its one tool approved.
     fn section() -> serde_yaml::Value {
+        section_running(script())
+    }
+
+    /// The section: one registration whose program is `/bin/sh -c <script>`, its one tool approved.
+    pub(crate) fn section_running(script: String) -> serde_yaml::Value {
         let mut fs = serde_yaml::Mapping::new();
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
             "args".into(),
-            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script.into()]),
         );
         fs.insert(
             "pin".into(),
@@ -6952,6 +7009,52 @@ pub(crate) mod program_member {
             fact(&second, "pongs"),
             "1",
             "the child's own request was answered once: {second}"
+        );
+    }
+}
+
+/// THE PROGRAM'S SUPERVISOR, END TO END (THE DESIGN §2, l.388: the program's supervisor is its
+/// carrier transport's; 1.5.5's crash-loop policy): a registration whose program ends at once,
+/// called over and over through the composed door and the real connector for longer than the whole
+/// backoff (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute
+/// stops its restarts and every later call is refused without a spawn. The policy lives in the
+/// program's carrier, keyed by the member's supervision key the connector hands each spawn. RED
+/// with the connector's own supervisor deleted and the carrier's absent: every call spawns the
+/// program anew.
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
+mod program_member_supervised {
+    use super::program_member::section_running;
+    use super::tool_door::{rig_tools, send, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The section: one registration whose program appends a line to `spawns` and ends.
+    fn section(spawns: &std::path::Path) -> serde_yaml::Value {
+        section_running(format!("echo spawned >> '{}'; exit 1", spawns.display()))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_that_keeps_ending_is_spawned_five_times_then_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-supervised";
+        let _published = Published(instance);
+        let spawns =
+            std::env::temp_dir().join(format!("busbar-{instance}-{}-spawns", std::process::id()));
+        let _ = std::fs::remove_file(&spawns);
+        let rig = rig_tools(instance, 0, section(&spawns), &|app| app);
+
+        // Called every 150 ms for 3.6 s: well past the four backoffs (1.5 s), well inside a minute.
+        for _ in 0..24 {
+            let _ = send(&rig.router, Some(&rig.token), CALL).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        let spawned = std::fs::read_to_string(&spawns)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&spawns);
+        assert_eq!(
+            spawned, 5,
+            "five ends inside a minute stop the restarts: spawned {spawned} times"
         );
     }
 }
@@ -8237,6 +8340,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
         1,
     )
     .expect("the egress composes");
@@ -8852,4 +8956,42 @@ fn red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its
         );
         assert!(!refused.contains(bad), "the value is not echoed: {refused}");
     }
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20
+/// on root#7 / loader#9): serving one configured outbound style binds the one linked auth row that
+/// states it, and no other. Which row states a style is read off each row's static Statement
+/// (reading, not loading), never by binding every row to ask.
+#[test]
+fn serving_a_style_binds_only_the_linked_row_that_states_it() {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let linked = crate::LINKED.auths;
+    assert!(
+        linked.len() > 1,
+        "the default build links more than one auth row: {}",
+        linked.len()
+    );
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let served = auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("the serving row opens");
+    assert!(served.is_some(), "a linked row states `bearer`");
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        bound.len(),
+        1,
+        "only the row serving the style is bound, once: {bound:?}"
+    );
 }
