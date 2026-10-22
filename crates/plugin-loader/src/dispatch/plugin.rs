@@ -492,6 +492,9 @@ pub(crate) struct Instance {
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
     pub(crate) drainable: AtomicU32,
+    /// Ops of ADMITTED UNITS in flight (a plane unit's `on_piece` and `serve`): they hold no
+    /// `max_inflight` unit, and `close` is refused while any is in flight (THE DESIGN §11.13 M1).
+    pub(crate) unit_ops: AtomicU32,
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
     pub(crate) timeout: Outcome,
@@ -652,16 +655,31 @@ impl Instance {
     /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
     /// no other op is in flight (one atomic step). `None` over the cap, or `close` with ops in
     /// flight.
+    ///
+    /// `close` is refused too while an admitted unit's op is in flight ([`Instance::unit_ops`];
+    /// THE DESIGN §11.13 M1: "`close` is refused while units are in flight"). The count is read
+    /// again once the units are taken: a unit op counted before that is seen and the units go
+    /// back; one counted after it was submitted after `close` was admitted, and meets the closing
+    /// instance's own refusal.
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         let close = s == slot::CLOSE;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
         let want = if close { self.cap } else { 1 };
-        self.inflight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        let taken = self
+            .inflight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 let fits = if close { n == 0 } else { n < self.cap };
                 fits.then_some(n + want)
             })
             .ok()
-            .map(|_| want)
+            .map(|_| want)?;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            self.release(taken);
+            return None;
+        }
+        Some(taken)
     }
 
     pub(crate) fn release(&self, units: u32) {
@@ -1617,6 +1635,7 @@ impl<K: Kind> Plugin<K> {
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
+                unit_ops: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
                 timeout: K::TIMEOUT,
