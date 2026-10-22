@@ -978,6 +978,114 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     closed::<OpenForward>(p);
 }
 
+// ── a cancelled exchange closes its stream (status row 159) ─────────────────────────────────────
+
+/// The stream the closing connector's ESTABLISH answers.
+const HELD_STREAM: u64 = 9;
+/// What the closing connector's CLOSE was handed: the stream and the ticket it came on.
+static CLOSED: std::sync::Mutex<Vec<(u64, Ticket)>> = std::sync::Mutex::new(Vec::new());
+
+/// Answer `o` in the SDK's `out`, with `value`.
+fn answered(out: *mut ServiceOut, o: Outcome, value: u64) -> RawOutcome {
+    // SAFETY: the SDK's `out`, live for the call.
+    let out = unsafe { &mut *out };
+    out.value = value;
+    out.outcome = RawOutcome::of(o);
+    RawOutcome::of(o)
+}
+
+/// An ESTABLISH that answers [`HELD_STREAM`] at once.
+extern "C" fn establish_at_once(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: every service `in` leads with a `ServiceHead`.
+    assert_eq!(unsafe { *i.cast::<ServiceHead>() }.op, service::ESTABLISH);
+    answered(o, Outcome::Ready, HELD_STREAM)
+}
+
+/// An ESTABLISH (or a request piece) that never completes: the op pends on it.
+extern "C" fn never_completes(_: HostCtx, _: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    answered(o, Outcome::Pending, 0)
+}
+
+/// Log the CLOSE `i` names into `log`.
+fn log_close(log: &std::sync::Mutex<Vec<(u64, Ticket)>>, i: *const c_void) {
+    // SAFETY: a CLOSE's `in` is a `StreamIn`.
+    let i = unsafe { i.cast::<crate::abi::host::conn::connector::StreamIn>().read() };
+    let mut log = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    log.push((i.stream, i.head.handle.ticket));
+}
+
+extern "C" fn close_logged(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    log_close(&CLOSED, i);
+    answered(o, Outcome::Ready, 0)
+}
+
+/// A connector whose ESTABLISH answers a stream at once and whose request never completes.
+static CLOSING_SLOTS: ConnectorSlots = ConnectorSlots {
+    size: std::mem::size_of::<ConnectorSlots>() as u32,
+    slots: SERVICES,
+    establish: Some(establish_at_once),
+    reject_endpoint: None,
+    side_stream: None,
+    read: None,
+    write: None,
+    upgrade_secure: None,
+    facts: None,
+    checkout: None,
+    checkin: None,
+    close: Some(close_logged),
+    random: None,
+    identity: None,
+    read_reply: None,
+    write_request: Some(never_completes),
+};
+
+/// Open a [`Forward`] hook over `conns`, run one `decide` to PENDING on [`TICKET`], cancel that
+/// ticket, and close the instance.
+fn cancel_a_pending_decide(conns: &'static ConnectorSlots) {
+    let tables = HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns,
+        services: std::ptr::null(),
+        io: std::ptr::null(),
+    };
+    let mut open: OpenIn = zeroed();
+    open.host = &tables;
+    let p = opened_with::<OpenForward>(&open);
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Pending
+    );
+    let mut c: CancelIn = zeroed();
+    c.ticket = TICKET;
+    let mut co: CancelOut = zeroed();
+    assert_eq!(
+        call::<life::Cancel<HookLife<OpenForward>>>(p, CANCEL, &c, &mut co),
+        Outcome::Ready
+    );
+    assert_eq!(co.disposition, cancel::ABORTED);
+    closed::<OpenForward>(p);
+}
+
+/// RED (status row 159, a cancelled exchange leaks its connection): a hook whose exchange
+/// established its stream and pends on the request is cancelled; the SDK drops the exchange it
+/// parked, and that closes the stream on the host, once, on no ticket (a close never pends).
+#[test]
+fn a_cancelled_exchange_closes_the_stream_it_established() {
+    cancel_a_pending_decide(&CLOSING_SLOTS);
+    let seen = CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(seen, vec![(HELD_STREAM, Ticket::NONE)]);
+}
+
 /// A hook handed no connector answers its exchange unarmed, at once.
 #[test]
 fn a_hook_with_no_connector_answers_unarmed() {
