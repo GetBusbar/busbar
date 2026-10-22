@@ -132,18 +132,18 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "6a762ce7e43c05bbc83e8bda6b99151d939b06be2d2e1b6d334fdba40488c2fc",
-   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
-   "round": 3,
+   "tree_hash": "e8d00b8e751e6ee19cbafcd0eea37d572238717870b024e9340ae0827ea4b582",
+   "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 6,
-    "MEDIUM": 19,
-    "LOW": 17,
-    "NIT": 1
+    "HIGH": 5,
+    "MEDIUM": 12,
+    "LOW": 16,
+    "NIT": 8
    },
-   "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully.",
-   "auditor": "opus-r159c-root-parts",
+   "report": "Boot opens every linked transport and binds a probe of every discovered plane door whatever the configuration uses. A chain that reads back but fails verification is served over an empty rebuild, a long store outage can wedge the store lane until a restart, and unit records still omit the slice, lease and policy generation they ran under. A style no linked row states loads every dropped-in auth plugin, a dry-run registry build replaces the live secret rows, an apply leaves the plane's member fetches on boot bindings and swallows a plane's refusal, early datagram writes queue without bound, inbound needs are refused only when dropped in, admin chain reads hold the book lock across store calls, shutdown drains only the lane queue, a correction refused for its journal write can still land, and adjust answers before the store keeps it. The stored-chain walk misses a stripped signature. Read in two parts, fully.",
+   "auditor": "opus-r159e-root-parts",
    "fixed_at": null,
    "rounds": [
     {
@@ -187,6 +187,20 @@
       "NIT": 1
      },
      "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159e-root-parts",
+     "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+     "tree_hash": "e8d00b8e751e6ee19cbafcd0eea37d572238717870b024e9340ae0827ea4b582",
+     "counts": {
+      "HIGH": 5,
+      "MEDIUM": 12,
+      "LOW": 16,
+      "NIT": 8
+     },
+     "report": "Boot opens every linked transport and binds a probe of every discovered plane door whatever the configuration uses. A chain that reads back but fails verification is served over an empty rebuild, a long store outage can wedge the store lane until a restart, and unit records still omit the slice, lease and policy generation they ran under. A style no linked row states loads every dropped-in auth plugin, a dry-run registry build replaces the live secret rows, an apply leaves the plane's member fetches on boot bindings and swallows a plane's refusal, early datagram writes queue without bound, inbound needs are refused only when dropped in, admin chain reads hold the book lock across store calls, shutdown drains only the lane queue, a correction refused for its journal write can still land, and adjust answers before the store keeps it. The stored-chain walk misses a stripped signature. Read in two parts, fully."
     }
    ]
   },
@@ -196,18 +210,18 @@
    "paths": [
     "crates/busbar/src"
    ],
-   "tree_hash": "c9620f2d6c082d92a366bf8086ee9300706d23b4cfd69f138c57c206839812f5",
-   "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
-   "round": 3,
+   "tree_hash": "c438b4d9e19878806a1b3630f7ca62479591826ff40ba7c25396c2ee9c80e01e",
+   "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 0,
-    "MEDIUM": 3,
-    "LOW": 4,
-    "NIT": 1
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 5,
+    "NIT": 8
    },
-   "report": "Stdio serve mode now drains the money journal and plane records before exit. In that mode a shutdown signal is still caught and ignored, so a supervisor's stop does nothing until stdin closes, and asking for stdio serving with no plane claiming it still opens the network listeners. Two planes' pool tables are still passed by name. Any plane flag counts as the stdio flag, the table generator keeps five axes no row fills, the door apply refresh hangs on a legacy row's axis, and several comments are false. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The pools plane's config-apply refresh and health probes compile only when that plane is linked, so a dropped-in copy keeps its boot providers and pools and is never probed. A dropped-in plane's line-serve flag is never honoured, because the command line is read before any plugin is, and on the shutdown signal the line serve is dropped with its units in flight. Any plane flag counts as the line-serve flag, the table generator keeps axes and a swaps path no row fills, one connector axis selects nothing, the build stamp takes the first substring match of a flag, and several comments are false. Read fully.",
+   "auditor": "opus-r159e-busbar-src",
    "fixed_at": null,
    "exclude": [
     "crates/busbar/src/root",
@@ -255,6 +269,20 @@
       "NIT": 1
      },
      "report": "Stdio serve mode now drains the money journal and plane records before exit. In that mode a shutdown signal is still caught and ignored, so a supervisor's stop does nothing until stdin closes, and asking for stdio serving with no plane claiming it still opens the network listeners. Two planes' pool tables are still passed by name. Any plane flag counts as the stdio flag, the table generator keeps five axes no row fills, the door apply refresh hangs on a legacy row's axis, and several comments are false. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159e-busbar-src",
+     "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+     "tree_hash": "c438b4d9e19878806a1b3630f7ca62479591826ff40ba7c25396c2ee9c80e01e",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 1,
+      "LOW": 5,
+      "NIT": 8
+     },
+     "report": "The pools plane's config-apply refresh and health probes compile only when that plane is linked, so a dropped-in copy keeps its boot providers and pools and is never probed. A dropped-in plane's line-serve flag is never honoured, because the command line is read before any plugin is, and on the shutdown signal the line serve is dropped with its units in flight. Any plane flag counts as the line-serve flag, the table generator keeps axes and a swaps path no row fills, one connector axis selects nothing, the build stamp takes the first substring match of a flag, and several comments are false. Read fully."
     }
    ]
   },
@@ -2483,7 +2511,7 @@
    "paths": [
     "crates/busbar-plane-streaming-plugin/src"
    ],
-   "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+   "tree_hash": "94ac41ebaddd0de836d45d670c5312cf7b118ebb4cc7fe0bfa67f5fb2a904068",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -2495,7 +2523,7 @@
    },
    "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
    "auditor": "opus-r159c-plane-twins",
-   "fixed_at": null,
+   "fixed_at": "f1d4d737016117f5491915df4b8c0650fc6a0c7e",
    "exclude": [
     "crates/busbar-plane-streaming-plugin/src/tests"
    ],

@@ -3546,6 +3546,48 @@ fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
     );
 }
 
+/// RED (audit loader-src PL1#7; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.13 M1, l.1652-1653:
+/// "`close` is refused while units are in flight"): an admitted unit's op (a plane's `on_piece` or
+/// `serve`, [`Dispatcher::submit_unit`]) holds no `max_inflight` unit, yet while one is in flight
+/// `close` is REFUSED and never crosses, called or submitted. RED: the unit op left `inflight` at 0,
+/// so `close` took every unit and closed the instance under a pending unit, whose resume then
+/// answered FAULT and cut a stream already answered to its caller. The GREEN twin: once the unit's
+/// op has ended, `close` crosses and closes.
+#[test]
+fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_unit(
+        &p,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Stream,
+        0,
+        Arc::new(()),
+    );
+    until("the unit's held op", || d.is_pending(t));
+    let n = crossings(&p);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Refused,
+        "close crossed while a unit's op was in flight"
+    );
+    let c = d.mint(1).unwrap();
+    let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
+    assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
+    assert_eq!(crossings(&p), n, "a refused close never crossed");
+    assert!(p.is_open());
+    d.drop_client(t);
+    let _ = held.wait(WAIT).unwrap();
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Ready
+    );
+    assert!(!p.is_open());
+}
+
 /// RED (audit loader-src PL1#8; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.324-325: "The memory a
 /// call lends a plugin lives until that call completes, abandoned or not, for every kind"): when
 /// one plugin wedges a worker and the watchdog replaces it, a HEALTHY instance's op that was

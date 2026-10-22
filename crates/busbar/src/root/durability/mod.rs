@@ -504,6 +504,21 @@ impl Durability {
         self.lane.as_ref().and_then(JournalLane::refuses_money)
     }
 
+    /// RE-OFFER WHAT THE JOURNAL HOLDS BACK FROM THE STORE, and answer how many records it still
+    /// holds back. A batch the full lane turned away waits in the journal, outside the lane, until
+    /// an append re-offers it; an append of nothing does that and seals nothing. Never calls the
+    /// store: the lane takes the batch or turns it away. 0 at once on a book whose durability is not
+    /// its store, and on one that holds nothing back.
+    pub fn offer_held_back(&mut self) -> usize {
+        if !self.durable_in_store() || self.journal.buffered() == 0 {
+            return 0;
+        }
+        let token = busbar_kernel::teller::Kernel::new().durability_token();
+        // Turned away again, the batch stays retained; the count below says so.
+        let _ = self.journal.append(&token, StepName::Meter, &[]);
+        self.journal.buffered()
+    }
+
     /// Put a durable `ChainBreak` record on the journal for every segment remainder boot recovery
     /// quarantined, naming the segment file, the byte offset, the byte count and the quarantine
     /// file. `wall` is seconds since the Unix epoch. `Ok(None)` when nothing was set aside.
