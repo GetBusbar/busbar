@@ -174,9 +174,9 @@ pub struct Wal {
     /// Records the store has not acknowledged, oldest first. On disk only: a refusal there does not
     /// fail the commit, so this is the only thing that remembers the store is still owed them.
     owed_to_store: Vec<Record>,
-    /// How many records the store's catch-up queue has left on the medium at its bound, to be read
-    /// back from there.
-    store_debt_dropped: u64,
+    /// How many records, in total, the store's catch-up queue has left on the medium at its bound.
+    /// None is dropped: each is read back from there (see `store_owed_from`).
+    store_debt_on_medium: u64,
     /// Where on the medium the store's debt continues past the queue: the segment and the byte the
     /// first record the queue did not take starts at. Every record from there to the end of the log
     /// is owed to the store, after the queue's own.
@@ -340,7 +340,7 @@ impl Wal {
             gap_order: VecDeque::new(),
             lost_batch: Vec::new(),
             owed_to_store: Vec::new(),
-            store_debt_dropped: 0,
+            store_debt_on_medium: 0,
             store_owed_from: owes_store_on_open.then_some((0, 0)),
             recovered: Vec::new(),
             segments_used,
@@ -448,11 +448,11 @@ impl Wal {
         &self.owed_to_store
     }
 
-    /// How many records the store's catch-up queue has left on the medium at its bound. They are
-    /// still owed: the log reads them back from its segments and offers them, in order, once the
-    /// store takes what the queue holds.
-    pub fn store_debt_dropped(&self) -> u64 {
-        self.store_debt_dropped
+    /// How many records, in total since open, the store's catch-up queue has left on the medium at
+    /// its bound. None of them is dropped: the log reads them back from its segments and offers
+    /// them, in order, once the store takes what the queue holds.
+    pub fn store_debt_on_medium(&self) -> u64 {
+        self.store_debt_on_medium
     }
 
     /// Whether the store is owed records the queue does not hold, to be read back off the medium:
@@ -734,8 +734,8 @@ impl Wal {
                 self.store_owed_from = Some((batch_at.0, batch_at.1 + frames * FRAME_BYTES as u64));
             }
         }
-        self.store_debt_dropped = self
-            .store_debt_dropped
+        self.store_debt_on_medium = self
+            .store_debt_on_medium
             .saturating_add((batch.len() - queued) as u64);
         loop {
             if self.owed_to_store.is_empty() && !self.refill_store_debt() {
