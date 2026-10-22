@@ -377,7 +377,8 @@ async fn an_unknown_route_is_admitted_then_refused_and_settles() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-money-unknown", true);
     let (status, body) = g.post("/call/direct:nowhere", true).await;
-    assert_eq!((status, body.as_str()), (503, "refused:503:no_destination"));
+    // A route nothing holds is a policy refusal (`NotFound`): 404, never a server fault.
+    assert_eq!((status, body.as_str()), (404, "refused:404:no_destination"));
     assert_eq!(g.requests(), 1, "charged before its route was refused");
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
 }
