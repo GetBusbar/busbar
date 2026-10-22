@@ -1244,6 +1244,16 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a planted unregistered gate name is caught"                   xtask_gates_invoked_are_registered "$st_tmp/plant.sh"
   st_expect accept "every gate name THIS file invokes is in cargo xtask gate --list" xtask_gates_invoked_are_registered "$SELF"
 
+  # ── P-ITEMS: a pin in a pinned plane is reached in that plane's checkout, or the step is RED ───
+  # The P-ITEMS leg once ran `cargo test -p busbar-plane-a2a` here, where no plane is a member: every
+  # step died on "did not match any packages" before one pin ran. Each refusal is planted through the
+  # REAL helpers the steps call, beside the clean case each must accept.
+  st_expect refuse "a pinned plane cargo does not resolve is RED, never a skip"        pinned_plane_workspace busbar-plane-no-such-planted
+  st_expect accept "a pinned plane resolves to its pinned checkout's workspace"        pinned_plane_workspace busbar-plane-a2a
+  st_expect refuse "a pinned-plane run that is not \`cargo test -p <package>\` is refused" pinned_plane_cargo_test cargo build -p busbar-plane-a2a
+  st_expect refuse "one failing run fails the whole multi-run step"                     cargo_test_runs true :: false :: true
+  st_expect accept "every run passing passes the multi-run step"                        cargo_test_runs true :: true
+
   # ── --help shows the FLAGS contract (item 551) ────────────────────────────────────────────────
   st_help() { local h; h="$(bash "$SELF" --help 2>&1)" || return 1
     case "$h" in *"--fast"*) ;; *) return 1 ;; esac
