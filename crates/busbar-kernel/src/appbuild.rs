@@ -1119,7 +1119,7 @@ pub fn build_app_from_config(
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
     // — aborts the build rather than surfacing a 500 at request time.
     let login_methods = Arc::new(
-        crate::auth::token::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
+        crate::auth::login::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
             .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
     // Thread the operator-configured hard-down cooldown + honored-Retry-After ceiling into the store
