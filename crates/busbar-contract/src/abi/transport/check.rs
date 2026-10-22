@@ -461,6 +461,17 @@ pub fn check_keying(k: &KeyingMaterial) -> Result<(), Fault> {
     Ok(())
 }
 
+/// [`check_keying`] over the keying item a call lends (status rows 159 and 194): the same rules,
+/// read where it is lent. #1471 seals the `Lent` and keeps this name, so a transport checks the
+/// item it was lent with `check_keying_lent(&k)` before and after.
+///
+/// # Errors
+///
+/// As [`check_keying`].
+pub fn check_keying_lent(k: &crate::abi::sdk::Lent<'_, KeyingMaterial>) -> Result<(), Fault> {
+    check_keying(k.get())
+}
+
 /// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
 /// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
