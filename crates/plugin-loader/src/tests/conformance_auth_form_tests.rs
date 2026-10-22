@@ -4,6 +4,7 @@
 //! The auth suite reads a `begin_login` credential form as production reads it.
 
 use super::*;
+use busbar_contract::abi::auth::{LoginField, FORM_TEXT};
 
 /// A READY `begin_login` answer whose form is `fields`.
 fn form_of(fields: &[LoginField]) -> BeginLoginOut {

@@ -1021,7 +1021,7 @@ impl Drop for Submitted {
 }
 
 #[path = "auth_login.rs"]
-mod login;
+pub(crate) mod login;
 
 #[cfg(test)]
 #[path = "tests/auth_door_tests.rs"]
