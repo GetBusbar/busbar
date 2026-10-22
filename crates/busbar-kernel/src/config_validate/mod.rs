@@ -313,17 +313,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // provider sweep (not just its protocol arm) is a function a test can drive against an EMPTY
     // set. See `validate_providers_with` for why the empty set is the load-bearing case.
     //
-    // Read through `registry().codec_protocols()` rather than the `known_protocols()` re-export:
-    // both yield the same codec set (`known_protocols` IS `registry().codec_protocols()`), but the
-    // `registry()` accessor SEEDS core's own-test built-in tail first, where the bare re-export does
-    // not. Under the test-support surface, validation can be a test's FIRST registry read (an
-    // app-boot fixture that never hit a request path), and an unseeded read would spuriously see an
-    // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
-    // the direct substrate re-export and the composition root installed the protocols in `main`.
+    // The known set is the registered planes' DECLARED provider dialects
+    // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3): each plane states which
+    // of its dialects a provider's `protocol` may name, as data, and the kernel names none.
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
     // P2-243/P2-decvalidate) — a plane like the decisions plane speaks a dialect with no translating
-    // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
+    // IR (jev), so it is never a provider dialect the fallback plane declares and would otherwise be an "unknown
     // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
     // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a
     // plane's own dialect restriction is a declared CONSTANT, so a throwaway default instance
@@ -333,9 +329,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
-        .codec_protocols()
-        .to_vec();
+    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
     for decl in crate::plane::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
@@ -446,69 +440,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // produce a breaker that either never protects the backend or trips it open on the first
         // hiccup, defeating the failure-handling guarantee. Reject them at startup (fail-loud).
         if let Some(breaker) = &pool_cfg.breaker {
-            // A `base_cooldown_secs: 0` or `max_cooldown_secs: 0` parses fine but yields a degenerate
-            // breaker with NO cooldown: when the breaker trips open it would re-admit the failing
-            // backend immediately (the cooldown window is zero seconds), defeating the back-off the
-            // breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-floor
-            // guards below (min_requests/window_s/n >= 1) — reject a zero floor on EITHER cooldown
-            // field at boot rather than ship a breaker that never actually pauses the backend. (The
-            // inversion check below additionally requires max >= base; the two together pin both
-            // fields to >= 1 with max >= base.)
-            if breaker.base_cooldown_secs == 0 {
-                errors.push(format!(
-                    "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-                ));
-            }
-            if breaker.max_cooldown_secs == 0 {
-                errors.push(format!(
-                    "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-                ));
-            }
-            // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
-            // pin every cooldown below the configured base — reject the inversion.
-            if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
-                errors.push(format!(
-                    "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
-                    pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
-                ));
-            }
-            if let Some(trip) = &breaker.trip {
-                // min_requests is the floor below which error-rate trips are suppressed; 0 makes the
-                // floor vacuous so a single error in an otherwise-empty window can trip.
-                if trip.min_requests == 0 {
-                    errors.push(format!(
-                        "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
-                    ));
-                }
-                // window_s is the sliding-window length; a 0 window holds no outcomes so the
-                // count is always below min_requests and the error-rate breaker never trips.
-                if trip.window_secs == 0 {
-                    errors.push(format!(
-                        "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
-                    ));
-                }
-                match trip.mode {
-                    crate::config::BreakerTripMode::ErrorRate => {
-                        // threshold is an error-rate fraction; the rate is capped at 1.0, so a
-                        // threshold > 1.0 can never trip and <= 0.0 trips on the first error.
-                        if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
-                            errors.push(format!(
-                                "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
-                                pool_name, trip.threshold
-                            ));
-                        }
-                    }
-                    crate::config::BreakerTripMode::Consecutive => {
-                        // n is the consecutive-failure streak length; n == 0 makes `streak >= 0`
-                        // always true so the lane trips on every evaluation.
-                        if trip.consecutive_n == 0 {
-                            errors.push(format!(
-                                "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
-                            ));
-                        }
-                    }
-                }
-            }
+            check_pool_breaker(pool_name, breaker, &mut errors);
         }
 
         // Rule 6b: Validate the per-pool failover budget. `failover.timeout_secs == 0` is the exact
@@ -648,6 +580,16 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     ));
                 }
             }
+        }
+    }
+
+    // Rule 6, EVERY PLANE'S POOLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+    // functionality"): a pool written under another plane's section (`<verb>.pools`) is not in
+    // `pools`, but it carries the same `breaker:` block, so it is held to the same rules in the same
+    // words.
+    for (pool_name, pool_cfg) in cfg.plane_pools.values().flat_map(|pools| pools.iter()) {
+        if let Some(breaker) = &pool_cfg.breaker {
+            check_pool_breaker(pool_name, breaker, &mut errors);
         }
     }
 
@@ -1300,6 +1242,79 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     }
 }
 
+/// Rule 6, for one pool's `breaker:` block: the pathological-but-parseable values that ship a
+/// breaker which never protects the backend or trips on the first hiccup. One body for every
+/// plane's pools, so a refusal reads the same whichever plane the pool belongs to.
+fn check_pool_breaker(
+    pool_name: &str,
+    breaker: &crate::config::BreakerCfg,
+    errors: &mut Vec<String>,
+) {
+    // A `base_cooldown_secs: 0` or `max_cooldown_secs: 0` parses fine but yields a degenerate
+    // breaker with NO cooldown: when the breaker trips open it would re-admit the failing
+    // backend immediately (the cooldown window is zero seconds), defeating the back-off the
+    // breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-floor
+    // guards below (min_requests/window_s/n >= 1) — reject a zero floor on EITHER cooldown
+    // field at boot rather than ship a breaker that never actually pauses the backend. (The
+    // inversion check below additionally requires max >= base; the two together pin both
+    // fields to >= 1 with max >= base.)
+    if breaker.base_cooldown_secs == 0 {
+        errors.push(format!(
+            "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+        ));
+    }
+    if breaker.max_cooldown_secs == 0 {
+        errors.push(format!(
+            "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+        ));
+    }
+    // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
+    // pin every cooldown below the configured base — reject the inversion.
+    if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
+        errors.push(format!(
+            "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
+            pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
+        ));
+    }
+    if let Some(trip) = &breaker.trip {
+        // min_requests is the floor below which error-rate trips are suppressed; 0 makes the
+        // floor vacuous so a single error in an otherwise-empty window can trip.
+        if trip.min_requests == 0 {
+            errors.push(format!(
+                "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
+            ));
+        }
+        // window_s is the sliding-window length; a 0 window holds no outcomes so the
+        // count is always below min_requests and the error-rate breaker never trips.
+        if trip.window_secs == 0 {
+            errors.push(format!(
+                "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
+            ));
+        }
+        match trip.mode {
+            crate::config::BreakerTripMode::ErrorRate => {
+                // threshold is an error-rate fraction; the rate is capped at 1.0, so a
+                // threshold > 1.0 can never trip and <= 0.0 trips on the first error.
+                if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
+                    errors.push(format!(
+                        "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
+                        pool_name, trip.threshold
+                    ));
+                }
+            }
+            crate::config::BreakerTripMode::Consecutive => {
+                // n is the consecutive-failure streak length; n == 0 makes `streak >= 0`
+                // always true so the lane trips on every evaluation.
+                if trip.consecutive_n == 0 {
+                    errors.push(format!(
+                        "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Range-check the resolved operational limits. Pushes a message per violation (collect-all, like the
 /// rest of `validate`). The bounds are intentionally loose: each default is the production working
 /// value, so we only reject values that would make a subsystem non-functional.
@@ -1827,19 +1842,19 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         Some(_) => {}
     }
 
-    // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME. The built-ins are
-    // `env` and `file`; ANY OTHER module name is a `kind: secret` PLUGIN reference (vault, aws-sm,
-    // …), which is the marquee 1.5.0 "secrets are plugins" feature. Whether such a plugin actually
-    // exists + is `kind: secret` + is trusted is resolved against the plugin REGISTRY — but this
-    // function runs at boot AND `--validate` BEFORE the plugin pre-flight builds that registry, and
-    // captures none, so it CANNOT tell an installed vault plugin from a typo. Therefore the
-    // module-EXISTENCE check for a non-built-in module is DEFERRED to the shared plugin pre-flight
-    // (`validate_secret_refs`, called from `plugins_preflight`'s two call-sites) — the SAME deferral
-    // the `store.module` plugin reference already uses (a non-`memory` store is only checked once the
-    // registry exists). Here we validate ONLY the STRUCTURE that is checkable without the registry:
-    // the built-in `env`/`file` modules' required settings. The VALUE is never resolved here (CI
-    // validates config structure without secrets present); resolution failures are boot-time
-    // fail-closed errors.
+    // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME, and every module is a
+    // `kind: secret` PLUGIN reference. Whether such a plugin actually exists + is `kind: secret` +
+    // is trusted is resolved against the plugin REGISTRY — but this function runs at boot AND
+    // `--validate` BEFORE the plugin pre-flight builds that registry, and captures none, so it
+    // CANNOT tell an installed plugin from a typo. Therefore the module-EXISTENCE check is DEFERRED
+    // to the shared plugin pre-flight (`validate_secret_refs`, called from `plugins_preflight`'s two
+    // call-sites) — the SAME deferral the `store.module` plugin reference already uses. Here we
+    // validate ONLY the STRUCTURE that is checkable without the registry: the settings key each
+    // loaded secret plugin's declared shorthand names (its Statement's `REWRITE_SUGAR`; audit
+    // contract-admin #10, Law 1: the kernel reads the shorthand off the plugins and names no
+    // source). The VALUE is never resolved here (CI validates config structure without secrets
+    // present); resolution failures are boot-time fail-closed errors.
+    let sugars = crate::config::secret::sugars();
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
         // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
@@ -1852,45 +1867,19 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     "{what}: `none` declares that there is NO credential, which is only meaningful \
                      for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
                      {what} requires a real secret reference, e.g. \
-                     {what}: {{ env: MY_SECRET_VAR }}"
+                     {what}: {}",
+                    example_reference(&sugars, "MY_SECRET_VAR")
                 ));
             }
             // Nothing structural left to check: `none` names no module settings at all.
             return;
         }
-        // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
-        // `{ file: "" }` sugar already rejects an empty value in the deserializer
-        // (contract secret_ref), but the CANONICAL `{ module: env, settings: { key: "" } }` form
-        // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
-        // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
-        // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.
-        // Reject both the MISSING and the EMPTY cases here, mirroring the sugar check.
-        if r.module == crate::config::secret::SECRET_MODULE_ENV {
-            match r.env_var() {
-                None => errors.push(format!(
-                    "{what}: secret module 'env' requires settings.key (the environment variable \
-                     name)"
-                )),
-                Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'env' requires a NON-EMPTY settings.key (the \
-                     environment variable name)"
-                )),
-                Some(_) => {}
-            }
-        } else if r.module == crate::config::secret::SECRET_MODULE_FILE {
-            match r.file_path() {
-                None => errors.push(format!(
-                    "{what}: secret module 'file' requires settings.path (the file to read)"
-                )),
-                Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'file' requires a NON-EMPTY settings.path (the file to \
-                     read)"
-                )),
-                Some(_) => {}
-            }
+        if let Some(refusal) = declared_setting_refusal(&sugars, &what, r) {
+            errors.push(refusal);
         }
-        // A non-built-in module name (a `kind: secret` plugin reference) is NOT rejected here: its
-        // existence is proven against the registry in `validate_secret_refs` at plugin pre-flight.
+        // A module no loaded plugin declares a shorthand for is NOT rejected here: its existence is
+        // proven against the registry in `validate_secret_refs` at plugin pre-flight, which refuses
+        // an unknown module in 1.5.5's words.
     };
     // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
     // structural check here and the registry-backed module-existence check at plugin pre-flight
@@ -1899,16 +1888,22 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         check_secret(what, r);
     }
 
-    // secrets (module-level `open()` config for `kind: secret` plugins): the built-in `env` / `file`
-    // modules take NO module config, so naming them under `secrets:` is a mistake (their settings live
-    // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
-    // shared `plugins_preflight` verifies against the registry at boot.
+    // secrets (module-level `open()` config for `kind: secret` plugins): a LINKED source takes NO
+    // module config, so naming it under `secrets:` is a mistake (its settings live per-reference,
+    // under the keys the loaded plugins' shorthand declares). Any other module additionally
+    // requires the plugin subsystem, which the shared `plugins_preflight` verifies against the
+    // registry at boot.
+    let per_reference = sugars
+        .iter()
+        .map(|s| format!("`{}`", s.setting))
+        .collect::<Vec<_>>()
+        .join(" / ");
     for module in cfg.secrets.keys() {
         if crate::config::secret::is_linked_secret(module) {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
-                 config; its settings (`key` / `path`) belong on each individual secret reference, \
-                 not in the top-level `secrets:` block"
+                 config; its settings ({per_reference}) belong on each individual secret \
+                 reference, not in the top-level `secrets:` block"
             ));
         }
     }
@@ -1920,6 +1915,43 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
     if token.is_some() && !operator::answered(operator_provider()) {
         errors.push(operator::unanswered_token(operator_provider()));
+    }
+}
+
+/// An example secret reference to the value of the process variable `var`, for a refusal to show:
+/// the shorthand of the loaded plugin whose declared role is the config fill
+/// (`REWRITE_SUGAR_ROLE`), or the canonical form when none declares it. The kernel names no source.
+fn example_reference(sugars: &busbar_contract::secret_ref::Sugars, var: &str) -> String {
+    match sugars.with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL) {
+        Some(s) => format!("{{ {}: {var} }}", s.word),
+        None => "{ module: <secret-module>, settings: {…} }".to_string(),
+    }
+}
+
+/// THE STRUCTURAL REFUSAL of a secret reference to a module whose shorthand a loaded secret
+/// plugin declares (audit contract-admin #10, Law 1): the reference must set the settings key that
+/// shorthand's value lands under, NON-EMPTY, in what the plugin's Statement says the value names
+/// (`REWRITE_SUGAR`, `REWRITE_SUGAR_NAMES`). The shorthand spelling already rejects an empty value
+/// in the deserializer, but the CANONICAL `{ module: <word>, settings: { <key>: "" } }` form
+/// bypasses that arm. Left unchecked, such a config passes `--validate` as "ok" then fail-closes at
+/// boot, so a clean validate would no longer imply a clean boot. A module no loaded plugin declares
+/// a shorthand for answers `None`: its existence is the registry's to prove.
+fn declared_setting_refusal(
+    sugars: &busbar_contract::secret_ref::Sugars,
+    what: &str,
+    r: &crate::config::SecretRef,
+) -> Option<String> {
+    let sugar = sugars.get(&r.module)?;
+    match r.settings.get(&sugar.setting).and_then(|v| v.as_str()) {
+        None => Some(format!(
+            "{what}: secret module '{}' requires settings.{} ({})",
+            r.module, sugar.setting, sugar.names
+        )),
+        Some(v) if v.trim().is_empty() => Some(format!(
+            "{what}: secret module '{}' requires a NON-EMPTY settings.{} ({})",
+            r.module, sugar.setting, sugar.names
+        )),
+        Some(_) => None,
     }
 }
 
@@ -2693,3 +2725,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/store_required_tests.rs"]
 mod store_required_tests;
+
+#[cfg(test)]
+#[path = "tests/secret_shorthand_declared_tests.rs"]
+mod secret_shorthand_declared_tests;

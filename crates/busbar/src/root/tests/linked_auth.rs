@@ -27,10 +27,12 @@ fn link() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    busbar_kernel::test_support::register_neutral_test_plane();
 }
 
 /// The operator credential's provider key, read AFTER the root's words are handed in. Before the
@@ -1064,7 +1066,8 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
              [rekey-model]\n  gpool-b:\n    members: [rekey-model]",
         )
         .expect("the section"),
-    );
+    )
+    .expect("the pools");
     // What the caller reads: the identity refusal's 401, the grant's 403, else served.
     let answer = |credential: &'static str, pool: &'static str| {
         let (auth, app, pools) = (Arc::clone(&auth), Arc::clone(&app), pools.clone());

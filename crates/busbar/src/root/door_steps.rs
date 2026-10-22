@@ -69,17 +69,24 @@ pub struct DoorPools {
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
+    /// Each pool's `breaker:` block, where its `pools:` entry states one ([`POOL_BREAKER_KEY`]):
+    /// the same block, read the same way, as a top-level pool's (BUSBAR-1.6.0.md THE DESIGN
+    /// §1: "Any plugin gets all functionality").
+    breakers: BTreeMap<String, busbar_kernel::config::BreakerCfg>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
 pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
-    /// The pools `section` states.
-    #[must_use]
-    pub fn of(section: &serde_yaml::Value) -> Self {
+    /// The pools `section` states. REFUSED where a member written `{name, tier}` carries a tier
+    /// that is no unsigned integer that fits `u32` (a member that writes no tier states none, tier
+    /// `0`): the tier is core-owned
+    /// ([`crate::root::serve::pools_into`] writes each member's declared index), so a bad one is a
+    /// core bug, and defaulting it to `0` would route that member at the top tier in silence.
+    pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
-            return Self::default();
+            return Ok(Self::default());
         };
         let key = |k: &serde_yaml::Value| k.as_str().map(str::to_owned);
         // A model-serving section's entries are its `models` map's; any other section's are its own
@@ -99,36 +106,24 @@ impl DoorPools {
                 })
                 .collect(),
         };
-        let pools = map
+        let mut pools: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut tiers: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        for (name, pool) in map
             .get(RESERVED_POOLS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
-            .map(|pools| {
-                pools
-                    .iter()
-                    .filter_map(|(name, pool)| {
-                        Some((
-                            key(name)?,
-                            members(pool).into_iter().map(|(m, _)| m).collect(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let tiers = map
-            .get(RESERVED_POOLS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
-            .map(|pools| {
-                pools
-                    .iter()
-                    .filter_map(|(name, pool)| {
-                        Some((
-                            key(name)?,
-                            members(pool).into_iter().map(|(_, t)| t).collect(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = key(name) else {
+                continue;
+            };
+            let listed = members(pool).map_err(|e| format!("pool '{name}': {e}"))?;
+            pools.insert(
+                name.clone(),
+                listed.iter().map(|(m, _)| m.clone()).collect(),
+            );
+            tiers.insert(name, listed.into_iter().map(|(_, t)| t).collect());
+        }
         let fallbacks = map
             .get(RESERVED_POOLS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
@@ -160,6 +155,21 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        // THE POOL'S `breaker:` BLOCK, carried here by `serve::pools_into` from the pool's
+        // `<verb>.pools` entry (already held to `config_validate`'s Rule 6), never handed to the plane.
+        let breakers = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        let block = pool.get(POOL_BREAKER_KEY)?.clone();
+                        Some((key(name)?, serde_yaml::from_value(block).ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
         let timeouts = entries
@@ -174,14 +184,21 @@ impl DoorPools {
                 Some((entry.clone(), ms))
             })
             .collect();
-        DoorPools {
+        Ok(DoorPools {
             entries,
             pools,
             fallbacks,
             member_granted,
             timeouts,
             tiers,
-        }
+            breakers,
+        })
+    }
+
+    /// The `breaker:` block `pool` states, where it states one; `None` = the defaults.
+    #[must_use]
+    pub fn breaker(&self, pool: &str) -> Option<&busbar_kernel::config::BreakerCfg> {
+        self.breakers.get(pool)
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
@@ -257,6 +274,11 @@ impl DoorPools {
 /// grammar's own words, `busbar_kernel::config::pools::OnExhaustedCfg`).
 const ON_EXHAUSTED_KEY: &str = "on_exhausted";
 const FALLBACK_POOL_KEY: &str = "fallback_pool";
+
+/// A pool's `breaker:` key, in the pools grammar's own word (`busbar_kernel::config::PoolCfg`'s
+/// `breaker`): the core-owned block `serve::pools_into` carries onto a door section's pool and
+/// `serve::plane_settings` strikes before the plane is handed its section.
+pub(crate) const POOL_BREAKER_KEY: &str = "breaker";
 
 impl DoorPools {
     /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
@@ -342,27 +364,44 @@ impl DoorPools {
 }
 
 /// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
-/// member's tier (`0` where it states none, or states one that is no unsigned integer).
-fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
-    pool.get(POOL_MEMBERS_KEY)
+/// member's tier. A member that WRITES NO TIER, a bare name or an object naming its entry
+/// (`{name}`, `busbar_contract::section::POOL_MEMBER_NAME_KEY`), states none: tier `0`, the
+/// unordered pool, as the section read it before the refusal (the reserved `tier` sub-key is
+/// optional, `BUSBAR-1.6.0.md` l.552-554). A member that WRITES a `tier`, as
+/// [`crate::root::serve::pools_into`] does for every member it lays, must write an unsigned integer
+/// that fits `u32`: anything else is refused, never read as `0`.
+fn members(pool: &serde_yaml::Value) -> Result<Vec<(String, u32)>, String> {
+    let Some(list) = pool
+        .get(POOL_MEMBERS_KEY)
         .and_then(serde_yaml::Value::as_sequence)
-        .map(|list| {
-            list.iter()
-                .filter_map(|m| {
-                    let name = m.as_str().or_else(|| {
-                        m.get(POOL_MEMBER_NAME_KEY)
-                            .and_then(serde_yaml::Value::as_str)
-                    })?;
-                    let tier = m
-                        .get(POOL_MEMBER_TIER_KEY)
-                        .and_then(serde_yaml::Value::as_u64)
-                        .and_then(|t| u32::try_from(t).ok())
-                        .unwrap_or(0);
-                    Some((name.to_owned(), tier))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for m in list {
+        if let Some(name) = m.as_str() {
+            out.push((name.to_owned(), 0));
+            continue;
+        }
+        let Some(name) = m
+            .get(POOL_MEMBER_NAME_KEY)
+            .and_then(serde_yaml::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(written) = m.get(POOL_MEMBER_TIER_KEY) else {
+            out.push((name.to_owned(), 0));
+            continue;
+        };
+        let tier = written
+            .as_u64()
+            .and_then(|t| u32::try_from(t).ok())
+            .ok_or_else(|| {
+                format!("member '{name}' has tier {written:?}, which is no unsigned integer that fits u32")
+            })?;
+        out.push((name.to_owned(), tier));
+    }
+    Ok(out)
 }
 
 /// THE KEY A DOOR PLANE'S ENTRY IS PRICED, METERED AND ROUTED UNDER (ARCHITECT Q-FL3: "keys the
@@ -722,8 +761,8 @@ impl<'s> DoorSteps<'s> {
     /// Whether the unit's far end CUT its STREAMED answer after its head, as the driver told the
     /// steps at the unit's audit ([`DriverSteps::answered`]): the caller asked for the answer
     /// streamed (`ROUTE_STREAM`), and its connection failed, or its send's deadline passed, before
-    /// the answer completed. A whole (non-stream) answer cut by its far end is not one: it bills
-    /// what its far end reported (owner ruling Q31, oracle cell `route.failover|fo|primary-cut-body`).
+    /// the answer completed. A whole (non-stream) answer cut by its far end is not one. Neither
+    /// changes the bill: the unit bills what its plane ledgered (owner ruling 2026-10-20).
     #[must_use]
     pub fn stream_cut(&self) -> bool {
         let u = self.lock();
@@ -906,6 +945,13 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    fn pool_holds(&self, pool: &[u8], member: &str) -> bool {
+        std::str::from_utf8(pool)
+            .ok()
+            .and_then(|pool| self.pools.pools().get(pool))
+            .is_some_and(|members| members.iter().any(|m| m == member))
+    }
+
     fn decoded(&self, _ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
         let mut u = self.lock();
         u.op = Some(op);
@@ -929,15 +975,10 @@ impl DriverSteps for DoorSteps<'_> {
         }
     }
 
-    fn answered(&self, ctx: &UnitCtx, streamed: bool, cut: bool) {
+    fn answered(&self, _ctx: &UnitCtx, streamed: bool, cut: bool) {
+        // A stream the far end cut bills what its plane ledgered, as any other: the cut is a fact
+        // of the unit's end, never a reason to drop its usage (owner ruling 2026-10-20).
         self.lock().answered = (streamed, cut);
-        // A stream the far end cut bills no usage (status row 183): its money steps drop the usage
-        // it reported before its line is read and its end settled.
-        if self.stream_cut() {
-            if let Some(money) = self.money {
-                money.far_cut(ctx.key);
-            }
-        }
     }
 
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
@@ -1388,11 +1429,13 @@ pub fn label_bound(
 /// one member per entry `routes` seals (each named by its (plane key, entry), Q-FL3), a pool per
 /// named pool of its section (its members, its fallback pool) and a pool per entry its direct
 /// routes walk, the breaker under every pool's default ladder, the members' permits, the node's
-/// clock and counters, and `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)).
+/// counters, `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)) and `clock`, the
+/// walk's clock the plane was composed on (the node's, [`crate::root::egress_ports::NodeClock`]).
 ///
 /// # Errors
 ///
 /// A named pool whose member entry has no sealed route: the load is refused, naming both.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_egress(
     facts: &DoorFacts,
     pools: &DoorPools,
@@ -1400,6 +1443,7 @@ pub fn compose_egress(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
     stream_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};
@@ -1483,25 +1527,47 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
-    // Every cell of this plane's members under the default ladder, with the plane's declared
-    // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
-    let cell = || {
-        let mut cfg = busbar_kernel::store::pool_breaker_cfg(None);
+    // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
+    // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
+    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
+    // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
+    // reads exactly the ladder it always did.
+    let cell = |pool: Option<&str>| {
+        let mut cfg = busbar_kernel::store::pool_breaker_cfg(pool.and_then(|p| pools.breaker(p)));
         if let Some(bench) = facts.bench_below_trip_threshold {
             cfg.bench_below_trip_threshold = bench;
         }
         cfg
     };
     let policy = built.keys().fold(
-        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
-        |policy, pool| policy.with_pool(pool.as_str(), cell()),
+        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell(None)),
+        |policy, pool| policy.with_pool(pool.as_str(), cell(Some(pool.as_str()))),
     );
+    // The process-wide `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`,
+    // as published for the generation this egress is sealed for (boot's commit, or the swap that
+    // refreshes the door planes onto a new generation): the same two limits the lane store's
+    // cells run under (THE DESIGN §1). Unpublished (a test process), the defaults — the values
+    // every default deployment runs under.
+    let (hard_down_cooldown_secs, max_honored_retry_after_secs) =
+        busbar_kernel::config::limits::installed().map_or(
+            (
+                busbar_kernel::config::limits::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
+                busbar_kernel::config::limits::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+            ),
+            |l| (l.hard_down_cooldown_secs, l.max_honored_retry_after_secs),
+        );
+    let unit = busbar_kernel_breaker::BreakerUnit::new()
+        .with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::with_policy(policy)),
+        breaker: Arc::new(crate::root::adapters::BreakerAdapter::new(
+            Arc::new(unit),
+            policy,
+        )),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
-        clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
+        clock,
         journal,
         telemetry: Arc::new(
             crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
@@ -1525,8 +1591,9 @@ pub fn compose_egress(
 /// validated `{section: value}` object per `open`/`refresh`): the kernel-owned sections it reads
 /// ([`kernel_sections`]), the providers its members are reached through ([`provider_routes`]) and
 /// the model-serving pools' bounds ([`crate::root::model_egress::ModelPools`]). Projected from each
-/// resolved configuration as it is built (`busbar_kernel::appbuild::set_config_projection`), and
-/// read back when that generation is swapped in.
+/// resolved configuration as it is built (the root's install record,
+/// `busbar_kernel::preflight::RootInstall::config_projection`), and read back when that generation
+/// is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
@@ -2014,15 +2081,24 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
-    /// Every auth row's outbound facts, read once at the first serving (each row bound once to
-    /// read them), so a serving binds only the row it opens.
-    facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// Each linked row's outbound facts, READ off its door's `'static` Statement at the first
+    /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
+    /// static declaration, its kind tail included, is reading, not loading).
+    linked_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// Each dropped-in row's outbound facts, read only when no linked row states a style asked
+    /// for. A dropped row's auth tail is in its library alone (its signed rendering states the
+    /// tail's size, never its styles), so each is bound once to read them.
+    dropped_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
     /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
     /// plugin's validate and open crossings never run under a host lock).
     opened: crate::root::loader::open_once::OpenOnce<
         String,
         crate::root::loader::dispatch::auth_outbound::OutboundInstance,
     >,
+    /// TEST PROBE: every row [`Self::load_with`] was asked to bind, by name, in order (Law 7: an
+    /// auth row no configured style selects is never bound).
+    #[cfg(test)]
+    bound: Mutex<Vec<String>>,
 }
 
 /// One auth row's outbound facts: where its door is, the styles its Statement states, and whether
@@ -2070,8 +2146,11 @@ impl OutboundAuths {
             linked: linked.to_vec(),
             dropped,
             conns,
-            facts: std::sync::OnceLock::new(),
+            linked_facts: std::sync::OnceLock::new(),
+            dropped_facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
+            #[cfg(test)]
+            bound: Mutex::default(),
         }
     }
 
@@ -2130,6 +2209,11 @@ impl OutboundAuths {
     > {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        #[cfg(test)]
+        self.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(name.to_string());
         match door {
             AuthRowDoor::Linked(i) => {
                 let (_, _, door) = self.linked.get(i)?;
@@ -2153,26 +2237,59 @@ impl OutboundAuths {
         }
     }
 
-    /// Every auth row's outbound facts, linked first, then dropped in, read once: each row is bound
-    /// once to read them, then let go. A row that will not load is passed over.
-    fn facts(&self) -> &[AuthRowFacts] {
-        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
-        self.facts.get_or_init(|| {
-            let linked = self
-                .linked
+    /// The rows stating the outbound `style`, in the order a serving tries them: the linked rows
+    /// whose Statement states it, then (read only once no linked row served it) the dropped-in rows
+    /// stating it.
+    fn stating<'a>(&'a self, style: &'a str) -> impl Iterator<Item = &'a AuthRowFacts> + 'a {
+        self.linked_facts()
+            .iter()
+            .chain(std::iter::once_with(move || self.dropped_facts()).flatten())
+            .filter(move |row| row.styles.iter().any(|s| s.name == style))
+    }
+
+    /// Every linked row's outbound facts, read once off its door's `'static` Statement: the styles
+    /// its auth tail states, and whether a need of its takes its target from its settings
+    /// (`target_from`: one instance per binding's settings). No row is bound. A row whose
+    /// Statement a bind refuses states nothing here.
+    fn linked_facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::kinds::auth::stated_facts;
+        use crate::root::loader::dispatch::LinkedRow;
+        self.linked_facts.get_or_init(|| {
+            self.linked
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
-            let dropped = self
-                .dropped
+                .filter_map(|(i, (name, _, door))| {
+                    let styles = stated_facts(*door).ok()?.styles;
+                    let per_binding = LinkedRow::of(*door)
+                        .ok()
+                        .and_then(|row| {
+                            busbar_contract::abi::mechanism::rendering::read(&row.statement).ok()
+                        })
+                        .is_some_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
+                    Some(AuthRowFacts {
+                        name: (*name).to_string(),
+                        door: AuthRowDoor::Linked(i),
+                        styles,
+                        per_binding,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Every dropped-in row's outbound facts, read once: each row is bound once to read them (its
+    /// tail is in its library alone), then let go. A row that will not load is passed over.
+    fn dropped_facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
+        self.dropped_facts.get_or_init(|| {
+            self.dropped
                 .map_or(&[][..], |r| r.loadable())
                 .iter()
                 .enumerate()
                 .filter(|(_, r)| r.manifest.kind == "auth")
-                .map(|(i, r)| (r.manifest.name.clone(), AuthRowDoor::Dropped(i)));
-            linked
-                .chain(dropped)
-                .filter_map(|(name, door)| {
+                .filter_map(|(i, r)| {
+                    let name = r.manifest.name.clone();
+                    let door = AuthRowDoor::Dropped(i);
                     let plugin = self.load(&name, door)?;
                     Some(AuthRowFacts {
                         styles: outbound_styles(&plugin),
@@ -2223,7 +2340,7 @@ impl OutboundAuths {
             Some((stripped, userinfo)) => (stripped, userinfo.clone().or(presented)),
             None => (settings, presented),
         };
-        for row in self.facts() {
+        for row in self.stating(style) {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
                 continue;
             };
@@ -2568,9 +2685,12 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
 
 impl OutboundAuths {
     /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
-    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
-    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
-    /// credential or no row states the style.
+    /// serving `style`, loaded as a CHECK bind (`ConnTable::Probe`: a need it declares is not
+    /// declared and it is handed no table, so it reaches nothing), and the refusals it names for the
+    /// credential itself — its `credential:` lines, their text. Empty when it accepts the credential
+    /// or no row states the style. A `ConnTable::NoNeeds` bind would REFUSE every plugin that
+    /// declares a need (a token endpoint), so the styles that mint would be passed over and their
+    /// malformed credentials pass `--validate` that boot refuses (oracle BOOT-035).
     ///
     /// # Errors
     ///
@@ -2583,11 +2703,8 @@ impl OutboundAuths {
     ) -> Result<Vec<String>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         use crate::root::loader::dispatch::ConnTable;
-        for row in self.facts() {
-            if !row.styles.iter().any(|s| s.name == style) {
-                continue;
-            }
-            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+        for row in self.stating(style) {
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::Probe) else {
                 continue;
             };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
@@ -3818,7 +3935,12 @@ fn registration_anchors(
     let pin = busbar_kernel::trust::section::parse_entry(&at, registration, &served.trust_keys)?
         .pin
         .filter(|p| p.peer_key)
-        .and_then(|p| p.key);
+        .and_then(|p| p.key)
+        .map(|written| {
+            busbar_contract::transport::trust::canonical_key_pin(&written)
+                .map_err(|_| peer_key_pin_refusal(&at, &served.trust_keys))
+        })
+        .transpose()?;
     // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4f): sealed beside
     // its pin, honoured by the connector's one guard for this member's need alone.
     let private_reach =
@@ -3856,6 +3978,28 @@ fn registration_anchors(
     })
 }
 
+/// THE REFUSAL OF A PEER-KEY PIN THAT NAMES NO DIGEST, at the registration `at`
+/// (`` `<section>.<name>` ``): the field, and the form it takes. The value is not echoed: what was
+/// pasted there may not be a public key digest at all.
+fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl]) -> String {
+    let k = keys
+        .iter()
+        .find(|k| k.role == busbar_contract::plane::TrustRole::Pin)
+        .map_or("pin", |k| k.key);
+    format!(
+        "{at}: `{k}.key:` is not a key pin. Write `sha256/<base64>`: the standard, padded base64 \
+         of the 32-byte SHA-256 digest of the far end's certificate SubjectPublicKeyInfo (the \
+         plain `<base64>` of the same digest is also accepted)."
+    )
+}
+
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
 pub(crate) mod tests;
+
+// A registration's anchors read here, sealed on the in-tree connector over this build's linked
+// wires and dialled over real TLS: the build links a wire to dial over, and the plane door whose
+// section's registrations seal a peer-key pin and a client identity.
+#[cfg(all(test, linked_axis_transport_door, linked_section_agents))]
+#[path = "tests/registration_pin.rs"]
+mod registration_pin_tests;

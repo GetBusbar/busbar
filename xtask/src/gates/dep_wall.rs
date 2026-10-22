@@ -99,7 +99,10 @@ const VALUE_PATHS: &[&str] = &[
 /// scans. Its eight pins in the ledger drained with it and are struck there. `busbar-a2a` likewise
 /// (FLIP-A2A): the a2a plane is its door crate `busbar-plane-a2a`, a `gate.plugin_kinds.plane` row.
 /// `busbar-voice` likewise (FLIP-STREAMING).
-const LEGACY: &[&str] = &["crates/busbar-llm"];
+/// `busbar-llm` likewise, the last of them (DEV-GREEN row 83, coordinator ruling 2026-10-18): the
+/// llm plane is its door crate `busbar-plane-llm`, a `gate.plugin_kinds.plane` row. No legacy engine
+/// crate is left for this list to name.
+const LEGACY: &[&str] = &[];
 
 /// The external source a plugin repository resolves from.
 const EXTERNAL_SOURCE: &str = "git+https://github.com/GetBusbar/";
@@ -311,9 +314,43 @@ fn forwards(pkg: &Pkg) -> Vec<String> {
 /// every pinned plugin whose own source read no file (a scan that read nothing proved nothing).
 pub type Measured = (Offenders, usize, BTreeSet<String>, Vec<String>);
 
-/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
-pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
-    let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml")?)
+/// The workspace as `cargo metadata` resolves it: every package by id, and every resolve node.
+struct Workspace {
+    pkgs: BTreeMap<String, Pkg>,
+    nodes: BTreeMap<String, Node>,
+}
+
+/// THE WORKSPACE [`measure`] walks, READ ONCE PER CHECKOUT AND PROCESS.
+///
+/// Cargo reads the manifests ON DISK, never the overlay, so its answer cannot change while one gate
+/// process runs; only a planted answer (the overlay's `cargo-metadata:Cargo.toml` command) can, and
+/// that one is read as planted every time. Every self-test case used to pay a whole `cargo metadata`
+/// and its parse of its own (the cost the `one-memory-abi` battery shed the same way). The cell is
+/// handed out under the lock and filled outside it, so concurrent cases share one `cargo metadata`.
+fn workspace(cx: &Ctx) -> Result<std::sync::Arc<Workspace>, String> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    if let Some(planted) = cx.overlay_command("cargo-metadata:Cargo.toml") {
+        return read_workspace(&planted).map(Arc::new);
+    }
+    type Cell = Arc<OnceLock<Result<Arc<Workspace>, String>>>;
+    static MEMO: OnceLock<Mutex<BTreeMap<std::path::PathBuf, Cell>>> = OnceLock::new();
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(cx.root().to_path_buf())
+        .or_default()
+        .clone();
+    cell.get_or_init(|| {
+        cx.cargo_metadata("Cargo.toml")
+            .and_then(|out| read_workspace(&out).map(Arc::new))
+    })
+    .clone()
+}
+
+/// [`workspace`]'s reading of one `cargo metadata` answer, taken fresh.
+fn read_workspace(metadata: &str) -> Result<Workspace, String> {
+    let json: Value = serde_json::from_str(metadata)
         .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
     let mut pkgs: BTreeMap<String, Pkg> = BTreeMap::new();
     for p in json["packages"].as_array().cloned().unwrap_or_default() {
@@ -419,12 +456,19 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
             (deps, features),
         );
     }
+    Ok(Workspace { pkgs, nodes })
+}
+
+/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
+pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
+    let ws = workspace(cx)?;
+    let (pkgs, nodes) = (&ws.pkgs, &ws.nodes);
 
     // THE ROOTS: in-tree plugin-kind and legacy crates, and every external plugin.
     let globs = kind_globs(cx)?;
     let root = cx.root().to_string_lossy().to_string();
     let mut roots: Vec<(String, Option<String>)> = Vec::new(); // (id, in-tree dir)
-    for (id, p) in &pkgs {
+    for (id, p) in pkgs {
         if carriers.contains(&p.name) {
             continue;
         }
@@ -476,7 +520,12 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
                 if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
                     continue;
                 }
-                hits.extend(banned_paths(&f.text).into_iter().map(str::to_string));
+                hits.extend(
+                    banned_paths_memo(&f.text)
+                        .iter()
+                        .copied()
+                        .map(str::to_string),
+                );
             }
         }
         if !hits.is_empty() {
@@ -508,8 +557,44 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
         .parent()
         .map(|d| d.join("src"))
         .unwrap_or_default();
+    let mut files = checkout_source_memo(&checkout, &src).as_ref().clone();
+    for f in walked {
+        files.insert(f.rel_str(), f);
+    }
+    files.into_values().collect()
+}
+
+/// A pinned plugin's cargo checkout's `src/**/*.rs`, keyed `{src}/<sub>`, READ ONCE PER CHECKOUT
+/// AND PROCESS. Cargo checks a pinned rev out into a directory named for that rev and never writes
+/// it again, so the reading is a pure function of the two inputs it is keyed on; every self-test
+/// case used to walk and read every such checkout afresh. A plant is laid over this by
+/// [`own_source`] on every run.
+fn checkout_source_memo(
+    checkout: &std::path::Path,
+    src: &str,
+) -> std::sync::Arc<BTreeMap<String, crate::ctx::SourceFile>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Files = Arc<BTreeMap<String, crate::ctx::SourceFile>>;
+    type Memo = Mutex<BTreeMap<(std::path::PathBuf, String), Arc<OnceLock<Files>>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry((checkout.to_path_buf(), src.to_string()))
+        .or_default()
+        .clone();
+    cell.get_or_init(|| Arc::new(checkout_source(checkout, src)))
+        .clone()
+}
+
+/// [`checkout_source_memo`]'s reading, taken fresh.
+fn checkout_source(
+    checkout: &std::path::Path,
+    src: &str,
+) -> BTreeMap<String, crate::ctx::SourceFile> {
     let mut files: BTreeMap<String, crate::ctx::SourceFile> = BTreeMap::new();
-    let mut stack = vec![checkout.clone()];
+    let mut stack = vec![checkout.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
             continue;
@@ -523,7 +608,7 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
             if abs.extension().is_none_or(|x| x != "rs") {
                 continue;
             }
-            let (Ok(sub), Ok(text)) = (abs.strip_prefix(&checkout), std::fs::read_to_string(&abs))
+            let (Ok(sub), Ok(text)) = (abs.strip_prefix(checkout), std::fs::read_to_string(&abs))
             else {
                 continue;
             };
@@ -538,10 +623,7 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
             );
         }
     }
-    for f in walked {
-        files.insert(f.rel_str(), f);
-    }
-    files.into_values().collect()
+    files
 }
 
 /// THE BANNED PATHS ONE SOURCE FILE NAMES, read as PATHS, not as text.
@@ -576,6 +658,30 @@ pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
     second.hits
 }
 
+/// [`banned_paths`] of one file's text, LEXED ONCE PER DISTINCT TEXT AND PROCESS.
+///
+/// The reading is a pure function of the text, and the memo is keyed on the WHOLE text, compared
+/// byte for byte (no hash stands in for it). Every self-test case sees the tree one planted file
+/// away from the last, and each used to lex and strip every in-scope crate's every file again; now
+/// every case after the first lexes only what it planted. The cell is handed out under the lock and
+/// filled outside it, so concurrent cases that need the same file take one lex between them.
+fn banned_paths_memo(text: &str) -> std::sync::Arc<BTreeSet<&'static str>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Cell = Arc<OnceLock<Arc<BTreeSet<&'static str>>>>;
+    static MEMO: OnceLock<Mutex<BTreeMap<String, Cell>>> = OnceLock::new();
+    let cell = {
+        let mut memo = MEMO
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match memo.get(text) {
+            Some(cell) => cell.clone(),
+            None => memo.entry(text.to_string()).or_default().clone(),
+        }
+    };
+    cell.get_or_init(|| Arc::new(banned_paths(text))).clone()
+}
+
 fn segments(path: &str) -> Vec<&str> {
     path.split("::").collect()
 }
@@ -589,7 +695,10 @@ fn is_test_attr(body: &TokenStream) -> bool {
         _ => false,
     });
     if idents_only {
-        return matches!(toks.last(), Some(TokenTree::Ident(i)) if i == "test");
+        // Exactly `test` or `tokio::test`: an attribute whose LAST segment is `test` (`foo::test`)
+        // is some other crate's macro, and the item under it is production (#1128).
+        let spelled: Vec<String> = toks.iter().map(ToString::to_string).collect();
+        return spelled == ["test"] || spelled == ["tokio", ":", ":", "test"];
     }
     let [TokenTree::Ident(cfg), TokenTree::Group(g)] = toks.as_slice() else {
         return false;
@@ -608,9 +717,73 @@ fn is_test_attr(body: &TokenStream) -> bool {
     }
 }
 
+/// Whether the `>` at `i` is the tail of `->` or `=>`, not a closing angle bracket.
+fn arrow_before(toks: &[TokenTree], i: usize) -> bool {
+    i > 0
+        && matches!(&toks[i - 1], TokenTree::Punct(p)
+            if matches!(p.as_char(), '-' | '=') && p.spacing() == Spacing::Joint)
+}
+
+fn punct_is(t: Option<&TokenTree>, c: char) -> bool {
+    matches!(t, Some(TokenTree::Punct(p)) if p.as_char() == c)
+}
+
+fn ident_is(t: Option<&TokenTree>, words: &[&str]) -> bool {
+    matches!(t, Some(TokenTree::Ident(id)) if words.iter().any(|w| id == w))
+}
+
+/// Does the `<` at `i` open a GENERIC LIST?
+///
+/// Only three places open one: directly after an item's name (`fn f<`, `struct S<`, `enum`,
+/// `union`, `trait`, `type`, `impl X<`), directly after `impl`, and a turbofish `::<`. Anywhere
+/// else `<`, `<<`, `<=` and `>>` are operators and open nothing.
+fn opens_generic_list(toks: &[TokenTree], i: usize) -> bool {
+    punct_is(toks.get(i), '<')
+        && ((i >= 1 && ident_is(toks.get(i - 1), &["impl"]))
+            || (i >= 2
+                && matches!(&toks[i - 1], TokenTree::Ident(_))
+                && ident_is(
+                    toks.get(i - 2),
+                    &["fn", "struct", "enum", "union", "trait", "type", "impl"],
+                ))
+            || (i >= 2
+                && matches!(&toks[i - 2], TokenTree::Punct(p)
+                if p.as_char() == ':' && p.spacing() == Spacing::Joint)
+                && punct_is(toks.get(i - 1), ':')))
+}
+
+/// The `>` closing the generic list [`opens_generic_list`] found at `i`. Inside the list a `{}`,
+/// `()` or `[]` group is one opaque token, so a `<` or `>` within it never counts. A list with no
+/// closing `>` in this token stream, or one that meets a `;` or a `=>` first, is not certain:
+/// `None`.
+fn generic_list_close(toks: &[TokenTree], i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (j, t) in toks.iter().enumerate().skip(i + 1) {
+        let TokenTree::Punct(p) = t else { continue };
+        match p.as_char() {
+            ';' => return None,
+            '<' => depth += 1,
+            '>' if arrow_before(toks, j) => {
+                if punct_is(toks.get(j - 1), '=') {
+                    return None;
+                }
+            }
+            '>' if depth == 0 => return Some(j),
+            '>' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The token stream with every test-marked item removed: the attribute, the attributes after it,
-/// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
-/// the scope it opens.
+/// and the item up to its first top-level `;`, `,` or `{ .. }` body. The `,` ends a marked element
+/// of a group (a struct field, an enum variant, a match arm, a fn parameter), so the element after
+/// it is read (#1128). An inner `#![cfg(test)]` empties the scope it opens. A test-marked GENERIC
+/// PARAMETER is removed to its own end only (the list's next top-level `,`, or the `>` that closes
+/// the list), never on into the item's body; the generic list is handled before the item skip.
+/// FAIL CLOSED: once a generic list opens that [`generic_list_close`] cannot close, no test mark at
+/// this level is stripped, so nothing behind one is hidden.
 fn strip_tests(stream: TokenStream) -> TokenStream {
     let toks: Vec<TokenTree> = stream.into_iter().collect();
     let attr_at = |i: usize| -> Option<(usize, bool)> {
@@ -630,18 +803,73 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
         (g.delimiter() == Delimiter::Bracket && is_test_attr(&g.stream()))
             .then_some((at + 1 - i, inner))
     };
+    let keep = |out: &mut Vec<TokenTree>, t: &TokenTree| match t {
+        TokenTree::Group(g) => {
+            let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
+            kept.set_span(g.span());
+            out.push(TokenTree::Group(kept));
+        }
+        t => out.push(t.clone()),
+    };
     let mut out: Vec<TokenTree> = Vec::new();
     let mut i = 0;
+    let mut uncertain = false;
     while i < toks.len() {
-        if let Some((len, inner)) = attr_at(i) {
+        if !uncertain && opens_generic_list(&toks, i) {
+            let Some(close) = generic_list_close(&toks, i) else {
+                uncertain = true;
+                continue;
+            };
+            // A generic list: a test mark at its top level removes one parameter, nothing more.
+            keep(&mut out, &toks[i]);
+            i += 1;
+            let mut depth = 0usize;
+            while i < close {
+                if depth == 0 {
+                    if let Some((len, _)) = attr_at(i) {
+                        i += len;
+                        let mut inner = 0usize;
+                        while i < close {
+                            match &toks[i] {
+                                TokenTree::Punct(p) if p.as_char() == '<' => inner += 1,
+                                TokenTree::Punct(p)
+                                    if p.as_char() == '>' && !arrow_before(&toks, i) =>
+                                {
+                                    inner = inner.saturating_sub(1)
+                                }
+                                TokenTree::Punct(p) if p.as_char() == ',' && inner == 0 => {
+                                    i += 1;
+                                    break;
+                                }
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                        continue;
+                    }
+                }
+                match &toks[i] {
+                    TokenTree::Punct(p) if p.as_char() == '<' => depth += 1,
+                    TokenTree::Punct(p) if p.as_char() == '>' && !arrow_before(&toks, i) => {
+                        depth = depth.saturating_sub(1)
+                    }
+                    _ => {}
+                }
+                keep(&mut out, &toks[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if let Some((len, inner)) = attr_at(i).filter(|_| !uncertain) {
             if inner {
                 return TokenStream::new();
             }
             i += len;
-            // Skip the item: further attributes, then up to its body or its `;`.
+            // Skip the item: further attributes, then up to its body, its `;`, or the `,` that
+            // ends it as one element of a group.
             while i < toks.len() {
                 match &toks[i] {
-                    TokenTree::Punct(p) if p.as_char() == ';' => {
+                    TokenTree::Punct(p) if p.as_char() == ';' || p.as_char() == ',' => {
                         i += 1;
                         break;
                     }
@@ -654,14 +882,7 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
             }
             continue;
         }
-        match &toks[i] {
-            TokenTree::Group(g) => {
-                let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
-                kept.set_span(g.span());
-                out.push(TokenTree::Group(kept));
-            }
-            t => out.push(t.clone()),
-        }
+        keep(&mut out, &toks[i]);
         i += 1;
     }
     out.into_iter().collect()
@@ -1002,10 +1223,134 @@ impl Gate for DepWallGate {
             ov,
             &["new-offender", "busbar-plane-llm", "std::net"],
         ));
+        // A TEST MARK ON A GENERIC PARAMETER must hide that parameter only, never the body.
+        for (what, src) in [
+            (
+                "last",
+                "pub fn dial<U, #[cfg(test)] T>() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+            (
+                "middle",
+                "pub fn dial<U, #[cfg(test)] T, V>() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set("crates/busbar-plane-decisions/src/planted_generic_socket.rs", src);
+            report.push(prove_red(
+                cx,
+                self,
+                match what {
+                    "last" => "a test mark on the last generic parameter does not hide the body",
+                    _ => "a test mark on a middle generic parameter does not hide the body",
+                },
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
+        // A `<` THAT OPENS NO GENERIC LIST (a comparison, a shift, a guard) and a `{}` INSIDE one
+        // never let a test mark's generic skip run on past the arm or the parameter it marks.
+        const ARM: &str = "#[cfg(test)] 1 => { true } \
+             _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); false } } }\n";
+        for (what, src) in [
+            (
+                "a test mark on the arm after a `<` comparison does not hide the arms after it",
+                format!("pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 => a < b, {ARM}"),
+            ),
+            (
+                "a test mark on the arm after an `if a < b` guard does not hide the arms after it",
+                format!(
+                    "pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 if a < b => true, {ARM}"
+                ),
+            ),
+            (
+                "a test mark on the arm after an `if a <= b` guard does not hide the arms after it",
+                format!(
+                    "pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 if a <= b => true, {ARM}"
+                ),
+            ),
+            (
+                "a test mark on the arm after a `<<` shift does not hide the arms after it",
+                format!(
+                    "pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 => a << b == 0, {ARM}"
+                ),
+            ),
+            (
+                "a `{}` inside a fn's generic list does not turn a test-marked parameter into an item",
+                "pub trait Tr<const N: usize> {}\n\
+                 pub fn dial<T: Tr<{ 1 }>, #[cfg(test)] U>() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n"
+                    .to_string(),
+            ),
+            (
+                "a `{}` inside a struct's generic list does not turn a test-marked parameter into an item",
+                "pub struct S<const B: bool = { 1 < 2 }, #[cfg(test)] T = u8> { pub s: std::net::TcpStream }\n"
+                    .to_string(),
+            ),
+            // A test-marked arm whose body is no `{}` ends at its `,` (#1390's comma skip).
+            (
+                "a test mark on an arm with no `{}` body does not hide the arms after it",
+                "pub fn dial(x: u8, a: u8, b: u8) -> bool { match x { #[cfg(test)] 1 => a < b, \
+                 _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); false } } }\n"
+                    .to_string(),
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set("crates/busbar-plane-decisions/src/planted_angle_socket.rs", src);
+            report.push(prove_red(
+                cx,
+                self,
+                what,
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
+        // A TEST MARK INSIDE A GROUP covers one element, up to its `,`: the socket in the element
+        // after it is production source (#1128).
+        for (what, file, text) in [
+            (
+                "a struct field after a test-marked field",
+                "planted_field_socket.rs",
+                "pub struct S { #[cfg(test)] a: u8, pub b: std::net::TcpStream }\n",
+            ),
+            (
+                "an enum variant after a test-marked variant",
+                "planted_variant_socket.rs",
+                "pub enum E { #[cfg(test)] A(u8), B(std::net::TcpStream) }\n",
+            ),
+            (
+                "a match arm after a test-marked arm",
+                "planted_arm_socket.rs",
+                "pub fn dial(x: u8) { match x { #[cfg(test)] 0 => (), \
+                 _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); } } }\n",
+            ),
+            (
+                "a fn parameter after a test-marked parameter",
+                "planted_param_socket.rs",
+                "pub fn hold(#[cfg(test)] a: u8, b: std::net::TcpStream) { drop(b); }\n",
+            ),
+            // ONLY THE NAMED TEST MARKS are test code: `foo::test` is some crate's macro.
+            (
+                "a fn under a foreign `test` attribute",
+                "planted_foreign_test_socket.rs",
+                "#[foo::test] pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(format!("crates/busbar-plane-decisions/src/{file}"), text);
+            report.push(prove_red(
+                cx,
+                self,
+                format!("a socket path in {what} is production source and a new offender"),
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
         // THE SAME PLANT IN AN IN-TREE PLUGIN, whose source the wall reads off the disk.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm/src/planted_socket.rs",
+            "crates/busbar-plane-llm/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
         report.push(prove_red(
@@ -1014,7 +1359,7 @@ impl Gate for DepWallGate {
             "an in-tree plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
-            &["new-offender", "busbar-llm", "std::net"],
+            &["new-offender", "busbar-plane-llm", "std::net"],
         ));
         // AND IN A PINNED PLUGIN THE BASE LAYER DOES NOT LAY: read from its cargo checkout.
         let mut ov = Overlay::new();
@@ -1040,12 +1385,12 @@ impl Gate for DepWallGate {
         };
         let mut ov = based();
         ov.set(
-            "crates/busbar-llm/src/planted_socket.rs",
+            "crates/busbar-plane-llm/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
         ov.set(
             LEDGER,
-            format!("{}\nbusbar-llm\tstd::net\n", held.trim_end()),
+            format!("{}\nbusbar-plane-llm\tstd::net\n", held.trim_end()),
         );
         report.push(prove_red(
             cx,
@@ -1053,7 +1398,7 @@ impl Gate for DepWallGate {
             "a pin written in the change that introduced its offence is refused",
             &[ROW_NEW],
             ov,
-            &["minted", "busbar-llm", "std::net"],
+            &["minted", "busbar-plane-llm", "std::net"],
         ));
         // A CARRIER MINTED IN THIS CHANGE, on a real transport crate the workspace resolves.
         let mut ov = based();

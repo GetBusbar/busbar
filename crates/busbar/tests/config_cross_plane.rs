@@ -11,65 +11,13 @@
 
 mod linked;
 
-use busbar_kernel::config::{
-    deploy_from_yaml_str, merge_provider_fallback, resolve, DeployCfg, ProviderDef, ProviderDeploy,
-    SecretRef,
-};
+use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg};
 use std::collections::HashMap;
 
 /// Register every test-linked plane in the process registry, idempotent (first-wins) — needed
 /// because the kernel lifts a `tools:`/`agents:` section only when a registered plane declares it.
 fn register_planes() {
     linked::install();
-}
-
-/// A minimal ProviderDef for resolve() tests — byte-identical to the fixture this test used before
-/// the move (`src/config/tests/tests.rs::provider_def`).
-fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
-    ProviderDef {
-        protocol: protocol.to_string(),
-        base_url: base_url.to_string(),
-        error_map: HashMap::new(),
-        health: None,
-        path: None,
-        path_base: None,
-        organization: None,
-        project: None,
-        token_url: None,
-        scope: None,
-        subject: None,
-        auth: None,
-        allow_metadata_hosts: Vec::new(),
-        max_output_key: None,
-        anthropic_adaptive_thinking: None,
-        native_structured_output: None,
-        model_capabilities: Vec::new(),
-    }
-}
-
-/// A minimal ProviderDeploy whose credential is `{ env: <var> }` — byte-identical to
-/// `src/config/tests/tests.rs::provider_deploy`.
-fn provider_deploy(env_var: &str) -> ProviderDeploy {
-    ProviderDeploy {
-        api_key: SecretRef::env(env_var),
-        protocol: None,
-        base_url: None,
-        error_map: None,
-        path: None,
-        path_base: None,
-        organization: None,
-        project: None,
-        token_url: None,
-        scope: None,
-        subject: None,
-        auth: None,
-        allow_metadata_hosts: None,
-        max_output_key: None,
-        anthropic_adaptive_thinking: None,
-        native_structured_output: None,
-        model_capabilities: None,
-        health: None,
-    }
 }
 
 /// A DeployCfg parsed from `sections` through the kernel's own config entry point
@@ -82,57 +30,10 @@ fn deploy_yaml(sections: &str) -> DeployCfg {
     deploy_from_yaml_str(&text).unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
-/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge runs
-/// through `PlaneDecl::resolve_provider` when the LLM plane is installed (the shipped default) and
-/// through core's own `merge_provider_fallback` when no plane implements the hook. This test proves
-/// the two produce the IDENTICAL `ResolvedProvider` for the same inputs, so an llm-plane-absent build's
-/// merge is byte-identical to the shipped one — the guarantee `merge_provider_fallback`'s doc claims.
-#[test]
-fn resolve_provider_hook_and_core_fallback_agree() {
-    let mut def = provider_def("anthropic", "https://api.z.ai/api/model-1");
-    def.error_map
-        .insert("1113".to_string(), "billing".to_string());
-    def.error_map
-        .insert("1302".to_string(), "rate_limit".to_string());
-    let deploy_cfg = provider_deploy("ZAI_KEY");
-
-    // Every linked plane that implements the hook, read back from the registry — at least one (the
-    // shipped fallback plane does), each proven equal to core's fallback.
-    let hooks: Vec<_> = linked::planes()
-        .iter()
-        .filter_map(|d| d.resolve_provider.map(|h| (d.key, h)))
-        .collect();
-    assert!(
-        !hooks.is_empty(),
-        "a test-linked plane declares `resolve_provider`"
-    );
-    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
-    for (key, hook) in hooks {
-        let via_hook = hook(&def, &deploy_cfg);
-        assert_eq!(via_hook.table, via_fallback.table, "{key}");
-        assert_eq!(via_hook.base_url, via_fallback.base_url, "{key}");
-        assert_eq!(
-            via_hook.api_key.env_var(),
-            via_fallback.api_key.env_var(),
-            "{key}"
-        );
-        assert_eq!(
-            via_hook.health.is_some(),
-            via_fallback.health.is_some(),
-            "{key}"
-        );
-        assert_eq!(via_hook.path, via_fallback.path, "{key}");
-        assert_eq!(via_hook.path_base, via_fallback.path_base, "{key}");
-        assert_eq!(via_hook.token_url, via_fallback.token_url, "{key}");
-        assert_eq!(via_hook.scope, via_fallback.scope, "{key}");
-        assert_eq!(via_hook.subject, via_fallback.subject, "{key}");
-        assert_eq!(via_hook.auth, via_fallback.auth, "{key}");
-        assert_eq!(
-            via_hook.allow_metadata_hosts, via_fallback.allow_metadata_hosts,
-            "{key}"
-        );
-    }
-}
+// (`resolve_provider_hook_and_core_fallback_agree` is RETIRED with its subject: no plane implements
+// the `resolve_provider` hook since the retired engine crate's deletion (DEV-GREEN row 83), so the
+// served provider merge IS core's `merge_provider_fallback`, the one path; covered by
+// busbar-kernel `ir/tests/lane_caps_tests.rs` (F25 rows 485-487) and `config/tests/tests.rs`.)
 
 #[test]
 fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
@@ -350,4 +251,52 @@ agents:
         errs.iter().any(|e| e.contains("at least TWO members")),
         "{errs:?}"
     );
+}
+
+/// A POOL'S `breaker:` BLOCK IS EVERY PLANE'S (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+/// functionality ... A capability one plane has and a sibling plane lacks is a gap to close"). The
+/// top-level `pools:` have always carried a `breaker:` block held to Rule 6; a pool written under
+/// another plane's section (`<verb>.pools`) takes the same key, so it is held to the same rule in
+/// the same words, and the block it states goes with it to its plane's egress.
+///
+/// RED before the fix: the plane's pool carrier had no `breaker` key, so the block was never read,
+/// never held to Rule 6 and never applied.
+#[test]
+fn a_planes_pool_breaker_block_is_held_to_the_same_rule_and_carried() {
+    let pool = |base: u64| {
+        let deploy = deploy_yaml(&format!(
+            r#"
+tools:
+  search-eu: {{ url: "https://eu.example/t", pin: {{ mechanism: unpinned }} }}
+  search-us: {{ url: "https://us.example/t", pin: {{ mechanism: unpinned }} }}
+  pools:
+    search:
+      members: [search-eu, search-us]
+      breaker: {{ base_cooldown_secs: {base}, max_cooldown_secs: 300 }}
+"#
+        ));
+        resolve(&deploy, &HashMap::new()).expect("the pool resolves")
+    };
+    let refused = busbar_kernel::config_validate::validate(&pool(0)).expect_err("refused");
+    assert!(
+        refused.iter().any(|e| e
+            == "pool 'search' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown \
+                re-admits a tripped backend immediately, defeating the breaker's back-off"),
+        "the top-level pools' Rule 6, in its own words: {refused:?}"
+    );
+    let carried = pool(30);
+    let block = carried.plane_pools["tools"]["search"]
+        .breaker
+        .as_ref()
+        .expect("the block goes with the pool to its plane");
+    assert_eq!(
+        (block.base_cooldown_secs, block.max_cooldown_secs),
+        (30, 300)
+    );
+    if let Err(errors) = busbar_kernel::config_validate::validate(&carried) {
+        assert!(
+            !errors.iter().any(|e| e.contains("breaker")),
+            "a sound block is not refused: {errors:?}"
+        );
+    }
 }

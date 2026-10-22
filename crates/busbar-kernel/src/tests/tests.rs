@@ -1137,7 +1137,6 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
 /// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
 /// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
 /// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
     let hook = |module: &str| {
@@ -1176,7 +1175,6 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
 }
 
 /// The linked hook's Statement name, as this test build links it (the ranking double).
-#[cfg(feature = "hooks-ranking")]
 fn linked_hook_name() -> &'static str {
     crate::test_support::ranking_double::NAME
 }
@@ -1187,7 +1185,6 @@ fn linked_hook_name() -> &'static str {
 /// The words are the door's Statement marks, never registry aliases: no registry row spells them.
 /// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
 /// unknown.
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     for name in crate::config::RESERVED_HOOK_NAMES
@@ -1217,7 +1214,6 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
 /// candidates, the same expected order or abstain). Every answer is `Ok`: the call never fails,
 /// times out or reaches `on_error`. Its deadline is the dispatcher's Call class budget, never the
 /// 1 ms gate default.
-#[cfg(feature = "hooks-ranking")]
 #[tokio::test]
 async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
     use crate::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
@@ -1349,6 +1345,42 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         ("fastest", Vec::new(), RoutingDecision::Abstain),
         ("least_busy", Vec::new(), RoutingDecision::Abstain),
         ("usage", Vec::new(), RoutingDecision::Abstain),
+        // An infinity is a key like any other, ordered as 1.5.5 ordered it (the v1.5.5 ranking
+        // natives' `lib.rs:77-80`, `:99-102`): never dropped as absent.
+        (
+            "cheapest",
+            vec![
+                (0, Some(f64::INFINITY), None, 1, None),
+                (1, Some(f64::INFINITY), None, 1, None),
+            ],
+            prefer(&[0, 1]),
+        ),
+        (
+            "cheapest",
+            vec![
+                (0, Some(3.0), None, 1, None),
+                (1, Some(f64::NEG_INFINITY), None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            prefer(&[1, 0, 2]),
+        ),
+        (
+            "fastest",
+            vec![
+                (0, None, Some(f64::INFINITY), 1, None),
+                (1, None, Some(10.0), 1, None),
+            ],
+            prefer(&[1, 0]),
+        ),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, Some(0.5)),
+                (1, None, None, 1, None),
+                (2, None, None, 1, Some(f64::INFINITY)),
+            ],
+            prefer(&[2, 0, 1]),
+        ),
     ];
     let gate_default = std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS);
     for (word, rows, want) in cases {
@@ -1642,6 +1674,8 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
@@ -1690,10 +1724,12 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// path for a keyless local upstream rests on this building an App at all.
 ///
 /// What that lane then does on the wire — no auth header, and skipped by the prober — is asserted at
-/// the seams that decide it, in busbar-llm's `auth_style_tests` and `health` tests, rather than
+/// the seams that decide it, in the retired engine crate's `auth_style_tests` and `health` tests, rather than
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
@@ -1725,6 +1761,8 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-vault-ok");
     // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
     for module in ["vault", "acme-secret-vault"] {
@@ -1750,6 +1788,8 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-typo");
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
@@ -1834,6 +1874,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -1965,18 +2007,29 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
-    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (mut router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
 
-    let client = reqwest::Client::new();
+    // The request is handed to the router IN PROCESS: no socket is bound, so there is no port for
+    // another process's listener to be mistaken for ours. The old shape bound `127.0.0.1:0` and
+    // dialled it, and on a CI host running the whole workspace's test binaries side by side a
+    // dial could land on a different process's listener (the integration tests reserve ports by
+    // pick-then-bind) and read ITS 404 here. Every layer under test is still the production
+    // stack: `DefaultBodyLimit`, the reshape, auth and the catch-all all run, and axum enforces
+    // the cap on the body stream exactly as it does off a connection.
     let oversized = "x".repeat(4096);
-    let r = client
-        .post(format!("http://{addr}/v1/chat/completions"))
+    let payload = serde_json::json!({"pad": oversized}).to_string();
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/v1/chat/completions")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"pad": oversized}).to_string())
-        .send()
+        .header("content-length", payload.len().to_string())
+        .body(axum::body::Body::from(payload))
+        .unwrap();
+    type Req = axum::http::Request<axum::body::Body>;
+    std::future::poll_fn(|cx| <axum::Router as tower::Service<Req>>::poll_ready(&mut router, cx))
+        .await
+        .unwrap();
+    let r = <axum::Router as tower::Service<Req>>::call(&mut router, req)
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
@@ -1986,7 +2039,11 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let body = r.text().await.unwrap();
+    let body = {
+        use http_body_util::BodyExt as _;
+        let bytes = r.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    };
     assert!(
         ct.starts_with("application/json"),
         "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
@@ -1998,8 +2055,6 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         v.get("error").is_some(),
         "the 413 must carry the error envelope; got {v}"
     );
-
-    server.abort();
 }
 
 // ── THE MOUNT-AWARE RESOLVER, read off the wire ──────────────────────────────────────────────────
@@ -2484,6 +2539,8 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// went live through an apply.
 #[test]
 fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     const REFUSED: &str = "https://refused.root-rules.test";
     struct Refusing;
     impl crate::appbuild::RootRules for Refusing {
@@ -2632,6 +2689,8 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -2709,6 +2768,228 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     assert!(
         std::sync::Arc::ptr_eq(&app3.plane_breakers, &app4.plane_breakers),
         "a provisioned prior must survive an apply that removes the plane content"
+    );
+}
+
+// ── A GENERATION'S LIMITS GO LIVE WITH IT, AND REACH EVERY PLANE (Q128 p1#6, p12#4, p6#1) ──────
+
+/// Puts the process-wide limits back exactly as a test found them, failure path included.
+struct RestorePublished(Option<crate::config::LimitsResolved>);
+
+impl Drop for RestorePublished {
+    fn drop(&mut self) {
+        crate::config::limits::set_installed(self.0.take());
+    }
+}
+
+/// The live readers' view, read on ANOTHER thread — the running generation's traffic, which no
+/// build is on: the WHOLE published `LimitsResolved` (its `Debug` rendering, every field) and the
+/// derived caps mirrored out of it (the translate-body cap and the hook content ceiling).
+fn live_limits() -> (Option<String>, usize, usize) {
+    std::thread::spawn(|| {
+        (
+            crate::config::limits::installed().map(|l| format!("{l:?}")),
+            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel::proxy::hook_content_max_bytes(),
+        )
+    })
+    .join()
+    .expect("reader thread must not panic")
+}
+
+/// A `LimitsResolved` whose live-read fields all differ from the defaults and from each other's
+/// tag, so a reader that saw any one of them is caught. Every value is within validation's bounds.
+fn tagged_limits(tag: u64) -> crate::config::LimitsResolved {
+    let n = usize::try_from(tag).expect("small tag");
+    crate::config::LimitsResolved {
+        key_gauge_limit: 1_000 + n,
+        request_body_max_bytes: (1 + n) * 1024 * 1024,
+        hook_content_max_bytes: 1_024 * (1 + n),
+        upstream_error_body_max_bytes: 8_192 + n,
+        default_probe_interval_secs: 20 + tag,
+        default_probe_timeout_secs: 3 + tag,
+        default_policy_timeout_ms: 500 + tag,
+        hard_down_cooldown_secs: 600 + tag,
+        max_honored_retry_after_secs: 3_600 + tag,
+        tls_handshake_timeout_secs: 5 + tag,
+        request_body_read_timeout_secs: 15 + tag,
+        rate_sweep_interval: 100 + u32::try_from(tag).expect("small tag"),
+        ..crate::config::LimitsResolved::default()
+    }
+}
+
+fn build_with(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+) -> Result<(crate::state::App, crate::appbuild::InstalledLimits), String> {
+    crate::build_app_from_config(
+        cfg,
+        crate::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        prior,
+        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+    )
+    .map(|(app, _, limits)| (app, limits))
+}
+
+/// A BUILT GENERATION'S LIMITS ARE IN FORCE ONLY ONCE IT IS LIVE (BUSBAR-1.6.0.md THE DESIGN §6
+/// item 8, l.980-982: a reload "swaps them in atomically ... and is refused, leaving the running
+/// generation serving, if any check fails"; §3: "A validation refusal keeps the running
+/// generation"). Judged on the WHOLE published `LimitsResolved` and the caps derived from it, read
+/// on another thread: unchanged after a refused apply; unchanged while an apply is built but not
+/// live — the window an admin apply's persist runs in; the candidate's, field for field, from the
+/// swap that installs it. Register entry GEN-LIMITS (testing/shadow-oracle/accepted-differences.json):
+/// v1.5.5 installed the candidate before validating it (main.rs:2704/2711).
+///
+/// RED before the fix: the build installed its candidate's limits process-wide FIRST, before
+/// validation, and they stayed in force until the handle was dropped — the live view read the
+/// candidate's limits while the generation was built but not live.
+#[test]
+fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D):
+    // without it the fixture's provider is refused before any limit is read.
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
+    let _restore = RestorePublished(crate::config::limits::installed());
+    let running = tagged_limits(1);
+    crate::config::limits::install(&running);
+    let before = live_limits();
+    assert_eq!(
+        before,
+        (
+            Some(format!("{running:?}")),
+            running.request_body_max_bytes,
+            running.hook_content_max_bytes
+        ),
+        "the live view reads the running generation's limits"
+    );
+    let cfg = |limits: crate::config::LimitsResolved| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_LIMITS_LIVE",
+        ));
+        cfg.limits = limits;
+        cfg
+    };
+
+    // A REFUSED apply (validation: a zero sticky cooldown) changes no live limit.
+    let mut refused = tagged_limits(2);
+    refused.hard_down_cooldown_secs = 0;
+    let Err(refusal) = build_with(cfg(refused), None) else {
+        panic!("validation refuses it");
+    };
+    assert!(
+        refusal.contains("limits.hard_down_cooldown_secs must be >= 1"),
+        "refused for its zero sticky cooldown, not another reason: {refusal}"
+    );
+    assert_eq!(
+        live_limits(),
+        before,
+        "a refused apply changed a live limit"
+    );
+
+    // BUILT BUT NOT LIVE: the running generation's limits stand, every field, on every thread.
+    let candidate = tagged_limits(3);
+    let (next, unkept) = build_with(cfg(candidate.clone()), None).expect("builds");
+    assert_eq!(
+        live_limits(),
+        before,
+        "a built-but-not-live generation's limits are in force under the running generation"
+    );
+    assert_eq!(
+        crate::config::limits::installed().map(|l| format!("{l:?}")),
+        Some(format!("{running:?}")),
+        "the build's own view of its candidate ends with the build"
+    );
+
+    // LIVE: the swap that installs it publishes its limits, every field.
+    let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    handle.swap(std::sync::Arc::new(next));
+    let after = (
+        Some(format!("{candidate:?}")),
+        candidate.request_body_max_bytes,
+        candidate.hook_content_max_bytes,
+    );
+    assert_eq!(live_limits(), after, "the swapped-in generation's limits");
+    // The commit after the swap republishes the same values.
+    unkept.keep();
+    assert_eq!(live_limits(), after);
+}
+
+/// THE OPERATOR'S BREAKER LIMITS REACH EVERY PLANE'S CELLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any
+/// plugin gets all functionality ... A capability one plane has and a sibling plane lacks is a gap
+/// to close"). The first plane's store has always been built under `limits.hard_down_cooldown_secs`
+/// / `limits.max_honored_retry_after_secs`; the store every other plane's cells live in now is too,
+/// and — being process-lifetime — takes a subsequent generation's values at the swap that puts that
+/// generation live, not during its build. Under the default config nothing changes: the defaults
+/// the config layer resolves are the values the store was hard-wired to.
+///
+/// RED before the fix: the plane store was built with the hard-wired 1800s sticky cooldown and
+/// never refreshed, so the first hard-down below read ~1800, not <= 60.
+#[test]
+fn the_operator_breaker_limits_reach_every_planes_cells() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D):
+    // without it the fixture's provider is refused before any limit is read.
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
+    let _restore = RestorePublished(crate::config::limits::installed());
+    let hard_down = crate::breaker::CanonicalSignal {
+        class: crate::breaker::StatusClass::Auth,
+        provider_signal: None,
+        retry_after: None,
+    };
+    let cfg = |hard_down_cooldown_secs: u64| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PLANE_LIMITS",
+        ));
+        // Any plane content provisions the plane store; a pool of opaque members is the smallest.
+        cfg.plane_pools.entry("p-section").or_default().insert(
+            "p".to_string(),
+            crate::config::pools::CandidatePoolCfg {
+                members: vec!["m1".to_string(), "m2".to_string()],
+                ..Default::default()
+            },
+        );
+        cfg.limits.hard_down_cooldown_secs = hard_down_cooldown_secs;
+        cfg
+    };
+
+    let (first, _) = build_with(cfg(60), None).expect("builds");
+    assert!(first.plane_breakers.is_provisioned());
+    first.plane_breakers.record_signal("k:a", 0, &hard_down);
+    let ra = first.plane_breakers.retry_after_secs("k:a", 0);
+    assert!(
+        (1..=60).contains(&ra),
+        "the operator's 60s sticky cooldown on a plane cell, got {ra}"
+    );
+
+    // A subsequent generation REUSES the process-lifetime store; its build does not touch the live cells.
+    let (second, _) = build_with(cfg(120), Some(&first)).expect("builds");
+    assert!(std::sync::Arc::ptr_eq(
+        &first.plane_breakers,
+        &second.plane_breakers
+    ));
+    second.plane_breakers.record_signal("k:b", 0, &hard_down);
+    let ra = second.plane_breakers.retry_after_secs("k:b", 0);
+    assert!(
+        (1..=60).contains(&ra),
+        "a generation not yet live must not change the live cells' limits, got {ra}"
+    );
+
+    // Swapped in: the next hard-down arms the new generation's value.
+    let handle = crate::state::AppHandle::new(std::sync::Arc::new(first));
+    handle.swap(std::sync::Arc::new(second));
+    let live = handle.load();
+    live.plane_breakers.record_signal("k:c", 0, &hard_down);
+    let ra = live.plane_breakers.retry_after_secs("k:c", 0);
+    assert!(
+        (61..=120).contains(&ra),
+        "the swapped-in generation's 120s sticky cooldown, got {ra}"
     );
 }
 
@@ -2973,7 +3254,7 @@ pub(crate) fn frozen_str(key: &str) -> String {
         .to_string()
 }
 
-/// F25 row 634: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
+/// F25 row 634: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
 /// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
 /// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
 /// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
@@ -3012,4 +3293,87 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
         "the kernel's envelope states the agnostic kind verbatim"
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
+}
+
+/// A KERNEL-SHAPED REFUSAL IS RENDERED BY THE DOOR THAT OWNS ITS PATH (ARCHITECT ruling 2026-10-16,
+/// 3b B): the kernel decides the reason, status and words and hands them, with the path and target,
+/// to the bound door renderer; its answer is served as rendered. A path no door owns, or a render
+/// that failed (`None`), gets the kernel's own answer, and the native-API root, the kernel's own
+/// surface, never asks a door. RED arms: the unbound handle, the failed render and the root.
+#[tokio::test]
+async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    use http_body_util::BodyExt as _;
+    use std::sync::{Arc, Mutex};
+    // (reason, status, words, path, target), as the door renderer was handed them.
+    type Seen = Vec<(ReasonCode, u16, String, String, String)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
+    let refuser: PlaneRefuseByPathFn = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |r: &KernelRefusal<'_>| {
+            seen.lock().unwrap().push((
+                r.reason,
+                r.status,
+                r.text.to_string(),
+                r.path.to_string(),
+                r.target.to_string(),
+            ));
+            (r.path != "/door/failed").then(|| {
+                axum::http::Response::builder()
+                    .status(r.status)
+                    .body(axum::body::Body::from("door"))
+                    .unwrap()
+            })
+        })
+    };
+    let answer = |handle: &crate::state::AppHandle, path: &str| {
+        crate::router::kernel_refusal_response(
+            handle,
+            &residual_planes(),
+            ReasonCode::MethodNotAllowed,
+            path,
+            &format!("{path}?q=1"),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            "method not allowed for this resource",
+        )
+    };
+    let body = |r: axum::response::Response| async move {
+        r.into_body().collect().await.unwrap().to_bytes().to_vec()
+    };
+    let unbound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    let r = answer(&unbound, "/door/x");
+    assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_ne!(body(r).await, b"door", "no door bound: the kernel answers");
+    let bound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    bound.bind_door_refuser(refuser);
+    let r = answer(&bound, "/door/x");
+    assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body(r).await, b"door");
+    assert_eq!(
+        seen.lock().unwrap().last().cloned(),
+        Some((
+            ReasonCode::MethodNotAllowed,
+            405,
+            "method not allowed for this resource".to_string(),
+            "/door/x".to_string(),
+            "/door/x?q=1".to_string(),
+        ))
+    );
+    let r = answer(&bound, "/door/failed");
+    assert_ne!(
+        body(r).await,
+        b"door",
+        "a failed render: the kernel answers"
+    );
+    let asked = seen.lock().unwrap().len();
+    let root = format!("{}/info", crate::admin::gate::API_ROOT);
+    let r = answer(&bound, &root);
+    assert_ne!(body(r).await, b"door");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        asked,
+        "the native-API root asks no door"
+    );
 }

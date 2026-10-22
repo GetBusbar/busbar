@@ -112,19 +112,17 @@ pub fn residual_default_dialect() -> Option<&'static str> {
     registry::residual_default_protocol()
 }
 
-// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands verbatim
-// in the native error body (`error.message` for anthropic/openai/gemini/responses, the bare
-// top-level `message` for cohere, the `message` beside `__type` for bedrock). It MUST read like the
-// copy the REAL vendor returns for a bad/missing credential and carry NO busbar-internal vocabulary
-// ("lane", "virtual key", "passthrough", …): any such word is a deterministic protocol tell that
-// also discloses busbar's auth model. Canonical source of truth; `auth.rs::vendor_auth_failure_message`
-// is a thin delegation wrapper to this, not a copy. Strings sampled from real 401/403 bodies:
-//   anthropic → "invalid x-api-key"; openai/responses → "Incorrect API key provided.";
-//   gemini → "API key not valid. Please pass a valid API key."; cohere → "invalid api token";
-//   bedrock → "" (AWS conveys AccessDenied via __type / x-amzn-errortype, not message prose).
+// The upstream-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands
+// verbatim in the protocol's native error body, wherever that protocol carries its message. It MUST
+// read like the copy the real upstream returns for a bad or missing credential and carry NO
+// busbar-internal vocabulary ("lane", "virtual key", "passthrough", ...): any such word is a
+// deterministic protocol tell that also discloses busbar's auth model. Canonical source of truth;
+// `auth.rs::vendor_auth_failure_message` is a thin delegation wrapper to this, not a copy. Each
+// protocol's declaration states its own copy (an empty one where the protocol conveys the denial in
+// its head rather than its message).
 //
-// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so the per-vendor copy
-// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
+// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so each protocol's copy
+// lives in its declaration, not in this agnostic function. An unknown future proto falls back to
 // the default generic copy.
 // RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
@@ -167,8 +165,8 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // so it names no protocol submodule: delete a protocol and the marker is simply never injected.
 // RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
-// The NEUTRAL streaming-translator seam (`StreamTranslator` trait, `install_stream_translator_factory`
-// and the `new_stream_translator` construction seam) lives in `installed.rs`, exported below.
+// No streaming-translator factory is installed in the kernel: a plane builds its own translator
+// inside its door (the kernel's walk never translates a stream).
 // The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_kernel::proto`; re-exported here
 // at its historical `busbar_kernel::proto::StreamTranslator` path so core's forward path is unchanged.
 
@@ -180,7 +178,7 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // drained core's own suite of any dependence on the witnessed codec: the concrete-codec tests moved
 // beside the types they exercise, in the plugin crate's own test tree, where they name
 // `crate::proto_codec::…` in the plugin. Production core drives translation through the neutral
-// `DialectCodec` seam + the installed `StreamTranslator` factory and names none of these.
+// `DialectCodec` seam and names none of these.
 
 // `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_kernel::proto` (a
 // dialect's stream translator and reassembler drive them); re-exported here at their
@@ -331,40 +329,6 @@ pub use busbar_contract::protocol::{
     ERR_TYPE_REQUEST_TOO_LARGE, ERR_TYPE_SERVER_ERROR, SIGNAL_IR_PARSE, STREAM_ABORT_DETAIL,
 };
 pub use installed::*;
-
-use crate::ingress::arrival::{install_path_ingress, PathIngress};
-
-/// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
-/// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`
-/// split off [`ProtocolDecl`] cannot drift from the first. Folds the two installs into one call and,
-/// before either lands, asserts the PARITY that keeps the split honest:
-///
-/// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
-/// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
-/// arrival and SILENTLY fall through to the body-model branch — a wrong-behavior 404-shaped bug.
-/// Asserting it here makes that drift a LOUD PANIC at boot, and it is asserted BEFORE either install
-/// so a refused boot leaves both seams unwritten rather than one of the two.
-///
-/// # Panics
-/// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
-/// - if either underlying install was already called (two composition roots).
-pub fn install_protocols_with_path_ingress(
-    decls: Vec<&'static ProtocolDecl>,
-    path_ingress: Vec<(&'static str, PathIngress)>,
-) {
-    if let Some(name) = first_path_model_without_arrival(
-        &decls,
-        &path_ingress.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-    ) {
-        panic!(
-            "protocol '{name}' declares has_model_in_url == true but registered no path_ingress \
-             arrival: a request naming its URL model would silently fall through to the body-model \
-             branch. Register its arrival alongside its declaration."
-        );
-    }
-    install_protocols(decls);
-    install_path_ingress(path_ingress);
-}
 
 #[cfg(test)]
 #[path = "../tests/proto.rs"]

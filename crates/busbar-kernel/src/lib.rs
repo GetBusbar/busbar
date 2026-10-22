@@ -219,7 +219,13 @@ pub mod bound_credential;
 pub mod egress;
 pub mod endpoints;
 pub mod export;
-pub mod failover;
+/// The pool vocabulary's historical path. The failover module is deleted (row 82 D2); the one
+/// spelling of this path left is a linked plugin's root tests at its pinned rev, which name
+/// `failover::CandidatePoolCfg`. Its rename to `config::pools` is open on the plugin's own
+/// repository, and the repin that carries it strikes this alias.
+pub mod failover {
+    pub use crate::config::pools::CandidatePoolCfg;
+}
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
@@ -259,7 +265,6 @@ mod member_tests;
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
 pub mod plane;
-pub mod plane_host;
 pub mod plugin_routes;
 /// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
 /// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
@@ -326,6 +331,22 @@ pub mod timing;
 // where it now lives (`test_support::seam`, `test_support::engine_kit`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+/// The kernel's neutral test seam: a test-support consumer that links no plane installs it, and the
+/// kernel's own test binary reads its protocol set.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;
+// FINAL-REPIN: delete with a2a path move
+/// THE HOST SEAM'S OLD TEST PATH, kept for the door cells a pinned plane crate compiles into the
+/// root's test binary (`crates/<crate>/tests/root/mod.rs`): a plane's root cells mint their hook
+/// stage's host as `busbar_kernel::plane_host::engine_host`, and the plane's pin moves on that
+/// plane's own line, not this one. The kernel's plane hosting is deleted (status row 82); this module
+/// holds no code, only the plane driver's own `engine_host` under the name those cells spell, and
+/// only where `test_support` is (`test-support`), so no shipped build carries it.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod plane_host {
+    pub use crate::plane_driver::engine_host;
+}
 pub mod tls;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.
