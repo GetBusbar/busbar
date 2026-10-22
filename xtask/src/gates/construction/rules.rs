@@ -814,10 +814,27 @@ fn past_visibility(text: &str) -> &str {
 }
 
 /// The type aliases a file declares: `type X = Y;` maps `X` to `Y`'s type (its last path segment,
-/// past a reference, a lifetime and generics). An alias the file gives two different targets, or a
+/// past a reference, a lifetime and generics), and every `use … Y as X` rename (module-level, inside
+/// a fn, or in a `use` group broken over lines; read by [`crate::gates::tracing::renames`]) maps `X`
+/// to `Y`, its source path's last segment. An alias the file gives two different targets, or a
 /// target this cannot read off its line, maps to `None`: unresolved.
 fn type_aliases(lines: &[Line]) -> BTreeMap<String, Option<String>> {
     let mut out: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let code: String = lines
+        .iter()
+        .filter(|l| !l.intest)
+        .map(|l| l.blank.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (from, to) in crate::gates::tracing::renames(&code) {
+        let resolved = is_ident(&from).then_some(from);
+        let entry = if out.get(&to).is_some_and(|seen| *seen != resolved) {
+            None
+        } else {
+            resolved
+        };
+        out.insert(to, entry);
+    }
     for l in lines {
         let Some(rest) = past_visibility(&l.code).strip_prefix("type") else {
             continue;
@@ -1055,7 +1072,15 @@ fn calls_terminal(
         return true;
     };
     let no = lines[idx].no;
-    let aliases = type_aliases(lines);
+    let mut aliases = type_aliases(lines);
+    // A NAME BOUND TWO WAYS IS UNRESOLVED: an alias spelled as a type that itself defines the
+    // terminal's name (`use … PlaneMoney as Node;` beside the real `Node`) is read as neither, so a
+    // call through it is counted (fail-closed).
+    for (name, target) in &mut aliases {
+        if owners.contains(name) && target.as_deref() != Some(name.as_str()) {
+            *target = None;
+        }
+    }
     match receiver_of(lines, idx, at) {
         Some(Receiver::Path(path_ty)) => {
             let named = if path_ty == "Self" {
