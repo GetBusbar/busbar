@@ -3119,7 +3119,7 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     let held = Mutex::new(None);
     // SAFETY: no buffers; the service pends.
     let pended = unsafe {
-        serve(&d.service_store(), &waking, &head, None, |c| {
+        serve(&d.service_store(), &waking, &head, 0, None, |c| {
             *held.lock().unwrap() = c;
             Ran::Later
         })
@@ -3646,5 +3646,112 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
             stated: ANSWER_LAYOUT + 1,
             host: ANSWER_LAYOUT,
         }
+    );
+}
+
+// ── the client-drop `cancel` names the unit its op serves ──────────────────────────────────────
+
+/// The unit the last client-drop `cancel` of a [`UnitKind`] op named.
+static CANCEL_NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// The test kind, its ops serving a unit: a `tick`'s `now_ns` stands for the unit key its `in`
+/// carries (as a plane's `OnPieceIn::unit` does), and its `cancel` frame records the unit it is
+/// told to name (as a plane's `PlaneCancelIn::unit`).
+struct UnitKind;
+
+impl Kind for UnitKind {
+    const CODE: KindCode = plug::KIND;
+    type Ops = OpsHead;
+    const TIMEOUT: Outcome = Outcome::Failed;
+
+    fn context(
+        st: &busbar_contract::abi::mechanism::door::Statement,
+    ) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+        <TestKind as Kind>::context(st)
+    }
+
+    fn check(a: &crate::dispatch::Answer) -> Result<(), Fault> {
+        <TestKind as Kind>::check(a)
+    }
+
+    fn short(a: &crate::dispatch::Answer) -> bool {
+        <TestKind as Kind>::short(a)
+    }
+
+    fn unit_of(
+        s: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+    ) -> Option<u64> {
+        // SAFETY: the dispatcher's own `in` of `in_size` bytes, read only when it holds a whole
+        // `TickIn`.
+        (s == TICK && in_size >= std::mem::size_of::<TickIn>())
+            .then(|| unsafe { input.cast::<TickIn>().read_unaligned() }.now_ns)
+    }
+
+    fn cancel_frame() -> Box<dyn crate::dispatch::CancelFrame> {
+        Box::new(Naming(crate::dispatch::cancel_frame(Ticket::NONE)))
+    }
+}
+
+/// The lifecycle's `cancel` frame, recording the unit it is told to name.
+struct Naming(
+    Frame<
+        busbar_contract::abi::mechanism::lifecycle::CancelIn,
+        busbar_contract::abi::mechanism::lifecycle::CancelOut,
+    >,
+);
+
+impl crate::dispatch::CancelFrame for Naming {
+    fn prepare(
+        &mut self,
+        ticket: Ticket,
+        class: u8,
+    ) -> (
+        *mut busbar_contract::abi::mechanism::call::InHead,
+        *mut OutHead,
+        u32,
+    ) {
+        crate::dispatch::CancelFrame::prepare(&mut self.0, ticket, class)
+    }
+
+    fn disposition(&self) -> u32 {
+        crate::dispatch::CancelFrame::disposition(&self.0)
+    }
+
+    fn name_unit(&mut self, unit: u64) {
+        CANCEL_NAMED.store(unit, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// RED (plane reviews, close once): the client-drop path's `cancel` of an op in flight names the
+/// unit the op serves, read off the op's own `in` (`Kind::unit_of`), so a plane that keys its units
+/// from `arrive` frees that unit by its key (`PlaneCancelIn::unit`). Before the fix the frame was
+/// never told it and a plane's `cancel` carried `unit: 0`.
+#[test]
+fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
+    let d = Dispatcher::new(config());
+    let p = load_linked::<UnitKind>(&row(), bind(quiet())).expect("the linked door loads");
+    let t = d.mint(0).expect("a ticket");
+    let opened = d
+        .submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
+        .wait(WAIT)
+        .expect("open answers");
+    d.recycle(t);
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+    let held = frame(plug::PEND_HOLD);
+    let unit = held.input.now_ns;
+    assert_ne!(unit, 0);
+    let reply = d.submit(&p, t, TICK, held, DeadlineClass::Call, 0);
+    until("the held op", || d.is_pending(t));
+    d.drop_client(t);
+    let done = reply.wait(WAIT).expect("the drop answers");
+    d.recycle(t);
+    assert_eq!(done.outcome, Outcome::Failed, "the kind's timeout outcome");
+    assert_eq!(
+        CANCEL_NAMED.load(std::sync::atomic::Ordering::SeqCst),
+        unit,
+        "the client-drop cancel named the unit its op serves"
     );
 }
