@@ -29,7 +29,7 @@ use crate::abi::host::conn::connector::{
     REQUEST_END, REQUEST_HEAD,
 };
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::conn::{Answer, ConnFailure, Connector, Host, Observed};
+use crate::abi::sdk::conn::{Answer, Closer, ConnFailure, Connector, Host, Observed};
 use crate::abi::sdk::safe::Instance;
 use crate::abi::transport::{fields, FrameSpan};
 
@@ -159,6 +159,21 @@ pub struct Exchange {
     /// replays, which do not apply a piece again, so the replayed read fails the exchange again
     /// and its close is issued on the same handle.
     refused_read: Option<(u32, &'static str)>,
+    /// What closes `stream` should the exchange be dropped before it closed it: set when
+    /// [`Op::exchange`] parks it, so a parked exchange its op gives up does not leave its host
+    /// connection open.
+    closer: Option<Closer>,
+}
+
+impl Drop for Exchange {
+    /// A parked exchange dropped before it closed its stream (its op cancelled, a fresh op on its
+    /// ticket, the instance closed) closes it here: the host reclaims a connection only on its
+    /// CLOSE. An exchange that answered READY closed its stream already and closes nothing.
+    fn drop(&mut self) {
+        if let (Some(closer), Some(stream)) = (self.closer, self.stream.take()) {
+            closer.close(stream);
+        }
+    }
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -192,6 +207,7 @@ impl Exchange {
             stream: None,
             reply_ceiling: REPLY_MAX,
             refused_read: None,
+            closer: None,
         }
     }
 
@@ -207,7 +223,7 @@ impl Exchange {
     /// The stream this exchange established, once it has and until the exchange closed it: a
     /// caller that abandons the exchange closes it (`Connector::close`), so the host's connection
     /// does not outlive the attempt. An exchange that answered READY, its reply or its failure,
-    /// closed its stream and answers `None`.
+    /// closed its stream and answers `None`; one [`Op::exchange`] parked closes it when dropped.
     #[must_use]
     pub const fn stream(&self) -> Option<u64> {
         self.stream
@@ -653,13 +669,12 @@ impl<'a> Op<'a> {
                 Err(e) => return Poll::Ready(Err(e)),
             },
         };
-        let answer = exchange(
-            &mut host.connector(self.on.ticket()),
-            &mut state,
-            need,
-            target,
-        );
+        let mut c = host.connector(self.on.ticket());
+        let answer = exchange(&mut c, &mut state, need, target);
         if answer.is_pending() {
+            // Parked, the exchange may be given up (a cancel, a fresh op on the ticket): what it
+            // keeps closes its stream then.
+            state.closer = Some(c.closer());
             self.on.park(state);
         }
         answer

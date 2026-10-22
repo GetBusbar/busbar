@@ -984,6 +984,8 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
 const HELD_STREAM: u64 = 9;
 /// What the closing connector's CLOSE was handed: the stream and the ticket it came on.
 static CLOSED: std::sync::Mutex<Vec<(u64, Ticket)>> = std::sync::Mutex::new(Vec::new());
+/// The same, for the connector whose ESTABLISH never completes.
+static DIALLING_CLOSED: std::sync::Mutex<Vec<(u64, Ticket)>> = std::sync::Mutex::new(Vec::new());
 
 /// Answer `o` in the SDK's `out`, with `value`.
 fn answered(out: *mut ServiceOut, o: Outcome, value: u64) -> RawOutcome {
@@ -1019,6 +1021,15 @@ extern "C" fn close_logged(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> 
     answered(o, Outcome::Ready, 0)
 }
 
+extern "C" fn close_logged_dialling(
+    _: HostCtx,
+    i: *const c_void,
+    o: *mut ServiceOut,
+) -> RawOutcome {
+    log_close(&DIALLING_CLOSED, i);
+    answered(o, Outcome::Ready, 0)
+}
+
 /// A connector whose ESTABLISH answers a stream at once and whose request never completes.
 static CLOSING_SLOTS: ConnectorSlots = ConnectorSlots {
     size: std::mem::size_of::<ConnectorSlots>() as u32,
@@ -1037,6 +1048,26 @@ static CLOSING_SLOTS: ConnectorSlots = ConnectorSlots {
     identity: None,
     read_reply: None,
     write_request: Some(never_completes),
+};
+
+/// A connector whose ESTABLISH never completes.
+static DIALLING_SLOTS: ConnectorSlots = ConnectorSlots {
+    size: std::mem::size_of::<ConnectorSlots>() as u32,
+    slots: SERVICES,
+    establish: Some(never_completes),
+    reject_endpoint: None,
+    side_stream: None,
+    read: None,
+    write: None,
+    upgrade_secure: None,
+    facts: None,
+    checkout: None,
+    checkin: None,
+    close: Some(close_logged_dialling),
+    random: None,
+    identity: None,
+    read_reply: None,
+    write_request: None,
 };
 
 /// Open a [`Forward`] hook over `conns`, run one `decide` to PENDING on [`TICKET`], cancel that
@@ -1084,6 +1115,18 @@ fn a_cancelled_exchange_closes_the_stream_it_established() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert_eq!(seen, vec![(HELD_STREAM, Ticket::NONE)]);
+}
+
+/// GREEN twin: an exchange cancelled before its stream was established closes nothing: the
+/// exchange it parked holds no stream, and the host is handed no CLOSE.
+#[test]
+fn a_cancelled_exchange_with_no_stream_closes_nothing() {
+    cancel_a_pending_decide(&DIALLING_SLOTS);
+    let seen = DIALLING_CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(seen.is_empty(), "{seen:?}");
 }
 
 /// A hook handed no connector answers its exchange unarmed, at once.
