@@ -1260,7 +1260,6 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
             let principal = &self.attribution.principal;
-            let journal = self.node_amendments.as_deref();
             return adjust::adjust_effect(
                 request,
                 scope,

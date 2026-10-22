@@ -1898,7 +1898,7 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
 /// generation carries the journal its governance owns, and an apply carries the SAME one — the
 /// prior generation's, which is still governance's. A journal rebuilt on an apply would be one with
 /// no durable sink and none of the node's corrections: every count correction would read as never
-/// made, and every later one would go unjournalled. Pointer identity, no clock.
+/// made, and every one made after the apply would go unjournalled. Pointer identity, no clock.
 #[test]
 fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     crate::test_support::register_neutral_test_plane();
