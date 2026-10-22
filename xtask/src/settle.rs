@@ -40,7 +40,7 @@
 use std::collections::BTreeMap;
 
 use crate::ctx::Ctx;
-use crate::gates::{self, Gate};
+use crate::gates;
 use crate::ledger::{Row, Status};
 
 pub const KIND_ISOLATION: &str = "qa/kind-isolation.toml";
