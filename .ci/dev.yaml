@@ -28,6 +28,16 @@ env:
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
+  # THE JUDGE, AS PROTECTED CONFIG (busbar ruling 2026-10-22): bin/oracle reads the judge only from
+  # these, never from the tree it judges. Verified against dev 17d824b657's
+  # testing/shadow-oracle/oracle-rust.pin (blob caf1786da0) and its golden/1.5.5 tree.
+  BUSBAR_ORACLE_RELEASE_REPO: "https://github.com/GetBusbar/busbar-release.git"
+  BUSBAR_ORACLE_RELEASE_REF: "151ad095a21819dca97e8bdb3384c3c3eb2eb806"
+  BUSBAR_ORACLE_SHA256_LINUX_X86_64: "0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8"
+  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: "188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4"
+  BUSBAR_GOLDEN_1_5_5_TREE: "92c7d7f72af5a9e05195817ffa0523c13705c146"
+  BUSBAR_ORACLE_CRATE: "busbar-release-oracle"
+  BUSBAR_ORACLE_BIN: "busbar-oracle"
   BUSBAR_TOOL_SH: |
     # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
     # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
@@ -178,10 +188,12 @@ checks:
   # `pin`. The others have no counterpart on qa and stay parallel (a check needing outputs runs on
   # the move's own lease, one after another). It does not cover Flaky, Quarantined or SameOnTarget.
   pin:
+    env_from_run: []
     run: |
       mkdir -p target/dev-green-pin && git rev-parse HEAD > target/dev-green-pin/head
     outputs: [target/dev-green-pin]
   gates:
+    env_from_run: [MODERNCI_HEAD, MODERNCI_TO]
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
     # green, not "no worse than qa"). The base-relative rules (new edges, minted rows) take dev's
     # own previous commit as their base: every lane move already judged its delta against dev.
@@ -193,6 +205,7 @@ checks:
     requires: [cc, git-history]
     needs: [pin]
   oracle-record:
+    env_from_run: [MODERNCI_TO_SHA]
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
@@ -217,7 +230,7 @@ checks:
       # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
       # backends up for this run (testing/shadow-oracle/scripts/oracle-box-store-services.sh), under
       # run-unique names on free ports, export the three URLs, and remove them when the check ends.
-      sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+      sfx="$(git rev-parse --short=12 HEAD)-$$"
       free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
       export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
       export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
@@ -228,6 +241,7 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
     outputs: [target/oracle/recordings]
   oracle:
+    env_from_run: [MODERNCI_TO_SHA]
     # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
     # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
     # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
@@ -238,7 +252,8 @@ checks:
     # then oracle-record's recording of the candidate is replayed against the committed 1.5.5
     # golden, strict: green is every cell byte-green or forgiven by an owner-signed accepted
     # difference.
-    requires: [cc]
+    # git-history: the golden-guard reads back to the commit that added the golden.
+    requires: [cc, git-history]
     run: |
       # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
       # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
@@ -251,7 +266,12 @@ checks:
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
         ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       else
-        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+        # The base (qa) holds no golden yet, so it is held add-only from the commit that first added it:
+        # every change to it since, whatever this move's base, is judged.
+        added="$(git log --diff-filter=A --format=%H --reverse -- testing/shadow-oracle/golden/1.5.5 | sed -n 1p)"
+        [ -n "$added" ] || { echo "golden-guard: no commit adds golden/1.5.5 in this history: refusing to judge without it"; exit 1; }
+        echo "golden-guard: $MODERNCI_TO_SHA holds no golden/1.5.5; held add-only from the commit that added it, $added"
+        ./bin/oracle golden-guard --repo . --base "$added" --head HEAD
       fi
       ./bin/oracle fetch-golden
       rm -rf target/oracle/reports/dev
@@ -261,6 +281,7 @@ checks:
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
     outputs: [target/oracle/reports/]
   conformance:
+    env_from_run: []
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.
     # The instruments the rigs call from PATH are provided here, each fetched once per pin (sha256
@@ -336,7 +357,7 @@ checks:
       python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
       docker buildx version
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
-      cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
+      cargo xtask conformance check --musts --sha "$(git rev-parse HEAD)" --format=tsv
     needs: [oracle-record]
     # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
     # backend probed to have all of these, and says which one is missing otherwise.
@@ -347,6 +368,7 @@ checks:
     # testing/ws-conformance/reports: the websocket suite's reports (row 97).
     outputs: [target/conformance-record, testing/ws-conformance/reports]
   verify-done:
+    env_from_run: [MODERNCI_TO_SHA]
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
     run: |
@@ -362,6 +384,7 @@ checks:
     # It reads merge-bases and tags (the config-schema baseline is tag v1.5.3): full history and tags.
     requires: [git-history]
   q128-audit:
+    env_from_run: []
     # DEV-GREEN item 5 (docs/design/BUSBAR-1.6.0.md l.2910-2912; 1.6.0-QUESTIONS.md Q128, option
     # A): one fresh, independent architecture audit on this commit with no open BLOCK, and a clean
     # audit ledger. The auditor records the audit in qa/q128-audit.json; this judges that record and
@@ -383,6 +406,7 @@ checks:
     # Each scope's state and every finding, red or green: `modernci call artifact --check q128-audit`.
     outputs: [target/audit/]
   test-gated:
+    env_from_run: []
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
     # only. A, the busbar/kernel/core-admin gates at once (test-harness,
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
@@ -428,30 +452,38 @@ checks:
   # selftest <gate>` process per gate. The base-relative plants read dev's previous commit, as the
   # gates check does. The same shards run on demand in .ci/default.yaml.
   selftest-1:
+    env_from_run: [MODERNCI_TO]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=1/4
     requires: [cc, git-history]
     needs: [gates]
   selftest-2:
+    env_from_run: [MODERNCI_TO]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=2/4
     requires: [cc, git-history]
     needs: [gates]
   selftest-3:
+    env_from_run: [MODERNCI_TO]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=3/4
     requires: [cc, git-history]
     needs: [gates]
   selftest-4:
+    env_from_run: [MODERNCI_TO]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
+      export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=4/4
     requires: [cc, git-history]
     needs: [gates]
