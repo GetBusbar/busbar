@@ -1348,18 +1348,18 @@ pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u
     }
 }
 
-/// `len` entries at `p`, or `None` for NULL-with-length or an over-long array.
+/// `len` entries at `p`, or `None` for NULL-with-length, an over-long array, or one misaligned for
+/// `T`: formed only through the one capped, validated reader ([`validate::lent`], THE DESIGN
+/// §11.13 M1).
 ///
 /// # Safety
-/// A non-NULL `p` points to `len` live `T`s.
+/// A range that passes the checks names `len` live `T`s.
 unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
-    match (p.is_null(), len) {
-        (_, 0) => Some(&[]),
-        (true, _) => None,
-        (false, n) if n > MAX_ENVELOPE_ENTRIES => None,
-        // SAFETY: the caller's contract.
-        (false, n) => Some(unsafe { std::slice::from_raw_parts(p, n) }),
+    if len > MAX_ENVELOPE_ENTRIES {
+        return None;
     }
+    // SAFETY: the caller's contract.
+    unsafe { validate::lent(p, len) }
 }
 
 /// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
