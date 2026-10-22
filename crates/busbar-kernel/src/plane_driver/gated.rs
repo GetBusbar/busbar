@@ -145,16 +145,25 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             // hook ran (`proxy/engine/mod.rs:728`, `:749`) and answered the shared 500, no hook
             // invoked. Anywhere else 1.5.5's gates judged a Null body and the request proceeded
             // (`:957-961`): the entry's gates judge a view with no body, and the unit goes on.
-            Err(Stopped::Unparseable) => {
+            Err(Stopped::Unparseable { marked }) => {
+                // The entry the kernel recorded at decode; a unit that recorded none, or one that
+                // is not UTF-8, binds the empty entry, as `bound_entry` reads an unnamed one.
                 let entry = std::str::from_utf8(recorded.as_deref().unwrap_or_default())
                     .unwrap_or_default()
                     .to_string();
-                let Some(hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
-                    return Ok(());
-                };
-                if !hooks.rewrites.is_empty() {
+                let hooks = binder.bind_gated(&entry, principal.as_deref());
+                // A configured rewrite: the shared 500 for every FAULT, marked or not (v1.5.5
+                // `:728`, `:749`), no hook invoked.
+                if hooks.as_ref().is_some_and(|h| !h.rewrites.is_empty()) {
                     return Err(super::fault_veto());
                 }
+                // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+                if !marked {
+                    return Err(Stopped::Unreadable);
+                }
+                let Some(hooks) = hooks else {
+                    return Ok(());
+                };
                 let null = Projection {
                     pool: entry,
                     dialect: binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),

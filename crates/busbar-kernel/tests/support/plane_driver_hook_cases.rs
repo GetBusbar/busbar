@@ -1073,7 +1073,8 @@ async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
     }
 }
 
-/// RED (lead rulings on #1500): only the plane's own FAULT marked `PROJECT_FAULT_UNPARSEABLE` takes
+/// GUARD (lead rulings on #1500; dev answers these 400 too): only the plane's own FAULT marked
+/// `PROJECT_FAULT_UNPARSEABLE` takes
 /// the Null-view path. Every other FAULT on a gate-only route is a broken plane and fails closed,
 /// unreadable (400), before any gate judges it and before any attempt: a slot that panicked (its
 /// door writes nothing but the outcome), a frame refused before the crossing or a quarantined
@@ -1140,5 +1141,49 @@ async fn every_fault_but_the_marked_unparseable_one_on_a_gate_only_route_is_refu
             "{target}, gate-first: no gate judged it"
         );
         assert!(far.sent().is_empty(), "{target}, gate-first: never dialled");
+    }
+}
+
+/// RED (opus review of #1500): at a gate-first screen the first `project` is made before the entry
+/// is bound, so it cannot know a rewrite is configured. An UNMARKED FAULT there (a panicking slot, no
+/// crossing, a FAULT without the mark, a READY answer the host's check refused) over an entry that
+/// carries a rewrite is the shared 500, no hook invoked and nothing dialled, as dev answered it and
+/// as the routed path does. RED before: 400, the unit read as unreadable without the rewrite looked at.
+#[tokio::test]
+async fn a_gate_first_unmarked_fault_with_a_configured_rewrite_is_the_shared_500() {
+    for target in [
+        "/panics",
+        "/no-crossing",
+        "/fault-unmarked",
+        "/broken-answer",
+    ] {
+        let (calls, chain) = counting(|| TransformOutcome::Abstain);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r
+            .driver
+            .with_hooks(Arc::new(GatedRewrites { rewrites: chain }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+            "{target}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the 500 is rendered");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{target}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{target}: no hook ran"
+        );
+        assert!(far.sent().is_empty(), "{target}: never dialled");
     }
 }
