@@ -90,11 +90,19 @@ pub fn recorded_in(durability: &Durability, amends: &str) -> Option<RecordedCoun
 /// hold is `NotFound`. A missing `pool`, or one `pool_known` does not know, answers `400
 /// invalid_request` whose message names the fault (Q64/Q67). The answer names the sealed
 /// amendment's position and digest, the pool, and the counts it now stands at.
+///
+/// A COUNT CORRECTION IS A DURABLE VERB (ARCHITECT 2026-10-07 H3 ruling (d)): it moves money (#71).
+/// With `journal` bound — the node's journal, which the node amendment journal's sink writes the
+/// correction onto as it is sealed (`durability::bind_amendments`) — nothing is sealed while the
+/// store is refusing the journal's records, and the answer waits for the store to keep the
+/// correction: either refusal is a `503` with the reason. With none bound the node amendment
+/// journal is memory-only and there is nothing to wait for.
 pub(crate) fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
     authorised_by: &str,
     pool_known: &dyn Fn(&str) -> bool,
+    journal: Option<&super::AmendmentJournal>,
     recorded: impl FnOnce(&str) -> Option<RecordedCounts>,
 ) -> Result<AdminAnswer, GovernanceError> {
     let doc: serde_json::Value =
@@ -130,6 +138,13 @@ pub(crate) fn adjust_effect(
         now.insert(class.clone(), count);
     }
     let was = recorded(amends).ok_or(GovernanceError::NotFound)?;
+    // WHERE THE STORE KEEPS THE JOURNAL, nothing is sealed while it is refusing the journal's
+    // records: the correction is refused 503 with the reason.
+    if let Some(journal) = journal {
+        if let Err(why) = journal.admit() {
+            return Ok(super::bound::journal_unavailable(&why));
+        }
+    }
     let sealed = correct_counts(
         scope,
         &was.classes,
@@ -147,6 +162,19 @@ pub(crate) fn adjust_effect(
     .map_err(|e| match e {
         CorrectionError::NotRoot | CorrectionError::Refused(_) => GovernanceError::Validation,
     })?;
+    // AND THE ANSWER WAITS FOR THE STORE. The sink put the correction on the journal as it was
+    // sealed, so it is at or below the journal's newest record: once that is kept, so is the
+    // correction. Until then it is in force on this node, as the chain holds it, and not answered
+    // as done.
+    if let Some(journal) = journal {
+        if let Err(why) = journal.acked(journal.sealed_through()) {
+            return Ok(super::bound::journal_unavailable(&format!(
+                "the correction is sealed as amendment {} and not yet kept by the store: {why}; \
+                 do not re-submit",
+                sealed.seq
+            )));
+        }
+    }
     let AmendBody::Adjust(adj) = &sealed.body else {
         return Err(GovernanceError::Store);
     };

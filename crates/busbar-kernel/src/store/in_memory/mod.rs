@@ -723,13 +723,13 @@ impl HealthState {
         ls.last_trip_at.store(now, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_success_for(&self, pool: &str, lane: usize) {
+    pub(crate) fn record_success_for(&self, pool: &str, lane: usize, now: u64) {
         let ls = self.get_lane(lane);
         // Dead lane: count the success for observability, don't touch the breaker.
         if !ls.dead.load(Ordering::Relaxed) {
             let cell = self.cell(pool, lane);
             // A HalfOpen→Closed recovery re-admits this cell to selection with a zeroed accumulator.
-            if cell.fsm().record_success(Self::now_secs()) {
+            if cell.fsm().record_success(now) {
                 self.reset_swrr_for(pool, cell.as_ref());
             }
         }
