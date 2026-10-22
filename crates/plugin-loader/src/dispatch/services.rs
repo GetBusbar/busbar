@@ -1305,6 +1305,24 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
 thread_local! {
     /// The unit the crossing on this thread serves.
     static SERVING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// The ticket the crossing on this thread carries (`Ticket::NONE` for a ticket-less one);
+    /// `None` outside any crossing.
+    static CROSSING: std::cell::Cell<Option<Ticket>> = const { std::cell::Cell::new(None) };
+}
+
+/// The ticket a crossing carries, stated for the host services it calls on its thread, and
+/// restored (to that of any crossing it is nested in) when the crossing returns.
+pub(crate) struct Crossing(Option<Ticket>);
+
+impl Drop for Crossing {
+    fn drop(&mut self) {
+        CROSSING.with(|c| c.set(self.0));
+    }
+}
+
+/// State that the crossing on this thread carries `ticket` until the returned guard drops.
+pub(crate) fn crossing(ticket: Ticket) -> Crossing {
+    Crossing(CROSSING.with(|c| c.replace(Some(ticket))))
 }
 
 /// The unit a crossing serves, stated for the host services it calls on its thread, and cleared
