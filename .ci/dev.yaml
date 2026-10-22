@@ -205,7 +205,7 @@ checks:
     requires: [cc, git-history]
     needs: [pin]
   oracle-record:
-    env_from_run: [MODERNCI_TO_SHA, MODERNCI_HEAD]
+    env_from_run: [MODERNCI_TO_SHA]
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
@@ -241,7 +241,7 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
     outputs: [target/oracle/recordings]
   oracle:
-    env_from_run: [MODERNCI_TO_SHA, MODERNCI_HEAD]
+    env_from_run: [MODERNCI_TO_SHA]
     # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
     # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
     # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
@@ -368,8 +368,7 @@ checks:
     # testing/ws-conformance/reports: the websocket suite's reports (row 97).
     outputs: [target/conformance-record, testing/ws-conformance/reports]
   verify-done:
-    # MODERNCI_HEAD: its PARITY group's bin/oracle judges from $MODERNCI_HEAD~1 when the target has no pin (#1556).
-    env_from_run: [MODERNCI_TO_SHA, MODERNCI_HEAD]
+    env_from_run: [MODERNCI_TO_SHA]
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
     run: |

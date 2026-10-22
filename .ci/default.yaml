@@ -312,7 +312,8 @@ checks:
     # The selftests run the gates over the real tree, merge-base included.
     requires: [cc, git-history]
   test-gated:
-    env_from_run: []
+    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
+    env_from_run: [MODERNCI_TO_SHA]
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
     # only. A, the busbar/kernel/core-admin gates at once (test-harness,
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
@@ -320,11 +321,13 @@ checks:
     run: |
       # Check selection (PRs): the gated suites build and read nothing under
       # xtask/, qa/, docs/ or .github/, nor a top-level *.md; a change
-      # touching only xtask/, qa/, docs/, .github/ or a top-level *.md cannot change this result. The change is the judged merge against
-      # its first parent (the target's tip), renames as delete plus add. Anything else, a commit
-      # that is no merge (the target's own run) or a diff that cannot be read runs it whole.
-      if git rev-parse -q --verify HEAD^2 >/dev/null &&
-        changed=$(git diff --name-only --no-renames HEAD^1 HEAD) && [ -n "$changed" ] &&
+      # touching only xtask/, qa/, docs/, .github/ or a top-level *.md cannot change this result. The change is every
+      # path changed between the target and the judged commit since their merge-base (TO_SHA...HEAD,
+      # renames as delete plus add). Anything else, the target's own run (an empty diff), an octopus
+      # merge (a train), or a base that is unset or not in the checkout runs it whole.
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
+        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
+        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
         ! printf '%s\n' "$changed" | grep -Ev '^(xtask|qa|docs|\.github)/|^[^/]*\.md$' >/dev/null; then
         echo "test-gated: this change touches only xtask/, qa/, docs/, .github/ or a top-level *.md; nothing here builds or reads them"
         exit 0
@@ -363,16 +366,18 @@ checks:
     requires: [cc, git-history]
     needs: [gates]
   test-docs:
-    env_from_run: []
+    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
+    env_from_run: [MODERNCI_TO_SHA]
     # `test` runs with `scope: affected`, and ModernCI's scoper reads docs/ and every *.md as no
     # crate's code: a change to them alone skips `test`, and a mixed change runs only the crates its
     # code reaches. Tests do read those files (qa/*.md bindings, docs/design, READMEs), so whenever
     # the change touches docs/ or any *.md this runs `test`'s build and suite whole; else it has
-    # nothing to add. The target's own run, a commit that is no merge or an unreadable diff runs it.
+    # nothing to add. The target's own run (an empty diff), an octopus merge or an unreadable base runs it.
     requires: [cc, git-history]
     run: |
-      if git rev-parse -q --verify HEAD^2 >/dev/null &&
-        changed=$(git diff --name-only --no-renames HEAD^1 HEAD) && [ -n "$changed" ] &&
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
+        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
+        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
         ! printf '%s\n' "$changed" | grep -E '^docs/|\.md$' >/dev/null; then
         echo "test-docs: this change touches no docs/ path and no *.md; test covers it"
         exit 0
@@ -420,17 +425,20 @@ checks:
     scope: affected
     baseline: target
   deletion-matrix:
-    env_from_run: []
+    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
+    env_from_run: [MODERNCI_TO_SHA]
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
       # Check selection (PRs): the kernel and contract feature builds read
       # nothing under xtask/, qa/, docs/ or .github/, nor a top-level *.md; a change
-      # touching only xtask/, qa/, docs/, .github/ or a top-level *.md cannot change this result. The change is the judged merge against
-      # its first parent (the target's tip), renames as delete plus add. Anything else, a commit
-      # that is no merge (the target's own run) or a diff that cannot be read runs it whole.
-      if git rev-parse -q --verify HEAD^2 >/dev/null &&
-        changed=$(git diff --name-only --no-renames HEAD^1 HEAD) && [ -n "$changed" ] &&
+      # touching only xtask/, qa/, docs/, .github/ or a top-level *.md cannot change this result. The change is every
+      # path changed between the target and the judged commit since their merge-base (TO_SHA...HEAD,
+      # renames as delete plus add). Anything else, the target's own run (an empty diff), an octopus
+      # merge (a train), or a base that is unset or not in the checkout runs it whole.
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
+        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
+        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
         ! printf '%s\n' "$changed" | grep -Ev '^(xtask|qa|docs|\.github)/|^[^/]*\.md$' >/dev/null; then
         echo "deletion-matrix: this change touches only xtask/, qa/, docs/, .github/ or a top-level *.md; nothing here builds or reads them"
         exit 0
@@ -500,7 +508,7 @@ checks:
   # On every move (above): the same judge as the dev -> qa oracle (.ci/dev.yaml), here no worse than
   # dev, so a lane cannot land a customer-visible change the 1.5.5 golden does not forgive.
   oracle:
-    env_from_run: [MODERNCI_TO_SHA, MODERNCI_HEAD]
+    env_from_run: [MODERNCI_TO_SHA]
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
