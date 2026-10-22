@@ -242,7 +242,8 @@ checks:
     # then oracle-record's recording of the candidate is replayed against the committed 1.5.5
     # golden, strict: green is every cell byte-green or forgiven by an owner-signed accepted
     # difference.
-    requires: [cc]
+    # git-history: the golden-guard reads back to the commit that added the golden.
+    requires: [cc, git-history]
     run: |
       # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
       # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
@@ -255,7 +256,12 @@ checks:
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
         ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       else
-        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+        # The base (qa) holds no golden yet, so it is held add-only from the commit that first added it:
+        # every change to it since, whatever this move's base, is judged.
+        added="$(git log --diff-filter=A --format=%H --reverse -- testing/shadow-oracle/golden/1.5.5 | sed -n 1p)"
+        [ -n "$added" ] || { echo "golden-guard: no commit adds golden/1.5.5 in this history: refusing to judge without it"; exit 1; }
+        echo "golden-guard: $MODERNCI_TO_SHA holds no golden/1.5.5; held add-only from the commit that added it, $added"
+        ./bin/oracle golden-guard --repo . --base "$added" --head HEAD
       fi
       ./bin/oracle fetch-golden
       rm -rf target/oracle/reports/dev
