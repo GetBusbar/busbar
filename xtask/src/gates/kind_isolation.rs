@@ -147,6 +147,8 @@ mod truths;
 
 pub use closure::ROW_CLOSURE;
 pub use inputs::ROW_INPUTS;
+/// The Law 0 row `cargo xtask gate --settle` reads its per-cell measure off ([`crate::settle`]).
+pub use matrix::ROW_LAW0;
 pub use matrix::ROW_MATRIX;
 pub use truths::ROW_TRUTHS;
 
@@ -7081,16 +7083,32 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 /// [`KindIsolationGate::run`] returns it INSTEAD of the ordinary rows when the flag is set.
 pub const ROW_WRITE: &str = "kind-isolation:write";
 
-/// One row of the registry whose number this run would move.
-struct Repin {
+/// One row of the registry whose number this run would move. `pub(crate)` for one reader,
+/// `cargo xtask gate --settle` ([`settle_repins`]), which settles off this measure, never a second.
+pub(crate) struct Repin {
     /// `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
     /// is looking at.
-    label: String,
+    pub(crate) label: String,
     /// The lines that identify the row in the file, so the rewrite cannot move the wrong one.
-    keys: Vec<(String, String)>,
-    table: &'static str,
-    was: i64,
-    now: i64,
+    pub(crate) keys: Vec<(String, String)>,
+    pub(crate) table: &'static str,
+    pub(crate) was: i64,
+    pub(crate) now: i64,
+}
+
+/// THE `[[dep]]` / `[[face]]` MEASURE FOR `cargo xtask gate --settle` ([`crate::settle`]): the same
+/// pinned mount, census, registry and [`repins`] the `--write` arm re-pins from, so the merge train
+/// settles a measured count off the gate's one measuring path (BUSBAR-1.6.0.md Law 8 and Law 9: a
+/// ceiling is today's MEASURED value). Every row whose count is off its measure, either way; which
+/// way may be written is the caller's rule.
+pub(crate) fn settle_repins(cx: &Ctx) -> Result<Vec<Repin>, String> {
+    let mounted = pinned::with_pinned(cx);
+    let cx = &mounted;
+    let mut crates = census(cx)?;
+    let (planes, ports) = vocabularies(&crates);
+    assign_instances(&mut crates, &planes, &ports);
+    let reg = load_registry(cx)?;
+    repins(cx, &crates, &reg)
 }
 
 /// EVERY EXACT-COUNT ROW IN THE REGISTRY, MEASURED, and which way each one would have to move.

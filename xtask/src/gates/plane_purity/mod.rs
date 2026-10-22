@@ -294,6 +294,14 @@ fn root_present(cx: &Ctx, root: &str) -> bool {
             }))
 }
 
+/// THE TWO WALK COUNTS FOR `cargo xtask gate --settle` ([`crate::settle`]): `(neutral_files,
+/// plane_files)`, off the same [`measure`] the denominator row judges against [`NEUTRAL_FLOOR`] and
+/// [`PLANE_FLOOR`], so the floors settle to the gate's own measure (BUSBAR-1.6.0.md Law 9).
+pub fn settle_measure(cx: &Ctx) -> Result<(usize, usize), String> {
+    let m = measure(cx)?;
+    Ok((m.neutral_files, m.plane_files))
+}
+
 fn measure(cx: &Ctx) -> Result<Measurement, String> {
     // THE NEUTRAL POPULATION COMES FROM THE KIND TABLE TOO (Law 8: "a roster maintained by hand is
     // a defect with a date on it"). It was `planes::neutral_src_roots`, a thirteen-entry list a new
