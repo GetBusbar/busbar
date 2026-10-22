@@ -55,6 +55,7 @@
 
 mod answer;
 mod cancel;
+mod close;
 pub mod door;
 mod epoch;
 mod far_end;
@@ -215,21 +216,37 @@ pub fn refusal_status(reason: ReasonCode) -> u32 {
 }
 
 /// The kernel's default status for one refusal class.
+///
+/// A POLICY REFUSAL IS A REFUSAL, NOT A SERVER FAULT (ARCHITECT ruling): a class that refuses the
+/// caller's request (its bytes, its authority, its size, its rate, its money, what it named, or a
+/// limit its admission ran into) is a 4xx naming that refusal, so a caller never retries it as
+/// though the node broke; a class that is the node's own state or fault is a 5xx. Each 4xx is the
+/// status the other surfaces already answer for the class (the one classification):
+///
+/// * `Rejected` 400: readable, and not taken as asked (an unbillable name, an unpriced class, a
+///   replayed or superseded idempotency key). 1.5.5's recorded `no rate` refusal, 400
+///   `invalid_request_error`; a plane that restates the class renders it as its request error.
+/// * `Busy` 429: the in-flight table, or the idempotency key's unit, is busy: a limit the
+///   admission ran into, retryable once it frees. 1.5.5's in-flight limit, 429 `rate_limit_error`;
+///   the admin surface's 429 for the class.
+/// * `NotFound` 404: nowhere for the request to go. 1.5.5's model-not-found 404; the admin
+///   surface's 404 for the class.
+///
+/// 402 is no class's status: a spent money cap (`QuotaExhausted`) is 1.5.5's 429
+/// `insufficient_quota`. The node's own states and faults keep their 5xx: a shut way to the
+/// destination and a node that cannot take the unit now (503), a deadline (504), a plane's panic
+/// (502), and an internal fault (503).
 pub const fn class_status(class: RefusalClass) -> u32 {
     match class {
-        RefusalClass::Unreadable => 400,
+        RefusalClass::Unreadable | RefusalClass::Rejected => 400,
         RefusalClass::Unauthenticated => 401,
         RefusalClass::Forbidden => 403,
+        RefusalClass::NotFound => 404,
         RefusalClass::TooLarge => 413,
-        RefusalClass::Throttled | RefusalClass::QuotaExhausted => 429,
+        RefusalClass::Throttled | RefusalClass::Busy | RefusalClass::QuotaExhausted => 429,
         RefusalClass::PlaneFault => 502,
         RefusalClass::Timeout => 504,
-        RefusalClass::Rejected
-        | RefusalClass::Busy
-        | RefusalClass::NotFound
-        | RefusalClass::Unreachable
-        | RefusalClass::Unavailable
-        | RefusalClass::NodeFault => 503,
+        RefusalClass::Unreachable | RefusalClass::Unavailable | RefusalClass::NodeFault => 503,
     }
 }
 
@@ -241,6 +258,9 @@ pub struct PlaneDriver {
     config: DriverConfig,
     money: Arc<dyn MoneySeam>,
     buried: Mutex<Vec<cancel::Buried>>,
+    /// The units dropped while their plane still held them: the close each is owed
+    /// ([`close`]), paid by the sweep.
+    owed: Mutex<Vec<close::Owed>>,
     reload: watch::Sender<bool>,
     /// The kernel's record write path and the instance the plane's writes are keyed by.
     records: Option<(Arc<KernelServices>, Caller)>,
@@ -396,6 +416,7 @@ impl PlaneDriver {
             config,
             money,
             buried: Mutex::new(Vec::new()),
+            owed: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,
             driver,
@@ -737,6 +758,8 @@ pub struct Rendered {
 pub(crate) struct UnitState {
     /// The unit's kernel-minted key, once decode has run.
     unit: u64,
+    /// Where the unit stands with its plane's closing call, from `arrive` on ([`close`]).
+    close: close::Close,
     decoded: Option<Decoded>,
     /// A REFUSED `arrive`'s own code and 4xx status.
     declined: Option<(u32, u32)>,
@@ -892,6 +915,13 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             ..blank_in()
         };
         let mut o: ArriveOut = blank_out();
+        // FROM HERE THE PLANE HOLDS THE UNIT, whatever `arrive` answers: it is owed exactly one
+        // closing call ([`close`]).
+        {
+            let mut st = self.lock();
+            st.unit = unit;
+            st.close = close::Close::Open;
+        }
         let outcome = self
             .driver
             .calls
@@ -1026,7 +1056,10 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             input.hook = AbiStr::over(hook.as_bytes());
         }
         let principal = self.lock().principal.clone();
-        self.driver.render_refusal(input, principal.as_ref())
+        let rendered = self.driver.render_refusal(input, principal.as_ref());
+        // The `refusal` that names the unit is its closing call.
+        self.lock().close.closed();
+        rendered
     }
 }
 
@@ -1526,7 +1559,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key; the principal itself never enters a plane input.
+    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
+    /// itself never enters a plane input.
     ///
     /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
     /// unit, so a driver whose book lends references never lends an empty one to a governed
@@ -1562,6 +1596,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+        // Every arrival first pays what the units before it left owing ([`close`]), so a plane
+        // whose units are all refused before their route still has its dropped units closed.
+        self.driver.sweep();
         self.lock().unit = ctx.key.get();
         let decoded = self.arrive(ctx.key.get());
         let classes = &self.driver.config.op_classes;
