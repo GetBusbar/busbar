@@ -25,9 +25,8 @@ Each assertion drives a fresh instance of each door with one script and is PASS 
    subject; every conformance leg must then go RED.
 
 `lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
-voice_conform`, and the cdylib twin from the workspace this checkout's lock pins the plane at:
-`cargo build --locked --manifest-path <that workspace> -p busbar-plane-streaming-plugin
---target-dir <this target>`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
+voice_conform`, and the cdylib twin at the rev the root pins the plane, in this workspace and so
+against the host's busbar-contract: `cargo build --locked -p busbar-plane-streaming-plugin`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
 against the plane, loader, contract and harness sources), `VOICE_CONFORM_DOOR` a dropped door that
 is not in the profile directory beside it.
 

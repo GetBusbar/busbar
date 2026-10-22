@@ -838,6 +838,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-streaming-plugin"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=03cb3eb5d9c98b010c57fac4f75eabf874361d60#03cb3eb5d9c98b010c57fac4f75eabf874361d60"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-streaming",
+]
+
+[[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
@@ -4002,6 +4011,7 @@ version = "0.0.0"
 dependencies = [
  "busbar-contract",
  "busbar-plane-streaming",
+ "busbar-plane-streaming-plugin",
  "busbar-plugin-loader",
  "bytes",
  "serde_json",
