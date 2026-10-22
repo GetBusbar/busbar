@@ -3587,3 +3587,56 @@ fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
     );
     assert!(!p.is_open());
 }
+
+/// RED (audit loader-src PL1#8; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.324-325: "The memory a
+/// call lends a plugin lives until that call completes, abandoned or not, for every kind"): when
+/// one plugin wedges a worker and the watchdog replaces it, a HEALTHY instance's op that was
+/// PENDING on that worker is sent `cancel` before its frame and lent memory go, so the plugin
+/// learns its op ended (a store op's checked-out connection is released on `cancel`). Its caller is
+/// answered FAULT, and the lent memory goes only after the `cancel`. RED: the replacement dropped
+/// the op with no `cancel`, and the plugin was never told.
+#[test]
+fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_its_memory_goes() {
+    let d = Dispatcher::new(config());
+    let (healthy, sink) = opened(&d);
+    let (owner, dropped) = lent(plug::PEND_HOLD);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_lent(
+        &healthy,
+        t,
+        TICK,
+        lent_frame(&owner),
+        DeadlineClass::Call,
+        0,
+        owner.clone(),
+    );
+    drop(owner);
+    until("the healthy op pends", || d.is_pending(t));
+    let (wedger, _) = opened(&d);
+    let h = d.mint(0).unwrap();
+    let hung = d.submit(
+        &wedger,
+        h,
+        TICK,
+        frame(b"hang:orphan"),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the watchdog replaced the wedged worker", || {
+        d.stats().replacements == 1
+    });
+    until("the healthy instance's orphaned op is cancelled", || {
+        count(&healthy, &sink).1 >= 1
+    });
+    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Fault);
+    until("the orphan's lent memory goes after its cancel", || {
+        dropped.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    // Release the hang from a third instance (the wedger is faulted).
+    let (releaser, _) = opened(&d);
+    assert_eq!(
+        releaser.call(TICK, &mut frame(b"unhang:orphan")).outcome,
+        Outcome::Ready
+    );
+    drop(hung);
+}
