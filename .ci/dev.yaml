@@ -42,6 +42,8 @@ env:
   # its bin/oracle is this blob (verified against dev 17d824b657; dev's tip has the same blob).
   BUSBAR_ORACLE_SHIM_COMMIT: "17d824b6576d57492055585bc905aee8a1521fd4"
   BUSBAR_ORACLE_SHIM_BLOB: "c3cc236f061e3b9e191f50124049bc13ceb4ba4b"
+  # 0 until #1556 lands and the shim commit above is bumped to it: the oracle reports NOT JUDGED.
+  BUSBAR_ORACLE_JUDGE_LIVE: "0"
   ORACLE_TRUST_SH: |
     # THE TRUSTED JUDGE SHIM (security, 2026-10-22). Evaluated by a check BEFORE any candidate code
     # runs: bin/oracle and the store-services helper are extracted from the TARGET's copy (a commit
@@ -68,7 +70,8 @@ env:
       _ots_shim_blob="$(git rev-parse "$_ots_src:bin/oracle")"
       _ots_svc_blob="$(git rev-parse "$_ots_src:$_ots_svc")"
       export BUSBAR_ORACLE_SHIM="$ORACLE_TRUST/bin/oracle" BUSBAR_ORACLE_PRODUCT_ROOT="$PWD" BUSBAR_ORACLE_DATA="$PWD/testing/shadow-oracle"
-      readonly ORACLE_TRUST _ots_svc _ots_shim_blob _ots_svc_blob BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_DATA \
+      unset BUSBAR_ORACLE_RUST_BIN
+      readonly ORACLE_TRUST _ots_src _ots_svc _ots_shim_blob _ots_svc_blob BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_RUST_BIN \
         BUSBAR_ORACLE_RELEASE_REPO BUSBAR_ORACLE_RELEASE_REF BUSBAR_ORACLE_SHA256_LINUX_X86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64 \
         BUSBAR_GOLDEN_1_5_5_TREE BUSBAR_ORACLE_CRATE BUSBAR_ORACLE_BIN BUSBAR_ORACLE_SHIM_COMMIT BUSBAR_ORACLE_SHIM_BLOB
       echo "oracle-trust: bin/oracle and the store-services helper come from $_ots_why"
@@ -77,6 +80,32 @@ env:
       [ "$(git hash-object "$ORACLE_TRUST/bin/oracle")" = "$_ots_shim_blob" ] \
         && [ "$(git hash-object "$ORACLE_TRUST/$_ots_svc")" = "$_ots_svc_blob" ] \
         || { echo "oracle-trust: the trusted copy changed on disk after it was extracted: refusing to run it" >&2; return 1; }
+    }
+    # NO JUDGE until busbar's #1556 lands and the protected shim commit is bumped to it (busbar
+    # ruling 2026-10-22): the judge reports NOT JUDGED, never green. ModernCI has no neutral
+    # verdict yet, so it is a red that names itself; BUSBAR_ORACLE_JUDGE_LIVE=1 lifts it.
+    oracle_not_judged() {
+      [ "${BUSBAR_ORACLE_JUDGE_LIVE:-0}" = 1 ] && return 0
+      echo "oracle: NOT JUDGED: no trusted judge until #1556 lands and BUSBAR_ORACLE_SHIM_COMMIT is bumped to it (busbar ruling 2026-10-22). This is not a verdict on the candidate."
+      exit 1
+    }
+    # The judge's own tree: a FRESH checkout of the trusted commit (the target's, or the protected
+    # shim commit), where no candidate code has run. The judge runs there, reading only the
+    # candidate's recording.
+    oracle_judge_tree() {
+      ORACLE_JUDGE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/oracle-judge.XXXXXX")/tree" || return 1
+      git worktree add -q --detach "$ORACLE_JUDGE_TREE" "$_ots_src" || { echo "oracle-trust: could not check $_ots_src out for the judge" >&2; return 1; }
+      [ "$(git -C "$ORACLE_JUDGE_TREE" rev-parse HEAD)" = "$(git rev-parse "$_ots_src^{commit}")" ] \
+        && [ "$(git hash-object "$ORACLE_JUDGE_TREE/bin/oracle")" = "$_ots_shim_blob" ] \
+        || { echo "oracle-trust: the judge's tree is not $_ots_src" >&2; return 1; }
+      readonly ORACLE_JUDGE_TREE
+    }
+    # The judge in its own tree, its product root and data that tree's (never the candidate's).
+    oracle_judge() {
+      [ -n "${ORACLE_JUDGE_TREE:-}" ] || { echo "oracle-trust: no judge tree" >&2; return 1; }
+      [ "$(git hash-object "$ORACLE_JUDGE_TREE/bin/oracle")" = "$_ots_shim_blob" ] || { echo "oracle-trust: the judge's shim changed on disk" >&2; return 1; }
+      ( cd "$ORACLE_JUDGE_TREE" && BUSBAR_ORACLE_PRODUCT_ROOT="$ORACLE_JUDGE_TREE" BUSBAR_ORACLE_DATA="$ORACLE_JUDGE_TREE/testing/shadow-oracle" \
+          "$ORACLE_JUDGE_TREE/bin/oracle" "$@" )
     }
     # The judge, run only from the trusted copy.
     oracle() { _ots_verify || return 1; "$ORACLE_TRUST/bin/oracle" "$@"; }
@@ -313,7 +342,6 @@ checks:
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
       eval "$ORACLE_TRUST_SH"; oracle_trust || exit 1
-      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
         oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD || { echo "golden-guard: RED: the 1.5.5 golden is not add-only"; exit 1; }
@@ -325,9 +353,15 @@ checks:
         echo "golden-guard: $MODERNCI_TO_SHA holds no golden/1.5.5; held add-only from the commit that added it, $added"
         oracle golden-guard --repo . --base "$added" --head HEAD || { echo "golden-guard: RED: the 1.5.5 golden is not add-only"; exit 1; }
       fi
-      oracle fetch-golden
-      rm -rf target/oracle/reports/dev
-      oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+      # The judge: in a fresh checkout of the trusted commit, never where candidate code ran. The
+      # candidate's recording (oracle-record's outputs) is the only thing it reads from this job.
+      oracle_not_judged
+      oracle_judge_tree || exit 1
+      cand="$PWD/target/oracle/recordings/candidate"; out="$PWD/target/oracle/reports/dev"
+      [ -d "$cand" ] || { echo "oracle: no candidate recording laid in from oracle-record"; exit 1; }
+      rm -rf "$out"; mkdir -p "$out"
+      oracle_judge fetch-golden || exit 1
+      oracle_judge replay --golden "$ORACLE_JUDGE_TREE/testing/shadow-oracle/golden/1.5.5" --candidate "$cand" --out "$out" --strict
     needs: [oracle-record]
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
