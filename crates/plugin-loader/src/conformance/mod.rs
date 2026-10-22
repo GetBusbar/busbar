@@ -2153,16 +2153,15 @@ macro_rules! conformance_suite {
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
-            #[allow(unused_mut)]
-            let mut s = $crate::conformance::Subject::new(
-                $crate::__conformance_door!($door),
-                $cdylib,
-                $inputs,
-            );
-            $(s = s.with_host($host);)?
-            $(s = s.with_anchors($tls);)?
-            $(s = s.with_namespace($create, $drop);)?
-            s.declared_in(env!("CARGO_MANIFEST_DIR"))
+            $crate::conformance_suite!(
+                @subject door: $door,
+                manifest_dir: env!("CARGO_MANIFEST_DIR"),
+                cdylib: $cdylib,
+                inputs: $inputs
+                $(, host: $host)?
+                $(, tls: $tls)?
+                $(, namespace: ($create, $drop))?
+            )
         }
         $crate::conformance_suite!(@tests);
     };
@@ -2178,15 +2177,75 @@ macro_rules! conformance_suite {
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
-            #[allow(unused_mut)]
-            let mut s = $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs);
-            $(s = s.with_host($host);)?
-            $(s = s.with_anchors($tls);)?
-            $(s = s.with_namespace($create, $drop);)?
-            s
+            $crate::conformance_suite!(
+                @subject loaded: $loaded,
+                manifest_dir: env!("CARGO_MANIFEST_DIR"),
+                cdylib: $cdylib,
+                inputs: $inputs
+                $(, host: $host)?
+                $(, tls: $tls)?
+                $(, namespace: ($create, $drop))?
+            )
         }
         $crate::conformance_suite!(@tests);
     };
+    // INTERNAL: the subject a suite runs over, its door named by either form, with the plugin
+    // crate's manifest dir (the suite passes its own `CARGO_MANIFEST_DIR`; a loader test passes a
+    // scratch dir). Both forms finish in the one `@declared` step, so each reads the declares file.
+    (
+        @subject door: $door:path,
+        manifest_dir: $dir:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {
+        $crate::conformance_suite!(
+            @declared $crate::conformance::Subject::new(
+                $crate::__conformance_door!($door),
+                $cdylib,
+                $inputs,
+            ),
+            manifest_dir: $dir
+            $(, host: $host)?
+            $(, tls: $tls)?
+            $(, namespace: ($create, $drop))?
+        )
+    };
+    (
+        @subject loaded: $loaded:expr,
+        manifest_dir: $dir:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {
+        $crate::conformance_suite!(
+            @declared $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs),
+            manifest_dir: $dir
+            $(, host: $host)?
+            $(, tls: $tls)?
+            $(, namespace: ($create, $drop))?
+        )
+    };
+    // INTERNAL: the one step both forms share: the host, anchors and namespace hooks named, then
+    // the plugin crate's declares file read ([`Subject::declared_in`]).
+    (
+        @declared $subject:expr,
+        manifest_dir: $dir:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {{
+        #[allow(unused_mut)]
+        let mut s: $crate::conformance::Subject = $subject;
+        $(s = s.with_host($host);)?
+        $(s = s.with_anchors($tls);)?
+        $(s = s.with_namespace($create, $drop);)?
+        s.declared_in($dir)
+    }};
     (@tests) => {
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
         #[test]

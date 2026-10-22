@@ -1739,6 +1739,47 @@ fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike
     );
 }
 
+/// THE PUBLISHED SUITE HOLDS A PLUGIN TO WHAT PRODUCTION HOLDS IT TO (docs/design/BUSBAR-1.6.0.md
+/// §2: a compiled-in plugin and a dropped-in one are one contract). `conformance_suite!` reads the
+/// plugin's declares file whichever form names its door, so a hook declaring `hook.orders: false`
+/// is judged on abstain-only under `loaded:` as under `door:`, as the loader refuses its order at
+/// run. RED before: the `loaded:` form never read the declares file, its subject stated nothing,
+/// and a hook that orders passed `both_ways` there.
+#[test]
+fn a_suite_reads_the_declares_file_whichever_form_names_its_door() {
+    let root = std::env::temp_dir().join(format!("declares-forms-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("plugin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("declares.json"), r#"{"hook": {"orders": false}}"#).unwrap();
+    let at = dir.to_str().unwrap();
+    let by_door = crate::conformance_suite!(
+        @subject door: crate::plane_door_plugin::door,
+        manifest_dir: at,
+        cdylib: "plane_door_plugin",
+        inputs: "{}"
+    );
+    let by_loaded = crate::conformance_suite!(
+        @subject loaded: {
+            // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised
+            // door.
+            unsafe { crate::dispatch::LoadedDoor::from_raw(crate::plane_door_plugin::door) }
+        },
+        manifest_dir: at,
+        cdylib: "plane_door_plugin",
+        inputs: "{}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        !by_door.hook_orders(),
+        "the `door:` form reads the declares file"
+    );
+    assert!(
+        !by_loaded.hook_orders(),
+        "the `loaded:` form reads the declares file as the `door:` form does"
+    );
+}
+
 #[test]
 fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
     use crate::dispatch::{rendering_of, rendering_of_loaded, LinkedRow, LoadedDoor};
