@@ -329,6 +329,9 @@ enum Exit {
     DoneAnswerRacingTheDeadline,
     /// Its caller went away while the op's own done answer was on its way: the answer won.
     DoneAnswerRacingAClientDrop,
+    /// Its deadline passed while a done answer with a retry verdict, not marked final, was on its
+    /// way: the plane keeps the unit for the retry, so it is still owed its close.
+    RetryDoneAnswerRacingTheDeadline,
     /// The walk had no member at all.
     NoMemberLeft,
     /// The far end failed over and the walk ran out.
@@ -341,7 +344,7 @@ enum Exit {
     SessionEnded,
 }
 
-const EXITS: [Exit; 22] = [
+const EXITS: [Exit; 23] = [
     Exit::Completed,
     Exit::AnsweredLocally,
     Exit::RefusedAtArrive,
@@ -359,6 +362,7 @@ const EXITS: [Exit; 22] = [
     Exit::GoneMidAnswer,
     Exit::DoneAnswerRacingTheDeadline,
     Exit::DoneAnswerRacingAClientDrop,
+    Exit::RetryDoneAnswerRacingTheDeadline,
     Exit::NoMemberLeft,
     Exit::UpstreamFailedOver,
     Exit::DialFailed,
@@ -465,15 +469,24 @@ async fn closed_by(exit: Exit) -> u32 {
             driver.sweep();
             closes(&plane, KEY)
         }
-        Exit::DoneAnswerRacingTheDeadline | Exit::DoneAnswerRacingAClientDrop => {
+        Exit::DoneAnswerRacingTheDeadline
+        | Exit::DoneAnswerRacingAClientDrop
+        | Exit::RetryDoneAnswerRacingTheDeadline => {
             // Two windows: the first streams, the second (the reply done) is held past the cut.
             let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
             let (steps, far, caller) = (
                 passing(),
-                cases::Far::new(&["done-late"], &[b"hello ", b"end"]),
+                cases::Far::new(
+                    &[if matches!(exit, Exit::RetryDoneAnswerRacingTheDeadline) {
+                        "retry-done-late"
+                    } else {
+                        "done-late"
+                    }],
+                    &[b"hello ", b"end"],
+                ),
                 cases::Caller::default(),
             );
-            let racing_the_deadline = matches!(exit, Exit::DoneAnswerRacingTheDeadline);
+            let racing_the_deadline = !matches!(exit, Exit::DoneAnswerRacingAClientDrop);
             let deadline = if racing_the_deadline {
                 now_ns() + 40_000_000
             } else {

@@ -36,9 +36,10 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
-    ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
+    REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
@@ -143,6 +144,9 @@ struct Unit {
     short: bool,
     /// The last answer was `more = 1` from this source: the next piece is its re-call.
     more_from: Option<u32>,
+    /// The answer's first piece carried `PIECE_FINAL`: a retry verdict on it does not keep the
+    /// unit.
+    final_answer: bool,
 }
 
 /// One answer, held until it is due. The `out` carries plane pointers; the host reads it only
@@ -494,6 +498,9 @@ impl Double {
         if i.from == FROM_FAR_END && (!piece.is_empty() || i.flags != 0) {
             u.far_answered = true;
             u.far_pieces += 1;
+            if i.flags & PIECE_HAS_STATUS != 0 {
+                u.final_answer = i.flags & PIECE_FINAL != 0;
+            }
             u.saw_last |= i.flags & PIECE_LAST != 0;
             match u.mode.as_slice() {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
@@ -510,7 +517,7 @@ impl Double {
                 // An answer whose last window (its reply done) comes LATE (mode `done-late`): the
                 // second far-end piece's answer is held, so a deadline, a drain or the caller
                 // going away reaches the op before its own done answer does.
-                b"done-late" if u.far_pieces == 2 => {
+                b"done-late" | b"retry-done-late" if u.far_pieces == 2 => {
                     hold = Hold::For(DONE_LATE);
                 }
                 b"retry" => {
@@ -612,6 +619,11 @@ impl Double {
         if u.saw_last && u.pending.is_empty() {
             o.flags = EMIT_DONE;
             o.verdict = 0;
+            // A done answer with a retry verdict (mode `retry-done-late`): an answer not marked
+            // final keeps the unit for the attempt the retry asks for.
+            if u.mode == b"retry-done-late" {
+                o.verdict = VERDICT_RETRY;
+            }
         }
         // A plane whose emitted messages are text (mode `text`): each whole message says so.
         if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
@@ -1210,11 +1222,15 @@ impl PlaneCalls for Double {
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
-        // A done answer with a retry verdict keeps the unit for the kernel's next attempt.
+        // A done answer with a retry verdict keeps the unit for the kernel's next attempt, unless
+        // its answer was marked final (`PIECE_FINAL`).
+        let final_answer = (self.units.lock().unwrap())
+            .get(&input.unit)
+            .is_some_and(|u| u.final_answer);
         if answer.outcome == Outcome::Ready
             && out.flags & EMIT_DONE != 0
             && out.more == 0
-            && out.verdict != VERDICT_RETRY
+            && (out.verdict != VERDICT_RETRY || final_answer)
             && input.flags & PIECE_REFUSED == 0
         {
             self.closed(input.unit);

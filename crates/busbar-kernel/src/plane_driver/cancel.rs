@@ -178,6 +178,8 @@ pub(crate) struct Buried {
     /// The flags of the piece its op in flight was pushed: a refused piece's done answer is not
     /// the unit's close.
     pub(crate) piece_flags: u32,
+    /// That op's answer was marked `PIECE_FINAL` on its first piece (`route::closes_unit`).
+    pub(crate) final_answer: bool,
 }
 
 impl PlaneDriver {
@@ -214,6 +216,7 @@ impl PlaneDriver {
                                     &done,
                                     &*flight,
                                     unit.piece_flags,
+                                    unit.final_answer,
                                 ) =>
                         {
                             None

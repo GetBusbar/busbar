@@ -651,11 +651,16 @@ impl Answer {
         }
     }
 
-    /// The answer says the unit's reply is complete, its last window answered: the plane lets the
-    /// unit go ([`super::close`]). The refused piece's answer never does: the unit's `refusal`
-    /// follows it.
-    fn says_done(&self, piece: &Piece) -> bool {
-        self.flags & EMIT_DONE != 0 && self.more == 0 && piece.flags & PIECE_REFUSED == 0
+    /// This answer, to `piece`, is the unit's closing call ([`closes_unit`]); `final_answer` = the
+    /// answer's first piece carried `PIECE_FINAL`.
+    fn says_done(&self, piece: &Piece, final_answer: bool) -> bool {
+        closes_unit(
+            self.flags,
+            self.more,
+            self.verdict,
+            piece.flags,
+            final_answer,
+        )
     }
 
     /// The usage-tap fault this answer carries, as the reason the kernel counts it under; `None`
@@ -705,9 +710,13 @@ pub(crate) struct Pumping<'u> {
     /// The member whose wait the plane stated its refusal answers (`OnPieceOut::wait_member`), on
     /// its answer to the walk's exhausted refused piece.
     wait_member: Option<String>,
-    /// The flags of the piece last pushed (its op's answer is read against them: a refused
-    /// piece's done answer is not the unit's close).
+    /// The flags of the piece last pushed: the one whose op may still be in flight when the unit
+    /// is cut or its caller goes away, so its answer is read against them (a refused piece's done
+    /// answer is not the unit's close).
     piece_flags: u32,
+    /// The answer being pumped was marked `PIECE_FINAL` on its first piece (the kernel will not
+    /// fail it over): a retry verdict on it does not keep the unit ([`closes_unit`]).
+    final_answer: bool,
 }
 
 impl<'u> Pumping<'u> {
@@ -736,6 +745,7 @@ impl<'u> Pumping<'u> {
             cancel_writes: Vec::new(),
             wait_member: None,
             piece_flags: 0,
+            final_answer: false,
         }
     }
 
@@ -759,6 +769,14 @@ impl<'u> Pumping<'u> {
     /// the dispatcher is handed none, so no second cancel races the driver's.
     async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>) {
         self.piece_flags = p.flags;
+        // THE ANSWER'S FINAL MARK, as the plane is told it: on an answer's first piece (its
+        // status), and none yet on a new attempt.
+        if p.from == FROM_KERNEL && p.attempt_no > 0 {
+            self.final_answer = false;
+        }
+        if p.flags & PIECE_HAS_STATUS != 0 {
+            self.final_answer = p.flags & PIECE_FINAL != 0;
+        }
         let calls = &self.driver.calls;
         let (input, out) = frame(&mut self.bufs, p, self.ctx.key.get());
         let left = self.left();
@@ -781,7 +799,9 @@ impl<'u> Pumping<'u> {
             // cancel's FAULT): the unit's closing call. So is the op's own answer, when it ended on
             // its own before the cancel reached it saying the unit's reply is complete.
             let done = answered.outcome == AbiOutcome::Ready
-                && out.as_ref().is_some_and(|o| o.says_done(p));
+                && out
+                    .as_ref()
+                    .is_some_and(|o| o.says_done(p, self.final_answer));
             if answered.disposition.is_some() || answered.outcome == AbiOutcome::Fault || done {
                 self.lock().close.closed();
             }
@@ -935,7 +955,10 @@ impl Drop for Pumping<'_> {
         let (flight, done) = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
                 // The op ended on its own: its answer may have closed the unit.
-                Some(settled) => (None, answered_done(&settled, &*flight, self.piece_flags)),
+                Some(settled) => (
+                    None,
+                    answered_done(&settled, &*flight, self.piece_flags, self.final_answer),
+                ),
                 None => {
                     self.driver.calls.drop_client(self.ticket);
                     (Some(flight), false)
@@ -959,22 +982,44 @@ impl Drop for Pumping<'_> {
             principal,
             closed,
             piece_flags: self.piece_flags,
+            final_answer: self.final_answer,
         });
     }
 }
 
-/// Whether an op that ended on its own (`settled`, its `flight`) closed its unit: a READY answer
-/// that says the unit's reply is complete, its last window, to a piece that was not the refused
-/// piece (`piece_flags`).
+/// WHETHER AN `on_piece` ANSWER IS THE UNIT'S CLOSING CALL, by the contract's own words: it says
+/// "the unit's reply is complete" (`EMIT_DONE`) on its last window (`more == 0`), to a piece that
+/// is not the refused piece (`PIECE_REFUSED`: the unit's `refusal` follows it), and it is the
+/// unit's last answer: a `VERDICT_RETRY` answer is the unit's last only when its first piece
+/// carried `PIECE_FINAL` ("the kernel will not fail this answer over, whatever verdict the plane
+/// answers it with, so an answer whose verdict is `VERDICT_RETRY` is the unit's last"). Without
+/// it, a plane keeps the unit for the attempt the retry asks for.
+pub(crate) fn closes_unit(
+    flags: u32,
+    more: u32,
+    verdict: u32,
+    piece_flags: u32,
+    final_answer: bool,
+) -> bool {
+    flags & EMIT_DONE != 0
+        && more == 0
+        && piece_flags & PIECE_REFUSED == 0
+        && (verdict != VERDICT_RETRY || final_answer)
+}
+
+/// Whether an op that ended on its own (`settled`, its `flight`) closed its unit
+/// ([`closes_unit`]), read against the piece it was pushed (`piece_flags`) and its answer's
+/// final mark.
 pub(crate) fn answered_done(
     settled: &Answered,
     flight: &dyn PieceInFlight,
     piece_flags: u32,
+    final_answer: bool,
 ) -> bool {
     settled.outcome == AbiOutcome::Ready
-        && flight.out().is_some_and(|o| {
-            o.flags & EMIT_DONE != 0 && o.more == 0 && piece_flags & PIECE_REFUSED == 0
-        })
+        && flight
+            .out()
+            .is_some_and(|o| closes_unit(o.flags, o.more, o.verdict, piece_flags, final_answer))
 }
 
 /// Await `fut`, unless the plane's generation is reloaded or the deadline passes first.
@@ -1384,15 +1429,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
-                    // THE PLANE SAID THE UNIT'S REPLY IS COMPLETE: its closing call, unless the
-                    // kernel fails this answer over (a retry verdict before the first byte), which
-                    // keeps the unit for its next attempt (`PIECE_FINAL`: only an answer the kernel
-                    // will not fail over is the unit's last).
-                    let retried = out.verdict == VERDICT_RETRY && {
-                        let st = run.lock();
-                        fails_over(st.facts.streamed, st.facts.relayed)
-                    };
-                    if out.says_done(&piece) && !retried {
+                    // THE PLANE SAID THE UNIT'S REPLY IS COMPLETE, and this is its last answer: its
+                    // closing call ([`closes_unit`]).
+                    if out.says_done(&piece, run.final_answer) {
                         run.lock().close.closed();
                     }
                     out
