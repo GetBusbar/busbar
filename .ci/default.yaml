@@ -23,6 +23,9 @@ guarded:
   - "bin/oracle"
   - "testing/shadow-oracle/oracle-rust.pin"
   - "testing/shadow-oracle/golden/**"
+  # The store-services helper the oracle checks bring the backends up with (sourced: it exports
+  # env), and the scripts beside it.
+  - "testing/shadow-oracle/scripts/**"
   - "xtask/src/gates/**"
 # Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
 # its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
@@ -70,7 +73,7 @@ ratchets:
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
   move: [preflight, gates, clippy, compile, test, test-docs, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
-  manual: [oracle]
+  manual: [oracle-record, oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -86,6 +89,85 @@ env:
   BUSBAR_GOLDEN_1_5_5_TREE: "92c7d7f72af5a9e05195817ffa0523c13705c146"
   BUSBAR_ORACLE_CRATE: "busbar-release-oracle"
   BUSBAR_ORACLE_BIN: "busbar-oracle"
+  # The trusted judge shim when the target holds no bin/oracle (qa): this commit's, and only if
+  # its bin/oracle is this blob (verified against dev 17d824b657; dev's tip has the same blob).
+  BUSBAR_ORACLE_SHIM_COMMIT: "17d824b6576d57492055585bc905aee8a1521fd4"
+  BUSBAR_ORACLE_SHIM_BLOB: "c3cc236f061e3b9e191f50124049bc13ceb4ba4b"
+  # 0 until #1556 lands and the shim commit above is bumped to it: the oracle reports NOT JUDGED.
+  BUSBAR_ORACLE_JUDGE_LIVE: "0"
+  ORACLE_TRUST_SH: |
+    # THE TRUSTED JUDGE SHIM (security, 2026-10-22). Evaluated by a check BEFORE any candidate code
+    # runs: bin/oracle and the store-services helper are extracted from the TARGET's copy (a commit
+    # that already passed review), or, when the target holds none (qa, the first dev -> qa move), from
+    # the protected commit and blob named below. Never from the tree being judged. Each call re-checks
+    # the extracted files against the blobs git named at extraction, and the protected values are
+    # read-only from here on.
+    oracle_trust() {
+      _ots_fail() { echo "oracle-trust: $*" >&2; return 1; }
+      _ots_svc=testing/shadow-oracle/scripts/oracle-box-store-services.sh
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && git cat-file -e "$MODERNCI_TO_SHA:bin/oracle" 2>/dev/null \
+         && git cat-file -e "$MODERNCI_TO_SHA:$_ots_svc" 2>/dev/null; then
+        _ots_src="$MODERNCI_TO_SHA"; _ots_why="the target's copy at $MODERNCI_TO_SHA"
+      else
+        _ots_src="$BUSBAR_ORACLE_SHIM_COMMIT"
+        git cat-file -e "$_ots_src^{commit}" 2>/dev/null || git fetch -q --no-tags --depth 1 origin "$_ots_src" 2>/dev/null || true
+        git cat-file -e "$_ots_src^{commit}" 2>/dev/null || { _ots_fail "the protected shim commit $_ots_src is not in this checkout and could not be fetched"; return 1; }
+        [ "$(git rev-parse "$_ots_src:bin/oracle")" = "$BUSBAR_ORACLE_SHIM_BLOB" ] || { _ots_fail "bin/oracle at $_ots_src is not the protected blob $BUSBAR_ORACLE_SHIM_BLOB"; return 1; }
+        _ots_why="the protected shim commit $_ots_src (the target holds no bin/oracle)"
+      fi
+      ORACLE_TRUST="$(mktemp -d "${TMPDIR:-/tmp}/oracle-trust.XXXXXX")" || return 1
+      git archive "$_ots_src" bin/oracle testing/shadow-oracle/scripts testing/shadow-oracle/oracle-rust.pin \
+        | tar -x -C "$ORACLE_TRUST" || { _ots_fail "could not extract the shim from $_ots_src"; return 1; }
+      _ots_shim_blob="$(git rev-parse "$_ots_src:bin/oracle")"
+      _ots_svc_blob="$(git rev-parse "$_ots_src:$_ots_svc")"
+      export BUSBAR_ORACLE_SHIM="$ORACLE_TRUST/bin/oracle" BUSBAR_ORACLE_PRODUCT_ROOT="$PWD" BUSBAR_ORACLE_DATA="$PWD/testing/shadow-oracle"
+      unset BUSBAR_ORACLE_RUST_BIN
+      readonly ORACLE_TRUST _ots_src _ots_svc _ots_shim_blob _ots_svc_blob BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_RUST_BIN \
+        BUSBAR_ORACLE_RELEASE_REPO BUSBAR_ORACLE_RELEASE_REF BUSBAR_ORACLE_SHA256_LINUX_X86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64 \
+        BUSBAR_GOLDEN_1_5_5_TREE BUSBAR_ORACLE_CRATE BUSBAR_ORACLE_BIN BUSBAR_ORACLE_SHIM_COMMIT BUSBAR_ORACLE_SHIM_BLOB
+      echo "oracle-trust: bin/oracle and the store-services helper come from $_ots_why"
+    }
+    _ots_verify() {
+      [ "$(git hash-object "$ORACLE_TRUST/bin/oracle")" = "$_ots_shim_blob" ] \
+        && [ "$(git hash-object "$ORACLE_TRUST/$_ots_svc")" = "$_ots_svc_blob" ] \
+        || { echo "oracle-trust: the trusted copy changed on disk after it was extracted: refusing to run it" >&2; return 1; }
+    }
+    # NO JUDGE until busbar's #1556 lands and the protected shim commit is bumped to it (busbar
+    # ruling 2026-10-22): the judge reports NOT JUDGED, never green. ModernCI has no neutral
+    # verdict yet, so it is a red that names itself; BUSBAR_ORACLE_JUDGE_LIVE=1 lifts it.
+    oracle_not_judged() {
+      [ "${BUSBAR_ORACLE_JUDGE_LIVE:-0}" = 1 ] && return 0
+      echo "oracle: NOT JUDGED: no trusted judge until #1556 lands and BUSBAR_ORACLE_SHIM_COMMIT is bumped to it (busbar ruling 2026-10-22). This is not a verdict on the candidate."
+      exit 1
+    }
+    # The judge's own tree: a FRESH checkout of the trusted commit (the target's, or the protected
+    # shim commit), where no candidate code has run. The judge runs there, reading only the
+    # candidate's recording.
+    oracle_judge_tree() {
+      ORACLE_JUDGE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/oracle-judge.XXXXXX")/tree" || return 1
+      git worktree add -q --detach "$ORACLE_JUDGE_TREE" "$_ots_src" || { echo "oracle-trust: could not check $_ots_src out for the judge" >&2; return 1; }
+      [ "$(git -C "$ORACLE_JUDGE_TREE" rev-parse HEAD)" = "$(git rev-parse "$_ots_src^{commit}")" ] \
+        && [ "$(git hash-object "$ORACLE_JUDGE_TREE/bin/oracle")" = "$_ots_shim_blob" ] \
+        || { echo "oracle-trust: the judge's tree is not $_ots_src" >&2; return 1; }
+      readonly ORACLE_JUDGE_TREE
+    }
+    # The judge in its own tree, its product root and data that tree's (never the candidate's).
+    oracle_judge() {
+      [ -n "${ORACLE_JUDGE_TREE:-}" ] || { echo "oracle-trust: no judge tree" >&2; return 1; }
+      [ "$(git hash-object "$ORACLE_JUDGE_TREE/bin/oracle")" = "$_ots_shim_blob" ] || { echo "oracle-trust: the judge's shim changed on disk" >&2; return 1; }
+      ( cd "$ORACLE_JUDGE_TREE" && BUSBAR_ORACLE_PRODUCT_ROOT="$ORACLE_JUDGE_TREE" BUSBAR_ORACLE_DATA="$ORACLE_JUDGE_TREE/testing/shadow-oracle" \
+          "$ORACLE_JUDGE_TREE/bin/oracle" "$@" )
+    }
+    # The judge, run only from the trusted copy.
+    oracle() { _ots_verify || return 1; "$ORACLE_TRUST/bin/oracle" "$@"; }
+    # The store backends: `oracle_services up` is sourced (it exports the URLs), the rest are run.
+    oracle_services() {
+      _ots_verify || return 1
+      case "$1" in
+        up) . "$ORACLE_TRUST/$_ots_svc" "$@" ;;
+        *) bash "$ORACLE_TRUST/$_ots_svc" "$@" ;;
+      esac
+    }
   BUSBAR_TOOL_SH: |
     # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
     # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
@@ -233,7 +315,7 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       cargo fmt --all -- --check
       cargo metadata --locked --format-version 1 >/dev/null
       cargo build -q -p xtask
@@ -242,7 +324,7 @@ checks:
   gates:
     env_from_run: [MODERNCI_TO_SHA]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
       cargo xtask gate --all --format=tsv
     baseline: target
@@ -257,7 +339,7 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
     baseline: target
   compile:
@@ -265,7 +347,7 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       cargo check --workspace --all-targets --locked --keep-going
       cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
       cargo check --release -p busbar --bin busbar --locked
@@ -275,7 +357,10 @@ checks:
     # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
     # dropped-in plugins the tests dlopen, then one build and one nextest run.
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      # Offered, not enforced: this check runs the candidate's own code, which calls bin/oracle itself;
+      # it gets $BUSBAR_ORACLE_SHIM (the trusted copy) to call instead.
+      eval "$ORACLE_TRUST_SH"; oracle_trust || echo "oracle-trust: no trusted shim offered to this check"
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -332,7 +417,7 @@ checks:
         echo "test-gated: this change touches only xtask/, qa/, docs/, .github/ or a top-level *.md; nothing here builds or reads them"
         exit 0
       fi
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -375,6 +460,9 @@ checks:
     # nothing to add. The target's own run (an empty diff), an octopus merge or an unreadable base runs it.
     requires: [cc, git-history]
     run: |
+      # Offered, not enforced: this check runs the candidate's own code, which calls bin/oracle itself;
+      # it gets $BUSBAR_ORACLE_SHIM (the trusted copy) to call instead.
+      eval "$ORACLE_TRUST_SH"; oracle_trust || echo "oracle-trust: no trusted shim offered to this check"
       if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
         git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
         changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
@@ -382,7 +470,7 @@ checks:
         echo "test-docs: this change touches no docs/ path and no *.md; test covers it"
         exit 0
       fi
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -420,7 +508,7 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       cargo test --workspace --doc --locked --no-fail-fast
     scope: affected
     baseline: target
@@ -443,7 +531,7 @@ checks:
         echo "deletion-matrix: this change touches only xtask/, qa/, docs/, .github/ or a top-level *.md; nothing here builds or reads them"
         exit 0
       fi
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --locked
@@ -451,7 +539,7 @@ checks:
   deny:
     env_from_run: []
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny || exit 1
       cargo deny check
     baseline: target
     needs: [preflight]
@@ -468,7 +556,7 @@ checks:
   selftest-1:
     env_from_run: []
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=1/4
@@ -478,7 +566,7 @@ checks:
   selftest-2:
     env_from_run: []
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=2/4
@@ -488,7 +576,7 @@ checks:
   selftest-3:
     env_from_run: []
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=3/4
@@ -498,7 +586,7 @@ checks:
   selftest-4:
     env_from_run: []
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET=dev
       cargo xtask selftest --shard=4/4
@@ -507,18 +595,11 @@ checks:
     needs: [gates]
   # On every move (above): the same judge as the dev -> qa oracle (.ci/dev.yaml), here no worse than
   # dev, so a lane cannot land a customer-visible change the 1.5.5 golden does not forgive.
-  oracle:
+  oracle-record:
     env_from_run: [MODERNCI_TO_SHA]
-    # cargo links with the system C linker: only a backend with a C compiler may run this check; the
-    # store-persist cells' live backends run in docker.
     requires: [cc, docker]
-    baseline: target
-    # busbar's own judge, fetched by bin/oracle itself exactly as .ci/dev.yaml does (no backend tool):
-    # the judge is the one dev's oracle-rust.pin names, run only when its
-    # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
-    # add-only from dev to this commit; then the candidate's release binary is recorded over the
-    # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
-    # or forgiven by an owner-signed accepted difference.
+    # The candidate's recording only: build, store backends, record. The candidate's own code runs
+    # here (build.rs, the binary), so nothing here judges: the judge is `oracle`, in its own job.
     run: |
       # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
       # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
@@ -526,15 +607,10 @@ checks:
       [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      ./bin/oracle tool-dir >/dev/null
-      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
-        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
-      else
-        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
-      fi
+      eval "$ORACLE_TRUST_SH"; oracle_trust || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
+      oracle tool-dir >/dev/null
       cargo build --locked --release -p busbar --bin busbar
-      ./bin/oracle fetch-golden
       # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
       # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
       # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
@@ -544,14 +620,40 @@ checks:
       free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
       export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
       export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
-      trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
-      . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
-      bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
-      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
-      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
-      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+      trap 'oracle_services down' EXIT
+      oracle_services up
+      oracle_services wait || { echo "oracle: the store backends did not come up"; exit 1; }
+      rm -rf target/oracle/recordings/candidate
+      oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
     needs: [gates]
-    # The candidate recording, handed to any check that `needs: [oracle]` (content-addressed, laid
-    # into the needing check's slot on any machine), and the judge's report (diverging.txt and the
-    # per-cell diffs), kept green or red: `modernci call artifact --check oracle`.
-    outputs: [target/oracle/recordings, target/oracle/reports/]
+    outputs: [target/oracle/recordings]
+  oracle:
+    env_from_run: [MODERNCI_TO_SHA]
+    requires: [cc, git-history]
+    baseline: target
+    # The judge, in a job where no candidate code runs: the trusted shim and a fresh checkout of the
+    # trusted commit judge oracle-record's recording. NOT JUDGED until #1556 (BUSBAR_ORACLE_JUDGE_LIVE).
+    run: |
+      # Fail closed (never judge against this tree's own pin or golden by accident): the base commit
+      # bin/oracle reads the judge's pin and the add-only golden from must be in this checkout. One
+      # that is not is fetched; one that still is not is red, never a silent fall-back to this tree.
+      [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
+      git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
+      eval "$ORACLE_TRUST_SH"; oracle_trust || exit 1
+      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+        oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD || { echo "golden-guard: RED: the 1.5.5 golden is not add-only"; exit 1; }
+      else
+        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+      fi
+      # The judge: in a fresh checkout of the trusted commit, never where candidate code ran. The
+      # candidate's recording (oracle-record's outputs) is the only thing it reads from this job.
+      oracle_not_judged
+      oracle_judge_tree || exit 1
+      cand="$PWD/target/oracle/recordings/candidate"; out="$PWD/target/oracle/reports/dev"
+      [ -d "$cand" ] || { echo "oracle: no candidate recording laid in from oracle-record"; exit 1; }
+      rm -rf "$out"; mkdir -p "$out"
+      oracle_judge fetch-golden || exit 1
+      oracle_judge replay --golden "$ORACLE_JUDGE_TREE/testing/shadow-oracle/golden/1.5.5" --candidate "$cand" --out "$out" --strict
+    needs: [oracle-record]
+    outputs: [target/oracle/reports/]
