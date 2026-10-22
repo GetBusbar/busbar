@@ -595,14 +595,13 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // #1276): `PlaneMoney` re-exported as `Node` from another file and imported plainly (G) or by a
     // glob (H), and a raw identifier, `as r#Node` (I). A name any file binds to another type is read
     // as neither in every file, and `r#Node` is `Node`.
-    const ZZ_REEXPORT: (&str, &str) = (
-        "crates/busbar/src/root/zz_g_reexport.rs",
-        "pub use crate::plane_driver::PlaneMoney as Node;\n",
-    );
     for (files, caller) in [
         (
             vec![
-                ZZ_REEXPORT,
+                (
+                    "crates/busbar/src/root/zz_g_reexport.rs",
+                    "pub use crate::plane_driver::PlaneMoney as Node;\n",
+                ),
                 (
                     "crates/busbar/src/root/zz_g_caller.rs",
                     "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
@@ -613,7 +612,10 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ),
         (
             vec![
-                ZZ_REEXPORT,
+                (
+                    "crates/busbar/src/root/zz_g_reexport.rs",
+                    "pub use crate::plane_driver::PlaneMoney as Node;\n",
+                ),
                 (
                     "crates/busbar/src/root/zz_h_caller.rs",
                     "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
@@ -681,6 +683,64 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
          declares the name as",
         &["single-terminal"],
     ));
+
+    // A RECEIVER BOUND MORE THAN ONE WAY IN ITS FN IS COUNTED (the approval desk's review of
+    // #1276): a typed `n: &Node` in an inner block (K-shadow) or as a closure's argument
+    // (K-closure2) does not type the untyped `n` the call is made on, so every declaration of the
+    // name up to the call must be typed and agree before the receiver is read as the real `Node`.
+    // And A TERMINAL NAMED BUT NOT CALLED THERE IS COUNTED: a fn item taken as a value, a path
+    // handed to a macro, and a bare name a macro splices into a path are each a call made elsewhere.
+    for (file, body, caller) in [
+        (
+            "crates/busbar/src/root/zz_planted_k_shadow.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_k_shadow(m: \
+             &crate::plane_driver::PlaneMoney, node: &Node, k: u64) {\n    let n = m;\n    {\n        \
+             let n: &Node = node;\n        let _ = n;\n    }\n    n.settle_end(k, 200);\n}\n",
+            "zz_k_shadow",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_k_closure2.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_k_closure2(m: \
+             &crate::plane_driver::PlaneMoney, k: u64) {\n    let n = m;\n    let g = |n: &Node| \
+             n.zz_peek();\n    let _ = g;\n    n.settle_end(k, 200);\n}\n",
+            "zz_k_closure2",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_fn_item.rs",
+            "pub fn zz_fn_item(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    let f = \
+             crate::plane_driver::PlaneMoney::settle_end;\n    f(m, k, 200);\n}\n",
+            "zz_fn_item",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_macro_path.rs",
+            "macro_rules! zz_call {\n    ($f:path, $m:expr, $k:expr) => {\n        $f($m, $k, \
+             200)\n    };\n}\n\npub fn zz_macro_path(m: &crate::plane_driver::PlaneMoney, k: u64) \
+             {\n    zz_call!(crate::plane_driver::PlaneMoney::settle_end, m, k);\n}\n",
+            "zz_macro_path",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_macro_splice.rs",
+            "macro_rules! zz_splice {\n    ($f:ident, $m:expr, $k:expr) => {\n        \
+             crate::plane_driver::PlaneMoney::$f($m, $k, 200)\n    };\n}\n\npub fn \
+             zz_macro_splice(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    \
+             zz_splice!(settle_end, m, k);\n}\n",
+            "zz_macro_splice",
+        ),
+    ] {
+        let mut ov = on(base);
+        ov.set(file, body);
+        r.push(prove_red(
+            cx,
+            gate,
+            &format!(
+                "a terminal reached through a second binding or named without a call ({caller}) \
+                 is counted"
+            ),
+            &["single-terminal"],
+            ov,
+            &[caller],
+        ));
+    }
 
     // ... AND THE REAL TYPE STAYS ITS OWN (the green twins): the same shapes naming the real `Node`,
     // imported plainly, are the node's own `settle_end` and are not the terminal.

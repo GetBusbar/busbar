@@ -1027,7 +1027,11 @@ fn binds_untyped(code: &str, start: usize) -> bool {
 /// argument, a `for` variable), or when `f` declares no such binding.
 fn binding_type(lines: &[Line], f: &Fnc, idx: usize, at: usize, ident: &str) -> Option<String> {
     let call_no = lines[idx].no;
-    let mut last: Option<Option<String>> = None;
+    // EVERY DECLARATION OF THE NAME in the enclosing fn up to the call, not the last one: a block,
+    // a closure's argument or a shadow can bind the name to one type while the call's receiver is
+    // another binding of it. The receiver is attributed only when every declaration is typed and
+    // they all agree; one untyped or one disagreeing declaration leaves it unread (counted).
+    let mut decls: Vec<Option<String>> = Vec::new();
     for l in lines.iter().filter(|l| l.no >= f.start && l.no <= call_no) {
         let code = if l.no == call_no {
             l.code.get(..at).unwrap_or_default()
@@ -1036,13 +1040,17 @@ fn binding_type(lines: &[Line], f: &Fnc, idx: usize, at: usize, ident: &str) -> 
         };
         for start in word_starts(code, ident) {
             if let Some(text) = declared_type_at(code, start, ident) {
-                last = Some(Some(text));
+                decls.push(Some(text));
             } else if binds_untyped(code, start) {
-                last = Some(None);
+                decls.push(None);
             }
         }
     }
-    last.flatten()
+    let first = decls.first()?.clone()?;
+    decls
+        .iter()
+        .all(|d| d.as_deref().map(str::trim) == Some(first.trim()))
+        .then_some(first)
 }
 
 /// Is the call of `t.name` at byte `at` of line `idx` of `rel` a call of the TERMINAL? A bare
@@ -1134,7 +1142,12 @@ pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let (mut extra, mut seen_all, mut refusals, mut allowed_all) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for t in &terms {
-        let call_rx = Regex::new(&format!(r"{}\s*\(", word(&t.name)))?;
+        // EVERY TOKEN NAMING THE TERMINAL, CALLED THERE OR NOT: a fn item taken as a value (`let f =
+        // PlaneMoney::settle_end; f(..)`), a path handed to a macro (`call!(PlaneMoney::settle_end,
+        // ..)`) or a bare name a macro splices into a path (`PlaneMoney::$f` invoked with
+        // `settle_end`) is a call of it made elsewhere, so it is read as one; a token with no
+        // receiver this rule can pin is counted.
+        let call_rx = Regex::new(&format!(r"{}(?![A-Za-z0-9_])", word(&t.name)))?;
         let defn_rx = Regex::new(&format!(r"fn\s+{}(?![A-Za-z0-9_])", rx::escape(&t.name)))?;
         // The types that define a production fn of this name (`""`: a free fn).
         let defined: Vec<(String, &Fnc)> = tree
