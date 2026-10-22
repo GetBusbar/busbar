@@ -256,6 +256,13 @@ J
   echo "oracle premise-selftest: FAILED"; exit 1
 fi
 
+if [ -n "${MODERNCI:-}${MODERNCI_JOB:-}${MODERNCI_TO_SHA:-}${MODERNCI_HEAD:-}${MODERNCI_COMMIT:-}" ]; then
+  # Under ModernCI the engine's names are the config's (judge_pin_text holds the candidate's pin to
+  # them before any judge is obtained); the shim may run from a checkout that holds no pin.
+  pin="(ModernCI's config)"
+  RELEASE_REPO="${BUSBAR_ORACLE_RELEASE_REPO:-}"; RELEASE_REF="${BUSBAR_ORACLE_RELEASE_REF:-none}"
+  CRATE="${BUSBAR_ORACLE_CRATE:-busbar-release-oracle}"; BINNAME="${BUSBAR_ORACLE_BIN:-busbar-oracle}"
+else
 pin="$here/testing/shadow-oracle/oracle-rust.pin"
 [ -f "$pin" ] || { echo "oracle: missing source pin $pin" >&2; exit 1; }
 _pin() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}' "$pin"; }
@@ -264,6 +271,7 @@ RELEASE_REF="$(_pin release_ref)"
 CRATE="$(_pin crate)"; CRATE="${CRATE:-busbar-release-oracle}"
 BINNAME="$(_pin bin)"; BINNAME="${BINNAME:-busbar-oracle}"
 [ -n "$RELEASE_REF" ] || { echo "oracle: $pin has no release_ref" >&2; exit 1; }
+fi
 
 root="$here/target/oracle/rust/$RELEASE_REF"
 shim_dir="$root/tool"
@@ -421,8 +429,13 @@ ORACLE_PIN_REL="testing/shadow-oracle/oracle-rust.pin"
 ORACLE_GOLDEN_REL="testing/shadow-oracle/golden/1.5.5"
 ORACLE_ENV_KEYS="BUSBAR_ORACLE_RELEASE_REPO=release_repo BUSBAR_ORACLE_RELEASE_REF=release_ref BUSBAR_ORACLE_SHA256_LINUX_X86_64=sha256_linux_x86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64=sha256_linux_aarch64 BUSBAR_ORACLE_CRATE=crate BUSBAR_ORACLE_BIN=bin"
 under_modernci() { [ -n "${MODERNCI:-}${MODERNCI_JOB:-}${MODERNCI_TO_SHA:-}${MODERNCI_HEAD:-}${MODERNCI_COMMIT:-}" ]; }
-env_judge_pin() {  # env_judge_pin <repo> — the config's pin text, once the candidate's equals it; else 1
-  local repo="$1" pair var key got missing="" bad=""
+# THE CANDIDATE is the tree $BUSBAR_ORACLE_DATA names (else this shim's own checkout): ModernCI may run
+# the TARGET's copy of this shim with DATA pointing into the candidate's tree. Its pin and golden are
+# the ones held to the config.
+cand_data() { printf '%s\n' "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"; }
+cand_root() { git -C "$(cand_data)" rev-parse --show-toplevel 2>/dev/null; }
+env_judge_pin() {  # env_judge_pin <pin file> — the config's pin text, once the candidate's equals it; else 1
+  local pinf="$1" pair var key got missing="" bad=""
   for pair in $ORACLE_ENV_KEYS; do
     var="${pair%%=*}"
     [ -n "${!var:-}" ] || missing="$missing $var"
@@ -433,9 +446,9 @@ env_judge_pin() {  # env_judge_pin <repo> — the config's pin text, once the ca
   fi
   for pair in $ORACLE_ENV_KEYS; do
     var="${pair%%=*}"; key="${pair#*=}"
-    got="$(_pin_in "$key" <"$repo/$ORACLE_PIN_REL" 2>/dev/null)" || got=""
+    got="$(_pin_in "$key" <"$pinf" 2>/dev/null)" || got=""
     [ "$got" = "${!var}" ] || bad="$bad
-  $key: the candidate's $ORACLE_PIN_REL says '${got:-<none>}', ModernCI's $var says '${!var}'"
+  $key: the candidate's $pinf says '${got:-<none>}', ModernCI's $var says '${!var}'"
   done
   if [ -n "$bad" ]; then
     echo "oracle: NO JUDGE: the candidate's pin is not the judge ModernCI's config names (a repin is a config change):$bad" >&2
@@ -446,8 +459,22 @@ env_judge_pin() {  # env_judge_pin <repo> — the config's pin text, once the ca
   done
 }
 judge_pin_text() {  # judge_pin_text <repo> — under ModernCI the config's pin (see above); else the tree's
-  if under_modernci; then env_judge_pin "$1"; return; fi
+  if under_modernci; then env_judge_pin "$(cand_data)/oracle-rust.pin"; return; fi
   cat "$1/$ORACLE_PIN_REL"
+}
+# modernci_golden — under ModernCI, every `--golden` in the global `args` becomes
+# BUSBAR_GOLDEN_1_5_5_TREE read from the candidate's object database (odb_golden); 1 when none can be.
+modernci_golden() {
+  local root gdir i
+  root="$(cand_root)" || { echo "oracle: NO GOLDEN: the candidate's data dir $(cand_data) is in no git checkout. Refusing." >&2; return 1; }
+  mkdir -p "$cache_home"
+  gdir="$(mktemp -d "${cache_home%/}/oracle-golden-odb.XXXXXX")"
+  odb_golden "$root" "$gdir" || return 1
+  for i in "${!args[@]}"; do
+    if [ "${args[$i]}" = --golden ]; then args[$((i+1))]="$gdir"; fi
+    case "${args[$i]}" in --golden=*) args[$i]="--golden=$gdir";; esac
+  done
+  echo "oracle: the 1.5.5 golden is tree $BUSBAR_GOLDEN_1_5_5_TREE, read from the object database (never the worktree)" >&2
 }
 odb_golden() {  # odb_golden <repo> <out dir> — BUSBAR_GOLDEN_1_5_5_TREE, from the object database, into <out dir>; else 1
   local repo="$1" out="$2" want="${BUSBAR_GOLDEN_1_5_5_TREE:-}" got
@@ -643,18 +670,25 @@ if [ "${1:-}" = "base-selftest" ]; then
   st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
   fail=0
   REF=151ad095a21819dca97e8bdb3384c3c3eb2eb806 FORGED=ffffffffffffffffffffffffffffffffffffffff
-  X86=0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-  ARM=188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4
   REPO=https://github.com/GetBusbar/busbar-release.git
   cat >"$st/engine" <<'E'
 #!/usr/bin/env bash
 echo "$*" >>"$CALLS"
-[ "$1" = diff ] || exit 0
 out=""; gold=""; prev=""; for a in "$@"; do [ "$prev" = --out ] && out="$a"; [ "$prev" = --golden ] && gold="$a"; prev="$a"; done
-echo "golden-cell=$(cat "$gold/cell" 2>/dev/null)" >>"$CALLS"
+[ -z "$gold" ] || echo "golden-cell=$(cat "$gold/cell" 2>/dev/null)" >>"$CALLS"
+[ "$1" = diff ] || exit 0
 mkdir -p "$out"; echo '{"totals": {"owed": 3}}' >"$out/report.json"; exit 0
 E
   chmod +x "$st/engine"
+  # The stub engine IS the config's judge here: both architectures' digests are its sha256, so a
+  # BUSBAR_ORACLE_RUST_BIN is accepted only at that digest (a copy with one byte more is not).
+  X86="$(sha256_of "$st/engine")"; ARM="$X86"
+  { cat "$st/engine"; echo '# one byte more'; } >"$st/engine-other"; chmod +x "$st/engine-other"
+  # fakes on PATH: uname -s answers $FAKE_OS (uname -m is the host's); curl logs and fails (no fetch)
+  mkdir -p "$st/fakebin"
+  printf '#!/bin/sh\nif [ "$1" = -s ]; then echo "$FAKE_OS"; else exec %s "$@"; fi\n' "$(command -v uname)" >"$st/fakebin/uname"
+  printf '#!/bin/sh\necho "curl $*" >>"%s/curl"\nexit 22\n' "$st" >"$st/fakebin/curl"
+  chmod +x "$st/fakebin/uname" "$st/fakebin/curl"
   g() { git -C "$r" -c user.name=t -c user.email=t@t.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
   put() {  # put <pin ref> <golden cell> [<crate>]
     mkdir -p "$r/testing/shadow-oracle/golden/1.5.5"
@@ -745,7 +779,48 @@ E
   grep -qx "golden-cell=committed-golden" "$st/calls" \
     && ok "a golden edited in the worktree is never read: the object database's tree is judged" \
     || bad "the worktree golden was read ($(tr '\n' ';' <"$st/calls"))"
+  for sub in replay-selftest diff; do
+    : >"$st/calls"; rc=0
+    ( cd "$r" && env -u MODERNCI_CACHE_DIR -u BUSBAR_ORACLE_DATA CALLS="$st/calls" BUSBAR_ORACLE_RUST_BIN="$st/engine" \
+        "${MC[@]}" "${CFG[@]}" bash "$r/bin/oracle" "$sub" --golden testing/shadow-oracle/golden/1.5.5 \
+        --candidate c --out "$st/o" >/dev/null ) 2>"$st/err" || rc=$?; echo "$rc" >"$st/rc"
+    { grep -qx "golden-cell=committed-golden" "$st/calls" && ! grep -q "golden-cell=edited-in-place" "$st/calls"; } \
+      && ok "$sub under ModernCI reads the config's golden from the object database, not the edited worktree" \
+      || bad "$sub read the worktree golden ($(tr '\n' ';' <"$st/calls"))"
+  done
   g checkout -q -- . 2>/dev/null || true
+  # resolve_bin: no stub handed over, or a stub at the wrong digest
+  : >"$st/curl"
+  got="$(shim "$c2" "${MC[@]}" "${CFG[@]}" BUSBAR_ORACLE_RUST_BIN= PATH="$st/fakebin:$PATH" FAKE_OS=Linux -- --help)"
+  { [ "$(cat "$st/rc")" != 0 ] && grep -q "NO JUDGE" "$st/err" && [ ! -s "$st/curl" ]; } \
+    && ok "no BUSBAR_ORACLE_RUST_BIN, a forged pin, a fake release API: NO JUDGE and zero fetches" \
+    || bad "a forged pin reached the release API ($(wc -l <"$st/curl" | tr -d ' ') fetches)"
+  got="$(shim "$good" "${MC[@]}" "${CFG[@]}" BUSBAR_ORACLE_RUST_BIN= PATH="$st/fakebin:$PATH" FAKE_OS=Darwin -- --help)"
+  { [ "$(cat "$st/rc")" != 0 ] && grep -q "NO JUDGE: judge is the config's fetched Linux binary only" "$st/err" && [ ! -s "$st/curl" ]; } \
+    && ok "a non-Linux host under ModernCI: NO JUDGE, never a source build of the pin" \
+    || bad "a non-Linux host under ModernCI got a judge"
+  replay "$good" "${MC[@]}" "${CFG[@]}" BUSBAR_ORACLE_RUST_BIN="$st/engine-other" --
+  { red && grep -q "NO JUDGE: BUSBAR_ORACLE_RUST_BIN" "$st/err"; } \
+    && ok "a BUSBAR_ORACLE_RUST_BIN whose sha256 is not the config's: NO JUDGE, nothing judged" \
+    || bad "a wrong-digest BUSBAR_ORACLE_RUST_BIN judged ($(tr '\n' ';' <"$st/calls"))"
+  # the TARGET's copy of the shim, with DATA in the candidate's tree
+  t="$st/target"; git init -q "$t"; mkdir -p "$t/bin" "$t/testing/shadow-oracle"; cp "$under" "$t/bin/oracle"
+  printf 'release_ref=%s\n' "$REF" >"$t/testing/shadow-oracle/oracle-rust.pin"
+  tshim() {  # tshim <candidate commit> — the target's shim replays the candidate
+    g checkout -q --detach "$1"; : >"$st/calls"; local rc=0
+    ( cd "$r" && env -u MODERNCI_CACHE_DIR -u BUSBAR_ORACLE_TOOL_DIR CALLS="$st/calls" BUSBAR_ORACLE_RUST_BIN="$st/engine" \
+        BUSBAR_ORACLE_DATA="$r/testing/shadow-oracle" BUSBAR_ORACLE_PRODUCT_ROOT="$r" "${MC[@]}" "${CFG[@]}" \
+        bash "$t/bin/oracle" replay --golden "$r/testing/shadow-oracle/golden/1.5.5" --candidate c --out "$st/o" --strict >/dev/null ) \
+      2>"$st/err" || rc=$?
+    echo "$rc" >"$st/rc"
+  }
+  tshim "$good"
+  { [ "$(cat "$st/rc")" = 0 ] && grep -qx "golden-cell=committed-golden" "$st/calls"; } \
+    && ok "the target's shim, DATA in a matching candidate: GREEN against the config's golden" \
+    || bad "the target's shim did not judge a matching candidate ($(tr '\n' ';' <"$st/calls"))"
+  tshim "$c2"
+  { red && grep -q "$FORGED" "$st/err"; } && ok "the target's shim, DATA in a forged candidate: RED on the candidate's pin" \
+    || bad "the target's shim judged a forged candidate ($(tr '\n' ';' <"$st/calls"))"
   # outside ModernCI a local run reads the tree's pin
   got="$(shim "$c2" -- judge-pin)"
   printf '%s\n' "$got" | grep -qx "release_ref=$FORGED" && ok "outside ModernCI a local run reads the tree's pin" \
@@ -754,6 +829,29 @@ E
   echo "oracle base-selftest: FAILED"; exit 1
 fi
 resolve_bin() {
+  # UNDER MODERNCI the only judge is the config's: its pin is held to the candidate's first, on every
+  # OS; then a BUSBAR_ORACLE_RUST_BIN is taken only at the config's sha256 for this architecture, and
+  # otherwise only the fetched Linux binary is. Never a source build, never another digest.
+  if under_modernci; then
+    local pin_text arch var want got
+    pin_text="$(judge_pin_text "$here")" || exit 1
+    arch="$(judge_arch)"; var="BUSBAR_ORACLE_SHA256_LINUX_$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')"
+    if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
+      want="${!var:-}"; got=""
+      [ -f "$BUSBAR_ORACLE_RUST_BIN" ] && got="$(sha256_of "$BUSBAR_ORACLE_RUST_BIN")"
+      if [ -z "$want" ] || [ "$got" != "$want" ] || [ ! -x "$BUSBAR_ORACLE_RUST_BIN" ]; then
+        echo "oracle: NO JUDGE: BUSBAR_ORACLE_RUST_BIN ($BUSBAR_ORACLE_RUST_BIN) has sha256 '${got:-<unreadable>}', not ModernCI's $var ('${want:-unset}'). Refusing." >&2
+        exit 1
+      fi
+      printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
+    fi
+    if [ "$(uname -s)" != Linux ]; then
+      echo "oracle: NO JUDGE: judge is the config's fetched Linux binary only (this host is $(uname -s))" >&2
+      exit 1
+    fi
+    fetch_judge "$pin_text" "$cache_home/busbar-oracle-judge" api || exit 1
+    return 0
+  fi
   if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
     [ -x "$BUSBAR_ORACLE_RUST_BIN" ] || { echo "oracle: BUSBAR_ORACLE_RUST_BIN is not executable: $BUSBAR_ORACLE_RUST_BIN" >&2; exit 1; }
     printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
@@ -876,7 +974,10 @@ case "$sub" in
 
   replay-selftest)
     # the owed-baseline ratchet over the committed golden (Python read $DATA).
-    exec "$RUST_BIN" replay-selftest --golden "$DATA/golden/1.5.5" --baseline "$DATA/owed-baseline.txt" "$@" ;;
+    # Under ModernCI the golden is the config's tree from the object database, never the worktree.
+    args=(--golden "$DATA/golden/1.5.5" --baseline "$DATA/owed-baseline.txt" "$@")
+    if under_modernci; then modernci_golden || exit 3; fi
+    exec "$RUST_BIN" replay-selftest "${args[@]}" ;;
 
   fetch-golden)
     # WORKAROUND for a parser bug in the pinned Rust engine (busbar-release @ oracle-rust.pin): its
@@ -1059,16 +1160,9 @@ if not owed:
     # commit of the candidate's own history graded the candidate: a target can hold none (qa at
     # 1.5.5), and a parent can be the candidate's own first commit.
     if under_modernci; then
-      mkdir -p "$cache_home"
-      gdir="$(mktemp -d "${cache_home%/}/oracle-golden-odb.XXXXXX")"
-      odb_golden "$here" "$gdir" || exit 3
-      have=0
-      for i in "${!args[@]}"; do
-        if [ "${args[$i]}" = --golden ]; then args[$((i+1))]="$gdir"; have=1; fi
-        case "${args[$i]}" in --golden=*) args[$i]="--golden=$gdir"; have=1;; esac
-      done
+      have=0; for a in "${args[@]}"; do case "$a" in --golden|--golden=*) have=1;; esac; done
       [ "$have" = 1 ] || { echo "oracle: a replay under ModernCI names its 1.5.5 golden with --golden; none was given. Refusing." >&2; exit 3; }
-      echo "oracle: the 1.5.5 golden is tree $BUSBAR_GOLDEN_1_5_5_TREE, read from the object database (never the worktree)" >&2
+      modernci_golden || exit 3
     fi
     if [ -z "$IDF" ]; then
       set +e; "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; rc=$?; set -e
@@ -1099,6 +1193,8 @@ if not owed:
       --filter|--filter=*) refuse_filter_flag diff ;;
       *) args+=("$1"); shift;;
     esac; done
+    # Under ModernCI a diff's --golden is the 1.5.5 golden: the config's tree from the object database.
+    if under_modernci; then modernci_golden || exit 3; fi
     if [ -z "$IDF" ]; then exec "$RUST_BIN" diff "${args[@]}"; fi
     WIDE="$(widen_filter "$IDF")"
     log="$(mktemp)"; set +e
