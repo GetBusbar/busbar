@@ -38,6 +38,56 @@ env:
   BUSBAR_GOLDEN_1_5_5_TREE: "92c7d7f72af5a9e05195817ffa0523c13705c146"
   BUSBAR_ORACLE_CRATE: "busbar-release-oracle"
   BUSBAR_ORACLE_BIN: "busbar-oracle"
+  # The trusted judge shim when the target holds no bin/oracle (qa): this commit's, and only if
+  # its bin/oracle is this blob (verified against dev 17d824b657; dev's tip has the same blob).
+  BUSBAR_ORACLE_SHIM_COMMIT: "17d824b6576d57492055585bc905aee8a1521fd4"
+  BUSBAR_ORACLE_SHIM_BLOB: "c3cc236f061e3b9e191f50124049bc13ceb4ba4b"
+  ORACLE_TRUST_SH: |
+    # THE TRUSTED JUDGE SHIM (security, 2026-10-22). Evaluated by a check BEFORE any candidate code
+    # runs: bin/oracle and the store-services helper are extracted from the TARGET's copy (a commit
+    # that already passed review), or, when the target holds none (qa, the first dev -> qa move), from
+    # the protected commit and blob named below. Never from the tree being judged. Each call re-checks
+    # the extracted files against the blobs git named at extraction, and the protected values are
+    # read-only from here on.
+    oracle_trust() {
+      _ots_fail() { echo "oracle-trust: $*" >&2; return 1; }
+      _ots_svc=testing/shadow-oracle/scripts/oracle-box-store-services.sh
+      if [ -n "${MODERNCI_TO_SHA:-}" ] && git cat-file -e "$MODERNCI_TO_SHA:bin/oracle" 2>/dev/null \
+         && git cat-file -e "$MODERNCI_TO_SHA:$_ots_svc" 2>/dev/null; then
+        _ots_src="$MODERNCI_TO_SHA"; _ots_why="the target's copy at $MODERNCI_TO_SHA"
+      else
+        _ots_src="$BUSBAR_ORACLE_SHIM_COMMIT"
+        git cat-file -e "$_ots_src^{commit}" 2>/dev/null || git fetch -q --no-tags --depth 1 origin "$_ots_src" 2>/dev/null || true
+        git cat-file -e "$_ots_src^{commit}" 2>/dev/null || { _ots_fail "the protected shim commit $_ots_src is not in this checkout and could not be fetched"; return 1; }
+        [ "$(git rev-parse "$_ots_src:bin/oracle")" = "$BUSBAR_ORACLE_SHIM_BLOB" ] || { _ots_fail "bin/oracle at $_ots_src is not the protected blob $BUSBAR_ORACLE_SHIM_BLOB"; return 1; }
+        _ots_why="the protected shim commit $_ots_src (the target holds no bin/oracle)"
+      fi
+      ORACLE_TRUST="$(mktemp -d "${TMPDIR:-/tmp}/oracle-trust.XXXXXX")" || return 1
+      git archive "$_ots_src" bin/oracle testing/shadow-oracle/scripts testing/shadow-oracle/oracle-rust.pin \
+        | tar -x -C "$ORACLE_TRUST" || { _ots_fail "could not extract the shim from $_ots_src"; return 1; }
+      _ots_shim_blob="$(git rev-parse "$_ots_src:bin/oracle")"
+      _ots_svc_blob="$(git rev-parse "$_ots_src:$_ots_svc")"
+      export BUSBAR_ORACLE_SHIM="$ORACLE_TRUST/bin/oracle" BUSBAR_ORACLE_PRODUCT_ROOT="$PWD" BUSBAR_ORACLE_DATA="$PWD/testing/shadow-oracle"
+      readonly ORACLE_TRUST _ots_svc _ots_shim_blob _ots_svc_blob BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_DATA \
+        BUSBAR_ORACLE_RELEASE_REPO BUSBAR_ORACLE_RELEASE_REF BUSBAR_ORACLE_SHA256_LINUX_X86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64 \
+        BUSBAR_GOLDEN_1_5_5_TREE BUSBAR_ORACLE_CRATE BUSBAR_ORACLE_BIN BUSBAR_ORACLE_SHIM_COMMIT BUSBAR_ORACLE_SHIM_BLOB
+      echo "oracle-trust: bin/oracle and the store-services helper come from $_ots_why"
+    }
+    _ots_verify() {
+      [ "$(git hash-object "$ORACLE_TRUST/bin/oracle")" = "$_ots_shim_blob" ] \
+        && [ "$(git hash-object "$ORACLE_TRUST/$_ots_svc")" = "$_ots_svc_blob" ] \
+        || { echo "oracle-trust: the trusted copy changed on disk after it was extracted: refusing to run it" >&2; return 1; }
+    }
+    # The judge, run only from the trusted copy.
+    oracle() { _ots_verify || return 1; "$ORACLE_TRUST/bin/oracle" "$@"; }
+    # The store backends: `oracle_services up` is sourced (it exports the URLs), the rest are run.
+    oracle_services() {
+      _ots_verify || return 1
+      case "$1" in
+        up) . "$ORACLE_TRUST/$_ots_svc" "$@" ;;
+        *) bash "$ORACLE_TRUST/$_ots_svc" "$@" ;;
+      esac
+    }
   BUSBAR_TOOL_SH: |
     # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
     # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
@@ -198,7 +248,7 @@ checks:
     # green, not "no worse than qa"). The base-relative rules (new edges, minted rows) take dev's
     # own previous commit as their base: every lane move already judged its delta against dev.
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask gate --all --format=tsv
     # The base-relative rules read history: only a backend with the repo's history runs this check.
@@ -222,8 +272,9 @@ checks:
       [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle-record: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle-record: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      ./bin/oracle tool-dir >/dev/null
+      eval "$ORACLE_TRUST_SH"; oracle_trust || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
+      oracle tool-dir >/dev/null
       cargo build --locked --release -p busbar --bin busbar
       # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
       # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
@@ -234,11 +285,11 @@ checks:
       free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
       export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
       export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
-      trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
-      . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
-      bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
+      trap 'oracle_services down' EXIT
+      oracle_services up
+      oracle_services wait || { echo "oracle: the store backends did not come up"; exit 1; }
       rm -rf target/oracle/recordings/candidate
-      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
     outputs: [target/oracle/recordings]
   oracle:
     env_from_run: [MODERNCI_TO_SHA]
@@ -261,21 +312,22 @@ checks:
       [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "oracle: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "oracle: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      ./bin/oracle tool-dir >/dev/null
+      eval "$ORACLE_TRUST_SH"; oracle_trust || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
+      oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
-        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+        oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD || { echo "golden-guard: RED: the 1.5.5 golden is not add-only"; exit 1; }
       else
         # The base (qa) holds no golden yet, so it is held add-only from the commit that first added it:
         # every change to it since, whatever this move's base, is judged.
         added="$(git log --diff-filter=A --format=%H --reverse -- testing/shadow-oracle/golden/1.5.5 | sed -n 1p)"
         [ -n "$added" ] || { echo "golden-guard: no commit adds golden/1.5.5 in this history: refusing to judge without it"; exit 1; }
         echo "golden-guard: $MODERNCI_TO_SHA holds no golden/1.5.5; held add-only from the commit that added it, $added"
-        ./bin/oracle golden-guard --repo . --base "$added" --head HEAD
+        oracle golden-guard --repo . --base "$added" --head HEAD || { echo "golden-guard: RED: the 1.5.5 golden is not add-only"; exit 1; }
       fi
-      ./bin/oracle fetch-golden
+      oracle fetch-golden
       rm -rf target/oracle/reports/dev
-      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+      oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [oracle-record]
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
@@ -289,7 +341,10 @@ checks:
     # is built from its tagged source), h2spec v2.6.0, testssl.sh v3.2.0, slsa-verifier v2.7.1. The self-hosted OIDF suite (oidf-oauth2, fapi2) runs in the backend's docker. A suite
     # whose instrument cannot be provided stays not-run and denies; nothing here marks one optional.
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      # Offered, not enforced: this check runs the candidate's own code, which calls bin/oracle itself;
+      # it gets $BUSBAR_ORACLE_SHIM (the trusted copy) to call instead.
+      eval "$ORACLE_TRUST_SH"; oracle_trust || echo "oracle-trust: no trusted shim offered to this check"
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       set -euo pipefail
       T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"
       mkdir -p "$T/bin"
@@ -378,7 +433,10 @@ checks:
       [ -n "${MODERNCI_TO_SHA:-}" ] || { echo "verify-done: MODERNCI_TO_SHA is not set: no base to judge against"; exit 1; }
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$MODERNCI_TO_SHA" 2>/dev/null || true
       git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null || { echo "verify-done: the base commit $MODERNCI_TO_SHA is not in this checkout and could not be fetched: no judge without it"; exit 1; }
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      # Offered, not enforced: this check runs the candidate's own code, which calls bin/oracle itself;
+      # it gets $BUSBAR_ORACLE_SHIM (the trusted copy) to call instead.
+      eval "$ORACLE_TRUST_SH"; oracle_trust || echo "oracle-trust: no trusted shim offered to this check"
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       bash scripts/verify-1.6.0-done.sh
     needs: [gates]
     # It reads merge-bases and tags (the config-schema baseline is tag v1.5.3): full history and tags.
@@ -392,7 +450,7 @@ checks:
     # BLOCK/HIGH/MEDIUM/LOW, scope, evidence) and exits 1 on any open BLOCK. An audit of another
     # tree, or none, is a BLOCK.
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Every audit-ledger scope's state (clean, open or stale at its tree_hash) first, kept whatever
       # it says (its red is q128's to judge, never a reason to skip it), then the Q128 judgement,
       # whose exit is the check's.
@@ -412,7 +470,7 @@ checks:
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
     # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -454,7 +512,7 @@ checks:
   selftest-1:
     env_from_run: [MODERNCI_TO]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=1/4
@@ -463,7 +521,7 @@ checks:
   selftest-2:
     env_from_run: [MODERNCI_TO]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=2/4
@@ -472,7 +530,7 @@ checks:
   selftest-3:
     env_from_run: [MODERNCI_TO]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=3/4
@@ -481,7 +539,7 @@ checks:
   selftest-4:
     env_from_run: [MODERNCI_TO]
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust || exit 1
       # Head-only: a red proof plants its own cases, so no base commit is read (and none keys it).
       export XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask selftest --shard=4/4
