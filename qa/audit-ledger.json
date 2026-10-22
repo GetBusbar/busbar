@@ -3925,7 +3925,7 @@
    "paths": [
     "crates/busbar-plane-llm/dialects"
    ],
-   "tree_hash": "3e4543730b97c3f4071c5800bdbe28a3232faf07169ccb899b7ce89980a97ba3",
+   "tree_hash": "0668f157c4e3484cd83e2ffdabf3fe581cba98aaa458a559a62c97575f211a86",
    "audited_at": "1eaf96738fa5fa89813726c36eb55bc50c06e0c8",
    "round": 2,
    "result": "findings",
@@ -3937,7 +3937,7 @@
    },
    "report": "These six files are the hand-written wire-to-IR maps of the llm plane's six dialects: each one lists its request, response and stream wire paths against the shared slot vocabulary, the word tables for enumerated values, the controls it has no form for, and its no-equivalent marks. The plane compiles them into its own tables, and the drop walk and translation matrix read them. They are self-contained (no dialect includes another's rows) and stay inside the plane, as Law 5 and the dialect fidelity rule require. One real gap remains. The Responses served-tier word table makes `flex` and `scale` write-only, so when a Responses answer reports that it was served at flex or scale, the reader loses that tier with no warn and no audit. The Chat table reads the same words, and the published Responses answer lists them; neither table reads `fast`/`ultrafast`/`auto` either. Two hygiene items are also noted: a `silent = true` control flag that the runtime ignores (those drops are warned) but whose name and comments claim a silent drop, and comment pointers to a wire-lock location and a slot document that do not exist. Read fully.",
    "auditor": "opus-q128-busbar-plane-llm-dialects-a",
-   "fixed_at": "035d26add736c43f9b712504fac58a1474ebbbe3",
+   "fixed_at": "5bed5b670138187024a6ca42940565c93aa28ca1",
    "rounds": [
     {
      "round": 1,
