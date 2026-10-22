@@ -3119,7 +3119,7 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     let held = Mutex::new(None);
     // SAFETY: no buffers; the service pends.
     let pended = unsafe {
-        serve(&d.service_store(), &waking, &head, None, |c| {
+        serve(&d.service_store(), &waking, &head, 0, None, |c| {
             *held.lock().unwrap() = c;
             Ran::Later
         })
