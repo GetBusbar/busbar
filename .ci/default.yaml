@@ -62,8 +62,8 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
-  manual: [oracle, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -282,10 +282,9 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The nextest limits: every test is cut at five minutes, except the whole-registry gate run
-      # and the kind-isolation battery, which get twelve and start first. Every registered gate's
-      # RED proof runs in the selftest-1 and selftest-2 checks, one process per gate.
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree) | test(the_kind_isolation_gate_proves_red_in_its_selftest)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
+      # The nextest limit: every test is cut at five minutes. Every registered gate's RED proof runs
+      # in the selftest-1..4 checks (`cargo xtask selftest --shard=K/4`), on every move.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
     scope: affected
