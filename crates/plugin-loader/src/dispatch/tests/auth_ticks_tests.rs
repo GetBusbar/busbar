@@ -42,6 +42,9 @@ struct Twice;
 /// Asks for a tick `GAP_NS` on, every time.
 struct Forever;
 
+/// Asks for a tick `GAP_NS` on, every time (a schedule of its own, so its count is its own).
+struct Reloaded;
+
 macro_rules! life {
     ($life:ident, $tick:expr) => {
         impl Life for $life {
@@ -74,6 +77,7 @@ life!(Forever, |now| {
     FOREVER.fetch_add(1, Ordering::SeqCst);
     now + GAP_NS
 });
+life!(Reloaded, |now| now + GAP_NS);
 
 /// Every auth op of a double: REFUSED (the schedule is under test, not `verify`).
 struct Refuses<L, I, O>(PhantomData<(L, I, O)>);
@@ -126,6 +130,7 @@ macro_rules! door {
 
 door!(twice, Twice, "ticked-twice");
 door!(forever, Forever, "ticked-forever");
+door!(reloaded, Reloaded, "ticked-reloaded");
 
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(DispatchConfig {
@@ -211,5 +216,27 @@ async fn a_dropped_inbound_instance_is_ticked_no_more() {
         FOREVER.load(Ordering::SeqCst),
         stopped,
         "a dropped instance's schedule stops"
+    );
+}
+
+/// A DROPPED AUTH INSTANCE IS LET GO (audit loader-src PL1#5; THE DESIGN `docs/design/BUSBAR-1.6.0.md`
+/// §11.11: a driver ticket is "persistent until recycled"): its schedule's driver ticket is
+/// recycled when the schedule ends or is aborted, so the slab no longer holds the instance and the
+/// instance (its library, its connector streams) is dropped. Each config apply that rebinds an auth
+/// row drops the instance it replaces. RED: the driver ticket was never recycled, so the slab kept
+/// the instance alive for the life of the process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_auth_instance_is_let_go_by_its_schedules_driver_ticket() {
+    let d = dispatcher();
+    let a = opened(&d, reloaded::door, "ticked-reloaded");
+    let held = a.instance();
+    assert!(held.upgrade().is_some(), "the opened instance is alive");
+    // The schedule has minted its driver ticket and is ticking.
+    tokio::time::sleep(Duration::from_millis(3 * GAP_NS / 1_000_000)).await;
+    drop(a);
+    until(|| held.upgrade().is_none()).await;
+    assert!(
+        held.upgrade().is_none(),
+        "a dropped auth instance is still held: its schedule's driver ticket was never recycled"
     );
 }
