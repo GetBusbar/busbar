@@ -658,6 +658,13 @@ impl Answer {
         }
     }
 
+    /// The answer says the unit's reply is complete, its last window answered: the plane lets the
+    /// unit go ([`super::close`]). The refused piece's answer never does: the unit's `refusal`
+    /// follows it.
+    fn says_done(&self, piece: &Piece) -> bool {
+        self.flags & EMIT_DONE != 0 && self.more == 0 && piece.flags & PIECE_REFUSED == 0
+    }
+
     /// The usage-tap fault this answer carries, as the reason the kernel counts it under; `None`
     /// only for an answer that carries none. A byte outside the vocabulary is `unknown`, counted.
     fn usage_tap_fault(&self) -> Option<&'static str> {
@@ -772,6 +779,14 @@ impl<'u> Pumping<'u> {
         // The record writes of a `cancel` that ended it (its client-drop path), for the unit's end.
         if cause.is_some() {
             self.cancel_writes = flight.cancel_writes();
+            // THE CANCEL CROSSED ON THE OP'S WORKER (its answer carries the disposition, or the
+            // cancel's FAULT): the unit's closing call. So is the op's own answer, when it ended on
+            // its own before the cancel reached it saying the unit's reply is complete.
+            let done = answered.outcome == AbiOutcome::Ready
+                && out.as_ref().is_some_and(|o| o.says_done(p));
+            if answered.disposition.is_some() || answered.outcome == AbiOutcome::Fault || done {
+                self.lock().close.closed();
+            }
         }
         self.flight = None;
         (answered, out, cause)
@@ -784,8 +799,7 @@ impl<'u> Pumping<'u> {
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
-            _ => (self.driver.cancel_now(self.ticket, self.ctx.key.get()))
-                .map(|c| (c.disposition, c.writes)),
+            _ => self.cancel_now().map(|c| (c.disposition, c.writes)),
         };
         // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
         if let Some((_, writes)) = &cancelled {
@@ -797,6 +811,14 @@ impl<'u> Pumping<'u> {
         let bill = CancelBill::new(cause, disposition, &facts);
         self.driver.money.cancelled(self.ctx, &bill);
         bill
+    }
+
+    /// The driver's own ticketless `cancel` of the unit, on its ticket and naming it: the unit's
+    /// closing call ([`super::close`]).
+    pub(crate) fn cancel_now(&self) -> Option<busbar_contract::plane_calls::Cancelled> {
+        let cancelled = self.driver.cancel_now(self.ticket, self.ctx.key.get());
+        self.lock().close.closed();
+        cancelled
     }
 
     /// THE PIECE'S RECORD WRITES, in the plane's order, through the kernel's one record write path
@@ -918,8 +940,10 @@ impl Drop for Pumping<'_> {
             },
             None => None,
         };
+        // The buried unit's `cancel` (the client-drop path's, or the sweep's) is its closing call.
         let (facts, principal) = {
-            let st = self.lock();
+            let mut st = self.lock();
+            st.close.closed();
             (st.facts.clone(), st.principal.clone())
         };
         self.driver.bury(Buried {
@@ -1357,7 +1381,20 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 return Step::End(End::Cancel(cause, Some(done)));
             }
             let out = match (done.outcome, out) {
-                (AbiOutcome::Ready, Some(out)) => out,
+                (AbiOutcome::Ready, Some(out)) => {
+                    // THE PLANE SAID THE UNIT'S REPLY IS COMPLETE: its closing call, unless the
+                    // kernel fails this answer over (a retry verdict before the first byte), which
+                    // keeps the unit for its next attempt (`PIECE_FINAL`: only an answer the kernel
+                    // will not fail over is the unit's last).
+                    let retried = out.verdict == VERDICT_RETRY && {
+                        let st = run.lock();
+                        fails_over(st.facts.streamed, st.facts.relayed)
+                    };
+                    if out.says_done(&piece) && !retried {
+                        run.lock().close.closed();
+                    }
+                    out
+                }
                 (AbiOutcome::Failed, Some(o)) if done.short => {
                     // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
                     // dispatcher answers a second short answer FAULT.

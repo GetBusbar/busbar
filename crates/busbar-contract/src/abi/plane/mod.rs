@@ -1534,6 +1534,25 @@ impl TrustKey {
     };
 }
 
+/// HOW THE TRUST KEY ROW IS MADE (status row 194): from [`TrustKey::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl TrustKey {
+    /// Nothing stated: every string absent, every list empty, every number zero.
+    pub const EMPTY: TrustKey = TrustKey {
+        key: AbiStr::ABSENT,
+        role: 0,
+        flags: 0,
+        default: AbiStr::ABSENT,
+        mechanisms: std::ptr::null(),
+        mechanisms_len: 0,
+    };
+
+    abi_lists! {
+        mechanisms, mechanisms_len: PinMechanism
+            => mechanisms_ptr, with_mechanisms, with_raw_mechanisms;
+    }
+}
+
 /// THE GRAMMAR OF [`PlaneTail::cli_help`]: the plane's rows of the host's command-line help, each
 /// filling one slot of it. A row opens with [`MARK`], the slot's name and [`NAME_END`], and runs to
 /// the next [`MARK`]; text before the first mark is one [`FLAG`] row (a plane that states only its
@@ -1728,6 +1747,90 @@ impl PlaneTail {
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
     };
+}
+
+/// HOW THE PLANE KIND TAIL IS MADE (status row 194): from [`PlaneTail::EMPTY`], its plain fields
+/// set directly and each list by its setter, to items that live for the program.
+impl PlaneTail {
+    /// Nothing stated: every string absent, every list empty, every number zero; the head
+    /// sized to the whole tail.
+    pub const EMPTY: PlaneTail = PlaneTail {
+        head: KindTailHead {
+            size: core::mem::size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        },
+        flags: 0,
+        ingress: 0,
+        dispatch_shape: 0,
+        answer_layout: 0,
+        scope: AbiStr::ABSENT,
+        label: AbiStr::ABSENT,
+        subject_noun: AbiStr::ABSENT,
+        admin_noun: AbiStr::ABSENT,
+        audit_kind: AbiStr::ABSENT,
+        signing_domain: AbiStr::ABSENT,
+        signing_kid_prefix: AbiStr::ABSENT,
+        cli_help: AbiStr::ABSENT,
+        dialects: std::ptr::null(),
+        dialects_len: 0,
+        dialect_auth: std::ptr::null(),
+        dialect_auth_len: 0,
+        scope_kinds: std::ptr::null(),
+        scope_kinds_len: 0,
+        op_classes: std::ptr::null(),
+        op_classes_len: 0,
+        billable_classes: std::ptr::null(),
+        billable_classes_len: 0,
+        route_cost: std::ptr::null(),
+        route_cost_len: 0,
+        fee_units: std::ptr::null(),
+        fee_units_len: 0,
+        record_kinds: std::ptr::null(),
+        record_kinds_len: 0,
+        egress_targets: std::ptr::null(),
+        egress_targets_len: 0,
+        record_chains: std::ptr::null(),
+        record_chains_len: 0,
+        trust_keys: std::ptr::null(),
+        trust_keys_len: 0,
+        refusal_statuses: std::ptr::null(),
+        refusal_statuses_len: 0,
+        caller_credential_refusal: AbiStr::ABSENT,
+        admin_routes: std::ptr::null(),
+        admin_routes_len: 0,
+        admin_openapi: Blob::ABSENT,
+        stream_ceiling_secs: 0,
+        metric_lanes: std::ptr::null(),
+        metric_lanes_len: 0,
+    };
+
+    abi_lists! {
+        dialects, dialects_len: AbiStr => dialects_ptr, with_dialects, with_raw_dialects;
+        dialect_auth, dialect_auth_len: DialectAuth
+            => dialect_auth_ptr, with_dialect_auth, with_raw_dialect_auth;
+        scope_kinds, scope_kinds_len: AbiStr
+            => scope_kinds_ptr, with_scope_kinds, with_raw_scope_kinds;
+        op_classes, op_classes_len: OpClass => op_classes_ptr, with_op_classes, with_raw_op_classes;
+        billable_classes, billable_classes_len: BillableClass
+            => billable_classes_ptr, with_billable_classes, with_raw_billable_classes;
+        route_cost, route_cost_len: RouteCost
+            => route_cost_ptr, with_route_cost, with_raw_route_cost;
+        fee_units, fee_units_len: AbiStr => fee_units_ptr, with_fee_units, with_raw_fee_units;
+        record_kinds, record_kinds_len: AbiStr
+            => record_kinds_ptr, with_record_kinds, with_raw_record_kinds;
+        egress_targets, egress_targets_len: AbiStr
+            => egress_targets_ptr, with_egress_targets, with_raw_egress_targets;
+        record_chains, record_chains_len: RecordChain
+            => record_chains_ptr, with_record_chains, with_raw_record_chains;
+        trust_keys, trust_keys_len: TrustKey
+            => trust_keys_ptr, with_trust_keys, with_raw_trust_keys;
+        refusal_statuses, refusal_statuses_len: RefusalStatus
+            => refusal_statuses_ptr, with_refusal_statuses, with_raw_refusal_statuses;
+        admin_routes, admin_routes_len: AdminRoute
+            => admin_routes_ptr, with_admin_routes, with_raw_admin_routes;
+        metric_lanes, metric_lanes_len: AbiStr
+            => metric_lanes_ptr, with_metric_lanes, with_raw_metric_lanes;
+    }
 }
 
 /// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
@@ -2598,10 +2701,10 @@ pub struct PlaneCancelIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
-    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), on the
-    /// host's own cancel of a unit, so a plane that keys its units from `arrive` finds one whose
-    /// ticket no piece ever carried (audit P-M7). `0` for the instance's driver ticket and for
-    /// a cancel of an op in flight, whose own `in` names its unit.
+    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), so a
+    /// plane that keys its units from `arrive` frees it by that key: on the host's own cancel of a
+    /// unit, one whose ticket no piece ever carried included (audit P-M7), and on the cancel of an
+    /// op in flight, the unit that op's own `in` names. `0` for the instance's driver ticket.
     pub unit: u64,
 }
 
@@ -2617,6 +2720,36 @@ pub struct PlaneCancelOut {
     pub _reserved: u32,
     /// Bytes written to `arena_buf`.
     pub arena_written: u64,
+}
+
+/// The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite
+/// gate's `reject(500, ..)` when the validated body could not be materialized for the rewrite pass).
+pub const PROJECT_FAULT_STATUS: u16 = 500;
+
+/// The words a FAULT `project` answers the caller with, byte for byte 1.5.5's.
+pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
+
+/// `project`'s outcomes, and what the kernel makes of each where a rewrite hook is configured for
+/// the unit (v1.5.5 `proxy/engine/mod.rs:728`: the document is materialized, `:749`, before any
+/// hook runs, so the unit's first `project` is made before any rewrite hook is invoked) or the call
+/// carried a rewrite ([`ProjectIn::rewrite`] present):
+///
+/// * READY: the view (and the rewritten body, when the plane applied the rewrite).
+/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. That is the
+///   rewriting hook's own failure, answered by its `on_error` (a load-bearing hook refuses the
+///   unit; any other proceeds with the request as it stood).
+/// * FAULT: the plane could not apply a rewrite it must not leave unapplied (a redaction whose
+///   document the body does not parse into). The kernel ALWAYS answers
+///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
+///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
+///
+/// A FAULT answered to a `project` where no rewrite hook is configured and no rewrite was carried
+/// stops the unit as unreadable, as any refused `project` does.
+///
+/// This is the one home of the mapping; the kernel holds no status or words of its own for it.
+#[must_use]
+pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable: bool) -> bool {
+    faultable && matches!(outcome, super::mechanism::call::Outcome::Fault)
 }
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
