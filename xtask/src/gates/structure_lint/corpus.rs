@@ -182,13 +182,11 @@ pub fn is_test_file_name(rel: &str) -> bool {
         || rel.ends_with("_test.rs")
 }
 
-/// An attribute that compiles what follows ONLY for tests or for the test-support feature.
-/// `not(test)` is the opposite claim and never counts.
+/// An attribute that compiles what follows ONLY for tests or for a test-only feature
+/// ([`crate::cfg_scope::TEST_ONLY_FEATURES`]). `not(test)` is the opposite claim and never counts,
+/// and `any(test, feature = "root-admin")` ships in the default build, so it does not either.
 fn is_test_cfg(attr: &str) -> bool {
-    let a: String = attr.chars().filter(|c| !c.is_whitespace()).collect();
-    a.starts_with("#[cfg(")
-        && !a.contains("not(")
-        && (a == "#[cfg(test)]" || a.contains("any(test") || a.contains("feature=\"test-support\""))
+    crate::cfg_scope::parse_attr(attr).is_some_and(|p| p.is_test_only())
 }
 
 /// Every file in `files` that is TEST SCOPE: named as a test, or declared as a module under a

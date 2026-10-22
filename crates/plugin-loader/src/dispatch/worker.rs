@@ -536,7 +536,20 @@ pub(crate) struct Meta {
     units_held: bool,
     lifecycle: bool,
     drainable: bool,
+    /// An admitted unit's op ([`Dispatcher::submit_unit`]): counted in [`Instance::unit_ops`].
+    unit: bool,
     pub(crate) reply: Arc<dyn Settle>,
+}
+
+/// How an op submitted is admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admit {
+    /// Under the instance's `max_inflight` ([`Instance::acquire`]).
+    Cap,
+    /// On a driver ticket: outside `max_inflight`.
+    Driver,
+    /// An op of an admitted unit: outside `max_inflight`, and in flight for `close`.
+    Unit,
 }
 
 impl Meta {
@@ -548,6 +561,9 @@ impl Meta {
             self.instance.release(self.units);
             if self.drainable {
                 self.instance.drainable.fetch_sub(1, Ordering::AcqRel);
+            }
+            if self.unit {
+                self.instance.unit_ops.fetch_sub(1, Ordering::SeqCst);
             }
             if self.lifecycle {
                 self.instance.leave_lifecycle();
@@ -2147,7 +2163,7 @@ impl Dispatcher {
             deadline_ns,
             None,
             Duration::ZERO,
-            false,
+            Admit::Cap,
         )
     }
 
@@ -2174,7 +2190,7 @@ impl Dispatcher {
             deadline_ns,
             Some(lent),
             Duration::ZERO,
-            false,
+            Admit::Cap,
         )
     }
 
@@ -2203,7 +2219,7 @@ impl Dispatcher {
             deadline_ns,
             Some(lent),
             watch,
-            false,
+            Admit::Cap,
         )
     }
 
@@ -2235,7 +2251,7 @@ impl Dispatcher {
             deadline_ns,
             Some(lent),
             Duration::ZERO,
-            true,
+            Admit::Unit,
         )
     }
 
@@ -2268,7 +2284,7 @@ impl Dispatcher {
             0,
             None,
             Duration::ZERO,
-            true,
+            Admit::Driver,
         );
         // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
         reply.owner = None;
@@ -2286,7 +2302,7 @@ impl Dispatcher {
         deadline_ns: u64,
         lent: Option<Lent>,
         watch: Duration,
-        driven: bool,
+        admit: Admit,
     ) -> Reply<I, O> {
         let inst = &plugin.inner;
         if ticket.is_none() {
@@ -2304,7 +2320,11 @@ impl Dispatcher {
         }
         // An op on a driver ticket, or of an admitted unit ([`Dispatcher::submit_unit`]), holds no
         // `max_inflight` unit.
-        let Some(units) = (if driven { Some(0) } else { inst.acquire(s) }) else {
+        let Some(units) = (if admit == Admit::Cap {
+            inst.acquire(s)
+        } else {
+            Some(0)
+        }) else {
             // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {
                 inst.leave_lifecycle();
@@ -2314,6 +2334,11 @@ impl Dispatcher {
         let drainable = class != DeadlineClass::WriteBehind;
         if drainable {
             inst.drainable.fetch_add(1, Ordering::AcqRel);
+        }
+        // An admitted unit's op is IN FLIGHT until it ends: `close` is refused while one is.
+        let unit = admit == Admit::Unit;
+        if unit {
+            inst.unit_ops.fetch_add(1, Ordering::SeqCst);
         }
         let slot = Arc::new(ReplySlot::new());
         let meta = Meta {
@@ -2327,6 +2352,7 @@ impl Dispatcher {
             units_held: true,
             lifecycle,
             drainable,
+            unit,
             reply: slot.clone(),
         };
         let job = Box::new(JobOf {
