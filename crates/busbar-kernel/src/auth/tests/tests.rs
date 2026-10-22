@@ -746,15 +746,14 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "admin",
     ];
     let paths = [
-        "/v1beta/models/x:generateContent",
+        "/v1beta/models/x:verb", // a colon-verb path shape
         "/pa/v1/messages",
-        "/v1/chat/completions",
+        "/v1/kind/action",
         "/v1/responses", // F25 row 65: the legacy sweep's dialect this list had dropped
         "/v2/chat",
-        "/model/vendor.model/converse",
-        "/model/anthropic.claude/converse", // F25 row 65: the legacy sweep's converse path
-        "/api/v1/admin/keys",               // admin path → inferred-proto fallback
-        "/totally/unknown/path",            // unknown → fallback
+        "/model/vendor.model/converse", // F25 row 65: the legacy sweep's converse path shape
+        "/api/v1/admin/keys",           // admin path → inferred-proto fallback
+        "/totally/unknown/path",        // unknown → fallback
     ];
     for path in paths {
         let body = decode_body(unauthorized_response(
@@ -1657,11 +1656,9 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
     for _ in 0..2 {
         state.push(MockResponse::Ok {
             status: axum::http::StatusCode::OK,
-            body: serde_json::json!({
-                "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
-                "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
-                "usage": {"input_tokens": 1, "output_tokens": 1}
-            }),
+            // A kind-neutral answer: the door refuses before any lane is dialled, so no dialect
+            // ever reads it.
+            body: serde_json::json!({"id": "r1", "answer": "hi"}),
         });
     }
     state
@@ -2895,12 +2892,8 @@ fn door_mint(gov: &crate::governance::GovState, name: &str, pools: &[&str]) -> (
 fn door_app() -> crate::test_support::TestApp {
     crate::test_support::TestApp::new()
         .lane(
-            crate::test_support::LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .api_key("busbar-upstream-key"),
+            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
+                .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
 }
@@ -3348,8 +3341,8 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
 
 /// F25 row 65: rehomed from the retired engine crate's src/engine/tests/auth_native_envelope_tests.rs::test_unauthorized_body_carries_no_busbar_vocabulary.
 /// Pins: over the live stack (token mode, a wrong credential, no plane mounted), the auth-failure
-/// body for EVERY data-plane path shape the legacy swept — including `/v1/responses` and
-/// `/model/anthropic.claude/converse` — is JSON and names none of busbar's auth vocabulary.
+/// body for EVERY data-plane path shape the legacy swept — including `/v1/responses` and the
+/// converse shape — is JSON and names none of busbar's auth vocabulary.
 #[tokio::test]
 async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
     const FORBIDDEN: &[&str] = &[
@@ -3371,12 +3364,12 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         .build();
     let (addr, handle) = dp_serve(app).await;
     let paths = [
-        "/v1beta/models/x:generateContent",
+        "/v1beta/models/x:verb",
         "/pa/v1/messages",
-        "/v1/chat/completions",
+        "/v1/kind/action",
         "/v1/responses",
         "/v2/chat",
-        "/model/anthropic.claude/converse",
+        "/model/vendor.model/converse",
         "/totally/unknown/path",
     ];
     for path in paths {
@@ -3417,12 +3410,8 @@ async fn test_admin_prefix_is_boundary_safe() {
     crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .lane(
-            crate::test_support::LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .api_key("busbar-upstream-key"),
+            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
+                .api_key("busbar-upstream-key"),
         )
         .pool("apix", &[(0, 1)])
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(

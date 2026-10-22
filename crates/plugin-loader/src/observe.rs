@@ -429,37 +429,63 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
 // other plugin, which therefore keeps the envelope's rule whatever it declares.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The granted series, by the plugin's host-assigned name. Written at open, read per fold.
-static GRANTS: std::sync::RwLock<
-    Option<
-        std::collections::HashMap<
-            String,
-            Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
-        >,
-    >,
-> = std::sync::RwLock::new(None);
+/// What one plugin name was granted: its declared series, and how many of its first-party
+/// instances hold the grant ([`SeriesGrant`]). A name is in the table exactly while one of its
+/// first-party instances is live (THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.12 H2: a
+/// per-instance host registry lets go with its instance).
+#[derive(Debug, Default)]
+struct Granted {
+    holders: usize,
+    series: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
+}
 
-/// Grant `plugin`'s declared series, when it is `first_party`. A claim on a series the host
-/// emits (the predicate the composition root installed on `observing`, the one place that names
-/// the host's metric catalog: two writers of one series is a merge nobody could read back apart),
-/// or on one another plugin was already granted, is refused naming both; a plugin that is not
-/// first-party is granted nothing (and refused nothing — it keeps today's rule).
+/// The granted series and the first-party names, by the plugin's host-assigned name. Written at
+/// open and at an instance's last drop, read per fold.
+static GRANTS: std::sync::RwLock<Option<std::collections::HashMap<String, Granted>>> =
+    std::sync::RwLock::new(None);
+
+/// One first-party instance's hold on its plugin's grant ([`grant_series`]): dropped with the
+/// instance, and the grant goes with its last holder. So a first-party plugin replaced by a third
+/// party of the same name keeps no grant, and a series a removed plugin declared is free for the
+/// plugin that replaces it, with no restart.
+#[derive(Debug)]
+#[must_use = "the grant lasts only while it is held"]
+pub struct SeriesGrant {
+    plugin: Option<String>,
+}
+
+impl Drop for SeriesGrant {
+    fn drop(&mut self) {
+        let Some(plugin) = self.plugin.take() else {
+            return;
+        };
+        let mut guard = GRANTS.write().unwrap_or_else(|e| e.into_inner());
+        let Some(grants) = guard.as_mut() else {
+            return;
+        };
+        if let Some(g) = grants.get_mut(&plugin) {
+            g.holders = g.holders.saturating_sub(1);
+            if g.holders == 0 {
+                grants.remove(&plugin);
+            }
+        }
+    }
+}
+
+/// Grant `plugin`'s declared series, when it is `first_party`, for as long as the returned
+/// [`SeriesGrant`] is held (the instance's life). A claim on a series the host emits (the
+/// predicate the composition root installed on `observing`, the one place that names the host's
+/// metric catalog: two writers of one series is a merge nobody could read back apart), or on one
+/// another LIVE plugin holds, is refused naming both; a plugin that is not first-party is granted
+/// nothing (and refused nothing — it keeps today's rule).
 pub fn grant_series(
     observing: &Observing,
     plugin: &str,
     first_party: bool,
     declared: &[busbar_contract::abi::mechanism::observe::SeriesDecl],
-) -> Result<(), String> {
+) -> Result<SeriesGrant, String> {
     if !first_party {
-        return Ok(());
-    }
-    FIRST_PARTY
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(Default::default)
-        .insert(plugin.to_string());
-    if declared.is_empty() {
-        return Ok(());
+        return Ok(SeriesGrant { plugin: None });
     }
     let mut guard = GRANTS.write().unwrap_or_else(|e| e.into_inner());
     let grants = guard.get_or_insert_with(Default::default);
@@ -470,7 +496,9 @@ pub fn grant_series(
                 d.name
             ));
         }
-        let owner = grants.iter().find(|(p, s)| *p != plugin && s.contains(d));
+        let owner = grants
+            .iter()
+            .find(|(p, g)| *p != plugin && g.series.contains(d));
         if let Some((owner, _)) = owner {
             return Err(format!(
                 "plugin '{plugin}' declares the series '{}', already granted to plugin '{owner}'",
@@ -478,21 +506,22 @@ pub fn grant_series(
             ));
         }
     }
-    grants.insert(plugin.to_string(), declared.to_vec());
-    Ok(())
+    let granted = grants.entry(plugin.to_string()).or_default();
+    granted.holders += 1;
+    granted.series = declared.to_vec();
+    Ok(SeriesGrant {
+        plugin: Some(plugin.to_string()),
+    })
 }
 
-/// Every plugin opened FIRST-PARTY (linked door, or signed by the release key), by its
-/// host-assigned name — recorded at open by [`grant_series`] whatever it declares (K9c).
-static FIRST_PARTY: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
-    std::sync::RwLock::new(None);
-
-/// Was `plugin` opened first-party? What the host's observer asks before it renders a
-/// diagnostic the plugin raised as the host renders its own: the catalogue's line, no provenance
-/// label (K9c — the first-party namespace of S1, for diagnostics).
+/// Is a FIRST-PARTY instance of `plugin` (linked door, or signed by the release key) live, by its
+/// host-assigned name — granted at open by [`grant_series`] whatever it declares (K9c)? What the
+/// host's observer asks before it renders a diagnostic the plugin raised as the host renders its
+/// own: the catalogue's line, no provenance label (K9c — the first-party namespace of S1, for
+/// diagnostics).
 pub fn first_party(plugin: &str) -> bool {
-    let guard = FIRST_PARTY.read().unwrap_or_else(|e| e.into_inner());
-    guard.as_ref().is_some_and(|s| s.contains(plugin))
+    let guard = GRANTS.read().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().is_some_and(|g| g.contains_key(plugin))
 }
 
 /// Is `name` of type `kind` a series granted to `plugin`? What the host's observer asks of each
@@ -500,7 +529,7 @@ pub fn first_party(plugin: &str) -> bool {
 pub fn first_party_series(plugin: &str, name: &str, kind: &str) -> bool {
     let guard = GRANTS.read().unwrap_or_else(|e| e.into_inner());
     let granted = guard.as_ref().and_then(|g| g.get(plugin));
-    granted.is_some_and(|s| s.iter().any(|d| d.name == name && d.kind == kind))
+    granted.is_some_and(|g| g.series.iter().any(|d| d.name == name && d.kind == kind))
 }
 
 /// The counters granted to `plugin` as its SHED counters (K9b): its first-party declarations
@@ -511,7 +540,7 @@ pub fn shed_series(plugin: &str) -> Vec<String> {
         .as_ref()
         .and_then(|g| g.get(plugin))
         .into_iter()
-        .flatten();
+        .flat_map(|g| g.series.iter());
     let shed = granted.filter(|d| d.shed && d.kind == "counter");
     shed.map(|d| d.name.clone()).collect()
 }
