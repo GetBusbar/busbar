@@ -116,6 +116,25 @@ pub struct LineEntry {
     pub route: RouteMatch,
 }
 
+/// HOW THE ROUTE ROW IS MADE (status row 194): from [`RouteMatch::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl RouteMatch {
+    /// Nothing stated: every string absent, every list empty, every number zero.
+    pub const EMPTY: RouteMatch = RouteMatch {
+        methods: 0,
+        path_form: 0,
+        path: AbiStr::ABSENT,
+        fields: std::ptr::null(),
+        fields_len: 0,
+        rung: 0,
+        _reserved: 0,
+    };
+
+    abi_lists! {
+        fields, fields_len: FieldPredicate => fields_ptr, with_fields, with_raw_fields;
+    }
+}
+
 /// A [`RouteMatch`] read into Rust: what the kernel orders and matches, and what
 /// [`crate::abi::transport::check::check_route_view`] judges.
 #[derive(Debug, Clone, PartialEq, Eq)]
