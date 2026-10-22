@@ -228,9 +228,10 @@ impl Exchange {
     }
 
     /// WHETHER THE REPLY'S HEAD WAS RECEIVED: `true` once a head (or a pure-send transport's ack)
-    /// was read, whatever the exchange answered after it. A failed exchange that had its head
-    /// failed reading the body (a reset, a stalled body, [`REPLY_OVER_BOUND`]); one without failed
-    /// before any reply (the dial, the send, the far end's silence).
+    /// was read, whatever the exchange answered after it. When a failed exchange answers `true`,
+    /// it failed while reading the body (a reset, a stalled body, [`REPLY_OVER_BOUND`]). When it
+    /// answers `false`, it failed before any reply arrived (the dial, the send, the far end's
+    /// silence).
     #[must_use]
     pub const fn head_seen(&self) -> bool {
         self.head_seen
