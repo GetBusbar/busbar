@@ -200,7 +200,7 @@ E
   chmod +x "$st/engine"
   run() {  # run <stub mode> <replay args...> -> "<rc>" ; stderr to $st/err
     : >"$st/calls"
-    env -u BUSBAR_ORACLE_DATA STUB="$1" BUSBAR_ORACLE_RUST_BIN="$st/engine" "$st/repo/bin/oracle" \
+    env -u BUSBAR_ORACLE_DATA -u MODERNCI -u MODERNCI_TO_SHA -u MODERNCI_HEAD STUB="$1" BUSBAR_ORACLE_RUST_BIN="$st/engine" "$st/repo/bin/oracle" \
       replay "${@:2}" >/dev/null 2>"$st/err"; echo $?
   }
   fail=0
@@ -361,10 +361,13 @@ fi
 # ── the pinned judge, FETCHED (OWNER 2026-10-13: no hand-installed tools; ModernCI installs no judge) ──
 # On Linux the judge is the binary busbar-release's dev-bin.yml built and published from the pinned
 # commit: `busbar-oracle-linux-<arch>-<release_ref>` on the `dev-bin` release, run only when its
-# sha256 is the pin's `sha256_linux_<arch>` line. The pin read is the BASE's: $MODERNCI_TO_SHA's
-# testing/shadow-oracle/oracle-rust.pin when ModernCI names a base that holds one (a candidate never
-# picks its own judge; a pin bump judges from the commit after it lands), else this tree's (the first
-# dev -> qa move: .ci/dev.yaml fetches the pinned judge). A pin with no line for this host's
+# sha256 is the pin's `sha256_linux_<arch>` line. The pin read is a FIXED BASE's, never the candidate's
+# (oracle_base below): $MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin when the target holds
+# one, else, under ModernCI, the commit before the head judged ($MODERNCI_HEAD~1, else HEAD~1). A
+# candidate never picks its own judge, and a pin bump judges from the commit after it lands. Under
+# ModernCI no fixed base holding a pin is NO JUDGE (red): the dev -> qa move onto a qa that holds no pin
+# (1.5.5, a71b21e) once read this tree's own pin, so the candidate graded itself. Outside ModernCI (a
+# local run, which is never a verdict) the tree's pin is read when no target is named. A pin with no line for this host's
 # architecture has NO JUDGE (red, never another architecture's, never a source build). A `.sig` beside
 # the asset is verified against busbar-release's release key (Ed25519 over "<asset name>\n<sha256>\n",
 # busbar-release-cli update.rs RELEASE_KEY_SPKI) before the bytes are ever made executable; a
@@ -406,13 +409,43 @@ token_word() {
   elif [ -n "${GITHUB_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN absent, GITHUB_TOKEN present'
   else printf 'no token (BUSBAR_RELEASE_TOKEN, GH_TOKEN and GITHUB_TOKEN are all absent)'; fi
 }
-judge_pin_text() {  # judge_pin_text <repo> — the BASE pin's text (see above)
-  local repo="$1" rel="testing/shadow-oracle/oracle-rust.pin"
-  if [ -n "${MODERNCI_TO_SHA:-}" ] && git -C "$repo" cat-file -e "$MODERNCI_TO_SHA:$rel" 2>/dev/null; then
-    git -C "$repo" show "$MODERNCI_TO_SHA:$rel"
-  else
-    cat "$repo/$rel"
+# ── THE FIXED BASE: where the judge's pin and the add-only 1.5.5 golden are read from ─────────────
+# The candidate is the tree being judged. Whatever it commits, it cannot change a commit that came
+# before it, so the judge's pin and the golden it is held to are read from one: the target
+# ($MODERNCI_TO_SHA) when it holds the file; else, under ModernCI, the commit before the head judged
+# ($MODERNCI_HEAD~1, the base the gates check reads; else HEAD~1). A candidate is never its own base
+# (a target or parent that IS HEAD is skipped). Under ModernCI, no fixed base holding the file is a
+# refusal; the caller says what is missing.
+ORACLE_PIN_REL="testing/shadow-oracle/oracle-rust.pin"
+ORACLE_GOLDEN_REL="testing/shadow-oracle/golden/1.5.5"
+under_modernci() { [ -n "${MODERNCI:-}${MODERNCI_TO_SHA:-}${MODERNCI_HEAD:-}" ]; }
+oracle_base() {  # oracle_base <repo> <path> — the fixed base commit holding <path>, or 1
+  local repo="$1" rel="$2" head c cand
+  head="$(git -C "$repo" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || head=""
+  local -a cands=("${MODERNCI_TO_SHA:-}")
+  if under_modernci; then
+    cands+=("${MODERNCI_HEAD:+$MODERNCI_HEAD~1}" "${head:+$head~1}")
   fi
+  for cand in "${cands[@]}"; do
+    [ -n "$cand" ] || continue
+    c="$(git -C "$repo" rev-parse -q --verify "$cand^{commit}" 2>/dev/null)" || continue
+    [ "$c" != "$head" ] || continue
+    git -C "$repo" cat-file -e "$c:$rel" 2>/dev/null || continue
+    printf '%s\n' "$c"; return 0
+  done
+  return 1
+}
+judge_pin_text() {  # judge_pin_text <repo> — the FIXED BASE's pin text (see above), or 1
+  local repo="$1" b
+  if b="$(oracle_base "$repo" "$ORACLE_PIN_REL")"; then
+    echo "oracle: the judge's pin is $ORACLE_PIN_REL at the fixed base $b" >&2
+    git -C "$repo" show "$b:$ORACLE_PIN_REL"; return 0
+  fi
+  if under_modernci; then
+    echo "oracle: NO JUDGE: no fixed base holds $ORACLE_PIN_REL (target ${MODERNCI_TO_SHA:-unset}, head ${MODERNCI_HEAD:-unset}, and HEAD~1 hold none). A candidate never picks its own judge, so this tree's pin is not read. Refusing." >&2
+    return 1
+  fi
+  cat "$repo/$ORACLE_PIN_REL"
 }
 release_api() {  # release_api <url> [<accept> [<out> [<what>]]] — an authenticated GET; the token never on an argv
   local tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
@@ -575,20 +608,96 @@ sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
     elif grep -q "release key" "$st/err"; then echo "  [ok]     a .sig made by another key refuses"
     else echo "  [FAILED] the bad-.sig refusal did not say so: $(cat "$st/err")"; fail=1; fi
   else echo "  [FAILED] no openssl with Ed25519 here: the .sig check cannot be proven"; fail=1; fi
-  # THE BASE PIN wins over the tree's when ModernCI names a base that holds one.
-  git init -q "$st/repo" && mkdir -p "$st/repo/testing/shadow-oracle" \
-    && printf 'release_ref=base\n' >"$st/repo/testing/shadow-oracle/oracle-rust.pin" \
-    && git -C "$st/repo" add -A && git -C "$st/repo" -c user.name=t -c user.email=t@t.invalid \
-         -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m pin \
-    && printf 'release_ref=head\n' >"$st/repo/testing/shadow-oracle/oracle-rust.pin" \
-    || { echo "  [FAILED] could not build the base-pin fixture"; fail=1; }
-  b="$(git -C "$st/repo" rev-parse HEAD 2>/dev/null)"
-  if [ "$(MODERNCI_TO_SHA="$b" judge_pin_text "$st/repo")" = "release_ref=base" ] \
-     && [ "$(MODERNCI_TO_SHA= judge_pin_text "$st/repo")" = "release_ref=head" ]; then
-    echo "  [ok]     the base's pin is read when ModernCI names a base, the tree's otherwise"
-  else echo "  [FAILED] the judge's pin was not read from the base"; fail=1; fi
+  # Which commit's pin is read (never the candidate's) is base-selftest's.
   [ "$fail" = 0 ] && { echo "oracle fetch-selftest: the judge is the pinned digest's, or there is none"; exit 0; }
   echo "oracle fetch-selftest: FAILED"; exit 1
+fi
+# `judge-pin`: the pin text the judge would be fetched by (the fixed base's), or the refusal.
+if [ "${1:-}" = "judge-pin" ]; then rc=0; judge_pin_text "$here" || rc=$?; exit "$rc"; fi
+if [ "${1:-}" = "base-selftest" ]; then
+  # A CANDIDATE NEVER GRADES ITSELF. A fixture history: `qa` holds no pin and no golden (as 1.5.5,
+  # a71b21e), `base` holds pin `base` and golden cell `base`, and the candidate HEAD on top of it
+  # rewrites both to its own. Driven against a copy of the shim with a stub engine that logs its
+  # calls. An optional argument names the shim under test (a parent revision's, for the red proof).
+  under="${2:-$here/bin/oracle}"
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  fail=0
+  cat >"$st/engine" <<'E'
+#!/usr/bin/env bash
+echo "$*" >>"$CALLS"
+[ "$1" = diff ] || exit 0
+out=""; prev=""; for a in "$@"; do [ "$prev" = --out ] && out="$a"; prev="$a"; done
+mkdir -p "$out"; echo '{"totals": {"owed": 3}}' >"$out/report.json"; exit 0
+E
+  chmod +x "$st/engine"
+  g() { git -C "$1" -c user.name=t -c user.email=t@t.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "${@:2}"; }
+  put() {  # put <repo> <pin ref> <golden cell>
+    mkdir -p "$1/testing/shadow-oracle/golden/1.5.5"
+    printf 'release_ref=%s\n' "$2" >"$1/testing/shadow-oracle/oracle-rust.pin"
+    printf '%s\n' "$3" >"$1/testing/shadow-oracle/golden/1.5.5/cell"
+  }
+  # repo: qa (nothing) <- base (pin, golden) <- head (its own pin and golden)
+  r="$st/repo"; git init -q "$r"
+  printf 'qa\n' >"$r/README"; g "$r" add -A; g "$r" commit -q -m qa; qa="$(g "$r" rev-parse HEAD)"
+  put "$r" base base; g "$r" add -A; g "$r" commit -q -m base; base="$(g "$r" rev-parse HEAD)"
+  put "$r" head self-graded; g "$r" add -A; g "$r" commit -q -m head; head="$(g "$r" rev-parse HEAD)"
+  # lone: the candidate is a root commit beside a qa with nothing: no fixed base exists.
+  l="$st/lone"; git init -q "$l"
+  printf 'qa\n' >"$l/README"; g "$l" add -A; g "$l" commit -q -m qa; lqa="$(g "$l" rev-parse HEAD)"
+  g "$l" checkout -q --orphan cand; g "$l" rm -q -rf .
+  put "$l" head self-graded; g "$l" add -A; g "$l" commit -q -m cand
+  for d in "$r" "$l"; do
+    printf '{"cells": [{"id": "fam|a"}]}\n' >"$d/testing/shadow-oracle/cells.json"
+    printf '{"accepted": []}\n' >"$d/testing/shadow-oracle/accepted-differences.json"
+    mkdir -p "$d/bin"; cp "$under" "$d/bin/oracle"
+  done
+  shim() {  # shim <repo> <env...> -- <args...> -> stdout; rc in $st/rc; stderr in $st/err
+    local d="$1"; shift; local -a e=(); while [ "$1" != -- ]; do e+=("$1"); shift; done; shift
+    : >"$st/calls"; local rc=0
+    ( cd "$d" && env -u MODERNCI -u MODERNCI_TO_SHA -u MODERNCI_HEAD -u BUSBAR_ORACLE_DATA \
+        -u BUSBAR_ORACLE_PRODUCT_ROOT -u BUSBAR_ORACLE_TOOL_DIR CALLS="$st/calls" \
+        BUSBAR_ORACLE_RUST_BIN="$st/engine" ${e[@]+"${e[@]}"} bash "$d/bin/oracle" "$@" ) 2>"$st/err" || rc=$?
+    echo "$rc" >"$st/rc"
+  }
+  ok() { echo "  [ok]     $1"; }
+  bad() { echo "  [FAILED] $1 (rc=$(cat "$st/rc"); $(head -c 300 "$st/err"))"; fail=1; }
+  # THE PIN
+  got="$(shim "$r" MODERNCI=1 MODERNCI_TO_SHA="$qa" MODERNCI_HEAD="$head" -- judge-pin)"
+  [ "$got" = release_ref=base ] && ok "target qa holds no pin: the judge's pin is \$MODERNCI_HEAD~1's, not the candidate's" \
+    || bad "the judge's pin under a pinless target was '$got', not base's"
+  got="$(shim "$r" MODERNCI=1 MODERNCI_TO_SHA="$qa" -- judge-pin)"
+  [ "$got" = release_ref=base ] && ok "with no \$MODERNCI_HEAD, HEAD~1's pin is read" \
+    || bad "the judge's pin with no MODERNCI_HEAD was '$got', not base's"
+  got="$(shim "$r" MODERNCI=1 MODERNCI_TO_SHA="$head" MODERNCI_HEAD="$head" -- judge-pin)"
+  [ "$got" = release_ref=base ] && ok "a target that IS the candidate is not its base" \
+    || bad "a target equal to HEAD gave the pin '$got'"
+  got="$(shim "$l" MODERNCI=1 MODERNCI_TO_SHA="$lqa" -- judge-pin)"
+  if [ "$(cat "$st/rc")" != 0 ] && [ "$got" != release_ref=head ] && grep -q "NO JUDGE" "$st/err"; then
+    ok "no fixed base holds a pin: no judge (red), never the candidate's own pin"
+  else bad "with no fixed base the pin was '$got'"; fi
+  got="$(shim "$r" -- judge-pin)"
+  [ "$got" = release_ref=head ] && ok "outside ModernCI with no target named, a local run reads the tree's pin" \
+    || bad "a local run read '$got'"
+  # THE GOLDEN
+  shim "$r" MODERNCI=1 MODERNCI_TO_SHA="$qa" MODERNCI_HEAD="$head" -- replay \
+    --golden testing/shadow-oracle/golden/1.5.5 --candidate c --out "$st/o1" --strict >/dev/null
+  first="$(grep -v '^tool-dir ' "$st/calls" | head -n1)"
+  if [ "$(cat "$st/rc")" = 0 ] && [[ "$first" == "golden-guard --repo "*" --base $base --head HEAD" ]] && grep -q '^diff ' "$st/calls"; then
+    ok "target qa holds no golden: the candidate's golden is held add-only to \$MODERNCI_HEAD~1's before any cell is judged"
+  else bad "the replay did not guard the golden against the fixed base first (calls: $(tr '\n' ';' <"$st/calls"))"; fi
+  shim "$l" MODERNCI=1 MODERNCI_TO_SHA="$lqa" -- replay \
+    --golden testing/shadow-oracle/golden/1.5.5 --candidate c --out "$st/o2" --strict >/dev/null
+  if [ "$(cat "$st/rc")" != 0 ] && ! grep -q '^diff ' "$st/calls"; then
+    ok "no fixed base holds the golden: the replay refuses and judges nothing against the candidate's own golden"
+  else bad "with no fixed golden the replay ran (calls: $(tr '\n' ';' <"$st/calls"))"; fi
+  printf 'edited-in-place\n' >"$r/testing/shadow-oracle/golden/1.5.5/cell"
+  shim "$r" MODERNCI=1 MODERNCI_TO_SHA="$qa" MODERNCI_HEAD="$head" -- replay \
+    --golden testing/shadow-oracle/golden/1.5.5 --candidate c --out "$st/o3" --strict >/dev/null
+  if [ "$(cat "$st/rc")" != 0 ] && ! grep -q '^diff ' "$st/calls"; then
+    ok "a golden edited in the checkout after HEAD is refused before any cell is judged"
+  else bad "a golden differing from HEAD's was judged against (calls: $(tr '\n' ';' <"$st/calls"))"; fi
+  [ "$fail" = 0 ] && { echo "oracle base-selftest: the judge's pin and the golden are a fixed base's; a candidate never grades itself"; exit 0; }
+  echo "oracle base-selftest: FAILED"; exit 1
 fi
 resolve_bin() {
   if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
@@ -596,7 +705,9 @@ resolve_bin() {
     printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
   fi
   if [ "$(uname -s)" = Linux ]; then
-    fetch_judge "$(judge_pin_text "$here")" "$cache_home/busbar-oracle-judge" api || exit 1
+    local pin_text
+    pin_text="$(judge_pin_text "$here")" || exit 1
+    fetch_judge "$pin_text" "$cache_home/busbar-oracle-judge" api || exit 1
     return 0
   fi
   local built="$root/checkout/target/release/$BINNAME"
@@ -888,6 +999,23 @@ if not owed:
       --filter|--filter=*) refuse_filter_flag replay ;;
       *) args+=("$1"); shift;;
     esac; done
+    # THE GOLDEN IS HELD TO A FIXED BASE BEFORE ANY CELL IS JUDGED (under ModernCI). The yaml's
+    # golden-guard reads $MODERNCI_TO_SHA's golden and holds nothing when the target has none (qa at
+    # 1.5.5), and then the candidate's own golden graded the candidate. Here the committed golden is
+    # held add-only to the fixed base's (oracle_base), and one this checkout edited after HEAD is
+    # refused. No fixed base holding a golden is a refusal, never a replay against the candidate's.
+    if under_modernci; then
+      gb="$(oracle_base "$here" "$ORACLE_GOLDEN_REL")" || {
+        echo "oracle: no fixed base holds $ORACLE_GOLDEN_REL (target ${MODERNCI_TO_SHA:-unset}, head ${MODERNCI_HEAD:-unset}, and HEAD~1 hold none): the candidate's golden would grade the candidate. Refusing." >&2
+        exit 3; }
+      if [ -n "$(git -C "$here" status --porcelain --untracked-files=all -- "$ORACLE_GOLDEN_REL")" ]; then
+        echo "oracle: $ORACLE_GOLDEN_REL in this checkout differs from HEAD's: a golden edited after the commit is not the one held add-only. Refusing." >&2
+        exit 3
+      fi
+      echo "oracle: the 1.5.5 golden is held add-only to the fixed base $gb" >&2
+      grc=0; "$RUST_BIN" golden-guard --repo "$here" --base "$gb" --head HEAD || grc=$?
+      [ "$grc" = 0 ] || { echo "oracle: golden-guard against the fixed base $gb is red (exit $grc); nothing is judged." >&2; exit "$grc"; }
+    fi
     if [ -z "$IDF" ]; then
       set +e; "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; rc=$?; set -e
       judged_or_refuse "$rc" "${args[@]}"

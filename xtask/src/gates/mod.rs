@@ -708,8 +708,8 @@ impl Registration {
 ///
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
-/// The `test:xtask-selftest` check runs `xtask selftest <gate>` for every registered gate, split
-/// across the check's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
+/// selftest-1..4 (`cargo xtask selftest --shard=K/4`) run `xtask selftest <gate>` for every
+/// registered gate, each gate in exactly one of the four round-robin shards, and that is the ONE place
 /// every gate's cases are driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's
 /// self-test, never all of them (verification runs once per input). That check is the only place
 /// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --
@@ -757,8 +757,8 @@ impl Registration {
 ///   [`cpu::thread`]) on the thread that ran it, just before and just after the battery
 ///   ([`ruler_cpu`]).
 /// * BATTERIES NEVER OVERLAP IN ONE PROCESS while they are measured. `xtask selftest <gate>` takes
-///   one battery and `xtask selftest` takes them one after another; the `test:xtask-selftest` check
-///   runs `xtask selftest {part}`, ONE PROCESS PER GATE. A window that opens while another is open
+///   one battery and `xtask selftest` takes them one after another; selftest-1..4
+///   (`cargo xtask selftest --shard=K/4`) run `xtask selftest <gate>`, ONE PROCESS PER GATE. A window that opens while another is open
 ///   makes BOTH readings refused ([`BatteryReading::Refused`]) — an overlap is never guessed
 ///   around.
 /// * PER-CASE FIGURES (`XTASK_SELFTEST_TIMING`) are the worker thread's own wall clock and CPU, for

@@ -113,7 +113,8 @@ fn the_engine_clone_stores_no_token_and_builds_locked() {
 /// runs it only when its sha256 is the BASE pin's line for this architecture; a `.sig` beside it must
 /// be the release key's. `bin/oracle fetch-selftest` proves, offline: the pinned judge is fetched and
 /// cached, a wrong sha256 refuses, a pin with no line for this architecture has "no judge", a
-/// disagreeing `.sha256` and another key's `.sig` refuse, and the base's pin wins over the tree's.
+/// disagreeing `.sha256` and another key's `.sig` refuse. Which commit's pin is read is
+/// `a_candidate_never_grades_itself`'s.
 #[test]
 fn the_fetched_judge_is_the_pinned_digests_or_none() {
     let shim = repo_root().join("bin/oracle");
@@ -126,6 +127,30 @@ fn the_fetched_judge_is_the_pinned_digests_or_none() {
     assert!(
         out.status.success(),
         "bin/oracle fetch-selftest failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A CANDIDATE NEVER GRADES ITSELF (the DEV-GREEN move onto qa a71b21e, 1.5.5, which holds no
+/// oracle-rust.pin and no golden/1.5.5: the shim read the candidate's own pin and the yaml's
+/// golden-guard held nothing). `bin/oracle base-selftest` proves, offline, over a fixture history:
+/// under ModernCI the judge's pin is a fixed base's (the target's, else `$MODERNCI_HEAD~1`, else
+/// HEAD~1, never HEAD), none is no judge, and a replay holds the golden add-only to the fixed base's
+/// before any cell is judged, refusing when no fixed base holds one or the checkout edited it.
+/// RED against the parent revision's shim (`bin/oracle base-selftest <old shim>`): every arm fails.
+#[test]
+fn a_candidate_never_grades_itself() {
+    let shim = repo_root().join("bin/oracle");
+    let out = std::process::Command::new("bash")
+        .arg(&shim)
+        .arg("base-selftest")
+        .current_dir(repo_root())
+        .output()
+        .expect("run bin/oracle base-selftest");
+    assert!(
+        out.status.success(),
+        "bin/oracle base-selftest failed:\n{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
