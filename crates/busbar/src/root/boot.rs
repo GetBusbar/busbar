@@ -51,17 +51,40 @@ pub fn registry(
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    let scanned = scan.is_some();
     let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
-    // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
-    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6). A build of the linked
-    // rows alone (no `plugins:` block: the kernel's `preflight::linked`) read no directory, so it
-    // leaves the dropped-in set the last scan admitted as it is.
-    if scanned {
-        super::linked::secret_rows()
-            .admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
-    }
+    // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
+    // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
+    // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
+    // (BUSBAR-1.6.0.md l.456-457).
+    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
+}
+
+/// STAGE 3's SECRET ADMISSION (BUSBAR-1.6.0.md §3, 3a/3e; the kernel's `RootInstall::secret_admit`):
+/// the dropped-in secret plugins that state a door join the secret axis (the root's, over the one
+/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). The
+/// app build calls it through the install record with the rows the kernel holds, read back as the
+/// registry this root built them as (a test build's rows double admits nothing); boot's scan calls
+/// [`admit_dropped_secrets`] on its own registry. The registry build ([`registry`]) never does.
+///
+/// # Errors
+///
+/// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
+/// another plugin answers to, naming both.
+pub fn admit_secrets(rows: &Arc<dyn PluginRows>) -> Result<(), String> {
+    match super::loader::rows::registry_arc(Arc::clone(rows)) {
+        Some(registry) => admit_dropped_secrets(&registry),
+        None => Ok(()),
+    }
+}
+
+/// [`admit_secrets`] over a registry this root built.
+///
+/// # Errors
+///
+/// As [`admit_secrets`].
+pub fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
+    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
 /// THE REGISTRY BUILD THE KERNEL RECEIVES (`RootInstall::registry_build`): [`registry`] over the
@@ -651,7 +674,11 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     }
     plugins.warn_invalid_floors();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {}).ok()
+    let registry =
+        crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})
+            .ok()?;
+    admit_dropped_secrets(&registry).ok()?;
+    Some(registry)
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
