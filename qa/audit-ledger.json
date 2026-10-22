@@ -1634,7 +1634,7 @@
    "paths": [
     "crates/busbar-kernel-ledger/src"
    ],
-   "tree_hash": "941e13b804160d04bc41b08135eb462970ed5339fae8258e3645354bb553cca9",
+   "tree_hash": "c1187c1757bd310e64655f7a46b5e6b3f4af767c3818fb95a9bbaede71deea08",
    "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
    "round": 4,
    "result": "findings",
@@ -1646,7 +1646,7 @@
    },
    "report": "Money arithmetic is exact and checked: counts times integer rates accumulate at scale fifteen, the tier divides once with half-to-even rounding, a hole in the history or an unpriced lane or class refuses, and the statement read lists every line it cannot price. Two defects stand. The in-memory book and the dual-write sums keep one balance per principal, bucket and window for the life of the process, because the book's retirement verb has no production caller and the summed rows have none at all, so memory and the size of every sealed checkpoint grow with uptime. The sequence check between two checkpoints passes a node whose chain head vanished and a head rewritten at the same sequence. The rest is a statement sum that saturates where the money rule refuses, an identity that closes only if the caller's overdraft figure is exactly the excess, unreachable or unread fields, and doc comments that describe a rounding rule, a float-free intake and a cache the code does not have. Read in 20 parts, fully.",
    "auditor": "opus-r159d-kernel-ledger",
-   "fixed_at": null,
+   "fixed_at": "1dfad0de31c27506ef211f415165af4324040565",
    "exclude": [
     "crates/busbar-kernel-ledger/src/tests"
    ],
