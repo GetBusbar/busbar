@@ -258,7 +258,8 @@ impl PlaneBreakers {
         if !self.provisioned {
             return; // inert: nothing was ever dispatched (see `try_admit`).
         }
-        self.health.record_success_in(key, lane);
+        self.health
+            .record_success_in(key, lane, HealthState::now_secs());
     }
 
     /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`crate::breaker::classify`],
