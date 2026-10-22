@@ -34,24 +34,24 @@
 //! THE SURFACE IS AUDITABLE BY READING [`MONEY_INTAKE`], which is the whole point of its existing.
 //! Every place money enters this system from configuration is a row in that table, with the file it
 //! lives in and the ITEM, by name, that is the conversion. Only the named items' own spans are
-//! exempt; every other line of the file is scanned. Two files carry intakes today:
+//! exempt; every other line of the file is scanned. One file carries intakes today:
 //!
-//! * `busbar-kernel-ledger/src/cost/rate.rs` — the card-build arithmetic itself (#44): `nano_rate`
-//!   and the four constructor fns that hand a configured decimal to it, plus `TierRates`, the
-//!   record of configured decimals they read. **THE FILE IS NOT EXEMPT.** It used to be dropped
-//!   from the ledger walk whole as "the card build", while it also holds the lane resolution
-//!   (`lane_pricing`), the card digest and the runtime price reads (`fee_of`, `fee_unit_price_nanos`,
-//!   `nanos_per_unit`): a float in any of those read GREEN for any amount of float (audit xtask-X3
-//!   finding 1). It is walked with the rest of the ledger now, and only the named items are exempt.
-//! * `crates/busbar/src/root/kernel.rs` :: `card_from_config` — **THE SECOND INTAKE, AND IT WAS
-//!   UNDECLARED AND UNSCANNED.** This is where the deployment's configured rates become the card
-//!   every plane's exit prices against: the root reads config, `card_from_config` relays it into the
-//!   cost unit, and `CardRepricer::rates_applied` appends the result to the history. This gate's own
-//!   header used to say the file "lives in files this gate does not scan, for the same reason: it is
-//!   the boundary" — but "the boundary" is one FUNCTION in a 1 300-line composition-root file, and a
-//!   float anywhere else in it (in the repricer, in the epoch read, in the units registry) could not
-//!   produce a RED for any amount of float. The file is scanned now, with `card_from_config`'s own
-//!   body the only span in it a float may appear in.
+//! * `busbar-kernel-ledger/src/cost/rate.rs` — the card-build arithmetic itself (#44): `nano_rate`,
+//!   `representable_nano_rate` and `from_micro_rates`, the items a configured decimal still reaches.
+//!   **THE FILE IS NOT EXEMPT.** It used to be dropped from the ledger walk whole as "the card
+//!   build", while it also holds the lane resolution (`lane_pricing`), the card digest and the
+//!   runtime price reads (`fee_of`, `fee_unit_price_nanos`, `nanos_per_unit`): a float in any of
+//!   those read GREEN for any amount of float (audit xtask-X3 finding 1). It is walked with the rest
+//!   of the ledger now, and only the named items are exempt.
+//! * `crates/busbar/src/root/kernel.rs` :: `card_from_config` WAS THE SECOND INTAKE, undeclared and
+//!   unscanned until it was named; it is where the deployment's configured rates become the card
+//!   every plane's exit prices against. Its rates reach it as integer nano-rates now, so its row was
+//!   struck when the premise rule below measured its span to hold no float (audit XE HIGH 4), and
+//!   the file is scanned whole by name ([`BINARY_MONEY_FILES`]).
+//!
+//! EVERY ROW'S PREMISE IS EVALUATED (Law 10). An intake row says "a configured decimal is converted
+//! here"; a row whose span holds no float converts nothing, exempts a span a float can only reach by
+//! being planted, and is refused as "holds NO float" rather than read as a standing allowance.
 //!
 //! AND THE RULE THAT MAKES "AT THE BOUNDARY" MEAN SOMETHING: every boundary's declared RETURN TYPE
 //! is checked, and a float in it is a finding. Decimals go in, integers come out — a boundary that
@@ -218,36 +218,15 @@ pub const MONEY_INTAKE: &[MoneyIntake] = &[
         file: CARD_BUILD_FILE,
         boundary: "from_micro_rates",
         item: IntakeItem::ConversionFn,
-        why: "#44: the card constructor over configured micro-unit decimals; each one goes to \
-              `place_rate` and nowhere else. Decimals in, a card of integer cells out.",
+        why:
+            "#44: the card constructor over configured micro-unit decimals; each one goes to \
+              `representable_nano_rate` and nowhere else. Decimals in, a card of integer cells out.",
     },
-    MoneyIntake {
-        file: CARD_BUILD_FILE,
-        boundary: "from_config",
-        item: IntakeItem::ConversionFn,
-        why: "#44: THE CARD A DEPLOYMENT CONFIGURED, built from its `TierRates` decimals by the \
-              class fan-out into `from_micro_rates`. Decimals in, a card out.",
-    },
-    MoneyIntake {
-        file: CARD_BUILD_FILE,
-        boundary: "place_rate",
-        item: IntakeItem::ConversionFn,
-        why: "#44: the one placement of a configured decimal into a cell, through \
-              `representable_nano_rate`; returns unit and leaves an integer cell.",
-    },
-    MoneyIntake {
-        file: CARD_BUILD_FILE,
-        boundary: "TierRates",
-        item: IntakeItem::DecimalRecord,
-        why: "#44: one lane's four configured micro-unit decimals, the raw-value record \
-              `from_config` converts, and its `by_class` fan-out. The record a conversion reads.",
-    },
-    MoneyIntake {
-        file: "crates/busbar/src/root/kernel.rs",
-        boundary: "card_from_config",
-        item: IntakeItem::ConversionFn,
-        why: "THE SECOND INTAKE: the composition root relaying the deployment's configured rates               into the cost unit's card, on boot and on every live rate apply. Its call path —               `CardRepricer::rates_applied`, which appends the built card to the history, and               `RateEpoch::effective_from_at`, which dates a price against it — is the rest of this               file, and is scanned.",
-    },
+    // STRUCK, AND WHY (audit XE HIGH 4): `from_config`, `place_rate`, `TierRates` and the root's
+    // `card_from_config` were rows here while their spans held NO float — the decimals had become
+    // integer nano-rates before reaching them — so each exempted a span a float could only appear in
+    // by being planted. A row's premise is now evaluated: a span that holds no float is refused
+    // ("holds NO float"), and these four are scanned like the rest of their files.
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -350,6 +329,11 @@ const BINARY_MONEY_FILES: &[&str] = &[
     "crates/busbar/src/root/durability/book.rs",
     "crates/busbar/src/root/ledger_identity.rs",
     "crates/busbar/src/root/migration.rs",
+    // The card relay (`card_from_config`), the repricer that appends the built card to the history
+    // and the epoch read that dates a price against it. It was scanned as an intake row's file; the
+    // row was struck when its span was measured to hold no float (audit XE HIGH 4), and the file
+    // stays in the ban by name.
+    "crates/busbar/src/root/kernel.rs",
 ];
 
 /// The directory the binary money files live under — walked once, then filtered to the named set.
@@ -531,6 +515,10 @@ pub const MONEY_TYPES: &[&str] = &[
     "MoneyBook",
     "SharedBook",
     "AccrualMeter",
+    // The money CAPABILITY's posting (audit XE HIGH 2): `recovery.rs` posts the figure for every
+    // hold a dead node left open through `Posted`, and named none of the ledger-side types above,
+    // so the crash-recovery settlement writer was in no float scan at all.
+    "Posted",
 ];
 
 /// THE FLOOR UNDER THE DERIVED MONEY POPULATION. MEASURED 2026-10-13 on predev `5c99befcfa`: 28
@@ -712,8 +700,56 @@ pub const FLOAT_TOKENS: &[&str] = &["f64", "f32"];
 /// money scan reads, and the line names neither type word nor a literal. Each of these methods
 /// exists on `f32`/`f64` and on no integer type, so a call to one IS a float on the line, whatever
 /// its receiver is spelled as. (`as f64` / `as f32` is already the [`FLOAT_TOKENS`] word.)
+///
+/// THE LIST IS EVERY SUCH METHOD, NOT NINE OF THEM (audit XE HIGH 1): `x.ln() as u64` is a float as
+/// surely as `x.round() as u64`, and the nine-name list read it GREEN. A method integers share
+/// (`abs`, `signum`, `min`, `max`, `clamp`, `pow`, `rem_euclid`, `div_euclid`, `midpoint`) is not
+/// here, and neither is `log`, which a logger answers to.
 pub const FLOAT_ONLY_METHODS: &[&str] = &[
-    "round", "floor", "ceil", "trunc", "fract", "mul_add", "powf", "powi", "sqrt",
+    "round",
+    "floor",
+    "ceil",
+    "trunc",
+    "fract",
+    "mul_add",
+    "powf",
+    "powi",
+    "sqrt",
+    "cbrt",
+    "ln",
+    "ln_1p",
+    "log2",
+    "log10",
+    "exp",
+    "exp2",
+    "exp_m1",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "acosh",
+    "atanh",
+    "hypot",
+    "recip",
+    "to_degrees",
+    "to_radians",
+    "copysign",
+    "total_cmp",
+    "round_ties_even",
+    "is_nan",
+    "is_infinite",
+    "is_finite",
+    "is_normal",
+    "is_subnormal",
+    "is_sign_positive",
+    "is_sign_negative",
 ];
 
 /// THE NAMED FLOAT CARRIERS (audit xtask-E HIGH 2): items declared outside every money scan set that
@@ -1292,15 +1328,141 @@ fn scan_walked(
     f: &crate::ctx::SourceFile,
     walk: Walk,
     exempt: &IntakeSpans,
+    decls: &FloatDecls,
     offenders: &mut Vec<String>,
 ) {
+    push_float_findings(
+        &f.rel_str(),
+        &walked_float_lines(cx, f, walk, decls),
+        exempt,
+        offenders,
+    );
+}
+
+/// Every float one walked file's code names under `decls` (what `float_lines` reads), both halves
+/// memoised unless `walk` says the full walk: [`float_hits`] on the file ([`scan::file_reading`]),
+/// and [`declared_hits`] on the file AND the declarations it names ([`declared_reading`]).
+fn walked_float_lines(
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    decls: &FloatDecls,
+) -> Vec<(usize, String)> {
     static MEMO: scan::FileReadingMemo<Vec<(usize, String)>> = std::sync::OnceLock::new();
     let hits = if walk.memoised {
         scan::file_reading(&MEMO, cx, f, float_hits)
     } else {
         std::sync::Arc::new(float_hits(&f.text))
     };
-    push_float_findings(&f.rel_str(), &hits, exempt, offenders);
+    let mut all: Vec<(usize, String)> = hits.to_vec();
+    all.extend(declared_reading(cx, f, walk, decls).iter().cloned());
+    all
+}
+
+/// A per-file reading memoised on the file's ABSOLUTE PATH — compared whole, no hash — for a file
+/// the overlay does not touch, single-flight per key; a planted file, or any file
+/// when `walk` says the full walk, is read afresh and nothing is remembered. An unplanted file is
+/// read from disk (or the base layer), so its absolute path is a promise that its bytes are the
+/// same for the life of the process — the promise [`scan::file_reading`] and
+/// [`scan::cfg_test_module_files`] key their stable readings on.
+type StableMemo<T> = std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<
+            std::path::PathBuf,
+            std::sync::Arc<std::sync::OnceLock<std::sync::Arc<T>>>,
+        >,
+    >,
+>;
+
+fn stable_reading<T: Send + Sync + 'static>(
+    memo: &'static StableMemo<T>,
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    read: impl FnOnce(&str) -> T,
+) -> std::sync::Arc<T> {
+    let planted = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| *p == f.rel));
+    if !walk.memoised || planted {
+        return std::sync::Arc::new(read(&f.text));
+    }
+    let cell = memo
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(f.abs.clone())
+        .or_default()
+        .clone();
+    cell.get_or_init(|| std::sync::Arc::new(read(&f.text)))
+        .clone()
+}
+
+/// [`declared_hits`] of one walked file under `decls`, memoised on the file's absolute path AND
+/// the part of `decls` the file's code names ([`FloatDecls::named_in`]), both compared whole —
+/// single-flight per key; a planted file, or any file when `walk` says the full walk, is read
+/// afresh.
+///
+/// THE DEAREST HALF OF A GATE RUN. Every scanned money file was lexed again and every line searched
+/// for every derived carrier and float-field name on every run, although the derived set is a pure
+/// function of the crate sources — which a self-test case leaves as they were in all but the one or
+/// two files it plants. Read afresh on every case it made the battery's serial re-take 18 851 units
+/// against a budget of 9 000 (dev 85e59fc5fc). Keyed on the names the file holds rather than the
+/// whole set, a plant that declares a new float elsewhere re-reads only the files that name it.
+/// Same bytes and the same names, same reading: [`declared_floats`] only ever reports a name found
+/// at a word boundary of the blanked code, so a name the file's code never spells reads nothing.
+fn declared_reading(
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    decls: &FloatDecls,
+) -> std::sync::Arc<Vec<(usize, String)>> {
+    type Cell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Vec<(usize, String)>>>>;
+    type Memo = std::collections::HashMap<std::path::PathBuf, Vec<(FloatDecls, Cell)>>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    static WORDS: StableMemo<std::collections::BTreeSet<String>> = std::sync::OnceLock::new();
+    let planted = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| *p == f.rel));
+    if !walk.memoised || planted {
+        return std::sync::Arc::new(declared_hits(&f.text, decls));
+    }
+    let named = decls.named_in(&stable_reading(&WORDS, cx, f, walk, code_words));
+    let cell: Cell = {
+        let mut memo = MEMO
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = memo.entry(f.abs.clone()).or_default();
+        if let Some(at) = held.iter().position(|(d, _)| *d == named) {
+            std::sync::Arc::clone(&held[at].1)
+        } else {
+            let cell = Cell::default();
+            held.push((named.clone(), std::sync::Arc::clone(&cell)));
+            cell
+        }
+    };
+    cell.get_or_init(|| std::sync::Arc::new(declared_hits(&f.text, &named)))
+        .clone()
+}
+
+/// Every identifier word of `text`'s code — each maximal run of `[A-Za-z0-9_]` in the lines
+/// [`declared_hits`] reads (comments and literals blanked the same way).
+fn code_words(text: &str) -> std::collections::BTreeSet<String> {
+    let mut lex = scan::LexState::default();
+    let mut out = std::collections::BTreeSet::new();
+    for raw in text.lines() {
+        let blanked = scan::blank_code(raw, &mut lex);
+        for word in blanked
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|w| !w.is_empty())
+        {
+            if !out.contains(word) {
+                out.insert(word.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Every float on every line of `text`, as `(1-based line, token)`, in the order a line's findings
@@ -1328,6 +1490,237 @@ fn float_hits(text: &str) -> Vec<(usize, String)> {
         }
         for carried in float_carriers(&blanked) {
             out.push((line, carried));
+        }
+    }
+    out
+}
+
+/// Every float a file's code names, as `(1-based line, token)`: [`float_hits`], and — through
+/// `decls` — a call of an item the tree declares as returning a float, or a read of a field it
+/// declares as one ([`declared_hits`]).
+#[cfg(test)]
+fn float_lines(text: &str, decls: &FloatDecls) -> Vec<(usize, String)> {
+    let mut out = float_hits(text);
+    out.extend(declared_hits(text, decls));
+    out
+}
+
+/// The floats a file reaches through the tree's declarations ([`declared_floats`]), per line.
+fn declared_hits(text: &str, decls: &FloatDecls) -> Vec<(usize, String)> {
+    let mut lex = scan::LexState::default();
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let blanked = scan::blank_code(raw, &mut lex);
+        for declared in declared_floats(&blanked, decls) {
+            out.push((i + 1, declared));
+        }
+    }
+    out
+}
+
+/// WHAT THE TREE DECLARES AS A FLOAT (audit XE HIGH 1), derived from every production file under
+/// `crates/*/src` rather than typed: the fn names whose EVERY declaration returns a float
+/// (`rate_headroom`, `-> Option<f64>`), and the field names whose every declaration is float-typed
+/// (`cost_per_mtok: f64`). A float reaches a money line through either with no float on the line
+/// itself; a name some declaration gives a non-float type is no evidence and is left out, so
+/// `get` and `input` are not carriers because one of their declarations is.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct FloatDecls {
+    carriers: std::collections::BTreeSet<String>,
+    fields: std::collections::BTreeSet<String>,
+}
+
+/// One file's declarations, as `(fn name, returns a float)` and `(field name, is a float)`.
+type FileDecls = (Vec<(String, bool)>, Vec<(String, bool)>);
+
+/// Derive [`FloatDecls`] over `files` (production files, test scope already removed), each file's
+/// declarations memoised unless `walk` says the full walk ([`file_decls`]).
+fn float_decls(cx: &Ctx, files: &[crate::ctx::SourceFile], walk: Walk) -> FloatDecls {
+    let mut fns: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    let mut fields: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    for f in files {
+        let decls = file_decls(cx, f, walk);
+        for (name, float) in &decls.0 {
+            let all = fns.entry(name.clone()).or_insert(true);
+            *all = *all && *float;
+        }
+        for (name, float) in &decls.1 {
+            let all = fields.entry(name.clone()).or_insert(true);
+            *all = *all && *float;
+        }
+    }
+    FloatDecls {
+        carriers: fns
+            .into_iter()
+            .filter(|(n, all)| *all && !FLOAT_CARRIERS.contains(&n.as_str()))
+            .map(|(n, _)| n)
+            .collect(),
+        fields: fields
+            .into_iter()
+            .filter(|(_, all)| *all)
+            .map(|(n, _)| n)
+            .collect(),
+    }
+}
+
+/// One file's fn and field declarations — MEMOISED on the file ([`stable_reading`]), because every
+/// gate run (and every self-test case is one) reads the whole crate-source population. It was keyed
+/// on a 64-bit hash of the bytes, which hashed the whole population again on every case and could
+/// answer one file's declarations for another's on a collision; the path is compared whole.
+fn file_decls(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<FileDecls> {
+    static MEMO: StableMemo<FileDecls> = std::sync::OnceLock::new();
+    stable_reading(&MEMO, cx, f, walk, read_file_decls)
+}
+
+impl FloatDecls {
+    /// The part of this set `words` (a file's [`code_words`]) holds. A name that is not one word
+    /// could never be split out of the code, so it is always kept.
+    fn named_in(&self, words: &std::collections::BTreeSet<String>) -> FloatDecls {
+        let one_word = |n: &str| n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        let pick = |set: &std::collections::BTreeSet<String>| {
+            let mut out: std::collections::BTreeSet<String> = words
+                .iter()
+                .filter(|w| set.contains(w.as_str()))
+                .cloned()
+                .collect();
+            out.extend(set.iter().filter(|n| !one_word(n)).cloned());
+            out
+        };
+        FloatDecls {
+            carriers: pick(&self.carriers),
+            fields: pick(&self.fields),
+        }
+    }
+}
+
+/// The reading [`file_decls`] remembers: every `fn <name>` with its declared return type judged,
+/// and every named field of every braced `struct` with its type judged.
+fn read_file_decls(text: &str) -> FileDecls {
+    let mut st = scan::LexState::default();
+    let code: String = text
+        .lines()
+        .map(|l| scan::blank_code(l, &mut st))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let is_float = |ty: &str| FLOAT_TOKENS.iter().any(|t| word_hit(ty, t));
+    let mut fns = Vec::new();
+    for at in word_positions(&code, "fn") {
+        let rest = &code[at + 2..];
+        let name: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // The header runs to the `{` or `;` at paren depth zero; the return type follows the `->`
+        // after its last `)`.
+        let mut depth = 0i32;
+        let mut stop = rest.len();
+        for (k, c) in rest.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '{' | ';' if depth <= 0 => {
+                    stop = k;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let header = &rest[..stop];
+        let returns = header
+            .rfind(')')
+            .and_then(|close| header[close..].find("->").map(|a| &header[close + a + 2..]))
+            .map(|r| r.split(" where ").next().unwrap_or(r))
+            .unwrap_or("");
+        fns.push((name, is_float(returns)));
+    }
+    let mut fields = Vec::new();
+    for (_, body) in struct_bodies(text) {
+        let Some(open) = body.find('{') else {
+            continue;
+        };
+        let inner = body[open + 1..].trim_end().trim_end_matches('}');
+        let (mut depth, mut from) = (0i32, 0usize);
+        let mut parts = Vec::new();
+        for (k, c) in inner.char_indices() {
+            match c {
+                '<' | '(' | '[' | '{' => depth += 1,
+                '>' | ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(&inner[from..k]);
+                    from = k + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&inner[from..]);
+        for part in parts {
+            let mut decl = part.trim();
+            // Attributes go first: `#[serde(default)] pub x: f64`.
+            while decl.starts_with("#[") {
+                let Some(close) = balanced(decl.as_bytes(), 1, b'[', b']') else {
+                    break;
+                };
+                decl = decl[close..].trim_start();
+            }
+            let decl = decl
+                .strip_prefix("pub(")
+                .and_then(|r| r.split_once(')').map(|(_, a)| a.trim_start()))
+                .or_else(|| decl.strip_prefix("pub "))
+                .unwrap_or(decl);
+            let Some((name, ty)) = decl.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            if ty.starts_with(':')
+                || name.is_empty()
+                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || name.starts_with(|c: char| c.is_ascii_digit())
+            {
+                continue;
+            }
+            fields.push((name.to_string(), is_float(ty)));
+        }
+    }
+    (fns, fields)
+}
+
+/// A float the line reaches through the tree's declarations ([`FloatDecls`]): a call of a derived
+/// carrier (`rate_headroom(…)`, reported `rate_headroom()`) and a read of a derived float field
+/// (`c.cost_per_mtok`, reported `.cost_per_mtok`). A `fn` declaring the name is not a call of it.
+fn declared_floats(blanked: &str, decls: &FloatDecls) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in &decls.carriers {
+        for at in word_positions(blanked, name) {
+            let before = blanked[..at].trim_end();
+            if before.ends_with("fn")
+                && !before[..before.len() - 2]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let after = blanked[at + name.len()..].trim_start();
+            if after.starts_with('(') || after.starts_with("::<") {
+                out.push(format!("{name}()"));
+            }
+        }
+    }
+    for name in &decls.fields {
+        for at in word_positions(blanked, name) {
+            let before = blanked[..at].trim_end();
+            if !before.ends_with('.') || before.ends_with("..") {
+                continue;
+            }
+            let after = blanked[at + name.len()..].trim_start();
+            if after.starts_with('(') || after.starts_with("::") || after.starts_with('!') {
+                continue;
+            }
+            out.push(format!(".{name}"));
         }
     }
     out
@@ -1756,28 +2149,60 @@ fn read_args(bytes: &[u8], text: &str, mut i: usize) -> Option<(String, usize)> 
 /// substitutes it: `unwrap_or_default()`, `unwrap_or(Z)`, `unwrap_or_else(Z)`, `map_or(Z, f)`,
 /// `map_or_else(Z, f)`, `if let Some(n) = <read> { … } else { Z }` and
 /// `match <read> { … None => Z }`.
+///
+/// THE DEFAULT IS JUDGED WHEREVER IN THE CHAIN IT SITS (audit XE HIGH 3), not only as the first
+/// call after the accessor: a narrowing `and_then(|n| u32::try_from(n).ok())`, a `map`, a `filter`
+/// between the read and its zero still record "no work happened" for a count that will not read.
+/// Each [`PASS_THROUGH`] combinator keeps the read's `None` a `None`, so it is stepped over.
 fn zero_default_after(flat: &Flat, start: usize, i: usize) -> Option<usize> {
     let bytes = flat.text.as_bytes();
-    let next = skip_call(bytes, &flat.text, i)?;
-    if bytes.get(next) == Some(&b'{') {
-        return if_let_else_zero(flat, start, next).or_else(|| match_none_zero(flat, start, next));
-    }
-    let dot = skip_to_dot(bytes, &flat.text, i)?;
-    let (name, after) = read_ident(bytes, &flat.text, dot);
-    match name.as_str() {
-        "unwrap_or_default" => read_args(bytes, &flat.text, after).map(|(_, end)| end),
-        "unwrap_or" | "unwrap_or_else" => {
-            let (arg, end) = read_args(bytes, &flat.text, after)?;
-            is_zero_value(&arg).then_some(end)
+    let mut i = i;
+    for _ in 0..PASS_THROUGH_DEPTH {
+        let next = skip_call(bytes, &flat.text, i)?;
+        if bytes.get(next) == Some(&b'{') {
+            return if_let_else_zero(flat, start, next)
+                .or_else(|| match_none_zero(flat, start, next));
         }
-        "map_or" | "map_or_else" => {
-            let open = flat.text[after..].find('(')? + after;
-            let end = balanced(bytes, open, b'(', b')')?;
-            is_zero_value(first_arg(&flat.text[open + 1..end - 1])).then_some(end)
+        let dot = skip_to_dot(bytes, &flat.text, i)?;
+        let (name, after) = read_ident(bytes, &flat.text, dot);
+        match name.as_str() {
+            "unwrap_or_default" => return read_args(bytes, &flat.text, after).map(|(_, end)| end),
+            "unwrap_or" | "unwrap_or_else" => {
+                let (arg, end) = read_args(bytes, &flat.text, after)?;
+                return is_zero_value(&arg).then_some(end);
+            }
+            "map_or" | "map_or_else" => {
+                let open = flat.text[after..].find('(')? + after;
+                let end = balanced(bytes, open, b'(', b')')?;
+                return is_zero_value(first_arg(&flat.text[open + 1..end - 1])).then_some(end);
+            }
+            step if PASS_THROUGH.contains(&step) => i = after,
+            _ => return None,
         }
-        _ => None,
     }
+    None
 }
+
+/// The combinators that sit between a read and its default without turning a missing value into a
+/// present one: each hands a `None` (or an `Err`) on as one, so a zero default after them is the
+/// read's zero default.
+const PASS_THROUGH: &[&str] = &[
+    "and_then",
+    "map",
+    "filter",
+    "inspect",
+    "copied",
+    "cloned",
+    "flatten",
+    "as_ref",
+    "ok",
+    "ok_or",
+    "ok_or_else",
+    "map_err",
+];
+
+/// How many links of a chain [`zero_default_after`] walks before it stops looking.
+const PASS_THROUGH_DEPTH: usize = 8;
 
 /// `match <read> { … None => Z, … }` (or `_ => Z`) with `Z` zero (audit xtask-E HIGH 4): the `{` at
 /// `body` opens the `match` body, and the read starting at `start` must be its scrutinee (no `{`,
@@ -2318,6 +2743,8 @@ impl NoFloatMoneyGate {
         float_scan_problems.extend(crate_src_problems);
         let crate_src = production_only(cx, crate_src);
         let money_typed = money_typed_files(cx, &crate_src, walk);
+        // WHAT THE TREE DECLARES AS A FLOAT, over the same population (audit XE HIGH 1).
+        let decls = float_decls(cx, &crate_src, walk);
         if money_typed.len() < MONEY_TYPED_FLOOR {
             float_scan_problems.push(format!(
                 "the derived money population holds {} production file(s) naming a money type, \
@@ -2404,12 +2831,32 @@ impl NoFloatMoneyGate {
                 ));
                 continue;
             }
+            // THE ROW'S PREMISE IS EVALUATED (audit XE HIGH 4, Law 10): an intake is where a
+            // configured decimal is converted, so its span holds a float. A span that holds none
+            // converts nothing, and exempting it only hides the float somebody plants there next.
+            let intake_file = crate::ctx::SourceFile {
+                rel: std::path::PathBuf::from(intake.file),
+                abs: cx.abs(intake.file),
+                text,
+            };
+            let holds_float = walked_float_lines(cx, &intake_file, walk, &decls)
+                .iter()
+                .any(|(line, _)| spans.iter().any(|(a, z)| line >= a && line <= z));
+            if !holds_float {
+                float_scan_problems.push(format!(
+                    "{}: the money-intake row `{}` holds NO float — its span converts no configured \
+                     decimal, so the row's premise is false and it exempts nothing. Strike the row; \
+                     the item is scanned like the rest of its file",
+                    intake.file, intake.boundary
+                ));
+                continue;
+            }
             intake_spans
                 .entry(intake.file.to_string())
                 .or_default()
                 .extend(spans);
             if !intake_texts.iter().any(|(f, _)| *f == intake.file) {
-                intake_texts.push((intake.file, text));
+                intake_texts.push((intake.file, intake_file.text));
             }
         }
 
@@ -2483,16 +2930,16 @@ impl NoFloatMoneyGate {
         }
 
         for f in &ledger_files {
-            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &decls, &mut offenders);
         }
         for f in &governance_files {
-            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &decls, &mut offenders);
         }
         for f in &whole_crate_files {
-            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &decls, &mut offenders);
         }
         for f in &named_files {
-            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &decls, &mut offenders);
         }
         offenders.sort();
         offenders.dedup();
@@ -2746,6 +3193,123 @@ impl Gate for NoFloatMoneyGate {
             &["rate_apply.rs", "`blended_per_mtok`", "`.round()`"],
         ));
 
+        // ── AUDIT XE HIGH 1: A FLOAT REACHED THROUGH WHAT THE TREE DECLARES, NOT WHAT THE LINE SPELLS ─
+        //
+        // `rate_headroom` returns `Option<f64>`; called from `try_admit` and cast with `as`, the line
+        // names no float type, no literal and no listed method. The carriers are derived from every
+        // float-returning item, so the call is a float on the money path.
+        match body_plant(
+            cx,
+            NOT_MONEY_RATIO.file,
+            "try_admit",
+            "let _planted_headroom = self.rate_headroom(cost, key, Some(pool), now).map_or(0, |h| h as u64);",
+        ) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a float-returning call cast with `as` inside `try_admit` is flagged (derived carriers)",
+                &[ROW_NO_FLOAT],
+                ov,
+                &["governance/state.rs", "`rate_headroom()`"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside `fn try_admit` ({e})"
+            )),
+        }
+        // A float-only method the old nine-name list did not hold, and a read of a field declared
+        // `f64` in every struct that declares it: neither spells a float on the line.
+        report.push(plant(
+            cx,
+            self,
+            "a float-only method outside the old list and a float field read are flagged",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/rate_apply.rs",
+            Edit::Append(
+                "\npub fn planted_carried(c: &CandidateStatic, x: Rate) -> u64 {\n    x.get().ln() as u64 + c.cost_per_mtok as u64\n}\n"
+                    .to_string(),
+            ),
+            &["rate_apply.rs", "`.ln()`", "`.cost_per_mtok`"],
+        ));
+
+        // ── AUDIT XE HIGH 2: THE CRASH-RECOVERY SETTLEMENT WRITER ────────────────────────────────
+        //
+        // `recovery.rs` posts the money figure for every hold a dead node left open, through the
+        // money capability types (`Hold`, `Posted`, `WriteMoney`), and named none of the ledger-side
+        // money types — so it was in no float scan at all.
+        report.push(plant(
+            cx,
+            self,
+            "a float in the crash-recovery settlement writer (recovery.rs) is flagged",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/recovery.rs",
+            Edit::Append(format!(
+                "\npub fn planted_recovered(amount: u64) -> u64 {{ (amount as {float_ty} * 1.5) as u64 }}\n"
+            )),
+            &["recovery.rs", &float_ty],
+        ));
+
+        // ── AUDIT XE HIGH 4: AN INTAKE ROW'S PREMISE IS EVALUATED ────────────────────────────────
+        //
+        // `card_from_config` and `from_config` build every deployment's card from integer cells; a
+        // float written into either is a float on the one path the rule was written for, and it
+        // read green under a row whose span held no float.
+        for (file, boundary, where_) in [
+            (
+                "crates/busbar/src/root/kernel.rs",
+                "card_from_config",
+                "root/kernel.rs",
+            ),
+            (CARD_BUILD_FILE, "from_config", "cost/rate.rs"),
+        ] {
+            match body_plant(
+                cx,
+                file,
+                boundary,
+                &format!("let _planted_card: {float_ty} = 27.1;"),
+            ) {
+                Ok(ov) => report.push(prove_red(
+                    cx,
+                    self,
+                    format!("a float inside the card build `{boundary}` is flagged (no stale exemption)"),
+                    &[ROW_NO_FLOAT],
+                    ov,
+                    &[where_, &float_ty],
+                )),
+                Err(e) => report.note_infra_failure(format!(
+                    "no-float-money selftest: could not plant inside `fn {boundary}` ({e})"
+                )),
+            }
+        }
+        // AND A ROW WHOSE SPAN NO LONGER HOLDS A FLOAT IS REFUSED: `from_micro_rates` with its one
+        // decimal parameter turned integer exempts integer code, so its row's premise is false.
+        match cx.read(CARD_BUILD_FILE) {
+            Ok(text) => {
+                let from = format!("Item = (LaneClass, {float_ty})>");
+                if text.contains(&from) {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        CARD_BUILD_FILE,
+                        text.replacen(&from, "Item = (LaneClass, u64)>", 1),
+                    );
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a money-intake row whose span holds no float is refused",
+                        &[ROW_SCAN_FLOOR, ROW_NO_FLOAT],
+                        ov,
+                        &["from_micro_rates", "holds NO float"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {CARD_BUILD_FILE} no longer spells `{from}`"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read {CARD_BUILD_FILE} ({e})"
+            )),
+        }
+
         // AUDIT XTASK-E HIGH 3: THE MONEY FILES NOBODY HAD TYPED. The settlement writer, the accrual
         // meter and the operator's rate amend were in no float scan set, so a float in what a unit's
         // end posts, in the accrual total or in a rate correction could not go red. They are in the
@@ -2978,38 +3542,38 @@ impl Gate for NoFloatMoneyGate {
             )),
         }
 
-        // ── THE SECOND MONEY-INTAKE BOUNDARY (`card_from_config`) ─────────────────────────────
+        // ── THE CARD RELAY'S FILE AND THE INTAKE BOUNDARIES ──────────────────────────────────────
         //
         // Four cases, because "the boundary is in the scan set" is four claims and only one of them
         // is "a float here goes red": the file is scanned, the boundary's own body is not, the
         // boundary has to still be where the table says, and what comes out of it has to be an
-        // integer.
-        let second = intake_row("card_from_config");
+        // integer. The card relay (`root/kernel.rs`) was the second intake until its row was struck
+        // as holding no float (audit XE HIGH 4); its file is scanned whole, by name.
+        let second = intake_row("from_micro_rates");
 
-        // 1. A FLOAT IN THE INTAKE'S FILE BUT OUTSIDE ITS BOUNDARY IS FLAGGED. THE HOLE: this file
-        //    was in no scan set at all, so no amount of float in the repricer that appends the card
-        //    to the history, or in the epoch read that dates a price against it, could go red.
+        // 1. A FLOAT IN THE CARD RELAY'S FILE IS FLAGGED. THE HOLE: this file was in no scan set at
+        //    all, so no amount of float in the repricer that appends the card to the history, or in
+        //    the epoch read that dates a price against it, could go red.
         report.push(plant(
             cx,
             self,
-            "a float in the second intake's file, outside its boundary, is flagged",
+            "a float in the card relay's file (root/kernel.rs) is flagged",
             &[ROW_NO_FLOAT],
-            second.file,
+            ROOT_CARD_RELAY,
             Edit::Append(format!(
                 "\npub fn planted_reprice(x: {float_ty}) -> {float_ty} {{ x * 1.5 }}\n"
             )),
             &[&float_ty, "root/kernel.rs"],
         ));
 
-        // 2. AND A FLOAT INSIDE THE BOUNDARY'S OWN BODY STAYS GREEN. The conversion is where a
+        // 2. AND A FLOAT INSIDE AN INTAKE BOUNDARY'S OWN BODY STAYS GREEN. The conversion is where a
         //    configured decimal is allowed to be; a gate that flagged it would push the conversion
         //    out of the one place #44 puts it, which is the failure `cost.rs` is on the named list
         //    for. Planted INSIDE the measured span rather than appended, so the two cases differ in
         //    exactly the thing under test: where in the file the float is.
         match intake_body_plant(cx, second, &format!("let _planted_micro: {float_ty} = 27.1; let _planted_nanos = (_planted_micro * 1000.0) as u64;")) {
             Ok(ov) => report.push(Case {
-                name: "a float INSIDE the second intake's boundary stays green (the conversion)"
-                    .to_string(),
+                name: "a float INSIDE an intake boundary stays green (the conversion)".to_string(),
                 covers: vec![ROW_NO_FLOAT.to_string()],
                 expected: crate::gates::Expect::Green,
                 got: verdict_expect(self, &cx.with_overlay(ov)),
@@ -3342,6 +3906,21 @@ impl Gate for NoFloatMoneyGate {
             (
                 "an if-let with a zero else",
                 "if let Some(n) = v.as_u64() { n } else { 0 }",
+            ),
+            // AUDIT XE HIGH 3: A ZERO DEFAULT REACHED THROUGH AN INTERMEDIATE COMBINATOR. The
+            // default was judged only when it was the FIRST call after the accessor, so a narrowing
+            // `and_then`/`map` in between read GREEN.
+            (
+                "a narrowing and_then before the zero default",
+                "v.as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0) as u64",
+            ),
+            (
+                "a map before the zero default",
+                "v.as_u64().map(|n| n as u32).unwrap_or(0) as u64",
+            ),
+            (
+                "a path-form read through a filter and a map_or zero",
+                "v.get(\"tokens\").and_then(Json::as_u64).filter(|n| *n > 0).map_or(0, |n| n)",
             ),
             // AUDIT XTASK-E HIGH 4: A `match` WHOSE `None` (OR WILDCARD) ARM IS ZERO. A `{` after the
             // read was judged only as an `if let` body, so each of these was GREEN.
@@ -3680,6 +4259,10 @@ impl Gate for NoFloatMoneyGate {
 /// rows of [`MONEY_INTAKE`], and nothing else in it is exempt.
 const CARD_BUILD_FILE: &str = "crates/busbar-kernel-ledger/src/cost/rate.rs";
 
+/// The composition root's card relay (`card_from_config`), scanned whole by name
+/// ([`BINARY_MONEY_FILES`]) since its intake row was struck as holding no float.
+const ROOT_CARD_RELAY: &str = "crates/busbar/src/root/kernel.rs";
+
 /// The [`MONEY_INTAKE`] row naming `boundary`. Panics on a name the table does not hold: a
 /// selftest that plants against a row which is not there is a broken selftest, not a skipped case.
 fn intake_row(boundary: &str) -> &'static MoneyIntake {
@@ -3889,6 +4472,81 @@ mod tests {
         }
     }
 
+    /// THE MEMOISED DECLARATION READINGS ARE THE FRESH ONES. The derived declarations taken through
+    /// the per-file memo equal the ones read afresh; every scanned money file's declared hits, asked
+    /// cold and again warm, equal [`declared_hits`] read afresh; a set that differs only in a name
+    /// the file never spells is answered from the same reading; and a set that differs in names the
+    /// file does spell is a reading of its own: the card-build file read under every fn and field it
+    /// declares, called a float, is a different reading, and equals the fresh one under that set.
+    #[test]
+    fn the_memoised_declaration_readings_are_the_fresh_readings() {
+        let cx = cx();
+        let (files, problems) = crate_src_files(&cx);
+        assert!(problems.is_empty(), "{problems:?}");
+        let files = production_only(&cx, files);
+        let fresh = float_decls(&cx, &files, Walk::FULL);
+        let memoised = float_decls(&cx, &files, Walk::MEMOISED);
+        let warm = float_decls(&cx, &files, Walk::MEMOISED);
+        assert_eq!(
+            memoised, fresh,
+            "the memoised declarations are not the fresh ones"
+        );
+        assert_eq!(warm, fresh, "the warm declarations are not the fresh ones");
+        assert!(
+            !fresh.carriers.is_empty() && !fresh.fields.is_empty(),
+            "the derived declarations read empty: {fresh:?}"
+        );
+        let mut elsewhere = fresh.clone();
+        elsewhere
+            .carriers
+            .insert("zz_planted_carrier_no_file_spells".to_string());
+
+        let scanned: Vec<&crate::ctx::SourceFile> = files
+            .iter()
+            .filter(|f| money_reading(&cx, f, Walk::MEMOISED).names)
+            .collect();
+        assert!(
+            scanned.len() >= MONEY_TYPED_FLOOR,
+            "{} files",
+            scanned.len()
+        );
+        for f in &scanned {
+            let cold = declared_reading(&cx, f, Walk::MEMOISED, &fresh);
+            let warm = declared_reading(&cx, f, Walk::MEMOISED, &fresh);
+            let other = declared_reading(&cx, f, Walk::MEMOISED, &elsewhere);
+            assert!(
+                std::sync::Arc::ptr_eq(&cold, &warm) && std::sync::Arc::ptr_eq(&cold, &other),
+                "{}: not memoised",
+                f.rel_str()
+            );
+            assert_eq!(
+                *cold,
+                declared_hits(&f.text, &fresh),
+                "{}: the memoised declared hits are not the fresh ones",
+                f.rel_str()
+            );
+            assert_eq!(*other, declared_hits(&f.text, &elsewhere));
+        }
+
+        let card = files
+            .iter()
+            .find(|f| f.rel_str() == CARD_BUILD_FILE)
+            .expect("the card-build file is a production crate source");
+        let (fns, fields) = read_file_decls(&card.text);
+        let wide = FloatDecls {
+            carriers: fns.iter().map(|(n, _)| n.clone()).collect(),
+            fields: fields.iter().map(|(n, _)| n.clone()).collect(),
+        };
+        let under_real = declared_reading(&cx, card, Walk::MEMOISED, &fresh);
+        let under_wide = declared_reading(&cx, card, Walk::MEMOISED, &wide);
+        assert_eq!(*under_wide, declared_hits(&card.text, &wide));
+        assert_eq!(*under_real, declared_hits(&card.text, &fresh));
+        assert_ne!(
+            under_wide, under_real,
+            "the wider set reads more of the card-build file, so the set is an input of the memo"
+        );
+    }
+
     use super::*;
 
     fn cx() -> Ctx {
@@ -3955,42 +4613,91 @@ mod tests {
         assert!(b.last_line > b.first_line, "measured backwards");
     }
 
-    /// THE EXEMPTION IS A FUNCTION, NOT A FILE. The second intake's file is 1 300 lines of
-    /// composition root; if the span it exempts crept over the repricer that appends the built card
-    /// to the history, the hole would be closed on paper and open in fact.
+    /// THE CARD RELAY IS NO INTAKE AND ITS FILE IS SCANNED WHOLE (audit XE HIGH 4). Its row was
+    /// struck as holding no float; the file — the relay, the repricer that appends the built card to
+    /// the history and the epoch read that dates a price against it — is a named money file with no
+    /// exempt span in it at all.
     #[test]
-    fn the_exempt_span_is_the_boundary_and_not_the_file() {
-        let cx = cx();
-        let intake = intake_row("card_from_config");
-        let text = cx.read(intake.file).expect("the second intake's file");
-        let b = find_boundary(&text, intake.boundary).expect("the second intake's boundary");
-        let lines: Vec<&str> = text.lines().collect();
-
+    fn the_card_relay_is_scanned_whole_with_no_exempt_span() {
         assert!(
-            lines[b.first_line - 1].contains(&format!("fn {}", intake.boundary)),
-            "the span starts on `{}`",
-            lines[b.first_line - 1]
+            BINARY_MONEY_FILES.contains(&ROOT_CARD_RELAY),
+            "{ROOT_CARD_RELAY} is not a named money file"
         );
         assert!(
-            b.last_line < lines.len(),
-            "the span reaches the end of a {}-line file",
-            lines.len()
+            MONEY_INTAKE.iter().all(|i| i.file != ROOT_CARD_RELAY),
+            "{ROOT_CARD_RELAY} carries an intake row again"
         );
-        // The call path around it — the repricer that appends the card, and the epoch read that
-        // dates a price against it — is OUTSIDE the span and therefore scanned.
-        for needle in ["fn rates_applied", "fn effective_from_at"] {
-            let at = lines
-                .iter()
-                .position(|l| l.contains(needle))
-                .map(|i| i + 1)
-                .unwrap_or_else(|| panic!("{needle} is not in {}", intake.file));
+        let text = cx().read(ROOT_CARD_RELAY).expect("the card relay's file");
+        for needle in [
+            "fn card_from_config",
+            "fn rates_applied",
+            "fn effective_from_at",
+        ] {
             assert!(
-                at < b.first_line || at > b.last_line,
-                "{needle} (line {at}) sits inside the exempt span {}..={}",
-                b.first_line,
-                b.last_line
+                text.contains(needle),
+                "{needle} is not in {ROOT_CARD_RELAY}"
             );
         }
+    }
+
+    /// EVERY INTAKE ROW'S SPAN HOLDS A FLOAT: the premise a row states is true of the tree.
+    #[test]
+    fn every_intake_row_span_holds_a_float() {
+        let cx = cx();
+        for intake in MONEY_INTAKE {
+            let text = cx
+                .read(intake.file)
+                .unwrap_or_else(|e| panic!("{}: {e}", intake.file));
+            let spans = match intake.item {
+                IntakeItem::ConversionFn => find_boundary(&text, intake.boundary)
+                    .map(|b| vec![(b.first_line, b.last_line)])
+                    .unwrap_or_default(),
+                IntakeItem::DecimalRecord => record_spans(&text, intake.boundary),
+            };
+            assert!(
+                float_lines(&text, &FloatDecls::default())
+                    .iter()
+                    .any(|(line, _)| spans.iter().any(|(a, z)| line >= a && line <= z)),
+                "{}: `{}` holds no float",
+                intake.file,
+                intake.boundary
+            );
+        }
+    }
+
+    /// A CARRIER IS A NAME EVERY DECLARATION OF WHICH RETURNS A FLOAT, and a float field is one
+    /// every declaration of which is float-typed: one integer declaration of the name is no
+    /// evidence, so `get` is never a carrier.
+    #[test]
+    fn a_name_is_a_float_carrier_only_when_every_declaration_is_a_float() {
+        let file = |text: &str| crate::ctx::SourceFile {
+            rel: "m.rs".into(),
+            abs: "/m.rs".into(),
+            text: text.to_string(),
+        };
+        let decls = float_decls(
+            &cx(),
+            &[
+                file(
+                    "fn ratio(&self) -> Option<f64> { None }\nfn get(&self) -> f64 { 0.0 }\n\
+                  struct A { pub cost_per_mtok: f64, pub input: f64 }\n",
+                ),
+                file("fn get(&self) -> u64 { 0 }\nstruct B { input: Option<u64> }\n"),
+            ],
+            Walk::FULL,
+        );
+        assert!(decls.carriers.contains("ratio"), "{decls:?}");
+        assert!(!decls.carriers.contains("get"), "{decls:?}");
+        assert!(decls.fields.contains("cost_per_mtok"), "{decls:?}");
+        assert!(!decls.fields.contains("input"), "{decls:?}");
+        let found = declared_floats(
+            "    let x = self.ratio().unwrap_or(0.0) as u64 + c.cost_per_mtok as u64 + c.get();",
+            &decls,
+        );
+        assert_eq!(
+            found,
+            vec!["ratio()".to_string(), ".cost_per_mtok".to_string()]
+        );
     }
 
     /// A BRACE IN A MESSAGE IS NOT A BODY. The span is measured over blanked literals, because a

@@ -28,12 +28,6 @@ item = "openapi (openapi-schema)"
 count = 1
 
 [[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
-item = "ranking (hooks-ranking)"
-count = 1
-
-[[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
@@ -170,18 +164,6 @@ rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/fixtures.rs"
 item = "http"
 count = 2
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "http"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "https"
-count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
