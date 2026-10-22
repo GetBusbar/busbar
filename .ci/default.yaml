@@ -299,6 +299,15 @@ checks:
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
     # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
     run: |
+      # Check selection (PRs; dev's move into qa runs its own copy whole): the gated suites build
+      # and read nothing under xtask/, qa/, docs/ or .github/, nor a top-level *.md, so a change
+      # touching only those cannot change this result. Anything else, the target's own run (an
+      # empty diff) or a diff that cannot be read runs it whole.
+      if changed=$(git diff --name-only "$MODERNCI_TO_SHA" HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -Ev '^(xtask|qa|docs|\.github)/|^[^/]*\.md$' >/dev/null; then
+        echo "test-gated: this change touches only xtask/, qa/, docs/, .github/ or top-level *.md; nothing here builds or reads them"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
@@ -345,6 +354,15 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
+      # Check selection (PRs): the kernel and contract feature builds read nothing under xtask/,
+      # qa/, docs/ or .github/, nor a top-level *.md, so a change touching only those cannot
+      # change this result. Anything else, the target's own run (an empty diff) or a diff that
+      # cannot be read runs it whole.
+      if changed=$(git diff --name-only "$MODERNCI_TO_SHA" HEAD) && [ -n "$changed" ] &&
+        ! printf '%s\n' "$changed" | grep -Ev '^(xtask|qa|docs|\.github)/|^[^/]*\.md$' >/dev/null; then
+        echo "deletion-matrix: this change touches only xtask/, qa/, docs/, .github/ or top-level *.md; nothing here builds or reads them"
+        exit 0
+      fi
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
