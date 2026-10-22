@@ -9680,7 +9680,9 @@ mod pools_door_counts_and_routes {
             .await
             .expect("the request reaches its far end");
         let epoch_before = rig.app.store.probe_epoch_in("p", 0);
-        rig.app.store.record_success_in("p", 0);
+        rig.app
+            .store
+            .record_success_in("p", 0, busbar_kernel::store::now());
         rig.app.store.force_open_in("p", 0, 0);
         assert!(
             rig.app
@@ -9850,7 +9852,9 @@ mod pools_door_counts_and_routes {
             .store
             .record_transient_in("p", 0, "test", &cfg, None);
         for _ in 0..3 {
-            rig.app.store.record_success_in("p", 0);
+            rig.app
+                .store
+                .record_success_in("p", 0, busbar_kernel::store::now());
         }
         let _ = rig.chat().await;
         let bag = bag_of(&rig, "m0");

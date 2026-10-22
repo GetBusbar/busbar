@@ -10,14 +10,16 @@
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::plane::{
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_POOL,
+    class_of, reason_code, reason_of, RefusalClass, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_POOL,
 };
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::media::base64_encode;
+use busbar_kernel::plane_driver::refusal_status;
 use busbar_plane_streaming::claims::{HTTP_TRANSPORT, WS_TRANSPORT};
 use busbar_plane_streaming::door::{
-    refusal_body, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR, RIDES_LIVE_SOCKET,
-    RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
+    refusal_body, refusal_render, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR,
+    RIDES_LIVE_SOCKET, RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
 };
 use busbar_plane_streaming::driven::{
     mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, REALTIME_SOCKET_PATH, SESSION_OPEN_ACTION,
@@ -29,9 +31,9 @@ use serde_json::{json, Value};
 
 use crate::codec_legs::{caller_norms, far_norms, frame, usage_tokens, Dialect, Norm};
 use crate::door::{
-    arrive, attempt, drive, judge, judge_planted, open, piece, refusal, request, result, session,
-    Answer, Arrived, Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL,
-    PUBLIC, SESSION,
+    arrive, attempt, drive, judge, judge_planted, open, piece, refusal, refusal_for, request,
+    result, session, Answer, Arrived, Emission, Log, Opened, Piece, Rendered, Rig, Session,
+    CALLER_REF, MODEL, PUBLIC, SESSION,
 };
 
 // ── the frames the legs push ────────────────────────────────────────────────────────────────────
@@ -734,10 +736,43 @@ fn provider_dial(rig: &Rig, slice: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AdmitObs {
     rendered: Vec<(u16, Rendered)>,
+    policy: Vec<PolicyRefusal>,
     after: Vec<String>,
     drive: (Outcome, Vec<u64>),
     control: Answer,
 }
+
+/// One policy refusal as the composition answers it: the class, the reason the kernel refused for,
+/// the status the kernel's plane driver chose for it (the plane states no row of its own), and what
+/// the door rendered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PolicyRefusal {
+    class: RefusalClass,
+    reason: ReasonCode,
+    status: u16,
+    rendered: Rendered,
+}
+
+/// The refusal classes that refuse the caller's request rather than name a state or fault of the
+/// node (ARCHITECT ruling: a policy refusal is a refusal, not a server fault; the class docs in
+/// `busbar_contract::abi::plane::RefusalClass`).
+const POLICY_CLASSES: [RefusalClass; 9] = [
+    RefusalClass::Unreadable,
+    RefusalClass::Rejected,
+    RefusalClass::Unauthenticated,
+    RefusalClass::Forbidden,
+    RefusalClass::TooLarge,
+    RefusalClass::Throttled,
+    RefusalClass::Busy,
+    RefusalClass::QuotaExhausted,
+    RefusalClass::NotFound,
+];
+
+/// The words a policy refusal is rendered with.
+const POLICY_WORDS: &str = "the request was refused";
+
+/// The unit a policy refusal ends: one that never opened a session.
+const POLICY_UNIT: u64 = 62;
 
 const REFUSALS: [(u16, &str, &str); 3] = [
     (429, "the caller's budget is exhausted", "rate_limit_error"),
@@ -750,6 +785,23 @@ fn admit_script(p: &Plugin<Plane>) -> AdmitObs {
     let rendered = REFUSALS
         .iter()
         .map(|(status, words, _)| (*status, refusal(p, 60, 0, u32::from(*status), words)))
+        .collect();
+    // Every reason a plane can be handed, in every policy class: the status the kernel's plane
+    // driver chooses for it where the plane states no row (the streaming plane states none), and
+    // the door's rendering of that refusal.
+    let policy = ReasonCode::ALL
+        .iter()
+        .filter(|r| POLICY_CLASSES.contains(&class_of(**r)))
+        .filter(|r| reason_of(reason_code(**r)).is_some())
+        .map(|r| {
+            let status = refusal_status(*r);
+            PolicyRefusal {
+                class: class_of(*r),
+                reason: *r,
+                status: u16::try_from(status).unwrap_or(0),
+                rendered: refusal_for(p, POLICY_UNIT, 0, reason_code(*r), status, POLICY_WORDS),
+            }
+        })
         .collect();
     let far = piece(p, &session(60, 2, FROM_FAR_END, 0, &downlink(96)));
     let collect = piece(p, &session(60, 2, FROM_KERNEL, 0, &[]));
@@ -766,6 +818,7 @@ fn admit_script(p: &Plugin<Plane>) -> AdmitObs {
     let control = s.push(FROM_CALLER, 0, &uplink(100));
     AdmitObs {
         rendered,
+        policy,
         after,
         drive,
         control,
@@ -788,6 +841,33 @@ fn admit_check(o: &AdmitObs) -> Result<String, String> {
             return Err(format!("the kernel's {status} refusal rendered as {r:?}"));
         }
     }
+    for class in POLICY_CLASSES {
+        if !o.policy.iter().any(|r| r.class == class) {
+            return Err(format!("no policy refusal of class {class:?} was rendered"));
+        }
+    }
+    for r in &o.policy {
+        let want: Value = serde_json::from_slice(&refusal_render(
+            r.status,
+            reason_code(r.reason),
+            POLICY_WORDS,
+        ))
+        .unwrap_or(Value::Null);
+        let (kind, _) = error_of(&r.rendered);
+        if !(400..500).contains(&r.status)
+            || kind == "server_error"
+            || r.rendered.outcome != Outcome::Ready
+            || serde_json::from_str::<Value>(&r.rendered.body).ok() != Some(want)
+            || r.rendered.fields != [("content-type".to_string(), "application/json".to_string())]
+            || r.rendered.status != 0
+            || r.rendered.records != 0
+        {
+            return Err(format!(
+                "the policy refusal {:?} ({:?}) answered {} as {:?}",
+                r.reason, r.class, r.status, r.rendered
+            ));
+        }
+    }
     if o.after != ["far Refused emitted=0", "collect Refused emitted=0"] {
         return Err(format!(
             "a refused unit's stream was answered as though a session were open: {:?}",
@@ -808,7 +888,10 @@ fn admit_check(o: &AdmitObs) -> Result<String, String> {
     }
     Ok(
         "the kernel's refusal (budget 429, grant 403, credential 401) is rendered in the \
-         dialect's error envelope with the kernel's status kept and no record written; a refused \
+         dialect's error envelope with the kernel's status kept and no record written; every \
+         policy refusal (each reason of the unreadable, rejected, unauthenticated, forbidden, too \
+         large, throttled, busy, quota-exhausted and not-found classes) wears the kernel's 4xx and \
+         its refusal envelope, never `server_error`; a refused \
          unit opens no session and dials nothing (its stream's far piece and collection are \
          refused, drive names nothing), while an admitted control dials. Reading the caller's \
          chain dry and refusing before the hold is the kernel's admit step"
@@ -826,6 +909,12 @@ fn admit_refusal(rig: &Rig, slice: &str) -> bool {
             let mut planted = o.clone();
             planted.rendered[0].1.body =
                 String::from_utf8_lossy(&refusal_body(500, "x")).into_owned();
+            // A policy refusal collapsed into the node's 503 `server_error`.
+            if let Some(r) = planted.policy.first_mut() {
+                r.status = 503;
+                r.rendered.body =
+                    String::from_utf8_lossy(&refusal_body(503, POLICY_WORDS)).into_owned();
+            }
             planted
         },
     )

@@ -312,9 +312,10 @@ fn the_checkpoint_ring_holds_the_latest_1024_and_evicts_the_oldest_at_1025() {
     );
 }
 
-/// N SEALS HOLD NO COPY OF THE BOOK BEYOND ONE IN FLIGHT (Q128 kernel-ledger HIGH 1, ARCHITECT
-/// ruling A1): the node keeps one live book, the deltas not yet sealed, and at most one sealed
-/// snapshot while a seal is being made, however many seals it has made. RED before the ruling: the
+/// N SEALS HOLD NO COPY OF THE BOOK BEYOND ONE RESIDENT SEALED COPY (Q128 kernel-ledger HIGH 1,
+/// ARCHITECT ruling A1): the node keeps one live book, the deltas not yet sealed, and one resident
+/// sealed copy (the newest kept seal, which the retirement measures against), however many seals it
+/// has made. RED before the ruling: the
 /// ring kept a full copy of the book per seal, so fifty seals of an eight-balance book held four
 /// hundred balances.
 #[test]
@@ -338,8 +339,8 @@ fn n_seals_hold_no_copy_of_the_book_beyond_one_in_flight() {
     }
     assert!(
         durability.sealed_balances_held() <= book,
-        "fifty seals hold {} sealed balances beside a live book of {book}: at most one sealed \
-         snapshot may be held",
+        "fifty seals hold {} sealed balances beside a live book of {book}: one resident sealed \
+         copy at most",
         durability.sealed_balances_held()
     );
 }
