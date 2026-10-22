@@ -1704,3 +1704,81 @@ mod hook_orders {
         assert!(text.contains("longer than hook.order_cap"), "{text}");
     }
 }
+
+#[test]
+fn a_suite_names_its_door_by_function_or_by_macro_door_alike() {
+    // `conformance_suite! { door: plugin::door, .. }` and `{ door: plugin::MACRO_DOOR, .. }` run
+    // over the one door function (status rows 159 and 194: the second spelling is the one that
+    // compiles once #1469 lands, and it compiles here first).
+    let by_fn = crate::__conformance_door!(crate::plane_door_plugin::door);
+    let by_macro = crate::__conformance_door!(crate::plane_door_plugin::MACRO_DOOR);
+    let named = crate::plane_door_plugin::MACRO_DOOR.door_fn();
+    assert_eq!(by_fn as usize, by_macro as usize);
+    assert_eq!(by_macro as usize, named as usize);
+}
+
+#[test]
+fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike() {
+    use crate::dispatch::{rendering_of, rendering_of_macro, LinkedRow};
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    let by_fn = super::Subject::new(door, "plane_door_plugin", "{}");
+    let by_macro = super::Subject::of_macro(macro_door, "plane_door_plugin", "{}");
+    assert_eq!(by_fn.door as usize, by_macro.door as usize);
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { crate::dispatch::LoadedDoor::from_raw(door) };
+    let by_loaded = super::Subject::of_loaded(restated, "plane_door_plugin", "{}");
+    assert_eq!(by_fn.door as usize, by_loaded.door as usize);
+    let row = LinkedRow::of(door).expect("the door states its Statement");
+    let row_macro = LinkedRow::of_macro(macro_door).expect("the door states its Statement");
+    assert_eq!(row.statement, row_macro.statement);
+    assert_eq!(row.door as usize, row_macro.door as usize);
+    assert_eq!(
+        rendering_of(door).expect("renders"),
+        rendering_of_macro(macro_door).expect("renders")
+    );
+}
+
+#[test]
+fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
+    use crate::dispatch::{rendering_of, rendering_of_loaded, LinkedRow, LoadedDoor};
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    // A restated door (a hand-built one, in a plugin's own test) and a macro door's own.
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let by_restated = LinkedRow::of_loaded(restated).expect("the door states its Statement");
+    let by_macro = LinkedRow::of_loaded(LoadedDoor::from(macro_door)).expect("states");
+    let by_fn = LinkedRow::of(door).expect("states");
+    assert_eq!(by_restated.statement, by_fn.statement);
+    assert_eq!(by_macro.statement, by_fn.statement);
+    assert_eq!(by_restated.door as usize, by_fn.door as usize);
+    assert_eq!(
+        rendering_of_loaded(restated).expect("renders"),
+        rendering_of(door).expect("renders")
+    );
+    // A row's door is carried as given; `link` reads only its manifest (a kind the registry
+    // links), so any door the test holds stands in for the comparison.
+    let abi = busbar_contract::abi::secret::ABI_VERSION;
+    let manifest = || crate::both_ways::statement("secret", "row-door", "row-door", abi);
+    let linked = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(), door)])
+        .expect("the door links");
+    let linked_macro = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::of_macro(manifest(), macro_door)])
+        .expect("the macro door links");
+    assert_eq!(
+        linked.linked()[0].door().map(|d| d as usize),
+        linked_macro.linked()[0].door().map(|d| d as usize)
+    );
+    assert!(linked_macro.linked()[0].door().is_some());
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let linked_loaded = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::of_loaded(manifest(), restated)])
+        .expect("the restated door links");
+    assert_eq!(
+        linked_loaded.linked()[0].door().map(|d| d as usize),
+        linked_macro.linked()[0].door().map(|d| d as usize)
+    );
+}
