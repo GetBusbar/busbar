@@ -777,6 +777,36 @@ fn a_refused_send_closes_its_stream() {
     assert_eq!(r.state.stream(), None);
 }
 
+/// GREEN twin: an exchange that completes still closes its stream exactly once, last, and holds
+/// none after it; a send that is acked does the same.
+#[test]
+fn a_completed_exchange_closes_its_stream_once() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(r.answered.as_ref().expect("the exchange completes").status, 200);
+    assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
+    assert_eq!(r.ops.last(), Some(&service::CLOSE));
+    assert_eq!(r.state.stream(), None);
+    let acked = run(
+        vec![piece(REPLY_ACK, 250, b"ok", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert_eq!(acked.answered.as_ref().expect("acked").code, 250);
+    assert_eq!(ran(&acked, service::CLOSE), 1, "{:?}", acked.ops);
+    assert_eq!(acked.ops.last(), Some(&service::CLOSE));
+}
+
 /// RED: a limit above `REPLY_MAX` clamps to it, and an exchange that sets none holds `REPLY_MAX`.
 #[test]
 fn a_limit_above_reply_max_clamps() {

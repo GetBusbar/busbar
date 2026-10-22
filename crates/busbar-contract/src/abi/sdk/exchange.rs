@@ -155,6 +155,10 @@ pub struct Exchange {
     /// The most this exchange's reply body may reach ([`Exchange::reply_limit`]); never above
     /// [`REPLY_MAX`].
     reply_ceiling: usize,
+    /// The read whose piece the exchange refused (its handle) and why, once one was: kept across
+    /// replays, which do not apply a piece again, so the replayed read fails the exchange again
+    /// and its close is issued on the same handle.
+    refused_read: Option<(u32, &'static str)>,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -187,6 +191,7 @@ impl Exchange {
             observed: None,
             stream: None,
             reply_ceiling: REPLY_MAX,
+            refused_read: None,
         }
     }
 
@@ -199,8 +204,10 @@ impl Exchange {
         self
     }
 
-    /// The stream this exchange established, once it has: a caller that abandons the exchange
-    /// closes it (`Connector::close`), so the host's connection does not outlive the attempt.
+    /// The stream this exchange established, once it has and until the exchange closed it: a
+    /// caller that abandons the exchange closes it (`Connector::close`), so the host's connection
+    /// does not outlive the attempt. An exchange that answered READY, its reply or its failure,
+    /// closed its stream and answers `None`.
     #[must_use]
     pub const fn stream(&self) -> Option<u64> {
         self.stream
@@ -404,7 +411,10 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
     }
 }
 
-/// Send, then read the reply to its terminal piece into `state`.
+/// Send, then read the reply to its terminal piece into `state`, then close the stream: on a
+/// failure after the stream is established as on a reply (the host reclaims a connection only on
+/// its CLOSE, so an exchange that failed without one would leave it open for the instance's
+/// life). The close's own answer never replaces the exchange's.
 fn send_and_read(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -413,6 +423,22 @@ fn send_and_read(
 ) -> Answer<()> {
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     state.stream = Some(stream);
+    let ended = match read_to_end(c, state, stream) {
+        Poll::Ready(ended) => ended,
+        Poll::Pending => return Poll::Pending,
+    };
+    match c.close(stream) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(_) => {
+            state.stream = None;
+            Poll::Ready(ended)
+        }
+    }
+}
+
+/// Send on `stream`, then read the reply to its terminal piece into `state`; the stream's facts
+/// are read where the caller asks, once the reply ended or failed.
+fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();
@@ -443,8 +469,15 @@ fn send_and_read(
                 used.zeroize();
             }
         }
-        if let Err(text) = applied {
-            return failed(text);
+        if let (true, Err(text)) = (fresh, applied) {
+            state.refused_read = Some((this, text));
+        }
+        // A refused piece fails the exchange on the entry that refused it and on every replay of
+        // that read (a replay applies nothing, so only `refused_read` remembers it).
+        match (state.refused_read, applied) {
+            (Some((at, text)), _) if at == this => return failed(text),
+            (_, Err(text)) => return failed(text),
+            _ => {}
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
@@ -459,10 +492,7 @@ fn send_and_read(
     if observe(c, state, stream).is_pending() {
         return Poll::Pending;
     }
-    match c.close(stream) {
-        Poll::Pending => Poll::Pending,
-        Poll::Ready(_) => Poll::Ready(Ok(())),
-    }
+    Poll::Ready(Ok(()))
 }
 
 /// Apply one reply piece, `p` and its first `len` bytes of the read buffer, to the reply `state`
