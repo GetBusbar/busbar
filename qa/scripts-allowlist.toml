@@ -1,7 +1,9 @@
 # THE SCRIPT ALLOWLIST: every tracked .py, .sh and .bash file in this tree, and why it is still here.
 #
 # OWNER 2026-10-02: "drop as much python ... as possible to rust", "minimal to no .sh". Product checks
-# and gates are `cargo xtask`; release tooling is busbar-release. `cargo xtask gate script-allowlist`
+# and gates are `cargo xtask`; release steps are ModernCI's branch files, `.ci/dev.yaml` and `.ci/qa.yaml`
+# (THE DESIGN Part 6, l.3115-3132: busbar-release is retired from busbar and keeps only the oracle, the
+# soak and the plugin fleet generator). `cargo xtask gate script-allowlist`
 # is RED on a script this file does not list, on an entry whose file is gone, and on an entry with
 # no class or a reason too short to be one. A port or a deletion strikes its entry in the same
 # commit; a new script needs an entry here and a reviewer who agrees with its reason.
@@ -16,12 +18,12 @@
 [[script]]
 path = ".github/scripts/bump_cargo.py"
 class = "port"
-reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
+reason = "release step in RELEASE.md (version bump, changelog roll): becomes a step of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132)"
 
 [[script]]
 path = ".github/scripts/roll_changelog.py"
 class = "port"
-reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
+reason = "release step in RELEASE.md (version bump, changelog roll): becomes a step of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132)"
 
 [[script]]
 path = "examples/claude-code-bedrock/bedrock-usage.sh"
@@ -111,12 +113,12 @@ reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) an
 [[script]]
 path = "scripts/bolt-pass.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/build-provenance-gate.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/capability-equality-summary.py"
@@ -226,12 +228,12 @@ reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give id
 [[script]]
 path = "scripts/pgo-build.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/pgo-drift-check.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/plane-config-noun-gate.sh"
@@ -261,7 +263,7 @@ reason = "plugins.yaml vs the org's repos: folds into busbar-release plugin (the
 [[script]]
 path = "scripts/profile-lock.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/proto-deletion-gate.sh"
@@ -276,57 +278,57 @@ reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give id
 [[script]]
 path = "scripts/release-build.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/release-gate/binfmt.py"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/channel-checks.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/docker-checks.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/expected-ids.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/gate.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/ledger-selftest.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/lib.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/platform-checks.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-gate/site-curl.sh"
 class = "port"
-reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+reason = "post-publish channel checks (docker, platform, site): become on_landed steps of the qa -> main move in .ci/qa.yaml (THE DESIGN Part 6, l.3132); nothing runs them today"
 
 [[script]]
 path = "scripts/release-key-guard.sh"
 class = "port"
-reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131); nothing runs it today"
 
 [[script]]
 path = "scripts/signing-gate.sh"
@@ -341,12 +343,12 @@ reason = "#33 store migration fixtures (BUSBAR-1.6.0.md l.1096-1103): records ro
 [[script]]
 path = "scripts/verify-1.6.0-done.sh"
 class = "port"
-reason = "the 1.6.0 done verifier (busbar-release status reads its groups): becomes `cargo xtask verify-done`, group for group"
+reason = "the 1.6.0 done verifier (the verify-done check of .ci/dev.yaml runs it): becomes `cargo xtask verify-done`, group for group"
 
 [[script]]
 path = "scripts/verify-artifact.py"
 class = "port"
-reason = "release artifact verifier: becomes part of the busbar-release release-binaries build"
+reason = "release artifact verifier: becomes part of the release-binaries check of the dev -> qa move in .ci/dev.yaml (THE DESIGN Part 6, l.3131)"
 
 [[script]]
 path = "testing/a2a-governance/a2agov/__init__.py"
