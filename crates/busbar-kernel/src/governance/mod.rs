@@ -806,6 +806,10 @@ pub struct GovState {
     /// CORRECTED by it — an instance the node owns, never a process static. Every `App`
     /// generation carries the same `Arc` (`App::amendments`).
     amendments: Arc<crate::audit::amend::NodeAmendments>,
+    /// This boot's random caller-reference key: the last resort when the node has neither signing
+    /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
+    /// Zeroised on drop and never logged (`GovState` has no `Debug`).
+    boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
