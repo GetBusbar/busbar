@@ -25,9 +25,8 @@ Each assertion drives a fresh instance of each door with one script and is PASS 
    subject; every conformance leg must then go RED.
 
 `lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
-voice_conform`, and the cdylib twin from the workspace this checkout's lock pins the plane at:
-`cargo build --locked --manifest-path <that workspace> -p busbar-plane-streaming-plugin
---target-dir <this target>`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
+voice_conform`, and the cdylib twin at the rev the root pins the plane, in this workspace and so
+against the host's busbar-contract: `cargo build --locked -p busbar-plane-streaming-plugin`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
 against the plane, loader, contract and harness sources), `VOICE_CONFORM_DOOR` a dropped door that
 is not in the profile directory beside it.
 
@@ -47,7 +46,7 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 | `session-scope` | 1 | the `session` grant kind; every door asks for a principal; 404 off the guest list |
 | `gemini-live-route` | 1 | the Gemini Live door: claim, arrival, and the handshake across it |
 | `provider-dial` | 1 | a session's far frames ride the dialect's socket need; the host connector dials |
-| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing |
+| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing; a policy refusal wears its 4xx, never `server_error` |
 | `route-failover` | 1 | each ATTEMPT answered afresh on the pass need; nothing reaches the caller early |
 | `audit-record` | 1 | the audit kind and operation the kernel's one row is written under; no door row |
 | `exit-terminal` | 1 | one session, one end; an ended stream is refused on every side |
