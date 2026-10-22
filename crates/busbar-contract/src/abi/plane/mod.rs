@@ -1836,6 +1836,8 @@ impl PlaneTail {
         stream_ceiling_secs: 0,
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
+        record_retentions: std::ptr::null(),
+        record_retentions_len: 0,
     };
 
     abi_lists! {
