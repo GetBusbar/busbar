@@ -302,10 +302,18 @@ pub struct BookCtx<'a> {
 
 /// THE PROTOCOL AXIS: each entry's protocol-axis seams. No arrival installs anywhere: a plane's door
 /// claims and serves its own paths (ARCHITECT 2026-10-16 ruling 3 item 1), and the kernel keeps no
-/// protocol-keyed arrival table (status row 82, D2). No dialect declaration installs anywhere: a
-/// plane resolves its own dialects (spec Part 1, Law 5). Then the node axis: every entry on it is
-/// handed the node a root unit drives it through.
+/// protocol-keyed arrival table (status row 82, D2). No dialect declaration installs anywhere but as
+/// the path labels an authentication refusal's tap is told ([`path_dialects`]): a plane resolves
+/// its own dialects (spec Part 1, Law 5). Then the node axis: every entry on it is handed the node
+/// a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
+    match path_dialects(linked) {
+        Ok(dialects) => busbar_kernel::ingress::native::install_path_dialects(dialects),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     for install in linked.protocol_seams {
         install();
     }
@@ -371,6 +379,69 @@ pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
     })
 }
 
+/// THE PATH LABELS an authentication refusal's tap is told
+/// (`busbar_kernel::ingress::native::PathDialects`), read off the path alone as v1.5.5 read it
+/// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path`): every linked plane's
+/// `declares.auth_labels` (ARCHITECT ruling on the tap label: the plane states its own labels,
+/// the root folds them), its rules in the plane's order and the planes in the linked order, the
+/// first rule whose path match holds naming the label; the first plane's `default` labels a path
+/// no rule matches. The root spells no label (Law 1).
+///
+/// # Errors
+///
+/// A linked door's `declares` section that does not read, or a rule that names verbs: the label is
+/// read with no verb in hand.
+pub fn path_dialects(
+    linked: &Linked,
+) -> Result<busbar_kernel::ingress::native::PathDialects, String> {
+    let mut rules: Vec<(crate::root::loader::sign::PathMatch, &'static str)> = Vec::new();
+    let mut residual: Option<&'static str> = None;
+    let mut names = busbar_kernel::Registration::new();
+    let mut label_of = |row: &str, label: &str| {
+        names.key(label).ok_or_else(|| {
+            format!(
+                "plugin '{row}' states the `auth_labels` label `{label}`, which the vocabulary \
+                 cannot take (boot is over, or it is full)"
+            )
+        })
+    };
+    for (row, _, json) in linked.plane_door_declares {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        let Some(labels) = declares.auth_labels else {
+            continue;
+        };
+        for rule in labels.rules {
+            if !rule.methods.is_empty() {
+                return Err(format!(
+                    "plugin '{row}' states an `auth_labels` rule for the verbs {:?}: an \
+                     authentication refusal's label is read off its path alone",
+                    rule.methods
+                ));
+            }
+            rules.push((rule.path, label_of(row, &rule.label)?));
+        }
+        if residual.is_none() {
+            residual = labels
+                .default
+                .as_deref()
+                .map(|label| label_of(row, label))
+                .transpose()?;
+        }
+    }
+    Ok(busbar_kernel::ingress::native::PathDialects {
+        claimed: Arc::new(move |path: &str| {
+            rules
+                .iter()
+                .find(|(path_match, _)| path_match.matches(path))
+                .map(|(_, label)| *label)
+        }),
+        residual,
+    })
+}
+
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
 /// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
 /// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
@@ -388,6 +459,7 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            secret_admit: Some(crate::root::boot::admit_secrets),
             // The root's card repricer is the kernel's rate holder and dater (the node unit, in
             // every build's root-unit table, arms its journal before the boot resolution:
             // `crate::root::kernel::install_card_repricer`).
@@ -423,7 +495,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
 
 /// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
 /// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
-/// ones each registry build replaces (`root::boot::registry`).
+/// ones each app build and boot's scan replace (`root::boot::admit_secrets`).
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
     std::sync::OnceLock::new();
 
@@ -631,12 +703,12 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
         .iter()
         .map(|candidate| {
             let name = candidate.name.clone();
-            let candidate = candidate.clone();
+            let bound = candidate.clone();
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
-                        std::slice::from_ref(&candidate),
+                        std::slice::from_ref(&bound),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),
                         probe.adopter(),
@@ -646,11 +718,11 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                     .into_iter()
                     .next()
                     .map(|(_, plane)| plane)
-                    .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
+                    .ok_or_else(|| format!("{}: the door bound nothing", bound.name))
                 });
             Ok((
                 name,
-                crate::root::loader::dispatch::kinds::plane::registration(bind)?,
+                crate::root::loader::dispatch::kinds::plane::stated_registration(candidate, bind)?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
