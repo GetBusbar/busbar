@@ -61,12 +61,7 @@ impl DesignBindingsGate {
             .read(OUT_JSON_REL)
             .map_err(|e| format!("{e} -- run `cargo xtask gate design-bindings --write` first"))?;
         let ledger = json::parse(&ledger_text)?;
-        let mut ctx = verify::Ctx::build(
-            &cells,
-            &cx.abs("crates"),
-            cx.root(),
-            &cx.abs(GOLDEN_LEDGER_REL),
-        )?;
+        let mut ctx = verify::Ctx::build(&cells, cx, &cx.abs(GOLDEN_LEDGER_REL))?;
         if let Some(planted) = cx.overlay_command(NOTE_TABLE_KEY) {
             let table: Vec<(String, String)> = planted
                 .split('\n')

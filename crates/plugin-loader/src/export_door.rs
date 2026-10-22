@@ -413,6 +413,9 @@ pub struct ExportInstance {
     shared: Arc<Shared>,
     /// The flusher thread, and what it sends once [`Shared::flush`] returned.
     flusher: Mutex<Option<(std::thread::JoinHandle<()>, Receiver<()>)>>,
+    /// The first-party grant of its declared series, held for the instance's life: dropped after
+    /// [`ExportInstance`]'s own drop has stopped its flusher.
+    _grant: Option<crate::observe::SeriesGrant>,
 }
 
 impl std::fmt::Debug for ExportInstance {
@@ -505,7 +508,15 @@ impl ExportInstance {
         Ok(Self {
             shared,
             flusher: Mutex::new(Some((flusher, done))),
+            _grant: None,
         })
+    }
+
+    /// The instance, holding `grant` (its first-party series) for its life.
+    #[must_use]
+    pub fn holding(mut self, grant: crate::observe::SeriesGrant) -> Self {
+        self._grant = Some(grant);
+        self
     }
 
     /// The plugin handle.

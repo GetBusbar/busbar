@@ -23,6 +23,11 @@
 //!   from the kernel's own `StepName::ALL` (set and order), the rows from the `PlaneMeta` KEY every
 //!   plane-kind crate states. A plane with no row, a kernel step the matrix lacks, and a matrix
 //!   step or row the tree does not declare are each red by name.
+//! * **a cleanliness crate's coverage is re-pointed, never retired** (BUSBAR-1.6.0.md l.3987). A
+//!   compiled-in cleanliness crate (spec Part 2 #26) is not a plane and states no `PlaneMeta`, so
+//!   its steps cannot ride the plane roster; they live under `cleanliness_rows`, one row per entry
+//!   of the gate's own [`CLEANLINESS_ROWS`] list, and every rule below judges those rows exactly as
+//!   it judges a plane row: every cell, every cited loop test, `--root-legs` and the gating bar.
 //!
 //! Plus `MIN_ROOT_NOTE`: every root verdict, proven OR gap, owes a one-line argument of at least 60
 //! characters. A label is not an argument, and `"not yet"` was the shape that rule was written
@@ -125,14 +130,30 @@ pub const ROW_RIG: &str = "teller-steps:rig-cells";
 pub const ROW_ROOT_COLUMN: &str = "teller-steps:root-column";
 pub const ROW_ROOT_LEGS: &str = "teller-steps:root-legs";
 pub const ROW_GATING: &str = "teller-steps:gating-gaps";
-/// The capability-equality ledger's root column, judged by the same run rule as this matrix's
-/// (Law 10, status row 178): its enforcing cargo test (`crates/busbar/tests/capability_equality.rs`)
+/// The capability-equality ledger's two columns, judged by the same run rule as this matrix's
+/// (Law 10, status row 178): its root column, and each cell's own test wherever it cites the
+/// composition root's build. Its enforcing cargo test (`crates/busbar/tests/capability_equality.rs`)
 /// reads only the source, so whether CI's build compiles a cited cell is asked here, where the
 /// module tree is read.
 pub const ROW_EQUALITY_CELLS: &str = "teller-steps:equality-root-cells";
 
 /// The capability-equality ledger whose root column [`ROW_EQUALITY_CELLS`] judges.
 pub const EQUALITY_REL: &str = "qa/capability-equality.json";
+
+/// The ledger key the cleanliness rows live under, beside `matrix`.
+pub const CLEANLINESS_KEY: &str = "cleanliness_rows";
+
+/// THE CLEANLINESS ROWS THE GATE OWES, as a FIXED list: `(row, crate, manifest)`. A cleanliness
+/// crate (spec Part 2 #26: compiled-in, one-way dep on the kernel, no plugin face) is not a plane
+/// and must never state a `PlaneMeta` again just to be counted, so its row cannot be derived from
+/// the plane roster. It is named here instead, and a reviewable edit to this list is the only way
+/// to add or drop one. Each entry must carry a row; each row must be an entry; and the row is then
+/// judged under every rule a plane row is (spec l.3987: coverage "is re-pointed, never retired").
+pub const CLEANLINESS_ROWS: [(&str, &str, &str); 1] = [(
+    "admin",
+    "busbar-core-admin",
+    "crates/busbar-core-admin/Cargo.toml",
+)];
 
 // -------------------------------------------------------------------------------------------
 // The matrix
@@ -157,17 +178,30 @@ impl Matrix {
         self.doc.get("root_legs")
     }
 
-    /// The declared step order — the file's key order, which is the render sequence.
-    pub fn step_order(&self) -> Vec<String> {
-        self.steps()
-            .as_object()
-            .map(|o| o.keys().map(str::to_string).collect())
-            .unwrap_or_default()
+    /// The cleanliness rows (`cleanliness_rows`), `Null` when the ledger carries none.
+    pub fn cleanliness(&self) -> &Json {
+        self.doc.get(CLEANLINESS_KEY)
     }
 
-    /// The plane rows, SORTED — `sorted(matrix)` in the Python, and the order every message and
-    /// every rendered line comes out in.
-    pub fn planes(&self) -> Vec<String> {
+    /// Is `row` a cleanliness row rather than a plane row?
+    pub fn is_cleanliness(&self, row: &str) -> bool {
+        self.cleanliness()
+            .as_object()
+            .is_some_and(|o| o.contains_key(row))
+    }
+
+    /// Where `row` lives in the ledger, as a message names it: `matrix.<row>` or
+    /// `cleanliness_rows.<row>`.
+    pub fn at(&self, row: &str) -> String {
+        if self.is_cleanliness(row) {
+            format!("{CLEANLINESS_KEY}.{row}")
+        } else {
+            format!("matrix.{row}")
+        }
+    }
+
+    /// The PLANE rows only, sorted — what the `PlaneMeta` roster is held to.
+    pub fn plane_rows(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .matrix()
             .as_object()
@@ -177,8 +211,42 @@ impl Matrix {
         v
     }
 
+    /// The cleanliness rows only, sorted.
+    pub fn cleanliness_rows(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .cleanliness()
+            .as_object()
+            .map(|o| o.keys().map(str::to_string).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// The declared step order — the file's key order, which is the render sequence.
+    pub fn step_order(&self) -> Vec<String> {
+        self.steps()
+            .as_object()
+            .map(|o| o.keys().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// EVERY JUDGED ROW, SORTED: the plane rows (`sorted(matrix)` in the Python) and the
+    /// cleanliness rows together, and the order every message and every rendered line comes out
+    /// in. Every rule iterates this, which is what holds a cleanliness row to the plane rows' rules
+    /// without a second copy of any of them. Only the `PlaneMeta` roster reads [`Self::plane_rows`].
+    pub fn planes(&self) -> Vec<String> {
+        let mut v = self.plane_rows();
+        v.extend(self.cleanliness_rows());
+        v.sort();
+        v
+    }
+
     fn cell(&self, plane: &str, step: &str) -> &Json {
-        self.matrix().get(plane).get(step)
+        if self.is_cleanliness(plane) {
+            self.cleanliness().get(plane).get(step)
+        } else {
+            self.matrix().get(plane).get(step)
+        }
     }
 }
 
@@ -216,26 +284,53 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
     }
 
     let declared: BTreeSet<String> = steps_obj.keys().map(str::to_string).collect();
-    let mut planes: Vec<&str> = matrix.as_object().expect("checked above").keys().collect();
+    let mut planes: Vec<(&str, &str)> = matrix
+        .as_object()
+        .expect("checked above")
+        .keys()
+        .map(|k| ("matrix", k))
+        .collect();
     planes.sort_unstable();
 
-    for plane in planes {
-        let row = matrix.get(plane);
+    // THE CLEANLINESS ROWS ARE STRUCTURALLY THE SAME AS A PLANE ROW and are validated by the same
+    // loop. A row under both keys would be judged twice under one name, so that is a refusal.
+    let cleanliness = doc.get(CLEANLINESS_KEY);
+    if !matches!(cleanliness, Json::Null) {
+        let Some(c) = cleanliness.as_object() else {
+            return Err(format!(
+                "{LEDGER_REL}: '{CLEANLINESS_KEY}' is not an object of rows"
+            ));
+        };
+        let mut rows: Vec<&str> = c.keys().collect();
+        rows.sort_unstable();
+        for row in rows {
+            if matrix.get(row).as_object().is_some() {
+                return Err(format!(
+                    "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} is also matrix.{row} -- one row under \
+                     two keys is judged twice under one name"
+                ));
+            }
+            planes.push((CLEANLINESS_KEY, row));
+        }
+    }
+
+    for (section, plane) in planes {
+        let row = doc.get(section).get(plane);
         let Some(row_obj) = row.as_object() else {
-            return Err(format!("{LEDGER_REL}: matrix.{plane} is not an object"));
+            return Err(format!("{LEDGER_REL}: {section}.{plane} is not an object"));
         };
         let present: BTreeSet<String> = row_obj.keys().map(str::to_string).collect();
         let missing: Vec<&String> = declared.difference(&present).collect();
         if !missing.is_empty() {
             return Err(format!(
-                "{LEDGER_REL}: matrix.{plane} is missing step(s) {}",
+                "{LEDGER_REL}: {section}.{plane} is missing step(s) {}",
                 py_list(missing.into_iter().map(String::as_str))
             ));
         }
         for step in row_obj.keys() {
             if !declared.contains(step) {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} names an undeclared step"
+                    "{LEDGER_REL}: {section}.{plane}.{step} names an undeclared step"
                 ));
             }
             let cell = row.get(step);
@@ -243,12 +338,12 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
                 (cell.get("cell").as_str(), cell.get("status").as_str())
             else {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} has no cell/status"
+                    "{LEDGER_REL}: {section}.{plane}.{step} has no cell/status"
                 ));
             };
             if !STATUSES.contains(&status) {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.status {} is not one of {}",
+                    "{LEDGER_REL}: {section}.{plane}.{step}.status {} is not one of {}",
                     json_lite::py_repr(status),
                     py_list(STATUSES)
                 ));
@@ -257,7 +352,7 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
             // or one of the two spellings is a gap the other column reports as covered.
             if (cell_id == "none") != (status == "none") {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} cell/status disagree on whether this is \
+                    "{LEDGER_REL}: {section}.{plane}.{step} cell/status disagree on whether this is \
                      a gap (cell={} status={})",
                     json_lite::py_repr(cell_id),
                     json_lite::py_repr(status)
@@ -343,9 +438,13 @@ pub fn kernel_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 ///   kernel does not declare is a cell about nothing.
 /// * the ROWS are the planes the tree declares: every plane-kind crate (the kind census,
 ///   [`kind_isolation::plane_meta_declarations`]) must state a `PlaneMeta` KEY, and every key it
-///   states must be a row. A row must in turn be a key SOME crate's `impl PlaneMeta` states — which
-///   is what keeps `admin` (declared by the cleanliness crate `busbar-core-admin`, served by the
-///   loop through its own root leg) and refuses a row for a plane nothing declares any more.
+///   states must be a row. A row must in turn be a key SOME crate's `impl PlaneMeta` states, which
+///   refuses a row for a plane nothing declares any more.
+/// * the CLEANLINESS ROWS are the gate's own [`CLEANLINESS_ROWS`] list, never the plane roster: a
+///   listed crate with no row is coverage retired rather than re-pointed, a row the list does not
+///   name is a row about nothing the gate owes, a listed crate whose manifest is gone is a row for
+///   a crate the tree no longer has, and a cleanliness row some crate's `impl PlaneMeta` declares
+///   is a plane, whose row belongs in `matrix`.
 pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
     let mut out = Vec::new();
     let order = m.step_order();
@@ -380,7 +479,32 @@ pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
         }
     }
 
-    let rows: BTreeSet<String> = m.planes().into_iter().collect();
+    let rows: BTreeSet<String> = m.plane_rows().into_iter().collect();
+    let clean: BTreeSet<String> = m.cleanliness_rows().into_iter().collect();
+    for (row, krate, manifest) in CLEANLINESS_ROWS {
+        if !clean.contains(row) {
+            out.push(format!(
+                "{LEDGER_REL}: cleanliness crate {krate} carries no {CLEANLINESS_KEY}.{row} -- its \
+                 Teller steps are measured nowhere, and coverage is re-pointed, never retired \
+                 (BUSBAR-1.6.0.md l.3987)"
+            ));
+        }
+        if !cx.exists(manifest) {
+            out.push(format!(
+                "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} is owed by cleanliness crate {krate}, whose \
+                 manifest {manifest} does not exist -- a row for a crate the tree does not have"
+            ));
+        }
+    }
+    for row in clean
+        .iter()
+        .filter(|r| !CLEANLINESS_ROWS.iter().any(|(c, _, _)| *c == r.as_str()))
+    {
+        out.push(format!(
+            "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} names no cleanliness crate the gate's \
+             CLEANLINESS_ROWS list owes -- a row about nothing the gate judges"
+        ));
+    }
     match kind_isolation::plane_meta_declarations(cx) {
         Err(e) => out.push(format!(
             "{LEDGER_REL}: the plane roster cannot be derived: {e}"
@@ -418,6 +542,13 @@ pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
                     "{LEDGER_REL}: matrix.{row} is a plane no crate declares (no `impl \
                      PlaneMeta` states KEY {}) -- a row for a plane the tree does not have",
                     json_lite::py_repr(row)
+                ));
+            }
+            for row in clean.iter().filter(|r| declared.contains(r.as_str())) {
+                out.push(format!(
+                    "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} is a key some crate's `impl PlaneMeta` \
+                     declares -- a plane's row belongs in 'matrix', and a cleanliness crate states \
+                     no PlaneMeta"
                 ));
             }
         }
@@ -739,12 +870,13 @@ pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
             }
             if owners.resolve(&cell_id).is_none() {
                 out.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} names rig cell {}, which NOTHING in the \
+                    "{LEDGER_REL}: {}.{step} names rig cell {}, which NOTHING in the \
                      tree owns -- no oracle cell of that id, no h2 subject script, no voice leg, \
                      no jev rig check, no suite source declaring it and no row in \
                      rigs-baseline.json. The scenario \
                      was renamed or deleted; a claim that outlives its evidence is the drift this \
                      check exists to stop",
+                    m.at(&plane),
                     json_lite::py_repr(&cell_id)
                 ));
             }
@@ -773,11 +905,17 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
 
 /// WHAT RUNS IN CI: the composition root's module tree, read off the source with every cfg on the
 /// way to each file, and the build CI's `test` check compiles it in ([`crate::ci_cfg`]). Read once
-/// per gate run and handed to both root columns.
+/// per gate run and handed to both root columns. A cited file the root's tree does not reach is
+/// looked for in the test targets of the crate that compiles it (the root's own integration-test
+/// targets, then any other workspace member's lib, bin and test targets), each read once and kept.
 pub struct CiView {
     tree: crate::libtest_path::ModuleTree,
     ci: Result<crate::ci_cfg::CiBuild, String>,
+    /// target root file -> its module tree, read on first use.
+    targets: std::sync::Mutex<BTreeMap<String, ModuleTreeRef>>,
 }
+
+type ModuleTreeRef = std::sync::Arc<crate::libtest_path::ModuleTree>;
 
 impl CiView {
     pub fn of(cx: &Ctx) -> CiView {
@@ -787,6 +925,7 @@ impl CiView {
                 .read(MANIFEST_REL)
                 .and_then(|t| crate::ci_cfg::CiBuild::of_manifest(&t))
                 .map_err(|e| format!("{MANIFEST_REL}: {e}")),
+            targets: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -797,6 +936,231 @@ impl CiView {
         })?;
         crate::libtest_path::resolve_cell(&self.tree, file, func).and_then(|c| ci.runs(&c))
     }
+
+    /// THE VERDICT FOR ANY CITATION: `None` when `file` is outside this workspace (a pinned
+    /// plugin's own repo, whose tests that repo's CI builds), else whether CI's `test` check
+    /// (`cargo nextest run --workspace`) compiles and runs `file::func`:
+    /// - a file the composition root's binary reaches (door cells included) is judged in that build;
+    /// - else, in each target that reaches it, under the build of the crate that target belongs
+    ///   to: the file's own crate's lib, bin and the integration-test target its path spells, then
+    ///   (when none of those runs it) every test target of that crate and the composition root's
+    ///   targets that include a plane crate's driver-proofs cases. A target whose
+    ///   `required-features` its crate's build lacks is never built. One target that runs it is
+    ///   enough;
+    /// - a file of a workspace crate no target reaches is a refusal, never skipped.
+    fn judge(&self, cx: &Ctx, file: &str, func: &str) -> Option<Result<(), String>> {
+        if self.tree.paths.contains_key(file) {
+            return Some(self.runs(file, func));
+        }
+        let member = workspace_member_of(cx, file)?;
+        let mut why = Vec::new();
+        for full in [false, true] {
+            for target in target_candidates(cx, &member, file, full) {
+                let tree = self.tree_at(cx, &target);
+                if !tree.paths.contains_key(file) {
+                    continue;
+                }
+                match self.runs_in_target(cx, &target, &tree, file, func) {
+                    Ok(()) => return Some(Ok(())),
+                    Err(e) => {
+                        let e = format!("in {target}: {e}");
+                        if !why.contains(&e) {
+                            why.push(e);
+                        }
+                    }
+                }
+            }
+        }
+        if !why.is_empty() {
+            return Some(Err(why.join("; ")));
+        }
+        if file.starts_with(BUSBAR_SRC) {
+            // Reached by no `mod` from the root: `runs` names that refusal.
+            return Some(self.runs(file, func));
+        }
+        Some(Err(format!(
+            "{file} is reached by no target of {member} (its lib, bin or test targets), nor by \
+             the composition root's, so no test in it runs"
+        )))
+    }
+
+    /// `file::func` in `target` (a root file `tree` was read from), under the build of the crate
+    /// `target` belongs to: the composition root's derived build, or another member's
+    /// ([`crate::ci_cfg::CiBuild::of_member_manifest`]).
+    fn runs_in_target(
+        &self,
+        cx: &Ctx,
+        target: &str,
+        tree: &crate::libtest_path::ModuleTree,
+        file: &str,
+        func: &str,
+    ) -> Result<(), String> {
+        let krate = workspace_member_of(cx, target).unwrap_or_else(|| BUSBAR_DIR.to_string());
+        let manifest_rel = format!("{krate}/Cargo.toml");
+        let manifest = cx.read(&manifest_rel).unwrap_or_default();
+        let build = if krate == BUSBAR_DIR {
+            self.ci.clone().map_err(|e| {
+                format!("CI's test build could not be derived, so no cell is shown to run ({e})")
+            })?
+        } else {
+            crate::ci_cfg::CiBuild::of_member_manifest(&manifest)
+        };
+        let off: Vec<String> = required_features(&manifest, &krate, target)
+            .into_iter()
+            .filter(|f| !build.features.contains(f))
+            .collect();
+        if !off.is_empty() {
+            return Err(format!(
+                "its test target {target} requires feature(s) {} ({manifest_rel} \
+                 `required-features`), which {} does not enable, so cargo never builds it",
+                py_list(off.iter().map(String::as_str)),
+                crate::ci_cfg::CI_TEST_BUILD
+            ));
+        }
+        crate::libtest_path::resolve_cell(tree, file, func).and_then(|c| build.runs(&c))
+    }
+
+    /// The module tree rooted at `target`, read once per view.
+    fn tree_at(&self, cx: &Ctx, target: &str) -> ModuleTreeRef {
+        let mut cache = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .entry(target.to_string())
+            .or_insert_with(|| {
+                std::sync::Arc::new(crate::libtest_path::module_tree(
+                    &|rel: &str| cx.read(rel).ok(),
+                    target,
+                ))
+            })
+            .clone()
+    }
+}
+
+/// The targets that may compile `file`, a file of the workspace member at `krate`, each an existing
+/// root file. Not `full`: the cheap ones, the member's lib and bin (the composition root's bin is
+/// [`CiView::tree`] itself) and the integration-test target `file`'s path spells. `full`: every
+/// test target of the member ([`target_roots`]), and the composition root's targets that include a
+/// plane crate's driver-proofs cases (`tests/on_driver/`, compiled only there).
+fn target_candidates(cx: &Ctx, krate: &str, file: &str, full: bool) -> Vec<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    if full {
+        out.extend(target_roots(cx, krate));
+        if krate != BUSBAR_DIR {
+            out.extend(target_roots(cx, BUSBAR_DIR).into_iter().filter(|r| {
+                cx.read(r)
+                    .is_ok_and(|t| t.contains(crate::libtest_path::DRIVER_PROOFS_FILE))
+            }));
+        }
+    } else {
+        if krate != BUSBAR_DIR {
+            let manifest = cx.read(format!("{krate}/Cargo.toml")).unwrap_or_default();
+            let lib = crate::toml_lite::parse_text(&manifest)
+                .table("lib")
+                .get_one("path")
+                .map_or_else(|| "src/lib.rs".to_string(), str::to_string);
+            out.insert(format!("{krate}/{}", lib.trim_start_matches("./")));
+            out.insert(format!("{krate}/src/main.rs"));
+        }
+        out.extend(target_root_of(krate, file));
+    }
+    out.into_iter().filter(|r| cx.exists(r)).collect()
+}
+
+/// The root files of the workspace member at `krate`'s integration-test targets, as its manifest
+/// and its `tests/` directory state them: every `[[test]]` path, every `tests/<x>.rs` and
+/// `tests/<x>/main.rs`. Whether each exists is the caller's question.
+fn target_roots(cx: &Ctx, krate: &str) -> BTreeSet<String> {
+    let manifest = cx.read(format!("{krate}/Cargo.toml")).unwrap_or_default();
+    let mut roots: BTreeSet<String> = BTreeSet::new();
+    for t in crate::toml_lite::parse_text(&manifest).array_table("test") {
+        if let Some(p) = t.get_one("path") {
+            roots.insert(format!("{krate}/{}", p.trim_start_matches("./")));
+        }
+    }
+    let tests_dir = format!("{krate}/tests");
+    if let Ok(rd) = std::fs::read_dir(cx.abs(&tests_dir)) {
+        for e in rd.filter_map(Result::ok) {
+            let name = e.file_name().to_string_lossy().to_string();
+            if e.path().is_dir() {
+                roots.insert(format!("{tests_dir}/{name}/main.rs"));
+            } else if name.ends_with(".rs") {
+                roots.insert(format!("{tests_dir}/{name}"));
+            }
+        }
+    }
+    roots
+}
+
+/// A workspace member's test file a capability-equality cell's own column cites (the kernel's
+/// breaker cells), which the selftest extends with a cell CI's build is not shown to compile.
+const MEMBER_CELL_FILE: &str = "crates/busbar-kernel/src/tests/breaker_tests.rs";
+/// A file in that member no `mod` and no target reaches, planted by the selftest.
+// qa-names: crates/busbar-kernel/src/tests/a_file_no_mod_reaches.rs -- xtask/src/gates/teller_steps.rs -- a PLANT: the selftest writes this file into an overlay to show a cited cell no target reaches is refused; its absence from the tree is the point
+const MEMBER_UNREACHED_FILE: &str = "crates/busbar-kernel/src/tests/a_file_no_mod_reaches.rs";
+
+/// The composition root's crate directory.
+const BUSBAR_DIR: &str = "crates/busbar";
+/// The composition root's own sources: every test under here is compiled, if at all, by the build
+/// [`CiView`] models.
+const BUSBAR_SRC: &str = "crates/busbar/src/";
+/// The composition root's integration-test targets, one per `<name>.rs` directly under here.
+const BUSBAR_TESTS: &str = "crates/busbar/tests/";
+/// The workspace manifest whose `[workspace] members` CI's `--workspace` run builds.
+const WORKSPACE_MANIFEST: &str = "Cargo.toml";
+
+/// The workspace member (its directory, as `[workspace] members` spells it) whose tree holds
+/// `file`; `None` for a file outside every member (a pinned plugin's own repo).
+fn workspace_member_of(cx: &Ctx, file: &str) -> Option<String> {
+    let doc = crate::toml_lite::parse_text(&cx.read(WORKSPACE_MANIFEST).ok()?);
+    doc.table("workspace")
+        .get_list("members")
+        .into_iter()
+        .filter(|m| file.starts_with(&format!("{m}/")))
+        .max_by_key(String::len)
+}
+
+/// The integration-test target cargo compiles `file` as, spelled from its path alone: `file` itself
+/// when it is `<crate>/tests/<name>.rs`, else `<crate>/tests/<dir>/main.rs` for a file under
+/// `<crate>/tests/<dir>/` (whether that target exists is the caller's question).
+fn target_root_of(krate: &str, file: &str) -> Option<String> {
+    let rest = file.strip_prefix(&format!("{krate}/tests/"))?;
+    match rest.split_once('/') {
+        None => rest.ends_with(".rs").then(|| file.to_string()),
+        Some((dir, _)) => Some(format!("{krate}/tests/{dir}/main.rs")),
+    }
+}
+
+/// Points the first `proven` cell of a capability-equality document at `cited` in its own column;
+/// `false` when no cell is proven.
+fn plant_own_test(eq: &mut Json, cited: &str) -> bool {
+    let Some(Json::Array(cells)) = eq.as_object_mut().and_then(|d| d.get_mut("cells")) else {
+        return false;
+    };
+    for c in cells.iter_mut() {
+        if c.str_or("state", "") != "proven" {
+            continue;
+        }
+        if let Some(o) = c.as_object_mut() {
+            o.insert("test", Json::Str(cited.to_string()));
+            return true;
+        }
+    }
+    false
+}
+
+/// The `required-features` of the `[[test]]` table in `manifest` (the manifest of the crate at
+/// `krate`) whose `path` is `target` (stated relative to the crate: `tests/x.rs`); empty when no
+/// such table states any.
+fn required_features(manifest: &str, krate: &str, target: &str) -> Vec<String> {
+    let rel = target.strip_prefix(&format!("{krate}/")).unwrap_or(target);
+    crate::toml_lite::parse_text(manifest)
+        .array_table("test")
+        .into_iter()
+        .filter(|t| t.get_one("path").map(|p| p.trim_start_matches("./")) == Some(rel))
+        .flat_map(|t| t.get_list("required-features"))
+        .collect()
 }
 
 fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
@@ -877,11 +1241,12 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             continue;
         };
         let file = &leg_file[leg];
+        let at = m.at(&plane);
         for step in m.step_order() {
             let r = m.cell(&plane, &step).get("root");
             if r.as_object().is_none() {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} carries no 'root' verdict -- an absent \
+                    "{LEDGER_REL}: {at}.{step} carries no 'root' verdict -- an absent \
                      second verdict is indistinguishable from an oversight"
                 ));
                 continue;
@@ -889,7 +1254,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let state = r.str_or("state", "");
             if !ROOT_STATES.contains(&state.as_str()) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root.state {} is not one of {}",
+                    "{LEDGER_REL}: {at}.{step}.root.state {} is not one of {}",
                     json_lite::py_repr_json(r.get("state")),
                     py_list(ROOT_STATES)
                 ));
@@ -898,7 +1263,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let named_leg = r.str_or("leg", "");
             if &named_leg != leg {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root names leg {}, but plane {} runs \
+                    "{LEDGER_REL}: {at}.{step}.root names leg {}, but plane {} runs \
                      through {}",
                     json_lite::py_repr_json(r.get("leg")),
                     json_lite::py_repr(&plane),
@@ -909,7 +1274,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let note = r.get("note").as_str().unwrap_or("").trim().to_string();
             if let Some(why) = note_problem(&note) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root has note {}: {why}",
+                    "{LEDGER_REL}: {at}.{step}.root has note {}: {why}",
                     json_lite::py_repr(&note)
                 ));
                 continue;
@@ -920,13 +1285,13 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             // use a note keeps it; each later reuse is named against the cell it was taken from.
             if let Some(first) = seen_notes.get(&note) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root reuses the note already argued at \
-                     matrix.{first} verbatim: a note copied between cells is boilerplate, not an \
+                    "{LEDGER_REL}: {at}.{step}.root reuses the note already argued at \
+                     {first} verbatim: a note copied between cells is boilerplate, not an \
                      argument about this cell's verdict"
                 ));
                 continue;
             }
-            seen_notes.insert(note.clone(), format!("{plane}.{step}"));
+            seen_notes.insert(note.clone(), format!("{at}.{step}"));
             if state == "none" {
                 continue;
             }
@@ -934,7 +1299,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let prefix = format!("{file}::");
             let Some(func) = test.strip_prefix(&prefix) else {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {}, which does not \
+                    "{LEDGER_REL}: {at}.{step}.root is proven by {}, which does not \
                      live in {}'s own file {file} -- a leg is proven by its own cells",
                     json_lite::py_repr(&test),
                     json_lite::py_repr(leg)
@@ -946,7 +1311,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let body = cx.read(file).unwrap_or_default();
             if !body.contains(&format!("fn {func}(")) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {test}, but no `fn \
+                    "{LEDGER_REL}: {at}.{step}.root is proven by {test}, but no `fn \
                      {func}(` exists there. The named loop cell is gone or renamed; a claim that \
                      outlives its evidence is the drift this check exists to stop"
                 ));
@@ -983,10 +1348,16 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
     p
 }
 
-/// THE CAPABILITY-EQUALITY LEDGER'S ROOT COLUMN, BY THE SAME RUN RULE: every `proven` root cell of
-/// [`EQUALITY_REL`] names a test CI's build compiles and runs. Its shape, ownership and existence
-/// are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is the
-/// question a source read there cannot answer, whether the cited fn is in the build that runs.
+/// THE CAPABILITY-EQUALITY LEDGER, BY THE SAME RUN RULE: every `proven` cell of [`EQUALITY_REL`]
+/// names a test CI's build compiles and runs, in BOTH its columns. The root column always lives in
+/// the composition root; the cell's own column is judged wherever it cites a file of this
+/// workspace ([`CiView::judge`]): the root's binary or test targets, or another member crate's lib,
+/// bin or test targets, each under the build CI's `--workspace` run compiles it in.
+/// `audit-chain`x`llm` once cited a node-axis cell that compiles under `cfg(linked_axis_node)`,
+/// which no CI build enables. A citation into a pinned plugin's own repo is that repo's CI's to
+/// run, not this workspace's. Shape, ownership and
+/// existence are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is
+/// the question a source read there cannot answer, whether the cited fn is in the build that runs.
 pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
     let doc = match cx.read(EQUALITY_REL).and_then(|t| json_lite::parse(&t)) {
         Ok(d) => d,
@@ -994,17 +1365,34 @@ pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
     };
     let mut out = Vec::new();
     let mut proven = 0usize;
+    let mut judged_own = 0usize;
     for cell in doc.get("cells").as_array().unwrap_or(&[]) {
-        let r = cell.get("root");
-        if r.str_or("state", "") != "proven" {
-            continue;
-        }
-        proven += 1;
         let id = format!(
             "{}x{}",
             cell.str_or("capability", "?"),
             cell.str_or("plane", "?")
         );
+        // The cell's own column.
+        if cell.str_or("state", "") == "proven" {
+            let test = cell.str_or("test", "");
+            if let Some((file, func)) = test.split_once("::") {
+                if let Some(verdict) = view.judge(cx, file, func) {
+                    judged_own += 1;
+                    if let Err(why) = verdict {
+                        out.push(format!(
+                            "{EQUALITY_REL}: cell {id} is proven by {test}, which no CI step \
+                             runs: {why}. A proof may not point at a test that never runs"
+                        ));
+                    }
+                }
+            }
+        }
+        // The root column.
+        let r = cell.get("root");
+        if r.str_or("state", "") != "proven" {
+            continue;
+        }
+        proven += 1;
         let test = r.str_or("test", "");
         let Some((file, func)) = test.split_once("::") else {
             out.push(format!(
@@ -1026,6 +1414,13 @@ pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
         out.push(format!(
             "{EQUALITY_REL}: no root cell is proven, so there is nothing to show runs -- an empty \
              column is not a column that passed"
+        ));
+    }
+    if judged_own == 0 {
+        out.push(format!(
+            "{EQUALITY_REL}: no proven cell's own test is in this workspace's build, so \
+             nothing in that column is shown to run -- a column judged over nothing is not a \
+             column that passed"
         ));
     }
     out
@@ -1192,7 +1587,11 @@ pub fn check_gating(m: &Matrix) -> Gating {
 pub fn render(m: &Matrix) -> String {
     let mut lines = Vec::new();
     for plane in m.planes() {
-        lines.push(format!("plane {plane}:"));
+        if m.is_cleanliness(&plane) {
+            lines.push(format!("cleanliness {plane}:"));
+        } else {
+            lines.push(format!("plane {plane}:"));
+        }
         for step in m.step_order() {
             let entry = m.cell(&plane, &step);
             let status = entry.str_or("status", "");
@@ -2057,6 +2456,37 @@ impl Gate for TellerStepsGate {
                     p.set_cell_field("llm", "meter", "status", Json::Str("none".into()));
                 }),
             ),
+            // ── A CLEANLINESS ROW IS JUDGED BY THE PLANE ROWS' RULES (spec l.3987). ──────────────
+            (
+                "a cleanliness row whose cited loop test does not exist",
+                ROW_ROOT_COLUMN,
+                "cleanliness_rows.admin.meter.root is proven by",
+                Box::new(|p: &mut Plant| {
+                    p.set_root_field(
+                        "admin",
+                        "meter",
+                        "test",
+                        Json::Str(format!(
+                            "{ROOT_DIR}units_admin/tests/units_admin.rs::a_fn_that_was_renamed_away"
+                        )),
+                    );
+                }),
+            ),
+            (
+                "a cleanliness row's gating step with no cell",
+                ROW_GATING,
+                "admin.audit",
+                Box::new(|p: &mut Plant| {
+                    p.set_cell_field("admin", "audit", "cell", Json::Str("none".into()));
+                    p.set_cell_field("admin", "audit", "status", Json::Str("none".into()));
+                }),
+            ),
+            (
+                "a cleanliness row the gate's list does not owe",
+                ROW_MATRIX,
+                "cleanliness_rows.ghost names no cleanliness crate",
+                Box::new(|p: &mut Plant| p.copy_row("admin", "ghost")),
+            ),
         ];
 
         // THE GREEN BASE EVERY PLANT IS PROVEN FROM. A root cell whose named loop cell is gone
@@ -2194,6 +2624,102 @@ impl Gate for TellerStepsGate {
             Err(e) => report.note_infra_failure(format!("{EQUALITY_REL}: {e}")),
         }
 
+        // THE SAME RULE OVER THE CAPABILITY-EQUALITY LEDGER'S OWN COLUMN: a proven cell's own
+        // `test` pointed at a cell under a cfg no CI build enables (the shape `audit-chain`x`llm`
+        // once had, a node-axis cell), and at a cell in an integration-test target cargo builds
+        // only under a feature CI's test build lacks.
+        let manifest = base_cx.read(MANIFEST_REL).unwrap_or_default();
+        let target = format!("{BUSBAR_TESTS}a_target_no_ci_build_has.rs");
+        // (label, cited `file::fn`, the files it plants, the word its refusal must name)
+        type OwnPlant = (&'static str, String, Vec<(String, String)>, &'static str);
+        let member_body = base_cx.read(MEMBER_CELL_FILE).unwrap_or_default();
+        let own_plants: [OwnPlant; 4] = [
+            (
+                "a capability-equality cell's own test under a cfg no CI build enables",
+                format!("{llm_leg_file}::a_cell_no_ci_build_compiles"),
+                vec![(
+                    llm_leg_file.clone(),
+                    format!("{leg_body}{}", run_plants[0].1),
+                )],
+                "linked_axis_node",
+            ),
+            (
+                "a capability-equality cell's own test in a target CI's build never builds",
+                format!("{target}::a_cell_in_a_target_no_build_has"),
+                vec![
+                    (
+                        target.clone(),
+                        "#[test]\nfn a_cell_in_a_target_no_build_has() {}\n".to_string(),
+                    ),
+                    (
+                        MANIFEST_REL.to_string(),
+                        format!(
+                            "{manifest}\n[[test]]\nname = \"a_target_no_ci_build_has\"\n\
+                             path = \"tests/a_target_no_ci_build_has.rs\"\n\
+                             required-features = [\"a-feature-ci-never-enables\"]\n"
+                        ),
+                    ),
+                ],
+                "required-features",
+            ),
+            // ANOTHER WORKSPACE MEMBER (row 178): its own tests are judged in its own build too,
+            // where a feature outside its default and self-dev closure is not shown on.
+            (
+                "a capability-equality cell's own test in another workspace crate under a feature \
+                 its CI build is not shown to enable",
+                format!("{MEMBER_CELL_FILE}::a_member_cell_no_ci_build_is_shown_to_compile"),
+                vec![(
+                    MEMBER_CELL_FILE.to_string(),
+                    format!(
+                        "{member_body}\n#[cfg(feature = \"a-feature-ci-never-enables\")]\n#[test]\n\
+                         fn a_member_cell_no_ci_build_is_shown_to_compile() {{}}\n"
+                    ),
+                )],
+                "a-feature-ci-never-enables",
+            ),
+            (
+                "a capability-equality cell's own test in a workspace crate file no target reaches",
+                format!("{MEMBER_UNREACHED_FILE}::a_member_cell_no_mod_reaches"),
+                vec![(
+                    MEMBER_UNREACHED_FILE.to_string(),
+                    "#[test]\nfn a_member_cell_no_mod_reaches() {}\n".to_string(),
+                )],
+                "reached by no target",
+            ),
+        ];
+        if member_body.is_empty() {
+            report.note_infra_failure(format!(
+                "{MEMBER_CELL_FILE}: unreadable, so the member-crate plant has nothing to extend"
+            ));
+        }
+        for (label, cited, files, naming) in own_plants {
+            let eq = base_cx
+                .read(EQUALITY_REL)
+                .and_then(|t| json_lite::parse(&t))
+                .map(|mut eq| (plant_own_test(&mut eq, &cited), eq));
+            match eq {
+                Ok((true, eq)) => {
+                    let mut ov = Overlay::new();
+                    for (rel, text) in files {
+                        ov.set(rel, text);
+                    }
+                    ov.set(EQUALITY_REL, format!("{}\n", json_lite::dump_python(&eq)));
+                    report.push(prove_red(
+                        &base_cx,
+                        self,
+                        label,
+                        &[ROW_EQUALITY_CELLS],
+                        base.layered(&ov),
+                        &["is proven by", naming],
+                    ));
+                }
+                Ok((false, _)) => report.note_infra_failure(format!(
+                    "{EQUALITY_REL}: no proven cell to plant the run rule's RED on ({label})"
+                )),
+                Err(e) => report.note_infra_failure(format!("{EQUALITY_REL}: {e}")),
+            }
+        }
+
         // THE TREE'S SIDE OF THE ROSTER: plants in the declarations the roster is derived from,
         // with the committed matrix untouched. A gate that read its roster off the matrix again
         // would stay green under every one of them.
@@ -2262,7 +2788,10 @@ impl Gate for TellerStepsGate {
 /// ordinary state of the tree.
 fn missing_root_cells(cx: &Ctx, doc: &Json) -> Overlay {
     let mut stubs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    if let Some(planes) = doc.get("matrix").as_object() {
+    for planes in ["matrix", CLEANLINESS_KEY]
+        .into_iter()
+        .filter_map(|section| doc.get(section).as_object())
+    {
         for (_, steps) in planes.iter() {
             let Some(steps) = steps.as_object() else {
                 continue;
@@ -2315,11 +2844,26 @@ struct Plant {
 }
 
 impl Plant {
+    /// The section a row lives in: `cleanliness_rows` when it is a cleanliness row, else `matrix`.
+    fn section_of(&self, plane: &str) -> &'static str {
+        if self
+            .doc
+            .get(CLEANLINESS_KEY)
+            .as_object()
+            .is_some_and(|o| o.contains_key(plane))
+        {
+            CLEANLINESS_KEY
+        } else {
+            "matrix"
+        }
+    }
+
     fn cell_mut(&mut self, plane: &str, step: &str) -> Option<&mut json_lite::Obj> {
+        let section = self.section_of(plane);
         match self
             .doc
             .as_object_mut()?
-            .get_mut("matrix")?
+            .get_mut(section)?
             .as_object_mut()?
             .get_mut(plane)?
             .as_object_mut()?
@@ -2343,10 +2887,11 @@ impl Plant {
     }
 
     fn drop_step(&mut self, plane: &str, step: &str) {
+        let section = self.section_of(plane);
         if let Some(Json::Object(row)) = self
             .doc
             .as_object_mut()
-            .and_then(|d| d.get_mut("matrix"))
+            .and_then(|d| d.get_mut(section))
             .and_then(Json::as_object_mut)
             .and_then(|m| m.get_mut(plane))
         {
@@ -2354,8 +2899,8 @@ impl Plant {
         }
     }
 
-    /// Drop `step` from the declared steps AND from every row, so the matrix is internally whole
-    /// and only the kernel's roster can see what it lost.
+    /// Drop `step` from the declared steps AND from every row, plane and cleanliness alike, so the
+    /// matrix is internally whole and only the kernel's roster can see what it lost.
     fn drop_step_everywhere(&mut self, step: &str) {
         let Some(doc) = self.doc.as_object_mut() else {
             return;
@@ -2363,19 +2908,22 @@ impl Plant {
         if let Some(Json::Object(steps)) = doc.get_mut("steps") {
             steps.remove(step);
         }
-        if let Some(Json::Object(rows)) = doc.get_mut("matrix") {
-            let planes: Vec<String> = rows.keys().map(str::to_string).collect();
-            for plane in planes {
-                if let Some(Json::Object(row)) = rows.get_mut(&plane) {
-                    row.remove(step);
+        for section in ["matrix", CLEANLINESS_KEY] {
+            if let Some(Json::Object(rows)) = doc.get_mut(section) {
+                let planes: Vec<String> = rows.keys().map(str::to_string).collect();
+                for plane in planes {
+                    if let Some(Json::Object(row)) = rows.get_mut(&plane) {
+                        row.remove(step);
+                    }
                 }
             }
         }
     }
 
-    /// Add a row `to` that is a copy of row `from`.
+    /// Add a row `to` that is a copy of row `from`, in the section `from` lives in.
     fn copy_row(&mut self, from: &str, to: &str) {
-        if let Some(Json::Object(rows)) = self.doc.as_object_mut().and_then(|d| d.get_mut("matrix"))
+        let section = self.section_of(from);
+        if let Some(Json::Object(rows)) = self.doc.as_object_mut().and_then(|d| d.get_mut(section))
         {
             if let Some(row) = rows.get(from).cloned() {
                 rows.insert(to, row);
@@ -2546,6 +3094,27 @@ mod root_gating_tests {
         );
     }
 
+    /// A cleanliness row is held to the shipped-leg bar exactly as a plane row: a gating step on a
+    /// shipped leg with no cell over the loop is red, named by the row.
+    #[test]
+    fn a_cleanliness_rows_gating_step_with_no_loop_cell_is_red() {
+        let m = Matrix {
+            doc: json_lite::parse(
+                r#"{"steps": {"admit": {"gating": true}},
+                    "matrix": {"p": {"admit": {"root": {"leg": "root-x", "state": "proven"}}}},
+                    "cleanliness_rows": {"c": {"admit": {"root": {"leg": "root-c", "state": "none"}}}},
+                    "root_legs": {"root-x": {}, "root-c": {}}}"#,
+            )
+            .expect("the planted matrix parses"),
+        };
+        let (lines, rc) = root_legs_gating_verdict(&m, &legs(&["root-x", "root-c"]));
+        assert_eq!(rc, 1, "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("c.admit (root-c)")),
+            "{lines:?}"
+        );
+    }
+
     /// The control: a shipped leg whose gating cell is proven is GREEN, so the refusal is the
     /// empty denominator's and not every verdict's.
     #[test]
@@ -2674,5 +3243,54 @@ mod cell_owner_tests {
                 "plant {i}: no id resolved, so nothing was compared"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod equality_target_tests {
+    use super::*;
+
+    const MANIFEST: &str = "[package]\nname = \"busbar\"\n\n[[test]]\nname = \"gated\"\n\
+                            path = \"tests/gated.rs\"\nrequired-features = [\"a\", \"b\"]\n\n\
+                            [[test]]\nname = \"free\"\npath = \"tests/free.rs\"\n\n\
+                            [features]\ndefault = []\n";
+
+    #[test]
+    fn a_target_states_its_required_features_and_only_its_own() {
+        assert_eq!(
+            required_features(MANIFEST, "crates/busbar", "crates/busbar/tests/gated.rs"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(
+            required_features(MANIFEST, "crates/busbar", "crates/busbar/tests/free.rs").is_empty()
+        );
+        assert!(
+            required_features(MANIFEST, "crates/busbar", "crates/busbar/tests/absent.rs")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_files_target_is_spelled_from_its_path_under_its_crates_tests() {
+        assert_eq!(
+            target_root_of("crates/busbar", "crates/busbar/tests/plane_integration.rs").as_deref(),
+            Some("crates/busbar/tests/plane_integration.rs")
+        );
+        assert_eq!(
+            target_root_of("crates/busbar", "crates/busbar/tests/linked/mod.rs").as_deref(),
+            Some("crates/busbar/tests/linked/main.rs")
+        );
+        assert_eq!(
+            target_root_of("crates/busbar-kernel", "crates/busbar-kernel/tests/x.rs").as_deref(),
+            Some("crates/busbar-kernel/tests/x.rs")
+        );
+        assert_eq!(
+            target_root_of("crates/busbar", "crates/busbar-kernel/tests/x.rs"),
+            None
+        );
+        assert_eq!(
+            target_root_of("crates/busbar", "crates/busbar/src/root/tests/x.rs"),
+            None
+        );
     }
 }
