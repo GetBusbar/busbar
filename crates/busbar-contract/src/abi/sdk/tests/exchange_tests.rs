@@ -32,6 +32,9 @@ fn piece(
     (kind, code, reason, fields, body)
 }
 
+/// A scripted read the host answers FAILED (the far end went away mid-reply), in place of a piece.
+const READ_FAILS: u32 = u32::MAX - 1;
+
 /// What the framer was handed, as the host saw it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Framed {
@@ -55,6 +58,8 @@ struct Script {
     unframed: bool,
     /// The registration each ESTABLISH named, in order (`None` = an absent member).
     members: Vec<Option<Vec<u8>>>,
+    /// Every service the host ran (a replay runs none), in order.
+    ops: Vec<u32>,
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -136,6 +141,11 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         return answer(out, o, v, l);
     }
     *s.runs.entry(seq).or_default() += 1;
+    s.ops.push(op);
+    if op == service::READ_REPLY && s.reply.get(s.reads).map(|p| p.0) == Some(READ_FAILS) {
+        s.stored.insert(seq, (Outcome::Failed, 0, 0));
+        return answer(out, Outcome::Pending, 0, 0);
+    }
     let (value, len) = match op {
         service::ESTABLISH => {
             // SAFETY: an `EstablishIn` (the SDK states its whole size).
@@ -289,6 +299,8 @@ struct Run<T> {
     members: Vec<Option<Vec<u8>>>,
     /// The exchange's state once it completed.
     state: Exchange,
+    /// Every service the host ran, in order.
+    ops: Vec<u32>,
 }
 
 /// Run the op to completion under `reply`: a fresh connector each entry, the same parked state.
@@ -326,6 +338,7 @@ fn run<T>(
         framed: s.framed,
         members: s.members,
         state,
+        ops: s.ops,
     }
 }
 
@@ -669,6 +682,99 @@ fn a_reply_at_the_exchanges_limit_passes() {
         |c, st| exchange(c, st, 0, None),
     );
     assert_eq!(r.answered.expect("at the limit").body.len(), 100);
+}
+
+/// How many times the host ran `op` in `r`.
+fn ran<T>(r: &Run<T>, op: u32) -> usize {
+    r.ops.iter().filter(|&&o| o == op).count()
+}
+
+/// RED (status row 159, a failed exchange leaks its connection): a reply the host fails mid-read
+/// closes the stream the exchange established, once, and the exchange holds no stream after it.
+#[test]
+fn a_failed_reply_read_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reply = vec![
+        piece(REPLY_HEAD, 200, b"", b"", b""),
+        piece(READ_FAILS, 0, b"", b"", b""),
+    ];
+    let r = run(
+        reply,
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(
+        matches!(r.answered, Err(ConnFailure::Failed(_))),
+        "{:?}",
+        r.answered
+    );
+    assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
+    assert_eq!(r.ops.last(), Some(&service::CLOSE));
+    assert_eq!(r.state.stream(), None);
+    assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
+}
+
+/// RED (status row 159): a reply past the exchange's limit is refused with its own failure, and
+/// the stream is closed once right after the read that passed it: no read follows the refusal.
+#[test]
+fn a_reply_over_the_limit_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        body_reply(60, 41),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .reply_limit(100),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered.as_ref().expect_err("the reply passes the limit"),
+        &ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+    assert_eq!(
+        r.ops,
+        vec![
+            service::ESTABLISH,
+            service::WRITE_REQUEST,
+            service::WRITE_REQUEST,
+            service::WRITE_REQUEST,
+            service::READ_REPLY,
+            service::READ_REPLY,
+            service::READ_REPLY,
+            service::CLOSE,
+        ]
+    );
+    assert_eq!(r.state.stream(), None);
+}
+
+/// RED (status row 159): a request the stream refuses (a send that fails) closes the stream it
+/// was established on, and the refusal is still what the exchange answers.
+#[test]
+fn a_refused_send_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered,
+        Err(ConnFailure::Refused(NOT_FRAMED.to_string()))
+    );
+    assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
+    assert_eq!(r.ops.last(), Some(&service::CLOSE));
+    assert_eq!(r.state.stream(), None);
 }
 
 /// RED: a limit above `REPLY_MAX` clamps to it, and an exchange that sets none holds `REPLY_MAX`.
