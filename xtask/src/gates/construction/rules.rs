@@ -740,29 +740,36 @@ fn caller_of(tree: &Tree, rel: &str, f: &Fnc) -> (String, String) {
     (qualified, f.name.clone())
 }
 
-/// What a call of the terminal's name is made on.
+/// The receiver of a terminal-named call, as its line spells it.
 enum Receiver {
-    /// A path call, `Type::fn(`: the type it names.
+    /// `Type::fn(`: the path's last segment as written (`Self`, an alias, a type).
     Path(String),
-    /// A bare binding, `money.fn(` or `self.fn(`: a local, an argument or `self`, declared in the
-    /// calling file if anywhere.
-    Binding(String),
-    /// A field, `served.money.fn(`: the trailing field name, declared on its struct, which may live
-    /// in another file.
-    Field(String),
+    /// `self.fn(`.
+    SelfValue,
+    /// `base.field.fn(`: the field, and the identifier it is read off (empty when none is).
+    Field { base: String, field: String },
+    /// `name.fn(`: a binding or an argument of the enclosing fn.
+    Local(String),
 }
 
-/// The receiver a call at byte `at` of line `idx` of `rel` is made on, read off the line above for
-/// a chain broken before its `.`; `None` when no single identifier names it.
+/// The identifier `text` ends with (empty when it ends with anything else).
+fn trailing_ident(text: &str) -> String {
+    let rev: String = text
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+        .collect();
+    rev.chars().rev().collect()
+}
+
+fn is_ident(word: &str) -> bool {
+    !word.is_empty() && word.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
+/// The receiver a call at byte `at` of line `idx` is made on, read off the line above for a chain
+/// broken before its `.`; `None` when no identifier names it (a call's result, an index, a
+/// generic or a qualified path).
 fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Receiver> {
-    let trailing_ident = |text: &str| -> String {
-        let rev: String = text
-            .chars()
-            .rev()
-            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
-            .collect();
-        rev.chars().rev().collect()
-    };
     let code = &lines[idx].code;
     let pre = code.get(..at).unwrap_or_default().trim_end();
     if let Some(path) = pre.strip_suffix("::") {
@@ -781,88 +788,255 @@ fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Receiver> {
     if ident.is_empty() {
         return None;
     }
+    if ident == "self" {
+        return Some(Receiver::SelfValue);
+    }
     let before = pre[..pre.len() - ident.len()].trim_end();
-    Some(if before.ends_with('.') {
-        Receiver::Field(ident)
-    } else {
-        Receiver::Binding(ident)
+    Some(match before.strip_suffix('.') {
+        Some(base) => Receiver::Field {
+            base: trailing_ident(base.trim_end()),
+            field: ident,
+        },
+        None => Receiver::Local(ident),
     })
 }
 
-/// The types among `owners` that a declaration of `ident` (`ident: …Type…`, a field, an argument
-/// or a typed binding) names, searched in `rel` first and then, when `tree_wide`, across the
-/// production tree.
-fn declared_types(
-    tree: &Tree,
-    rel: &str,
-    ident: &str,
-    owners: &[String],
-    tree_wide: bool,
-) -> Vec<String> {
-    let names = |l: &Line, found: &mut Vec<String>| {
-        let code = &l.code;
-        let mut from = 0;
-        while let Some(i) = code[from..].find(ident) {
-            let at = from + i;
-            from = at + ident.len();
-            let before_ok = code[..at]
-                .chars()
-                .next_back()
-                .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'));
-            let rest = code[from..].trim_start();
-            if !before_ok || !rest.starts_with(':') || rest.starts_with("::") {
-                continue;
-            }
-            let ty: String = rest[1..]
-                .chars()
-                .take_while(|ch| !matches!(ch, ',' | ';' | '=' | '{' | ')'))
-                .collect();
-            for owner in owners {
-                let whole = ty
-                    .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                    .any(|w| w == owner);
-                if whole && !found.contains(owner) {
-                    found.push(owner.clone());
-                }
-            }
-        }
-    };
-    let mut found = Vec::new();
-    for l in tree.files.get(rel).into_iter().flat_map(|v| v.iter()) {
-        if !l.intest {
-            names(l, &mut found);
-        }
+/// `text` past a leading visibility (`pub`, `pub(crate)`, `pub(in path)`).
+fn past_visibility(text: &str) -> &str {
+    let t = text.trim_start();
+    match t.strip_prefix("pub") {
+        Some(rest) if rest.starts_with('(') => rest
+            .split_once(')')
+            .map_or(t, |(_, after)| after.trim_start()),
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => t,
     }
-    if found.is_empty() && tree_wide {
-        for lines in tree.files.values() {
-            for l in lines.iter().filter(|l| !l.intest) {
-                names(l, &mut found);
-            }
-        }
-    }
-    found
 }
 
-/// Does a production line of the file bind `ident` with a `let` that names no type? Such a binding
-/// is a value nobody declared, so a call on it cannot be attributed. A pattern that fails to build
-/// answers yes (fail-safe: an unread call is a finding).
-fn untyped_let(lines: &[Line], ident: &str) -> bool {
-    let Ok(rx_let) = Regex::new(&format!(r"\blet\s+(mut\s+)?{}\s*=", rx::escape(ident))) else {
-        return true;
-    };
-    lines
+/// The type aliases a file declares: `type X = Y;` maps `X` to `Y`'s type (its last path segment,
+/// past a reference, a lifetime and generics). An alias the file gives two different targets, or a
+/// target this cannot read off its line, maps to `None`: unresolved.
+fn type_aliases(lines: &[Line]) -> BTreeMap<String, Option<String>> {
+    let mut out: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for l in lines {
+        let Some(rest) = past_visibility(&l.code).strip_prefix("type") else {
+            continue;
+        };
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let name: String = rest
+            .chars()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+            .collect();
+        let Some((_, target)) = rest.split_once('=') else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let resolved = target.split_once(';').and_then(|(target, _)| {
+            let head = target.split('<').next().unwrap_or_default();
+            let last = head.split_whitespace().next_back()?.trim_start_matches('&');
+            let last = last.rsplit("::").next()?;
+            is_ident(last).then(|| last.to_string())
+        });
+        let entry = if out.get(&name).is_some_and(|seen| *seen != resolved) {
+            None
+        } else {
+            resolved
+        };
+        out.insert(name, entry);
+    }
+    out
+}
+
+/// `name` through the file's aliases, followed to the end of a chain: `None` when an alias on the
+/// way is unresolved, or the chain does not end.
+fn through_aliases(aliases: &BTreeMap<String, Option<String>>, name: &str) -> Option<String> {
+    let mut cur = name.to_string();
+    for _ in 0..=aliases.len() {
+        match aliases.get(&cur) {
+            None => return Some(cur),
+            Some(None) => return None,
+            Some(Some(next)) if *next == cur => return Some(cur),
+            Some(Some(next)) => cur = next.clone(),
+        }
+    }
+    None
+}
+
+/// The bytes where the whole-word occurrences of `ident` in `code` start.
+fn word_starts(code: &str, ident: &str) -> Vec<usize> {
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut out = Vec::new();
+    if ident.is_empty() {
+        return out;
+    }
+    let mut from = 0;
+    while let Some(i) = code[from..].find(ident) {
+        let at = from + i;
+        from = at + ident.len();
+        let before_ok = code[..at].chars().next_back().is_none_or(|ch| !is_word(ch));
+        let after_ok = code[from..].chars().next().is_none_or(|ch| !is_word(ch));
+        if before_ok && after_ok {
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// The type text of a declaration `ident: Type` whose `ident` starts at byte `at` of `code` (read
+/// to the declaration's end, across generics); `None` when `ident` there carries no type.
+fn declared_type_at(code: &str, at: usize, ident: &str) -> Option<String> {
+    let ty = code[at + ident.len()..].trim_start().strip_prefix(':')?;
+    if ty.starts_with(':') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let text: String = ty
+        .chars()
+        .take_while(|&ch| {
+            if depth == 0 && matches!(ch, ',' | ';' | '=' | '{' | ')' | '|') {
+                return false;
+            }
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' if depth > 0 => depth -= 1,
+                _ => {}
+            }
+            true
+        })
+        .collect();
+    Some(text)
+}
+
+/// Does the declared type `text` name, for certain, a type other than `ty` that also defines the
+/// terminal's name? Not when it names `ty`, names no defining type, or names an alias the file
+/// leaves unresolved.
+fn names_other_owner(
+    text: &str,
+    ty: &str,
+    owners: &[String],
+    aliases: &BTreeMap<String, Option<String>>,
+) -> bool {
+    let mut other = false;
+    for w in text
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+        .filter(|w| !w.is_empty())
+    {
+        let Some(w) = through_aliases(aliases, w) else {
+            return false;
+        };
+        if w == ty {
+            return false;
+        }
+        other |= owners.contains(&w);
+    }
+    other
+}
+
+/// The type text `field` is declared with in the one production `struct owner` of `lines`;
+/// `None` when the file holds no such struct, or more than one, or that struct has no such field.
+fn struct_field_type(lines: &[Line], owner: &str, field: &str) -> Option<String> {
+    let heads: Vec<usize> = lines
         .iter()
-        .any(|l| !l.intest && rx_let.is_match(l.code_bytes()))
+        .enumerate()
+        .filter(|(_, l)| {
+            !l.intest
+                && past_visibility(&l.blank)
+                    .strip_prefix("struct")
+                    .filter(|r| r.starts_with(char::is_whitespace))
+                    .is_some_and(|r| {
+                        let name: String = r
+                            .trim_start()
+                            .chars()
+                            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                            .collect();
+                        name == owner
+                    })
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if heads.len() != 1 {
+        return None;
+    }
+    let (mut depth, mut opened) = (0i64, false);
+    for l in &lines[heads[0]..] {
+        for at in word_starts(&l.code, field) {
+            if let Some(text) = declared_type_at(&l.code, at, field) {
+                return Some(text);
+            }
+        }
+        for ch in l.blank.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                ';' | '(' if !opened => return None,
+                _ => {}
+            }
+        }
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    None
+}
+
+/// Does the occurrence at byte `start` of `code` bind a name without a type: in a `let` pattern
+/// (before its `=`), a `for` pattern (before its `in`), a closure's `|…|`, or a match arm's
+/// pattern (before its `=>`)?
+fn binds_untyped(code: &str, start: usize) -> bool {
+    let before = &code[..start];
+    let after = &code[start..];
+    let opened_by = |kw: &str, closer: &str| {
+        word_starts(before, kw)
+            .last()
+            .is_some_and(|&k| !before[k..].contains(closer))
+    };
+    opened_by("let", "=")
+        || opened_by("for", " in ")
+        || before.matches('|').count() % 2 == 1
+        || (after.contains("=>") && !before.contains('='))
+}
+
+/// The type text the binding `ident` holds at the call at byte `at` of line `idx`, read off its own
+/// declaration in the enclosing fn `f`: the last one before the call (a shadowing `let` declares it
+/// again). `None` when that declaration carries no type (an untyped `let`, a pattern, a closure
+/// argument, a `for` variable), or when `f` declares no such binding.
+fn binding_type(lines: &[Line], f: &Fnc, idx: usize, at: usize, ident: &str) -> Option<String> {
+    let call_no = lines[idx].no;
+    let mut last: Option<Option<String>> = None;
+    for l in lines.iter().filter(|l| l.no >= f.start && l.no <= call_no) {
+        let code = if l.no == call_no {
+            l.code.get(..at).unwrap_or_default()
+        } else {
+            l.code.as_str()
+        };
+        for start in word_starts(code, ident) {
+            if let Some(text) = declared_type_at(code, start, ident) {
+                last = Some(Some(text));
+            } else if binds_untyped(code, start) {
+                last = Some(None);
+            }
+        }
+    }
+    last.flatten()
 }
 
 /// Is the call of `t.name` at byte `at` of line `idx` of `rel` a call of the TERMINAL? A bare
 /// terminal is matched by name. A `Type::fn` terminal whose name no other type defines is too; one
-/// whose name another type also defines is attributed by its receiver: a path names its type (`Self`
-/// the enclosing impl's; a path naming no defining type, an alias, is counted), `self` is the
-/// enclosing impl's type, a binding is the type its declaration in the calling file
-/// names, and a field is the type its declaration names wherever it is.
-/// A receiver that resolves to no single type is counted (fail-safe: an unread call is a finding,
-/// never a pass).
+/// whose name another type also defines is excluded only when its receiver is that other type FOR
+/// CERTAIN: a path naming it (`Self` read as the enclosing impl's type, a same-file `type` alias as
+/// its target), `self` in its impl, a `self.field` its struct (in the same file) declares with it,
+/// or a binding whose own declaration in the enclosing fn names it. Anything else (an untyped
+/// binding, a field of another value, a path to a type that defines no such fn, an unread
+/// receiver) is counted: fail-safe, an unread call is a finding, never a pass. A declaration of the
+/// same name elsewhere in the tree is never read as the receiver's type.
 fn calls_terminal(
     tree: &Tree,
     rel: &str,
@@ -880,37 +1054,28 @@ fn calls_terminal(
     let Some(lines) = tree.files.get(rel) else {
         return true;
     };
+    let no = lines[idx].no;
+    let aliases = type_aliases(lines);
     match receiver_of(lines, idx, at) {
-        // A path names its type, `Self` the enclosing impl's. A path naming no type that defines
-        // the name (an alias, `use PlaneMoney as Money;`) is unread, so counted; only a path naming
-        // another defining type is that type's call.
         Some(Receiver::Path(path_ty)) => {
             let named = if path_ty == "Self" {
-                impl_owner(tree, rel, lines[idx].no)
+                impl_owner(tree, rel, no)
             } else {
-                Some(path_ty)
+                through_aliases(&aliases, &path_ty)
             };
-            named.is_none_or(|named| &named == ty || !owners.contains(&named))
+            named.is_none_or(|n| n == *ty || !owners.contains(&n))
         }
-        Some(Receiver::Binding(ident)) if ident == "self" => impl_owner(tree, rel, lines[idx].no)
-            .is_none_or(|owner| &owner == ty || !owners.contains(&owner)),
-        // A bare binding is declared in the calling file or nowhere the scan can read: an untyped
-        // `let` of it there (`let money = …;`) is unread, so counted, and otherwise a typed
-        // declaration there attributes it. A same-named field of another type, in this file or
-        // elsewhere in the tree, says nothing about it.
-        Some(Receiver::Binding(ident)) => {
-            untyped_let(lines, &ident) || {
-                let named = declared_types(tree, rel, &ident, owners, false);
-                named.is_empty() || named.contains(ty)
-            }
+        Some(Receiver::SelfValue) => {
+            impl_owner(tree, rel, no).is_none_or(|owner| &owner == ty || !owners.contains(&owner))
         }
-        // A field is declared on its struct, wherever that lives. Declared as another defining
-        // type alone: that type's call. As the terminal's type, as several, or undeclared: counted.
-        Some(Receiver::Field(ident)) => {
-            let named = declared_types(tree, rel, &ident, owners, true);
-            named.is_empty() || named.contains(ty)
-        }
-        None => true,
+        Some(Receiver::Field { base, field }) if base == "self" => impl_owner(tree, rel, no)
+            .and_then(|owner| struct_field_type(lines, &owner, &field))
+            .is_none_or(|text| !names_other_owner(&text, ty, owners, &aliases)),
+        Some(Receiver::Local(ident)) => tree
+            .enclosing_fn(rel, no)
+            .and_then(|f| binding_type(lines, f, idx, at, &ident))
+            .is_none_or(|text| !names_other_owner(&text, ty, owners, &aliases)),
+        Some(Receiver::Field { .. }) | None => true,
     }
 }
 
