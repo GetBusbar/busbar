@@ -853,8 +853,8 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
         .expect("a build with the plugins directory off is the linked rows alone");
     // The app build's path: the kernel holds the registry as the contract's rows view and hands it
     // to the install record's admission, which reads it back as the registry this root built.
-    let rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
-    admit_secrets(&rows).expect("no dropped-in secret contests a word");
+    let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
+    admit_secrets(&plugin_rows).expect("no dropped-in secret contests a word");
     let answers = rows.answers("row159-stale-vault");
     rows.set_dropped(std::iter::empty());
     assert!(
