@@ -99,8 +99,12 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234. Lowered 1234 -> 1232 by status row 82
 /// (D2, GetBusbar/busbar#1276 over dev 0f3c9caa44): the kernel's body-ingress arrival host leaves
 /// with its terminal tests (`busbar-kernel/src/ingress/arrival_host.rs`,
-/// `ingress/tests/terminal_tests.rs`); the gate's count on 4f926f805c is 1232.
-pub const MIN_FILES: usize = 1232;
+/// `ingress/tests/terminal_tests.rs`); the gate's count on 4f926f805c is 1232. Raised 1232 -> 1239
+/// merging dev 17d824b657: dev's 7 scanned arrivals since 0f3c9caa44 (contract
+/// abi/sdk/generation.rs, abi/sdk/test_support/{pairs,test_in}.rs, abi/sdk/tests/expand_tests.rs;
+/// kernel plane_driver/close.rs, plane_driver/hooks/tests/section_attach_tests.rs,
+/// tests/store_row_tests.rs); the gate's count on the merge is 1239.
+pub const MIN_FILES: usize = 1239;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
