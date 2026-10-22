@@ -593,6 +593,70 @@ fn read_all(cx: &Ctx) -> Result<Vec<Dialect>, String> {
         .collect())
 }
 
+/// Where the plane's codec modules live, one directory per dialect.
+pub const CODEC_DIR: &str = "crates/busbar-plane-llm/src/codec";
+
+/// How a codec module declares that it compiles a generated table: the attribute above its
+/// `mod map;` in `<d>/mod.rs`.
+const TABLE_DECL: &str = "#[path = \"map.gen.rs\"]";
+
+/// THE DIALECT FLOOR: the six dialects the plane speaks today (anthropic, bedrock, cohere, gemini,
+/// openai_chat, openai_responses). A roster under it is a refusal, not a smaller clean set.
+pub const DIALECT_FLOOR: usize = 6;
+
+/// THE DIALECT ROSTER, from the plane's own declarations: every codec module that declares a
+/// generated table (`#[path = "map.gen.rs"]` in `<d>/mod.rs`) or holds one (`<d>/map.gen.rs`). The
+/// mapping files under [`DIALECT_DIR`] must be exactly this set, and the set at least
+/// [`DIALECT_FLOOR`] — so a deleted mapping file whose table stays compiled in is RED, naming the
+/// dialect, instead of leaving the table checked by nothing (audit XA2 HIGH 1, XF HIGH 12).
+pub fn roster(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let files = cx
+        .walk(&WalkSpec::new([CODEC_DIR]).ext("rs").min_files(1))
+        .map_err(|e| e.to_string())?;
+    let mut declared = BTreeSet::new();
+    for f in &files {
+        let rel = f.rel_str();
+        let Some((dir, file)) = rel
+            .strip_prefix(CODEC_DIR)
+            .and_then(|r| r.strip_prefix('/'))
+            .and_then(|r| r.split_once('/'))
+        else {
+            continue;
+        };
+        let declares = file == "mod.rs" && f.text.lines().any(|l| l.trim() == TABLE_DECL);
+        if file == "map.gen.rs" || declares {
+            declared.insert(dir.to_string());
+        }
+    }
+    let stems: BTreeSet<String> = read_all(cx)?.into_iter().map(|d| d.name).collect();
+    let mut problems = Vec::new();
+    for d in declared.difference(&stems) {
+        problems.push(format!(
+            "dialect `{d}`: {CODEC_DIR}/{d} declares or holds a generated table but \
+             {DIALECT_DIR}/{d}.toml is gone — a table no mapping file states is checked by nothing; \
+             restore the mapping file, or delete the codec module's table with it"
+        ));
+    }
+    for d in stems.difference(&declared) {
+        problems.push(format!(
+            "dialect `{d}`: {DIALECT_DIR}/{d}.toml has no codec module declaring its table \
+             ({CODEC_DIR}/{d}/mod.rs with {TABLE_DECL})"
+        ));
+    }
+    if declared.len() < DIALECT_FLOOR {
+        problems.push(format!(
+            "the dialect roster holds {} dialect(s) ({}), below the floor of {DIALECT_FLOOR}",
+            declared.len(),
+            declared.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if problems.is_empty() {
+        Ok(declared)
+    } else {
+        Err(problems.join(" | "))
+    }
+}
+
 /// Compile every mapping file under [`DIALECT_DIR`].
 pub fn compile_all(cx: &Ctx) -> Result<Vec<Compiled>, String> {
     let all = read_all(cx)?;
@@ -721,6 +785,7 @@ pub struct MapFile {
 /// Every mapping file, read for the coverage gates, in file-name order. A file that does not
 /// compile is an `Err` naming it.
 pub fn load_maps(cx: &Ctx) -> Result<Vec<MapFile>, String> {
+    roster(cx)?;
     let all = read_all(cx)?;
     let answer = answer_slots(cx)?;
     for d in &all {
