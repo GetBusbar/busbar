@@ -42,7 +42,8 @@
 //!
 //! * the dropped-in library states exactly the linked door's Statement (the signed manifest's
 //!   rendering IS the linked row's), and both are admitted by the ONE loader ([`load_linked`] /
-//!   [`load_dropped`]) and bound to a dispatcher of their own, as the kernel binds them;
+//!   [`load_dropped_bytes`], the library's bytes staged as every production load stages them) and
+//!   bound to a dispatcher of their own, as the kernel binds them;
 //! * the KIND'S SCRIPT (one module per kind, below) drives each leg through the same table, step by
 //!   step, and records per step its answer and the crossings the instance made, counted by the
 //!   dispatcher's own crossing gate;
@@ -83,7 +84,7 @@
 //! module; a move to another home moves this directory and the macro's path, nothing else.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
-//! [`load_dropped`]: crate::dispatch::load_dropped
+//! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -108,9 +109,9 @@ use crate::dispatch::kinds::{
 use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
-    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
-    NoSink, OutFrame, Plugin,
+    in_head, load_dropped_bytes, load_linked, out_head, rendering_of, rendering_of_library, Bind,
+    Called, ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow,
+    LoadError, NoSink, OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -930,8 +931,25 @@ pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
 pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadError> {
     match leg {
         Leg::Linked => load_linked::<K>(&LinkedRow::of(s.door)?, b),
-        Leg::Dropped => load_dropped::<K>(&s.cdylib(), &s.stated(), b),
+        Leg::Dropped => load_dropped_staged::<K>(&s.cdylib(), &s.stated(), b),
     }
+}
+
+/// The dropped-in library at `path`, admitted against `stated` as every production caller admits a
+/// dropped plugin: its bytes read and handed to [`load_dropped_bytes`], which stages them by the
+/// loader's one staging path (a sealed `memfd` on Linux, a private `0700` copy elsewhere) and opens
+/// exactly those bytes, never the build path itself (THE DESIGN §11.4: one loading path).
+///
+/// # Errors
+/// The loader's refusal; a library that cannot be read is refused as one that does not open.
+pub(crate) fn load_dropped_staged<K: Kind>(
+    path: &Path,
+    stated: &[u8],
+    b: Bind,
+) -> Result<Plugin<K>, LoadError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| LoadError::Open(format!("cannot read {}: {e}", path.display())))?;
+    load_dropped_bytes::<K>(&bytes, &path.display().to_string(), stated, b)
 }
 
 /// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
@@ -1764,7 +1782,7 @@ pub fn red_kind_abi(s: &Subject) {
                 .expect_err("a linked door at another kind ABI is refused");
             assert_eq!(refused, want);
             assert!(refused.to_string().contains("rebuild"), "{refused}");
-            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
+            let refused = load_dropped_staged::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
                 .map(|_| ())
                 .expect_err("a manifest stating another kind ABI is refused");
             assert_eq!(refused, LoadError::ManifestKindAbi { stated: abi, host });
