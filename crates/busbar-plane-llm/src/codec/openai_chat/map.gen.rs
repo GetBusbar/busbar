@@ -167,4 +167,6 @@ pub(crate) const WORDS_SERVED_TIER: &[Word] = &[
     ("priority", "priority", Dir::Both),
     ("flex", "flex", Dir::Both),
     ("scale", "scale", Dir::Both),
+    ("fast", "fast", Dir::Both),
+    ("auto", "auto", Dir::Both),
 ];

@@ -649,6 +649,41 @@ fn a_responses_answer_served_at_flex_or_scale_keeps_its_tier() {
     }
 }
 
+/// A Responses answer served at `fast`, `ultrafast` or `auto` keeps its tier in the IR (the audit's
+/// MEDIUM names all five words the published answer lists, not only `flex` / `scale`).
+/// RED before the fix: `ServedTier` had no read row for the three, so `read_word` dropped them.
+#[test]
+fn a_responses_answer_served_at_fast_ultrafast_or_auto_keeps_its_tier() {
+    for tier in ["fast", "ultrafast", "auto"] {
+        assert_eq!(served_tier_read(tier).as_deref(), Some(tier), "{tier}");
+    }
+}
+
+/// GREEN twin: the words that were already read still read, `default` is still the standard tier,
+/// and a word the answer does not list stays unmapped.
+#[test]
+fn a_responses_served_tier_keeps_the_words_it_already_read() {
+    for tier in ["priority", "flex", "scale"] {
+        assert_eq!(served_tier_read(tier).as_deref(), Some(tier), "{tier}");
+    }
+    assert_eq!(served_tier_read("default").as_deref(), Some("standard"));
+    assert_eq!(served_tier_read("no-such-tier"), None);
+}
+
+fn served_tier_read(tier: &str) -> Option<String> {
+    let responses = serde_json::json!({"id": "resp_1", "object": "response", "created_at": 1,
+        "status": "completed", "model": "gpt", "service_tier": tier,
+        "output": [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "hi", "annotations": []}]}],
+        "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4}});
+    ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &responses)
+        .expect("read")
+        .usage
+        .detail
+        .service_tier
+}
+
 /// RSP-17: the served tier crosses in both directions, buffered and streamed.
 #[test]
 fn rsp17_service_tier_crosses_both_directions() {

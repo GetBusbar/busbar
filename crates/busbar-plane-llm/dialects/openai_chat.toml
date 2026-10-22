@@ -180,10 +180,12 @@ park = true
 # The response `service_tier` (the tier that SERVED the answer, OAI-03 / RSP-17) <> the IR
 # attribution word (the Anthropic vocabulary: `default` IS `standard`). The OpenAI-family words are
 # written as-is so a tier that arrived in that vocabulary is not lost; Chat also READS `flex` /
-# `scale`, carried in the IR tier vocabulary.
+# `scale` / `fast` / `auto` (every word the published answer lists), carried in the IR tier vocabulary.
 [words.served_tier]
 "standard" = { wire = "default" }
 "default" = { wire = "default", dir = "write" }
 "priority" = { wire = "priority" }
 "flex" = { wire = "flex" }
 "scale" = { wire = "scale" }
+"fast" = { wire = "fast" }
+"auto" = { wire = "auto" }

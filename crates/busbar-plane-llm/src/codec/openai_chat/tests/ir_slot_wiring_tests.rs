@@ -174,6 +174,63 @@ fn oai03_flex_and_scale_tiers_cross() {
     }
 }
 
+/// A Chat answer served at `fast` or `auto` keeps its tier in the IR and is written back (the
+/// audit's MEDIUM names them with `flex` / `scale`). RED before the fix: no read row for either.
+#[test]
+fn oai03_fast_and_auto_served_tiers_cross() {
+    for tier in ["fast", "auto"] {
+        let ir = chat_served_tier_ir(tier);
+        assert_eq!(
+            ir.usage.detail.service_tier.as_deref(),
+            Some(tier),
+            "{tier}"
+        );
+        let out = super::openai_writer().write_response(crate::codec::test_host::HOST, &ir);
+        assert_eq!(out["service_tier"], json!(tier), "{out}");
+    }
+}
+
+/// GREEN twin: the words already read still read, `default` is the standard tier, and a word the
+/// answer does not list stays unmapped.
+#[test]
+fn oai03_served_tier_keeps_the_words_it_already_read() {
+    for tier in ["priority", "flex", "scale"] {
+        let ir = chat_served_tier_ir(tier);
+        assert_eq!(
+            ir.usage.detail.service_tier.as_deref(),
+            Some(tier),
+            "{tier}"
+        );
+    }
+    assert_eq!(
+        chat_served_tier_ir("default")
+            .usage
+            .detail
+            .service_tier
+            .as_deref(),
+        Some("standard")
+    );
+    assert_eq!(
+        chat_served_tier_ir("no-such-tier")
+            .usage
+            .detail
+            .service_tier,
+        None
+    );
+}
+
+fn chat_served_tier_ir(tier: &str) -> crate::codec::ir::IrResponse {
+    let body = json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+        "service_tier": tier,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+    });
+    super::OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("reads")
+}
+
 // ── SHR-03: one OpenAI Files namespace ───────────────────────────────────────────────────────────
 
 /// SHR-03. A Responses `input_file.file_id` (vendor tag `responses`) reaches a Chat lane as
