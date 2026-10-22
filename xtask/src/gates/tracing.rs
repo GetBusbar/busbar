@@ -287,7 +287,7 @@ fn idents(code: &str) -> impl DoubleEndedIterator<Item = &str> {
 /// Every `X as Y` rename in one file's blanked code, as (`X`, `Y`). Read as a run of identifiers,
 /// so a `use` group broken over lines is read whole; a cast (`n as u64`) renames nothing a span
 /// macro is called by, so reading one too costs nothing.
-fn renames(code: &str) -> Vec<(String, String)> {
+pub(crate) fn renames(code: &str) -> Vec<(String, String)> {
     let words: Vec<&str> = idents(code).collect();
     words
         .windows(3)
