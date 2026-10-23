@@ -704,6 +704,7 @@ fn names_a_ref(r: &str) -> bool {
 ///     base, newly seen, so it never covers a site this change adds;
 ///   * (c) the reason carries a `drain:` field that names a PR, a row or a file ([`names_a_ref`],
 ///     syntax only).
+///
 /// An entry that fails any condition is RED with every reason it fails, and excuses nothing; the
 /// ledger is add-only against the base.
 fn measured_ceilings(
