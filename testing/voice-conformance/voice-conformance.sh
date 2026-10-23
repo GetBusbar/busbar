@@ -391,6 +391,17 @@ selftest() {
   if ! verdict_out="$( ( emit_verdict ) 2>&1 )"; then
     # Say WHY: the verdict's own words (its last lines), so a red here names the leg and its result.
     printf '%s\n' "$verdict_out" | tail -n 60 >&2
+    # Then ONE LINE PER RED LEG, last, so a reader that keeps only a short tail (the done-oracle's
+    # step readout) still sees every red leg and the first assertion it failed. A slice line comes
+    # before its leg's `READY/RED` summary line, so the first non-PASS slice since the previous
+    # summary is that leg's first failure.
+    warn "first failing assertion of each red leg:"
+    printf '%s\n' "$verdict_out" | awk '
+      /^      · / && first == "" && $0 !~ / : PASS( |$)/ { first = $0; sub(/^      · /, "", first) }
+      /^  leg [^ ]+ \[/ {
+        if ($0 ~ /READY\/RED$/) { name = $2; sub(/:$/, "", name); printf "  %s: %s\n", name, substr(first, 1, 300) }
+        first = ""
+      }' >&2
     die "the shipped scaffold does not self-account cleanly: $shipped"
   fi
   local n; n="$(declared_legs | grep -c . || true)"

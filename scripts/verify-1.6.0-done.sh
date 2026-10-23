@@ -129,13 +129,16 @@ end_group() {
 }
 
 # Run one step; print [ok]/[RED]; on RED, mark the current group red and remember the first reason.
+# A red step keeps its command's last STEP_TAIL lines (4 unless the call site says more). A step
+# whose command names its reason in a list longer than four lines (a rig that prints one line per
+# failing leg) is called with `STEP_TAIL=<n> step ...`, so the readout carries the reason itself.
 step() {   # $1 = label ; rest = command
-  local label="$1"; shift
+  local label="$1" keep="${STEP_TAIL:-4}"; shift
   if "$@" >/tmp/done-oracle-step.$$ 2>&1; then
     printf '  \033[32m[ok]\033[0m   %s\n' "$label"
   else
     printf '  \033[31m[RED]\033[0m  %s\n' "$label"
-    sed 's/^/          /' /tmp/done-oracle-step.$$ | tail -4
+    sed 's/^/          /' /tmp/done-oracle-step.$$ | tail -n "$keep"
     CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$label"
   fi
   rm -f /tmp/done-oracle-step.$$
@@ -314,6 +317,25 @@ fi
 
 # A step that is RED simply because an artifact does not exist yet (a not-yet-built sub-gate).
 absent_step() { printf '  \033[31m[RED]\033[0m  %s — NOT PRESENT YET (%s)\n' "$1" "$2"; CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$1 (absent)"; }
+
+# The non-PASS rows of a plane-rig ledger (testing/shadow-oracle/rigs-ledger.sh), printed under the
+# rig step so a red names its rows; a row that says `see <log>` gets that log's last lines. Prints
+# nothing for a ledger with no such rows, or no ledger. Information only: the verdict is the step's.
+rigs_red_rows() {  # $1 = ledger.tsv
+  local ledger="$1" logs log
+  [ -s "$ledger" ] || return 0
+  awk -F'\t' '$2 != "PASS" && $2 != "N/A" && $2 != "SKIP" {f=1} END{exit !f}' "$ledger" || return 0
+  printf '  \033[36m[info]\033[0m rig ledger rows not PASS:\n'
+  awk -F'\t' '$2 != "PASS" && $2 != "N/A" && $2 != "SKIP" { printf "          %s %s %s\n", $2, $1, substr($4, 1, 240) }' \
+    "$ledger" | head -n 60
+  logs="$(awk -F'\t' '$2 != "PASS" && $2 != "N/A" && $2 != "SKIP"' "$ledger" \
+    | grep -oE 'see [^ ]+\.log' | sed 's/^see //' | sort -u | head -n 8)"
+  for log in $logs; do
+    [ -s "$log" ] || continue
+    printf '  \033[36m[info]\033[0m last lines of %s:\n' "$log"
+    tail -n 25 "$log" | sed 's/^/          /'
+  done
+}
 
 # THE BUILD GROUP, as a function so --selftest can drive its arms. Without --fast the ONLY green
 # BUILD is the whole battery: formatting, clippy under -D warnings (which is what compiles every
@@ -1511,7 +1533,9 @@ begin_group "CONFORMANCE — rig selftests + voice legs =ready"
 [ -f scripts/mcp-conformance.sh ] && step "mcp-conformance --selftest" bash scripts/mcp-conformance.sh --selftest \
   || absent_step "mcp-conformance --selftest" "scripts/mcp-conformance.sh"
 if [ -f testing/voice-conformance/voice-conformance.sh ]; then
-  step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
+  # Its red names each failing leg's first failing assertion in one line per leg (17 legs), then
+  # the verdict line: the tail is long enough to carry the whole list.
+  STEP_TAIL=24 step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
   step "voice legs =ready (every declared leg LEG_STATUS=ready)" voice_legs_all_ready testing/voice-conformance/voice-conformance.sh ""
 else
   absent_step "voice conformance selftest" "testing/voice-conformance/voice-conformance.sh — voice conformance rig not built yet"
@@ -1995,6 +2019,12 @@ if [ -f qa/teller-steps.json ]; then
       bash testing/shadow-oracle/rigs-ledger.sh --selftest
     step "the rig suites the matrix cites RUN and pass (mcp.rig / a2a.battery / a2a.tck / voice.rig)" \
       bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
+    # THE ROWS BEHIND A RED RIG RUN, NAMED HERE. `step` keeps a red command's last lines, and for
+    # this one those are verdict.sh's banner and the ledger's path on the runner, so the reason the
+    # rigs were red never reached this readout. Every row that is not PASS is printed from the
+    # ledger the run just wrote, with the head of its detail; a row whose detail points at a rig's
+    # log (`see <path>`: a leg that wrote no report) has that log's tail printed under it.
+    rigs_red_rows target/rigs-ledger/ledger.tsv
   fi
   printf '  \033[36m[info]\033[0m '
   cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"

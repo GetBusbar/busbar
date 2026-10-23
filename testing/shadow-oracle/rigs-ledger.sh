@@ -792,13 +792,16 @@ for line in open(sys.argv[1], encoding="utf-8"):
 print(f"META\t{len(legs)}")
 for leg, entries in legs.items():
     vacuous = [(s, d) for s, v, d in entries if v == "NORESULT"]
-    failing = [(s, v) for s, v, _ in entries if v not in ("PASS", "NORESULT")]
+    failing = [(s, v, d) for s, v, d in entries if v not in ("PASS", "NORESULT")]
     if vacuous:
         status = "FAIL"
         detail = "slice(s) with NO RESULT (vacuous-ready): " + ", ".join(s for s, _ in vacuous)
     elif failing:
         status = "FAIL"
-        detail = "failing slice(s): " + ", ".join(f"{s}:{v}" for s, v in failing)
+        # The slice names alone say THAT the leg failed; the first failing assertion's own words
+        # (the harness's RESULT detail) say WHY, so the ledger row carries it.
+        detail = "failing slice(s): " + ", ".join(sorted({f"{s}:{v}" for s, v, _ in failing})) \
+            + "; first: " + failing[0][2][:240]
     else:
         status = "PASS"
         detail = f"{len(entries)} slice(s), all PASS"
