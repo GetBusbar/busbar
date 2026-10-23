@@ -68,6 +68,7 @@ pub mod plane_purity;
 pub mod plane_secret_blindness;
 pub mod plane_transport_neutrality;
 pub mod plugin_closure_deps;
+pub mod plugin_pins_on_dev;
 pub mod population;
 pub mod qa_names;
 pub mod reachability;
@@ -3765,6 +3766,15 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(no_tracked_ignored::NoTrackedIgnoredGate),
         summary: "no tracked path matches a .gitignore rule of this tree (git ls-files -ci \
                   --exclude-standard)",
+    },
+    Registration {
+        name: "plugin-pins-on-dev",
+        batch: 1,
+        tier: Tier::Full,
+        build: || Box::new(plugin_pins_on_dev::PluginPinsOnDevGate),
+        summary: "every GetBusbar plugin rev the root Cargo.toml pins is reachable from that \
+                  repo's dev branch (git merge-base --is-ancestor <rev> FETCH_HEAD); a failed \
+                  fetch is RED",
     },
     Registration {
         name: "package-selectors",
