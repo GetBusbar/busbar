@@ -93,6 +93,14 @@ impl PluginRows for PluginRegistry {
         PluginRegistry::kind_refusal(self, kind, purpose, name_or_alias)
     }
 
+    fn secret_slots(&self, name_or_alias: &str) -> Vec<String> {
+        PluginRegistry::resolve(self, name_or_alias)
+            .and_then(crate::registry::LoadablePlugin::statement)
+            .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
+            .map(|stated| stated.secret_refs)
+            .unwrap_or_default()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

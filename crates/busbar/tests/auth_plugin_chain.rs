@@ -112,10 +112,8 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
 }
 
 /// The module's tarball SIGNED FIRST-PARTY (publisher `busbar`) under the test build's release key
-/// (`common::root_install::release_key`): every need the module states is in the
-/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only
-/// (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03), so an unsigned or third-party
-/// copy is skipped at the scan.
+/// (`common::root_install::release_key`), the trust a shipped busbar gives the module
+/// with no `plugins.trust` opt-in.
 fn first_party_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
     m.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
     common::plugins::signed(&common::root_install::release_key(), m, lib)

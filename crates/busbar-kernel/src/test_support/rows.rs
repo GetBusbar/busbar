@@ -37,6 +37,9 @@ struct Entry {
     /// For a linked auth row stated by [`Rows::with_linked_style`]: the carrier lines its door's
     /// Statement states as the default inbound style (`FACT_DEFAULT_INBOUND_STYLE`), in order.
     inbound_style: Vec<String>,
+    /// For a linked auth row stated by [`Rows::with_linked_secret_slots`]: the secret reference
+    /// keys its door's Statement names in `secret_refs`.
+    secret_slots: Vec<String>,
 }
 
 impl Entry {
@@ -116,6 +119,7 @@ fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bo
         former,
         door: Some(door),
         inbound_style: Vec::new(),
+        secret_slots: Vec::new(),
     }
 }
 
@@ -163,6 +167,20 @@ impl Rows {
         self
     }
 
+    /// `self` with the build's linked auth `row` registered as [`Self::with_linked`] does, its door
+    /// stating `slots` as the secret references its Statement names (`secret_refs`). As with
+    /// [`Self::with_linked_style`], the row states here what its door's Statement states; the
+    /// loader's reading of the Statement is proven in `crates/plugin-loader`
+    /// (`rows_tests::secret_slots_are_the_secret_refs_the_statement_names`).
+    #[must_use]
+    pub fn with_linked_secret_slots(mut self, row: LinkedRow, slots: &[&str]) -> Self {
+        self = self.with_linked(row);
+        if let Some(e) = self.linked.last_mut() {
+            e.secret_slots = slots.iter().map(|s| (*s).to_string()).collect();
+        }
+        self
+    }
+
     /// The linked rows stating the default inbound style ([`Self::with_linked_style`]), in
     /// registration order: each row's key and its lines.
     pub(crate) fn inbound_styles(&self) -> Vec<(String, Vec<String>)> {
@@ -181,6 +199,7 @@ impl Rows {
             former: Vec::new(),
             door: None,
             inbound_style: Vec::new(),
+            secret_slots: Vec::new(),
         });
         self
     }
@@ -321,6 +340,12 @@ impl PluginRows for Rows {
                 e.row.name
             ),
         }
+    }
+
+    fn secret_slots(&self, name_or_alias: &str) -> Vec<String> {
+        self.entry(name_or_alias)
+            .map(|e| e.secret_slots.clone())
+            .unwrap_or_default()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

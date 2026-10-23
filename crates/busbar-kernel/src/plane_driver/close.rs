@@ -63,10 +63,22 @@ impl PlaneDriver {
     /// it carried (the instance's ticketless crossing, so none is held past it), its record writes
     /// written. Called by [`PlaneDriver::sweep`]; never inside a `Drop`, never under a lock.
     pub(crate) fn close_owed(&self) {
-        let owed = std::mem::take(&mut *self.lock_owed());
-        for Owed { unit, principal } in owed {
+        // One at a time, the lock let go before each crossing: a crossing that unwinds leaves the
+        // rest owed, and the one it was paying owed again, for the next sweep, never dropped.
+        loop {
+            let next = self.lock_owed().pop();
+            let Some(owed) = next else {
+                return;
+            };
+            let (unit, principal) = (owed.unit, owed.principal.clone());
+            let mut paying = Paying {
+                driver: self,
+                owed: Some(owed),
+            };
             let ticket = self.calls.mint();
             let cancelled = self.cancel_now(ticket.unwrap_or(Ticket::NONE), unit);
+            // The `cancel` answered: the debt is paid, whatever it answered.
+            paying.owed = None;
             if let Some(t) = ticket {
                 self.calls.recycle(t);
             }
@@ -85,6 +97,21 @@ impl PlaneDriver {
         self.owed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A debt being paid: an unwind out of its `cancel` owes it again (the next sweep pays it), so no
+/// debt is lost to a panic. Crosses nothing in its `Drop`.
+struct Paying<'d> {
+    driver: &'d PlaneDriver,
+    owed: Option<Owed>,
+}
+
+impl Drop for Paying<'_> {
+    fn drop(&mut self) {
+        if let Some(owed) = self.owed.take() {
+            self.driver.lock_owed().push(owed);
+        }
     }
 }
 

@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936#175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=722a2fcecd61082efa19378052598f109ed11d19#722a2fcecd61082efa19378052598f109ed11d19"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=765d8120cfac540ab46b8e267cffc7a251a23707#765d8120cfac540ab46b8e267cffc7a251a23707"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327#df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -542,6 +542,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "bytes",
+ "futures",
  "http",
  "http-body-util",
  "oauth-as",
@@ -553,6 +554,7 @@ dependencies = [
  "serde_yaml_ng",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -771,7 +773,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=d7095cf3e6896b8eb806ef68f01af5147ef6b8ab#d7095cf3e6896b8eb806ef68f01af5147ef6b8ab"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=2df3a0367bbd4be0e784d0e58d04f913d8d2a9d9#2df3a0367bbd4be0e784d0e58d04f913d8d2a9d9"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -2543,16 +2545,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prettyplease"
-version = "0.2.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
-dependencies = [
- "proc-macro2",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2582,11 +2574,9 @@ dependencies = [
  "log",
  "multimap",
  "petgraph",
- "prettyplease",
  "prost",
  "prost-types",
  "regex",
- "syn 2.0.117",
  "tempfile",
 ]
 
