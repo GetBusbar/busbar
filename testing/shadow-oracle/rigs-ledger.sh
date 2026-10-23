@@ -510,6 +510,22 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 
 owed_ids=""
 
+# ── THE RIGS' NODE ───────────────────────────────────────────────────────────────────────────────
+# The h2 gating scenarios of both planes run node themselves (scripts/mcp-subject/h2-mock-upstream.mjs
+# and tool-digest.mjs, scripts/a2a-subject/h2-mock-agent.mjs), and so does the A2A leg's boot. Only
+# the MCP official-suite leg provisioned one (scripts/mcp-conformance.sh's ensure_node22), inside its
+# own process, so on a runner whose image ships no node every h2 scenario died at `node: command not
+# found` before its busbar booted and was recorded "boot failed". The SAME pinned, sha256-checked
+# Node is provisioned here once and put first on PATH for every leg. A failure to provision it is
+# not a skip: the legs then run without node and are recorded red, as before.
+if node_dir="$(cd "$repo" && bash scripts/mcp-conformance.sh --node-bin 2>"${WORK}/node-pin.log")" \
+    && [ -x "${node_dir}/node" ]; then
+  export PATH="${node_dir}:${PATH}"
+  say "node: $("${node_dir}/node" --version) at ${node_dir}"
+else
+  say "node: the pinned Node could not be provisioned -- see ${WORK}/node-pin.log"
+fi
+
 # ── MCP: official suite, subject leg ─────────────────────────────────────────────────────────────
 run_mcp() {
   say ""

@@ -101,7 +101,7 @@ voice_conform_bin() {
   local bin="${CARGO_TARGET_DIR:-$VC_ROOT/target}/debug/voice_conform"
   cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" -p voice-conformance-harness \
     --bin voice_conform >&2 || return 1
-  # The twin is built in THIS workspace (the harness's dev edge on it, at the rev the root pins the
+  # The twin is built in THIS workspace (the harness's edge on it, at the rev the root pins the
   # plane), so it compiles against the host's busbar-contract through the root's [patch], the
   # contract the loader admits it against, exactly as the linked row is. Built from the plane's own
   # workspace it took that repo's busbar pin instead, and a pin whose plane ops table is not the

@@ -36,6 +36,9 @@
 #   --battery-control    the in-house adversarial/seam battery against its pinned python control
 #   --battery-subject    the in-house battery against busbar. ARMED OR RED.
 #   --selftest           prove the anti-vacuity assertions bite, before any verdict is trusted
+#   --node-bin           provision the pinned Node (ensure_node22) and print the directory holding
+#                        its `node`, for a caller whose own scripts run node (the plane rigs' h2
+#                        scenarios, testing/shadow-oracle/rigs-ledger.sh): one pin, here
 #   --help
 #
 # ARMING
@@ -1068,6 +1071,7 @@ case "${1:---help}" in
   --battery-control)  ensure_node22; battery_control ;;
   --battery-subject)  ensure_node22; battery_subject ;;
   --selftest)         selftest ;;
+  --node-bin)         ensure_node22 >&2; dirname "$(command -v node)" ;;
   --help|-h)          usage ;;
   *) die "unknown mode: $1 (try --help)" ;;
 esac
