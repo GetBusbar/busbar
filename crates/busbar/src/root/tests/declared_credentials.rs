@@ -144,7 +144,7 @@ fn signing_dialect() -> &'static str {
         .map(|(dialect, _)| dialect.as_str())
         .collect();
     match found.as_slice() {
-        [one] => *one,
+        [one] => one,
         other => panic!("exactly one signing binding is recorded: {other:?}"),
     }
 }
@@ -213,7 +213,7 @@ fn family_dialect() -> &'static str {
     let [one] = found.as_slice() else {
         panic!("exactly one family-table dialect is recorded: {found:?}");
     };
-    *one
+    one
 }
 
 const PREFIX_FAMILIES: &[CredentialFamily] = &[
@@ -286,7 +286,7 @@ fn twin(dialect: &str) -> &'static ProtocolDecl {
         .filter(|d| d.egress_scheme.as_ref().map(describe).as_ref() == Some(data))
         .collect();
     match found.as_slice() {
-        [one] => *one,
+        [one] => one,
         other => panic!(
             "{dialect}: exactly one twin carries its recorded scheme, found {}",
             other.len()
