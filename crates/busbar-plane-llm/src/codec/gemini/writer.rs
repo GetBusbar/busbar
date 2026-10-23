@@ -1008,12 +1008,20 @@ impl ProtocolWriter for GeminiWriter {
                 crate::codec::ir::IrDelta::TextDelta(text) => {
                     // Record the answer text so a streamed citation that follows converts against it
                     // (GEM-16). A block's start is where its first text landed.
+                    // The copy is bounded by this stream's `translate_cap` (the same live limit the
+                    // tool-argument buffer holds): a fragment that would cross it is not recorded, so
+                    // a citation past that point anchors against the text held, clamping to its end.
                     if let Ok(mut st) = self.stream_text.lock() {
-                        if !st.block_starts.iter().any(|(i, _)| i == index) {
-                            let start = st.text.len();
-                            st.block_starts.push((*index, start));
+                        let cap = self
+                            .translate_cap
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        if st.text.len().saturating_add(text.len()) <= cap {
+                            if !st.block_starts.iter().any(|(i, _)| i == index) {
+                                let start = st.text.len();
+                                st.block_starts.push((*index, start));
+                            }
+                            st.text.push_str(text);
                         }
-                        st.text.push_str(text);
                     }
                     Some(model_part_frame(serde_json::json!({(keys::TEXT): text})))
                 }

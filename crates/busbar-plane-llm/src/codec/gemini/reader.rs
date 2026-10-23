@@ -961,7 +961,14 @@ impl ProtocolReader for GeminiReader {
                                     }
                                     // The answer text so far: a streamed citation's byte offsets
                                     // index into it (GEM-16).
-                                    state.streamed_text.push_str(text);
+                                    // Bounded by the translate cap's default (32 MiB): the copy
+                                    // only anchors citation offsets, and a fragment that would
+                                    // cross the bound is not recorded (offsets past it clamp).
+                                    if state.streamed_text.len().saturating_add(text.len())
+                                        <= busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
+                                    {
+                                        state.streamed_text.push_str(text);
+                                    }
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: ti,
                                         delta: crate::codec::ir::IrDelta::TextDelta(

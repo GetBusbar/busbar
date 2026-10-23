@@ -7649,3 +7649,53 @@ fn streamed_tool_ids_after_text_match_the_buffered_ids() {
     assert_eq!(buffered.len(), 2, "{buffered:?}");
     assert_eq!(streamed, buffered);
 }
+
+/// The checkpointed index must agree with per-offset conversion across many strides, on mixed-width
+/// text, for every byte offset.
+#[test]
+fn gemini_char_index_matches_per_offset_conversion_across_strides() {
+    let text = "aé✓𝄞x".repeat(100);
+    let index = GeminiCharIndex::build(&text);
+    for b in -2..=(text.len() as i64 + 3) {
+        assert_eq!(index.char_offset(b), gemini_byte_offset_to_char(&text, b));
+    }
+    let ascii = "plain ascii ".repeat(50);
+    let index = GeminiCharIndex::build(&ascii);
+    for b in [-1, 0, 7, 599, 600, 601] {
+        assert_eq!(index.char_offset(b), gemini_byte_offset_to_char(&ascii, b));
+    }
+}
+
+/// A support naming one large chunk many times yields ONE citation for it, not one clone per name.
+#[test]
+fn grounding_repeated_chunk_index_is_cloned_once() {
+    let candidate = serde_json::json!({"groundingMetadata": {
+        "groundingChunks": [{"web": {"uri": "https://a", "title": "A"}}],
+        "groundingSupports": [{"segment": {"startIndex": 0, "endIndex": 1, "text": "x"},
+            "groundingChunkIndices": vec![0; 5000]}]
+    }});
+    let out = citations::read_gemini_grounding_citations(&candidate, Some("x"));
+    assert_eq!(out.len(), 1);
+}
+
+/// Supports that between them name more chunk bytes than the per-candidate budget stop adding
+/// citations rather than cloning the body many times over.
+#[test]
+fn grounding_clone_budget_bounds_total_cloned_bytes() {
+    let big = "u".repeat(1024 * 1024);
+    let chunks: Vec<_> = (0..16)
+        .map(|_| serde_json::json!({"web": {"uri": big, "title": "T"}}))
+        .collect();
+    let supports: Vec<_> = (0..64)
+        .map(|_| serde_json::json!({"groundingChunkIndices": (0..16).collect::<Vec<_>>()}))
+        .collect();
+    let candidate = serde_json::json!({"groundingMetadata": {
+        "groundingChunks": chunks, "groundingSupports": supports}});
+    let out = citations::read_gemini_grounding_citations(&candidate, None);
+    assert!(!out.is_empty());
+    assert!(
+        out.len() <= 9,
+        "budget must stop the clones, got {}",
+        out.len()
+    );
+}

@@ -21,36 +21,65 @@ use crate::codec::keys;
 /// offset landing MID-codepoint (a malformed or adversarial upstream value, which has no valid
 /// character count at that exact point) resolves to the nearest EARLIER boundary rather than
 /// panicking on a non-boundary slice.
-pub(super) struct GeminiCharIndex {
-    /// Byte offset of every character START, ascending, with `text.len()` appended as the terminator
-    /// so a clamp-to-end offset resolves without a special case.
-    starts: Vec<usize>,
-    len: usize,
+pub(super) struct GeminiCharIndex<'a> {
+    text: &'a str,
+    /// Pure-ASCII text: a byte offset IS a character offset, so no index is held at all.
+    ascii: bool,
+    /// Byte offset of every [`CHAR_CHECKPOINT_STRIDE`]th character start, ascending. A lookup
+    /// binary-searches this and walks at most one stride of characters, so the index costs one
+    /// `usize` per stride instead of one per character.
+    checkpoints: Vec<usize>,
 }
 
-impl GeminiCharIndex {
+/// Characters between two checkpoints of a [`GeminiCharIndex`].
+const CHAR_CHECKPOINT_STRIDE: usize = 64;
+
+impl<'a> GeminiCharIndex<'a> {
     /// The single ordered pass. `char_indices()` yields character starts in ascending byte order, so
-    /// the vector is sorted by construction — no sort, and the binary searches below are valid.
-    pub(super) fn build(text: &str) -> Self {
-        let mut starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
-        starts.push(text.len());
+    /// the checkpoints are sorted by construction.
+    pub(super) fn build(text: &'a str) -> Self {
+        let ascii = text.is_ascii();
+        let checkpoints = if ascii {
+            Vec::new()
+        } else {
+            text.char_indices()
+                .step_by(CHAR_CHECKPOINT_STRIDE)
+                .map(|(b, _)| b)
+                .collect()
+        };
         Self {
-            starts,
-            len: text.len(),
+            text,
+            ascii,
+            checkpoints,
         }
     }
 
     /// The character offset for a wire BYTE offset.
     pub(super) fn char_offset(&self, byte_idx: i64) -> i64 {
-        let target = (byte_idx.max(0) as usize).min(self.len);
-        // The count of character starts strictly BELOW `target`.
-        let before = self.starts.partition_point(|&s| s < target);
-        // `partition_point` returns the first index whose start is >= `target`, so an entry equal to
-        // `target` there proves `target` is a character boundary (the appended `len` covers the
-        // clamp-to-end case). When it is NOT a boundary, `before` has counted the character that
-        // CONTAINS `target` — whose start is earlier — so drop it to land on the nearest earlier
-        // boundary, which is what converting the offset on its own does.
-        if self.starts.get(before) == Some(&target) {
+        let target = (byte_idx.max(0) as usize).min(self.text.len());
+        if self.ascii {
+            return target as i64;
+        }
+        // The last checkpoint at or before `target` (the first is byte 0 for any non-empty text).
+        let k = self.checkpoints.partition_point(|&s| s <= target);
+        if k == 0 {
+            return 0;
+        }
+        let base = self.checkpoints[k - 1];
+        let mut before = (k - 1) * CHAR_CHECKPOINT_STRIDE;
+        let mut boundary = target == self.text.len();
+        // Count the character starts strictly below `target`; a start equal to it proves `target`
+        // is a boundary. When it is NOT, the character containing it was counted, so drop it to
+        // land on the nearest earlier boundary.
+        for (b, _) in self.text[base..].char_indices() {
+            let start = base + b;
+            if start >= target {
+                boundary = boundary || start == target;
+                break;
+            }
+            before += 1;
+        }
+        if boundary {
             before as i64
         } else {
             before.saturating_sub(1) as i64
@@ -165,6 +194,9 @@ pub(super) fn read_gemini_citations(
 pub(super) const FIELD_GROUNDING_METADATA: &str = "groundingMetadata";
 const FIELD_GROUNDING_CHUNKS: &str = "groundingChunks";
 
+/// Most bytes of grounding chunks and cited text one candidate may clone into citations.
+const MAX_GROUNDING_CLONE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Map a Gemini candidate's `groundingMetadata` → neutral [`crate::codec::ir::IrCitation`]s.
 ///
 /// THE GAP THIS CLOSES: `groundingMetadata` is where a Google-Search-grounded Gemini answer puts its
@@ -203,6 +235,9 @@ pub(super) fn read_gemini_grounding_citations(
     if chunks.is_empty() {
         return Vec::new();
     }
+
+    // Serialized size of a chunk, measured per (support, chunk) pair the budget below admits.
+    let chunk_bytes = |chunk: &serde_json::Value| -> usize { chunk.to_string().len() };
 
     // `{web: {uri, title}}` and `{retrievedContext: {uri, title}}` are the two documented chunk
     // members and carry the same two fields; read whichever is present rather than name only `web`.
@@ -248,7 +283,8 @@ pub(super) fn read_gemini_grounding_citations(
         .unwrap_or_default();
 
     let mut out = Vec::new();
-    for support in supports {
+    let mut cloned_bytes = 0usize;
+    'supports: for support in supports {
         let segment = support.get("segment");
         let start = convert(
             segment
@@ -265,6 +301,7 @@ pub(super) fn read_gemini_grounding_citations(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let mut seen: Vec<u64> = Vec::new();
         for idx in support
             .get("groundingChunkIndices")
             .and_then(|v| v.as_array())
@@ -274,6 +311,20 @@ pub(super) fn read_gemini_grounding_citations(
             let Some(chunk) = idx.as_u64().and_then(|i| chunks.get(i as usize)) else {
                 continue;
             };
+            // A chunk named twice by one support yields the identical citation; naming it N times
+            // must not clone it N times.
+            let i = idx.as_u64().unwrap_or_default();
+            if seen.contains(&i) {
+                continue;
+            }
+            // The clones (the chunk kept in `raw`, the cited text) are bounded per candidate, so a
+            // support listing many large chunks cannot multiply the body into memory.
+            cloned_bytes = cloned_bytes
+                .saturating_add(chunk_bytes(chunk))
+                .saturating_add(cited_text.as_ref().map_or(0, String::len));
+            if cloned_bytes > MAX_GROUNDING_CLONE_BYTES {
+                break 'supports;
+            }
             let (url, title) = chunk_source(chunk);
             if url.is_none() && title.is_none() {
                 continue;
