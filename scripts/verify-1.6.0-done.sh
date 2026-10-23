@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# SCRATCH DIAGNOSTIC (draft PR, never to land): every voice leg's verdict lines, and the plane-rig
-# ledger's reds by family with their reasons. Compact output at the end of the log.
+# SCRATCH DIAGNOSTIC (draft PR, never to land): why each voice leg and each plane rig is red,
+# compact, at the very end of the log (the measurement keeps only the tail).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 R="$(pwd)"; D="$R/target/vd-diag"; rm -rf "$D"; mkdir -p "$D"
@@ -10,10 +10,12 @@ bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check >"
 L=target/rigs-ledger/ledger.tsv
 echo "######## SUMMARY ########"
 echo "VOICE rc=$vrc BUILD rc=$brc RIGS rc=$rrc"
-grep -E "^RESULT " "$D/voice.out" | grep -v " PASS" | cut -c1-300 | head -n 25
-grep -E "conformance failures|accounting problems" "$D/voice.out" | head -n 3
-awk -F'\t' '{split($1,a,"|"); k=a[1]; if (a[1]=="baseline") k="baseline:" a[2]; c[k" "$2]++} END{for (x in c) print c[x], x}' "$L" 2>/dev/null | sort -k2 | tr '\n' ';'; echo
-awk -F'\t' '$2!="PASS" && $2!="SKIP" && $1 !~ /^baseline/ {print $1" "$2" "substr($4,1,220)}' "$L" 2>/dev/null | head -n 40
-grep -E "control-scenario|ceiling|MUST requirements|battery test ids|scenarios:|RED|refus" "$D/rigs.out" | head -n 12 | cut -c1-240
-tail -n 5 "$D/rigs.out" | cut -c1-240
+echo "TCK FAIL count: $(awk -F'\t' '$1 ~ /^a2a.tck\|/ && $2=="FAIL"' "$L" | wc -l)"
+for f in a2a-tck.log a2a-battery.log mcp-rig.log; do [ -f "target/rigs-ledger/$f" ] && { echo "== $f"; grep -iE "error|refused|connection|traceback|exception|E  " "target/rigs-ledger/$f" | sort | uniq -c | sort -rn | head -n 4 | cut -c1-200; }; done
+ls target/rigs-ledger/ | tr '\n' ' '; echo
+awk -F'\t' '$1 ~ /^mcp.rig\|h2-/ && $2!="PASS" && $2!="SKIP" {print $1": "substr($4,1,260)}' "$L"
+awk -F'\t' '$1=="a2a.battery|adv.deep_nesting" || $1=="a2a.tck|CORE-SEND-001" {print $1": "substr($4,1,260)}' "$L"
+echo "== VOICE"
+grep -E "^RESULT " "$D/voice.out" | grep -v " PASS" | cut -c1-260 | head -n 20
+grep -E "conformance failures|accounting problems" "$D/voice.out" | head -n 2
 exit 1
