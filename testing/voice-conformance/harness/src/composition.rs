@@ -22,7 +22,7 @@ use busbar_plane_streaming::door::{
     RIDES_LIVE_SOCKET, RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
 };
 use busbar_plane_streaming::driven::{
-    mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, REALTIME_SOCKET_PATH, SESSION_OPEN_ACTION,
+    mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, SESSION_OPEN_ACTION,
 };
 use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
@@ -711,7 +711,7 @@ fn dial_check(o: &DialObs) -> Result<String, String> {
         &o.openai,
         USAGE_DONE,
         RIDES_REALTIME_SOCKET,
-        REALTIME_SOCKET_PATH,
+        Dialect::OpenAi.socket(),
     )?;
     let b = dial_one(
         Dialect::Gemini,
