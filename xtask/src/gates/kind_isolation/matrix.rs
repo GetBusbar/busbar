@@ -4792,6 +4792,82 @@ pub fn selftest<'a>(
         }
     }
 
+    // A 1.5.x CONFIG WORD THE MIGRATOR WRITES IS EXEMPT ONLY AT ITS ONE DECLARATION (architect
+    // ruling 2026-10-23, addition to R-3; [`config_words::FROZEN_CONFIG_LITERALS`]). GREEN: the
+    // declaration standing in its file under a new doc line (a position, not a line number). RED,
+    // each a cell grown over the merge-base: the same store-instance literal in another kernel
+    // file, the same declaration copied into another kernel file, and the declaration edited.
+    for f in config_words::FROZEN_CONFIG_LITERALS {
+        match cx.read(f.file) {
+            Ok(was) if was.lines().any(|l| l.trim() == f.declaration()) => {
+                let decl = f.declaration();
+                let cell = "busbar-kernel \u{d7} instance:store";
+                let mut ov = crate::ctx::Overlay::new();
+                ov.set(
+                    f.file,
+                    was.replacen(
+                        &decl,
+                        &format!("/// PLANTED: a doc line above it.\n{decl}"),
+                        1,
+                    ),
+                );
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a frozen config literal at its declaration is not a store instance",
+                    &[ROW_LAW0_BASE],
+                    ov,
+                ));
+                let elsewhere = "crates/busbar-kernel/src/planted_frozen_literal.rs";
+                for (how, rel, body) in [
+                    (
+                        "the frozen config literal's word in another kernel literal still counts",
+                        elsewhere,
+                        format!("pub const PLANTED_STORE: &str = \"{}\";\n", f.word),
+                    ),
+                    (
+                        "the frozen config literal's declaration copied into another file still \
+                         counts",
+                        elsewhere,
+                        format!("{decl}\n"),
+                    ),
+                    (
+                        "an edited declaration of the frozen config literal counts",
+                        f.file,
+                        was.replacen(
+                            &decl,
+                            &format!("pub const {}_EDITED: &str = \"{}\";", f.holder, f.word),
+                            1,
+                        ),
+                    ),
+                ] {
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set(rel, body);
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        ov,
+                        &["law0-grown", cell],
+                    ));
+                }
+            }
+            Ok(_) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "a frozen config literal's declaration to plant beside",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                format!("{} no longer declares `{}`", f.file, f.declaration()),
+            ))),
+            Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "a frozen config literal's declaration to plant beside",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                why,
+            ))),
+        }
+    }
+
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
     // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.

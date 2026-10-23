@@ -74,3 +74,29 @@ fn the_mask_keeps_lines_and_columns_and_touches_only_the_word() {
     assert_eq!(masked.len(), text.len());
     assert_eq!(masked, "  sink: { xxxxxxx: [logs] }\nlet streams = 1;\n");
 }
+
+#[test]
+fn the_migrated_store_literal_is_exempt_only_at_its_declaration() {
+    use super::{frozen_literal, FROZEN_CONFIG_LITERALS};
+    let f = &FROZEN_CONFIG_LITERALS[0];
+    let decl = format!("pub const {}: &str = \"{}\";", f.holder, f.word);
+    assert!(frozen_literal(f.file, &decl, f.word));
+    assert!(frozen_literal(f.file, &format!("    {decl}"), f.word));
+    for (rel, line) in [
+        // Another file, the same declaration.
+        ("crates/busbar-kernel/src/config/mod.rs", decl.clone()),
+        // The same file: an edited declaration, another name, the word on another line.
+        (
+            f.file,
+            format!("pub const {}_EDITED: &str = \"{}\";", f.holder, f.word),
+        ),
+        (f.file, format!("pub const OTHER: &str = \"{}\";", f.word)),
+        (f.file, format!("{decl} // and \"{}\"", f.word)),
+        (f.file, format!("let m = \"{}\";", f.word)),
+    ] {
+        assert!(
+            !frozen_literal(rel, &line, f.word),
+            "`{line}` in {rel} is not the declaration, so its literal counts"
+        );
+    }
+}

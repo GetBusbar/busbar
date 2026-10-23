@@ -808,6 +808,13 @@ pub fn measure_reserved(
         let struck = super::frozen::literals_struck(frozen, rel, text, text);
         let lits = file_literals(rel, struck.as_deref().unwrap_or(text));
         let frozen_mask = super::frozen::exempt_lines(frozen, rel, text);
+        // A 1.5.x CONFIG WORD THE MIGRATOR WRITES, AT ITS ONE DECLARATION (architect ruling
+        // 2026-10-23, addition to R-3; [`super::config_words::FROZEN_CONFIG_LITERALS`]).
+        let frozen_decl_lines: Vec<&str> = if super::config_words::holds_frozen_literal(rel) {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
         let reserving: Vec<usize> = shapes
             .iter()
             .enumerate()
@@ -845,6 +852,13 @@ pub fn measure_reserved(
                 .as_ref()
                 .is_some_and(|m| super::frozen::at(m, *line))
             {
+                continue;
+            }
+            let line_text = line
+                .checked_sub(1)
+                .and_then(|i| frozen_decl_lines.get(i).copied())
+                .unwrap_or("");
+            if super::config_words::frozen_literal(rel, line_text, lit) {
                 continue;
             }
             if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {

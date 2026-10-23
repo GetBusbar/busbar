@@ -28,10 +28,59 @@
 //! (`plane-streams`, `streams_route`) still count. English prose is the 2026-09-27 ruling's
 //! (`ENGLISH_INSTANCE_WORDS`), unchanged.
 //!
+//! ONE MORE FROZEN CONFIG WORD IS A LITERAL, NOT A KEY ([`FROZEN_CONFIG_LITERALS`]): the store
+//! module the migrator writes for 1.5.5's implicit store (`MIGRATED_STORE_MODULE = "memory"`),
+//! exempt on the instance-literal axes only at its declaration.
+//!
 //! `decisions` NEEDS NO POSITION HERE: the bare word is no needle at all (`BARE_WORD_COLLISIONS`,
 //! which strikes it for this same export stream token), so the token in a stream list is not read.
 //! The decisions plane's own spellings (`decision`, `plane-decisions`, `busbar-plane-decisions`)
 //! are needles everywhere, a stream list included; the self-test proves it.
+
+/// A 1.5.x CONFIG WORD THE 1.6.0 MIGRATOR WRITES INTO A CUSTOMER'S CONFIG, held as one named
+/// constant (architect ruling 2026-10-23, addition to R-3 for #1371). On the `instance:<kind>`
+/// literal axes its literal is exempt in ONE position: the declaration of [`FrozenLiteral::holder`]
+/// in [`FrozenLiteral::file`], written exactly as [`FrozenLiteral::declaration`] spells it. The same
+/// literal on any other line, in any other file, under any other name, or on an edited declaration
+/// counts.
+pub(super) struct FrozenLiteral {
+    /// The file the declaration stands in.
+    pub file: &'static str,
+    /// The constant that holds the word.
+    pub holder: &'static str,
+    /// The word, the whole content of the literal.
+    pub word: &'static str,
+}
+
+impl FrozenLiteral {
+    /// The declaration line, trimmed, byte for byte.
+    pub(super) fn declaration(&self) -> String {
+        format!("pub const {}: &str = \"{}\";", self.holder, self.word)
+    }
+}
+
+/// The frozen config literals. `memory` is the store a 1.5.x config with no `store:` block ran on
+/// (v1.5.5 crates/busbar/src/config/mod.rs:3026 `GOVERNANCE_STORE_MEMORY`), which
+/// `busbar --migrate-config` writes into that config as its `store: { module: memory }`: 1.5.5's
+/// implicit behaviour made explicit, frozen 1.5.5 config vocabulary.
+pub(super) const FROZEN_CONFIG_LITERALS: &[FrozenLiteral] = &[FrozenLiteral {
+    file: "crates/busbar-kernel/src/config/sections.rs",
+    holder: "MIGRATED_STORE_MODULE",
+    word: "memory",
+}];
+
+/// Whether `rel` holds a [`FROZEN_CONFIG_LITERALS`] declaration (so its lines are worth reading).
+pub(super) fn holds_frozen_literal(rel: &str) -> bool {
+    FROZEN_CONFIG_LITERALS.iter().any(|f| f.file == rel)
+}
+
+/// Whether the literal `lit` on `line` (its text) of file `rel` is a frozen config literal in its
+/// one position.
+pub(super) fn frozen_literal(rel: &str, line: &str, lit: &str) -> bool {
+    FROZEN_CONFIG_LITERALS
+        .iter()
+        .any(|f| f.file == rel && f.word == lit && line.trim() == f.declaration())
+}
 
 /// The export entry's 1.5.x key: the one frozen config word with a position to mask (the stream
 /// token `decisions` is no needle; see the module doc).
