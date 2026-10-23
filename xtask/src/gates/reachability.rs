@@ -547,6 +547,7 @@ fn normalize_rel(p: &str) -> String {
 fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) -> BTreeSet<String> {
     let live: Vec<&Scanned> = files.iter().filter(|f| !f.whole_file_is_test()).collect();
     let names: BTreeSet<&str> = live.iter().map(|f| f.stem.as_str()).collect();
+    let aliases = path_declared_modules(files);
 
     let mut mentions: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for f in &live {
@@ -561,12 +562,26 @@ fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) ->
             }
             // `counted`, NEVER `code`: the blanked copy drops literal CONTENTS, so a module
             // name mentioned inside a string is not an edge. `code` deliberately keeps them.
-            for w in local_path_words(&l.counted) {
-                if let Some(n) = names.get(w.as_str()) {
-                    if *n != f.stem {
-                        hit.insert(n);
+            for (w, prev) in path_words(&l.counted) {
+                if prev.as_deref().is_none_or(|p| LOCAL_ROOTS.contains(&p)) {
+                    if let Some(n) = names.get(w.as_str()) {
+                        if *n != f.stem {
+                            hit.insert(n);
+                        }
                     }
                 }
+                // `serve::lines` where `serve.rs` declares `#[path = "serve_lines.rs"] mod lines;`:
+                // the module is spelled by its declared name, reached through its declarer.
+                hit.extend(
+                    aliases
+                        .iter()
+                        .filter(|(declarer, name, target)| {
+                            prev.as_deref() == Some(declarer.as_str())
+                                && *name == w
+                                && *target != f.stem
+                        })
+                        .filter_map(|(_, _, target)| names.get(target.as_str())),
+                );
             }
         }
         // The generated table `main.rs` includes is `main.rs`'s text too (see the header).
@@ -595,6 +610,36 @@ fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) ->
     seen
 }
 
+/// `(declaring stem, declared name, target stem)` for every `#[path = "x.rs"] mod name;` whose
+/// declared name is not the target file's stem.
+fn path_declared_modules(files: &[Scanned]) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for f in files.iter().filter(|f| !f.whole_file_is_test()) {
+        let base = f.rel.rsplit_once('/').map_or("", |(d, _)| d);
+        let mut path_attr: Option<String> = None;
+        for l in &f.lines {
+            let code = l.code.trim();
+            if let Some(p) = path_attribute(code) {
+                path_attr = Some(p);
+                continue;
+            }
+            let Some(name) = mod_statement(code) else {
+                if !code.is_empty() && !code.starts_with("#[") {
+                    path_attr = None;
+                }
+                continue;
+            };
+            if let Some(p) = path_attr.take() {
+                let target = stem_of(&normalize_rel(&format!("{base}/{p}")));
+                if target != name {
+                    out.push((f.stem.clone(), name, target));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The path segments that root a path in THIS crate: `crate::root::boot`, `self::boot`,
 /// `super::boot`.
 const LOCAL_ROOTS: &[&str] = &["root", "crate", "self", "super"];
@@ -605,6 +650,16 @@ const LOCAL_ROOTS: &[&str] = &["root", "crate", "self", "super"];
 /// `units_a2a::boot()` calls a function. A `use a::{b, c}` group is read against its prefix `a`.
 /// A bare leading word (`boot::run()`, `use boot;`, `x.boot()`) keeps counting.
 fn local_path_words(code: &str) -> Vec<String> {
+    path_words(code)
+        .into_iter()
+        .filter(|(_, prev)| prev.as_deref().is_none_or(|p| LOCAL_ROOTS.contains(&p)))
+        .map(|(w, _)| w)
+        .collect()
+}
+
+/// Every word of a line with the path segment it was reached through (`None` when bare), group
+/// prefixes applied — [`local_path_words`] is the subset that can name a module of this crate.
+fn path_words(code: &str) -> Vec<(String, Option<String>)> {
     let chars: Vec<char> = code.chars().collect();
     let mut out = Vec::new();
     // The segment before the `::` that leads to the next word, if any.
@@ -620,9 +675,7 @@ fn local_path_words(code: &str) -> Vec<String> {
                 i += 1;
             }
             let w: String = chars[st..i].iter().collect();
-            if prev.as_deref().is_none_or(|p| LOCAL_ROOTS.contains(&p)) {
-                out.push(w.clone());
-            }
+            out.push((w.clone(), prev.clone()));
             let mut j = i;
             while j < chars.len() && chars[j].is_whitespace() {
                 j += 1;
