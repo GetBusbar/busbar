@@ -744,7 +744,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         r.push(prove_red(
             cx,
             gate,
-            &format!("a terminal called through a `use … as` rename ({caller}) is counted"),
+            format!("a terminal called through a `use … as` rename ({caller}) is counted"),
             &["single-terminal"],
             ov,
             &[caller],
@@ -798,7 +798,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         r.push(prove_red(
             cx,
             gate,
-            &format!(
+            format!(
                 "a terminal called through a rename its file does not show ({caller}) is counted"
             ),
             &["single-terminal"],
@@ -831,7 +831,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         r.push(prove_green(
             &cx.with_overlay(ov),
             gate,
-            &format!("the real `Node` named plainly is not the terminal ({file})"),
+            format!("the real `Node` named plainly is not the terminal ({file})"),
             &["single-terminal"],
         ));
     }
