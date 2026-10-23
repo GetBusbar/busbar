@@ -741,7 +741,7 @@
    "paths": [
     "crates/busbar-core-admin/src"
    ],
-   "tree_hash": "90f2b67a445df20ccc2083aea274fc97f1213f53e9495be02286027ce54674b0",
+   "tree_hash": "d9624046a78132782237edc337e363c12c29c2487b27f7ec1e93536518f01caa",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -753,7 +753,7 @@
    },
    "report": "The operator surface still reaches the process's rate history through a static seam of its own, still presents itself to the registry as a plane-kind plugin, and still sums money figures itself. Key rotation ignores the configured lifetime ceiling, and an empty admin chain is refused where the published release applied it. Several reads and one write still block async workers, the error envelope splices caller text into JSON unescaped, and the unit tests link a real plane and auth plugin. Read fully except the generated verb table, sampled.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "85e59fc5fcc5a859aa4554354dbf6c1fbd14ac6f",
    "exclude": [
     "crates/busbar-core-admin/src/tests"
    ],
@@ -861,18 +861,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "92255a77ce823bb94fac34921eee1e51160e752f934beafd6a496f82093eea60",
-   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
-   "round": 6,
+   "tree_hash": "30420c5a4e293d8f85650defa98829bea38b4acc96fe683850c4aa19c02176d3",
+   "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+   "round": 7,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 4,
-    "LOW": 4,
+    "MEDIUM": 3,
+    "LOW": 2,
     "NIT": 0
    },
-   "report": "The authorization server keeps its records in the deployment's store under fenced version claims, sweeps them on the kernel's clock, and fetches metadata documents through the root connector under per-site and global bounds. A cell the sweep retires leaves its own claim on the next version standing, so a client whose records are recreated within two minutes cannot write once it climbs back to that version. The per-site fetch bound counts each IPv6 literal as its own site, so a handful of slow addresses holds every fetch. Open registration installs no limiter and a registered client's records are never reclaimed, and the minted signing key sits in the store in clear. Read in 11 parts, fully.",
-   "auditor": "opus-r159d-core-oauth2",
+   "report": "The authorization server keeps its records in the deployment's store under fenced version claims. Each cell now carries its own epoch, so a client whose records the sweep retires can write again as soon as they are recreated. The sweep now deletes a self-registered client that has held nothing for a day, both in the store and in process. Registration now has a rate limit, but its budget is one global counter per process: six refused registrations a minute shut registration for every client on that node. The per-site fetch bound now groups IPv6 addresses by /64, but each IPv4 literal and each registrable domain still counts as its own site. Any caller can therefore hold every metadata-document fetch with eight slow public addresses, and it does not need to own them. When a request names no scope, the consent screen says no scopes are requested, yet the token carries the client's default: the whole default_grant for a provisioned client or for a metadata-document client whose document names no scope. The minted signing key still sits in the store in clear. Every node's sweep lists every client's records each minute and then reads each one again. Read fully.",
+   "auditor": "opus-r159g-oauth2-confirm",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -959,6 +959,20 @@
       "NIT": 0
      },
      "report": "The authorization server keeps its records in the deployment's store under fenced version claims, sweeps them on the kernel's clock, and fetches metadata documents through the root connector under per-site and global bounds. A cell the sweep retires leaves its own claim on the next version standing, so a client whose records are recreated within two minutes cannot write once it climbs back to that version. The per-site fetch bound counts each IPv6 literal as its own site, so a handful of slow addresses holds every fetch. Open registration installs no limiter and a registered client's records are never reclaimed, and the minted signing key sits in the store in clear. Read in 11 parts, fully."
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-r159g-oauth2-confirm",
+     "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+     "tree_hash": "30420c5a4e293d8f85650defa98829bea38b4acc96fe683850c4aa19c02176d3",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The authorization server keeps its records in the deployment's store under fenced version claims. Each cell now carries its own epoch, so a client whose records the sweep retires can write again as soon as they are recreated. The sweep now deletes a self-registered client that has held nothing for a day, both in the store and in process. Registration now has a rate limit, but its budget is one global counter per process: six refused registrations a minute shut registration for every client on that node. The per-site fetch bound now groups IPv6 addresses by /64, but each IPv4 literal and each registrable domain still counts as its own site. Any caller can therefore hold every metadata-document fetch with eight slow public addresses, and it does not need to own them. When a request names no scope, the consent screen says no scopes are requested, yet the token carries the client's default: the whole default_grant for a provisioned client or for a metadata-document client whose document names no scope. The minted signing key still sits in the store in clear. Every node's sweep lists every client's records each minute and then reads each one again. Read fully."
     }
    ]
   },
