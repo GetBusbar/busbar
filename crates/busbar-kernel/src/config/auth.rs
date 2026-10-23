@@ -443,19 +443,25 @@ pub struct AuthCfg {
 }
 
 impl AuthCfg {
-    /// Create a default (open front door, default admin chain) AuthCfg for initialization: a TEST
-    /// build's, under the words of the record a test lends when it lends none of its own.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn default_none() -> Self {
+    /// The default (open front door, default admin chain) AuthCfg a configuration with no `auth:`
+    /// block builds with, under the operator credential's words of the record `root` lends.
+    pub fn default_under(root: &RootInstall) -> Self {
         Self {
             signing_key: None,
             chain: vec![],
-            admin_auth: default_admin_auth(&crate::test_support::lent_stand_in()),
+            admin_auth: default_admin_auth(root),
             role_bindings: RoleBindings::new(),
             methods: AuthMethods::new(),
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
         }
+    }
+
+    /// Create a default (open front door, default admin chain) AuthCfg for initialization: a TEST
+    /// build's, under the words of the record a test lends when it lends none of its own.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn default_none() -> Self {
+        Self::default_under(&crate::test_support::lent_stand_in())
     }
 
     /// TEST-SUPPORT constructor: the default (open, default-admin) posture with ONLY the data-plane

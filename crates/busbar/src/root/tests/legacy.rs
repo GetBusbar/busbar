@@ -353,7 +353,7 @@ fn render(registry: &str) -> String {
 
 /// The manifest's table as written: from its header to the line before the next table header (or
 /// the end), less trailing blank lines.
-fn table(manifest: &str) -> String {
+fn manifest_table(manifest: &str) -> String {
     let lines: Vec<&str> = manifest.lines().collect();
     let start = lines
         .iter()
@@ -373,7 +373,7 @@ fn table(manifest: &str) -> String {
 /// to paste.
 fn drift(manifest: &str, registry: &str) -> Option<String> {
     let want = render(registry);
-    (table(manifest) != want).then(|| {
+    (manifest_table(manifest) != want).then(|| {
         format!(
             "crates/busbar/Cargo.toml: `{HEADER}` is not the render of plugins.yaml; replace it with:\n\n{want}"
         )

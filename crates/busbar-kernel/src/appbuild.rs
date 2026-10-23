@@ -665,7 +665,7 @@ pub fn build_app_from_config(
     let auth_cfg = cfg
         .auth
         .clone()
-        .unwrap_or_else(config::AuthCfg::default_none);
+        .unwrap_or_else(|| config::AuthCfg::default_under(&root));
 
     // DECLARATIVE PLUGIN FETCH (`plugins.fetch:`) — download the operator-declared signed tarballs
     // into `plugins.dir` BEFORE preflight scans it. Runs at BOOT and on `POST /plugins/reload` (both
