@@ -545,7 +545,9 @@ fn declares_marker(text: &str, name: &str) -> bool {
     let mut st = scan::LexState::default();
     text.lines().any(|l| {
         let code = scan::blank_code(l, &mut st);
-        word_positions(&code, name).any(|i| code[i + name.len()..].trim_start().starts_with("=>"))
+        let hit = word_positions(&code, name)
+            .any(|i| code[i + name.len()..].trim_start().starts_with("=>"));
+        hit
     })
 }
 
