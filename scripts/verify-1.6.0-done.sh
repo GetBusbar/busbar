@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
-# SCRATCH DIAGNOSTIC (draft PR, never to land): why each voice leg and each plane rig is red,
-# compact, at the very end of the log (the measurement keeps only the tail).
+# SCRATCH DIAGNOSTIC (draft PR, never to land): the A2A TCK runner's own errors, the battery's
+# deep-nesting case, and the MCP h2 meter leg's node log. Compact, at the very end of the log.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 R="$(pwd)"; D="$R/target/vd-diag"; rm -rf "$D"; mkdir -p "$D"
-bash testing/voice-conformance/voice-conformance.sh >"$D/voice.out" 2>&1; vrc=$?
 cargo build --release --locked -p busbar >"$D/build.out" 2>&1; brc=$?
 bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check >"$D/rigs.out" 2>&1; rrc=$?
-L=target/rigs-ledger/ledger.tsv
+G=target/rigs-ledger
 echo "######## SUMMARY ########"
-echo "VOICE rc=$vrc BUILD rc=$brc RIGS rc=$rrc"
-echo "TCK FAIL count: $(awk -F'\t' '$1 ~ /^a2a.tck\|/ && $2=="FAIL"' "$L" | wc -l)"
-for f in a2a-tck.log a2a-battery.log mcp-rig.log; do [ -f "target/rigs-ledger/$f" ] && { echo "== $f"; grep -iE "error|refused|connection|traceback|exception|E  " "target/rigs-ledger/$f" | sort | uniq -c | sort -rn | head -n 4 | cut -c1-200; }; done
-ls target/rigs-ledger/ | tr '\n' ' '; echo
-awk -F'\t' '$1 ~ /^mcp.rig\|h2-/ && $2!="PASS" && $2!="SKIP" {print $1": "substr($4,1,260)}' "$L"
-awk -F'\t' '$1=="a2a.battery|adv.deep_nesting" || $1=="a2a.tck|CORE-SEND-001" {print $1": "substr($4,1,260)}' "$L"
-echo "== VOICE"
-grep -E "^RESULT " "$D/voice.out" | grep -v " PASS" | cut -c1-260 | head -n 20
-grep -E "conformance failures|accounting problems" "$D/voice.out" | head -n 2
+echo "BUILD rc=$brc RIGS rc=$rrc"
+echo "== TCK log tail"; grep -vE "^\s*ok:" "$G/a2a-tck.log" | grep -iE "fail|error|assert|refus|status|exception|E  " | sort | uniq -c | sort -rn | head -n 10 | cut -c1-230
+echo "== TCK fold err"; tail -c 400 "$G/a2a-tck-fold.err" 2>/dev/null; echo
+R2=$(ls "$G"/a2a-tck-work/out/*.json 2>/dev/null | head -n 1); echo "report: $R2"
+[ -n "$R2" ] && python3 - "$R2" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+s=json.dumps(d)
+i=s.find("CORE-SEND-001"); print(s[max(0,i-100):i+700])
+PY
+echo "== battery deep_nesting"; grep -n -A6 "deep_nesting" "$G/a2a-battery.log" | cut -c1-230 | head -n 10
+echo "== mcp h2 meter-row log"; tail -n 14 "$G/mcp-h2-h2-meter-row.log" | cut -c1-230
+echo "== mcp h2 meter-row work"; ls "$G/mcp-h2-h2-meter-row" | tr '\n' ' '; echo
+f=$(ls "$G"/mcp-h2-h2-meter-row/*.yaml "$G"/mcp-h2-h2-meter-row/*/*.yaml 2>/dev/null | head -n 1); echo "config: $f"; [ -n "$f" ] && grep -nE "billing|rate_card|per_request|fee|ledger|mcp|server" "$f" | head -n 14 | cut -c1-200
 exit 1
