@@ -492,6 +492,9 @@ pub(crate) struct Instance {
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
     pub(crate) drainable: AtomicU32,
+    /// Ops of ADMITTED UNITS in flight (a plane unit's `on_piece` and `serve`): they hold no
+    /// `max_inflight` unit, and `close` is refused while any is in flight (THE DESIGN §11.13 M1).
+    pub(crate) unit_ops: AtomicU32,
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
     pub(crate) timeout: Outcome,
@@ -652,16 +655,31 @@ impl Instance {
     /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
     /// no other op is in flight (one atomic step). `None` over the cap, or `close` with ops in
     /// flight.
+    ///
+    /// `close` is refused too while an admitted unit's op is in flight ([`Instance::unit_ops`];
+    /// THE DESIGN §11.13 M1: "`close` is refused while units are in flight"). The count is read
+    /// again once the units are taken: a unit op counted before that is seen and the units go
+    /// back; one counted after it was submitted after `close` was admitted, and meets the closing
+    /// instance's own refusal.
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         let close = s == slot::CLOSE;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
         let want = if close { self.cap } else { 1 };
-        self.inflight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        let taken = self
+            .inflight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 let fits = if close { n == 0 } else { n < self.cap };
                 fits.then_some(n + want)
             })
             .ok()
-            .map(|_| want)
+            .map(|_| want)?;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            self.release(taken);
+            return None;
+        }
+        Some(taken)
     }
 
     pub(crate) fn release(&self, units: u32) {
@@ -924,6 +942,30 @@ impl Instance {
             self.close_half_open();
         }
         crossed
+    }
+
+    /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
+    /// abandoned with no worker to resume it on (a replaced worker's orphan): a TICKET-LESS crossing,
+    /// listed in [`Instance::calls`] so the watchdog judges one that hangs, made on a permanent FFI
+    /// worker ([`crate::ffi_thread`]) since its caller's thread retires. The kind's own frame, as
+    /// the worker's `cancel` sends it.
+    pub(crate) fn cancel_abandoned(
+        &self,
+        ticket: Ticket,
+        class: DeadlineClass,
+        unit: Option<u64>,
+    ) -> Outcome {
+        let mut frame = (self.cancel_frame)();
+        frame.name_unit(unit.unwrap_or(0));
+        let (input, out, out_size) = frame.prepare(ticket, class as u8);
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
+        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
+            self.cross(slot::CANCEL, input, out, out_size)
+        });
+        self.lock_calls().retain(|c| c.0 != id);
+        crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
     /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
@@ -1617,6 +1659,7 @@ impl<K: Kind> Plugin<K> {
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
+                unit_ops: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
                 timeout: K::TIMEOUT,
@@ -1774,7 +1817,23 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
     ) -> Called {
-        self.call_ticketed(s, frame, ticket, resume)
+        // A NEW op on the ticket starts with nothing kept; a resume, or the re-call a short answer
+        // earns, reads what its op kept (`super::inline`, THE DESIGN §11.12).
+        let inline = self
+            .inner
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.inline());
+        if let Some(tickets) = &inline {
+            tickets.starting(ticket, self.inner.instance, s, resume);
+        }
+        let called = self.call_ticketed(s, frame, ticket, resume);
+        if let Some(tickets) = &inline {
+            tickets.ended(ticket, s, called.recall.is_some());
+        }
+        called
     }
 
     fn instance_id(&self) -> usize {
