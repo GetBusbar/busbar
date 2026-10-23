@@ -561,6 +561,28 @@ impl Claim {
     };
 }
 
+/// HOW THE TRANSPORT CLAIM ROW IS MADE (status row 194): from [`Claim::EMPTY`], its plain fields
+/// set directly and each list by its setter, to items that live for the program.
+impl Claim {
+    /// Nothing stated: every string absent, every list empty, every number zero.
+    pub const EMPTY: Claim = Claim {
+        selector_forms: AbiStr::ABSENT,
+        egress_selector_forms: AbiStr::ABSENT,
+        facts: std::ptr::null(),
+        facts_len: 0,
+        status_namespace: AbiStr::ABSENT,
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at: 0,
+        _reserved: 0,
+    };
+
+    abi_lists! {
+        facts, facts_len: AbiStr => facts_ptr, with_facts, with_raw_facts;
+    }
+}
+
 /// One status-table row: a code range of a claim's numbering and the class it means. The breaker
 /// reads classes only, never a code band (the design's connections section).
 #[repr(C)]
@@ -732,6 +754,54 @@ impl TransportTail {
         frame_piece_size: 0,
         _reserved: 0,
     };
+}
+
+/// HOW THE TRANSPORT KIND TAIL IS MADE (status row 194): from [`TransportTail::EMPTY`], its plain
+/// fields set directly and each list by its setter, to items that live for the program.
+impl TransportTail {
+    /// Nothing stated: every string absent, every list empty, every number zero; the head
+    /// sized to the whole tail.
+    pub const EMPTY: TransportTail = TransportTail {
+        head: KindTailHead {
+            size: core::mem::size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        },
+        role: 0,
+        framing: 0,
+        facts: 0,
+        handshake_max_steps: 0,
+        composes_over: std::ptr::null(),
+        composes_over_len: 0,
+        claim_rows: std::ptr::null(),
+        claim_rows_len: 0,
+        upgrades_to: std::ptr::null(),
+        upgrades_to_len: 0,
+        handoff_from: AbiStr::ABSENT,
+        handoff_to: AbiStr::ABSENT,
+        handoff_binding_fact: AbiStr::ABSENT,
+        handshake_frame_kind: AbiStr::ABSENT,
+        status_rows: std::ptr::null(),
+        status_rows_len: 0,
+        settings: std::ptr::null(),
+        settings_len: 0,
+        fault_rows: std::ptr::null(),
+        fault_rows_len: 0,
+        frame_piece_size: 0,
+        _reserved: 0,
+    };
+
+    abi_lists! {
+        composes_over, composes_over_len: AbiStr
+            => composes_over_ptr, with_composes_over, with_raw_composes_over;
+        claim_rows, claim_rows_len: Claim => claim_rows_ptr, with_claim_rows, with_raw_claim_rows;
+        upgrades_to, upgrades_to_len: AbiStr
+            => upgrades_to_ptr, with_upgrades_to, with_raw_upgrades_to;
+        status_rows, status_rows_len: StatusRow
+            => status_rows_ptr, with_status_rows, with_raw_status_rows;
+        settings, settings_len: SettingDecl => settings_ptr, with_settings, with_raw_settings;
+        fault_rows, fault_rows_len: FaultRow
+            => fault_rows_ptr, with_fault_rows, with_raw_fault_rows;
+    }
 }
 
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
