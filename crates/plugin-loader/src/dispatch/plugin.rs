@@ -1817,7 +1817,23 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
     ) -> Called {
-        self.call_ticketed(s, frame, ticket, resume)
+        // A NEW op on the ticket starts with nothing kept; a resume, or the re-call a short answer
+        // earns, reads what its op kept (`super::inline`, THE DESIGN §11.12).
+        let inline = self
+            .inner
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.inline());
+        if let Some(tickets) = &inline {
+            tickets.starting(ticket, self.inner.instance, s, resume);
+        }
+        let called = self.call_ticketed(s, frame, ticket, resume);
+        if let Some(tickets) = &inline {
+            tickets.ended(ticket, s, called.recall.is_some());
+        }
+        called
     }
 
     fn instance_id(&self) -> usize {
