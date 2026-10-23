@@ -3861,6 +3861,106 @@
         ]
       },
       "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling), widened by OWNER 2026-10-22 (the DNS-name rule). 1.5.5's oidc module (busbar-auth-oidc v1.0.6 reqwest_fetcher.rs) followed up to 10 https redirects on its discovery and JWKS fetches with no address check. 1.6.0's busbar-auth-oidc door (PR #41, reviewed head 506a47037c) keeps that policy (at most 10, https only, reqwest 0.12.28's texts after 1.5.5's `request to {url} failed: ` prefix) and refuses two redirects before the next hop is asked. Each refusal names the URL that was ASKED (the configured or discovered discovery/JWKS URL), not the redirect target: `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed` for a redirect to a cloud-metadata or IPv6 link-local host, from any host; `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` for a redirect to a private or loopback host (an IP literal, or the localhost name: `localhost` and `*.localhost`, busbar-contract net.rs host_is_private_or_loopback) unless the hop that sent it is itself on a private or loopback host. THE RULE, exactly: each hop is judged by the host that redirected (fetch.rs `refused_hop(&at, &next, url)`, `at` being the hop that answered the redirect), so a chain that leaves through a public host cannot come back into the private network (asked https://10.0.0.7/... -> https://cdn.idp.example/jwks -> https://10.0.0.8/jwks is refused). The check reads the literal host only, with no DNS lookup. An identity provider reached by any other DNS name (e.g. keycloak.corp) counts as public, so its redirect to a private or loopback host is refused, where 1.5.5 followed it (OWNER 2026-10-22, relayed by the coordinator: approved). An identity provider on a private IP or at localhost may redirect to private or loopback hosts. A redirect to a DNS name that resolves privately is followed, and the dial guard judges it. A public-to-public https redirect is followed; the token POST follows no redirect, as on 1.5.5. Every other oidc error text is 1.5.5's. No oracle cell drives a redirect: egress.auth|login-hop|oidc serves its issuer, JWKS and token endpoint directly from the loopback capture mock, and plugins.load|auth-oidc lists the module. Neither is in `cells`; both must stay byte-identical. So this entry forgives no measured cell today; it registers the contract change, with `cells` naming the owed redirect cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured login hop to its 1.5.5 recording (the callback's 401 and the token POST with the injected client_secret), a cell in which no redirect occurs, so the new refusal has nothing to act on and the recording must stay 1.5.5's. Proof at 506a47037c (auth-oidc/src/tests/fetch_tests.rs): a_redirect_to_a_private_or_metadata_address_is_refused (asserts the asked URL in each refusal), a_public_to_public_https_redirect_is_followed, a_redirected_discovery_is_followed_to_its_document, a_redirected_key_set_is_followed_across_pending. Newer heads of busbar-auth-oidc #41 carry the same behaviour and the same tests: cf4d45a394. NOT FORGIVEN by this entry, and outside the owner's 2026-10-21 and 2026-10-22 approvals: the plugin PR discloses one known difference pending a contract accessor. The SDK `exchange()` returns head and body as one result, so a generic failure after the response head (a reset, a stall after headers) prints the send text `error sending request for url (<asked>)` where 1.5.5 printed `reading {url} response body failed: {e}`. No oracle cell measures it, and this entry's `cells` and classes do not reach it."
+    },
+    {
+      "id": "LLM2#8 a buffered Bedrock-dialect cited answer carries its text in citationsContent",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a buffered Bedrock-dialect answer whose text carries citations returns that text block as Converse `citationsContent` (the text inside it, with its citations); a text block without citations keeps the plain `text` member.",
+      "by": "ruling:Q61 (owner, 2026-09-24, on Q57), registered under architect ruling R-9 (2026-10-23)",
+      "signoff": {
+        "who": "ruling:Q61",
+        "when": "2026-10-23",
+        "ruling": "1.6.0-QUESTIONS.md Q61 (owner, 2026-09-24) on Q57: \"Q57 KEEP citations, and the IR maps 100% wherever a target dialect can carry a field — a drop is a defect\"; registered by an agent under architect ruling R-9 (2026-10-23), no owner signature claimed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_citation(@fixture)?$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "llm|bedrock|bedrock|request|ok",
+        "status": 200
+      },
+      "rationale": "1.5.5 bytes: the Converse response's text block was always `{\"text\": \"…\"}` and upstream citations were dropped. 1.6.0 bytes: when at least one citation projects, the block is `{\"citationsContent\": {\"content\": [{\"text\": \"…\"}], \"citations\": [ … ]}}` (codec/bedrock/writer.rs write_response), the buffered twin of the streamed `contentBlockDelta.citation` frame; a block with no projectable citation keeps `{\"text\": \"…\"}`. A client that reads only the plain `text` member of a cited block no longer finds it there, hence breaking. Owner Q61 on Q57 keeps citations. No corpus cell sends a cited answer to the Bedrock door today (corpus inspected 2026-10-23: the one citation cell is llm|responses|responses|request|ok_citation@fixture), so the entry forgives nothing now: expected_cells 0, and the regex names the cell this surface would be recorded as. The premise probes that the Bedrock door serves (llm|bedrock|bedrock|request|ok is 200)."
+    },
+    {
+      "id": "LLM2#9 the Cohere dialect's input_tokens counts the whole prompt and reports cached_tokens",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a Cohere-dialect answer's `usage.tokens.input_tokens` is the whole prompt, the cached share included, and the cache hit is reported beside it as `usage.cached_tokens`; 1.5.5 reported only the uncached share for a translated backend.",
+      "by": "ruling:Q61 (owner, 2026-09-24, on Q57), registered under architect ruling R-9 (2026-10-23)",
+      "signoff": {
+        "who": "ruling:Q61",
+        "when": "2026-10-23",
+        "ruling": "1.6.0-QUESTIONS.md Q61 (owner, 2026-09-24) on Q57: \"Q57 KEEP citations, and the IR maps 100% wherever a target dialect can carry a field — a drop is a defect\"; registered by an agent under architect ruling R-9 (2026-10-23), no owner signature claimed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^llm\\|cohere\\|[a-z]+\\|request\\|ok_cached_usage(@fixture)?$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "llm|cohere|cohere|request|ok",
+        "status": 200
+      },
+      "rationale": "1.5.5 bytes: a Cohere-dialect client of a translated backend got `usage.tokens.input_tokens` = the IR's uncached share only, and no `cached_tokens` (an OpenAI turn of 10 prompt tokens, 4 cached, read `input_tokens: 6`). 1.6.0 bytes: `input_tokens` = uncached + cache-read + cache-written (codec/cohere/mod.rs cohere_prompt_tokens, COH-10), and `usage.cached_tokens` carries the cache read when there is one, on the buffered answer and the stream's message-end. Cohere's own wire counts the whole prompt; the ledger is unaffected (it reads the IR). The number a client reads changes, hence breaking. Owner Q61 on Q57: the IR maps wherever the dialect can carry a field. No corpus cell has a cached-prompt usage on the Cohere door today, so expected_cells 0; the premise probes that the Cohere door serves."
+    },
+    {
+      "id": "LLM2#11 the Cohere dialect carries strict tools, logprobs, allowed tools, image detail, part order, JSON tool results and history citations",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: the Cohere dialect carries what its wire can hold that 1.5.5 dropped: `strict_tools`, `logprobs`, the allowed-tools filter, image `detail`, the order of message parts, JSON tool results and citations in conversation history.",
+      "by": "ruling:Q61 (owner, 2026-09-24, on Q57), registered under architect ruling R-9 (2026-10-23)",
+      "signoff": {
+        "who": "ruling:Q61",
+        "when": "2026-10-23",
+        "ruling": "1.6.0-QUESTIONS.md Q61 (owner, 2026-09-24) on Q57: \"Q57 KEEP citations, and the IR maps 100% wherever a target dialect can carry a field — a drop is a defect\"; registered by an agent under architect ruling R-9 (2026-10-23), no owner signature claimed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^llm\\|cohere\\|[a-z]+\\|request\\|ok_(strict_tools|logprobs|allowed_tools|image_detail|part_order|json_tool_result|history_citations)(@fixture)?$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "llm|cohere|cohere|request|ok",
+        "status": 200
+      },
+      "rationale": "1.5.5 bytes: the Cohere reader and writer dropped `strict_tools`, `logprobs`, the allowed-tools filter, an image part's `detail`, reordered message parts, stringified JSON tool results and dropped citations in conversation history. 1.6.0 bytes: each is carried to and from the IR where the Cohere v2 wire has the field (codec/cohere/writer.rs and reader.rs). A 1.5.5 client keeps working unchanged: fields it sent are now honoured rather than dropped, hence improvement. Owner Q61 on Q57. No corpus cell sends these fields to the Cohere door today, so expected_cells 0; the premise probes that the Cohere door serves."
+    },
+    {
+      "id": "LLM2#13 a foreign reasoning signature reaches the client in the bbsig1 envelope",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a reasoning signature minted by another model family reaches the client wrapped as `bbsig1:<origin>:<base64url>` and is unwrapped when the client sends it back, where 1.5.5 dropped it.",
+      "by": "ruling:Q61 (owner, 2026-09-24, on Q57), registered under architect ruling R-9 (2026-10-23)",
+      "signoff": {
+        "who": "ruling:Q61",
+        "when": "2026-10-23",
+        "ruling": "1.6.0-QUESTIONS.md Q61 (owner, 2026-09-24) on Q57: \"Q57 KEEP citations, and the IR maps 100% wherever a target dialect can carry a field — a drop is a defect\"; registered by an agent under architect ruling R-9 (2026-10-23), no owner signature claimed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^llm\\|(anthropic|bedrock|gemini|responses)\\|[a-z]+\\|request\\|ok_foreign_signature(@fixture)?$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "llm|responses|anthropic|request|ok",
+        "status": 200
+      },
+      "rationale": "1.5.5 bytes: a reasoning signature another family minted (a Claude `signature` answered to a Responses client, a Gemini `thoughtSignature` to an Anthropic client) was written into the client's carrier bare and dropped as foreign when the client sent it back, so thinking continuity broke across dialects. 1.6.0 bytes: the client carrier holds `bbsig1:<origin>:<base64url(signature)>` (codec/ir/sig_envelope.rs) and every reader unwraps it to the original bytes and origin; a vendor's own signature is never wrapped and reads as before. Owner Q61 on Q57: a drop is a defect. No corpus cell carries a cross-family signature today, so expected_cells 0; the premise probes that the Responses door serves an Anthropic backend."
     }
   ]
 }

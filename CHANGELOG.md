@@ -85,6 +85,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 - **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
   fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
+- 1.6.0 Changed: a buffered Bedrock-dialect answer whose text carries citations returns that text block as Converse `citationsContent` (the text inside it, with its citations); a text block without citations keeps the plain `text` member.
+- 1.6.0 Changed: a Cohere-dialect answer's `usage.tokens.input_tokens` is the whole prompt, the cached share included, and the cache hit is reported beside it as `usage.cached_tokens`; 1.5.5 reported only the uncached share for a translated backend.
+- 1.6.0 Changed: the Cohere dialect carries what its wire can hold that 1.5.5 dropped: `strict_tools`, `logprobs`, the allowed-tools filter, image `detail`, the order of message parts, JSON tool results and citations in conversation history.
+- 1.6.0 Changed: a reasoning signature minted by another model family reaches the client wrapped as `bbsig1:<origin>:<base64url>` and is unwrapped when the client sends it back, where 1.5.5 dropped it.
 
 ### Security
 

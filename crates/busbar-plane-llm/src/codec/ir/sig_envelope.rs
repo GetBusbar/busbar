@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR-18 signature-provenance envelope (architect ruling).
+//! IR-18 signature-provenance envelope (1.6.0-QUESTIONS.md Q61 on Q57 (owner) + R-9).
 //!
 //! A reasoning signature is only valid for the model family that minted it
 //! ([`IrSignatureOrigin`]). Inside busbar the IR carries the origin beside the bytes; on the CLIENT
