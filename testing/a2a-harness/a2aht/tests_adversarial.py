@@ -218,16 +218,20 @@ def test_unknown_fields(ctx):
 )
 def test_deep_nesting(ctx):
     depth = int(ctx.config.get("nesting_depth", 2000))
-    node = {"leaf": True}
+    # The nested part is written as TEXT, level by level: `json.dumps` of a 2000-deep dict recurses
+    # once per level and raises RecursionError in this process (the harness, not the agent) before
+    # a byte is sent. The document sent is the same `{"n": ... {"leaf": true} ...}`.
+    node = json.dumps({"leaf": True})
     for _ in range(depth):
-        node = {"n": node}
+        node = '{"n":' + node + '}'
+    sentinel = "__a2aht_deep_nesting_part__"
     msg = {"messageId": str(uuid.uuid4()), "role": "ROLE_USER",
-           "parts": [{"data": node}]}
+           "parts": [{"data": sentinel}]}
     payload = {"message": msg}
     if _binding(ctx) == "JSONRPC":
         payload = {"jsonrpc": "2.0", "id": 1, "method": "SendMessage",
                    "params": payload}
-    resp = _post_raw(ctx, json.dumps(payload))
+    resp = _post_raw(ctx, json.dumps(payload).replace(json.dumps(sentinel), node, 1))
     _survived(ctx, resp, "a %d-deep nested data part" % depth)
     ctx.observe("deep_nesting_depth", depth)
     ctx.observe("deep_nesting_status", resp.status)
