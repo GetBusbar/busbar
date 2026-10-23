@@ -93,11 +93,14 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
 # sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "af22153f4e34ffec8c9d1ad5f0838d00a4aca58f" }
+# The pin is oauth dev 722a2fcecd: its secret-named fields are the crate's own `Secret<String, Own>`
+# (secret-hygiene check1, #1192), compiled against busbar dev's contract (oauth f62e2adc58).
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "722a2fcecd61082efa19378052598f109ed11d19" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
-# pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret is a private `Held`.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "17a24d970b0190d7dffb84dbdf87ab4f792bbc0d" }
+# pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
+# private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "aaf683a69f866c5f251a1aaa17e17bc69ad22a71" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
@@ -136,7 +139,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "7782664c91769b80272ff99272127f127fbb2dfc" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "2df3a0367bbd4be0e784d0e58d04f913d8d2a9d9" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in

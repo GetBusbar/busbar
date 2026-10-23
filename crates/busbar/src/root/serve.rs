@@ -2031,8 +2031,9 @@ fn seal_live(
 /// THE HEALTH PROBES OF ONE GENERATION (K7; 1.5.5 `health:` per provider, `none | dead | active`):
 /// for the plane serving the `pools` map whose tail states `TAIL_PROBES`, a probe target over
 /// `live`'s sealed egress and `driver`, its probers spawned as a new generation of `schedule` (the
-/// previous generation's exit at their next tick). A build without the node has no kernel to run
-/// a probe unit on and probes nothing.
+/// previous generation's exit at their next tick). Which plane serves the `pools` map is read off
+/// its declared section at run time, never off which rows the build linked, so a dropped-in copy is
+/// probed exactly as the compiled-in one is (BUSBAR-1.6.0.md l.2179).
 fn arm_probes(
     driver: &Arc<PlaneDriver>,
     served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
@@ -2040,44 +2041,38 @@ fn arm_probes(
     egress: Option<&DoorEgress<'_>>,
     schedule: &Arc<busbar_kernel::probe::ProbeSchedule>,
 ) {
-    #[cfg(linked_section_pools)]
-    {
-        let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models))
-        else {
-            return;
-        };
-        if served_facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
-            return;
-        }
-        let (lanes, members) = models.probe_members();
-        if members.is_empty() {
-            return;
-        }
-        let (kernel, keys) = crate::root::plane_node::node().kernel_and_keys();
-        let Some(target) = busbar_kernel::plane_driver::PlaneProbes::new(
-            if served_facts.probes {
-                busbar_contract::abi::plane::TAIL_PROBES
-            } else {
-                0
-            },
-            Arc::clone(driver),
-            Arc::clone(sealed),
-            kernel,
-            keys,
-            (0..lanes)
-                .map(|i| busbar_contract::DestinationId::new(i as u64))
-                .collect(),
-        ) else {
-            return;
-        };
-        let target = Arc::new(target);
-        let members: Vec<busbar_kernel::probe::ProbeMember> =
-            members.into_iter().map(|(_, m)| m).collect();
-        busbar_kernel::probe::spawn_probers(&target, schedule, &members);
-        live.probes = Some(target);
+    let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models)) else {
+        return;
+    };
+    if served_facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
+        return;
     }
-    #[cfg(not(linked_section_pools))]
-    let _ = (driver, served_facts, live, egress, schedule);
+    let (lanes, members) = models.probe_members();
+    if members.is_empty() {
+        return;
+    }
+    let (kernel, keys) = crate::root::plane_node::node().kernel_and_keys();
+    let Some(target) = busbar_kernel::plane_driver::PlaneProbes::new(
+        if served_facts.probes {
+            busbar_contract::abi::plane::TAIL_PROBES
+        } else {
+            0
+        },
+        Arc::clone(driver),
+        Arc::clone(sealed),
+        kernel,
+        keys,
+        (0..lanes)
+            .map(|i| busbar_contract::DestinationId::new(i as u64))
+            .collect(),
+    ) else {
+        return;
+    };
+    let target = Arc::new(target);
+    let members: Vec<busbar_kernel::probe::ProbeMember> =
+        members.into_iter().map(|(_, m)| m).collect();
+    busbar_kernel::probe::spawn_probers(&target, schedule, &members);
+    live.probes = Some(target);
 }
 
 /// THE PLANE'S OTHER OWNED SECTIONS `sections` writes, as written, by section name (the names its

@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=af22153f4e34ffec8c9d1ad5f0838d00a4aca58f#af22153f4e34ffec8c9d1ad5f0838d00a4aca58f"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=722a2fcecd61082efa19378052598f109ed11d19#722a2fcecd61082efa19378052598f109ed11d19"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -427,7 +427,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=17a24d970b0190d7dffb84dbdf87ab4f792bbc0d#17a24d970b0190d7dffb84dbdf87ab4f792bbc0d"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=aaf683a69f866c5f251a1aaa17e17bc69ad22a71#aaf683a69f866c5f251a1aaa17e17bc69ad22a71"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -542,6 +542,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "bytes",
+ "futures",
  "http",
  "http-body-util",
  "oauth-as",
@@ -553,6 +554,7 @@ dependencies = [
  "serde_yaml_ng",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -772,7 +774,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=7782664c91769b80272ff99272127f127fbb2dfc#7782664c91769b80272ff99272127f127fbb2dfc"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=2df3a0367bbd4be0e784d0e58d04f913d8d2a9d9#2df3a0367bbd4be0e784d0e58d04f913d8d2a9d9"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
