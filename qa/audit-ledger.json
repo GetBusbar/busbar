@@ -3754,6 +3754,21 @@
    ]
   },
   {
+   "id": "crates/busbar-export-webhook/settings.schema.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-webhook/settings.schema.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-hook-ranking/declares.json",
    "kind": "production",
    "paths": [
@@ -4575,6 +4590,21 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-auth-sigv4/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-auth-webhook-signature/src/tests",
    "kind": "test",
    "paths": [
@@ -4714,6 +4744,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-export-prometheus/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-export-webhook/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-export-webhook/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -5444,6 +5489,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-http/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-stdio/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
