@@ -546,8 +546,99 @@ cargo_test_runs() {  # args: runs separated by a lone `::`
 # regenerate the snapshot, where before it could only be asserted not to have. A flag has to be
 # written at the call site, in a diff. The two CONFIG_SCHEMA_* variables stay: the gate still reads
 # both, and both still defeat the claim this script makes.
+#
+# THE TRUSTED JUDGE SHIM'S OWN VARIABLES ARE THE ONE ADMITTED CASE, and only as the shim set them.
+# ModernCI's oracle_trust (ORACLE_TRUST_SH, protected config) runs before any candidate code: it
+# extracts bin/oracle from the TARGET's commit (or, when the target holds none, from the protected
+# BUSBAR_ORACLE_SHIM_COMMIT, only at BUSBAR_ORACLE_SHIM_BLOB) and exports BUSBAR_ORACLE_SHIM (that
+# copy), BUSBAR_ORACLE_PRODUCT_ROOT=$PWD and BUSBAR_ORACLE_DATA=$PWD/testing/shadow-oracle, beside
+# the config's judge pin (BUSBAR_ORACLE_RELEASE_REPO/_REF/_SHA256_LINUX_X86_64/_SHA256_LINUX_AARCH64/
+# _CRATE/_BIN) and golden (BUSBAR_GOLDEN_1_5_5_TREE). Those values point at THIS checkout, so they
+# repoint nothing; the candidate's own pin and golden are then held to the config's by bin/oracle
+# itself (busbar #1556: NO JUDGE when a value is absent, a mismatch names both). So the set in
+# ORACLE_TRUST_VARS is admitted when, and only when, oracle_trust_env_admitted proves all of:
+#   * BUSBAR_ORACLE_SHIM is, byte for byte, the bin/oracle oracle_trust would extract (the target's
+#     copy, or the protected commit's at the protected blob) — re-checked before every PARITY run;
+#   * BUSBAR_ORACLE_PRODUCT_ROOT is this checkout and BUSBAR_ORACLE_DATA its testing/shadow-oracle;
+#   * the config names every pin field and the golden, and that shim's `judge-pin` answers with
+#     exactly the config's pin (it held this tree's oracle-rust.pin to it field by field).
+# Any one missing and every trust variable that is set is refused, by name, like the list below. A
+# local run (no MODERNCI_TO_SHA, no shim) is refused. Every OTHER variable in the list below is
+# refused whether or not the shim is trusted: a stray bless beside a trusted shim is still a bless.
+ORACLE_PIN_ENV_KEYS="BUSBAR_ORACLE_RELEASE_REPO=release_repo BUSBAR_ORACLE_RELEASE_REF=release_ref BUSBAR_ORACLE_SHA256_LINUX_X86_64=sha256_linux_x86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64=sha256_linux_aarch64 BUSBAR_ORACLE_CRATE=crate BUSBAR_ORACLE_BIN=bin"
+ORACLE_TRUST_VARS="BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_DATA \
+BUSBAR_ORACLE_RELEASE_REPO BUSBAR_ORACLE_RELEASE_REF BUSBAR_ORACLE_SHA256_LINUX_X86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64 \
+BUSBAR_ORACLE_CRATE BUSBAR_ORACLE_BIN BUSBAR_GOLDEN_1_5_5_TREE BUSBAR_ORACLE_SHIM_COMMIT BUSBAR_ORACLE_SHIM_BLOB"
+ORACLE_TRUST_SVC="testing/shadow-oracle/scripts/oracle-box-store-services.sh"
+
+# The blob bin/oracle must be, chosen as oracle_trust chooses it; else 1 naming why (on stdout).
+oracle_trust_blob() {
+  local to="${MODERNCI_TO_SHA:-}" c="${BUSBAR_ORACLE_SHIM_COMMIT:-}" b="${BUSBAR_ORACLE_SHIM_BLOB:-}" got
+  [ -n "$to" ] || { echo "MODERNCI_TO_SHA is not set: no ModernCI target, so no trusted judge shim (a local run)"; return 1; }
+  git cat-file -e "$to^{commit}" 2>/dev/null || { echo "the target $to is not a commit in this checkout"; return 1; }
+  if git cat-file -e "$to:bin/oracle" 2>/dev/null && git cat-file -e "$to:$ORACLE_TRUST_SVC" 2>/dev/null; then
+    git rev-parse "$to:bin/oracle"; return
+  fi
+  [ -n "$c" ] && [ -n "$b" ] || { echo "the target $to holds no bin/oracle and the config names no BUSBAR_ORACLE_SHIM_COMMIT/BUSBAR_ORACLE_SHIM_BLOB"; return 1; }
+  git cat-file -e "$c^{commit}" 2>/dev/null || { echo "the protected shim commit $c is not in this checkout"; return 1; }
+  got="$(git rev-parse -q --verify "$c:bin/oracle" 2>/dev/null)" || got=""
+  [ "$got" = "$b" ] || { echo "bin/oracle at the protected shim commit $c is blob '${got:-<none>}', not BUSBAR_ORACLE_SHIM_BLOB $b"; return 1; }
+  printf '%s\n' "$b"
+}
+
+# 0 when $BUSBAR_ORACLE_SHIM is that blob, now; else 1 naming why.
+oracle_shim_is_trusted() {
+  local want got
+  want="$(oracle_trust_blob)" || { echo "$want"; return 1; }
+  { [ -f "${BUSBAR_ORACLE_SHIM:-}" ] && [ -x "$BUSBAR_ORACLE_SHIM" ]; } \
+    || { echo "BUSBAR_ORACLE_SHIM ('${BUSBAR_ORACLE_SHIM:-}') is not an executable file"; return 1; }
+  got="$(git hash-object -- "$BUSBAR_ORACLE_SHIM" 2>/dev/null)" || got=""
+  [ "$got" = "$want" ] || { echo "BUSBAR_ORACLE_SHIM ($BUSBAR_ORACLE_SHIM) is blob '${got:-<unreadable>}', not the trusted bin/oracle $want"; return 1; }
+}
+
+# 0 when the trust variables are exactly the trusted shim's (see above); else 1 naming why.
+oracle_trust_env_admitted() {
+  local v pair here real want got rc
+  for v in BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_DATA; do
+    [ -n "${!v:-}" ] || { echo "$v is not set: ModernCI's oracle_trust sets BUSBAR_ORACLE_SHIM, BUSBAR_ORACLE_PRODUCT_ROOT and BUSBAR_ORACLE_DATA together"; return 1; }
+  done
+  oracle_shim_is_trusted || return 1
+  here="$(pwd -P)"
+  real="$(cd "$BUSBAR_ORACLE_PRODUCT_ROOT" 2>/dev/null && pwd -P)" || real=""
+  [ "$real" = "$here" ] || { echo "BUSBAR_ORACLE_PRODUCT_ROOT ('$BUSBAR_ORACLE_PRODUCT_ROOT') is not this checkout ($here): it would record another tree"; return 1; }
+  real="$(cd "$BUSBAR_ORACLE_DATA" 2>/dev/null && pwd -P)" || real=""
+  [ "$real" = "$here/testing/shadow-oracle" ] || { echo "BUSBAR_ORACLE_DATA ('$BUSBAR_ORACLE_DATA') is not this checkout's testing/shadow-oracle: it would judge another corpus"; return 1; }
+  for pair in $ORACLE_PIN_ENV_KEYS; do
+    v="${pair%%=*}"
+    [ -n "${!v:-}" ] || { echo "NO JUDGE: ModernCI's config sets no $v; the judge comes from the config only"; return 1; }
+  done
+  [[ "${BUSBAR_GOLDEN_1_5_5_TREE:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "NO GOLDEN: ModernCI's config names no 40-hex BUSBAR_GOLDEN_1_5_5_TREE ('${BUSBAR_GOLDEN_1_5_5_TREE:-unset}')"; return 1; }
+  want="$(for pair in $ORACLE_PIN_ENV_KEYS; do v="${pair%%=*}"; printf '%s=%s\n' "${pair#*=}" "${!v}"; done)"
+  got="$("$BUSBAR_ORACLE_SHIM" judge-pin </dev/null 2>/tmp/done-oracle-trust.$$)"; rc=$?
+  if [ "$rc" -ne 0 ] || [ "$got" != "$want" ]; then
+    echo "NO JUDGE: the trusted shim's \`judge-pin\` (exit $rc) did not answer with ModernCI's pin — bin/oracle does not hold this tree's pin to the config, so nothing it judges is the config's judge"
+    tail -3 /tmp/done-oracle-trust.$$ | sed 's/^/  /'; rm -f /tmp/done-oracle-trust.$$
+    return 1
+  fi
+  rm -f /tmp/done-oracle-trust.$$
+  echo "the trusted judge shim (blob $(git hash-object -- "$BUSBAR_ORACLE_SHIM")) points at this checkout and holds its pin to ModernCI's (release_ref ${BUSBAR_ORACLE_RELEASE_REF})"
+}
+
 assert_bless_env_empty() {
-  local v bad=0
+  local v bad=0 trust_set="" why
+  for v in $ORACLE_TRUST_VARS; do [ -z "${!v:-}" ] || trust_set="$trust_set $v"; done
+  if [ -n "$trust_set" ]; then
+    if why="$(oracle_trust_env_admitted 2>&1)"; then
+      echo "admitted, as ModernCI's trusted judge shim set them:$trust_set"
+      echo "  $why"
+    else
+      for v in $trust_set; do
+        echo "trust-shim env var $v is SET ('${!v}') but is not admitted as ModernCI's trusted judge shim's own (why: below) — the comparison would be against something the operator chose, not the pinned reference"
+      done
+      printf '%s\n' "$why" | sed 's/^/  why: /'
+      bad=1
+    fi
+  fi
   for v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
            SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
            BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE \
@@ -555,9 +646,22 @@ assert_bless_env_empty() {
            BUSBAR_UPDATE_GOLDEN UPDATE_KEYS_ERROR_GOLDEN UPDATE_DIAGNOSTICS \
            XTASK_INSN_EMIT_BASELINE XTASK_PPB_EMIT_BASELINE \
            GREP_GATE_REPORT_ONLY SECRET_GATE_REPORT_ONLY; do
+    # The trust variables are judged above, as one set (refused there unless admitted).
+    case " $ORACLE_TRUST_VARS " in *" $v "*) continue ;; esac
     if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
   return "$bad"
+}
+
+# The judge shim every PARITY step runs: the trusted copy, re-checked byte for byte before EACH run
+# (candidate code runs between the admission above and these steps), else this tree's bin/oracle.
+parity_oracle() {
+  if [ -n "${BUSBAR_ORACLE_SHIM:-}" ]; then
+    oracle_shim_is_trusted >&2 || { echo "oracle: the judge shim is not the trusted bin/oracle now: refusing to run it" >&2; return 1; }
+    "$BUSBAR_ORACLE_SHIM" "$@"
+  else
+    ./bin/oracle "$@"
+  fi
 }
 
 # Assert SKIP_BOOT_LEG is EMPTY — a DIFFERENT kind of hole than the bless/repoint vars above (it does
@@ -930,7 +1034,7 @@ PY
 parity_resolve_judge() {  # $1 = the pinned busbar-release ref
   local ref="${1:-}"
   [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
-  if "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
+  if parity_oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
   tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
   echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
   echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it). On Linux the"
@@ -1053,6 +1157,19 @@ if [ "$SELFTEST" -eq 1 ]; then
       printf '  [ok]     %s set -> the DONE run is REFUSED\n' "$st_v"
     fi
   done
+  # The trusted judge shim's variables, typed out AGAIN for the same reason: each one alone, with no
+  # trusted shim behind it (a local run), is refused. The admitted case is proven below, on a fixture.
+  for st_v in BUSBAR_ORACLE_SHIM BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_DATA \
+              BUSBAR_ORACLE_RELEASE_REPO BUSBAR_ORACLE_RELEASE_REF BUSBAR_ORACLE_SHA256_LINUX_X86_64 \
+              BUSBAR_ORACLE_SHA256_LINUX_AARCH64 BUSBAR_ORACLE_CRATE BUSBAR_ORACLE_BIN \
+              BUSBAR_GOLDEN_1_5_5_TREE BUSBAR_ORACLE_SHIM_COMMIT BUSBAR_ORACLE_SHIM_BLOB; do
+    if ( export "$st_v=planted"; assert_bless_env_empty ) >/dev/null 2>&1; then
+      printf '  [FAILED] %s was SET with no trusted judge shim and the DONE gate accepted it\n' "$st_v"
+      st_fail=1
+    else
+      printf '  [ok]     %s set with no trusted judge shim -> the DONE run is REFUSED\n' "$st_v"
+    fi
+  done
   # SKIP_BOOT_LEG is its own function (see above) with its own proof, for the same reason it is
   # checked in PLANE-DELETE rather than folded into assert_bless_env_empty.
   if ( export SKIP_BOOT_LEG=1; assert_skip_boot_leg_empty ) >/dev/null 2>&1; then
@@ -1078,6 +1195,87 @@ if [ "$SELFTEST" -eq 1 ]; then
     fi
   }
   st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/done-parity-selftest.XXXXXX")"
+  # ── THE TRUSTED JUDGE SHIM'S VARIABLES: ADMITTED ONLY AS ModernCI's oracle_trust SET THEM ──────
+  # A fixture checkout: commit A holds a bin/oracle whose `judge-pin` does what busbar #1556's does
+  # under ModernCI (the candidate's oracle-rust.pin held to the config's every field, else NO JUDGE);
+  # commit B is A without bin/oracle (the qa shape: the protected shim commit is the source); commit
+  # P's bin/oracle has no pin verification (the pre-#1556 shape). Each case drives the REAL
+  # assert_bless_env_empty from inside that checkout, with exactly the variables it names.
+  st_tr="$st_tmp/trust-repo" st_z64=0000000000000000000000000000000000000000000000000000000000000000
+  mkdir -p "$st_tr/bin" "$st_tr/testing/shadow-oracle/scripts" "$st_tmp/trust/bin" "$st_tmp/pre/bin" "$st_tmp/data-copy"
+  cat > "$st_tr/bin/oracle" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = judge-pin ] || exit 2
+pin="${BUSBAR_ORACLE_DATA:?}/oracle-rust.pin" out=""
+for p in BUSBAR_ORACLE_RELEASE_REPO=release_repo BUSBAR_ORACLE_RELEASE_REF=release_ref BUSBAR_ORACLE_SHA256_LINUX_X86_64=sha256_linux_x86_64 BUSBAR_ORACLE_SHA256_LINUX_AARCH64=sha256_linux_aarch64 BUSBAR_ORACLE_CRATE=crate BUSBAR_ORACLE_BIN=bin; do
+  v="${p%%=*}" k="${p#*=}"
+  [ -n "${!v:-}" ] || { echo "NO JUDGE: no $v" >&2; exit 1; }
+  [ "$(awk -F= -v k="$k" '$1==k{sub(/^[^=]*=/,"");print;exit}' "$pin")" = "${!v}" ] || { echo "NO JUDGE: $k" >&2; exit 1; }
+  out="$out$k=${!v}
+"
+done
+printf '%s' "$out"
+STUB
+  chmod +x "$st_tr/bin/oracle"
+  printf 'release_repo=https://example.invalid/r.git\nrelease_ref=%s\nsha256_linux_x86_64=%s\nsha256_linux_aarch64=%s\ncrate=c\nbin=b\n' \
+    1111111111111111111111111111111111111111 "$st_z64" "$st_z64" > "$st_tr/testing/shadow-oracle/oracle-rust.pin"
+  : > "$st_tr/$ORACLE_TRUST_SVC"
+  cp "$st_tr/testing/shadow-oracle/oracle-rust.pin" "$st_tmp/data-copy/"
+  st_git() { git -C "$st_tr" -c user.name=selftest -c user.email=selftest@invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+  st_git init -q && st_git add -A && st_git commit -q -m A
+  st_A="$(st_git rev-parse HEAD)"; st_blob="$(st_git rev-parse HEAD:bin/oracle)"
+  st_git rm -q bin/oracle && st_git commit -q -m B; st_B="$(st_git rev-parse HEAD)"
+  mkdir -p "$st_tr/bin"; printf '#!/bin/sh\nexit 2\n' > "$st_tr/bin/oracle"; chmod +x "$st_tr/bin/oracle"
+  st_git add -A && st_git commit -q -m P; st_P="$(st_git rev-parse HEAD)"
+  st_git show "$st_A:bin/oracle" > "$st_tmp/trust/bin/oracle"; chmod +x "$st_tmp/trust/bin/oracle"
+  st_git show "$st_P:bin/oracle" > "$st_tmp/pre/bin/oracle"; chmod +x "$st_tmp/pre/bin/oracle"
+  cp "$st_tmp/trust/bin/oracle" "$st_tmp/trust/bin/oracle-off"; printf '\n' >> "$st_tmp/trust/bin/oracle-off"
+  # What oracle_trust exports, and the config beside it, for the target A.
+  st_env=(MODERNCI_TO_SHA="$st_A" BUSBAR_ORACLE_SHIM="$st_tmp/trust/bin/oracle"
+          BUSBAR_ORACLE_PRODUCT_ROOT="$st_tr" BUSBAR_ORACLE_DATA="$st_tr/testing/shadow-oracle"
+          BUSBAR_ORACLE_RELEASE_REPO=https://example.invalid/r.git BUSBAR_ORACLE_RELEASE_REF=1111111111111111111111111111111111111111
+          BUSBAR_ORACLE_SHA256_LINUX_X86_64="$st_z64" BUSBAR_ORACLE_SHA256_LINUX_AARCH64="$st_z64"
+          BUSBAR_ORACLE_CRATE=c BUSBAR_ORACLE_BIN=b BUSBAR_GOLDEN_1_5_5_TREE=2222222222222222222222222222222222222222
+          BUSBAR_ORACLE_SHIM_COMMIT="$st_A" BUSBAR_ORACLE_SHIM_BLOB="$st_blob")
+  st_trust() {  # rest = VAR=value; the REAL assert_bless_env_empty in the fixture, every trust var cleared first
+    ( cd "$st_tr" || exit 1
+      for st_u in $ORACLE_TRUST_VARS MODERNCI_TO_SHA; do unset "$st_u"; done
+      export "$@"; assert_bless_env_empty )
+  }
+  st_expect accept "the trusted shim's own variables (the target's bin/oracle, its pin held to the config)" st_trust "${st_env[@]}"
+  st_expect accept "the trusted shim's own variables (the target holds none: the protected commit at its blob)" st_trust "${st_env[@]}" MODERNCI_TO_SHA="$st_B"
+  # THE RED ARM: a stray bless/repoint variable beside a fully trusted shim is still refused, each one.
+  for st_v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+              SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
+              BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE BUSBAR_ORACLE_RUST_BIN BUSBAR_RELEASE_CHECKOUT BUSBAR_EMIT_OPENAPI \
+              BUSBAR_UPDATE_GOLDEN UPDATE_KEYS_ERROR_GOLDEN UPDATE_DIAGNOSTICS \
+              XTASK_INSN_EMIT_BASELINE XTASK_PPB_EMIT_BASELINE GREP_GATE_REPORT_ONLY SECRET_GATE_REPORT_ONLY; do
+    st_expect refuse "a stray $st_v beside the trusted shim's variables" st_trust "${st_env[@]}" "$st_v=planted"
+  done
+  st_expect refuse "a local run: PRODUCT_ROOT and DATA at this checkout, no target and no shim" \
+    st_trust BUSBAR_ORACLE_PRODUCT_ROOT="$st_tr" BUSBAR_ORACLE_DATA="$st_tr/testing/shadow-oracle"
+  st_expect refuse "a local run: every trust variable but MODERNCI_TO_SHA (no target, so no trusted shim)" \
+    st_trust "${st_env[@]}" MODERNCI_TO_SHA=
+  st_expect refuse "a target but no BUSBAR_ORACLE_SHIM" st_trust "${st_env[@]}" BUSBAR_ORACLE_SHIM=
+  st_expect refuse "a shim one byte off the trusted bin/oracle" st_trust "${st_env[@]}" BUSBAR_ORACLE_SHIM="$st_tmp/trust/bin/oracle-off"
+  st_expect refuse "the trusted shim with BUSBAR_ORACLE_DATA repointed off this checkout" st_trust "${st_env[@]}" BUSBAR_ORACLE_DATA="$st_tmp/data-copy"
+  st_expect refuse "the trusted shim with BUSBAR_ORACLE_PRODUCT_ROOT repointed off this checkout" st_trust "${st_env[@]}" BUSBAR_ORACLE_PRODUCT_ROOT="$st_tmp"
+  st_expect refuse "the config names no BUSBAR_ORACLE_SHA256_LINUX_AARCH64 (NO JUDGE)" st_trust "${st_env[@]}" BUSBAR_ORACLE_SHA256_LINUX_AARCH64=
+  st_expect refuse "the config names no BUSBAR_GOLDEN_1_5_5_TREE (NO GOLDEN)" st_trust "${st_env[@]}" BUSBAR_GOLDEN_1_5_5_TREE=
+  st_expect refuse "the tree's pin is not the config's (the shim's pin verification refuses)" \
+    st_trust "${st_env[@]}" BUSBAR_ORACLE_RELEASE_REF=3333333333333333333333333333333333333333
+  st_expect refuse "a trusted shim with no pin verification (no judge-pin: the pre-#1556 shape)" \
+    st_trust "${st_env[@]}" MODERNCI_TO_SHA="$st_P" BUSBAR_ORACLE_SHIM="$st_tmp/pre/bin/oracle"
+  st_expect refuse "the target holds no bin/oracle and the protected commit's is not BUSBAR_ORACLE_SHIM_BLOB" \
+    st_trust "${st_env[@]}" MODERNCI_TO_SHA="$st_B" BUSBAR_ORACLE_SHIM_BLOB="$st_z64"
+  st_expect refuse "BUSBAR_ORACLE_SHIM alone (an operator-chosen judge shim)" st_trust BUSBAR_ORACLE_SHIM="$st_tmp/trust/bin/oracle"
+  # PARITY re-checks the shim before each run: the admitted copy runs; the same path edited after
+  # admission (candidate code runs in between) does not.
+  cp "$st_tmp/trust/bin/oracle" "$st_tmp/trust/bin/oracle-late"
+  st_parity() { ( cd "$st_tr" && export "${st_env[@]}" BUSBAR_ORACLE_SHIM="$st_tmp/trust/bin/oracle-late" && parity_oracle judge-pin ); }
+  st_expect accept "PARITY runs the admitted shim" st_parity
+  printf '# edited after admission\n' >> "$st_tmp/trust/bin/oracle-late"
+  st_expect refuse "PARITY runs a shim that changed after it was admitted" st_parity
   printf '#!/bin/sh\nexit 0\n' > "$st_tmp/busbar"; chmod +x "$st_tmp/busbar"
   st_sha="$(sha256_of "$st_tmp/busbar")"
   st_other=0000000000000000000000000000000000000000000000000000000000000000
@@ -1155,9 +1353,11 @@ if [ "$SELFTEST" -eq 1 ]; then
   printf '  step x ./bin/oracle %s --bin "$PARITY_BIN" --plane all --out "$CAND"\n' record > "$st_tmp/candidate-only.sh"
   # The trusted shim's spelling (ModernCI's BUSBAR_ORACLE_SHIM) is scanned the same way.
   printf '  step x "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" %s --out "$GOLDEN"\n' record > "$st_tmp/rerecord-shim.sh"
+  printf '  step x parity_oracle %s --out "$GOLDEN"\n' record > "$st_tmp/rerecord-parity.sh"
   st_expect refuse "a DONE run that re-records its own golden on the machine under test" assert_never_rerecords_golden "$st_tmp/rerecord.sh"
   st_expect accept "a DONE run that records only the candidate"                          assert_never_rerecords_golden "$st_tmp/candidate-only.sh"
   st_expect refuse "a re-record of the golden through the trusted shim's spelling"       assert_never_rerecords_golden "$st_tmp/rerecord-shim.sh"
+  st_expect refuse "a re-record of the golden through parity_oracle"                     assert_never_rerecords_golden "$st_tmp/rerecord-parity.sh"
   st_expect accept "THIS file never re-records the golden"                               assert_never_rerecords_golden "$SELF"
   mkdir -p "$st_tmp/g-whole/cells" "$st_tmp/g-short/cells" "$st_tmp/g-empty/cells" "$st_tmp/g-nocell/cells"
   for st_g in g-whole g-short g-nocell; do
@@ -1409,6 +1609,8 @@ end_group
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   printf '  \033[32m[ok]\033[0m   bless/regen/repoint env (every var in assert_bless_env_empty) is empty\n'
+  # Empty, or only the trusted judge shim's own variables, admitted by name (assert_bless_env_empty).
+  sed 's/^/          /' /tmp/done-oracle-step.$$; rm -f /tmp/done-oracle-step.$$
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide, so the plane
   # crates' `openapi-schema` reaches busbar-core-admin's dev-dep edges) — the golden tests are
   # cfg-gated on it, so without both the filter selects ZERO of them. The three byte-identity goldens
@@ -1655,8 +1857,8 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
   rm -f /tmp/done-parity-env.$$
   CUR_RED=1; CUR_FIRST_NOTE="bless/repoint env not empty (parity)"
 elif [ -x "${BUSBAR_ORACLE_SHIM:-bin/oracle}" ]; then
-  rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
+  sed 's/^/          /' /tmp/done-parity-env.$$; rm -f /tmp/done-parity-env.$$
   # THE JUDGE FIRST, ONCE. Every oracle step below runs the engine bin/oracle builds from its pinned
   # source (testing/shadow-oracle/oracle-rust.pin) in target/oracle/rust/<ref>/checkout. When that
   # cannot be obtained (busbar-release is private: a runner with no token and no checkout of the
@@ -1664,13 +1866,13 @@ elif [ -x "${BUSBAR_ORACLE_SHIM:-bin/oracle}" ]; then
   PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
   step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched at the pin's sha256" \
     parity_resolve_judge "$PARITY_JUDGE_REF"
-  step "replay-selftest (the differ can see a diff)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" replay-selftest
+  step "replay-selftest (the differ can see a diff)" parity_oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
-  step "enumerate-cells --check (cells.json is what the generator derives)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" cells --check
+  step "enumerate-cells --check (cells.json is what the generator derives)" parity_oracle cells --check
   # THE PUBLISHED BINARY, fetched by pinned digest (idempotent: a verified cache is a no-op).
-  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" fetch-golden
+  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" parity_oracle fetch-golden
   ORACLE_DIR="target/oracle"
   GOLDEN="$ORACLE_DIR/recordings/golden"
   # THE REFERENCE: the committed recording, copied in fresh and checked whole — never re-recorded on
@@ -1732,14 +1934,14 @@ elif [ -x "${BUSBAR_ORACLE_SHIM:-bin/oracle}" ]; then
     fi
     PARITY_LEG_SHAS="$PARITY_LEG_SHAS $PARITY_LEG=$PARITY_SHA"
     if [ "$PARITY_SUBJECT_OK" -eq 1 ]; then
-      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" record --bin "$PARITY_BIN" --plane all --out "$CAND"
+      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" parity_oracle record --bin "$PARITY_BIN" --plane all --out "$CAND"
       step "[$PARITY_LEG] the recording names the binary this run built" \
         assert_recorded_subject "$CAND" "$PARITY_SHA" "the $PARITY_LEG candidate recording"
       # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
       # exits 0 whatever they say — including when the selection matched nothing.
       #
       step "[$PARITY_LEG] replay: candidate vs golden (strict)" \
-        "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
+        parity_oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
       # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
       # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
       step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
