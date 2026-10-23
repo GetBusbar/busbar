@@ -353,7 +353,7 @@ macro_rules! door_root {
             }
 
             /// THE CRATE'S ONE PUBLIC ITEM (BUSBAR-1.6.0.md l.3560): its door.
-            pub use door::{door, LINKED_DOOR};
+            pub use door::door;
         }
     };
 }

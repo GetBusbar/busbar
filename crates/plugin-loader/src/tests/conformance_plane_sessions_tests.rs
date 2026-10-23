@@ -339,9 +339,11 @@ mod pieces_on_tickets {
                 on_piece: Some(test_op::<OnPiecePends>),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door {
-                ops: std::ptr::from_ref(ops).cast(),
-                ..real
+            let door = Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
             }));
             SLOT.store(door, Ordering::SeqCst);
             door
@@ -353,7 +355,7 @@ mod pieces_on_tickets {
     /// the script used to, every waiting piece is FAULT and the plane cannot pass.
     #[test]
     fn red_a_piece_that_waits_is_resumed_on_its_units_ticket_never_faulted_ticketless() {
-        let s = Subject::new(
+        let s = Subject::of_raw(
             test_door::<PendingDoor>,
             "plane_door_plugin",
             &format!(r#"{{ "plane": {{ "sessions": {SESSIONS} }} }}"#),

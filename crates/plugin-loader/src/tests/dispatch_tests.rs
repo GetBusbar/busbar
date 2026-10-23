@@ -150,7 +150,8 @@ fn facts() -> ManifestFacts {
 /// The plugin's Statement rendering, as its signed manifest states it: rendered from the linked
 /// `rlib`'s door, the same crate the `cdylib` is built from.
 fn stated() -> Vec<u8> {
-    rendering_of(plug::busbar_plugin_door).expect("the door renders its Statement")
+    crate::dispatch::load::rendering_of_raw(plug::busbar_plugin_door)
+        .expect("the door renders its Statement")
 }
 
 /// [`stated`] with its head facts replaced by `f`.
@@ -184,7 +185,7 @@ fn a_plugin_handle_is_not_clone() {
 }
 
 fn row() -> LinkedRow {
-    LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
+    LinkedRow::of_raw(plug::busbar_plugin_door).expect("the linked row states its Statement")
 }
 
 fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
@@ -842,7 +843,7 @@ mod open_faults_on_its_resume {
             // SAFETY: the test plugin's door and its lifecycle table are `'static`.
             let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
             // SAFETY: as above.
-            let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+            let ops: OpsHead = unsafe { real.ops().read_unaligned() };
             *REAL.lock().unwrap() = Some(ops);
             let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
                 open: Some(open),
@@ -850,7 +851,7 @@ mod open_faults_on_its_resume {
                 tick: Some(tick),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door { ops, ..real }));
+            let door = Box::into_raw(Box::new(unsafe { Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts { ops, ..real.parts() }) }));
             SLOT.store(door, Ordering::SeqCst);
             door
         }
@@ -859,7 +860,7 @@ mod open_faults_on_its_resume {
     #[test]
     fn red_an_open_that_faults_on_its_resume_leaves_no_instance() {
         let d = Dispatcher::new(config());
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
 
         let t = d.mint(0).expect("a ticket");
@@ -1022,14 +1023,14 @@ mod open_left_live_is_closed {
             // SAFETY: the test plugin's door and its lifecycle table are `'static`.
             let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
             // SAFETY: as above.
-            let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+            let ops: OpsHead = unsafe { real.ops().read_unaligned() };
             *REAL.lock().unwrap() = Some(ops);
             let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
                 open: Some(open),
                 close: Some(close),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door { ops, ..real }));
+            let door = Box::into_raw(Box::new(unsafe { Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts { ops, ..real.parts() }) }));
             SLOT.store(door, Ordering::SeqCst);
             door
         }
@@ -1039,7 +1040,7 @@ mod open_left_live_is_closed {
     fn red_an_open_the_host_judged_fault_is_closed_never_leaked() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let d = Dispatcher::new(config());
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(door).expect("the restated door states itself");
 
         // A ticket-less `open` that answers PENDING: the host FAULTs it.
         MODE.store(PEND, Ordering::SeqCst);
@@ -1087,7 +1088,7 @@ mod open_left_live_is_closed {
     /// A ticketed `open` that pends (no wake comes), ended by the host: `cancel` then `close`.
     fn pended(d: &Dispatcher) -> (Plugin<TestKind>, Ticket) {
         MODE.store(PEND, Ordering::SeqCst);
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
         let t = d.mint(0).expect("a ticket");
         (p, t)
@@ -1323,8 +1324,8 @@ fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
 fn red_every_door_refusal() {
     // SAFETY: the real door is `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let ops: OpsHead = unsafe { *real.ops };
-    let st = unsafe { *real.statement };
+    let ops: OpsHead = unsafe { *real.ops() };
+    let st = unsafe { *real.statement() };
     let leak_ops = |o: OpsHead| Box::leak(Box::new(o)) as *const OpsHead;
     let with = |f: &dyn Fn(&mut Door)| {
         let mut d = real;
@@ -1504,7 +1505,10 @@ fn red_both_origins_refuse_the_same_way() {
         load_linked::<TestKind>(&null_row, bind(quiet())).err(),
         Some(LoadError::NullDoor)
     );
-    assert_eq!(LinkedRow::of(null_door).err(), Some(LoadError::NullDoor));
+    assert_eq!(
+        LinkedRow::of_raw(null_door).err(),
+        Some(LoadError::NullDoor)
+    );
     // The manifest's mechanism is checked BEFORE dlopen: a path that does not exist is never opened.
     let nowhere = std::path::Path::new("/nonexistent/libnothing.so");
     for v in [MECHANISM_VERSION - 1, MECHANISM_VERSION + 1] {
@@ -2635,15 +2639,17 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             claims_len: NAMES.len(),
             ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
         }));
-        let door = Door {
-            magic: DOOR_MAGIC,
-            mechanism_version: MECHANISM_VERSION,
-            size: std::mem::size_of::<Door>() as u32,
-            kind: KindCode::Transport as u32,
-            kind_abi: KindCode::Transport.abi_version(),
-            statement: st,
-            ops: std::ptr::null(),
-            ready: None,
+        let door = unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                magic: DOOR_MAGIC,
+                mechanism_version: MECHANISM_VERSION,
+                size: std::mem::size_of::<Door>() as u32,
+                kind: KindCode::Transport as u32,
+                kind_abi: KindCode::Transport.abi_version(),
+                statement: st,
+                ops: std::ptr::null(),
+                ready: None,
+            })
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -2710,15 +2716,17 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
             kind_tail,
             ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
         }));
-        let door = Door {
-            magic: DOOR_MAGIC,
-            mechanism_version: MECHANISM_VERSION,
-            size: std::mem::size_of::<Door>() as u32,
-            kind: KindCode::Plane as u32,
-            kind_abi: KindCode::Plane.abi_version(),
-            statement: st,
-            ops: std::ptr::null(),
-            ready: None,
+        let door = unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                magic: DOOR_MAGIC,
+                mechanism_version: MECHANISM_VERSION,
+                size: std::mem::size_of::<Door>() as u32,
+                kind: KindCode::Plane as u32,
+                kind_abi: KindCode::Plane.abi_version(),
+                statement: st,
+                ops: std::ptr::null(),
+                ready: None,
+            })
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -3468,6 +3476,13 @@ extern "C" fn linked_cell<const I: usize>() -> *const Door {
     [&LINKED_ABI, &LINKED_PIECE, &LINKED_LAYOUT][I].get()
 }
 
+/// Linked cell `I` as a sealed door function: what the composition root hands the safe entry.
+extern "C" fn sealed_cell<const I: usize>() -> &'static Door {
+    // SAFETY: every test sets its cell, to a door built through the contract's `unsafe`
+    // constructor and leaked, before it calls this.
+    unsafe { &*linked_cell::<I>() }
+}
+
 /// A slot that answers READY: a table cell that is never called.
 extern "C" fn ready_slot(
     _: *mut std::ffi::c_void,
@@ -3506,15 +3521,19 @@ fn whole_table<K: Kind>() -> *const busbar_contract::abi::mechanism::lifecycle::
 
 /// A door of `kind` over the host's whole table of `K` and `statement`.
 fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
-    Door {
-        magic: DOOR_MAGIC,
-        mechanism_version: MECHANISM_VERSION,
-        size: std::mem::size_of::<Door>() as u32,
-        kind: kind as u32,
-        kind_abi: kind.abi_version(),
-        statement: Box::leak(Box::new(statement)),
-        ops: whole_table::<K>(),
-        ready: None,
+    // SAFETY: the Statement is leaked for the process, and every slot of the table answers READY
+    // under the call convention.
+    unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: kind as u32,
+            kind_abi: kind.abi_version(),
+            statement: Box::leak(Box::new(statement)),
+            ops: whole_table::<K>(),
+            ready: None,
+        })
     }
 }
 
@@ -3525,22 +3544,18 @@ fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
 fn open_linked_refuses_another_kind_abi_as_the_dropped_in_door_is_refused() {
     let abi = plug::KIND.abi_version();
     for v in [abi - 1, abi + 1] {
-        // SAFETY: the real door is `'static`.
-        let mut d = unsafe { *plug::busbar_plugin_door() };
+        let mut d = plug::door().parts();
         d.kind_abi = v;
-        LINKED_ABI.set(d);
-        let door: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<0>;
+        // SAFETY: the real door's own `'static` Statement and table, at another kind ABI.
+        LINKED_ABI.set(unsafe { Door::__from_parts(d) });
+        let door: busbar_contract::abi::sdk::door::RawDoorFn = linked_cell::<0>;
         // SAFETY: the cell's door function answers a `'static` door (a restated real door).
         let linked = unsafe { crate::dispatch::load::open_linked(door) }
             .expect_err("a linked door at another kind ABI is refused");
         // The safe entry the composition root's generated table calls is the same entry.
         assert_eq!(
-            // SAFETY: the cell's door function answers a `'static` door (a restated real door), as
-            // the door macro's own `LINKED_DOOR` does.
-            crate::dispatch::load::admit_linked(unsafe {
-                busbar_contract::abi::sdk::door::LinkedDoor::__from_door_macro(door)
-            })
-            .expect_err("the safe entry refuses it alike"),
+            crate::dispatch::load::admit_linked(sealed_cell::<0>)
+                .expect_err("the safe entry refuses it alike"),
             linked
         );
         let Err(dropped) = crate::dispatch::load::validate::<TestKind>(door) else {
@@ -3611,8 +3626,8 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
         )
     };
     let piece = std::mem::size_of::<FramePiece>() as u32;
-    let piece_cell: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<1>;
-    let layout_cell: busbar_contract::abi::mechanism::door::DoorFn = linked_cell::<2>;
+    let piece_cell: busbar_contract::abi::sdk::door::RawDoorFn = linked_cell::<1>;
+    let layout_cell: busbar_contract::abi::sdk::door::RawDoorFn = linked_cell::<2>;
 
     // GREEN: the host's piece and layout are admitted.
     LINKED_PIECE.set(piece_door(piece));

@@ -162,11 +162,12 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 }
 
 /// THE DOOR-ROOT TABLE (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic
-/// crate has `fn door()` as its only public item): `<plugin crate> = "<crate>::LINKED_DOOR"`, the
-/// sealed `LinkedDoor` its door macro emits beside `door` (ARCHITECT ruling on `admit_linked`). A
+/// crate has `fn door()` as its only public item): `<plugin crate> = "<crate>::door"`, the door its
+/// door macro emits: a `DoorFn` answering a `&'static Door`, SEALED because a `Door`'s fields are
+/// private behind the contract's one `unsafe` constructor (ARCHITECT ruling on `admit_linked`). A
 /// crate named here is DOOR-ROOT: the generated tables read that and nothing else of the crate's,
 /// hand it to the loader's safe entry (`admit_linked`, which admits it through `open_linked`, the `dlopen`
-/// path's own checks beside the one reviewed `unsafe`), hold a forwarder of the admitted door (see
+/// path's own checks beside the one reviewed `unsafe`), hold it under one name of the root's (see
 /// [`door_root_forwarder`]), and read every fact its axis needs off that door's Statement
 /// (`crate::root::door_root`). A crate not named here is TRANSITIONAL and keeps its entry's reads
 /// (`linked-entry`, else `<crate>::linked`), so a fleet that has not converged still links; the
@@ -176,7 +177,7 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 /// `forbid(unsafe_code)`.
 pub(crate) const DOOR_ROOT: &str = "package.metadata.busbar.door-root";
 
-/// The name of the generated forwarder of door-root crate `krate`'s door.
+/// The name of the generated item holding door-root crate `krate`'s door.
 pub(crate) fn door_root_fn(krate: &str) -> String {
     format!("__door_root_{}", ident(krate))
 }
@@ -187,12 +188,14 @@ pub(crate) fn door_root_admitted_fn(krate: &str) -> String {
 }
 
 /// A DOOR-ROOT CRATE'S DOOR, as the generated tables hold it, over the loader at path `loader`:
-/// its `door` (the table's `door`, its only public item) admitted ONCE by the loader's safe entry
+/// its `door` (the table's `door`, its only public item), named ONCE, as a `DoorFn` of the root's
+/// (the one place the root names the crate); and its admission by the loader's safe entry
 /// (`<loader>::dispatch::admit_linked`: `open_linked`, the `dlopen` path's checks, and the same
-/// refusal word for word), held in a cell; and a door function of the root's own that answers the
-/// admitted door, NULL where the loader refused it (the boot refuses that row first, with the
-/// loader's words: `crate::root::door_root::check`). Calling a door function is safe, and so is
-/// handing one to the loader's safe entry.
+/// refusal word for word), read once into a cell. The boot refuses a row whose admission is a
+/// refusal before its Statement is read, with the loader's words (`crate::root::door_root::check`);
+/// every read of the door runs the loader's checks again. A `DoorFn` answers a `&'static Door`, which
+/// only the contract's `unsafe` door constructor builds, so calling one is safe, and so is handing
+/// one to the loader's safe entry.
 pub(crate) fn door_root_forwarder(manifest: &str, krate: &str, loader: &str) -> String {
     let door = metadata_rows(manifest, DOOR_ROOT)
         .into_iter()
@@ -200,19 +203,15 @@ pub(crate) fn door_root_forwarder(manifest: &str, krate: &str, loader: &str) -> 
         .map(|(_, door)| door)
         .unwrap_or_else(|| panic!("Cargo.toml: `{krate}` is no `[{DOOR_ROOT}]` row"));
     format!(
-        "/// The admission of door-root crate `{krate}`'s door by the loader, read once.\n\
+        "/// The door of door-root crate `{krate}`: the one place the root names the crate.\n\
+         #[allow(dead_code, non_upper_case_globals)]\n\
+         const {name}: ::busbar_contract::abi::mechanism::door::DoorFn = ::{door};\n\
+         /// The admission of door-root crate `{krate}`'s door by the loader, read once.\n\
          #[allow(dead_code)]\n\
          fn {admitted}() -> &'static ::std::result::Result<{loader}::dispatch::LoadedDoor, {loader}::dispatch::LoadError> {{\n    \
          static ADMITTED: ::std::sync::OnceLock<::std::result::Result<{loader}::dispatch::LoadedDoor, {loader}::dispatch::LoadError>> =\n        \
          ::std::sync::OnceLock::new();\n    \
-         ADMITTED.get_or_init(|| {loader}::dispatch::admit_linked(::{door}))\n\
-         }}\n\
-         /// The door of door-root crate `{krate}`, as the loader admitted it.\n\
-         #[allow(dead_code)]\n\
-         extern \"C\" fn {name}() -> *const ::busbar_contract::abi::mechanism::door::Door {{\n    \
-         {admitted}()\n        \
-         .as_ref()\n        \
-         .map_or(::std::ptr::null(), |door| (door.door_fn())())\n\
+         ADMITTED.get_or_init(|| {loader}::dispatch::admit_linked({name}))\n\
          }}\n",
         admitted = door_root_admitted_fn(krate),
         name = door_root_fn(krate)
@@ -272,8 +271,8 @@ pub(crate) fn metadata_rows(manifest: &str, table: &str) -> Vec<(String, String)
     rows
 }
 
-/// THE DOOR A LINKED ROW READS, and whether the row is door-root: a door-root crate's generated
-/// forwarder (`crate::<door_root_fn>`), else `<entry>::door` (`entry` the row's transitional entry
+/// THE DOOR A LINKED ROW READS, and whether the row is door-root: a door-root crate's door as the
+/// root names it (`crate::<door_root_fn>`), else `<entry>::door` (`entry` the row's transitional entry
 /// module).
 pub(crate) fn door_of(manifest: &str, krate: &str, entry: &str) -> (String, bool) {
     match metadata_rows(manifest, DOOR_ROOT)
@@ -281,13 +280,14 @@ pub(crate) fn door_of(manifest: &str, krate: &str, entry: &str) -> (String, bool
         .find(|(k, _)| k == krate)
     {
         Some((_, door)) => {
-            // A door-root crate's door is named by the sealed `LinkedDoor` its door macro emits beside
-            // it (`LINKED_DOOR`, ARCHITECT ruling on `admit_linked`): the table names exactly that.
+            // A door-root crate's door is its door macro's `door`, the crate's only public item
+            // (BUSBAR-1.6.0.md l.3560, l.3875: `linked_gen.rs` names only `<crate>::door`): the
+            // table names exactly that.
             assert_eq!(
                 door,
-                format!("{}::LINKED_DOOR", ident(krate)),
+                format!("{}::door", ident(krate)),
                 "Cargo.toml: `[{DOOR_ROOT}]` names `{door}` for `{krate}`; a door-root crate's \
-                 door is its door macro's sealed `{}::LINKED_DOOR`",
+                 door is its door macro's `{}::door`, its only public item",
                 ident(krate)
             );
             (format!("crate::{}", door_root_fn(krate)), true)
@@ -511,8 +511,8 @@ pub(crate) fn linked_source(
         String::from("// @generated by build.rs from Cargo.toml metadata (src/linked_gen.rs).\n");
     let mut externs: Vec<String> = Vec::new();
     for (_, krate) in &on {
-        // A door-root crate is the loader's edge: the root names it nowhere, and holds its door
-        // through a generated forwarder instead.
+        // A door-root crate is the loader's edge: the root names it only at its door, once, in
+        // the item the generated tables hold.
         if door_root_rows.iter().any(|(k, _)| k == krate) {
             let line = format!(
                 "{}/// What door-root crate `{krate}`'s door states, read once.\n\

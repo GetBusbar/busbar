@@ -568,7 +568,7 @@ fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const
             // SAFETY: the linked door answers its `'static` Door; its table is the export kind's.
             let door = unsafe { *FILE_DOOR() };
             // SAFETY: as above.
-            let mut ops = unsafe { *door.ops.cast::<Ops>() };
+            let mut ops = unsafe { *door.ops().cast::<Ops>() };
             strip(&mut ops);
             let mut older = Box::new(OlderDoor(door, ops));
             older.0.ops = std::ptr::from_ref(&older.1).cast::<OpsHead>();
@@ -1085,7 +1085,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     // SAFETY: the image's door answers its `'static` Door; its ops table is the export kind's.
     let door = unsafe { *real_door() };
     // SAFETY: as above: the export kind's table, `'static` in the image.
-    let real_ops = unsafe { *door.ops.cast::<Ops>() };
+    let real_ops = unsafe { *door.ops().cast::<Ops>() };
     let _ = PRE_ENVELOPE_REAL.set(RealOps(real_ops));
     let shim = PRE_ENVELOPE_DOORS.get_or_init(|| {
         let mut shim = Box::new(ShimDoor(door, pre_envelope_ops(&real_ops)));
@@ -1093,7 +1093,8 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         shim
     });
     assert_eq!(
-        shim.0.statement, door.statement,
+        shim.0.statement(),
+        door.statement(),
         "the image's own Statement"
     );
     PRE_ENVELOPE_PLUGIN_LOCAL
@@ -1102,7 +1103,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         .clear();
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    let row = LinkedRow::of(pre_envelope_door).expect("the image's Statement renders");
+    let row = LinkedRow::of_raw(pre_envelope_door).expect("the image's Statement renders");
     assert_eq!(
         row.statement,
         rendering_of(FILE_DOOR).expect("renders"),

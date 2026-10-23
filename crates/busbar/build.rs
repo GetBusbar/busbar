@@ -377,7 +377,7 @@ fn test_linked_source(manifest: &str) -> String {
     let door_roots = metadata_rows(manifest, DOOR_ROOT);
     let mut forwarders = String::new();
     for id in &doors {
-        // A door-root crate's door is the loader's admitted one, through a forwarder (status row 195).
+        // A door-root crate's door is the item the generated admission names (status row 195).
         if let Some((krate, _)) = door_roots.iter().find(|(k, _)| ident(k.as_str()) == *id) {
             forwarders.push_str(&door_root_forwarder(
                 manifest,
@@ -837,8 +837,8 @@ fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> 
             .or_else(|| entries.iter().find(|(k, _)| *k == krate))
             .map_or_else(|| format!("{}::linked", ident(&krate)), |(_, e)| e.clone());
         if !entry.starts_with("crate::") {
-            // A door-root row reads the loader's admitted door, through a forwarder this file
-            // defines; a transitional one its entry's.
+            // A door-root row reads its sealed door through the item this file defines beside its
+            // admission; a transitional one its entry's.
             let (door, root) = door_of(manifest, &krate, &entry);
             if root {
                 forwarders.push_str(&door_root_forwarder(
@@ -889,8 +889,8 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             .or_else(|| entries.iter().find(|(k, _)| *k == krate))
             .map(|(_, path)| path.clone())
             .unwrap_or_else(|| format!("{}::linked", ident(&krate)));
-        // The door the row reads: a door-root crate's loader-admitted door, through a forwarder this
-        // file defines, else its entry's (status row 195).
+        // The door the row reads: a door-root crate's sealed door, through the item this file
+        // defines beside its admission, else its entry's (status row 195).
         let (door_fn, root) = door_of(manifest, &krate, &entry);
         let door_fn = if root {
             door_builds.push_str(&door_root_forwarder(

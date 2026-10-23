@@ -366,8 +366,8 @@ host = "unit"
 /// DOOR-ROOT ROWS OF EVERY KIND (status row 195; BUSBAR-1.6.0.md l.3560-3561; ARCHITECT ruling,
 /// l.272-274: the root generates the linked table and alone depends on the plugin crates, the loader
 /// names none): a crate the root's door-root table names is read at its `door` alone, handed to the
-/// loader's safe `admit_linked` once, and held through a generated forwarder of the admitted door,
-/// on every axis a door can carry (transport, plane door, secret, auth, export, store, hook). Each
+/// loader's safe `admit_linked` once, and held under one generated name of the root's (a `DoorFn`,
+/// sealed: a `Door` is built only through the contract's `unsafe` constructor), on every axis a door can carry (transport, plane door, secret, auth, export, store, hook). Each
 /// row reads its facts off that door's Statement at boot (`root::door_root`) and is listed, with its
 /// admission, for the boot's check. A crate the table does not name keeps its transitional reads
 /// beside it, row by row. RED: a door-root row naming a kernel-typed axis, an entry module or a
@@ -425,16 +425,16 @@ auth-x = "busbar-auth-x"
 node = "plane_node"
 
 [package.metadata.busbar.door-root]
-busbar-wire = "busbar_wire::LINKED_DOOR"
-busbar-plane-x = "busbar_plane_x::LINKED_DOOR"
-busbar-secret-x = "busbar_secret_x::LINKED_DOOR"
-busbar-auth-x = "busbar_auth_x::LINKED_DOOR"
-busbar-export-x = "busbar_export_x::LINKED_DOOR"
-busbar-store-x = "busbar_store_x::LINKED_DOOR"
-busbar-hook-x = "busbar_hook_x::LINKED_DOOR"
+busbar-wire = "busbar_wire::door"
+busbar-plane-x = "busbar_plane_x::door"
+busbar-secret-x = "busbar_secret_x::door"
+busbar-auth-x = "busbar_auth_x::door"
+busbar-export-x = "busbar_export_x::door"
+busbar-store-x = "busbar_store_x::door"
+busbar-hook-x = "busbar_hook_x::door"
 "#;
     let (out, _) = linked_source(manifest, &|_: &str| false);
-    // Each door-root row holds the forwarder of the door the loader admitted, and nothing else.
+    // Each door-root row holds the root's one name for the crate's sealed door, and nothing else.
     for (want, why) in [
         (
             "crate::root::linked::linked_transport!(crate::__door_root_busbar_wire)",
@@ -456,8 +456,12 @@ busbar-hook-x = "busbar_hook_x::LINKED_DOOR"
         ),
         ("hook_doors: &[crate::__door_root_busbar_hook_x, ],", "the hook row"),
         (
-            "ADMITTED.get_or_init(|| crate::root::loader::dispatch::admit_linked(::busbar_wire::LINKED_DOOR))",
-            "the transport row's forwarder",
+            "const __door_root_busbar_wire: ::busbar_contract::abi::mechanism::door::DoorFn = ::busbar_wire::door;",
+            "the transport row's door, named once",
+        ),
+        (
+            "ADMITTED.get_or_init(|| crate::root::loader::dispatch::admit_linked(__door_root_busbar_wire))",
+            "the transport row's admission",
         ),
     ] {
         assert!(out.contains(want), "{why}: `{want}` not in\n{out}");
@@ -474,11 +478,11 @@ busbar-hook-x = "busbar_hook_x::LINKED_DOOR"
         let reads: Vec<&str> = out
             .match_indices(&format!("{crate_ident}::"))
             .map(|(at, _)| &out[at..])
-            .filter(|rest| !rest.starts_with(&format!("{crate_ident}::LINKED_DOOR)")))
+            .filter(|rest| !rest.starts_with(&format!("{crate_ident}::door;")))
             .collect();
         assert!(
             reads.is_empty() && !out.contains(&format!("extern crate {crate_ident} ")),
-            "a door-root crate is read only at its door, by the loader's admission: {reads:?}\n{out}"
+            "a door-root crate is read only at its door, named once: {reads:?}\n{out}"
         );
     }
     // Every door-root row is listed for the boot's check, with the name its row states where its
@@ -545,13 +549,13 @@ busbar-hook-x = "busbar_hook_x::LINKED_DOOR"
             manifest.replace("busbar-hook-x = { path = \"../busbar-hook-x\" }\n", ""),
             "linked feature `hook-x` is not declared under [features]",
         ),
-        // RED: a door-root table naming anything but the crate's sealed `LINKED_DOOR`.
+        // RED: a door-root table naming anything but the crate's `door` (spec l.3875).
         (
             manifest.replace(
-                "busbar-hook-x = \"busbar_hook_x::LINKED_DOOR\"",
                 "busbar-hook-x = \"busbar_hook_x::door\"",
+                "busbar-hook-x = \"busbar_hook_x::linked::door\"",
             ),
-            "a door-root crate's door is its door macro's sealed `busbar_hook_x::LINKED_DOOR`",
+            "a door-root crate's door is its door macro's `busbar_hook_x::door`, its only public item",
         ),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|_: &str| false))

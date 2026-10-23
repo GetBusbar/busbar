@@ -102,7 +102,8 @@ pub struct TransportFacts {
 pub fn stated(
     door_fn: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
-    let st = crate::dispatch::load::statement_of(door_fn).map_err(|e| e.to_string())?;
+    let st = crate::dispatch::load::statement_of(crate::dispatch::load::raw(door_fn))
+        .map_err(|e| e.to_string())?;
     tail_facts(&st)
 }
 
@@ -268,7 +269,8 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
 pub fn linked_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
-    let v = crate::dispatch::load::validate::<Transport>(door).map_err(|e| e.to_string())?;
+    let v = crate::dispatch::load::validate::<Transport>(crate::dispatch::load::raw(door))
+        .map_err(|e| e.to_string())?;
     tail_facts(&v.statement)
 }
 

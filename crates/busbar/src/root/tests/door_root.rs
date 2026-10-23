@@ -213,10 +213,10 @@ fn a_door_root_row_whose_kind_carries_declares_must_state_them() {
     assert!(held > 0, "a declares-carrying family is held to it");
 }
 
-/// The loader's admission of the door-root fixture `wire`'s sealed door (its door macro's
-/// `LINKED_DOOR`), through the safe entry every door-root row is admitted by.
+/// The loader's admission of the door-root fixture `wire`'s sealed door (its door macro's `door`, a
+/// `DoorFn` answering a `&'static Door`), through the safe entry every door-root row is admitted by.
 fn wire_admission() -> Option<String> {
-    crate::root::loader::dispatch::admit_linked(busbar_plugin_loader_fixtures::wire::LINKED_DOOR)
+    crate::root::loader::dispatch::admit_linked(busbar_plugin_loader_fixtures::wire::door)
         .err()
         .map(|e| e.to_string())
 }
@@ -224,11 +224,9 @@ fn wire_admission() -> Option<String> {
 /// The loader's admission of the fixture `bad_piece`, a transport whose tail states another frame
 /// piece than the host's (row 167).
 fn bad_piece_admission() -> Option<String> {
-    crate::root::loader::dispatch::admit_linked(
-        busbar_plugin_loader_fixtures::bad_piece::LINKED_DOOR,
-    )
-    .err()
-    .map(|e| e.to_string())
+    crate::root::loader::dispatch::admit_linked(busbar_plugin_loader_fixtures::bad_piece::door)
+        .err()
+        .map(|e| e.to_string())
 }
 
 /// GREEN: A DOOR-ROOT ROW BOOTS: its sealed door admitted by the loader (`admit_linked`:
@@ -293,7 +291,7 @@ fn a_door_root_row_on_a_kernel_typed_axis_is_refused() {
 }
 
 /// RED: A DOOR THE LOADER REFUSES refuses the boot with the loader's words, before its Statement is
-/// read: the row's admission (`admit_linked` over the door macro's sealed `LINKED_DOOR`,
+/// read: the row's admission (`admit_linked` over the door macro's sealed `door`,
 /// `open_linked`'s checks) answers the refusal.
 #[test]
 fn a_door_root_row_the_loader_refuses_is_refused() {

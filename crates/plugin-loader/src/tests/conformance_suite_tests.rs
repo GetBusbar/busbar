@@ -124,8 +124,8 @@ mod suite_conns {
 
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
-    use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, RawDoorFn};
     use busbar_contract::conn::{NeedId, OpenDesc};
 
     use super::super::{bind, dispatcher, Subject};
@@ -169,15 +169,17 @@ mod suite_conns {
     fn restate(slot: &AtomicPtr<Door>, needs: &'static [Need]) {
         // SAFETY: the test door and its Statement are `'static`.
         let real: Door = unsafe { *plug::busbar_plugin_door() };
-        let st: Statement = unsafe { *real.statement };
+        let st: Statement = unsafe { *real.statement() };
         let st: &'static Statement = Box::leak(Box::new(Statement {
             needs: needs.as_ptr(),
             needs_len: needs.len(),
             ..st
         }));
-        let door = Box::into_raw(Box::new(Door {
-            statement: st,
-            ..real
+        let door = Box::into_raw(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                statement: st,
+                ..real.parts()
+            })
         }));
         slot.store(door, Ordering::SeqCst);
     }
@@ -201,8 +203,8 @@ mod suite_conns {
         MIXED_DOOR.load(Ordering::SeqCst)
     }
 
-    fn subject(door: DoorFn) -> Subject {
-        Subject::new(door, "unused", "{}")
+    fn subject(door: RawDoorFn) -> Subject {
+        Subject::of_raw(door, "unused", "{}")
     }
 
     #[test]
@@ -217,7 +219,7 @@ mod suite_conns {
     #[test]
     fn a_need_the_table_does_not_serve_keeps_the_bind_with_no_table() {
         let d = dispatcher();
-        for door in [http_door as DoorFn, mixed_door] {
+        for door in [http_door as RawDoorFn, mixed_door] {
             let s = subject(door);
             assert!(!s.needs().is_empty());
             assert!(s.conns(&d).is_none(), "{:?}", s.needs());
@@ -272,7 +274,7 @@ mod suite_conns {
         assert!(matches!(s.bind(&d, "a").conns, ConnTable::Host(_)));
         let table = s.conns(&d).expect("a tcp need is handed a table");
         let p = load_linked::<TestKind>(
-            &LinkedRow::of(tcp_door).expect("the restated door states its Statement"),
+            &LinkedRow::of_raw(tcp_door).expect("the restated door states its Statement"),
             Bind {
                 conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
                 ..bind(&d, "networked")
@@ -410,7 +412,7 @@ mod resumed_open {
         }
         // SAFETY: the test plugin's door and its lifecycle table are `'static`.
         let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
-        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+        let ops: OpsHead = unsafe { real.ops().read_unaligned() };
         REAL_OPEN.store(
             ops.open.expect("the test plugin opens") as *mut (),
             Ordering::SeqCst,
@@ -419,7 +421,12 @@ mod resumed_open {
             open: Some(open_pends),
             ..ops
         }));
-        let door = Box::into_raw(Box::new(Door { ops, ..real }));
+        let door = Box::into_raw(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                ops,
+                ..real.parts()
+            })
+        }));
         SLOT.store(door, Ordering::SeqCst);
         door
     }
@@ -430,7 +437,7 @@ mod resumed_open {
     #[test]
     fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
         let d = dispatcher();
-        let row = LinkedRow::of(pending_open_door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(pending_open_door).expect("the restated door states itself");
         let raw = load_linked::<TestKind>(&row, bind(&d, "raw")).expect("it loads");
         PENDED.store(false, Ordering::SeqCst);
         // A ticket-less crossing may not pend: the host FAULTs the raw open's PENDING.
@@ -474,7 +481,7 @@ mod fold_namespace {
         extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
             std::ptr::null()
         }
-        Subject::new(no_door, "unused", &format!(r#"{{"settings": {settings}}}"#))
+        Subject::of_raw(no_door, "unused", &format!(r#"{{"settings": {settings}}}"#))
     }
 
     /// Settings that name no placeholder are exactly the plugin's.
@@ -579,7 +586,7 @@ mod namespace_hooks {
         extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
             std::ptr::null()
         }
-        Subject::new(
+        Subject::of_raw(
             no_door,
             "unused",
             r#"{"settings": {"options": "-c search_path={fold}"}}"#,
@@ -653,7 +660,7 @@ mod namespace_hooks {
         extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
             std::ptr::null()
         }
-        let s = Subject::new(no_door, "unused", r#"{"settings": {"schema": "{fold}"}}"#);
+        let s = Subject::of_raw(no_door, "unused", r#"{"settings": {"schema": "{fold}"}}"#);
         let f = Leg::Linked.settings(&s);
         let ns = f.namespace().to_owned();
         assert_eq!(&*f, format!(r#"{{"schema":"{ns}"}}"#).as_bytes());
@@ -767,7 +774,7 @@ fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("plugin");
     std::fs::create_dir_all(&dir).unwrap();
-    let s = super::Subject::new(plug::busbar_plugin_door, "unused", "{}");
+    let s = super::Subject::of_raw(plug::busbar_plugin_door, "unused", "{}");
     let at = dir.to_str().unwrap();
     let why = panic_text(|| super::needs_declared(&s, at));
     assert!(why.contains("no declares.json for the plugin at"), "{why}");
@@ -788,10 +795,10 @@ fn red_an_outbound_arm_over_a_door_without_the_family_never_passes_unrun() {
         panic!("an outbound arm ran over a door that states no outbound family");
     }
     outbound_plant(
-        &Subject::new(plug::busbar_plugin_door, "unused", "{}"),
+        &Subject::of_raw(plug::busbar_plugin_door, "unused", "{}"),
         must_not_run,
     );
-    let driven = Subject::new(
+    let driven = Subject::of_raw(
         plug::busbar_plugin_door,
         "unused",
         r#"{"auth": {"outbound": [{"style": "bearer"}]}}"#,
@@ -978,7 +985,7 @@ mod lent_ops {
             watchdog_period: Duration::from_millis(20),
             ..DispatchConfig::default()
         });
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let lent: Arc<Vec<u8>> = Arc::new(b"the memory the op is lent".to_vec());
@@ -1090,9 +1097,11 @@ mod hook_on_tickets {
                 decide: Some(test_op::<DecidePends>),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door {
-                ops: std::ptr::from_ref(ops).cast(),
-                ..real
+            let door = Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
             }));
             SLOT.store(door, Ordering::SeqCst);
             door
@@ -1105,7 +1114,8 @@ mod hook_on_tickets {
     #[test]
     fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
         let d = super::super::dispatcher();
-        let row = LinkedRow::of(test_door::<PendingDoor>).expect("the restated door states itself");
+        let row =
+            LinkedRow::of_raw(test_door::<PendingDoor>).expect("the restated door states itself");
         let p = load_linked::<Hook>(&row, bind(&d, "hook")).expect("it loads");
         assert_eq!(
             open(&p, br#"{"reject_over_messages": 5}"#).outcome,
@@ -1169,7 +1179,7 @@ mod deadline_without_wake {
     fn a_wait_that_is_woken_passes() {
         let _ = woken();
         let d = dispatcher();
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "woken")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let c = on_ticket(
@@ -1191,7 +1201,7 @@ mod deadline_without_wake {
     fn red_a_wait_a_deadline_ended_is_refused() {
         let _ = woken();
         let d = dispatcher();
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "unwoken")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let c = on_ticket(
@@ -1415,19 +1425,19 @@ mod no_shared_state {
     fn red_the_environment_is_set_once_and_another_is_refused() {
         const VAR: &str = "BBCONF_SUITE_ENV_PROBE";
         let named = |v: &str| format!(r#"{{ "env": {{ "{VAR}": "{v}" }} }}"#);
-        let _first = Subject::new(
+        let _first = Subject::of_raw(
             crate::dispatch_test_plugin::busbar_plugin_door,
             "unused",
             &named("one"),
         );
         assert_eq!(std::env::var(VAR).as_deref(), Ok("one"));
-        let _again = Subject::new(
+        let _again = Subject::of_raw(
             crate::dispatch_test_plugin::busbar_plugin_door,
             "unused",
             &named("one"),
         );
         let refused = std::panic::catch_unwind(|| {
-            Subject::new(
+            Subject::of_raw(
                 crate::dispatch_test_plugin::busbar_plugin_door,
                 "unused",
                 &named("two"),
