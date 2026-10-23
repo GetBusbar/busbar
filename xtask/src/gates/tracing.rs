@@ -193,12 +193,30 @@ fn hotpath_level(text: &str) -> Option<String> {
     (!word.is_empty()).then_some(word)
 }
 
-/// The span MACROS a line invokes: each one's name, the level it fixes, and the byte index just
-/// past its `(`. `debug_span!` is not also a `span!`: a match must not follow an identifier
-/// character.
-fn span_macros_in(line: &str) -> Vec<(&'static str, Option<&'static str>, usize)> {
+/// The span MACROS a line invokes by their own names: each one's name, the level it fixes, and the
+/// byte index just past its `(`.
+fn span_macros_in(line: &str) -> Vec<(String, Option<&'static str>, usize)> {
+    span_macros_with(line, &[])
+}
+
+/// The span MACROS a line invokes, by their own names and by the renamed imports `aliases` holds
+/// (each alias with the level of the macro it names): each one's name as spelled, the level it
+/// fixes, and the byte index just past its `(`. `debug_span!` is not also a `span!`: a match must
+/// not follow an identifier character.
+fn span_macros_with(
+    line: &str,
+    aliases: &[(String, Option<&'static str>)],
+) -> Vec<(String, Option<&'static str>, usize)> {
     let mut hits = Vec::new();
-    for (name, level) in SPAN_MACROS {
+    // A line with no `!` invokes no macro: the common case, answered without a needle per name.
+    if !line.contains('!') {
+        return hits;
+    }
+    let names = SPAN_MACROS
+        .iter()
+        .map(|(name, level)| ((*name).to_string(), *level))
+        .chain(aliases.iter().cloned());
+    for (name, level) in names {
         let needle = format!("{name}!");
         let mut from = 0;
         while let Some(found) = line[from..].find(&needle) {
@@ -211,7 +229,7 @@ fn span_macros_in(line: &str) -> Vec<(&'static str, Option<&'static str>, usize)
             let rest = &line[from..];
             let open = rest.len() - rest.trim_start().len();
             if boundary && rest.trim_start().starts_with('(') {
-                hits.push((name, level, from + open + 1));
+                hits.push((name.clone(), level, from + open + 1));
             }
         }
     }
@@ -250,39 +268,229 @@ fn finding_macro(rel: &str, line: usize, name: &str, level: &str, hot: &str) -> 
     )
 }
 
-/// The hand-rolled spans of one file (its code blanked of literals and comments): how many it
-/// holds, and each one whose level is not `hot`.
-fn scan_macros(rel: &str, text: &str, hot: Option<&str>) -> (usize, Vec<String>) {
+/// What every file's span macros are judged against, read off the whole walk before any file is.
+#[derive(Debug, Default)]
+struct SpanRule {
+    /// The level `observability::HOTPATH_LEVEL` is set to (`None`: unread, so every span macro is
+    /// a finding).
+    hot: Option<String>,
+    /// The span macros' renamed imports across the walk (`use tracing::info_span as quiet_span;`),
+    /// each alias with the level of the macro it names: an alias of a span macro is that macro.
+    aliases: Vec<(String, Option<&'static str>)>,
+    /// Where the walk binds a `HOTPATH_LEVEL` other than its one declaration (a second `const`, a
+    /// rename to it): while any is there, a short spelling is not provably the one item.
+    rebound: Vec<String>,
+}
+
+/// `code` with every raw-identifier prefix (`r#name`) stripped, so `r#Node` reads as `Node`.
+pub(crate) fn unraw(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut prev: Option<char> = None;
+    let mut chars = code.chars().peekable();
+    while let Some(c) = chars.next() {
+        let starts_word = prev.is_none_or(|p| !(p.is_alphanumeric() || p == '_'));
+        if c == 'r' && starts_word && chars.peek() == Some(&'#') {
+            let mut ahead = chars.clone();
+            ahead.next();
+            if ahead.peek().is_some_and(|n| n.is_alphabetic() || *n == '_') {
+                chars.next();
+                prev = Some('#');
+                continue;
+            }
+        }
+        out.push(c);
+        prev = Some(c);
+    }
+    out
+}
+
+/// The identifiers of blanked code, in order (a raw identifier's `r#` is not part of it).
+fn idents(code: &str) -> impl DoubleEndedIterator<Item = &str> {
+    code.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+}
+
+/// Every `X as Y` rename in one file's blanked code, as (`X`, `Y`). Read as a run of identifiers,
+/// so a `use` group broken over lines is read whole; a cast (`n as u64`) renames nothing a span
+/// macro is called by, so reading one too costs nothing.
+pub(crate) fn renames(code: &str) -> Vec<(String, String)> {
+    // A raw identifier (`r#Node`) is the identifier itself: its `r#` is stripped before reading.
+    let code = unraw(code);
+    let words: Vec<&str> = idents(&code).collect();
+    words
+        .windows(3)
+        .filter(|w| w[1] == "as")
+        .map(|w| (w[0].to_string(), w[2].to_string()))
+        .collect()
+}
+
+/// The span macros' aliases among `renames`, followed through a rename of a rename: each alias with
+/// the level of the macro it names.
+fn macro_aliases(renames: &[(String, String)]) -> Vec<(String, Option<&'static str>)> {
+    let mut known: Vec<(String, Option<&'static str>)> = SPAN_MACROS
+        .iter()
+        .map(|(name, level)| ((*name).to_string(), *level))
+        .collect();
+    let builtin = known.len();
+    loop {
+        let before = known.len();
+        for (from, to) in renames {
+            let levels: Vec<Option<&'static str>> = known
+                .iter()
+                .filter(|(name, _)| name == from)
+                .map(|(_, level)| *level)
+                .collect();
+            for level in levels {
+                if !known.iter().any(|(name, l)| name == to && *l == level) {
+                    known.push((to.clone(), level));
+                }
+            }
+        }
+        if known.len() == before {
+            break;
+        }
+    }
+    known.split_off(builtin)
+}
+
+/// The lines of one file's blanked code that bind a `HOTPATH_LEVEL` (a `const`, `static`, `let`,
+/// `fn`, `type` or `mod` of that name, a typed argument, a rename `as HOTPATH_LEVEL`), as
+/// `rel:line`. Its home's own declaration is the item, not a second binding of it.
+fn hotpath_bindings(rel: &str, code: &[String]) -> Vec<String> {
+    const NAME: &str = "HOTPATH_LEVEL";
+    const BINDERS: [&str; 9] = [
+        "const", "static", "let", "mut", "as", "fn", "type", "mod", "struct",
+    ];
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        if rel == HOTPATH_HOME && line.contains(HOTPATH_DECL) {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(found) = line[from..].find(NAME) {
+            let at = from + found;
+            from = at + NAME.len();
+            let before = &line[..at];
+            let after = &line[from..];
+            let whole = before
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+                && after
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            if !whole {
+                continue;
+            }
+            let binder = idents(before.trim_end())
+                .next_back()
+                .is_some_and(|w| BINDERS.contains(&w))
+                && !before.trim_end().ends_with("::");
+            let after = after.trim_start();
+            let typed = after.starts_with(':') && !after.starts_with("::");
+            if binder || typed {
+                out.push(format!("{rel}:{}", i + 1));
+            }
+        }
+    }
+    out
+}
+
+/// Does a `span!`'s first argument `level` name `observability::HOTPATH_LEVEL` itself, or
+/// `tracing::Level::<hot>`? Read as one whole path, never a suffix: `NOT_HOTPATH_LEVEL` is another
+/// constant. The full path `busbar_kernel::observability::HOTPATH_LEVEL` is always the item; the
+/// short spellings (`HOTPATH_LEVEL`, `observability::HOTPATH_LEVEL`,
+/// `crate::observability::HOTPATH_LEVEL`) are only while nothing in the walk binds the name again.
+fn names_hotpath(level: &str, hot: &str, rebound: bool) -> bool {
+    let path: String = level.chars().filter(|c| !c.is_whitespace()).collect();
+    let path = path.strip_prefix("::").unwrap_or(path.as_str());
+    match path {
+        "busbar_kernel::observability::HOTPATH_LEVEL" => true,
+        "HOTPATH_LEVEL"
+        | "observability::HOTPATH_LEVEL"
+        | "crate::observability::HOTPATH_LEVEL" => !rebound,
+        _ => ["Level::", "tracing::Level::"]
+            .iter()
+            .any(|p| path.strip_prefix(*p) == Some(hot)),
+    }
+}
+
+/// What the scan reads of ONE FILE before any rule is applied: its code blanked of literals and
+/// comments (one lexer pass, line for line), its `X as Y` renames and its bindings of
+/// `HOTPATH_LEVEL`. None of it depends on any other file, so it is read once per file's bytes and
+/// shared by every run that sees those bytes: the self-test's plants change a file or two, and the
+/// rest of the walk is read once between them rather than once each.
+struct Prescan {
+    code: Vec<String>,
+    renames: Vec<(String, String)>,
+    bindings: Vec<String>,
+}
+
+/// [`Prescan`] of `rel` holding `text`, memoised on the path AND its bytes: a planted file is a
+/// different text, so it is a fresh read, never the base file's answer.
+fn prescan(rel: &str, text: &str) -> std::sync::Arc<Prescan> {
+    type Memo = std::collections::HashMap<String, Vec<(String, std::sync::Arc<Prescan>)>>;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    if let Some(hit) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(rel))
+        .and_then(|seen| seen.iter().find(|(t, _)| t == text))
+        .map(|(_, p)| p.clone())
+    {
+        return hit;
+    }
     let mut lex = scan::LexState::default();
-    let lines: Vec<String> = text
+    let code: Vec<String> = text
         .lines()
         .map(|l| scan::blank_code(l, &mut lex))
         .collect();
+    let found = std::sync::Arc::new(Prescan {
+        renames: renames(&code.join("\n")),
+        bindings: hotpath_bindings(rel, &code),
+        code,
+    });
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .entry(rel.to_string())
+        .or_default()
+        .push((text.to_string(), found.clone()));
+    found
+}
+
+/// The hand-rolled spans of one file (its code blanked of literals and comments): how many it
+/// holds, and each one whose level is not HOTPATH_LEVEL's.
+fn scan_macros(rel: &str, lines: &[String], rule: &SpanRule) -> (usize, Vec<String>) {
+    let hot = rule.hot.as_deref();
     let (mut spans, mut findings) = (0usize, Vec::new());
     for (i, line) in lines.iter().enumerate() {
-        for (name, fixed, open) in span_macros_in(line) {
+        for (name, fixed, open) in span_macros_with(line, &rule.aliases) {
             spans += 1;
             let level = match fixed {
                 Some(level) => level.to_string(),
-                None => first_argument(&lines, i, open).trim().to_string(),
+                None => first_argument(lines, i, open).trim().to_string(),
             };
             let ok = match hot {
                 Some(h) => match fixed {
                     Some(level) => level == h,
-                    None => {
-                        level.ends_with("HOTPATH_LEVEL") || level.ends_with(&format!("Level::{h}"))
-                    }
+                    None => names_hotpath(&level, h, !rule.rebound.is_empty()),
                 },
                 None => false,
             };
             if !ok {
-                findings.push(finding_macro(
-                    rel,
-                    i + 1,
-                    name,
-                    &level,
-                    hot.unwrap_or("unread: no HOTPATH_LEVEL declaration in its home"),
-                ));
+                let hot = match hot {
+                    Some(h) if fixed.is_none() && !rule.rebound.is_empty() => format!(
+                        "{h}; a short spelling is not the one item while HOTPATH_LEVEL is bound \
+                         again at {}",
+                        rule.rebound.join(", ")
+                    ),
+                    Some(h) => h.to_string(),
+                    None => "unread: no HOTPATH_LEVEL declaration in its home".to_string(),
+                };
+                findings.push(finding_macro(rel, i + 1, &name, &level, &hot));
             }
         }
     }
@@ -292,21 +500,21 @@ fn scan_macros(rel: &str, text: &str, hot: Option<&str>) -> (usize, Vec<String>)
 /// The statement-window accumulator, per file. An attribute's token stream may span any number of
 /// lines (a multi-line `fields(…)` list is the common shape); it is complete once the accumulated
 /// code has equal `(` and `)` counts — true immediately for a bare `#[instrument]`.
-fn scan_file(rel: &str, text: &str, hot: Option<&str>) -> Findings {
+fn scan_file(rel: &str, text: &str, pre: &Prescan, rule: &SpanRule) -> Findings {
     let mut out = Findings::default();
-    let (macro_spans, macro_findings) = scan_macros(rel, text, hot);
+    let (macro_spans, macro_findings) = scan_macros(rel, &pre.code, rule);
     out.spans += macro_spans;
     out.level.extend(macro_findings);
     let mut in_attr = false;
     let mut start_line = 0usize;
     let mut code = String::new();
-    let mut lex = scan::LexState::default();
 
     for (i, line) in text.lines().enumerate() {
         let is_comment = line.trim_start().starts_with("//");
         // A paren inside a STRING LITERAL or a COMMENT is text, not structure. The state is carried
-        // so a `fields(…)` list interrupted by a multi-line literal is still read as one attribute.
-        let nostr = scan::blank_code(line, &mut lex);
+        // so a `fields(…)` list interrupted by a multi-line literal is still read as one attribute:
+        // the file's blanked code, lexed once in [`prescan`], line for line.
+        let nostr = pre.code.get(i).map_or("", String::as_str);
 
         if !in_attr {
             if is_comment || !opens_instrument_attr(line) {
@@ -314,10 +522,10 @@ fn scan_file(rel: &str, text: &str, hot: Option<&str>) -> Findings {
             }
             in_attr = true;
             start_line = i + 1;
-            code = nostr;
+            code = nostr.to_string();
         } else {
             code.push('\n');
-            code.push_str(&nostr);
+            code.push_str(nostr);
         }
 
         let opens = code.matches('(').count();
@@ -470,13 +678,28 @@ impl Gate for TracingGate {
             );
         }
 
-        // The one hot-path level every hand-rolled span is held to, read off its declaration.
-        let hot = cx.read(HOTPATH_HOME).ok().and_then(|t| hotpath_level(&t));
+        // The one hot-path level every hand-rolled span is held to, read off its declaration; the
+        // span macros' renamed imports and any second binding of HOTPATH_LEVEL, read off the whole
+        // walk (a rename in one module is called in another).
+        let mut rule = SpanRule {
+            hot: cx.read(HOTPATH_HOME).ok().and_then(|t| hotpath_level(&t)),
+            ..SpanRule::default()
+        };
+        let pre: Vec<std::sync::Arc<Prescan>> = files
+            .iter()
+            .map(|f| prescan(&f.rel_str(), &f.text))
+            .collect();
+        let mut all_renames = Vec::new();
+        for p in &pre {
+            all_renames.extend(p.renames.iter().cloned());
+            rule.rebound.extend(p.bindings.iter().cloned());
+        }
+        rule.aliases = macro_aliases(&all_renames);
         let mut level = Vec::new();
         let mut unclosed = Vec::new();
         let mut spans = 0usize;
-        for f in &files {
-            let found = scan_file(&f.rel_str(), &f.text, hot.as_deref());
+        for (f, p) in files.iter().zip(&pre) {
+            let found = scan_file(&f.rel_str(), &f.text, p, &rule);
             spans += found.spans;
             level.extend(found.level);
             unclosed.extend(found.unclosed);
@@ -681,6 +904,52 @@ impl Gate for TracingGate {
                 "planted_wrong_level_spans.rs:2",
                 "planted_wrong_level_spans.rs:3",
             ],
+        ));
+
+        // A SPAN MACRO UNDER ANOTHER NAME, AND A LEVEL NAMED LIKE HOTPATH_LEVEL, ARE NOT ESCAPES.
+        // `use tracing::info_span as quiet_span;` makes `quiet_span!` an INFO span, and
+        // `NOT_HOTPATH_LEVEL` is another constant whose name merely ends like the one item.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_evading_spans.rs",
+            "use tracing::info_span as quiet_span;\n\
+             use tracing::Level;\n\n\
+             const NOT_HOTPATH_LEVEL: Level = Level::INFO;\n\n\
+             pub fn f() {\n\
+             \x20   let _a = quiet_span!(\"forward\");\n\
+             \x20   let _b = tracing::span!(NOT_HOTPATH_LEVEL, \"forward_once\");\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a renamed span macro and a level constant named like HOTPATH_LEVEL are flagged",
+            &[ROW_LEVEL],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_evading_spans.rs:7",
+                "planted_evading_spans.rs:8",
+            ],
+        ));
+
+        // A BARE `HOTPATH_LEVEL` IS THE ONE ITEM ONLY WHILE NOTHING ELSE BINDS THE NAME: a file
+        // declaring its own `HOTPATH_LEVEL` at INFO makes the short spelling another constant.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_shadowed_hotpath.rs",
+            "const HOTPATH_LEVEL: tracing::Level = tracing::Level::INFO;\n\n\
+             pub fn f() {\n\
+             \x20   let _a = tracing::span!(HOTPATH_LEVEL, \"forward\");\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a bare HOTPATH_LEVEL a file binds again is not the one item",
+            &[ROW_LEVEL],
+            ov,
+            &["1 finding(s)", "planted_shadowed_hotpath.rs:4"],
         ));
 
         // ITEM 228: THE SUBJECT FLOOR. Every production span becomes a hand-rolled `span!`; the

@@ -160,22 +160,6 @@ pub trait EngineHost: Send + Sync {
         key: &busbar_contract::records::VirtualKey,
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState>;
-
-    /// The mount-aware dialect an answer to `path` is SHAPED in —
-    /// `busbar_kernel::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A body-model
-    /// arrival's read.
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
-
-    /// The fallback error SHAPE by `path` — `busbar_kernel::fallback_error_response(&App::planes, path,
-    /// status, kind, message)`, the unmatched-path envelope in the dialect the deployment mounted
-    /// `path` under. A body-model arrival's read.
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response;
 }
 
 impl EngineHost for EngineHostImpl {
@@ -306,20 +290,6 @@ impl EngineHost for EngineHostImpl {
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         pin_models(pin).map_or_else(Vec::new, |(g, c)| g.budget_state(&c, key, now))
-    }
-
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
-        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
-    }
-
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response {
-        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
     }
 }
 

@@ -3,12 +3,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    body::Bytes,
-    extract::OriginalUri,
-    http::{HeaderMap, StatusCode},
-    response::Response,
-};
+use axum::{extract::OriginalUri, http::StatusCode, response::Response};
 
 use crate::state::App;
 

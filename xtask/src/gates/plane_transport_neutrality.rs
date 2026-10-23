@@ -96,13 +96,21 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `tests/percall_meter_shadow.rs`). #1377 deletes 6 (`plane_host/{build_input,mod}.rs`,
 /// `plane_host/tests/{build_input,mod,plane_answer,residual}_tests.rs`) and adds 7
 /// (`plane_driver/{answer,host,route_input}.rs`, `plane_driver/tests/{answer,host,route_input}_tests.rs`,
-/// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234.
-///
-/// RAISED 1234 -> 1239 on #1287: the gate's measure on #1287 merged with dev 17d824b657 (the
-/// approval desk's run of `zero-file-refusal`: 1239 file(s) across the census-neutral roots). Dev's
-/// own landings since 1234 add files; this PR deletes ingress/arrival_host.rs and
-/// ingress/tests/terminal_tests.rs and adds none.
-pub const MIN_FILES: usize = 1239;
+/// `tests/residual_log_tests.rs`). 1244 - 11 - 6 + 7 = 1234. Lowered 1234 -> 1232 by status row 82
+/// (D2, GetBusbar/busbar#1276 over dev 0f3c9caa44): the kernel's body-ingress arrival host leaves
+/// with its terminal tests (`busbar-kernel/src/ingress/arrival_host.rs`,
+/// `ingress/tests/terminal_tests.rs`); the gate's count on 4f926f805c is 1232. Raised 1232 -> 1239
+/// merging dev 17d824b657: dev's 7 scanned arrivals since 0f3c9caa44 (contract
+/// abi/sdk/generation.rs, abi/sdk/test_support/{pairs,test_in}.rs, abi/sdk/tests/expand_tests.rs;
+/// kernel plane_driver/close.rs, plane_driver/hooks/tests/section_attach_tests.rs,
+/// tests/store_row_tests.rs); the gate's count on the merge is 1239. Raised 1239 -> 1243 merging
+/// dev 3b2a1da1ed (head 5212bdf345): dev's 8 scanned arrivals (contract `alloc_counter.rs`,
+/// `tests/alloc_counter_tests.rs`; core-oauth2 `hosted_login.rs`, `tests/hosted_login_tests.rs`;
+/// kernel `auth/login.rs`, `auth/tests/login_tests.rs`, `hooks/taps.rs`; root
+/// `tests/durability_reads_unlocked.rs`) against its 4 departures (kernel `auth/token.rs`,
+/// `auth/tests/token_tests.rs`, `proxy/proxy_vocab.rs`, `tests/members/egress/trust_net_tests.rs`);
+/// the gate's count on the merge is 1243.
+pub const MIN_FILES: usize = 1243;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";

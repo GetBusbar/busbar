@@ -53,7 +53,9 @@ use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
 use crate::gates::construction::{
     ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
-use crate::gates::{prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
+};
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
 /// a clone of this, so a case that is not about a delegated input never pays for one.
@@ -402,8 +404,8 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "crates/busbar-plane-llm/src/zz_planted_shape.rs",
         "pub fn planted_second_attempt_site() {\n    let _ = \
          ctx.client().get().request(method, url);\n}\n\npub fn planted_extra_door() {\n    \
-         unit.finish_inner(end);\n}\n\npub fn planted_door_caller() {\n    \
-         finish_admitted(end);\n    finish_rejected(end);\n}\n\npub fn planted_pick_a() {\n    \
+         served.money.settle_end(unit, 200);\n}\n\npub fn planted_door_caller() {\n    \
+         served.money.settle_end_as(unit, end);\n}\n\npub fn planted_pick_a() {\n    \
          pick_among(lanes);\n}\n\npub fn planted_pick_b() {\n    pick_among(lanes);\n}\n",
     );
     // A second unit attempt goes where the rule scans (a crate that drives a unit's walk).
@@ -517,11 +519,11 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // ITEM 190: THE TERMINAL RENAMED AWAY. Every call of the configured name vanishes with it, so
     // "zero extra sites" used to pass; the floor refuses a terminal that no longer resolves.
     let mut ov = on(base);
-    let home = "crates/busbar-kernel/src/ingress/mod.rs";
+    let home = "crates/busbar-kernel/src/plane_driver/money.rs";
     if let Ok(basetext) = cx.read(home) {
         ov.set(
             home,
-            basetext.replace("finish_inner", "finish_inner_renamed_away"),
+            basetext.replace("settle_end_as", "settle_end_as_renamed_away"),
         );
     }
     r.push(prove_red(
@@ -532,6 +534,267 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["single-terminal"],
         ov,
         &["does not resolve"],
+    ));
+
+    // THE SINGLE-TERMINAL PLANTS ARE GROUPED BY FAMILY, as every other family in this file is
+    // (point 2 of the module doc): one overlay per group and ONE GATE RUN per group, never one per
+    // plant. A group is only plants that cannot speak for each other: none of the RED group's files
+    // binds a name a terminal's owner is spelled by (no `… as Node`, no `type Node`), defines a fn
+    // of a terminal's name, or reaches a call of another file's, so each is counted for its own
+    // shape and each is named, distinctly, in the one red. The renames (A-D, G-I) each bind `Node`
+    // tree-wide, which would count every other plant for that reason alone, so each keeps a run of
+    // its own. The GREEN twins share one run: one of them counted is the group's red, and it names
+    // its own caller.
+    //
+    // THE RED GROUP:
+    // * THE DOOR PATH'S TWO MONEY TERMINALS, EACH PINNED TO ITS DOORS BY IMPL TYPE (ARCHITECT ruling
+    //   2026-10-20, row 82 D2): a third caller of `PlaneMoney::settle_end` and of
+    //   `PlaneMoney::settle_end_as`, from a method of the request routes the config does not name.
+    // * A RECEIVER THE RULE CANNOT PIN TO ANOTHER TYPE IS COUNTED (ARCHITECT ruling: fail-safe).
+    //   `settle_end` is defined on PlaneMoney and on Node, so its calls are attributed by receiver;
+    //   each of these spells the terminal's own type in a way a literal name match does not read,
+    //   and each is a caller the config does not name: a typed argument (the control), `Self::`
+    //   inside `impl PlaneMoney`, a same-file alias of PlaneMoney, and an untyped binding whose name
+    //   another file declares as a `Node` field (a tree-wide name collision is never a type).
+    // * AN UNTYPED BINDING IS READ IN ITS OWN FN ONLY (the approval desk's review of #1382): `let n
+    //   = m; n.settle_end(..)` binds `n` with no type, and another fn of the same file declaring
+    //   `n: &Node` says nothing about it, so the call is counted.
+    // * A RECEIVER BOUND MORE THAN ONE WAY IN ITS FN IS COUNTED (the approval desk's review of
+    //   #1276): a typed `n: &Node` in an inner block (K-shadow) or as a closure's argument
+    //   (K-closure2) does not type the untyped `n` the call is made on, so every declaration of the
+    //   name up to the call must be typed and agree before the receiver is read as the real `Node`.
+    // * A TERMINAL NAMED BUT NOT CALLED THERE IS COUNTED: a fn item taken as a value, a path handed
+    //   to a macro, and a bare name a macro splices into a path are each a call made elsewhere.
+    let mut ov = on(base);
+    for (file, body) in [
+        (
+            "crates/busbar/src/root/zz_planted_third_caller.rs",
+            "impl DataRoutes {\n    fn zz_planted_third_caller(&self, served: &ServedPlane) {\n        \
+             served.money.settle_end(unit, 200);\n        \
+             served.money.settle_end_as(unit, end);\n    }\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_receivers.rs",
+            "type ZzMoney = PlaneMoney;\n\npub fn zz_planted_control_caller(money: &PlaneMoney) {\n    \
+             money.settle_end(unit, 200);\n}\n\nimpl PlaneMoney {\n    fn \
+             zz_planted_self_path_caller(&self) {\n        Self::settle_end(self, unit, 200);\n    \
+             }\n}\n\npub fn zz_planted_alias_caller(money: &ZzMoney) {\n    \
+             ZzMoney::settle_end(money, unit, 200);\n}\n\npub fn zz_planted_untyped_caller() {\n    \
+             let zz_held = zz_make_money();\n    zz_held.settle_end(unit, 200);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_node_holder.rs",
+            "pub struct ZzNodeHolder {\n    zz_held: Node,\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_untyped_other_fn.rs",
+            "use crate::root::plane_node::Node;\n\nfn zz_other_fn(n: &Node) {\n    let _ = n;\n}\n\n\
+             pub fn zz_untyped_other_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    let n = \
+             m;\n    n.settle_end(k, 200);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_k_shadow.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_k_shadow(m: \
+             &crate::plane_driver::PlaneMoney, node: &Node, k: u64) {\n    let n = m;\n    {\n        \
+             let n: &Node = node;\n        let _ = n;\n    }\n    n.settle_end(k, 200);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_k_closure2.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_k_closure2(m: \
+             &crate::plane_driver::PlaneMoney, k: u64) {\n    let n = m;\n    let g = |n: &Node| \
+             n.zz_peek();\n    let _ = g;\n    n.settle_end(k, 200);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_fn_item.rs",
+            "pub fn zz_fn_item(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    let f = \
+             crate::plane_driver::PlaneMoney::settle_end;\n    f(m, k, 200);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_macro_path.rs",
+            "macro_rules! zz_call {\n    ($f:path, $m:expr, $k:expr) => {\n        $f($m, $k, \
+             200)\n    };\n}\n\npub fn zz_macro_path(m: &crate::plane_driver::PlaneMoney, k: u64) \
+             {\n    zz_call!(crate::plane_driver::PlaneMoney::settle_end, m, k);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_macro_splice.rs",
+            "macro_rules! zz_splice {\n    ($f:ident, $m:expr, $k:expr) => {\n        \
+             crate::plane_driver::PlaneMoney::$f($m, $k, 200)\n    };\n}\n\npub fn \
+             zz_macro_splice(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    \
+             zz_splice!(settle_end, m, k);\n}\n",
+        ),
+    ] {
+        ov.set(file, body);
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called by a third door, through a typed argument, `Self::`, a type alias, an \
+         untyped binding (named like a `Node` field elsewhere, or a `Node` in another fn), a second \
+         binding of its receiver, or named without a call, is counted",
+        &["single-terminal"],
+        ov,
+        &[
+            "DataRoutes::zz_planted_third_caller",
+            "zz_planted_third_caller.rs",
+            "zz_planted_control_caller",
+            "PlaneMoney::zz_planted_self_path_caller",
+            "zz_planted_alias_caller",
+            "zz_planted_untyped_caller",
+            "zz_untyped_other_fn",
+            "zz_k_shadow",
+            "zz_k_closure2",
+            "zz_fn_item",
+            "zz_macro_path",
+            "zz_macro_splice",
+        ],
+    ));
+
+    // A `use … as` RENAME IS FOLLOWED (the approval desk's plant on #1276): `PlaneMoney` renamed to
+    // `Node`, the name of the other type that defines `settle_end`, at module level (A), inside the
+    // calling fn (B), and as a typed binding's type (C); and (D) the real `Node` and the rename both
+    // bound in one file. Each is the terminal called by a caller the config does not name, and each
+    // is counted: a rename is followed, and a name bound two ways is read as neither.
+    for (file, body, caller) in [
+        (
+            "crates/busbar/src/root/zz_planted_rename_module.rs",
+            "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, k: \
+             u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+            "zz_rename_module",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
+            "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
+             crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
+            "zz_rename_in_fn",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_rename_binding.rs",
+            "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
+             zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    let n: \
+             &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            "zz_rename_binding",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_rename_both.rs",
+            "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
+             busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
+             &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            "zz_rename_both",
+        ),
+    ] {
+        let mut ov = on(base);
+        ov.set(file, body);
+        r.push(prove_red(
+            cx,
+            gate,
+            format!("a terminal called through a `use … as` rename ({caller}) is counted"),
+            &["single-terminal"],
+            ov,
+            &[caller],
+        ));
+    }
+
+    // A RENAME THE CALLING FILE DOES NOT SHOW IS COUNTED TOO (the approval desk's second plant on
+    // #1276): `PlaneMoney` re-exported as `Node` from another file and imported plainly (G) or by a
+    // glob (H), and a raw identifier, `as r#Node` (I). A name any file binds to another type is read
+    // as neither in every file, and `r#Node` is `Node`.
+    for (files, caller) in [
+        (
+            vec![
+                (
+                    "crates/busbar/src/root/zz_g_reexport.rs",
+                    "pub use crate::plane_driver::PlaneMoney as Node;\n",
+                ),
+                (
+                    "crates/busbar/src/root/zz_g_caller.rs",
+                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
+                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_g_caller",
+        ),
+        (
+            vec![
+                (
+                    "crates/busbar/src/root/zz_g_reexport.rs",
+                    "pub use crate::plane_driver::PlaneMoney as Node;\n",
+                ),
+                (
+                    "crates/busbar/src/root/zz_h_caller.rs",
+                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
+                     {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_h_caller",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_i_caller.rs",
+                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
+                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_i_caller",
+        ),
+    ] {
+        let mut ov = on(base);
+        for (file, body) in files {
+            ov.set(file, body);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            format!(
+                "a terminal called through a rename its file does not show ({caller}) is counted"
+            ),
+            &["single-terminal"],
+            ov,
+            &[caller],
+        ));
+    }
+
+    // THE GREEN GROUP, one run: THE REAL TYPE STAYS ITS OWN. A binding declared in its own fn as the
+    // real `Node`, whatever another fn of its file declares the name as (the twin of the untyped
+    // binding above); the same shapes as the renames naming the real `Node`, imported plainly; and
+    // AN UNRELATED `fn settle_end` ON ANOTHER TYPE, NEITHER COUNTED NOR ALLOWED: the terminal is
+    // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
+    // `self`, is that type's business.
+    let mut ov = on(base);
+    for (file, body) in [
+        (
+            "crates/busbar/src/root/zz_planted_typed_own_fn.rs",
+            "use crate::root::plane_node::Node;\n\nfn zz_other_fn(n: &crate::plane_driver::PlaneMoney) \
+             {\n    let _ = n;\n}\n\npub fn zz_typed_own_fn(m: &Node) {\n    let n: &Node = m;\n    \
+             n.settle_end();\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_real_node_path.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_real_node_path(n: &Node) {\n    \
+             Node::settle_end(n);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_real_node_in_fn.rs",
+            "pub fn zz_real_node_in_fn(n: &crate::root::plane_node::Node) {\n    use \
+             crate::root::plane_node::Node;\n    Node::settle_end(n);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_real_node_binding.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_real_node_binding(m: &Node) {\n    \
+             let n: &Node = m;\n    n.settle_end();\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_unrelated_settle_end.rs",
+            "pub struct ZzUnrelated;\n\nimpl ZzUnrelated {\n    fn settle_end(&self) {}\n\n    \
+             fn zz_caller(&self) {\n        self.settle_end();\n    }\n}\n",
+        ),
+    ] {
+        ov.set(file, body);
+    }
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "the real `Node` (bound in its own fn, or named plainly) and a same-named method on another \
+         type are not the terminal",
+        &["single-terminal"],
     ));
 
     // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
