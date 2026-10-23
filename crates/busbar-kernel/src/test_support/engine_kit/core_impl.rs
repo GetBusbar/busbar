@@ -135,6 +135,7 @@ impl EngineTestKit for CoreEngineKit {
         crate::config::named_map::NamedMapSection::Plane(section).validate_def(
             name,
             def,
+            &crate::test_support::lent_stand_in(),
             crate::config::Legacy::stand_in(),
         )
     }
