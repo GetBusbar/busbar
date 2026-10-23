@@ -232,10 +232,7 @@ pub fn running_tests(text: &str) -> Result<Vec<String>, String> {
 /// written in a file nothing declares never runs. Crate roots, `src/bin/*` and anything outside
 /// `src/` (integration tests, examples, benches are targets of their own) are compiled by cargo's
 /// own discovery.
-fn module_is_declared(
-    file: &Path,
-    cache: &mut BTreeMap<PathBuf, BTreeSet<String>>,
-) -> bool {
+fn module_is_declared(file: &Path, cache: &mut BTreeMap<PathBuf, BTreeSet<String>>) -> bool {
     let comps: Vec<String> = file
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
