@@ -1534,8 +1534,8 @@ begin_group "CONFORMANCE — rig selftests + voice legs =ready"
   || absent_step "mcp-conformance --selftest" "scripts/mcp-conformance.sh"
 if [ -f testing/voice-conformance/voice-conformance.sh ]; then
   # Its red names each failing leg's first failing assertion in one line per leg (17 legs), then
-  # the verdict line: the tail is long enough to carry the whole list.
-  STEP_TAIL=24 step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
+  # up to four harness build-error or panic lines, then the verdict line: the tail carries them all.
+  STEP_TAIL=26 step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
   step "voice legs =ready (every declared leg LEG_STATUS=ready)" voice_legs_all_ready testing/voice-conformance/voice-conformance.sh ""
 else
   absent_step "voice conformance selftest" "testing/voice-conformance/voice-conformance.sh — voice conformance rig not built yet"

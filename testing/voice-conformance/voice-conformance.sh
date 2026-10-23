@@ -402,6 +402,10 @@ selftest() {
         if ($0 ~ /READY\/RED$/) { name = $2; sub(/:$/, "", name); printf "  %s: %s\n", name, substr(first, 1, 300) }
         first = ""
       }' >&2
+    # A harness that did not build, or panicked, says so on stderr, not in a RESULT line (the leg
+    # can only report "harness build failed"): its first such lines, deduplicated across the legs.
+    printf '%s\n' "$verdict_out" | grep -E "^(error(\[E[0-9]+\])?:|thread '[^']*' panicked)" \
+      | awk '!seen[$0]++' | head -n 4 >&2 || true
     die "the shipped scaffold does not self-account cleanly: $shipped"
   fi
   local n; n="$(declared_legs | grep -c . || true)"
