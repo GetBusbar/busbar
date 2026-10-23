@@ -563,7 +563,7 @@ fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) ->
             // `counted`, NEVER `code`: the blanked copy drops literal CONTENTS, so a module
             // name mentioned inside a string is not an edge. `code` deliberately keeps them.
             for (w, prev) in path_words(&l.counted) {
-                if prev.as_deref().is_none_or(|p| LOCAL_ROOTS.contains(&p)) {
+                if roots_here(prev.as_deref()) {
                     if let Some(n) = names.get(w.as_str()) {
                         if *n != f.stem {
                             hit.insert(n);
@@ -649,16 +649,12 @@ const LOCAL_ROOTS: &[&str] = &["root", "crate", "self", "super"];
 /// `busbar_kernel::boot::hydrate_all` names the kernel's `boot`, not `root/boot.rs`, and
 /// `units_a2a::boot()` calls a function. A `use a::{b, c}` group is read against its prefix `a`.
 /// A bare leading word (`boot::run()`, `use boot;`, `x.boot()`) keeps counting.
-fn local_path_words(code: &str) -> Vec<String> {
-    path_words(code)
-        .into_iter()
-        .filter(|(_, prev)| prev.as_deref().is_none_or(|p| LOCAL_ROOTS.contains(&p)))
-        .map(|(w, _)| w)
-        .collect()
+fn roots_here(prev: Option<&str>) -> bool {
+    prev.is_none_or(|p| LOCAL_ROOTS.contains(&p))
 }
 
 /// Every word of a line with the path segment it was reached through (`None` when bare), group
-/// prefixes applied — [`local_path_words`] is the subset that can name a module of this crate.
+/// prefixes applied — [`roots_here`] picks the subset that can name a module of this crate.
 fn path_words(code: &str) -> Vec<(String, Option<String>)> {
     let chars: Vec<char> = code.chars().collect();
     let mut out = Vec::new();
@@ -3948,6 +3944,14 @@ fn describe(sites: &[Site]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_path_words(code: &str) -> Vec<String> {
+        path_words(code)
+            .into_iter()
+            .filter(|(_, prev)| roots_here(prev.as_deref()))
+            .map(|(w, _)| w)
+            .collect()
+    }
 
     /// Every roster row is distinct in both spellings, and every aspect the declaration file may
     /// name is one this gate actually measures.
