@@ -59,8 +59,8 @@ use busbar_contract::abi::store::{
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
-    UsageLedger, VirtualKey,
+    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, Retention,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
@@ -1968,6 +1968,17 @@ impl RecordStore for LoadedStore {
         let r = Self::token_req(slot::PLANE_TOKEN_LIVE, kind, token, expires_at, now);
         let (ran, _) = run!(self, now, r);
         bridge(ran.ok().map(|()| ran.out.verdict == VERDICT_YES))
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => self.purge_plane_records_before(kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
     }
 }
 

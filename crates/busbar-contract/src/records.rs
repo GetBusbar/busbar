@@ -1129,9 +1129,12 @@ impl PlaneSelector<'_> {
 /// The engine keeps the AUTHORITATIVE enforcement counters in memory and treats this store as a
 /// write-behind durability layer (boot-hydrate + periodic flush), so every method here is off the
 /// request hot path — a plain synchronous call is fine, and a backend that needs async I/O runs it
-/// on its own runtime behind the sync signature. The credential/hydration-delta methods are
-/// DEFAULTED so a backend with no credential support (or a lightweight test double) need not
-/// implement them — see each method's own doc for its specific default behavior and why it's safe.
+/// on its own runtime behind the sync signature.
+///
+/// NO METHOD HAS A DEFAULT BODY (BUSBAR-1.6.0.md Part 2 #38(a): "a default body is a plugin quietly
+/// declining to answer"). Every implementor states every method, including the surfaces it does not
+/// support: each method's doc names the answer a store WITHOUT that surface gives, and why that
+/// answer is the safe one, so declining is something an implementor writes down, never inherits.
 pub trait RecordStore: Send + Sync + 'static {
     /// UPSERT `key` by `key.id` — the mint path and every in-place update (rename, enable/disable,
     /// regroup, rotate) go through here.
@@ -1159,8 +1162,8 @@ pub trait RecordStore: Send + Sync + 'static {
     fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>>;
     /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
     /// one method serves both the admin-listing caller (which filters `deleted_at.is_none()`
-    /// itself before rendering) and [`RecordStore::list_keys_since`]'s default incremental-hydration
-    /// fallback (which needs to SEE tombstones to evict cached credentials — see that method's
+    /// itself before rendering) and the full-scan answer to [`RecordStore::list_keys_since`] (which
+    /// needs to SEE tombstones to evict cached credentials — see that method's
     /// doc). A backend must not filter here; filtering belongs at the call site that actually wants
     /// a "live only" view.
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>>;
@@ -1181,8 +1184,8 @@ pub trait RecordStore: Send + Sync + 'static {
     /// idempotent one above. "Already tombstoned" means the operator's intent is satisfied and the
     /// evidence is on disk. "No such id" means it is not, and the likeliest cause is a typo or a
     /// stale id — where returning `Ok(())` tells an operator a key was revoked when nothing was
-    /// touched. Same reasoning [`RecordStore::revoke_credential`] gives for its own default; the two are
-    /// deliberately settled the same way.
+    /// touched. Same reasoning [`RecordStore::revoke_credential`] gives for its own unknown-id case; the
+    /// two are deliberately settled the same way.
     ///
     /// PII erasure (nulling `name`/`labels`) is a SEPARATE, explicit operation — see
     /// [`RecordStore::scrub_key`] — so "this key is gone" and "this key's personal data is gone" stay
@@ -1195,13 +1198,9 @@ pub trait RecordStore: Send + Sync + 'static {
     /// tombstoned (scrubbing a live key would be silent, un-auditable data loss on an active
     /// principal — go through `delete_key` first).
     ///
-    /// DEFAULTED to an error so a backend that has not implemented it fails loud rather than
-    /// silently no-op-ing a compliance-relevant request.
-    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support scrub_key".to_string(),
-        ))
-    }
+    /// A backend WITHOUT scrub support answers an error (`this Store does not support scrub_key`), so
+    /// it fails loud rather than silently no-op-ing a compliance-relevant request.
+    fn scrub_key(&self, id: &str) -> RecordStoreResult<()>;
     /// Every key with `revision > since` — the INCREMENTAL hydration delta, used instead of a full
     /// [`RecordStore::list_keys`] reload on each staleness tick. UNLIKE `list_keys`, this does NOT filter
     /// tombstones: a hydrator needs to observe a newly-tombstoned key (via its `deleted_at` now
@@ -1209,23 +1208,18 @@ pub trait RecordStore: Send + Sync + 'static {
     /// [`RecordStore::list_credentials_since`] for why that eviction cannot rely on the credential rows'
     /// own deltas. `since = 0` returns every key (the boot/full-load case).
     ///
-    /// DEFAULTED to a full-scan-and-filter over `list_keys` — CORRECT for any backend (it degrades
-    /// to "always changed" for a row the backend hasn't stamped with a real `revision`, per
-    /// `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are always visible
-    /// here) but not incremental; a backend that wants real delta-fetch efficiency overrides this
-    /// with an indexed `WHERE revision > ?`-shaped query.
+    /// A backend with no indexed delta answers it as a full scan and filter over
+    /// [`RecordStore::list_keys`], keeping `k.revision == 0 || k.revision > since` — CORRECT for any
+    /// backend (it degrades to "always changed" for a row the backend hasn't stamped with a real
+    /// `revision`, per `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are
+    /// always visible here) but not incremental; a backend that wants real delta-fetch efficiency
+    /// answers with an indexed `WHERE revision > ?`-shaped query.
     ///
     /// `revision == 0` is its own arm, not folded into `revision > since`: a row the backend never
     /// stamped with a real revision (including a tombstoned/revoked key written by a backend that
     /// doesn't track revisions) must always read as "changed", or an incremental hydrator running
     /// with `since > 0` would never observe it and would never evict that key's cached credentials.
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        Ok(self
-            .list_keys()?
-            .into_iter()
-            .filter(|k| k.revision == 0 || k.revision > since)
-            .collect())
-    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>>;
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
     /// key id) OR a budget-group bucket - same shape either way. An untouched (bucket, window)
     /// reads as the empty ledger. NO dollar field crosses this seam: spend is derived at read time
@@ -1249,19 +1243,16 @@ pub trait RecordStore: Send + Sync + 'static {
     /// delta-since-last-flush sum to the true fleet total, where `put_usage`'s absolute overwrite
     /// would be last-writer-wins. Counters are floored at 0. No dollar delta crosses the wire.
     ///
-    /// DEFAULT: a read-modify-write fallback (get + apply + put) for stores without a native
-    /// atomic add - correct for a single writer; a real shared backend overrides with an atomic
-    /// accumulate (SQL `UPDATE x = x + delta` UPSERT / valkey `HINCRBY`).
+    /// A store without a native atomic add answers it read-modify-write ([`RecordStore::get_usage`],
+    /// [`UsageLedger::apply_delta`], [`RecordStore::put_usage`]) - correct for a single writer; a real
+    /// shared backend answers with an atomic accumulate (SQL `UPDATE x = x + delta` UPSERT / valkey
+    /// `HINCRBY`).
     fn add_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
         delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        let mut cur = self.get_usage(bucket_id, window_start)?;
-        cur.apply_delta(delta);
-        self.put_usage(bucket_id, window_start, &cur)
-    }
+    ) -> RecordStoreResult<()>;
 
     /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
     /// provider) metering row (UPSERT/add; +1 request). Metering is observability — best-effort,
@@ -1276,15 +1267,13 @@ pub trait RecordStore: Send + Sync + 'static {
     /// `window_start < before`. Returns the number of windows purged. Called only from a background
     /// sweeper on a config interval — NEVER from the request path.
     ///
-    /// DEFAULTED to `Ok(0)` (a no-op that reports nothing purged): a backend has no obligation to
-    /// bound its own storage this way (e.g. an in-memory store already self-sweeps via a different
-    /// mechanism — see `MemoryStore`'s amortized eviction), and an in-tree default that silently did
-    /// nothing real would be misleading if it claimed to purge. Real durable backends (Postgres,
-    /// MySQL, Valkey, SQLite) each override this with whatever's idiomatic for their storage shape
-    /// (a native TTL, a partition drop, a chunked `DELETE`, …).
-    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
+    /// A backend that does not bound its storage this way answers `Ok(0)` (nothing purged): it has
+    /// no obligation to (e.g. an in-memory store already self-sweeps via a different mechanism — see
+    /// `MemoryStore`'s amortized eviction), and an answer that claimed to purge while doing nothing
+    /// real would be misleading. Real durable backends (Postgres, MySQL, Valkey, SQLite) each answer
+    /// with whatever's idiomatic for their storage shape (a native TTL, a partition drop, a chunked
+    /// `DELETE`, …).
+    fn purge_windows_before(&self, before: u64) -> RecordStoreResult<u64>;
 
     /// Retention purge for the DURABLE billing ledger (`MeteringRow`/`MeteringDelta`): purge every
     /// row in `bucket`. Unlike [`RecordStore::purge_windows_before`], this must NEVER be wired to an
@@ -1292,10 +1281,8 @@ pub trait RecordStore: Send + Sync + 'static {
     /// tombstones rather than removes for the same reason. The engine's admin surface is the only
     /// intended caller, and only behind an explicit, audit-logged operator action.
     ///
-    /// DEFAULTED to `Ok(0)`, same reasoning as `purge_windows_before`.
-    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
+    /// A backend without this purge answers `Ok(0)`, same reasoning as `purge_windows_before`.
+    fn purge_metering_before(&self, bucket: &str) -> RecordStoreResult<u64>;
 
     /// Persist a row-looked-up credential (today: only the request-signing auth's kind) — see
     /// [`CredentialSecret`] and the [`RecordStore::list_credentials`] doc for the
@@ -1306,53 +1293,43 @@ pub trait RecordStore: Send + Sync + 'static {
     /// rotation. `secret.meta.id`/`secret.meta.key_id`/`secret.meta.kind`/`secret.meta.slot` name
     /// the row; the rest of `secret.meta` plus `secret.secret` is the full row to write.
     ///
-    /// DEFAULTED so the (many) lightweight test-double stores need not implement the credential
-    /// surface — only a real backend does. The default is a no-op-shaped error so a misconfigured
-    /// store that silently dropped a credential cannot pass as success.
-    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support row-looked-up credentials".to_string(),
-        ))
-    }
+    /// A store WITHOUT credential support answers an error (`this Store does not support
+    /// row-looked-up credentials`), so a store that silently dropped a credential cannot pass as
+    /// success.
+    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()>;
 
     /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired credential row
-    /// together or not at all. A real transactional backend overrides this to wrap both writes in one
-    /// transaction. DEFAULT fallback: sequential writes (for test doubles with no transaction).
+    /// together or not at all. A real transactional backend wraps both writes in one transaction; a
+    /// store with no transaction answers with sequential writes ([`RecordStore::put_key`], then
+    /// [`RecordStore::put_credential`], the first error returned).
     fn put_key_with_credential(
         &self,
         key: &VirtualKey,
         secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.put_key(key)?;
-        self.put_credential(secret)?;
-        Ok(())
-    }
+    ) -> RecordStoreResult<()>;
 
     /// Every credential row for `key_id`, metadata only (never the secret — see
     /// [`RecordStore::lookup_credential_secret`] for the one place that returns it). The admin/listing
     /// surface.
     ///
-    /// DEFAULTED to empty: a store with no credential support simply has none to list.
-    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        Ok(Vec::new())
-    }
+    /// A store with no credential support answers empty: it simply has none to list.
+    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>>;
 
     /// Resolve `(kind, public_id)` to its full secret material — the verify-path / hydration
     /// lookup. `None` for an unknown `(kind, public_id)` pair (never an error: an unrecognized
     /// AccessKeyId is a normal, expected outcome of the SigV4 admit path, not a store failure).
     ///
-    /// DEFAULTED to `Ok(None)`: a store with no credential support resolves nothing, so that
+    /// A store with no credential support answers `Ok(None)`: it resolves nothing, so that
     /// credential kind's ingress is simply unavailable — never an auth bypass.
     fn lookup_credential_secret(
         &self,
-        _kind: &str,
-        _public_id: &str,
-    ) -> RecordStoreResult<Option<CredentialSecret>> {
-        Ok(None)
-    }
+        kind: &str,
+        public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>>;
 
     /// Revoke ONE credential by id (independent of the owning key — see
-    /// [`CredentialMeta::revoked_at`]). Idempotent. DEFAULTED to a loud error, matching
+    /// [`CredentialMeta::revoked_at`]). Idempotent. A store with no credential support answers a loud
+    /// error (`this Store does not support credential revocation`), matching
     /// [`RecordStore::add_denylist`]'s reasoning: a silent no-op here would let an operator believe a
     /// leaked SigV4 secret was killed when it was not.
     ///
@@ -1361,11 +1338,7 @@ pub trait RecordStore: Send + Sync + 'static {
     /// A backend must therefore read the row count its UPDATE actually affected, or check for the
     /// row explicitly — a statement that matched nothing looks identical to one that matched, and
     /// this is precisely the case where those two must not be confused.
-    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support credential revocation".to_string(),
-        ))
-    }
+    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()>;
 
     /// Every credential row with `revision > since`, SECRET included — the incremental hydration
     /// delta for the in-process verify-path cache (which must never make a synchronous store call,
@@ -1381,12 +1354,8 @@ pub trait RecordStore: Send + Sync + 'static {
     /// newly set, the consumer MUST evict every cached credential for that key id itself, rather
     /// than waiting for (or relying on) a corresponding credential-row delta that will never come.
     ///
-    /// DEFAULTED to a full-scan-and-filter over an internal full-credential enumeration; a backend
-    /// with no credential support returns empty (nothing to hydrate). Concrete backends should
-    /// override for real delta-fetch efficiency once they have their own storage to query.
-    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        Ok(Vec::new())
-    }
+    /// A backend with no credential support answers empty (nothing to hydrate).
+    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>>;
 
     /// Append one admin AUDIT record for DURABLE persistence (design: the audit log's durable home is
     /// the configured store — an ephemeral store keeps it for the process, a durable one for good;
@@ -1408,21 +1377,16 @@ pub trait RecordStore: Send + Sync + 'static {
     /// is not correct either — it collapses both cases into one and drops a genuinely different
     /// record on the floor, which is the same silent-loss shape, just quieter.
     ///
-    /// DEFAULTED to `Ok(())` (a no-op) so this is BACKWARD-COMPATIBLE: every existing store plugin —
-    /// including already-signed dynamic-library artifacts that predate this method — keeps working
-    /// unchanged, simply providing no durable audit (the RAM default's behavior). A backend that wants
-    /// durable audit overrides this + [`RecordStore::list_audit`].
-    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
-        Ok(())
-    }
+    /// A store that keeps no durable audit answers `Ok(())` and keeps nothing (the RAM default's
+    /// behavior), and [`RecordStore::list_audit`] answers empty to match. A backend with durable
+    /// audit answers both from its storage.
+    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()>;
 
     /// Every persisted audit record, oldest-first (by `seq`) — the boot RESTORE source when a durable
     /// store is configured (the store becomes the source of truth; the hash chain is verified after
-    /// load). DEFAULTED to an empty list so a store with no durable-audit support restores nothing
-    /// (the RAM default) rather than forcing every backend to implement it.
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        Ok(Vec::new())
-    }
+    /// load). A store with no durable-audit support answers an empty list, so it restores nothing
+    /// (the RAM default).
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>>;
 
     /// Add `sub` to the REVOCATION DENYLIST (1.5.0 signed-token keys): a minted token is stateless,
     /// so revoking it means recording its subject id here. The verify path reads the denylist
@@ -1430,140 +1394,108 @@ pub trait RecordStore: Send + Sync + 'static {
     /// rejects any token whose `sub` is present. Idempotent (adding an already-denied sub is a
     /// no-op). `reason` is operator metadata (audit only), never a secret.
     ///
-    /// DEFAULTED to a no-op error so a store predating denylist support fails LOUD if asked to
-    /// revoke (a silent success would leave a "revoked" token still valid). A real backend
-    /// overrides this + `list_denylist`.
-    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support the revocation denylist".to_string(),
-        ))
-    }
+    /// A store without denylist support answers an error (`this Store does not support the
+    /// revocation denylist`), so it fails LOUD if asked to revoke (a silent success would leave a
+    /// "revoked" token still valid). A real backend answers this + `list_denylist` from its storage.
+    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()>;
 
-    /// Every denied subject id (for the boot hydrate of the in-memory denylist set). DEFAULTED to
-    /// empty so a store with no denylist support has nothing to deny.
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        Ok(Vec::new())
-    }
+    /// Every denied subject id (for the boot hydrate of the in-memory denylist set). A store with no
+    /// denylist support answers empty: it has nothing to deny.
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>>;
 
     /// The most-recent `limit` audit records, oldest-first - the BOUNDED boot restore source. The
     /// engine's ring is size-bounded, so restoring the whole (never-pruned) durable history is
     /// wasteful and, over the plugin ABI, can exceed the response size cap or OOM on a large log.
     /// Restore reads only the tail it will keep (plus the head is verified within that tail).
     ///
-    /// DEFAULTED to a `list_audit` fallback + tail-truncation so every existing backend keeps working:
-    /// a store that has not overridden this still restores correctly (it just materializes the full
-    /// list once before truncating). A durable backend SHOULD override this with a `LIMIT`ed query so
-    /// the bound is enforced at the source (in the DB / across the ABI), which is the whole point.
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        let mut all = self.list_audit()?;
-        let limit = limit as usize;
-        if all.len() > limit {
-            all.drain(0..all.len() - limit);
-        }
-        Ok(all)
-    }
+    /// A store with no bounded query answers it as [`RecordStore::list_audit`] truncated to its last
+    /// `limit` records: it still restores correctly (it just materializes the full list once before
+    /// truncating). A durable backend SHOULD answer with a `LIMIT`ed query so the bound is enforced
+    /// at the source (in the DB / across the ABI), which is the whole point.
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>>;
 
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0) ────────────────────────────────────
     //
     // Eight kind-tagged verbs that SUBSUME the fourteen protocol-named durable methods this trait
     // once carried, collapsed in 1.6.0 into one generic surface. Every core consumer and every
     // backend now speaks these; the `kind` string names what a caller-specific method used to name
-    // in its identifier. Each is DEFAULTED to accept-and-keep-nothing so a backend that keeps no
-    // durable rows behaves exactly as the shipped RAM default does.
+    // in its identifier. A backend that keeps no durable rows answers each one accept-and-keep-nothing
+    // (the per-verb answers below), exactly as the shipped RAM default does.
 
     /// UPSERT one plane record by `(record.kind, record.id)`, for any registered record kind.
     /// Takes the whole record, borrowed ([`PlaneRecordRef`]), so the typed sidecar
     /// (`ts`/`disposition`/…) is on the write path where retention needs it.
     ///
-    /// DEFAULTED to `Ok(())` — accept and keep nothing. The return value is worthless as evidence
-    /// of durability; the engine learns what its backend kept by reading it back.
-    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        Ok(())
-    }
+    /// A backend that keeps no durable rows answers `Ok(())` — accept and keep nothing. The return
+    /// value is worthless as evidence of durability; the engine learns what its backend kept by
+    /// reading it back.
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
 
-    /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent.
-    /// DEFAULTED to `Ok(None)`.
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        Ok(None)
-    }
+    /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent. A backend
+    /// that keeps no durable rows answers `Ok(None)`.
+    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
 
     /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq`. The
     /// store persists the opaque body verbatim and never recomputes any digest inside it.
     ///
-    /// DEFAULTED to `Ok(())`.
-    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        Ok(())
-    }
+    /// A backend that keeps no durable rows answers `Ok(())`.
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
 
     /// The opaque bodies of a kind's records, narrowed by `selector` — every record of the kind
     /// ([`PlaneSelector::All`]) or every child record of one parent, oldest-first by `seq`
-    /// ([`PlaneSelector::Parent`]). DEFAULTED to empty.
+    /// ([`PlaneSelector::Parent`]). A backend that keeps no durable rows answers empty.
     fn list_plane_records(
         &self,
-        _kind: &str,
-        _selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        Ok(Vec::new())
-    }
+        kind: &str,
+        selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>>;
 
     /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` (the boot
-    /// enumeration). DEFAULTED to empty.
-    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
-        Ok(Vec::new())
-    }
+    /// enumeration). A backend that keeps no durable rows answers empty.
+    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>>;
 
     /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
     /// predicate applies (terminal-only vs. all older rows) is part of the kind's own contract,
     /// which is exactly why the `disposition` sidecar is a typed column: the backend reads it to
     /// honor a terminal-only split without decoding the opaque body.
     ///
-    /// DEFAULTED to `Ok(0)`.
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
+    /// A backend that keeps no durable rows answers `Ok(0)`.
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64>;
 
     /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
     /// `retention`, returning how many went.
     ///
-    /// DEFAULTED: [`Retention::Age`] is [`RecordStore::purge_plane_records_before`];
-    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
-    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+    /// A store without the terminal-only predicate answers [`Retention::Age`] as
+    /// [`RecordStore::purge_plane_records_before`] and [`Retention::TerminalOnly`] as `Ok(0)` — it
+    /// purges nothing rather than dropping an ACTIVE row.
     fn purge_plane_records(
         &self,
         kind: &str,
         before: u64,
         retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        match retention {
-            Retention::Age => self.purge_plane_records_before(kind, before),
-            Retention::TerminalOnly => Ok(0),
-        }
-    }
+    ) -> RecordStoreResult<u64>;
 
-    /// DELETE the record identified by `(kind, id)`; absent is a no-op. DEFAULTED to `Ok(())`.
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
-        Ok(())
-    }
+    /// DELETE the record identified by `(kind, id)`; absent is a no-op. A backend that keeps no
+    /// durable rows answers `Ok(())`.
+    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()>;
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
     /// was the first redemption. `now` lets a backend drop lapsed rows in the same call.
     ///
-    /// # The default is FAIL-CLOSED
+    /// # A store with no ledger answers FAIL-CLOSED
     ///
-    /// DEFAULTED to `Ok(false)`, NOT `Ok(true)`. A store that keeps no ledger cannot attest that
-    /// THIS call was the first redemption of the token — answering `true` unconditionally would let
-    /// a captured single-use token be replayed without limit against any backend that hasn't
-    /// implemented this verb. A store that means to grant these single-use capabilities implements
-    /// it; until then, every redemption attempt is refused.
+    /// `Ok(false)`, NOT `Ok(true)`. A store that keeps no ledger cannot attest that THIS call was
+    /// the first redemption of the token — answering `true` unconditionally would let a captured
+    /// single-use token be replayed without limit against any backend without a ledger. A store
+    /// that means to grant these single-use capabilities answers from its ledger; until then, every
+    /// redemption attempt is refused.
     fn redeem_plane_token(
         &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Ok(false)
-    }
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> RecordStoreResult<bool>;
 
     /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
     /// NOT [`RecordStore::redeem_plane_token`]'s single-use test-and-set.
@@ -1580,23 +1512,21 @@ pub trait RecordStore: Send + Sync + 'static {
     /// The honest verb is this one: live until the task reaches a terminal state (which flips the
     /// record's disposition) or until its deadline passes, and refused from that moment on.
     ///
-    /// # The default is FAIL-CLOSED, and that is the whole point
+    /// # A store that keeps no rows answers FAIL-CLOSED, and that is the whole point
     ///
-    /// `Ok(false)`, NOT `Ok(true)`. Every other defaulted neutral verb here tolerates a backend that
-    /// keeps no rows by answering empty or `Ok(())`, because "this store remembers nothing" and "there
-    /// is nothing to remember" are the same answer for a read. For a capability check they are
-    /// opposites: a store that cannot say whether a token is still live must not be read as saying it
-    /// is, or a backend that captured one replays it against a finished task on every deployment whose
-    /// store predates this verb. A store that means to accept these callbacks implements it.
+    /// `Ok(false)`, NOT `Ok(true)`. Every other neutral verb here tolerates a backend that keeps no
+    /// rows answering empty or `Ok(())`, because "this store remembers nothing" and "there is nothing
+    /// to remember" are the same answer for a read. For a capability check they are opposites: a
+    /// store that cannot say whether a token is still live must not be read as saying it is, or a
+    /// backend that captured one replays it against a finished task on every deployment whose store
+    /// keeps no rows. A store that means to accept these callbacks answers from its rows.
     fn plane_token_live(
         &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Ok(false)
-    }
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> RecordStoreResult<bool>;
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each

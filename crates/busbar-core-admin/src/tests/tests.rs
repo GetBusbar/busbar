@@ -2172,6 +2172,208 @@ impl busbar_kernel::governance::RecordStore for GatedKeyStore {
     {
         self.inner.list_metering(bucket)
     }
+    fn scrub_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(
+        &self,
+        since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        Ok(busbar_kernel::governance::RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &busbar_contract::records::UsageDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        let mut cur =
+            busbar_kernel::governance::RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        busbar_kernel::governance::RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(
+        &self,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(
+        &self,
+        _bucket: &str,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(
+        &self,
+        _secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_kernel::governance::RecordStore::put_key(self, key)?;
+        busbar_kernel::governance::RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(
+        &self,
+        _key_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
+    {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<
+        Option<busbar_contract::records::CredentialSecret>,
+    > {
+        Ok(None)
+    }
+    fn revoke_credential(
+        &self,
+        _id: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(
+        &self,
+        _since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialSecret>>
+    {
+        Ok(Vec::new())
+    }
+    fn append_audit(
+        &self,
+        _entry: &busbar_contract::records::AuditRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        Ok(Vec::new())
+    }
+    fn add_denylist(
+        &self,
+        _sub: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        let mut all = busbar_kernel::governance::RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        match retention {
+            busbar_contract::records::Retention::Age => {
+                busbar_kernel::governance::RecordStore::purge_plane_records_before(
+                    self, kind, before,
+                )
+            }
+            busbar_contract::records::Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
 }
 
 /// A `Store` wrapper that sleeps on exactly the `slow_on_call`-th `put_key` invocation (0-indexed
@@ -2238,6 +2440,208 @@ impl busbar_kernel::governance::RecordStore for SlowNthPutKeyStore {
     ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
     {
         self.inner.list_metering(bucket)
+    }
+    fn scrub_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(
+        &self,
+        since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        Ok(busbar_kernel::governance::RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &busbar_contract::records::UsageDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        let mut cur =
+            busbar_kernel::governance::RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        busbar_kernel::governance::RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(
+        &self,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(
+        &self,
+        _bucket: &str,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(
+        &self,
+        _secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_kernel::governance::RecordStore::put_key(self, key)?;
+        busbar_kernel::governance::RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(
+        &self,
+        _key_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
+    {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<
+        Option<busbar_contract::records::CredentialSecret>,
+    > {
+        Ok(None)
+    }
+    fn revoke_credential(
+        &self,
+        _id: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(
+        &self,
+        _since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialSecret>>
+    {
+        Ok(Vec::new())
+    }
+    fn append_audit(
+        &self,
+        _entry: &busbar_contract::records::AuditRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        Ok(Vec::new())
+    }
+    fn add_denylist(
+        &self,
+        _sub: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        let mut all = busbar_kernel::governance::RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        match retention {
+            busbar_contract::records::Retention::Age => {
+                busbar_kernel::governance::RecordStore::purge_plane_records_before(
+                    self, kind, before,
+                )
+            }
+            busbar_contract::records::Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
     }
 }
 
@@ -6239,6 +6643,196 @@ impl busbar_kernel::governance::RecordStore for CountingStore {
     fn list_denylist(&self) -> busbar_kernel::governance::RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
     }
+    fn scrub_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(
+        &self,
+        since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        Ok(busbar_kernel::governance::RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &busbar_contract::records::UsageDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        let mut cur =
+            busbar_kernel::governance::RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        busbar_kernel::governance::RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(
+        &self,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(
+        &self,
+        _bucket: &str,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(
+        &self,
+        _secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_kernel::governance::RecordStore::put_key(self, key)?;
+        busbar_kernel::governance::RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(
+        &self,
+        _key_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
+    {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<
+        Option<busbar_contract::records::CredentialSecret>,
+    > {
+        Ok(None)
+    }
+    fn revoke_credential(
+        &self,
+        _id: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(
+        &self,
+        _since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialSecret>>
+    {
+        Ok(Vec::new())
+    }
+    fn append_audit(
+        &self,
+        _entry: &busbar_contract::records::AuditRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        let mut all = busbar_kernel::governance::RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        match retention {
+            busbar_contract::records::Retention::Age => {
+                busbar_kernel::governance::RecordStore::purge_plane_records_before(
+                    self, kind, before,
+                )
+            }
+            busbar_contract::records::Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
 }
 
 /// GET /keys/{id}, GET /keys/{id}/usage and POST /keys/{id}/revoke are pure single-key reads (no
@@ -6718,6 +7312,196 @@ impl busbar_kernel::governance::RecordStore for BarrierStore {
     }
     fn list_denylist(&self) -> busbar_kernel::governance::RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
+    }
+    fn scrub_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(
+        &self,
+        since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        Ok(busbar_kernel::governance::RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &busbar_contract::records::UsageDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        let mut cur =
+            busbar_kernel::governance::RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        busbar_kernel::governance::RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(
+        &self,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(
+        &self,
+        _bucket: &str,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(
+        &self,
+        _secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_kernel::governance::RecordStore::put_key(self, key)?;
+        busbar_kernel::governance::RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(
+        &self,
+        _key_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
+    {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<
+        Option<busbar_contract::records::CredentialSecret>,
+    > {
+        Ok(None)
+    }
+    fn revoke_credential(
+        &self,
+        _id: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(
+        &self,
+        _since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialSecret>>
+    {
+        Ok(Vec::new())
+    }
+    fn append_audit(
+        &self,
+        _entry: &busbar_contract::records::AuditRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        let mut all = busbar_kernel::governance::RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        match retention {
+            busbar_contract::records::Retention::Age => {
+                busbar_kernel::governance::RecordStore::purge_plane_records_before(
+                    self, kind, before,
+                )
+            }
+            busbar_contract::records::Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
     }
 }
 

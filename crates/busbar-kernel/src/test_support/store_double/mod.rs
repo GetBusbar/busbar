@@ -31,8 +31,8 @@ use crate::config::MIGRATED_STORE_MODULE;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -874,10 +874,10 @@ impl Store for MemoryStore {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool> {
-        // TEST-AND-SET under ONE guard. The trait's default is `Ok(true)` — "this store keeps no
-        // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
-        // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
-        // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
+        // TEST-AND-SET under ONE guard. Answering `Ok(true)` — "this store keeps no ledger" — would
+        // on the DEFAULT backend make every single-use approval token replayable: a confirm-once
+        // tool re-executes for anyone who replays the nonce, and the store reports each replay as
+        // the first redemption. Governance's out-of-the-box posture cannot be that.
         let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
         // Lapsed rows go in the same call: a token past its own expiry can never be presented
         // again, so retaining it only grows the map.
@@ -902,8 +902,8 @@ impl Store for MemoryStore {
         // reached `expires_at`. Nothing is inserted, removed or mutated, so asking twice answers the
         // same twice — the whole point of the verb.
         //
-        // The trait default is `Ok(false)` precisely so a backend that keeps no records refuses these
-        // callbacks fail-closed. This backend DOES keep them, in the same `plane_records` map the
+        // A backend that keeps no records answers `Ok(false)` precisely so it refuses these callbacks
+        // fail-closed (the trait doc). This backend DOES keep them, in the same `plane_records` map the
         // upsert leg wrote to, so it answers from there — and it stays fail-closed for the same three
         // reasons: an unknown `(kind, token)`, a terminal disposition, and a lapsed deadline each
         // yield `Ok(false)`.
@@ -911,6 +911,31 @@ impl Store for MemoryStore {
             .plane_records_read()
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
+    }
+    fn purge_windows_before(&self, _before: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> StoreResult<u64> {
+        Ok(0)
+    }
+    fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
+        let mut all = Store::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        match retention {
+            Retention::Age => Store::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
     }
 }
 

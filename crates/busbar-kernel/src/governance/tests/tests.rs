@@ -140,6 +140,7 @@ fn vk_prefixed_principal_id_cannot_alias_a_virtual_key_bucket() {
     assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
 }
 use super::*;
+use busbar_contract::records::{AuditRecord, PlaneRecordRef, PlaneSelector, Retention};
 
 fn sample_key(id: &str, hash: &str) -> VirtualKey {
     VirtualKey {
@@ -1111,6 +1112,210 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         {
             self.inner.list_metering(b)
         }
+        fn scrub_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support scrub_key".to_string(),
+            ))
+        }
+        fn list_keys_since(
+            &self,
+            since: u64,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+        {
+            Ok(busbar_contract::records::RecordStore::list_keys(self)?
+                .into_iter()
+                .filter(|k| k.revision == 0 || k.revision > since)
+                .collect())
+        }
+        fn add_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            delta: &busbar_contract::records::UsageDelta,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            let mut cur =
+                busbar_contract::records::RecordStore::get_usage(self, bucket_id, window_start)?;
+            cur.apply_delta(delta);
+            busbar_contract::records::RecordStore::put_usage(self, bucket_id, window_start, &cur)
+        }
+        fn purge_windows_before(
+            &self,
+            _before: u64,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_metering_before(
+            &self,
+            _bucket: &str,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn put_credential(
+            &self,
+            _secret: &busbar_contract::records::CredentialSecret,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support row-looked-up credentials".to_string(),
+            ))
+        }
+        fn put_key_with_credential(
+            &self,
+            key: &busbar_contract::records::VirtualKey,
+            secret: &busbar_contract::records::CredentialSecret,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            busbar_contract::records::RecordStore::put_key(self, key)?;
+            busbar_contract::records::RecordStore::put_credential(self, secret)?;
+            Ok(())
+        }
+        fn list_credentials(
+            &self,
+            _key_id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<
+            Vec<busbar_contract::records::CredentialMeta>,
+        > {
+            Ok(Vec::new())
+        }
+        fn lookup_credential_secret(
+            &self,
+            _kind: &str,
+            _public_id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<
+            Option<busbar_contract::records::CredentialSecret>,
+        > {
+            Ok(None)
+        }
+        fn revoke_credential(
+            &self,
+            _id: &str,
+            _reason: &str,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support credential revocation".to_string(),
+            ))
+        }
+        fn list_credentials_since(
+            &self,
+            _since: u64,
+        ) -> busbar_contract::records::RecordStoreResult<
+            Vec<busbar_contract::records::CredentialSecret>,
+        > {
+            Ok(Vec::new())
+        }
+        fn append_audit(
+            &self,
+            _entry: &busbar_contract::records::AuditRecord,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_audit(
+            &self,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+        {
+            Ok(Vec::new())
+        }
+        fn add_denylist(
+            &self,
+            _sub: &str,
+            _reason: &str,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support the revocation denylist".to_string(),
+            ))
+        }
+        fn list_denylist(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn list_audit_tail(
+            &self,
+            limit: u64,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+        {
+            let mut all = busbar_contract::records::RecordStore::list_audit(self)?;
+            let limit = limit as usize;
+            if all.len() > limit {
+                all.drain(0..all.len() - limit);
+            }
+            Ok(all)
+        }
+        fn upsert_plane_record(
+            &self,
+            _record: busbar_contract::records::PlaneRecordRef<'_>,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(
+            &self,
+            _kind: &str,
+            _id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(
+            &self,
+            _record: busbar_contract::records::PlaneRecordRef<'_>,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(
+            &self,
+            _kind: &str,
+            _selector: &busbar_contract::records::PlaneSelector<'_>,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+            Ok(Vec::new())
+        }
+        fn list_plane_record_parents(
+            &self,
+            _kind: &str,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(
+            &self,
+            _kind: &str,
+            _before: u64,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_plane_records(
+            &self,
+            kind: &str,
+            before: u64,
+            retention: busbar_contract::records::Retention,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            match retention {
+                busbar_contract::records::Retention::Age => {
+                    busbar_contract::records::RecordStore::purge_plane_records_before(
+                        self, kind, before,
+                    )
+                }
+                busbar_contract::records::Retention::TerminalOnly => Ok(0),
+            }
+        }
+        fn delete_plane_record(
+            &self,
+            _kind: &str,
+            _id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> busbar_contract::records::RecordStoreResult<bool> {
+            Ok(false)
+        }
+        fn plane_token_live(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> busbar_contract::records::RecordStoreResult<bool> {
+            Ok(false)
+        }
     }
 
     let store = Arc::new(MeteringDownStore {
@@ -1414,6 +1619,187 @@ fn test_failed_flush_retries_the_unacked_delta() {
         ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
         {
             self.inner.list_audit()
+        }
+        fn scrub_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support scrub_key".to_string(),
+            ))
+        }
+        fn list_keys_since(
+            &self,
+            since: u64,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+        {
+            Ok(busbar_contract::records::RecordStore::list_keys(self)?
+                .into_iter()
+                .filter(|k| k.revision == 0 || k.revision > since)
+                .collect())
+        }
+        fn purge_windows_before(
+            &self,
+            _before: u64,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_metering_before(
+            &self,
+            _bucket: &str,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn put_credential(
+            &self,
+            _secret: &busbar_contract::records::CredentialSecret,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support row-looked-up credentials".to_string(),
+            ))
+        }
+        fn put_key_with_credential(
+            &self,
+            key: &busbar_contract::records::VirtualKey,
+            secret: &busbar_contract::records::CredentialSecret,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            busbar_contract::records::RecordStore::put_key(self, key)?;
+            busbar_contract::records::RecordStore::put_credential(self, secret)?;
+            Ok(())
+        }
+        fn list_credentials(
+            &self,
+            _key_id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<
+            Vec<busbar_contract::records::CredentialMeta>,
+        > {
+            Ok(Vec::new())
+        }
+        fn lookup_credential_secret(
+            &self,
+            _kind: &str,
+            _public_id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<
+            Option<busbar_contract::records::CredentialSecret>,
+        > {
+            Ok(None)
+        }
+        fn revoke_credential(
+            &self,
+            _id: &str,
+            _reason: &str,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support credential revocation".to_string(),
+            ))
+        }
+        fn list_credentials_since(
+            &self,
+            _since: u64,
+        ) -> busbar_contract::records::RecordStoreResult<
+            Vec<busbar_contract::records::CredentialSecret>,
+        > {
+            Ok(Vec::new())
+        }
+        fn add_denylist(
+            &self,
+            _sub: &str,
+            _reason: &str,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "this Store does not support the revocation denylist".to_string(),
+            ))
+        }
+        fn list_denylist(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn list_audit_tail(
+            &self,
+            limit: u64,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+        {
+            let mut all = busbar_contract::records::RecordStore::list_audit(self)?;
+            let limit = limit as usize;
+            if all.len() > limit {
+                all.drain(0..all.len() - limit);
+            }
+            Ok(all)
+        }
+        fn upsert_plane_record(
+            &self,
+            _record: busbar_contract::records::PlaneRecordRef<'_>,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(
+            &self,
+            _kind: &str,
+            _id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(
+            &self,
+            _record: busbar_contract::records::PlaneRecordRef<'_>,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(
+            &self,
+            _kind: &str,
+            _selector: &busbar_contract::records::PlaneSelector<'_>,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+            Ok(Vec::new())
+        }
+        fn list_plane_record_parents(
+            &self,
+            _kind: &str,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(
+            &self,
+            _kind: &str,
+            _before: u64,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_plane_records(
+            &self,
+            kind: &str,
+            before: u64,
+            retention: busbar_contract::records::Retention,
+        ) -> busbar_contract::records::RecordStoreResult<u64> {
+            match retention {
+                busbar_contract::records::Retention::Age => {
+                    busbar_contract::records::RecordStore::purge_plane_records_before(
+                        self, kind, before,
+                    )
+                }
+                busbar_contract::records::Retention::TerminalOnly => Ok(0),
+            }
+        }
+        fn delete_plane_record(
+            &self,
+            _kind: &str,
+            _id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> busbar_contract::records::RecordStoreResult<bool> {
+            Ok(false)
+        }
+        fn plane_token_live(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> busbar_contract::records::RecordStoreResult<bool> {
+            Ok(false)
         }
     }
     let store = Arc::new(FlakyStore {
@@ -2254,6 +2640,131 @@ impl RecordStore for RecordingBarrierStore {
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
 }
 
 /// The periodic flusher must never let two `flush_budgets`
@@ -2372,6 +2883,133 @@ impl RecordStore for BlockingDenylistStore {
     }
     fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
+    }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
     }
 }
 
@@ -2750,6 +3388,141 @@ fn test_hydrate_budgets_propagates_store_error() {
         ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
             self.inner.list_metering(bucket)
         }
+        fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support scrub_key".to_string(),
+            ))
+        }
+        fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+            Ok(RecordStore::list_keys(self)?
+                .into_iter()
+                .filter(|k| k.revision == 0 || k.revision > since)
+                .collect())
+        }
+        fn add_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            delta: &UsageDelta,
+        ) -> RecordStoreResult<()> {
+            let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+            cur.apply_delta(delta);
+            RecordStore::put_usage(self, bucket_id, window_start, &cur)
+        }
+        fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support row-looked-up credentials".to_string(),
+            ))
+        }
+        fn put_key_with_credential(
+            &self,
+            key: &VirtualKey,
+            secret: &CredentialSecret,
+        ) -> RecordStoreResult<()> {
+            RecordStore::put_key(self, key)?;
+            RecordStore::put_credential(self, secret)?;
+            Ok(())
+        }
+        fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+            Ok(Vec::new())
+        }
+        fn lookup_credential_secret(
+            &self,
+            _kind: &str,
+            _public_id: &str,
+        ) -> RecordStoreResult<Option<CredentialSecret>> {
+            Ok(None)
+        }
+        fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support credential revocation".to_string(),
+            ))
+        }
+        fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+            Ok(Vec::new())
+        }
+        fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+            Ok(Vec::new())
+        }
+        fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support the revocation denylist".to_string(),
+            ))
+        }
+        fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+            let mut all = RecordStore::list_audit(self)?;
+            let limit = limit as usize;
+            if all.len() > limit {
+                all.drain(0..all.len() - limit);
+            }
+            Ok(all)
+        }
+        fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(
+            &self,
+            _kind: &str,
+            _selector: &PlaneSelector<'_>,
+        ) -> RecordStoreResult<Vec<Vec<u8>>> {
+            Ok(Vec::new())
+        }
+        fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_plane_records(
+            &self,
+            kind: &str,
+            before: u64,
+            retention: Retention,
+        ) -> RecordStoreResult<u64> {
+            match retention {
+                Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+                Retention::TerminalOnly => Ok(0),
+            }
+        }
+        fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> RecordStoreResult<bool> {
+            Ok(false)
+        }
+        fn plane_token_live(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> RecordStoreResult<bool> {
+            Ok(false)
+        }
     }
 
     let inner = MemoryStore::new();
@@ -2826,6 +3599,141 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
             bucket: u64,
         ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
             self.inner.list_metering(bucket)
+        }
+        fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support scrub_key".to_string(),
+            ))
+        }
+        fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+            Ok(RecordStore::list_keys(self)?
+                .into_iter()
+                .filter(|k| k.revision == 0 || k.revision > since)
+                .collect())
+        }
+        fn add_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            delta: &UsageDelta,
+        ) -> RecordStoreResult<()> {
+            let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+            cur.apply_delta(delta);
+            RecordStore::put_usage(self, bucket_id, window_start, &cur)
+        }
+        fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support row-looked-up credentials".to_string(),
+            ))
+        }
+        fn put_key_with_credential(
+            &self,
+            key: &VirtualKey,
+            secret: &CredentialSecret,
+        ) -> RecordStoreResult<()> {
+            RecordStore::put_key(self, key)?;
+            RecordStore::put_credential(self, secret)?;
+            Ok(())
+        }
+        fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+            Ok(Vec::new())
+        }
+        fn lookup_credential_secret(
+            &self,
+            _kind: &str,
+            _public_id: &str,
+        ) -> RecordStoreResult<Option<CredentialSecret>> {
+            Ok(None)
+        }
+        fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support credential revocation".to_string(),
+            ))
+        }
+        fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+            Ok(Vec::new())
+        }
+        fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+            Ok(Vec::new())
+        }
+        fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support the revocation denylist".to_string(),
+            ))
+        }
+        fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+            let mut all = RecordStore::list_audit(self)?;
+            let limit = limit as usize;
+            if all.len() > limit {
+                all.drain(0..all.len() - limit);
+            }
+            Ok(all)
+        }
+        fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(
+            &self,
+            _kind: &str,
+            _selector: &PlaneSelector<'_>,
+        ) -> RecordStoreResult<Vec<Vec<u8>>> {
+            Ok(Vec::new())
+        }
+        fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_plane_records(
+            &self,
+            kind: &str,
+            before: u64,
+            retention: Retention,
+        ) -> RecordStoreResult<u64> {
+            match retention {
+                Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+                Retention::TerminalOnly => Ok(0),
+            }
+        }
+        fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> RecordStoreResult<bool> {
+            Ok(false)
+        }
+        fn plane_token_live(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> RecordStoreResult<bool> {
+            Ok(false)
         }
     }
 
@@ -3700,6 +4608,141 @@ mod metering_fanout {
         fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
             self.inner.list_metering(bucket)
         }
+        fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support scrub_key".to_string(),
+            ))
+        }
+        fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+            Ok(RecordStore::list_keys(self)?
+                .into_iter()
+                .filter(|k| k.revision == 0 || k.revision > since)
+                .collect())
+        }
+        fn add_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            delta: &UsageDelta,
+        ) -> RecordStoreResult<()> {
+            let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+            cur.apply_delta(delta);
+            RecordStore::put_usage(self, bucket_id, window_start, &cur)
+        }
+        fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support row-looked-up credentials".to_string(),
+            ))
+        }
+        fn put_key_with_credential(
+            &self,
+            key: &VirtualKey,
+            secret: &CredentialSecret,
+        ) -> RecordStoreResult<()> {
+            RecordStore::put_key(self, key)?;
+            RecordStore::put_credential(self, secret)?;
+            Ok(())
+        }
+        fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+            Ok(Vec::new())
+        }
+        fn lookup_credential_secret(
+            &self,
+            _kind: &str,
+            _public_id: &str,
+        ) -> RecordStoreResult<Option<CredentialSecret>> {
+            Ok(None)
+        }
+        fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support credential revocation".to_string(),
+            ))
+        }
+        fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+            Ok(Vec::new())
+        }
+        fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+            Ok(Vec::new())
+        }
+        fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+            Err(RecordStoreError(
+                "this Store does not support the revocation denylist".to_string(),
+            ))
+        }
+        fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+            let mut all = RecordStore::list_audit(self)?;
+            let limit = limit as usize;
+            if all.len() > limit {
+                all.drain(0..all.len() - limit);
+            }
+            Ok(all)
+        }
+        fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(
+            &self,
+            _kind: &str,
+            _selector: &PlaneSelector<'_>,
+        ) -> RecordStoreResult<Vec<Vec<u8>>> {
+            Ok(Vec::new())
+        }
+        fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+            Ok(0)
+        }
+        fn purge_plane_records(
+            &self,
+            kind: &str,
+            before: u64,
+            retention: Retention,
+        ) -> RecordStoreResult<u64> {
+            match retention {
+                Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+                Retention::TerminalOnly => Ok(0),
+            }
+        }
+        fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> RecordStoreResult<bool> {
+            Ok(false)
+        }
+        fn plane_token_live(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> RecordStoreResult<bool> {
+            Ok(false)
+        }
     }
 
     /// The metering write fan-out is bounded at 1, not N: with N responses metered concurrently on
@@ -3881,6 +4924,141 @@ impl RecordStore for FailDeleteStore {
     }
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
+    }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
     }
 }
 
@@ -4084,6 +5262,141 @@ impl RecordStore for FailListKeysAfterDeleteStore {
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
 }
 
 /// `refresh_self` used to tombstone the old binding in the STORE, then call `self.refresh()?` to
@@ -4205,6 +5518,141 @@ impl RecordStore for PanicOnPutKeyStore {
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
 }
 
 /// `mint_self_offloaded` maps a `JoinError` (the `spawn_blocking` task PANICKED) to a
@@ -4300,6 +5748,141 @@ impl RecordStore for RefreshBlipStore {
         since: u64,
     ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
         self.inner.list_metering(since)
+    }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
     }
 }
 
@@ -5128,6 +6711,141 @@ impl RecordStore for MeteringFailStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
     {
         self.inner.list_metering(bucket)
+    }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
     }
 }
 

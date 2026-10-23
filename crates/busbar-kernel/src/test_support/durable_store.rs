@@ -32,8 +32,9 @@
 
 use crate::governance::MemoryStore;
 use busbar_contract::records::{
-    MeteringDelta, MeteringRow, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore,
-    RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
+    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, Retention,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -222,5 +223,97 @@ impl RecordStore for DurableStore {
         now: u64,
     ) -> RecordStoreResult<bool> {
         self.read(|s| s.plane_token_live(kind, token, expires_at, now))
+    }
+    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(RecordStore::list_keys(self)?
+            .into_iter()
+            .filter(|k| k.revision == 0 || k.revision > since)
+            .collect())
+    }
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        let mut cur = RecordStore::get_usage(self, bucket_id, window_start)?;
+        cur.apply_delta(delta);
+        RecordStore::put_usage(self, bucket_id, window_start, &cur)
+    }
+    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support row-looked-up credentials".to_string(),
+        ))
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        RecordStore::put_key(self, key)?;
+        RecordStore::put_credential(self, secret)?;
+        Ok(())
+    }
+    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        Ok(Vec::new())
+    }
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        Ok(Vec::new())
+    }
+    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "this Store does not support the revocation denylist".to_string(),
+        ))
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        let mut all = RecordStore::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => RecordStore::purge_plane_records_before(self, kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
     }
 }
