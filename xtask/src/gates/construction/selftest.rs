@@ -2137,8 +2137,8 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
     }
 
     // A CEILING SET BY ITS MEASURING CHANGE IS SET ONCE (ARCHITECT ruling on #1454, the #1418
-    // MINTED precedent). The base here carries `[gate.census.measured]`, so the debt ceiling it
-    // set is held like any other: raised again it is refused. And a fresh
+    // MINTED precedent). The debt ceiling the base carries is held like any other: raised again
+    // it is refused. And a fresh
     // `[gate.census.measured]` entry whose detector did not change in the same diff excuses no
     // rise from 0.
     let debt_max = ConstructionGate::cfg(cx).ok().and_then(|c| {
@@ -2204,7 +2204,9 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
     // Each is RED on the census row now, naming every condition it fails (ARCHITECT rulings (a)
     // detector, (b) base re-measure, (c) drain field).
     // 1. A clock read added to a unit crate, a word added to the rule's `why`, `max_hits` 0 -> 1,
-    //    and a reason that only says nobody will drain it.
+    //    and a reason that only says nobody will drain it. The census re-measures no
+    //    [rules.unit-no-wall-clock] (it is not in `MEASURABLE`), so no detector of it counts and
+    //    no ceiling of it is set by measurement.
     let wall = "crates/busbar-kernel-breaker/src/lib.rs";
     let unit_head = "[rules.unit-no-wall-clock]\n";
     let why_head = format!("{unit_head}why = \"\"\"");
@@ -2236,7 +2238,7 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
                     "0 -> 1",
                     "`why` is not a detector key",
                     "no `drain:` field",
-                    "counts 0 under `max_hits`",
+                    "cannot re-measure [rules.unit-no-wall-clock]",
                 ],
             ));
             // 2. The same with a key new against the base named as the detector.
@@ -2262,7 +2264,7 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
                     "0 -> 1",
                     "`zz_unused` is not a detector key",
                     "no `drain:` field",
-                    "counts 0 under `max_hits`",
+                    "cannot re-measure [rules.unit-no-wall-clock]",
                 ],
             ));
         }

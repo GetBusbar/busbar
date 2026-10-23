@@ -1410,13 +1410,17 @@ fn type_defs(tree: &Tree) -> Result<TypeDefs, String> {
     Ok(defs)
 }
 
-/// The definitions one file holds, each `name\u{1}body` (see [`type_defs`]).
+/// The definitions one file holds, each `name\u{1}body` (see [`type_defs`]). Read with every
+/// attribute blanked ([`blank_attributes`]): a body is the types its fields hold, and a field's
+/// `#[serde(default = "…")]` is not an array, so `store_holds`' `\[` never matches one.
 fn defs_in(lines: &[Line], alias: &Regex, item: &Regex) -> Vec<String> {
-    let text: String = lines
-        .iter()
-        .map(|l| if l.intest { "" } else { l.blank.as_str() })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text: String = blank_attributes(
+        &lines
+            .iter()
+            .map(|l| if l.intest { "" } else { l.blank.as_str() })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     for m in alias.find_iter(bytes) {
@@ -1471,6 +1475,55 @@ fn defs_in(lines: &[Line], alias: &Regex, item: &Regex) -> Vec<String> {
         out.push(format!("{name}\u{1}{body}"));
     }
     out
+}
+
+/// `text` with every attribute (`#[…]`, `#![…]`) blanked to spaces, its brackets balanced, and its
+/// newlines and length kept. An attribute names no type a value holds: read as type text, the `[`
+/// of `#[serde(default = "…")]` matched `store_holds`' array pattern, so a struct of integers
+/// behind a lock read as a store. Run on the literal-blanked text, so a `]` inside a string in an
+/// attribute is already a space.
+fn blank_attributes(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let mut j = i + 1;
+        if b[i] == b'#' {
+            if b.get(j) == Some(&b'!') {
+                j += 1;
+            }
+            while b.get(j).is_some_and(|c| c.is_ascii_whitespace()) {
+                j += 1;
+            }
+        }
+        if b[i] != b'#' || b.get(j) != Some(&b'[') {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let mut depth = 0i64;
+        let mut end = b.len();
+        for (k, &ch) in b[j..].iter().enumerate() {
+            match ch {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j + k + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.extend(
+            b[i..end]
+                .iter()
+                .map(|&c| if c == b'\n' { b'\n' } else { b' ' }),
+        );
+        i = end;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `ty` with every type it names opened, to a fixed point: an alias is read as what it aliases and
@@ -2959,4 +3012,34 @@ pub fn no_test_doubles_in_production(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>
             doubles,
         ),
     ])
+}
+
+#[cfg(test)]
+mod attribute_tests {
+    use super::blank_attributes;
+
+    /// A field's attribute is not type text: its `[` is blanked, and the field's type, the
+    /// newlines and the length stay.
+    #[test]
+    fn attributes_are_blanked_and_types_kept() {
+        let body = "    #[serde(default = \"   \")]\n    pub low: u32,\n    #![allow(x)]\n    pub \
+                    rows: [u8; 4],\n    # [cfg(all(a, any(b)))] pub c: Vec<u8>,";
+        let out = blank_attributes(body);
+        assert_eq!(out.len(), body.len());
+        assert_eq!(out.matches('\n').count(), body.matches('\n').count());
+        assert!(!out.contains('#') && !out.contains("serde") && !out.contains("cfg"));
+        assert!(out.contains("pub low: u32,"));
+        assert!(
+            out.contains("pub rows: [u8; 4],"),
+            "a field's own array type stays: {out}"
+        );
+        assert!(out.contains("pub c: Vec<u8>,"));
+    }
+
+    /// A struct of integers whose fields carry attributes holds no array once they are blanked.
+    #[test]
+    fn an_attributed_scalar_body_matches_no_array() {
+        let out = blank_attributes("#[serde(default = \"x\")]\npub minimal: u32,\n");
+        assert!(!out.contains('['), "{out}");
+    }
 }

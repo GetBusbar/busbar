@@ -620,19 +620,16 @@ pub const MEASURED: &str = "gate.census.measured";
 /// (`why`), a ledger of debt or exemptions, a path it skips and a ceiling are not detectors, and
 /// neither is a key the rule does not read. A rule is listed only where [`base_remeasure`] can run
 /// it over the base, so every ceiling a measurement sets is checked against the base's own count.
-const MEASURABLE: &[(&str, &[&str])] = &[
-    (
-        "kernel-no-protocol-registry",
-        &[
-            "scope_globs",
-            "names",
-            "fn_names",
-            "store_cells",
-            "store_holds",
-        ],
-    ),
-    ("unit-no-wall-clock", &["scope_globs", "forbidden"]),
-];
+const MEASURABLE: &[(&str, &[&str])] = &[(
+    "kernel-no-protocol-registry",
+    &[
+        "scope_globs",
+        "names",
+        "fn_names",
+        "store_cells",
+        "store_holds",
+    ],
+)];
 
 /// The detector keys of `rule`, when the census can re-measure it ([`MEASURABLE`]).
 fn detectors_of(rule: &str) -> Option<&'static [&'static str]> {
@@ -968,7 +965,6 @@ fn base_remeasure(
     let tree = Tree::load(&base_view(cx, sha)?, &roots, &cfg.test_path_fragments()?)?;
     let rows = match table.strip_prefix("rules.").unwrap_or(table) {
         "kernel-no-protocol-registry" => rules2::kernel_no_protocol_registry(&tree, &cfg)?,
-        "unit-no-wall-clock" => rules2::unit_no_wall_clock(&tree, &cfg)?,
         other => return Err(format!("the census has no re-measure for [rules.{other}]")),
     };
     rows.iter()

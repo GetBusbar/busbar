@@ -1479,8 +1479,9 @@ the kernel's production code; comments are not read. INSTALLED-STORE: the same r
 name to find, behind a type-erased store, is refused by its shape: a kernel static of any name \
 (plain, `mut`, `thread_local!`, `lazy_static!`, declared by a `macro_rules!`) whose type, read to \
 its top-level end (a `;` inside `[u8; 0]` or an `=` inside `Iterator<Item = T>` is the type's \
-own), through every alias and into every field, is a cell holding a collection, a slice, an array \
-or a trait object (`dyn`, `Any`, `AnyMap`), or a pointer-sized atomic integer a fn of its file \
+own), through every alias and into every field (a field's attribute, `#[…]`, is not read as \
+type text), is a cell holding a collection, a slice, an array or a trait object (`dyn`, `Any`, \
+`AnyMap`), or a pointer-sized atomic integer a fn of its file \
 launders a pointer through (`as_ptr`, `into_raw`, `leak`, `from_raw_parts`, an `as *const` cast), \
 and that code outside the kernel reaches: a `pub static`, a `pub fn` or a trait method \
 that takes a value, an accessor returning the cell, or a setter one call away (by path or by the \
@@ -1501,7 +1502,8 @@ max_hits = 0
 # would let a `ProtocolDecl` back in beside it): stores outside the named ones, and stale names.
 max_stores = 0
 # The installed-store shape. A store is a static of any name (plain, `mut`, in a `thread_local!` or a
-# `lazy_static!`) whose type, read through every alias and into every field, names one of
+# `lazy_static!`) whose type, read through every alias and into every field (each `#[…]` and `#![…]`
+# attribute blanked first: `#[serde(default = "…")]` on an integer field is not an array), names one of
 # `store_cells` (a `static mut` and a `static ref` are their own cell; an `UnsafeCell` wrapper is a
 # cell) and matches one of `store_holds`; or whose type is a pointer-sized atomic integer
 # (`AtomicUsize`, `AtomicIsize`, `AtomicU64`, `AtomicI64`) that a fn of its file naming it launders a
@@ -1531,10 +1533,10 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # #1418 MINTED precedent): the row reads through aliases, fields, every static spelling and every
 # installer shape now, and the stores it sees that a composition root fills with rows keyed by
 # plane, protocol or plugin identity are DEBT, not end state. The ceiling is SET here, from 0, in
-# the change whose detector first makes them visible, to exactly the measured count, and only
-# because `[gate.census.measured]` ledgers it; every rise after it is refused (Law 9). Each site names its
-# drain lane. The drain is the same seam for all: the compose owns the table and lends it to what
-# reads it, so the kernel holds no root-installed static.
+# the change whose detector first makes them visible, to exactly the measured count; every rise
+# after it is refused (Law 9). Each site names its drain lane. The drain is the same seam for all:
+# the compose owns the table and lends it to what reads it, so the kernel holds no root-installed
+# static.
 debt_stores = [
   "crates/busbar-kernel/src/config/legacy.rs::ROWS -- the root legacy table, looked up by plugin identity (`former.<alias>`, `retired.<kind>.<word>`); drain: a064's drain fixers (row 159 drain lanes), the compose owns the rows and lends them to the config parse, migrate and registry-link paths",
   "crates/busbar-kernel/src/diagnostics/mod.rs::INSTALLED -- the plane-contributed diagnostics catalogue: the root folds each linked plane's owned `DIAGNOSTICS` slice and each first-party plugin's declared ones into it (crates/busbar/src/root/linked.rs:842-864), install_doors' shape on the diagnostics axis (diagnostics/mod.rs:54-62); drain: lane-d2-drain-installed-doors, the same App-owned seam as plane_driver/doors.rs::INSTALLED (the catalogue on App, a config-time parameter from compose)",
@@ -1546,14 +1548,16 @@ debt_stores = [
 max_debt = 6
 # Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
 # fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
-# re-measure added are stores the narrower row did not see, not new ones.
+# re-measure added are stores the narrower row did not see, not new ones. `config/limits.rs`'s
+# INSTALLED and BUILDING are not stores: `LimitsResolved` holds integers and flags, and only its
+# fields' `#[serde(…)]` attributes once read as an array.
 exempt_stores = [
   "crates/busbar-kernel/src/admin/seam.rs::SEAM -- the admin crate's mount seam: two fn pointers (a port) its `install` binds once; holds no table and no identity key (admin is a crate, not a plugin)",
   "crates/busbar-kernel/src/admin/seam.rs::VERB_TABLE -- two fn pointers into the admin crate's closed verb table (a port); keyed by admin operation name, never by plugin identity",
+  "crates/busbar-kernel/src/auth/login.rs::SEAM -- the hosted login flow's seam: two fn pointers (a port) the oauth2 crate binds once (crates/busbar-core-oauth2/src/lib.rs, `seam::install(hosted_login::SEAM)`); holds no table and no identity key (oauth2 is a crate, not a plugin)",
   "crates/busbar-kernel/src/audit/auditlog.rs::AUDIT_LOG -- the process-wide admin audit read model: records appended per action, no installer, no lookup by identity",
   "crates/busbar-kernel/src/audit_ring.rs::AUDIT -- the const-built admin audit ring: records, no lookup by identity",
   "crates/busbar-kernel/src/config/filled.rs::LEDGER -- the env-fill ledger, keyed by config document path, filled by the config walk; no plugin identity",
-  "crates/busbar-kernel/src/config/limits.rs::INSTALLED -- the resolved limit values, re-installed per config apply; values, not a table keyed by any identity",
   "crates/busbar-kernel/src/config/plane_sections.rs::PLANE_SECTIONS -- one fn pointer the root binds (the section-list provider); not keyed by any identity",
   "crates/busbar-kernel/src/diagnostics/emit.rs::SITES -- tracing callsites made once per (diagnostic code, level, names); diagnostic codes, not plane, dialect, protocol or plugin identity",
   "crates/busbar-kernel/src/egress/fixtures.rs::SCOPED_DIAL -- compiled only under test / test-support (`egress::fixtures`): a test thread's scoped dial posture",
@@ -1563,6 +1567,7 @@ exempt_stores = [
   "crates/busbar-kernel/src/export/scrape.rs::LENT -- the snapshot lend of one crossing: the scrape grant's trait methods (`handle_http`, `handle_http_with_app`) lend the App to this thread for the call and restore what was lent before (export/scrape.rs:49-84); one value per crossing, no table, no identity key",
   "crates/busbar-kernel/src/handlers/mod.rs::SEEN -- a warn-once set of (name, reason) faults, filled per fault by its own fn; no installer, no lookup",
   "crates/busbar-kernel/src/host_disk.rs::WORDS -- an interner of OS error words, filled by its own fn per error; words, no identity",
+  "crates/busbar-kernel/src/ingress/native.rs::PATH_DIALECTS -- one value the root folds from the linked planes' declared path labels and installs once (crates/busbar/src/root/linked.rs, `register_protocols`): a path-shape rule list and a residual label, read only to label an authentication refusal's `response` tap (v1.5.5's `proto_for_path`); looked up by path, never by plane, dialect, protocol or plugin identity, and no dialect's behaviour is found through it",
   "crates/busbar-kernel/src/oauth_as/seam.rs::CLOCK_WORK -- weak handles to the authorization server's sweep work on the one clock; no key, no lookup",
   "crates/busbar-kernel/src/oauth_as/seam.rs::SEAM -- the authorization-server crate's seam: fn pointers (a port) the root binds once; holds no table (oauth2 is a crate, not a plugin)",
   "crates/busbar-kernel/src/plane_driver/door.rs::HOOK_TABLE -- immutable: a const-built array of per-index hook trampolines, never written; read by `fold` for the index it claims",
@@ -2369,7 +2374,6 @@ abi = 1
 # base already held, and (c) its `drain:` field names a PR, a row or a file (checked as syntax only:
 # the re-measure is the guard). At any base after it, it excuses nothing. Add-only.
 [gate.census.measured]
-"rules.kernel-no-protocol-registry.max_debt" = "store_cells, store_holds -- status row 82, D2 (#1454): the installed-store row now reads every static spelling, through aliases and fields, every installer shape, and the cells it did not know; the six root-filled stores keyed by plane, protocol or plugin identity it first sees were all at the base (#1408) and are ledgered by name in debt_stores, each with its drain; measured 6 at the base and at this tree; drain: status row 82 (lane-d2-drain-installed-doors: INSTALLED, TABLES, the diagnostics catalogue, then DOORS) and row 159 (a064's drain fixers: ROOT_ROWS and legacy ROWS)"
 
 [gate.census.deleted_rules]
 "rules.no-response-escapes-audit" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the retired engine crate's step directory crates/busbar-llm/src/unit (allowed file audit.rs), was deleted with crates/busbar-llm; measured 0 (max_escapes = 0 at the base): no file under that root exists"
