@@ -489,10 +489,16 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         .expect("the linked door binds"),
     );
     let section = plane.served().section;
+    // No provider is lent here (no egress is sealed), so the model states its own dialect: a model
+    // whose provider's protocol the host did not state, and which states none, is refused at open.
+    let dialect = plane.served().dialects[0];
     let mut sections = BTreeMap::new();
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {dialect}}}}}"
+        ))
+        .expect("a section"),
     );
     let served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -568,10 +574,16 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         .expect("the linked door binds"),
     );
     let section = plane.served().section;
+    // No provider is lent here (no egress is sealed), so the model states its own dialect: a model
+    // whose provider's protocol the host did not state, and which states none, is refused at open.
+    let dialect = plane.served().dialects[0];
     let mut sections = BTreeMap::new();
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {dialect}}}}}"
+        ))
+        .expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -10537,11 +10549,18 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         ),
     )
     .expect("the linked door binds");
+    // The provider's protocol, as the host states it when the plane opens: a model of a provider the
+    // host stated no protocol for, and which states none of its own, is refused at open.
+    let typesafe = [busbar_contract::plane_calls::DialectFacts {
+        name: "typesafe".to_string(),
+        protocol: reg.dialects[0].to_string(),
+        error_map: None,
+    }];
     let facing = (reg.facing)(
         br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
         b"",
         None,
-        &[],
+        &typesafe,
     )
     .expect("the door faces the world");
     assert_eq!(facing.listed, vec!["a".to_string(), "b".to_string()]);
