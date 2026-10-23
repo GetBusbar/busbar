@@ -24,13 +24,11 @@
 //! liveness (a row whose path-prefix names nothing is RED), and `scan-complete` (a lexer that lost
 //! string state, or a file that would not read, is a broken instrument and not a count).
 //!
-//! BLOCKING BY DEFAULT — the owner-locked #53 release blocker, armed once the tree measured zero
-//! violations: any Check 1/2/3 violation FAILS its row (and `cargo xtask gate secret-hygiene`
-//! prints the report to stderr either way). `SECRET_GATE_REPORT_ONLY=1` is the one explicit escape,
-//! kept from the script (where it was the default): the three check rows become PASS rows whose
-//! detail carries the violation list. `SECRET_GATE_REPORT_ONLY=0` (the script's arming value) is
-//! still accepted and simply blocks. The floor, the allowlist liveness and scan-complete rows fail
-//! in BOTH modes: a broken instrument is not "report-only".
+//! BLOCKING, ALWAYS — the owner-locked #53 release blocker: any Check 1/2/3 violation FAILS its
+//! row (and `cargo xtask gate secret-hygiene` prints the report to stderr either way). There is no
+//! report-only mode: `SECRET_GATE_REPORT_ONLY` (the script's old escape) is not read, because a
+//! violation list recorded as PASS is a green gate over a leak (XE#17). The floor, the allowlist
+//! liveness and scan-complete rows fail too: a broken instrument is not a count.
 //!
 //! The scanners are hand ports of the script's awk programs (byte-oriented, like `LC_ALL=C awk`),
 //! quirks included: the same lexer, the same brace-depth stack, the same statement windows.
@@ -55,7 +53,7 @@ pub const ROW_C2: &str = "secret-hygiene:check2-sink";
 pub const ROW_C3: &str = "secret-hygiene:check3-message";
 
 // ── NEEDLES (verbatim from the script; see its history for why each is what it is) ──────────────
-const STRONG_NEEDLES: &str = "api_key api_key_plaintext client_secret private_key signing_key access_token subject_token api_secret secret_access_key password bearer credential_secret";
+const STRONG_NEEDLES: &str = "api_key api_key_plaintext client_secret private_key signing_key access_token subject_token api_secret secret_access_key password bearer credential_secret pwd psk hmac_key session_key seed passphrase";
 const CONTEXT_NEEDLES: &str = "secret token credential credentials";
 const CONTEXT_STRUCT_RE: &[&str] = &[
     "Key", "Cred", "Token", "Secret", "Auth", "Lease", "Issued", "Mint",
@@ -72,7 +70,9 @@ const C3_ERRCTX: &str = "Err( map_err ok_or_else ok_or( panic! .expect( bail! an
 const C3_PROXIMITY: usize = 56;
 
 /// One allowlist row: a Check-1 hit is suppressed iff `needle == field name`, the path STARTS WITH
-/// `prefix`, and `field` is empty or equals the field name.
+/// `prefix` (a `.rs` file, never a directory), and `field` equals the field name. A row must
+/// suppress at least one LIVE hit ([`SecretHygieneGate::stale_allow`]): a row that suppresses
+/// nothing is a stale exemption waiting for the next field of that name.
 #[derive(Debug, Clone, Copy)]
 pub struct Allow {
     pub needle: &'static str,
@@ -92,8 +92,8 @@ const fn allow(needle: &'static str, prefix: &'static str, field: &'static str) 
 /// git (`scripts/secret-hygiene-gate.sh` before its purge). In short: the three documented design
 /// exceptions (store-ABI serde egress `CredentialSecret`, the once-shown mint response
 /// `CreatedKeyView`, the auth wire boundary) plus the type-name false positives
-/// (`IrTokenLogprob.token`, `AuthView.upstream_credentials`). Several rows are vacuous today (kept
-/// as written intent); the LIVENESS row only asks that each path exist.
+/// (`IrTokenLogprob.token`, `AuthView.upstream_credentials`). Every row suppresses a live
+/// hit today; the LIVENESS row refuses one that does not.
 pub const ALLOWLIST_C1: &[Allow] = &[
     allow("secret", "crates/busbar-contract/src/records.rs", "secret"),
     allow(
@@ -105,11 +105,6 @@ pub const ALLOWLIST_C1: &[Allow] = &[
         "aws_secret_access_key",
         "crates/busbar-core-admin/src/v1/schema.rs",
         "aws_secret_access_key",
-    ),
-    allow(
-        "access_token",
-        "crates/busbar-core-admin/src/v1/schema.rs",
-        "",
     ),
     allow(
         "secret",
@@ -190,16 +185,16 @@ pub const PARITY_C3: &[Parity] = &[
     },
 ];
 
-/// The test-file shape (item 506): `(^|[/_])tests?\.rs$`.
-fn is_test_file(rel: &str) -> bool {
-    for suffix in ["tests.rs", "test.rs"] {
-        if let Some(head) = rel.strip_suffix(suffix) {
-            if head.is_empty() || head.ends_with('/') || head.ends_with('_') {
-                return true;
-            }
-        }
-    }
-    false
+/// The files of `files` that a `#[cfg(test)] mod` declares (directly or through a chain of
+/// declarations): test scope is decided by the declaring module's cfg, never by the file's name
+/// (XE#12). A file named `tests.rs` that nothing gates is production and is scanned; a file named
+/// `lib.rs` that a `#[cfg(test)] mod` declares is test code and is not.
+fn cfg_test_files(files: &[(String, String)]) -> std::collections::BTreeSet<String> {
+    crate::scan::cfg_test_module_files(
+        files
+            .iter()
+            .map(|(rel, text)| (rel.clone(), text.as_str(), None)),
+    )
 }
 
 // ── BYTE HELPERS (1-based, awk-style: out of range reads as 0, the awk empty string) ─────────────
@@ -557,17 +552,26 @@ struct FieldScan<'a> {
     strong: Vec<&'static [u8]>,
     context: Vec<&'static [u8]>,
     allow: &'a [Allow],
+    /// How many live hits each allowlist row suppressed (parallel to `allow`).
+    used: Vec<usize>,
     pendtest: bool,
     pend_sn: Vec<u8>,
 }
 
 impl FieldScan<'_> {
-    fn allowlisted(&self, file: &str, fname: &[u8]) -> bool {
-        self.allow.iter().any(|a| {
+    /// Whether a row suppresses this hit. The FIRST matching row takes the credit, so a duplicate
+    /// row suppresses nothing and the liveness row names it.
+    fn allowlisted(&mut self, file: &str, fname: &[u8]) -> bool {
+        let found = self.allow.iter().position(|a| {
             a.needle.as_bytes() == fname
                 && file.starts_with(a.prefix)
-                && (a.field.is_empty() || a.field.as_bytes() == fname)
-        })
+                && !a.field.is_empty()
+                && a.field.as_bytes() == fname
+        });
+        if let Some(i) = found {
+            self.used[i] += 1;
+        }
+        found.is_some()
     }
 
     fn file(&mut self, name: &str, text: &str, out: &mut Vec<Hit>) {
@@ -703,10 +707,16 @@ impl FieldScan<'_> {
 
 /// CHECK 1 over `(path, text)` files.
 pub fn scan_fields(files: &[(String, String)], allow: &[Allow]) -> Vec<Hit> {
+    scan_fields_counted(files, allow).0
+}
+
+/// [`scan_fields`], plus how many live hits each allowlist row suppressed.
+pub fn scan_fields_counted(files: &[(String, String)], allow: &[Allow]) -> (Vec<Hit>, Vec<usize>) {
     let mut fs = FieldScan {
         strong: words(STRONG_NEEDLES),
         context: words(CONTEXT_NEEDLES),
         allow,
+        used: vec![0; allow.len()],
         pendtest: false,
         pend_sn: Vec::new(),
     };
@@ -714,13 +724,45 @@ pub fn scan_fields(files: &[(String, String)], allow: &[Allow]) -> Vec<Hit> {
     for (n, t) in files {
         fs.file(n, t, &mut out);
     }
-    out
+    (out, fs.used)
 }
 
 // ── CHECK 2 ──────────────────────────────────────────────────────────────────────────────────────
 
-/// CHECK 2 over `(path, text)` files: `.expose(` (the sealed accessor, Part 2 #54) and a sink on
-/// one STATEMENT.
+/// A statement that calls the sealed accessor (Part 2 #54) in either spelling: the method
+/// (`k.expose(seal)`) or the path form (`Secret::expose(&k, seal)`).
+fn calls_expose(stmt: &[u8]) -> bool {
+    index_of(stmt, b".expose(") > 0 || index_of(stmt, b"::expose(") > 0
+}
+
+/// `w` as a whole identifier somewhere in `stmt` (string contents included, so an inline format
+/// argument `"{v}"` names `v`).
+fn names_word(stmt: &[u8], w: &[u8]) -> bool {
+    let mut from = 0;
+    while let Some(p) = stmt[from..].windows(w.len()).position(|x| x == w) {
+        let a = from + p;
+        let end = a + w.len();
+        if (a == 0 || !is_ident(stmt[a - 1])) && (end >= stmt.len() || !is_ident(stmt[end])) {
+            return true;
+        }
+        from = a + 1;
+    }
+    false
+}
+
+/// The plain binding a `let` statement makes from an exposed value (`let v = k.expose(..);`), or
+/// `None`: a pattern (`Some(x)`), `_`, or a statement that is not a `let`.
+fn exposed_binding(stmt: &[u8]) -> Option<Vec<u8>> {
+    if !calls_expose(stmt) {
+        return None;
+    }
+    let name = let_binding(stmt)?;
+    (name.len() > 1 && (name[0].is_ascii_lowercase() || name[0] == b'_')).then_some(name)
+}
+
+/// CHECK 2 over `(path, text)` files: the sealed accessor (Part 2 #54) and a sink on one STATEMENT,
+/// or a sink naming a binding an earlier statement of the same function took from the accessor
+/// (`let v = k.expose(..); info!(%v)`), in either spelling of the call (XE#16).
 pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
     let sinks = words(SINKS);
     let mut out = Vec::new();
@@ -728,21 +770,30 @@ pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
     let mut stmtline = 0usize;
     let mut stmtfile = String::new();
     let mut pdepth: i64 = 0;
+    // Bindings taken from the accessor, live until the next `fn` signature or the next file.
+    let mut exposed: Vec<Vec<u8>> = Vec::new();
     let flush = |stmt: &mut Vec<u8>,
                  stmtline: &mut usize,
                  stmtfile: &mut String,
                  pdepth: &mut i64,
+                 exposed: &mut Vec<Vec<u8>>,
                  out: &mut Vec<Hit>| {
-        if !stmt.is_empty()
-            && index_of(stmt, b".expose(") > 0
-            && sinks.iter().any(|s| index_of(stmt, s) > 0)
-        {
-            out.push(Hit {
-                rule: "expose".into(),
-                loc: format!("{stmtfile}:{stmtline}"),
-                name: String::new(),
-                text: lossy(stmt),
-            });
+        if !stmt.is_empty() {
+            if has_fn_sig(stmt) {
+                exposed.clear();
+            }
+            let sink = sinks.iter().any(|s| index_of(stmt, s) > 0);
+            if sink && (calls_expose(stmt) || exposed.iter().any(|v| names_word(stmt, v))) {
+                out.push(Hit {
+                    rule: "expose".into(),
+                    loc: format!("{stmtfile}:{stmtline}"),
+                    name: String::new(),
+                    text: lossy(stmt),
+                });
+            }
+            if let Some(v) = exposed_binding(stmt) {
+                exposed.push(v);
+            }
         }
         stmt.clear();
         *stmtline = 0;
@@ -759,8 +810,10 @@ pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
             &mut stmtline,
             &mut stmtfile,
             &mut pdepth,
+            &mut exposed,
             &mut out,
         );
+        exposed.clear();
         let mut inblk = false;
         for (idx, raw) in recs.into_iter().enumerate() {
             let fnr = idx + 1;
@@ -788,6 +841,7 @@ pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
                     &mut stmtline,
                     &mut stmtfile,
                     &mut pdepth,
+                    &mut exposed,
                     &mut out,
                 );
             }
@@ -798,6 +852,7 @@ pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
         &mut stmtline,
         &mut stmtfile,
         &mut pdepth,
+        &mut exposed,
         &mut out,
     );
     out
@@ -1828,7 +1883,7 @@ fn read_pinned(cx: &Ctx) -> Result<PinnedSources, String> {
                     .map(|r| r.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_default();
                 let shown = format!("{at}/{rel}");
-                if shown.contains("/tests/") || is_test_file(&shown) {
+                if shown.contains("/tests/") {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).map_err(|e| {
@@ -1840,6 +1895,8 @@ fn read_pinned(cx: &Ctx) -> Result<PinnedSources, String> {
                 files.push((shown, text));
             }
         }
+        let test = cfg_test_files(&files);
+        files.retain(|(rel, _)| !test.contains(rel));
         if files.is_empty() {
             return Err(format!(
                 "the git-pinned plugin crate `{name}` ({source}) at {}: no production .rs file \
@@ -1894,6 +1951,8 @@ struct Scan {
     pinned: Vec<String>,
     npinned: usize,
     c1: Vec<Hit>,
+    /// Per Check-1 allowlist row, in order, the live hits it suppressed.
+    allow_used: Vec<usize>,
     c2: Vec<Hit>,
     c3: Vec<Hit>,
     /// Per [`Parity`] row, in order, the live hits it suppressed.
@@ -1926,11 +1985,10 @@ impl SecretHygieneGate {
                 return sc;
             }
         };
-        let mut files: Vec<(String, String)> = files
-            .into_iter()
-            .map(|f| (f.rel_str(), f.text))
-            .filter(|(rel, _)| !is_test_file(rel))
-            .collect();
+        let mut files: Vec<(String, String)> =
+            files.into_iter().map(|f| (f.rel_str(), f.text)).collect();
+        let test = cfg_test_files(&files);
+        files.retain(|(rel, _)| !test.contains(rel));
         if files.is_empty() {
             sc.floor = Some(format!(
                 "scanned 0 production .rs file(s) under `{}`; zero is RED — a scan of zero files \
@@ -1946,7 +2004,7 @@ impl SecretHygieneGate {
         // p2 #2). A tracked file the walk did not read, or a read file nothing tracks, is refused
         // BY NAME; there is no count to re-pin.
         let whole: Vec<String> = match cx.tracked(&spec) {
-            Ok(w) => w.into_iter().filter(|p| !is_test_file(p)).collect(),
+            Ok(w) => w.into_iter().filter(|p| !test.contains(p)).collect(),
             Err(e) => {
                 sc.broken = Some(format!(
                     "the tracked set under `{}` would not read, so the scan cannot be reconciled: {e}",
@@ -2001,7 +2059,9 @@ impl SecretHygieneGate {
             }
         }
         sc.nfiles = files.len() - sc.npinned;
-        sc.c1 = scan_fields(&files, self.allow_c1);
+        let (c1, allow_used) = scan_fields_counted(&files, self.allow_c1);
+        sc.c1 = c1;
+        sc.allow_used = allow_used;
         sc.c2 = scan_sinks(&files);
         let (warns, c3): (Vec<Hit>, Vec<Hit>) = scan_msgs(&files)
             .into_iter()
@@ -2052,10 +2112,21 @@ impl SecretHygieneGate {
     }
 
     /// The allowlist liveness problems: an empty prefix, or a prefix that names nothing.
-    fn stale_allow(&self, cx: &Ctx) -> Vec<String> {
+    fn stale_allow(&self, cx: &Ctx, sc: &Scan, measured: bool) -> Vec<String> {
         let mut bad = Vec::new();
-        for a in self.allow_c1 {
+        for (i, a) in self.allow_c1.iter().enumerate() {
             let row = format!("{}|{}|{}", a.needle, a.prefix, a.field);
+            if a.field.is_empty() || a.field != a.needle {
+                bad.push(format!(
+                    "allowlist row `{row}` is not scoped to one field: its field must be non-empty and equal its needle — an empty field exempts every field of that file"
+                ));
+            }
+            if !a.prefix.is_empty() && !a.prefix.ends_with(".rs") {
+                bad.push(format!(
+                    "allowlist row `{row}` names `{}`, which is not one .rs file — a directory prefix exempts every file under it",
+                    a.prefix
+                ));
+            }
             if a.prefix.is_empty() {
                 bad.push(format!(
                     "allowlist row `{row}` has an EMPTY path prefix — a path-scoped allowlist with no path is a global one, which this gate does not have"
@@ -2064,6 +2135,11 @@ impl SecretHygieneGate {
                 bad.push(format!(
                     "allowlist row `{row}` names a path that is not in this tree: `{}` does not exist, so this row suppresses nothing and says nothing while doing it. If the file MOVED, repoint the row; if the exception is gone, DELETE the row",
                     a.prefix
+                ));
+            } else if measured && sc.allow_used.get(i).copied().unwrap_or(0) == 0 {
+                bad.push(format!(
+                    "allowlist row `{row}` suppresses no live Check-1 hit: no bare `{}` field is declared under `{}`, so the row exempts the next field of that name unread. DELETE the row (or repoint it if the field moved)",
+                    a.needle, a.prefix
                 ));
             }
         }
@@ -2144,7 +2220,7 @@ impl SecretHygieneGate {
     }
 }
 
-fn check_row(id: &str, title: &str, lines: &[String], measured: bool, blocking: bool) -> Row {
+fn check_row(id: &str, title: &str, lines: &[String], measured: bool) -> Row {
     if !measured {
         return Row::fail(
             id,
@@ -2155,27 +2231,15 @@ fn check_row(id: &str, title: &str, lines: &[String], measured: bool, blocking: 
     if lines.is_empty() {
         return Row::pass(id, title, "no violation");
     }
-    if blocking {
-        Row::fail(
-            id,
-            title,
-            format!(
-                "{} violation(s) (BLOCKING, #53; SECRET_GATE_REPORT_ONLY=1 is the report-only escape): {} — wrap each secret VALUE in busbar_contract::Secret<T>; log a SecretRef/id, never .expose(seal) output; for a Check-3 hit REDACT AT THE FORMAT SITE, never delete the diagnostic",
-                lines.len(),
-                lines.join(" | ")
-            ),
-        )
-    } else {
-        Row::pass(
-            id,
-            title,
-            format!(
-                "{} violation(s), REPORT-ONLY (SECRET_GATE_REPORT_ONLY=1; the default, blocking, makes this row FAIL): {}",
-                lines.len(),
-                lines.join(" | ")
-            ),
-        )
-    }
+    Row::fail(
+        id,
+        title,
+        format!(
+            "{} violation(s) (BLOCKING, #53; there is no report-only mode): {} — wrap each secret VALUE in busbar_contract::Secret<T>; log a SecretRef/id, never .expose(seal) output; for a Check-3 hit REDACT AT THE FORMAT SITE, never delete the diagnostic",
+            lines.len(),
+            lines.join(" | ")
+        ),
+    )
 }
 
 impl Gate for SecretHygieneGate {
@@ -2196,7 +2260,6 @@ impl Gate for SecretHygieneGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let sc = self.scan(cx);
-        let blocking = cx.env().secret_gate_blocking;
         if cx.overlay().is_none() && self.tag.is_empty() && sc.floor.is_none() {
             self.print_report(&sc);
         }
@@ -2233,9 +2296,9 @@ impl Gate for SecretHygieneGate {
         });
 
         let measured = sc.floor.is_none() && sc.broken.is_none();
-        let mut stale = self.stale_allow(cx);
+        let mut stale = self.stale_allow(cx, &sc, measured);
         stale.extend(self.unkept(&sc, measured));
-        let allow_title = "every allowlist row names a path in this tree, and every Check-3 1.5.5-parity row suppresses exactly one live hit (fails in BOTH modes)";
+        let allow_title = "every allowlist row names one field in one .rs file of this tree and suppresses a live hit, and every Check-3 1.5.5-parity row suppresses exactly one live hit (fails in BOTH modes)";
         rows.push(if stale.is_empty() {
             Row::pass(
                 ROW_ALLOW,
@@ -2301,21 +2364,18 @@ impl Gate for SecretHygieneGate {
             "Check 1: no bare-string secret field (not Secret/Zeroizing/SecretRef)",
             &l1,
             measured,
-            blocking,
         ));
         rows.push(check_row(
             ROW_C2,
             "Check 2: no .expose(seal) on a log/audit/metric sink statement",
             &l2,
             measured,
-            blocking,
         ));
         rows.push(check_row(
             ROW_C3,
             "Check 3: no secret interpolated into a message a caller receives",
             &l3,
             measured,
-            blocking,
         ));
         Verdict::of(rows)
     }
@@ -2374,6 +2434,26 @@ static EMPTY_PREFIX_ALLOW: SecretHygieneGate = SecretHygieneGate {
     tag: "empty-prefix-allow",
 };
 
+/// A row whose field is declared nowhere in its file: it suppresses nothing.
+static VACUOUS_ALLOW: SecretHygieneGate = SecretHygieneGate {
+    roots: &[SANDBOX_ROOT],
+    allow_c1: &[
+        allow("api_key", SANDBOX_ALLOWED, "api_key"),
+        allow("api_key", "selftest-sandbox/src/lib.rs", "api_key"),
+    ],
+    allow_c3: &[],
+    pinned: false,
+    tag: "vacuous-allow",
+};
+/// A row with no field: it exempts every field of that name in the file.
+static BLANKET_ALLOW: SecretHygieneGate = SecretHygieneGate {
+    roots: &[SANDBOX_ROOT],
+    allow_c1: &[allow("api_key", SANDBOX_ALLOWED, "")],
+    allow_c3: &[],
+    pinned: false,
+    tag: "blanket-allow",
+};
+
 const PARITY_PAIR: &str = "selftest-sandbox/src/c1_pair.rs";
 const fn sandbox_parity(rule: &'static str, param: &'static str) -> Parity {
     Parity {
@@ -2408,7 +2488,9 @@ static PARITY_EMPTY: SecretHygieneGate = SecretHygieneGate {
 
 fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> {
     let mut report = Report::new();
-    let quiet = cx.clone().secret_gate_blocking(false);
+    // SECRET_GATE_REPORT_ONLY=1 reaches the gate as `secret_gate_blocking(false)`; the gate does not
+    // read it, and the case below proves the row is red under it.
+    let escape = cx.clone().secret_gate_blocking(false);
     let blocking = cx.clone().secret_gate_blocking(true);
 
     report.push(prove_green(
@@ -2452,15 +2534,15 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         plant("c1_red", fixtures::C1_RED),
         &["api_key", "secret", "c1_red.rs:2", "c1_red.rs:6"],
     ));
-    // THE ESCAPE: the same plant under SECRET_GATE_REPORT_ONLY=1 is CARRIED, not failed — the row
-    // passes (its detail still names every violation). The pair with the RED case above proves the
-    // default is what blocks, not the plant.
-    report.push(prove_rows_green(
-        &quiet,
+    // THERE IS NO ESCAPE: the same plant under SECRET_GATE_REPORT_ONLY=1 still FAILS the row. A
+    // violation list recorded as PASS is a green gate over a leak (XE#17).
+    report.push(prove_rows_red(
+        &escape.with_overlay(base.clone()),
         &SANDBOX,
-        "REPORT-ONLY escape (SECRET_GATE_REPORT_ONLY=1): the SAME bare fields pass the check row, carried not failed",
+        "NO REPORT-ONLY ESCAPE (SECRET_GATE_REPORT_ONLY=1): the SAME bare fields still FAIL the check row",
         &[ROW_C1],
         plant("c1_red", fixtures::C1_RED),
+        &["api_key", "secret", "c1_red.rs:2", "c1_red.rs:6"],
     ));
     report.push(prove_rows_green(
         &base_cx,
@@ -2528,6 +2610,30 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         "GREEN c2: expose at a header injection, then a real sink on the NEXT statement — the statement window does not join them",
         &[ROW_C2],
         plant("c2_green", fixtures::C2_GREEN),
+    ));
+
+    report.push(prove_rows_red(
+        &base_cx,
+        &SANDBOX,
+        "RED c2 BOUND: `let v = k.expose(seal); info!(%v)` — the exposed value reaches a sink on a LATER statement",
+        &[ROW_C2],
+        plant("c2_bound", fixtures::C2_RED_BOUND),
+        &["c2_bound.rs:3"],
+    ));
+    report.push(prove_rows_red(
+        &base_cx,
+        &SANDBOX,
+        "RED c2 PATH: `Secret::expose(&k, seal)` on a sink statement is caught like the method form",
+        &[ROW_C2],
+        plant("c2_path", fixtures::C2_RED_PATH),
+        &["c2_path.rs:2"],
+    ));
+    report.push(prove_rows_green(
+        &base_cx,
+        &SANDBOX,
+        "GREEN c2 SCOPE: an exposed binding does not follow its name into the next function",
+        &[ROW_C2],
+        plant("c2_other_fn", fixtures::C2_GREEN_OTHER_FN),
     ));
 
     // ── Check 3 ──
@@ -2610,7 +2716,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
 
     // ── The allowlist liveness ──
     report.push(prove_red_by_configuration(
-        &quiet,
+        &blocking,
         gate,
         &STALE_ALLOW,
         "RED allowlist: a row whose PATH-PREFIX names no path on disk is REFUSED (in report-only mode too)",
@@ -2621,7 +2727,23 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         ],
     ));
     report.push(prove_red_by_configuration(
-        &quiet,
+        &base_cx,
+        &SANDBOX,
+        &VACUOUS_ALLOW,
+        "RED allowlist: a row that suppresses NO live hit (its field is declared nowhere in its file) is REFUSED",
+        &[ROW_ALLOW],
+        &["suppresses no live Check-1 hit", "selftest-sandbox/src/lib.rs"],
+    ));
+    report.push(prove_red_by_configuration(
+        &base_cx,
+        &SANDBOX,
+        &BLANKET_ALLOW,
+        "RED allowlist: a row with an EMPTY field exempts every field of that name and is REFUSED",
+        &[ROW_ALLOW],
+        &["not scoped to one field"],
+    ));
+    report.push(prove_red_by_configuration(
+        &blocking,
         gate,
         &EMPTY_PREFIX_ALLOW,
         "RED allowlist: a row with an EMPTY path prefix is REFUSED",
@@ -2676,7 +2798,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
 
     // ── The scan floor ──
     report.push(prove_red_by_configuration(
-        &quiet,
+        &blocking,
         gate,
         &TESTS_ONLY,
         "RED floor: a root holding ZERO production .rs (only a tests/ file) is a broken scan, not a PASS",
@@ -2684,7 +2806,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         &["scanned 0 production .rs", "zero is RED"],
     ));
     report.push(prove_red_by_configuration(
-        &quiet,
+        &blocking,
         gate,
         &MISSING_ROOT,
         "RED floor: a scan root that is not on disk is a broken scan, not a PASS",
@@ -2696,7 +2818,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
     // floor: a walk narrowed to one file must not read as a measured tree.
     match crate::gates::population::one_file_hidden(cx) {
         Ok((ov, rel)) => report.push(prove_rows_red(
-            &quiet,
+            &blocking,
             gate,
             "RED floor: a tracked production .rs the walk did not read is refused by name, not certified clean",
             &[ROW_FLOOR],
@@ -2706,29 +2828,38 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         Err(e) => report.note_infra_failure(format!("secret-hygiene selftest: {e}")),
     }
 
-    // ── The test-file shape (item 506) ──
+    // ── Test scope is the declaring `#[cfg(test)] mod`, not the file name (XE#12) ──
     // Multi-line on purpose: Check 1 reads a field only when the struct body opens on an EARLIER line
     // (the script's rule), so a one-line struct would make the green arm vacuous.
     let fixture = "pub struct Fixture {\n    pub api_key: String,\n}\n";
-    let mut shape = Overlay::new();
-    shape.set(format!("{SANDBOX_ROOT}/src/sub/tests.rs"), fixture);
-    shape.set(format!("{SANDBOX_ROOT}/src/test.rs"), fixture);
-    shape.set(format!("{SANDBOX_ROOT}/src/sub/wire_tests.rs"), fixture);
-    shape.set(format!("{SANDBOX_ROOT}/tests/only_test.rs"), fixture);
+    let mut gated = Overlay::new();
+    gated.set(
+        format!("{SANDBOX_ROOT}/src/lib.rs"),
+        "pub struct Clean { pub n: usize }\n#[cfg(test)]\nmod fixtures;\n#[cfg(test)]\nmod tests;\n",
+    );
+    gated.set(format!("{SANDBOX_ROOT}/src/fixtures.rs"), fixture);
+    gated.set(format!("{SANDBOX_ROOT}/src/tests.rs"), fixture);
+    gated.set(format!("{SANDBOX_ROOT}/tests/only_test.rs"), fixture);
     report.push(prove_rows_green(
         &base_cx,
         &SANDBOX,
-        "GREEN shape: tests.rs, test.rs, *_tests.rs and a tests/ file are test code, not production",
+        "GREEN scope: a file a `#[cfg(test)] mod` declares (whatever its name) and a tests/ file are test code, not production",
         &[ROW_C1],
-        base.layered(&shape),
+        base.layered(&gated),
     ));
+    let mut named = Overlay::new();
+    named.set(
+        format!("{SANDBOX_ROOT}/src/lib.rs"),
+        "pub struct Clean { pub n: usize }\nmod tests;\n",
+    );
+    named.set(format!("{SANDBOX_ROOT}/src/tests.rs"), fixture);
     report.push(prove_rows_red(
         &base_cx,
         &SANDBOX,
-        "RED shape: `contests.rs` is NOT a test file — a bare secret in it is scanned",
+        "RED scope: `tests.rs` that no `#[cfg(test)] mod` declares is production — a bare secret in it is scanned",
         &[ROW_C1],
-        plant("contests", fixture),
-        &["api_key", "contests.rs:2"],
+        base.layered(&named),
+        &["api_key", "tests.rs:2"],
     ));
     report
 }
@@ -2831,6 +2962,23 @@ pub struct LaneWire {
     req.header("authorization", format!("Bearer {}", key.expose(seal)));
     // tracing::info!("sent");  <- a sink in a COMMENT, on a different statement, is not a leak
     tracing::info!(key_id = %key.reference(), "sent");
+}
+"#####;
+    pub(super) const C2_RED_BOUND: &str = r#####"fn leak(key: &Secret<String>, seal: &Grant<Sign>) {
+    let v = key.expose(seal);
+    tracing::info!(%v, "using key");
+}
+"#####;
+    pub(super) const C2_RED_PATH: &str = r#####"fn leak(key: &Secret<String>, seal: &Grant<Sign>) {
+    tracing::info!(api_key = %Secret::expose(key, seal), "using key");
+}
+"#####;
+    pub(super) const C2_GREEN_OTHER_FN: &str = r#####"fn inject(key: &Secret<String>, seal: &Grant<Sign>) -> usize {
+    let v = key.expose(seal);
+    v.len()
+}
+fn report(v: usize) {
+    tracing::info!(%v, "sent");
 }
 "#####;
     pub(super) const C3_RED_PROXY: &str = r#####"pub(super) fn parse_proxy(v: &str) -> Result<ProxySpec, String> {
@@ -3036,6 +3184,11 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert!(m[0].loc.ends_with(":2"));
         assert!(c2(f::C2_GREEN).is_empty());
+        let b = c2(f::C2_RED_BOUND);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert!(b[0].loc.ends_with(":3"));
+        assert_eq!(c2(f::C2_RED_PATH).len(), 1);
+        assert!(c2(f::C2_GREEN_OTHER_FN).is_empty());
     }
 
     #[test]
@@ -3091,14 +3244,46 @@ mod tests {
         assert!(r.iter().any(|x| x.rule == "PARSE-WARN"));
     }
 
+    /// XE#10: the key-material names beyond the original roster are secret field names too.
     #[test]
-    fn test_file_shape() {
-        for t in ["a/tests.rs", "a/test.rs", "a/wire_tests.rs", "a/x_test.rs"] {
-            assert!(is_test_file(t), "{t}");
-        }
-        for p in ["a/contests.rs", "a/lib.rs", "a/latest.rs"] {
-            assert!(!is_test_file(p), "{p}");
-        }
+    fn check1_reads_key_material_names() {
+        let t = "pub struct Creds {\n    pub pwd: String,\n    pub psk: Vec<u8>,\n    pub hmac_key: Vec<u8>,\n    pub session_key: String,\n    pub seed: [u8; 32],\n    pub passphrase: String,\n    pub pwd_ok: String,\n}\n";
+        assert_eq!(
+            fields(&c1(t)),
+            [
+                "pwd",
+                "psk",
+                "hmac_key",
+                "session_key",
+                "seed",
+                "passphrase"
+            ]
+        );
+        let wrapped = "pub struct Creds {\n    pub pwd: Zeroizing<String>,\n}\n";
+        assert!(c1(wrapped).is_empty());
+    }
+
+    #[test]
+    fn test_scope_is_the_declaring_cfg_mod() {
+        let files = vec![
+            (
+                "a/lib.rs".to_string(),
+                "#[cfg(test)]\nmod tests;\nmod latest;\n".to_string(),
+            ),
+            ("a/tests.rs".to_string(), String::new()),
+            ("a/latest.rs".to_string(), String::new()),
+        ];
+        let t = cfg_test_files(&files);
+        assert!(t.contains("a/tests.rs"), "{t:?}");
+        assert!(
+            !t.contains("a/latest.rs") && !t.contains("a/lib.rs"),
+            "{t:?}"
+        );
+        let ungated = vec![
+            ("a/lib.rs".to_string(), "mod tests;\n".to_string()),
+            ("a/tests.rs".to_string(), String::new()),
+        ];
+        assert!(cfg_test_files(&ungated).is_empty());
     }
 
     /// Q128 LOW: every legal spelling of a bare secret is bare — `Arc<str>`, `Box<str>`,
