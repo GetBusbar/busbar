@@ -728,10 +728,16 @@ impl Ctx {
 
     /// A FRESH context with this overlay. The base is untouched.
     pub fn with_overlay(&self, overlay: Overlay) -> Ctx {
-        Ctx {
+        let mut cx = Ctx {
             overlay: Some(Arc::new(overlay)),
             ..self.clone()
-        }
+        };
+        // AN OVERLAID CONTEXT NEVER WRITES. `--write` is the arm that commits derived bytes over
+        // the baselines in the tree; a context whose inputs are a plant derives its bytes from the
+        // plant, so letting the flag ride along would let a self-test or an `--all` run overwrite a
+        // committed baseline with plant-derived content.
+        cx.env.write = false;
+        cx
     }
 
     pub fn overlay(&self) -> Option<&Overlay> {
@@ -1412,9 +1418,7 @@ fn merge_layers(mut rels: Vec<PathBuf>, layers: &[&Overlay], roots: &[String]) -
             // `kind-isolation:registry` runs — is proven by planting `vendor/…/Cargo.toml`, and the
             // prefix test `"vendor/…".starts_with("./")` is false, so the plant would have been
             // filtered out of the very walk it exists to be found by.
-            let under_a_root = roots
-                .iter()
-                .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
+            let under_a_root = under_a_walked_root(&s, roots);
             match change {
                 Change::Absent => {
                     if present.remove(path) {
@@ -1432,18 +1436,84 @@ fn merge_layers(mut rels: Vec<PathBuf>, layers: &[&Overlay], roots: &[String]) -
     rels
 }
 
+/// A NAME THE DISK WALK NEVER YIELDS: `target`, or any dot-name, at any depth below a walk root.
+fn walk_skips_name(name: &str) -> bool {
+    name == "target" || name.starts_with('.')
+}
+
+/// WHETHER A PLANTED PATH IS ONE THE DISK WALK COULD HAVE YIELDED under one of `roots`.
+///
+/// [`collect`] never lists an entry named `target` or starting with `.` below the root it walks,
+/// at any depth. A plant is held to the same rule: a path with such a component below the root is
+/// a path no commit-time walk can produce, so a gate that went red on it would be proven by a
+/// fixture the real walk cannot encounter. The root's own components are not judged (`.ci` can be
+/// a root); `.` is the whole tree, so every component of the path is below it.
+fn under_a_walked_root(path: &str, roots: &[String]) -> bool {
+    roots.iter().any(|r| {
+        if path == r {
+            return true;
+        }
+        let rest = if r == "." {
+            path.strip_prefix("./").unwrap_or(path)
+        } else {
+            match path.strip_prefix(&format!("{r}/")) {
+                Some(rest) => rest,
+                None => return false,
+            }
+        };
+        !rest.split('/').any(walk_skips_name)
+    })
+}
+
 fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {
+    let mut ancestors = Vec::new();
+    collect_guarded(dir, root, out, &mut ancestors)
+}
+
+/// THE RECURSION, with the canonical path of every directory on the way down. A directory symlink
+/// is followed (the tree may link a shared directory in), but one that resolves to a directory
+/// already being walked is a loop: it is refused by name, never silently dropped and never
+/// walked until the OS gives up.
+fn collect_guarded(
+    dir: &Path,
+    root: &Path,
+    out: &mut Vec<PathBuf>,
+    ancestors: &mut Vec<PathBuf>,
+) -> Result<(), WalkError> {
     if dir.is_file() {
         if let Ok(rel) = dir.strip_prefix(root) {
             out.push(rel.to_path_buf());
         }
         return Ok(());
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Ok(());
+    let io = |path: &Path, e: std::io::Error| WalkError::Io {
+        path: path.to_path_buf(),
+        message: e.to_string(),
     };
-    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    // A root that is not on disk yields nothing: a plant may add files under it, and
+    // `Ctx::list` has already refused a root that neither the disk nor an overlay holds.
+    if !dir.exists() {
+        return Ok(());
+    }
+    let canonical = std::fs::canonicalize(dir).map_err(|e| io(dir, e))?;
+    if ancestors.contains(&canonical) {
+        return Err(WalkError::Io {
+            path: dir.to_path_buf(),
+            message: format!(
+                "directory symlink loop: resolves to {}, which this walk is already inside",
+                canonical.display()
+            ),
+        });
+    }
+    // A directory that exists and cannot be read, or an entry that cannot be read, is a narrower
+    // scan than the tree: it is an error, never a smaller green.
+    let rd = std::fs::read_dir(dir).map_err(|e| io(dir, e))?;
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for e in rd {
+        entries.push(e.map_err(|e| io(dir, e))?.path());
+    }
     entries.sort();
+    ancestors.push(canonical);
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         // SKIP EVERY DOTDIR, not just `.git`. Naming the two known offenders was the bug: this walk
@@ -1453,15 +1523,16 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
         // as HUNG rather than as walking the wrong tree. A dotdir at the repo root is tooling state
         // by universal convention; none of it is the source this walk exists to enumerate, and the
         // next tool to park a cache under one would reintroduce the same hang under a new name.
-        if name == "target" || name.starts_with('.') {
+        if walk_skips_name(name) {
             continue;
         }
         if path.is_dir() {
-            collect(&path, root, out)?;
+            collect_guarded(&path, root, out, ancestors)?;
         } else if let Ok(rel) = path.strip_prefix(root) {
             out.push(rel.to_path_buf());
         }
     }
+    ancestors.pop();
     Ok(())
 }
 
@@ -1617,6 +1688,102 @@ mod read_write_memo_tests {
 }
 
 #[cfg(test)]
+mod walker_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ctx-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".fix").join("xtask")).expect("scratch creates");
+        root
+    }
+
+    /// XA2#5 / XA1#13: an overlaid context never carries `--write`.
+    #[test]
+    fn an_overlaid_context_drops_write_mode() {
+        let root = tmp("write");
+        let cx = Ctx::at(&root, &root.join(".fix").join("xtask"))
+            .expect("ctx opens")
+            .write_mode(true);
+        assert!(cx.env().write);
+        assert!(!cx.with_overlay(Overlay::new()).env().write);
+        assert!(cx.env().write, "the base is untouched");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// XA1#16: a plant at a nested dot-named path is not a path the disk walk can yield.
+    #[test]
+    fn a_plant_under_a_nested_dot_name_is_not_listed() {
+        let root = tmp("dot");
+        std::fs::create_dir_all(root.join("src")).expect("src creates");
+        std::fs::write(root.join("src/a.txt"), "a").expect("writes");
+        let cx = Ctx::at(&root, &root.join(".fix").join("xtask")).expect("ctx opens");
+        let mut ov = Overlay::new();
+        ov.set("src/.hidden/b.txt", "b");
+        ov.set("src/target/c.txt", "c");
+        ov.set("src/d.txt", "d");
+        let listed = cx
+            .with_overlay(ov)
+            .list(&WalkSpec::new(["src"]).ext("txt"))
+            .expect("lists");
+        assert_eq!(
+            listed,
+            vec![PathBuf::from("src/a.txt"), PathBuf::from("src/d.txt")]
+        );
+        assert!(under_a_walked_root(".ci/x.yaml", &[".ci".to_string()]));
+        assert!(!under_a_walked_root(".ci/x.yaml", &[".".to_string()]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// XA1#12: a directory symlink loop is an error, not a quiet stop.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_symlink_loop_is_refused() {
+        let root = tmp("loop");
+        std::fs::create_dir_all(root.join("src/sub")).expect("dirs create");
+        std::fs::write(root.join("src/a.txt"), "a").expect("writes");
+        std::os::unix::fs::symlink(root.join("src"), root.join("src/sub/back")).expect("links");
+        let cx = Ctx::at(&root, &root.join(".fix").join("xtask")).expect("ctx opens");
+        let err = cx
+            .list(&WalkSpec::new(["src"]).ext("txt"))
+            .expect_err("a loop is refused");
+        assert!(matches!(err, WalkError::Io { .. }), "{err}");
+        assert!(err.to_string().contains("loop"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// XA1#12: a directory that exists and cannot be read is an error, not an empty listing.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("perm");
+        let locked = root.join("src/locked");
+        std::fs::create_dir_all(&locked).expect("dirs create");
+        std::fs::write(root.join("src/a.txt"), "a").expect("writes");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let cx = Ctx::at(&root, &root.join(".fix").join("xtask")).expect("ctx opens");
+        let got = cx.list(&WalkSpec::new(["src"]).ext("txt"));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let _ = std::fs::remove_dir_all(&root);
+        // Running as root can read a mode-000 directory; only then is there nothing to refuse.
+        if let Ok(files) = got {
+            assert_eq!(
+                files.len(),
+                1,
+                "readable only because the runner is privileged"
+            );
+        } else {
+            assert!(matches!(got, Err(WalkError::Io { .. })));
+        }
+    }
+}
+
+#[cfg(test)]
 mod coverage_tests {
     use super::Coverage;
 
@@ -1661,9 +1828,7 @@ mod merge_layers_tests {
         for ov in layers {
             for (path, change) in &ov.files {
                 let s = path.to_string_lossy().replace('\\', "/");
-                let under_a_root = roots
-                    .iter()
-                    .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
+                let under_a_root = under_a_walked_root(&s, roots);
                 match change {
                     Change::Absent => rels.retain(|p| p != path),
                     Change::Unreadable(_) | Change::Content(_) => {
