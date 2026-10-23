@@ -519,7 +519,71 @@ pub const MONEY_TYPES: &[&str] = &[
     // hold a dead node left open through `Posted`, and named none of the ledger-side types above,
     // so the crash-recovery settlement writer was in no float scan at all.
     "Posted",
+    // The hold a unit's admission opens and its end settles (audit XE HIGH 2, rest): a file that
+    // handles only a `Hold`, a `HoldCell` or a `HoldAccrual` named none of the types above and was
+    // in no float scan. [`capability_owner_types`] derives the rest of this family from the
+    // contract, so the next type the money capability's impls take is refused until it is here.
+    "Hold",
+    "HoldCell",
+    "HoldAccrual",
 ];
+
+/// THE MONEY CAPABILITY'S MARKERS: not declared as a `struct` (`capability_markers!` lays them as
+/// `Name => "tag";` rows), and a file that holds only a `Grant<WriteMoney>` names no type above.
+const MONEY_MARKERS: &[&str] = &["WriteMoney"];
+
+/// The file whose impls the money capability is written through, and the marker its impls take.
+const MONEY_CAPABILITY_HOME: &str = "crates/busbar-contract/src/caps/hold.rs";
+
+/// Every name a file is money by: [`MONEY_TYPES`], then [`MONEY_MARKERS`].
+fn money_names() -> impl Iterator<Item = &'static str> {
+    MONEY_TYPES.iter().chain(MONEY_MARKERS.iter()).copied()
+}
+
+/// Is `name` laid as a capability marker row (`Name => "tag";`) in `text`?
+fn declares_marker(text: &str, name: &str) -> bool {
+    let mut st = scan::LexState::default();
+    text.lines().any(|l| {
+        let code = scan::blank_code(l, &mut st);
+        word_positions(&code, name).any(|i| code[i + name.len()..].trim_start().starts_with("=>"))
+    })
+}
+
+/// DERIVED, NOT TYPED (audit XE HIGH 2, rest): the types whose inherent `impl` blocks in `text` (the
+/// money capability's home) take the [`MONEY_MARKERS`] grant: the types that can write money. Each
+/// must be in [`MONEY_TYPES`], so a new one is refused until the scan set names it.
+fn capability_owner_types(text: &str) -> Vec<String> {
+    let mut st = scan::LexState::default();
+    let mut out: Vec<String> = Vec::new();
+    let mut current: Option<(String, i64, bool)> = None;
+    for l in text.lines() {
+        let code = scan::blank_code(l, &mut st);
+        let t = code.trim_start();
+        if current.is_none() && t.starts_with("impl") && !t.contains(" for ") {
+            let after = t["impl".len()..].trim_start();
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                current = Some((name, 0, false));
+            }
+        }
+        if let Some((name, depth, took)) = current.as_mut() {
+            if MONEY_MARKERS.iter().any(|m| word_hit(&code, m)) {
+                *took = true;
+            }
+            *depth += code.matches('{').count() as i64 - code.matches('}').count() as i64;
+            if *depth <= 0 && code.contains('}') {
+                if *took && !out.contains(name) {
+                    out.push(name.clone());
+                }
+                current = None;
+            }
+        }
+    }
+    out
+}
 
 /// THE FLOOR UNDER THE DERIVED MONEY POPULATION. MEASURED 2026-10-13 on predev `5c99befcfa`: 28
 /// production files name a [`MONEY_TYPES`] type in code. A population that empties out is "no money
@@ -542,13 +606,13 @@ fn money_typed_files(
 
 /// Whether a file names a [`MONEY_TYPES`] type in code (comments and literals blanked).
 fn names_money_type(text: &str) -> bool {
-    if !MONEY_TYPES.iter().any(|t| text.contains(t)) {
+    if !money_names().any(|t| text.contains(t)) {
         return false;
     }
     let mut st = scan::LexState::default();
     text.lines().any(|l| {
         let code = scan::blank_code(l, &mut st);
-        MONEY_TYPES.iter().any(|t| word_hit(&code, t))
+        money_names().any(|t| word_hit(&code, t))
     })
 }
 
@@ -564,7 +628,9 @@ fn read_money(text: &str) -> MoneyReading {
     MoneyReading {
         names,
         declares: if names {
-            MONEY_TYPES.iter().map(|t| declares_type(text, t)).collect()
+            money_names()
+                .map(|t| declares_type(text, t) || declares_marker(text, t))
+                .collect()
         } else {
             Vec::new()
         },
@@ -1528,25 +1594,73 @@ fn declared_hits(text: &str, decls: &FloatDecls) -> Vec<(usize, String)> {
 struct FloatDecls {
     carriers: std::collections::BTreeSet<String>,
     fields: std::collections::BTreeSet<String>,
+    /// THE TYPE NAMES THAT ARE A FLOAT (audit XE HIGH 1, the flow half): a `type Score = f64;`
+    /// alias, transitively, whose every declaration is a float. A local, a parameter or a field
+    /// typed through one names no `f64` on its line, and read green.
+    types: std::collections::BTreeSet<String>,
+    /// THE CONSTANTS AND STATICS THAT ARE A FLOAT (`const HEADROOM: f64 = 0.8;`, or one typed
+    /// through a float alias), whose every declaration is float-typed. Read as a bare word.
+    consts: std::collections::BTreeSet<String>,
 }
 
 /// One file's declarations, as `(fn name, returns a float)` and `(field name, is a float)`.
+#[cfg(test)]
 type FileDecls = (Vec<(String, bool)>, Vec<(String, bool)>);
+
+/// One file's declarations with the TYPE TEXT kept raw, because whether a type is a float depends
+/// on the aliases the whole tree declares ([`float_decls`] resolves them): `fns` as `(name,
+/// return type)`, `fields` as `(name, type)`, `aliases` as `(name, right-hand side)` and `consts`
+/// as `(name, type)`.
+#[derive(Debug, Default)]
+struct RawDecls {
+    fns: Vec<(String, String)>,
+    fields: Vec<(String, String)>,
+    aliases: Vec<(String, String)>,
+    consts: Vec<(String, String)>,
+}
 
 /// Derive [`FloatDecls`] over `files` (production files, test scope already removed), each file's
 /// declarations memoised unless `walk` says the full walk ([`file_decls`]).
 fn float_decls(cx: &Ctx, files: &[crate::ctx::SourceFile], walk: Walk) -> FloatDecls {
+    let raws: Vec<std::sync::Arc<RawDecls>> =
+        files.iter().map(|f| file_decls(cx, f, walk)).collect();
+    // The float aliases, to a fixpoint: a name is one when EVERY `type` declaration of it is a
+    // float, and a declaration is a float when its right-hand side names a float token or a name
+    // already in the set. The set only grows, so the loop ends.
+    let mut types: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    loop {
+        let mut all: std::collections::BTreeMap<&str, bool> = std::collections::BTreeMap::new();
+        for raw in &raws {
+            for (name, rhs) in &raw.aliases {
+                let e = all.entry(name.as_str()).or_insert(true);
+                *e = *e && type_is_float(rhs, &types);
+            }
+        }
+        let next: std::collections::BTreeSet<String> = all
+            .into_iter()
+            .filter(|(_, float)| *float)
+            .map(|(n, _)| n.to_string())
+            .collect();
+        if next == types {
+            break;
+        }
+        types = next;
+    }
     let mut fns: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
     let mut fields: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
-    for f in files {
-        let decls = file_decls(cx, f, walk);
-        for (name, float) in &decls.0 {
+    let mut consts: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    for raw in &raws {
+        for (name, ret) in &raw.fns {
             let all = fns.entry(name.clone()).or_insert(true);
-            *all = *all && *float;
+            *all = *all && type_is_float(ret, &types);
         }
-        for (name, float) in &decls.1 {
+        for (name, ty) in &raw.fields {
             let all = fields.entry(name.clone()).or_insert(true);
-            *all = *all && *float;
+            *all = *all && type_is_float(ty, &types);
+        }
+        for (name, ty) in &raw.consts {
+            let all = consts.entry(name.clone()).or_insert(true);
+            *all = *all && type_is_float(ty, &types);
         }
     }
     FloatDecls {
@@ -1560,16 +1674,27 @@ fn float_decls(cx: &Ctx, files: &[crate::ctx::SourceFile], walk: Walk) -> FloatD
             .filter(|(_, all)| *all)
             .map(|(n, _)| n)
             .collect(),
+        types,
+        consts: consts
+            .into_iter()
+            .filter(|(_, all)| *all)
+            .map(|(n, _)| n)
+            .collect(),
     }
+}
+
+/// Does the type text `ty` name a float token, or a type name in `aliases` (a float alias)?
+fn type_is_float(ty: &str, aliases: &std::collections::BTreeSet<String>) -> bool {
+    FLOAT_TOKENS.iter().any(|t| word_hit(ty, t)) || aliases.iter().any(|a| word_hit(ty, a))
 }
 
 /// One file's fn and field declarations — MEMOISED on the file ([`stable_reading`]), because every
 /// gate run (and every self-test case is one) reads the whole crate-source population. It was keyed
 /// on a 64-bit hash of the bytes, which hashed the whole population again on every case and could
 /// answer one file's declarations for another's on a collision; the path is compared whole.
-fn file_decls(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<FileDecls> {
-    static MEMO: StableMemo<FileDecls> = std::sync::OnceLock::new();
-    stable_reading(&MEMO, cx, f, walk, read_file_decls)
+fn file_decls(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<RawDecls> {
+    static MEMO: StableMemo<RawDecls> = std::sync::OnceLock::new();
+    stable_reading(&MEMO, cx, f, walk, read_raw_decls)
 }
 
 impl FloatDecls {
@@ -1589,20 +1714,40 @@ impl FloatDecls {
         FloatDecls {
             carriers: pick(&self.carriers),
             fields: pick(&self.fields),
+            types: pick(&self.types),
+            consts: pick(&self.consts),
         }
     }
 }
 
-/// The reading [`file_decls`] remembers: every `fn <name>` with its declared return type judged,
-/// and every named field of every braced `struct` with its type judged.
+/// [`read_raw_decls`] with each type judged on its own tokens (no alias resolved): every `fn <name>`
+/// with its declared return type, and every named field of every braced `struct` with its type.
+#[cfg(test)]
 fn read_file_decls(text: &str) -> FileDecls {
+    let raw = read_raw_decls(text);
+    let none = std::collections::BTreeSet::new();
+    (
+        raw.fns
+            .into_iter()
+            .map(|(n, t)| (n, type_is_float(&t, &none)))
+            .collect(),
+        raw.fields
+            .into_iter()
+            .map(|(n, t)| (n, type_is_float(&t, &none)))
+            .collect(),
+    )
+}
+
+/// The reading [`file_decls`] remembers: every `fn <name>` with its declared return type, every
+/// named field of every braced `struct` with its type, every `type` alias with its right-hand side
+/// and every `const`/`static` with its type, the type text raw.
+fn read_raw_decls(text: &str) -> RawDecls {
     let mut st = scan::LexState::default();
     let code: String = text
         .lines()
         .map(|l| scan::blank_code(l, &mut st))
         .collect::<Vec<_>>()
         .join("\n");
-    let is_float = |ty: &str| FLOAT_TOKENS.iter().any(|t| word_hit(ty, t));
     let mut fns = Vec::new();
     for at in word_positions(&code, "fn") {
         let rest = &code[at + 2..];
@@ -1635,7 +1780,7 @@ fn read_file_decls(text: &str) -> FileDecls {
             .and_then(|close| header[close..].find("->").map(|a| &header[close + a + 2..]))
             .map(|r| r.split(" where ").next().unwrap_or(r))
             .unwrap_or("");
-        fns.push((name, is_float(returns)));
+        fns.push((name, returns.to_string()));
     }
     let mut fields = Vec::new();
     for (_, body) in struct_bodies(text) {
@@ -1682,10 +1827,64 @@ fn read_file_decls(text: &str) -> FileDecls {
             {
                 continue;
             }
-            fields.push((name.to_string(), is_float(ty)));
+            fields.push((name.to_string(), ty.to_string()));
         }
     }
-    (fns, fields)
+    let (aliases, consts) = read_aliases_and_consts(&code);
+    RawDecls {
+        fns,
+        fields,
+        aliases,
+        consts,
+    }
+}
+
+/// Every `type <Name><..> = <rhs>;` and every `const|static [mut] <NAME>: <type> =` in `code` (the
+/// blanked source), as `(name, rhs)` and `(name, type)`. A `type` with no `=` (a trait's
+/// associated type) names no alias.
+fn read_aliases_and_consts(code: &str) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut aliases = Vec::new();
+    for at in word_positions(code, "type") {
+        if code[..at].trim_end().ends_with('.') {
+            continue;
+        }
+        let rest = code[at + 4..].trim_start();
+        let name: String = rest.chars().take_while(|c| ident(*c)).collect();
+        if name.is_empty() {
+            continue;
+        }
+        let Some(end) = rest.find(';') else { continue };
+        let head = &rest[..end];
+        if let Some(eq) = head.find('=') {
+            // Only a header (`Name<T: Bound>`) may stand between the name and the `=`.
+            if !head[..eq].contains(['{', '(', '.']) {
+                aliases.push((name, head[eq + 1..].to_string()));
+            }
+        }
+    }
+    let mut consts = Vec::new();
+    for kw in ["const", "static"] {
+        for at in word_positions(code, kw) {
+            let mut rest = code[at + kw.len()..].trim_start();
+            if let Some(r) = rest.strip_prefix("mut ") {
+                rest = r.trim_start();
+            }
+            let name: String = rest.chars().take_while(|c| ident(*c)).collect();
+            if name.is_empty() || name == "fn" || name == "unsafe" || name == "extern" {
+                continue;
+            }
+            let Some(after) = rest[name.len()..].trim_start().strip_prefix(':') else {
+                continue;
+            };
+            if after.starts_with(':') {
+                continue;
+            }
+            let end = after.find(['=', ';']).unwrap_or(after.len());
+            consts.push((name, after[..end].to_string()));
+        }
+    }
+    (aliases, consts)
 }
 
 /// A float the line reaches through the tree's declarations ([`FloatDecls`]): a call of a derived
@@ -1708,6 +1907,17 @@ fn declared_floats(blanked: &str, decls: &FloatDecls) -> Vec<String> {
             if after.starts_with('(') || after.starts_with("::<") {
                 out.push(format!("{name}()"));
             }
+        }
+    }
+    // A float alias or constant is read as a bare word. (A `.name` after a dot is a field, whose own
+    // declaration decides it.) The alias's own `type Name = f64;` line holds the token already.
+    for name in decls.types.iter().chain(decls.consts.iter()) {
+        for at in word_positions(blanked, name) {
+            let before = blanked[..at].trim_end();
+            if before.ends_with('.') && !before.ends_with("..") {
+                continue;
+            }
+            out.push(name.clone());
         }
     }
     for name in &decls.fields {
@@ -2753,7 +2963,24 @@ impl NoFloatMoneyGate {
                 money_typed.len()
             ));
         }
-        for (i, t) in MONEY_TYPES.iter().enumerate() {
+        match cx.read(MONEY_CAPABILITY_HOME) {
+            Ok(text) => {
+                for owner in capability_owner_types(&text) {
+                    if !MONEY_TYPES.contains(&owner.as_str()) {
+                        float_scan_problems.push(format!(
+                            "`{owner}` takes the money grant in {MONEY_CAPABILITY_HOME} and is not \
+                             in MONEY_TYPES — a file that handles only it is in no float scan; add \
+                             it in the diff that gives it the grant"
+                        ));
+                    }
+                }
+            }
+            Err(e) => float_scan_problems.push(format!(
+                "{MONEY_CAPABILITY_HOME} could not be read ({e}) — the money types derived from it \
+                 are unchecked"
+            )),
+        }
+        for (i, t) in money_names().enumerate() {
             if !money_typed
                 .iter()
                 .any(|f| money_reading(cx, f, walk).declares.get(i) == Some(&true))
@@ -3352,6 +3579,96 @@ impl Gate for NoFloatMoneyGate {
             ),
             &["planted_money_unit", "`1e9`"],
         ));
+
+        // AUDIT XE HIGH 2 (rest): THE FILES THAT HANDLE ONLY A `Hold`, A `HoldAccrual` OR A
+        // `Grant<WriteMoney>` named none of the twelve typed names and were in no float scan.
+        for (file, body, naming) in [
+            (
+                "crates/busbar-kernel/src/planted_hold_only.rs",
+                "pub fn planted(h: Hold, k: Rate) -> u64 {\n    (k.get() * 1e9) as u64 + h.reserved()\n}\n",
+                "`1e9`",
+            ),
+            (
+                "crates/busbar-kernel/src/planted_accrual_only.rs",
+                "pub fn planted(a: HoldAccrual, k: Rate) -> u64 {\n    (k.get() * 1e9) as u64\n}\n",
+                "`1e9`",
+            ),
+            (
+                "crates/busbar-kernel/src/planted_grant_only.rs",
+                "pub fn planted(t: &Grant<WriteMoney>, k: Rate) -> u64 {\n    (k.get() * 1e9) as u64\n}\n",
+                "`1e9`",
+            ),
+        ] {
+            let stem = file
+                .rsplit('/')
+                .next()
+                .and_then(|n| n.strip_suffix(".rs"))
+                .unwrap_or(file);
+            report.push(plant(
+                cx,
+                self,
+                &format!("a float in a NEW file that names only a money capability ({stem}) is flagged"),
+                &[ROW_NO_FLOAT],
+                file,
+                Edit::Create(body.to_string()),
+                &[stem, naming],
+            ));
+        }
+
+        // AND THE MONEY CAPABILITY IS READ, NOT LISTED: a type whose impl takes the money grant and
+        // is not in MONEY_TYPES is refused, naming the type.
+        match cx.read(MONEY_CAPABILITY_HOME) {
+            Ok(text) => {
+                let mut ov = Overlay::new();
+                ov.set(
+                    MONEY_CAPABILITY_HOME,
+                    format!(
+                        "{text}\nimpl PlantedSettleCell {{\n    pub fn settle(&self, _t: &Grant<WriteMoney>) {{}}\n}}\n"
+                    ),
+                );
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a type that takes the money grant and is not a MONEY_TYPES name is refused",
+                    &[ROW_SCAN_FLOOR, ROW_NO_FLOAT],
+                    ov,
+                    &["`PlantedSettleCell`", "not in MONEY_TYPES"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read {MONEY_CAPABILITY_HOME} ({e})"
+            )),
+        }
+
+        // AUDIT XE HIGH 1 (rest): A FLOAT THAT REACHES A MONEY LINE THROUGH A TYPE ALIAS OR A
+        // CONSTANT declared in a file no money scan reads names no float on the line.
+        {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-contract/src/planted_float_alias.rs",
+                format!(
+                    "pub type PlantedScore = {float_ty};\npub type PlantedWeight = PlantedScore;\npub const PLANTED_HEADROOM: PlantedWeight = 0.5;\n"
+                ),
+            );
+            ov.set(
+                format!("{LEDGER_SRC}/planted_alias_use.rs"),
+                "pub fn drift(w: PlantedWeight, nanos: u128) -> u128 {\n    let s: PlantedScore = w;\n    nanos.saturating_sub(PLANTED_HEADROOM as u128)\n}\n"
+                    .to_string(),
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                "a float reached through a float type alias or constant is flagged",
+                &[ROW_NO_FLOAT],
+                ov,
+                &[
+                    "planted_alias_use",
+                    "`PlantedWeight`",
+                    "`PlantedScore`",
+                    "`PLANTED_HEADROOM`",
+                ],
+            ));
+        }
 
         // AND A MONEY TYPE RENAMED AWAY IS REFUSED: every file that named only it would otherwise
         // leave the derived population in silence.
@@ -4536,6 +4853,7 @@ mod tests {
         let wide = FloatDecls {
             carriers: fns.iter().map(|(n, _)| n.clone()).collect(),
             fields: fields.iter().map(|(n, _)| n.clone()).collect(),
+            ..FloatDecls::default()
         };
         let under_real = declared_reading(&cx, card, Walk::MEMOISED, &fresh);
         let under_wide = declared_reading(&cx, card, Walk::MEMOISED, &wide);
