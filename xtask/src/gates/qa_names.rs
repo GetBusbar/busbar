@@ -167,6 +167,7 @@ pub const ROW_DECL_LIVE: &str = "qa-names:declaration-names-a-live-name";
 pub const ROW_DECL_FILE: &str = "qa-names:declaration-names-a-live-file";
 pub const ROW_DECL_REASON: &str = "qa-names:declaration-reason";
 pub const ROW_XTASK_FLOOR: &str = "qa-names:xtask-const-floor";
+pub const ROW_PARSE: &str = "qa-names:covered-files-parse";
 
 // ── TWO DECLARATIONS THAT BELONG BESIDE THEIR SITE AND ARE NOT, AND THE REASON IS WRITTEN DOWN ──
 //
@@ -352,12 +353,70 @@ fn is_path_shaped(value: &str, tops: &BTreeSet<String>) -> bool {
             .is_some_and(|head| tops.contains(head))
 }
 
+/// The file extensions a repo path ends in, for [`is_repo_path_shaped`].
+const PATH_EXTS: &[&str] = &[
+    "rs", "toml", "json", "yaml", "yml", "sh", "md", "txt", "py", "snap", "lock",
+];
+
+/// Is this value SHAPED like a repo-relative path, whether or not its first segment is a directory
+/// that exists now? [`is_path_shaped`] recognises a path only by a top directory that is on disk
+/// today, so the day a whole top-level directory is deleted or renamed, every name that still
+/// points into it stops being a name at all and the instrument goes dark on exactly the thing it
+/// exists to report (XH1#11). This is the shape that does not depend on the tree: no whitespace, a
+/// `/`, a first segment of only `[A-Za-z0-9_-]` (one leading `.` allowed), no `@` or `://` (a
+/// module version or a URL), and a tail that is a file with a known extension, a directory spelt
+/// with a trailing `/`, or a glob.
+fn is_repo_path_shaped(value: &str) -> bool {
+    if value.is_empty()
+        || value.chars().any(char::is_whitespace)
+        || value.contains('@')
+        || value.contains("://")
+    {
+        return false;
+    }
+    let Some((head, _)) = value.split_once('/') else {
+        return false;
+    };
+    let head_body = head.strip_prefix('.').unwrap_or(head);
+    if head_body.is_empty()
+        || !head_body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return false;
+    }
+    if value.ends_with('/') || value.contains('*') {
+        return true;
+    }
+    // The tails `known_sites` writes (`:240`, `::function`) are not part of the file name.
+    let core = match value.rfind("::") {
+        Some(i)
+            if value[i + 2..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+        {
+            &value[..i]
+        }
+        _ => value,
+    };
+    let core = match core.rfind(':') {
+        Some(i)
+            if !core[i + 1..].is_empty() && core[i + 1..].chars().all(|c| c.is_ascii_digit()) =>
+        {
+            &core[..i]
+        }
+        _ => core,
+    };
+    core.rsplit_once('.')
+        .is_some_and(|(_, ext)| PATH_EXTS.contains(&ext))
+}
+
 /// The classification, in the order the header states it.
 fn classify(rel: &str, key: &str, value: &str, tops: &BTreeSet<String>) -> Option<Class> {
     if has_token(key, FRAGMENT_TOKENS) {
         return None;
     }
-    if is_path_shaped(value, tops) {
+    if is_path_shaped(value, tops) || is_repo_path_shaped(value) {
         return Some(Class::Path);
     }
     if has_token(key, KIND_TOKENS) {
@@ -520,8 +579,21 @@ fn is_rust(rel: &str) -> bool {
 
 /// Every name and every declaration one covered file carries.
 fn scan(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<(usize, Decl)>) {
+    let (names, decls, _) = scan_checked(rel, text, tops);
+    (names, decls)
+}
+
+/// [`scan`] plus the one thing it cannot return as a name: WHY a covered `qa/*.toml` could not be
+/// read at all. `Some(reason)` is a file whose names are missing from every other row, and the
+/// gate reports it on [`ROW_PARSE`] rather than letting it vanish into the floor (XH1#10).
+fn scan_checked(
+    rel: &str,
+    text: &str,
+    tops: &BTreeSet<String>,
+) -> (Vec<Name>, Vec<(usize, Decl)>, Option<String>) {
     if is_rust(rel) {
-        return scan_rust(rel, text, tops);
+        let (names, decls) = scan_rust(rel, text, tops);
+        return (names, decls, None);
     }
     let mut names = Vec::new();
     let mut decls = Vec::new();
@@ -532,11 +604,13 @@ fn scan(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<(usiz
         }
     }
 
-    let Ok(doc) = toml_doc::parse_str(text) else {
-        // A FILE THIS GATE CANNOT PARSE YIELDS NO NAMES AND SAYS SO THROUGH THE FLOOR, never
-        // through silence: ten unparseable files is a scan set of zero, which is exactly what
-        // [`ROW_FLOOR`] refuses.
-        return (names, decls);
+    let doc = match toml_doc::parse_str(text) {
+        Ok(doc) => doc,
+        // A FILE THIS GATE CANNOT PARSE YIELDS NO NAMES, AND THAT IS REPORTED AS ITS OWN FINDING.
+        // It used to be left to the floor ("ten unparseable files is a scan set of zero"), which
+        // meant one broken file among forty cost three hundred names' worth of nothing and no row
+        // moved at all: the floor is a reads-nothing detector, not a per-file one.
+        Err(why) => return (names, decls, Some(why)),
     };
 
     for (table, t) in doc.tables() {
@@ -610,7 +684,7 @@ fn scan(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<(usiz
         }
     }
 
-    (names, decls)
+    (names, decls, None)
 }
 
 /// `# qa-names: name -- file -- reason`. A line that carries the prefix and does not have this shape
@@ -804,8 +878,15 @@ fn scan_rust(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<
             {
                 let raw_chars: Vec<char> = raw.chars().collect();
                 let mask: Vec<char> = blanked.chars().collect();
+                // A constant NAMED as a path set (`*_ROOTS`, `*_PATHS`, `*_FILES`, …) keeps its
+                // paths even when their first directory has since been deleted; a fixture file
+                // under a `tests/` directory does not get that, because its literals are inputs.
+                let named_as_paths =
+                    !rel.contains("/tests/") && has_token(&konst.to_ascii_lowercase(), PATH_TOKENS);
                 for value in literals_via_mask(&raw_chars, &mask) {
-                    if !is_path_shaped(&value, tops) {
+                    if !is_path_shaped(&value, tops)
+                        && !(named_as_paths && is_repo_path_shaped(&value))
+                    {
                         continue;
                     }
                     names.push(Name {
@@ -874,6 +955,7 @@ fn unproven(why: &str) -> Verdict {
     let mut rows = vec![Row::fail(ROW_UNIVERSE, "a universe did not load", why)];
     for id in [
         ROW_FLOOR,
+        ROW_PARSE,
         ROW_XTASK_FLOOR,
         ROW_KIND,
         ROW_CRATE,
@@ -912,6 +994,7 @@ impl Gate for QaNamesGate {
         [
             ROW_UNIVERSE,
             ROW_FLOOR,
+            ROW_PARSE,
             ROW_XTASK_FLOOR,
             ROW_KIND,
             ROW_CRATE,
@@ -959,8 +1042,12 @@ impl Gate for QaNamesGate {
         let tops = top_level_dirs(cx);
         let mut names: Vec<Name> = Vec::new();
         let mut decls: Vec<(String, usize, Decl)> = Vec::new();
+        let mut unparsed: Vec<String> = Vec::new();
         for (rel, text) in &files {
-            let (n, d) = scan(rel, text, &tops);
+            let (n, d, bad) = scan_checked(rel, text, &tops);
+            if let Some(why) = bad {
+                unparsed.push(format!("{rel}: {why}"));
+            }
             names.extend(n);
             decls.extend(d.into_iter().map(|(line, decl)| (rel.clone(), line, decl)));
         }
@@ -1002,6 +1089,22 @@ impl Gate for QaNamesGate {
                 "only {toml_names} name(s) were found across {toml_files} covered file(s) under \
                  `{QA_ROOT}/*.{QA_EXT}` (floor {NAME_FLOOR}). An empty scan set is the one state \
                  in which 'every name resolves' is true and means nothing."
+            ),
+        ));
+
+        // EVERY COVERED TOML MUST PARSE. A file this gate cannot read contributes no names to any
+        // row below, so it is its own finding rather than a smaller floor.
+        rows.push(row(
+            ROW_PARSE,
+            unparsed.is_empty(),
+            "every covered qa TOML parsed",
+            format!("{toml_files} covered `{QA_ROOT}/*.{QA_EXT}` file(s), none unreadable"),
+            "a covered qa TOML does not parse, so none of its names were checked",
+            format!(
+                "{} — a file this reader cannot parse yields no names, so every crate, kind and \
+                 path it writes is unchecked while the other rows stay green. Fix the file (or the \
+                 reader, if the file is valid TOML).",
+                unparsed.join(" | ")
             ),
         ));
 
@@ -1281,6 +1384,7 @@ impl Gate for QaNamesGate {
             &[
                 ROW_UNIVERSE,
                 ROW_FLOOR,
+                ROW_PARSE,
                 ROW_KIND,
                 ROW_DECL_LIVE,
                 ROW_DECL_FILE,
@@ -1445,12 +1549,19 @@ const PLANTED_CRATE: &str = "busbar-selftest-no-such-package";
 /// `busbar-selftest-…/src` has a first segment that is no directory at the repo root — so neither
 /// is a name, and the whole is assembled where it is used.
 const PLANTED_UNDER: &str = "crates";
-const PLANTED_PATH_TAIL: &str = "busbar-selftest-no-such-crate/src/lib.rs";
+const PLANTED_DEAD_CRATE_TAIL: &str = "busbar-selftest-no-such-crate/src/lib.rs";
 const PLANTED_GLOB_TAIL: &str = "busbar-selftest-no-such-family-*/src";
+
+/// The first directory of a path whose whole top-level directory is GONE (XH1#11), assembled where
+/// it is used for the same reason [`PLANTED_UNDER`] is. And the file a covered TOML that does not
+/// parse is planted as (XH1#10): a bare file name, which carries no `/` and is no name.
+const PLANTED_VANISHED_TOP: &str = "busbar-selftest-vanished-top";
+const PLANTED_UNPARSEABLE_FILE: &str = "qa/zzz-qa-names-unparseable-plant.toml";
+const PLANTED_VANISHED_FILE: &str = "qa/zzz-qa-names-vanished-plant.toml";
 
 /// A path no directory in this tree carries, assembled rather than spelled. See [`PLANTED_UNDER`].
 fn planted_path() -> String {
-    format!("{PLANTED_UNDER}/{PLANTED_PATH_TAIL}")
+    format!("{PLANTED_UNDER}/{PLANTED_DEAD_CRATE_TAIL}")
 }
 
 /// A glob no directory in this tree matches, assembled rather than spelled. See [`PLANTED_UNDER`].
@@ -1940,6 +2051,29 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             overlay: thin_decl,
         },
         Plant {
+            label: "a covered qa TOML that does not parse is reported, not dropped",
+            rule: ROW_PARSE,
+            naming: vec![PLANTED_UNPARSEABLE_FILE.to_string()],
+            overlay: Some({
+                let mut ov = Overlay::new();
+                ov.set(PLANTED_UNPARSEABLE_FILE, "[unterminated\nscan_roots = []\n");
+                ov
+            }),
+        },
+        Plant {
+            label: "a path into a top-level directory that no longer exists is a name",
+            rule: ROW_PATH,
+            naming: vec![PLANTED_VANISHED_TOP.to_string()],
+            overlay: Some({
+                let mut ov = Overlay::new();
+                ov.set(
+                    PLANTED_VANISHED_FILE,
+                    format!("[selftest]\nscan_roots = [\"{PLANTED_VANISHED_TOP}/src/lib.rs\"]\n"),
+                );
+                ov
+            }),
+        },
+        Plant {
             label: "the name scan matched nothing at all",
             rule: ROW_FLOOR,
             naming: vec![format!("floor {NAME_FLOOR}")],
@@ -1955,381 +2089,5 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cx() -> Ctx {
-        Ctx::workspace().expect("workspace context")
-    }
-
-    fn tops() -> BTreeSet<String> {
-        ["crates", "docs", "qa", "scripts", "testing", "xtask"]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
-    }
-
-    #[test]
-    fn prose_is_never_a_path_and_a_scan_root_always_is() {
-        let t = tops();
-        assert!(is_path_shaped("crates/busbar-substrate/src", &t));
-        assert!(is_path_shaped("qa/construction.toml", &t));
-        assert!(!is_path_shaped(
-            "An installable seam under crates/busbar-substrate/src is a promise",
-            &t
-        ));
-        // A module path and a regex are not paths, whatever the key is called.
-        assert!(!is_path_shaped("busbar_kernel_ledger::cost::", &t));
-        assert!(!is_path_shaped("^(install_[a-z0-9_]+)$", &t));
-        // A first segment that is not a directory of this repo is not a path either.
-        assert!(!is_path_shaped("vendor/anthropic/v1", &t));
-    }
-
-    #[test]
-    fn a_fragment_key_is_never_a_name_and_a_path_key_is_not_a_crate() {
-        let t = tops();
-        assert_eq!(
-            classify(CONFIG_REL, "non_production_path_fragments", "testkit", &t),
-            None
-        );
-        assert_eq!(
-            classify(CONFIG_REL, "exempt_seam_path_fragments", "/testkit/", &t),
-            None
-        );
-        assert_eq!(
-            classify(CONFIG_REL, "entry_path_patterns", "crates/x/y.rs", &t),
-            None
-        );
-        // `crate_roots = ["crates"]` is a directory list, not a package called `crates`.
-        assert_eq!(classify("qa/loc.toml", "crate_roots", "crates", &t), None);
-        assert_eq!(
-            classify(CONFIG_REL, "fee_reader_crates", "busbar-kernel", &t),
-            Some(Class::Crate)
-        );
-        assert_eq!(
-            classify(CONFIG_REL, "kinds", "pure_auth", &t),
-            Some(Class::Kind)
-        );
-        // ...and the SAME key in another file is another vocabulary, deliberately not read here.
-        assert_eq!(classify("qa/kind-isolation.toml", "kind", "api", &t), None);
-    }
-
-    #[test]
-    fn a_known_site_tail_is_stripped_before_the_path_is_resolved() {
-        let mk = |text: &str| Name {
-            text: text.to_string(),
-            file: CONFIG_REL.to_string(),
-            line: 1,
-            site: String::new(),
-            class: Class::Path,
-            in_array: true,
-        };
-        assert_eq!(
-            mk("crates/busbar-contract/src/ids.rs::key").core(),
-            "crates/busbar-contract/src/ids.rs"
-        );
-        assert_eq!(
-            mk("crates/busbar-kernel/src/appbuild.rs:240").core(),
-            "crates/busbar-kernel/src/appbuild.rs"
-        );
-        assert_eq!(
-            mk("crates/plugin-loader/src/").core(),
-            "crates/plugin-loader/src"
-        );
-        // A crate name with a `::` that is not a function tail keeps its spelling.
-        assert_eq!(mk("crates/a/b.rs").core(), "crates/a/b.rs");
-    }
-
-    #[test]
-    fn a_crate_glob_matches_the_way_fnmatch_does() {
-        assert!(glob_one("busbar-unit-*", "busbar-unit-transport-key"));
-        assert!(!glob_one("busbar-unit-*", "busbar-kernel-wal"));
-        assert!(glob_one("busbar*", "busbar"));
-        assert!(!glob_one("busbar-*", "busbar"));
-    }
-
-    #[test]
-    fn a_declaration_parses_into_its_three_fields() {
-        let d =
-            parse_decl(&format!("{DECL} n{SEP}qa/construction.toml{SEP}a reason")).expect("parses");
-        assert_eq!(
-            (d.name.as_str(), d.file.as_str()),
-            ("n", "qa/construction.toml")
-        );
-        assert_eq!(d.reason, "a reason");
-        // A line that carries the prefix and not the shape comes back with empty fields, so the
-        // file and reason rules report it rather than the parser swallowing it.
-        let d = parse_decl(&format!("{DECL} n")).expect("parses");
-        assert!(d.file.is_empty() && d.reason.is_empty());
-        assert!(parse_decl("# something else").is_none());
-    }
-
-    /// ITEM 88: a quoted spelling in a `#` comment above the value is prose. The citation (and so the
-    /// glob plant, which goes beside the cited line) must land on the value line, or the plant is
-    /// written into a comment and `glob-matches-something` scores a planted dead glob GREEN.
-    #[test]
-    fn a_citation_skips_a_quoted_spelling_in_a_comment() {
-        let text = "[gate]\n# It read `[\"crates/*/src\"]` and that is not the tree.\n\
-                    scan_roots = [\"crates/*/src\", \"crates/*/tests\"]\n";
-        assert_eq!(line_of(text, "gate", "crates/*/src"), 3);
-        // Only prose carries it: the comment is still the best citation there is.
-        let prose = "[gate]\n# It read `[\"crates/*/src\"]`.\nscan_roots = []\n";
-        assert_eq!(line_of(prose, "gate", "crates/*/src"), 2);
-    }
-
-    #[test]
-    fn a_phantom_is_planted_as_a_sibling_and_takes_nothing_away() {
-        let text = "[t]\nkinds = [\"plane\", \"hook\"]\n";
-        let at = Name {
-            text: "hook".to_string(),
-            file: CONFIG_REL.to_string(),
-            line: 2,
-            site: String::new(),
-            class: Class::Kind,
-            in_array: true,
-        };
-        assert_eq!(
-            plant_beside(text, &at, "ghost").as_deref(),
-            Some("[t]\nkinds = [\"plane\", \"hook\", \"ghost\"]\n")
-        );
-    }
-
-    /// The ids that went non-PASS under one planted overlay.
-    fn failed_ids(cx: &Ctx, ov: Overlay) -> BTreeSet<String> {
-        crate::gates::execute(&QaNamesGate, &cx.with_overlay(ov))
-            .rows
-            .iter()
-            .filter(|r| r.status != crate::ledger::Status::Pass)
-            .map(|r| r.id.clone())
-            .collect()
-    }
-
-    /// EVERY PLANT MUST REDDEN ITS OWN ROW AND TURN NOTHING ELSE RED THAT WAS GREEN — except the
-    /// kind-table plant, whose whole point is that everything below it is unproven. Stated against
-    /// the tree's OWN baseline rather than against "nothing else is red", because three rows carry
-    /// standing dead names that are not this change's to drain and a case that demanded they be
-    /// clean would be a case nobody could keep.
-    #[test]
-    fn each_plant_reddens_its_own_row_and_nothing_that_was_green() {
-        let cx = cx();
-        let base = failed_ids(&cx, Overlay::new());
-        for p in plants(&cx) {
-            if p.rule == ROW_UNIVERSE {
-                continue;
-            }
-            let ov = p
-                .overlay
-                .unwrap_or_else(|| panic!("nothing to plant: {}", p.label));
-            let got = failed_ids(&cx, ov);
-            assert!(
-                got.contains(p.rule),
-                "plant `{}` did not redden `{}` (red: {got:?})",
-                p.label,
-                p.rule
-            );
-            let fresh: Vec<&String> = got
-                .iter()
-                .filter(|id| id.as_str() != p.rule && !base.contains(*id))
-                .collect();
-            assert!(
-                fresh.is_empty(),
-                "plant `{}` also reddened rows that were green: {fresh:?}",
-                p.label
-            );
-        }
-    }
-
-    /// AN EXEMPTION IS SCOPED TO ITS OWN FILE: the declared file stays green on the path row, and a
-    /// second file writing the same dead path is RED, cited by its own path and line.
-    #[test]
-    fn a_declaration_excuses_the_dead_name_only_in_the_file_it_names() {
-        let cx = cx();
-        let ((a, a_text, a_at), (b, b_text, b_at)) =
-            anchor_pair(&cx, |n| n.class == Class::Path && !n.is_glob())
-                .expect("two covered TOML files carrying a path array");
-        let dead = planted_path();
-        let a_declared = format!(
-            "{}\n{DECL} {dead}{SEP}{a}{SEP}{PLANTED_REASON}\n",
-            plant_beside(&a_text, &a_at, &dead).expect("planted beside A")
-        );
-        let path_detail = |ov: Overlay| {
-            crate::gates::execute(&QaNamesGate, &cx.with_overlay(ov))
-                .rows
-                .into_iter()
-                .find(|r| r.id == ROW_PATH)
-                .expect("the path row")
-                .detail
-        };
-
-        let mut only_a = Overlay::new();
-        only_a.set(&a, a_declared.clone());
-        assert!(
-            !path_detail(only_a).contains(&dead),
-            "the declared name in its own file must stay excused"
-        );
-
-        let mut both = Overlay::new();
-        both.set(&a, a_declared);
-        both.set(
-            &b,
-            plant_beside(&b_text, &b_at, &dead).expect("planted beside B"),
-        );
-        let detail = path_detail(both);
-        assert!(
-            detail.contains(&format!("{b}:{} `{dead}`", b_at.line)),
-            "{detail}"
-        );
-        assert!(
-            !detail.contains(&format!("{a}:{} `{dead}`", a_at.line)),
-            "{detail}"
-        );
-    }
-
-    /// The rows with no standing debt are green, and the scan is over a real population.
-    #[test]
-    fn the_clean_rows_are_green_and_the_scan_is_not_empty() {
-        let verdict = crate::gates::execute(&QaNamesGate, &cx());
-        for id in [
-            ROW_UNIVERSE,
-            ROW_FLOOR,
-            ROW_KIND,
-            ROW_DECL_LIVE,
-            ROW_DECL_FILE,
-            ROW_DECL_REASON,
-        ] {
-            let r = verdict
-                .rows
-                .iter()
-                .find(|r| r.id == id)
-                .unwrap_or_else(|| panic!("{id} did not run"));
-            assert_eq!(
-                r.status,
-                crate::ledger::Status::Pass,
-                "{id} is RED on the real tree: {}",
-                r.detail
-            );
-        }
-    }
-
-    /// THE DAY'S FOUR FIXES, OLDEST FIRST, each as `(<sha>, <what it fixed>, <what the gate must
-    /// name in the config its PARENT carried>)`. `<sha>^:qa/construction.toml` is the pre-fix
-    /// config, and the needles differ per commit because each fix struck a different name: by
-    /// `ab5bcb45c^` the `[rules.source-denylist].kinds` half had already been corrected by
-    /// `383f23875`, so demanding it there would be demanding a defect that was gone.
-    #[allow(clippy::type_complexity)]
-    const FIXES: &[(&str, &str, &[&str])] = &[
-        (
-            "2b5727416",
-            "the export family glob at the wrong path",
-            &[
-                // Defect 1's own table, naming a plane folded into busbar-plane-streaming.
-                "`crates/busbar-plane-voice` ([gate.plugin_kinds] plane)",
-                // Defects 3 and 4: four phantom kind names across two rules.
-                "`pure_auth` ([rules.source-denylist] kinds)",
-                "`egress_auth` ([rules.source-denylist] kinds)",
-                "`pure_auth` ([rules.forbid-unsafe] forbid_kinds)",
-                "`egress_auth` ([rules.forbid-unsafe] forbid_kinds)",
-                // The same kind again as a census KEY, declaring a population of two.
-                "`pure_auth` ([gate.census.plugin_kinds] pure_auth)",
-                // Defect 5's open names, and two codec crates that had already been deleted.
-                "`busbar-a2a-codec` ([gate.plane_codec_crates] busbar-a2a)",
-                "`busbar-mcp-codec` ([gate.plane_codec_crates] busbar-mcp)",
-                "`busbar-admin` ([rules.one-pricing-site] fee_reader_crates)",
-                "`crates/busbar-substrate/src` ([rules.no-uninstalled-seam] seam_root)",
-            ],
-        ),
-        (
-            "2b2de9712",
-            "the fifth plane in no kind list",
-            &[
-                "`pure_auth` ([rules.source-denylist] kinds)",
-                "`egress_auth` ([rules.forbid-unsafe] forbid_kinds)",
-                "`pure_auth` ([gate.census.plugin_kinds] pure_auth)",
-                "`busbar-a2a-codec` ([gate.plane_codec_crates] busbar-a2a)",
-            ],
-        ),
-        (
-            "383f23875",
-            "source-denylist naming kinds that do not exist",
-            &[
-                "`pure_auth` ([rules.source-denylist] kinds)",
-                "`egress_auth` ([rules.source-denylist] kinds)",
-                "`pure_auth` ([rules.forbid-unsafe] forbid_kinds)",
-                "`pure_auth` ([gate.census.plugin_kinds] pure_auth)",
-            ],
-        ),
-        (
-            "ab5bcb45c",
-            "forbid-unsafe naming the same two, and the census re-pin",
-            &[
-                "`pure_auth` ([rules.forbid-unsafe] forbid_kinds)",
-                "`egress_auth` ([rules.forbid-unsafe] forbid_kinds)",
-                "`pure_auth` ([gate.census.plugin_kinds] pure_auth)",
-            ],
-        ),
-    ];
-
-    /// THE HISTORICAL CATCH, AND IT IS THE WHOLE PROOF.
-    ///
-    /// A gate written against an already-cleaned tree proves nothing: it was shaped until it
-    /// passed, and "it passes" is exactly what the config it replaced did. So this reconstructs the
-    /// config as it stood BEFORE each of the day's four fixes — read from history with `git show`,
-    /// never from the working tree, which the same change is free to edit — lays it over TODAY'S
-    /// tree, and requires the gate to name each defect BY ITS TABLE AND ITS KEY.
-    ///
-    /// THE OTHER HALF OF THE PROOF is the three names it must NOT report. `dialect = 0`,
-    /// `control = 0` and `egress_auth = 0` stood in the same pre-fix `[gate.census.plugin_kinds]`
-    /// as `pure_auth = 2`, and all four name no key in `[gate.plugin_kinds]`. The three declaring
-    /// ZERO are kinds with no crate yet, which the header over that table says in terms is
-    /// legitimate; the one declaring TWO claims a population nothing can find. A rule that reported
-    /// all four would be a rule with no way to satisfy it, which is a rule somebody deletes.
-    #[test]
-    fn the_pre_fix_config_of_the_day_is_named_in_full() {
-        let cx = cx();
-        for (sha, what, needles) in FIXES {
-            assert!(
-                cx.git_ref_resolves(&format!("{sha}^")),
-                "{sha}^ ({what}) does not resolve — this proof needs history, not a shallow clone"
-            );
-            let before = cx
-                .git_show(&format!("{sha}^"), CONFIG_REL)
-                .unwrap_or_else(|e| panic!("{sha}^:{CONFIG_REL}: {e}"));
-            let mut ov = Overlay::new();
-            ov.set(CONFIG_REL, before);
-            let verdict = crate::gates::execute(&QaNamesGate, &cx.with_overlay(ov));
-            let said: String = verdict
-                .rows
-                .iter()
-                .filter(|r| r.status != crate::ledger::Status::Pass)
-                .map(|r| format!("{} {}\n", r.id, r.detail))
-                .collect();
-            println!("\n===== {sha}^ ({what}) =====\n{said}");
-
-            for needle in *needles {
-                assert!(
-                    said.contains(needle),
-                    "{sha}^: the gate did not name {needle:?}"
-                );
-            }
-            for zero in [
-                "`dialect`",
-                "`control`",
-                "`egress_auth` ([gate.census.plugin_kinds]",
-            ] {
-                assert!(
-                    !said.contains(zero),
-                    "{sha}^: a DECLARED zero was reported: {zero}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_selftest_proves_every_owed_row() {
-        let cx = cx();
-        let report = QaNamesGate.selftest(&cx);
-        crate::gates::verify_report(&QaNamesGate, &report)
-            .unwrap_or_else(|errs| panic!("qa-names selftest: {errs:#?}"));
-        assert_eq!(report.skipped(), 0, "a case had nothing to plant");
-    }
-}
+#[path = "tests/qa_names_tests.rs"]
+mod tests;
