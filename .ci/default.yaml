@@ -72,8 +72,8 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, test-docs-whole, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
-  manual: [oracle-record, oracle]
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  manual: [oracle-record, oracle, test-docs-whole]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -451,6 +451,9 @@ checks:
     requires: [cc, git-history]
     needs: [gates]
   test-docs-whole:
+    # Off the required move list (ModernCI coordinator, 2026-10-23 21:30Z, asked by busbar's
+    # architect): even always-whole, its learned limit is killed on a cold cache. Still defined; it
+    # returns to the list when the engine judges a kill at a learned limit as nothing, once.
     # Was `test-docs`, then `test-docs-run` (ModernCI coordinator, 2026-10-22/23). It skipped itself
     # (exit 0 in ~20 s) when a change touched no docs/ and no *.md, so nearly all of its runs were
     # that skip, and ModernCI's learned run limit (twice the slowest of its last 50 runs, at least
