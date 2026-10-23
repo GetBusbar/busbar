@@ -32,8 +32,8 @@ pub(super) struct GeminiCharIndex<'a> {
 /// Characters between two marks of a [`GeminiCharIndex`].
 pub(super) const CHAR_MARK_STRIDE: usize = 64;
 
-/// Characters an index walked (building or answering), for the work-bound tests. Per thread, so
-/// parallel tests cannot see each other's walks.
+// Characters an index walked (building or answering), for the work-bound tests. Per thread, so
+// parallel tests cannot see each other's walks.
 #[cfg(test)]
 thread_local! {
     pub(super) static CHARS_WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -56,7 +56,7 @@ pub(super) fn extend_char_marks(
     appended: &str,
 ) {
     for (b, _) in appended.char_indices() {
-        if *chars % CHAR_MARK_STRIDE == 0 {
+        if chars.is_multiple_of(CHAR_MARK_STRIDE) {
             marks.push(base + b);
         }
         *chars += 1;
