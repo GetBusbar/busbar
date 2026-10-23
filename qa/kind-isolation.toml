@@ -1479,8 +1479,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:store"
-count = "2"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 2 -> 1: the clean-config validate test reads the store module through MIGRATED_STORE_MODULE (law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1575,8 +1575,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); #787's 107 -> 21 (85 extern ABI strings, durable_tests.rs's `c` directory, store_money_acceptance.rs's `c` message: each a one-letter `c` read as the secret plugin) removes hits the 107 -> 12 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; LOWERED 12 -> 5 (law0 P14): the secret-module fixtures use neutral names (law0-slack); LOWERED 5 -> 1: the manifest schema doc and the member-program settings test spell the secret module and the program environment key through the contract's SECRET_MODULE_ENV and PROGRAM_ENV_KEY; conformance/mod.rs keeps one (law0-slack)"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); #787's 107 -> 21 (85 extern ABI strings, durable_tests.rs's `c` directory, store_money_acceptance.rs's `c` message: each a one-letter `c` read as the secret plugin) removes hits the 107 -> 12 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; LOWERED 12 -> 5 (law0 P14): the secret-module fixtures use neutral names (law0-slack); LOWERED 5 -> 1: the manifest schema doc and the member-program settings test spell the secret module and the program environment key through the contract's SECRET_MODULE_ENV and PROGRAM_ENV_KEY; conformance/mod.rs keeps one (law0-slack); LOWERED 1 -> 0: conformance.json's environment key is read through the contract's PROGRAM_ENV_KEY (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
