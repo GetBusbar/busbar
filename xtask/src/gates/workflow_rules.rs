@@ -265,13 +265,6 @@ fn signer_value(cmd: &str) -> Option<String> {
     }
 }
 
-/// `\bkey\s*:\s*` at the head of a trimmed line, returning what follows.
-fn after_key<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
-    let rest = trimmed.strip_prefix(key)?;
-    let rest = rest.trim_start();
-    rest.strip_prefix(':')
-}
-
 /// Split `s` at every `sep` that sits outside quotes, `[..]` and `{..}`.
 fn split_top_level(s: &str, sep: char) -> Vec<String> {
     let (mut out, mut cur) = (Vec::new(), String::new());
