@@ -93,11 +93,14 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
 # sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "175fc1c04f5daa70ecd2cd2f79d15d3bd04d6936" }
+# The pin is oauth dev 722a2fcecd: its secret-named fields are the crate's own `Secret<String, Own>`
+# (secret-hygiene check1, #1192), compiled against busbar dev's contract (oauth f62e2adc58).
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "722a2fcecd61082efa19378052598f109ed11d19" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
-# pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret is a private `Held`.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "765d8120cfac540ab46b8e267cffc7a251a23707" }
+# pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
+# private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
@@ -111,13 +114,13 @@ busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking"
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "23b8fa8031ed969f66c08289bfe2415f25a16236" }
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "70c6ce925e45022cc7bdbc5f2b011f009189c2ae" }
 # THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
 # pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
 # repo's plugin CI; busbar's gates read the pinned crate through the base layer. Its media stack (str0m,
 # aes) is pinned in that repo's own manifest: no member here inherits it.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "90c7d4b311e73439ac60c1412e24a23a75604562" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "ba08e0e0185742b3946fcf08c0967749c52c9c27" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
@@ -136,12 +139,18 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "b2eda8a33db4ab2a7bbcaa5fc45cc4f31f5d9a16" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "2345681a614939ac51371c14db05ded1a00190ad" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
 busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "03cb3eb5d9c98b010c57fac4f75eabf874361d60" }
+# Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
+# (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
+# busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
+# lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
+# leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "03cb3eb5d9c98b010c57fac4f75eabf874361d60" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

@@ -170,6 +170,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
     pool.env.services.held.untrack_worker(old.index);
     let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();
     super::conn_services::forget_worker(&conns, old.index);
+    let (orphans, gone) = old.orphans(gone, &breached);
     let (w, rx) = Worker::new(old.index, gens, pool.env.ticket_key);
     *pool.slots[i]
         .current
@@ -180,4 +181,12 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
     // Only now, with the fresh worker serving: every `Meta` settles its reply as FAULT as it drops
     // and gives back what it held, so a caller that sees the FAULT finds the new worker in place.
     drop(gone);
+    // A healthy instance's pending op is told it ended (`cancel`) before its frame and lent memory
+    // go: off the watchdog's thread, so a `cancel` that hangs never stops the watchdog (the
+    // ticket-less watch judges it). A thread that cannot be started drops them as before.
+    if !orphans.is_empty() {
+        let _ = std::thread::Builder::new()
+            .name("busbar-orphan-cancel".into())
+            .spawn(move || orphans.into_iter().for_each(super::worker::Orphan::cancel));
+    }
 }
