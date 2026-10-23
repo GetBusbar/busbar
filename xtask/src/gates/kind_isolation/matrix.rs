@@ -172,6 +172,8 @@ fn scan_floor(cx: &Ctx) -> usize {
 }
 
 mod auth_words;
+mod carriers;
+mod config_words;
 mod external;
 mod frozen;
 mod instances;
@@ -276,7 +278,8 @@ fn alias_of(a: &str, b: &str) -> bool {
 ///   identity, decisions, …]`), a frozen wire word the kernel's export projection and the contract's
 ///   export ABI spell as the stream's own name. Counting it would report the export stream as the
 ///   plane, which is the collision `plane-purity` and `plane-abi-neutrality` exempt for the same
-///   plane.
+///   plane. Its sibling 1.5.x config word `streams` (the export key) is exempt only where a
+///   customer's config spells it ([`config_words`], architect ruling 2026-10-23 (R-3), L0-1).
 const BARE_WORD_COLLISIONS: &[&str] = &["decisions"];
 
 /// EVERY KIND'S VOCABULARY, READ OFF THE CENSUS.
@@ -842,6 +845,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         }
         let auth = auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision);
         let plane = c.kind == Some("plane");
+        let loader = c.name == carriers::LOADER_PACKAGE;
         // The two plane-crate masks read the tree beside the file: whether it is a dialect module,
         // and the wire lock a dialect mapping file names. Both are read here, for the key.
         let dialect_module = plane && in_dialect_module(cx, &dir, rel);
@@ -869,6 +873,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
             plane.hash(&mut h);
             dialect_module.hash(&mut h);
             wire.hash(&mut h);
+            loader.hash(&mut h);
             h.finish()
         };
         let memo = MASKED_MEMO.get_or_init(Default::default);
@@ -892,6 +897,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                     auth,
                     dialect_module,
                     wire: wire.as_ref(),
+                    loader,
                 }));
                 if walk == Walk::Memoised {
                     memo.lock()
@@ -928,6 +934,11 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
             .iter()
             .map(|h| {
                 if frozen_mask.as_ref().is_some_and(|m| frozen::at(m, h.line)) {
+                    return false;
+                }
+                // THE CONNECTOR'S CARRIER NAMES (architect ruling 2026-10-23 (R-3), L0-3): the
+                // bare `tcp`/`stdio` in the connector and in the loader's need-service files.
+                if carriers::exempt_hit(&c.name, &dir, rel, h.kind, &h.word) {
                     return false;
                 }
                 if !super::witness_may_apply(&granted, c, h.kind) {
@@ -985,6 +996,8 @@ struct MaskInputs<'a> {
     auth: Option<bool>,
     dialect_module: bool,
     wire: Option<&'a BTreeSet<String>>,
+    /// The file is the loader's: its two loader-wide carrier positions are masked ([`carriers`]).
+    loader: bool,
 }
 
 /// THE MASK CHAIN, in its order, over one file: a pure function of [`MaskInputs`], which is what
@@ -999,6 +1012,7 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
         auth,
         dialect_module,
         wire,
+        loader,
     } = m;
     // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
     // vocabulary is its own row's to measure (see [`contract_identifiers`]).
@@ -1013,8 +1027,15 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
     let masked = external::mask_kernel_facade(rel, &masked);
     // English words that are also instance names are not counted as English prose.
     let masked = mask_english_prose(rel, &masked);
-    // An export entry's frozen 1.5.x `streams: [` key is the export projection, not the plane.
-    let masked = match mask_export_streams_key(&masked) {
+    // The 1.5.x customer config words, where a customer's config spells them, are not the plane
+    // (architect ruling 2026-10-23 (R-3), L0-1; [`config_words`]).
+    let masked = match config_words::mask(&masked) {
+        Some(owned) => std::borrow::Cow::Owned(owned),
+        None => masked,
+    };
+    // The loader names the need service and a need's carrier by THE DESIGN §5's carrier words
+    // (architect ruling 2026-10-23 (R-3), L0-3; [`carriers`]).
+    let masked = match loader.then(|| carriers::mask_loader(&masked)).flatten() {
         Some(owned) => std::borrow::Cow::Owned(owned),
         None => masked,
     };
@@ -1399,51 +1420,6 @@ fn mask_english_prose<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str>
         out.push_str(&mask_prose_words(prose));
     }
     std::borrow::Cow::Owned(out)
-}
-
-/// THE FROZEN 1.5.x EXPORT KEY (ARCHITECT ruling, Law 0 root lane: a gate exemption only for frozen
-/// 1.5.x bytes, modelled on [`BARE_WORD_COLLISIONS`]). `streams` is the streaming plane's section-key
-/// alias, and it is also the key of an `export:` entry's projection list — `streams: [logs,
-/// identity, decisions, …]` (v1.5.5 crates/busbar/src/config/migrate_export.rs:17, :178), frozen
-/// operator config text every export entry carries. The two are told apart by the value the key
-/// takes: an export entry's `streams:` is a flow LIST, and a plane's section is a mapping. So a
-/// `streams` standing on its own (not joined to a neighbouring name by `-`, `_`, `.` or a letter),
-/// followed by `:` (not `::`) and then, past spaces, by `[`, is masked before the scanners read the
-/// line; in every other position — a section key over a mapping, an identifier, a literal of its
-/// own — it still counts.
-const EXPORT_STREAMS_KEY: &str = "streams";
-
-/// `text` with every export entry's `streams: [` key masked (same-length filler, so lines and
-/// columns hold), or `None` when it holds none; see [`EXPORT_STREAMS_KEY`].
-fn mask_export_streams_key(text: &str) -> Option<String> {
-    if !text.contains(EXPORT_STREAMS_KEY) {
-        return None;
-    }
-    let b = text.as_bytes();
-    let joins = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.');
-    let mut out = b.to_vec();
-    let mut changed = false;
-    let mut from = 0;
-    while let Some(off) = text[from..].find(EXPORT_STREAMS_KEY) {
-        let i = from + off;
-        let j = i + EXPORT_STREAMS_KEY.len();
-        from = j;
-        if i > 0 && joins(b[i - 1]) {
-            continue;
-        }
-        if b.get(j) != Some(&b':') || b.get(j + 1) == Some(&b':') {
-            continue;
-        }
-        let mut k = j + 1;
-        while matches!(b.get(k), Some(b' ' | b'\t')) {
-            k += 1;
-        }
-        if b.get(k) == Some(&b'[') {
-            out[i..j].fill(b'x');
-            changed = true;
-        }
-    }
-    changed.then(|| String::from_utf8(out).expect("ascii-for-ascii"))
 }
 
 /// The byte offset of a `//` comment on `line` that is not inside a `"…"` string literal.
@@ -4733,6 +4709,89 @@ pub fn selftest<'a>(
         }
     }
 
+    // THE CONNECTOR'S CARRIER NAMES ARE EXEMPT ONLY IN THE CONNECTOR AND THE LOADER'S NEED SERVICES
+    // (architect ruling 2026-10-23 (R-3), L0-3; [`carriers`]). GREEN: the bare `tcp`/`stdio` in a
+    // connector file and in a loader need-service file, the need service's name and a need's carrier
+    // literal elsewhere in the loader; no cell grows over the merge-base. RED, each its own case and
+    // each a cell grown over the merge-base: a transport plugin's package name in the connector, a
+    // framer's id in the connector, and a carrier word as an identifier in a loader file that is no
+    // need service.
+    {
+        let connector = "crates/busbar-core-connector/src/planted_carrier.rs";
+        let loader = "crates/plugin-loader/src/planted_need.rs";
+        let need_service = format!("crates/plugin-loader/{}", carriers::NEED_SERVICE_FILES[0]);
+        match cx.read(&need_service) {
+            Ok(was) => {
+                let mut ov = crate::ctx::Overlay::new();
+                ov.set(
+                    connector,
+                    "//! Dials the tcp carrier and spawns the stdio carrier.\n\
+                     pub enum PlantedCarrier { Tcp, Stdio }\n\
+                     pub fn planted_dial_tcp() -> &'static str { \"tcp\" }\n",
+                );
+                ov.set(
+                    loader,
+                    "pub use crate::tcp_conns::TcpConns as PlantedTable;\n\
+                     pub const PLANTED_NEED: &str = \"stdio\";\n",
+                );
+                ov.set(
+                    need_service.as_str(),
+                    format!(
+                        "{}\n// PLANTED: a stdio carrier served beside the tcp one.\n\
+                         pub fn planted_stdio_need() {{}}\n",
+                        was.trim_end()
+                    ),
+                );
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a carrier name in the connector and in the loader's need services is not a \
+                     transport instance",
+                    &[ROW_LAW0_BASE],
+                    ov,
+                ));
+            }
+            Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "the loader's need-service file to plant a carrier name into",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                why,
+            ))),
+        }
+        for (how, rel, body, cell) in [
+            (
+                "a transport plugin's package name in the connector still counts",
+                connector,
+                "use busbar_transport_tcp::Dial;\n",
+                "busbar-core-connector \u{d7} transport",
+            ),
+            (
+                "a framer's id in the connector still counts",
+                connector,
+                "pub fn planted_grpc_frames() -> usize { 0 }\n",
+                "busbar-core-connector \u{d7} transport",
+            ),
+            (
+                "a carrier word as an identifier in a loader file that is no need service still \
+                 counts",
+                loader,
+                "pub fn planted_tcp_route() -> usize { 0 }\n",
+                "busbar-plugin-loader \u{d7} transport",
+            ),
+        ] {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(rel, body);
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                how,
+                &[ROW_LAW0_BASE],
+                ov,
+                &["law0-grown", cell],
+            ));
+        }
+    }
+
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
     // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.
@@ -5163,19 +5222,27 @@ pub fn selftest<'a>(
         &["unlisted-cell", &fixture_subject("plane")],
     ));
 
-    // AN EXPORT ENTRY'S FROZEN 1.5.x `streams: [` KEY IS THE EXPORT PROJECTION, NOT THE PLANE
-    // ([`EXPORT_STREAMS_KEY`]). The fixture holds only export entries, in a YAML document and in a
-    // Rust string, and no row: the plane cell stays at zero (GREEN). The same word keying a mapping
-    // — the plane's section — beside them is a hit, and the cell becomes an edge nobody listed (RED).
+    // THE 1.5.x CUSTOMER CONFIG WORDS ARE EXEMPT ONLY WHERE A CUSTOMER'S CONFIG SPELLS THEM
+    // (architect ruling 2026-10-23 (R-3), L0-1; [`config_words`]). The fixture holds the export key
+    // `streams` in each of its positions (keying a flow list in a YAML document and in a Rust
+    // string, addressed by its `export.<entry>.streams` path, read through an `"export"`-rooted key
+    // path, and declared as the deserialized token list) and the stream token `decisions` in a
+    // list, and no row: the plane cell stays at zero (GREEN). Each RED adds one non-exempt
+    // occurrence beside them, and the cell becomes an edge nobody listed: the word keying a mapping
+    // (the 1.6.0 plane's section), the plane section's dotted path, the word as an identifier, and
+    // the decisions plane's own spelling inside a stream list.
     let export_fixture = |extra: Option<(&'static str, &'static str)>| {
         let mut files = vec![
             (
                 "export.yaml",
-                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics]\n",
+                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics, decisions]\n",
             ),
             (
                 "export.rs",
-                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n",
+                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n\
+                 pub const EMPTY: &str = \"export.{name}.streams: is EMPTY\";\n\
+                 pub fn at<'a>(doc: &'a Doc, name: &str) -> Option<&'a Doc> { dig(doc, &[\"export\", name, \"streams\"]) }\n\
+                 pub struct Def { pub streams: Option<Vec<String>>, }\n",
             ),
         ];
         files.extend(extra);
@@ -5184,18 +5251,47 @@ pub fn selftest<'a>(
     report.push(prove_rows_green(
         cx,
         over_fixture,
-        "an export entry's frozen 1.5.x `streams: [` key is not the plane",
+        "the 1.5.x export key `streams` and stream token `decisions`, where a customer's config \
+         spells them, are not the plane",
         &[ROW_MATRIX],
         export_fixture(None),
     ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "`streams:` keying a mapping beside the export entries still counts",
-        &[ROW_MATRIX],
-        export_fixture(Some(("section.yaml", "streams:\n  gw: {}\n"))),
-        &["unlisted-cell", &fixture_subject("plane")],
-    ));
+    for (how, file) in [
+        (
+            "`streams:` keying a mapping beside the export entries still counts",
+            ("section.yaml", "streams:\n  gw: {}\n"),
+        ),
+        (
+            "a plane section's dotted path `streams.<key>` beside the export entries still counts",
+            (
+                "section_path.rs",
+                "pub const P: &str = \"streams.fees.per_request\";\n",
+            ),
+        ),
+        (
+            "`streams` as an identifier beside the export entries still counts",
+            (
+                "projection.rs",
+                "pub fn from_parts(streams: &[u8]) -> usize { streams.len() }\n",
+            ),
+        ),
+        (
+            "the decisions plane's own spelling inside a stream list still counts",
+            (
+                "plane_list.yaml",
+                "export:\n  sink: { streams: [logs, plane-decisions] }\n",
+            ),
+        ),
+    ] {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            how,
+            &[ROW_MATRIX],
+            export_fixture(Some(file)),
+            &["unlisted-cell", &fixture_subject("plane")],
+        ));
+    }
 
     // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
     // ([`COLLIDING_INSTANCE_WORDS`]). The fixture holds only the non-references and no row: the
