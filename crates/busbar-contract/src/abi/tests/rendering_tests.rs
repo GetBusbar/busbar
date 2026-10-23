@@ -530,3 +530,57 @@ fn every_kind_renders_its_tail_facts_not_only_its_size() {
         &|| with_tail(KindCode::Transport, &t1),
     );
 }
+
+/// A PLANE'S COMMAND-LINE HELP READS BACK FROM ITS RENDERING, with no library (audit busbar-src r4
+/// S-2; BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path). The host
+/// reads a dropped-in plane's `busbar --help` rows, its line-serve flag among them, off the signed
+/// manifest before any configuration is served, as it reads a linked door's off its tail. Every
+/// tail field rendered before the help is stated, so a reader that skipped one reads another field
+/// as the help.
+#[test]
+fn a_plane_tails_cli_help_reads_back_with_no_library() {
+    use crate::abi::plane::PlaneTail;
+    const HELP: &str = "    --golden-serve      serve the golden plane on stdin/stdout";
+    let p0: PlaneTail = zeroed_tail();
+    let p = PlaneTail {
+        flags: 1,
+        ingress: 2,
+        dispatch_shape: 3,
+        answer_layout: 4,
+        scope: abi_str("golden-scope"),
+        label: abi_str("golden label"),
+        subject_noun: abi_str("golden route"),
+        admin_noun: abi_str("golden"),
+        audit_kind: abi_str("golden_kind"),
+        signing_domain: abi_str("golden-domain/v1"),
+        signing_kid_prefix: abi_str("golden-kid-"),
+        cli_help: abi_str(HELP),
+        dialects: DIALECTS.as_ptr(),
+        dialects_len: DIALECTS.len(),
+        ..p0
+    };
+    let r = read(&with_tail(KindCode::Plane, &p).expect("renders")).expect("reads back");
+    assert_eq!(
+        read_plane_cli_help(&r.kind_tail).expect("the help reads back"),
+        HELP
+    );
+    let r0 = read(&with_tail(KindCode::Plane, &p0).expect("renders")).expect("reads back");
+    assert_eq!(
+        read_plane_cli_help(&r0.kind_tail).expect("an absent help reads back"),
+        "",
+        "a plane that states no help reads back as none"
+    );
+    let end = r
+        .kind_tail
+        .windows(HELP.len())
+        .position(|w| w == HELP.as_bytes())
+        .expect("the help is in the tail's facts")
+        + HELP.len();
+    assert!(
+        read_plane_cli_help(&r.kind_tail[..end - 1]).is_err(),
+        "a tail cut inside its help is unreadable"
+    );
+    assert!(read_plane_cli_help(&[]).is_err(), "no tail states no help");
+}
+
+const DIALECTS: &[AbiStr] = &[abi_str("golden-dialect")];
