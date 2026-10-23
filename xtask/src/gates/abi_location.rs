@@ -1367,7 +1367,7 @@ impl Gate for AbiLocationGate {
             report.push(prove_rows_red(
                 cx,
                 self,
-                &format!("a deleted {name} lane that grows back is RED"),
+                format!("a deleted {name} lane that grows back is RED"),
                 &[ROW_LEDGER],
                 ov,
                 &["CONDEMNED lane regrown", lane],
