@@ -156,10 +156,19 @@ env:
       [ -n "${ORACLE_JUDGE_TREE:-}" ] || { echo "oracle-trust: no judge tree" >&2; return 1; }
       [ "$(git hash-object "$ORACLE_JUDGE_TREE/bin/oracle")" = "$_ots_shim_blob" ] || { echo "oracle-trust: the judge's shim changed on disk" >&2; return 1; }
       ( cd "$ORACLE_JUDGE_TREE" && BUSBAR_ORACLE_PRODUCT_ROOT="$ORACLE_JUDGE_TREE" BUSBAR_ORACLE_DATA="$ORACLE_JUDGE_TREE/testing/shadow-oracle" \
-          "$ORACLE_JUDGE_TREE/bin/oracle" "$@" )
+          _ots_env "$ORACLE_JUDGE_TREE/bin/oracle" "$@" )
     }
     # The judge, run only from the trusted copy.
-    oracle() { _ots_verify || return 1; "$ORACLE_TRUST/bin/oracle" "$@"; }
+    # The shim always runs in CI mode with the protected values named on its command line (desk
+    # residual 2026-10-23): what it sees never depends on an environment a script could have changed.
+    _ots_env() {
+      env -u BUSBAR_ORACLE_RUST_BIN MODERNCI=true MODERNCI_TO_SHA="${MODERNCI_TO_SHA:-}" \
+        BUSBAR_ORACLE_RELEASE_REPO="$BUSBAR_ORACLE_RELEASE_REPO" BUSBAR_ORACLE_RELEASE_REF="$BUSBAR_ORACLE_RELEASE_REF" \
+        BUSBAR_ORACLE_SHA256_LINUX_X86_64="$BUSBAR_ORACLE_SHA256_LINUX_X86_64" BUSBAR_ORACLE_SHA256_LINUX_AARCH64="$BUSBAR_ORACLE_SHA256_LINUX_AARCH64" \
+        BUSBAR_GOLDEN_1_5_5_TREE="$BUSBAR_GOLDEN_1_5_5_TREE" BUSBAR_ORACLE_CRATE="$BUSBAR_ORACLE_CRATE" BUSBAR_ORACLE_BIN="$BUSBAR_ORACLE_BIN" \
+        ${BUSBAR_ORACLE_JUDGE_PATH:+BUSBAR_ORACLE_JUDGE_PATH="$BUSBAR_ORACLE_JUDGE_PATH"} "$@"
+    }
+    oracle() { _ots_verify || return 1; _ots_env "$ORACLE_TRUST/bin/oracle" "$@"; }
     # The store backends: `oracle_services up` is sourced (it exports the URLs), the rest are run.
     oracle_services() {
       _ots_verify || return 1
