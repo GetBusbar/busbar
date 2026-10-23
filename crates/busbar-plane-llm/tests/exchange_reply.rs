@@ -4798,7 +4798,8 @@ mod rehomed_metering {
         let ctx = reply_ctx(&arrived, &lane);
         let mut reply = Reply::new(HOST, &ctx, 200, SSE_HEAD);
         let _ = reply.feed(HOST, &ctx, USAGE_CHUNK, false, AT);
-        let end = reply.feed(HOST, &ctx, &overflow(), true, AT);
+        let overflow = overflow();
+        let end = reply.feed(HOST, &ctx, &overflow, true, AT);
         assert_eq!(end.fault, Some(Fault::Transient("stream-translate-abort")));
         assert_eq!((end.units.tokens_in, end.units.tokens_out), (600, 400));
         assert!(
