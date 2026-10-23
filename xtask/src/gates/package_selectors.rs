@@ -42,7 +42,8 @@
 //!
 //! WHICH FILES ARE READ is derived from the tree, not from an extension list: EVERY file under
 //! `.github` (workflows, composite actions under `.github/actions`, `.github/scripts`), `scripts`,
-//! `qa` and `xtask/src` is walked, and its shape picks the reader. `.rs` is read for command
+//! `qa`, `xtask/src`, `.ci` (the ModernCI definitions), `bin` (the oracle shim) and `.githooks` is
+//! walked, and its shape picks the reader. `.rs` is read for command
 //! literals (rule 3); `.yml`/`.yaml` as commands plus matrix cells (rules 1 and 2); `.json` for its
 //! command strings (rule 4); Markdown is prose and is not read; EVERYTHING ELSE — `.sh`, `.py`,
 //! `.mjs`, `.toml`, a `Makefile`, an extensionless script — is read as command lines (rule 1). A
@@ -58,7 +59,10 @@
 //!    `features:` is `<pkg>/<feature>`, so its left half is a package selector in all but spelling.
 //! 3. A Rust string literal under `xtask/src` that BEGINS with `cargo ` — the command strings
 //!    a runner mirrors a pipeline with. The "begins with" is load-bearing: the same tuples carry PROSE
-//!    strings that quote dead selectors on purpose, and prose is not a command.
+//!    strings that quote dead selectors on purpose, and prose is not a command. And the ARRAY
+//!    spelling: `"-p", "<crate>"` as adjacent string elements of a bracket group that carries a
+//!    `"cargo"` element (or that follows `cargo` within three lines, as `Command::new(&cargo)
+//!    .args([…])` does). `docker compose -p …` in the same file is not cargo and is not read.
 //! 4. A JSON string that is the value of a `run` key — `qa/pipeline-checks.json` declares exactly
 //!    those as bash, for the `dev` -> `qa` move. JSON is data, and a string in it is a command only where a
 //!    consumer executes it: the audit evidence under `qa/` opens prose fields with `cargo test -p
@@ -112,6 +116,21 @@ pub const GITHUB_ROOT: &str = ".github";
 pub const SCRIPT_ROOT: &str = "scripts";
 pub const QA_ROOT: &str = "qa";
 pub const XTASK_ROOT: &str = "xtask/src";
+/// The CI definitions (`.ci/*.yaml`), the oracle shim (`bin/`) and the git hooks (`.githooks/`):
+/// all three run `cargo` on a contributor's or a runner's behalf and none of them was read.
+pub const CI_ROOT: &str = ".ci";
+pub const BIN_ROOT: &str = "bin";
+pub const HOOKS_ROOT: &str = ".githooks";
+/// Every covered root, in walk order.
+pub const ROOTS: [&str; 7] = [
+    GITHUB_ROOT,
+    SCRIPT_ROOT,
+    QA_ROOT,
+    XTASK_ROOT,
+    CI_ROOT,
+    BIN_ROOT,
+    HOOKS_ROOT,
+];
 
 /// The declaration, in the two comment spellings the covered files use. Matched on the TRIMMED
 /// line, so indentation is free to move — and deliberately NOT matched after `//!` or `///`, which
@@ -529,6 +548,218 @@ fn scan_rust_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
     }
 }
 
+/// One lexed Rust token, for [`scan_rust_argv`]. Comments are dropped, a string keeps its decoded
+/// text, and every token carries the line it starts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tok {
+    Str(String),
+    Word(String),
+    Punct(char),
+}
+
+/// Lex Rust source into [`Tok`]s with their 1-based lines. Not a full lexer: it knows exactly the
+/// things that would otherwise make a bracket or a `"-p"` in a comment, a char literal or a raw
+/// string look like code: line and block comments, `"…"` with escapes, `r#"…"#`, `'x'` against a
+/// lifetime.
+fn lex_rust(text: &str) -> Vec<(usize, Tok)> {
+    let b: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let (mut i, mut line) = (0usize, 1usize);
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            '\n' => {
+                line += 1;
+                i += 1;
+            }
+            c if c.is_whitespace() => i += 1,
+            '/' if b.get(i + 1) == Some(&'/') => {
+                while i < b.len() && b[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if b.get(i + 1) == Some(&'*') => {
+                let mut depth = 1;
+                i += 2;
+                while i < b.len() && depth > 0 {
+                    if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == '*' && b.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        if b[i] == '\n' {
+                            line += 1;
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            'r' if matches!(b.get(i + 1), Some('"' | '#')) && {
+                let mut k = i + 1;
+                while b.get(k) == Some(&'#') {
+                    k += 1;
+                }
+                b.get(k) == Some(&'"')
+            } =>
+            {
+                let mut hashes = 0;
+                i += 1;
+                while b.get(i) == Some(&'#') {
+                    hashes += 1;
+                    i += 1;
+                }
+                i += 1;
+                let start_line = line;
+                let mut lit = String::new();
+                while i < b.len() {
+                    if b[i] == '"' && (0..hashes).all(|h| b.get(i + 1 + h) == Some(&'#')) {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    if b[i] == '\n' {
+                        line += 1;
+                    }
+                    lit.push(b[i]);
+                    i += 1;
+                }
+                out.push((start_line, Tok::Str(lit)));
+            }
+            '"' => {
+                let start_line = line;
+                let mut lit = String::new();
+                i += 1;
+                while i < b.len() && b[i] != '"' {
+                    if b[i] == '\\' {
+                        if let Some(&n) = b.get(i + 1) {
+                            if n == '\n' {
+                                line += 1;
+                                i += 2;
+                                while i < b.len() && b[i].is_whitespace() {
+                                    if b[i] == '\n' {
+                                        line += 1;
+                                    }
+                                    i += 1;
+                                }
+                                continue;
+                            }
+                            lit.push(n);
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == '\n' {
+                        line += 1;
+                    }
+                    lit.push(b[i]);
+                    i += 1;
+                }
+                i += 1;
+                out.push((start_line, Tok::Str(lit)));
+            }
+            '\'' => {
+                // A char literal closes within a few characters; a lifetime does not.
+                if b.get(i + 1) == Some(&'\\') {
+                    i += 2;
+                    while i < b.len() && b[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if b.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            c if c.is_alphanumeric() || c == '_' => {
+                let st = i;
+                while i < b.len() && (b[i].is_alphanumeric() || b[i] == '_') {
+                    i += 1;
+                }
+                out.push((line, Tok::Word(b[st..i].iter().collect())));
+            }
+            c => {
+                out.push((line, Tok::Punct(c)));
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Rule 3b: the ARRAY spelling of a cargo command in Rust, `"-p", "<crate>"` as two adjacent
+/// string elements. Rule 3 reads only a single literal that begins with `cargo `; a runner that
+/// builds its argv as `["cargo", "build", "-p", "busbar-gone"]` (one element per line, as
+/// `rustfmt` lays out anything long) was never read.
+///
+/// The cargo discrimination is the same one rule 1 makes: `docker compose -p busbar-oidf` and
+/// `ps -p <pid>` are also `"-p"` pairs. The pair counts only when the ENCLOSING bracket group
+/// carries a `"cargo"` element, or when the three lines before that group's opening bracket name
+/// `cargo` (a `Command::new(&cargo)` followed by `.args([…])`). A value that is not a string
+/// literal (`"-p", CRATE`, `"-p", &name`) is a variable and is left alone, exactly as `$X` is in a
+/// script.
+fn scan_rust_argv(rel: &str, text: &str, out: &mut Vec<Site>) {
+    let toks = lex_rust(text);
+    for i in 1..toks.len().saturating_sub(2) {
+        let (line, Tok::Str(flag)) = &toks[i] else {
+            continue;
+        };
+        if flag != "-p" && flag != "--package" {
+            continue;
+        }
+        if !matches!(&toks[i - 1].1, Tok::Punct('[' | ',' | '(')) {
+            continue;
+        }
+        let (Tok::Punct(','), Tok::Str(value)) = (&toks[i + 1].1, &toks[i + 2].1) else {
+            continue;
+        };
+        let Some(pkg) = package_token(value) else {
+            continue;
+        };
+        // The opening bracket of the group this element sits in.
+        let mut depth = 0i32;
+        let mut open = None;
+        for k in (0..i).rev() {
+            match toks[k].1 {
+                Tok::Punct(')' | ']' | '}') => depth += 1,
+                Tok::Punct(c @ ('(' | '[' | '{')) => {
+                    if depth == 0 {
+                        open = Some((k, c));
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        let Some((open, _)) = open else { continue };
+        let is_cargo = |t: &Tok| match t {
+            Tok::Str(s) => s == "cargo" || s.starts_with("cargo "),
+            Tok::Word(w) => w == "cargo",
+            Tok::Punct(_) => false,
+        };
+        let in_group = toks[open..i].iter().any(|(_, t)| match t {
+            Tok::Str(s) => s == "cargo" || s.starts_with("cargo "),
+            _ => false,
+        });
+        let open_line = toks[open].0;
+        let before = toks[..open]
+            .iter()
+            .rev()
+            .take_while(|(l, _)| *l + 3 >= open_line)
+            .any(|(_, t)| is_cargo(t));
+        if in_group || before {
+            out.push(Site {
+                pkg,
+                file: rel.to_string(),
+                line: *line,
+                kind: "xtask cargo argv array",
+            });
+        }
+    }
+}
+
 /// Rule 4: a JSON string that is a `run` value.
 ///
 /// A JSON string cannot span lines, so the scan is per line: the string after a `"run":` key, read
@@ -606,7 +837,7 @@ fn parse_decl(trimmed: &str) -> Option<Decl> {
 /// the count of what was walked and not read is printed rather than implied.
 fn covered(cx: &Ctx) -> Result<Vec<Covered>, String> {
     let mut out = Vec::new();
-    for root in [GITHUB_ROOT, SCRIPT_ROOT, QA_ROOT, XTASK_ROOT] {
+    for root in ROOTS {
         let files = cx
             .walk(&WalkSpec::new([root]))
             .map_err(|e| format!("the `{root}` walk failed: {e}"))?;
@@ -630,7 +861,10 @@ fn scan(files: &[Covered]) -> (Vec<Site>, Vec<(String, usize, Decl)>) {
     for f in files {
         match f.reader {
             Reader::Prose => continue,
-            Reader::Rust => scan_rust_commands(&f.rel, &f.text, &mut sites),
+            Reader::Rust => {
+                scan_rust_commands(&f.rel, &f.text, &mut sites);
+                scan_rust_argv(&f.rel, &f.text, &mut sites);
+            }
             Reader::Json => scan_json_commands(&f.rel, &f.text, &mut sites),
             Reader::Yaml => {
                 scan_commands(&f.rel, &f.text, &mut sites);
@@ -735,7 +969,7 @@ impl Gate for PackageSelectorsGate {
                 "the selector scan collapsed below its discovery floor",
                 format!(
                     "only {} selector site(s) were found across {read} read file(s) under \
-                     [{GITHUB_ROOT}, {SCRIPT_ROOT}, {QA_ROOT}, {XTASK_ROOT}] ({prose} Markdown \
+                     {ROOTS:?} ({prose} Markdown \
                      file(s) walked and not read; floor {SITE_FLOOR}). An empty scan set is the \
                      one state in which 'every selector resolves' is true and means nothing.",
                     sites.len(),
@@ -746,8 +980,8 @@ impl Gate for PackageSelectorsGate {
                 ROW_SITE_FLOOR,
                 "enough selector sites were discovered for the check to mean something",
                 format!(
-                    "{} site(s) across {read} read file(s) under [{GITHUB_ROOT}, {SCRIPT_ROOT}, \
-                     {QA_ROOT}, {XTASK_ROOT}], {prose} Markdown file(s) walked and not read \
+                    "{} site(s) across {read} read file(s) under {ROOTS:?}, \
+                     {prose} Markdown file(s) walked and not read \
                      (floor {SITE_FLOOR})",
                     sites.len(),
                 ),
@@ -860,8 +1094,7 @@ impl Gate for PackageSelectorsGate {
                 "a declared exception names a file this gate does not cover",
                 format!(
                     "{} — a claim pointing at a path that was renamed away is a claim nobody can \
-                     check. The file must be one of the read files under [{GITHUB_ROOT}, \
-                     {SCRIPT_ROOT}, {QA_ROOT}, {XTASK_ROOT}].",
+                     check. The file must be one of the read files under {ROOTS:?}.",
                     bad_file.join(" | ")
                 ),
             )
@@ -949,6 +1182,12 @@ const PLANTED_YAML: &str = "busbar-selftest-yaml-action-package";
 const PLANTED_PY: &str = "busbar-selftest-python-package";
 const PLANTED_MAKE: &str = "busbar-selftest-makefile-package";
 const PLANTED_JSON: &str = "busbar-selftest-json-run-package";
+/// One dead name per root the walk gained: `.ci`, `bin`, `.githooks`, and the Rust ARRAY spelling
+/// of a cargo command (`"-p", "<crate>"` as two argv elements).
+const PLANTED_CI: &str = "busbar-selftest-ci-yaml-package";
+const PLANTED_BIN: &str = "busbar-selftest-bin-shim-package";
+const PLANTED_HOOK: &str = "busbar-selftest-githook-package";
+const PLANTED_ARGV: &str = "busbar-selftest-rust-argv-package";
 /// A path this gate does not cover, for the stale-file plant.
 // qa-names: scripts/deleted-by-this-fixture.sh -- xtask/src/gates/package_selectors.rs -- the stale-declaration plant names a covered script that is not there on purpose; a spelling that resolved would prove nothing
 const PLANTED_GONE_FILE: &str = "scripts/deleted-by-this-fixture.sh";
@@ -1046,6 +1285,29 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     wider.set(
         "qa/selftest-plant.json",
         format!("{{\n  \"run\": \"set -e; cargo build --locked -p {PLANTED_JSON}\"\n}}\n"),
+    );
+
+    // A DEAD SELECTOR IN EACH ROOT THE WALK USED TO MISS: a `.ci` definition, a `bin/` shim, a
+    // `.githooks` hook, and a Rust argv ARRAY under `xtask/src` (one element per line, the way
+    // rustfmt lays out a long command).
+    let mut roots = Overlay::new();
+    roots.set(
+        ".ci/selftest-plant.yaml",
+        format!("check:\n  run: |\n    cargo build --locked -p {PLANTED_CI}\n"),
+    );
+    roots.set(
+        "bin/selftest-plant",
+        format!("#!/usr/bin/env bash\ncargo build --locked -p {PLANTED_BIN}\n"),
+    );
+    roots.set(
+        ".githooks/selftest-plant",
+        format!("#!/usr/bin/env bash\ncargo test --locked -p {PLANTED_HOOK}\n"),
+    );
+    roots.set(
+        "xtask/src/selftest_plant_argv.rs",
+        format!(
+            "fn argv() -> [&'static str; 4] {{\n    [\n        \"cargo\",\n        \"build\",\n        \"-p\",\n        \"{PLANTED_ARGV}\",\n    ]\n}}\n"
+        ),
     );
 
     // THE DEFECT THIS GATE IS NAMED FOR, RE-PLANTED: a command selects a package the workspace does
@@ -1154,6 +1416,17 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             overlay: Some(wider),
         },
         Plant {
+            label: "a dead selector in .ci, bin, .githooks or a Rust argv array",
+            rule: ROW_RESOLVES,
+            naming: vec![
+                PLANTED_CI.to_string(),
+                PLANTED_BIN.to_string(),
+                PLANTED_HOOK.to_string(),
+                PLANTED_ARGV.to_string(),
+            ],
+            overlay: Some(roots),
+        },
+        Plant {
             label: "a declared exception outlived the selector it excused",
             rule: ROW_DECL_LIVE,
             naming: vec![PLANTED_NEVER.to_string()],
@@ -1187,289 +1460,5 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cx() -> Ctx {
-        Ctx::workspace().expect("workspace context")
-    }
-
-    #[test]
-    fn a_p_is_only_a_package_selector_when_cargo_is_in_the_same_command() {
-        let mut out = Vec::new();
-        scan_commands(
-            "f.sh",
-            "mkdir -p reports\n\
-             docker run -d --name x -p 8080:8080 img\n\
-             sudo gdb -p \"$stuck\" -batch\n\
-             rm -rf t; mkdir -p t\n\
-             N=$(printf '%s' \"$M\" | xxd -r -p | b64url)\n\
-             cargo build --locked -p busbar-kernel\n",
-            &mut out,
-        );
-        assert_eq!(
-            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar-kernel"],
-            "{out:?}"
-        );
-    }
-
-    #[test]
-    fn a_continued_command_keeps_its_cargo_and_a_comment_is_not_a_command() {
-        let mut out = Vec::new();
-        scan_commands(
-            "f.yml",
-            "          cargo build --locked \\\n\
-             \x20           -p busbar-store-example-plugin \\\n\
-             \x20           -p busbar-hook-test-plugin\n\
-             # it read `-p busbar-core` until the fold deleted that crate\n",
-            &mut out,
-        );
-        assert_eq!(
-            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar-store-example-plugin", "busbar-hook-test-plugin"]
-        );
-        assert!(out.iter().all(|s| s.line == 1), "{out:?}");
-    }
-
-    #[test]
-    fn a_dollar_substitution_and_a_pipeline_are_each_read_on_their_own_terms() {
-        let mut out = Vec::new();
-        scan_commands(
-            "f.yml",
-            "          out=\"$(cargo test -p busbar -p busbar-kernel --locked | tee /dev/stderr)\"\n\
-             (cd ../sibling && cargo build --release -p busbar-store-sqlite-plugin)\n\
-             cargo build --release --manifest-path x/Cargo.toml -p \"$PLUGIN_CRATE\"\n",
-            &mut out,
-        );
-        assert_eq!(
-            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar", "busbar-kernel", "busbar-store-sqlite-plugin"],
-            "a shell variable is not a package name and must not be reported: {out:?}"
-        );
-    }
-
-    #[test]
-    fn the_matrix_reader_takes_the_package_half_of_a_feature_cell_and_the_whole_tests_cell() {
-        let mut out = Vec::new();
-        scan_matrix(
-            "ci.yml",
-            "  tests:\n\
-             \x20           features: busbar-kernel/timing,busbar-llm/timing\n\
-             \x20           tests: -p busbar-kernel -p busbar-llm\n\
-             \x20           features: plane-a2a\n\
-             \x20           features: \"\"\n",
-            &mut out,
-        );
-        assert_eq!(
-            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar-kernel", "busbar-llm", "busbar-kernel", "busbar-llm"],
-            "a bare feature name names no package, and an empty job key is not a cell: {out:?}"
-        );
-    }
-
-    #[test]
-    fn only_a_rust_literal_that_begins_with_cargo_is_a_command() {
-        let mut out = Vec::new();
-        let prose = "the alloc gate. (It read '-p busbar-core' here for as long as ci.yml did.)";
-        let line =
-            format!("    (\"cargo test -p busbar-plane-llm --lib alloc_gate\", \"{prose}\"),");
-        scan_rust_commands("full_gate.rs", &line, &mut out);
-        assert_eq!(
-            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar-plane-llm"],
-            "prose that quotes a dead selector is not a command: {out:?}"
-        );
-        // ...and a doc comment is not scanned at all. THE PACKAGE HERE IS A LIVE ONE ON PURPOSE:
-        // this file is itself a covered file, the literal below really does begin with `cargo `
-        // once the escapes are read, and a dead name planted in it would red this gate against its
-        // own source. The assertion is `is_empty`, so it proves the doc-line skip either way.
-        let mut none = Vec::new();
-        scan_rust_commands("m.rs", "//! \"cargo test -p busbar-kernel\"", &mut none);
-        assert!(none.is_empty(), "{none:?}");
-    }
-
-    #[test]
-    fn a_declaration_parses_into_its_three_fields_in_either_comment_spelling() {
-        let d = parse_decl(&format!("{DECL_HASH} pkg{SEP}scripts/x.sh{SEP}a reason"))
-            .expect("hash form parses");
-        assert_eq!((d.pkg.as_str(), d.file.as_str()), ("pkg", "scripts/x.sh"));
-        assert_eq!(d.reason, "a reason");
-        assert!(parse_decl(&format!("{DECL_SLASH} pkg{SEP}f{SEP}r")).is_some());
-        // The module header prints the template; it must not declare anything.
-        assert!(parse_decl(&format!("//! {DECL_HASH} pkg{SEP}f{SEP}r")).is_none());
-        assert!(parse_decl(&format!("/// {DECL_SLASH} pkg{SEP}f{SEP}r")).is_none());
-    }
-
-    #[test]
-    fn a_port_number_is_not_a_package_and_a_variable_is_not_a_package() {
-        assert_eq!(
-            package_token("busbar-kernel").as_deref(),
-            Some("busbar-kernel")
-        );
-        assert_eq!(package_token("busbar)\"").as_deref(), Some("busbar"));
-        assert_eq!(package_token("\"$BIN_NAME\""), None);
-        assert_eq!(package_token("${{"), None);
-        assert_eq!(package_token("busbar-store-<backend>"), None);
-        assert_eq!(package_token("22"), None);
-        assert_eq!(package_token("8080:8080"), None);
-    }
-
-    #[test]
-    fn the_reader_is_picked_by_the_files_own_shape_and_only_markdown_is_unread() {
-        assert_eq!(reader_for("xtask/src/gates/x.rs"), Reader::Rust);
-        assert_eq!(reader_for(".github/workflows/plugin-ci.yml"), Reader::Yaml);
-        assert_eq!(reader_for(".github/actions/a/action.yaml"), Reader::Yaml);
-        assert_eq!(reader_for("qa/pipeline-checks.json"), Reader::Json);
-        assert_eq!(reader_for("qa/DESIGN-BINDINGS.md"), Reader::Prose);
-        for commands in [
-            "scripts/x.sh",
-            "scripts/x.py",
-            "scripts/x.mjs",
-            "qa/construction.toml",
-            "scripts/sub/Makefile",
-            "scripts/release-gate/run",
-            ".github/release-notify-targets.txt",
-        ] {
-            assert_eq!(reader_for(commands), Reader::Commands, "{commands}");
-        }
-    }
-
-    #[test]
-    fn a_python_argv_list_is_a_cargo_command_and_a_js_comment_is_not() {
-        let mut out = Vec::new();
-        scan_commands(
-            "x.py",
-            "    base = [\"cargo\", \"test\", \"-p\", \"busbar\", \"--features\", F]\n\
-             // cargo build -p busbar-kernel\n",
-            &mut out,
-        );
-        assert_eq!(
-            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar"],
-            "{out:?}"
-        );
-    }
-
-    #[test]
-    fn a_json_run_value_is_a_command_and_a_json_prose_field_is_not() {
-        let mut out = Vec::new();
-        scan_json_commands(
-            "qa/x.json",
-            "{\n  \"run\": \"m=$(cargo metadata --locked); cargo build -p busbar-kernel\",\n\
-             \x20 \"summary\": \"it ran `cargo test -p busbar-plane-llm --lib x` and found nothing\",\n\
-             \x20 \"positive_control\": \"cargo test -p busbar-plane-llm usage (run in the pin)\"\n}\n",
-            &mut out,
-        );
-        assert_eq!(
-            out.iter()
-                .map(|s| (s.pkg.as_str(), s.line))
-                .collect::<Vec<_>>(),
-            vec![("busbar-kernel", 2)],
-            "a prose field that opens with a command is the record of a run, not a run: {out:?}"
-        );
-    }
-
-    /// AN EXEMPTION IS SCOPED TO ITS OWN FILE: the declared file stays green and the other file
-    /// carrying the same dead selector is RED, cited by its own path and line.
-    #[test]
-    fn a_declaration_excuses_the_dead_selector_only_in_the_file_it_names() {
-        let ((a, a_text), (b, b_text)) = plant_pair(&cx()).expect("two covered scripts");
-        let declared_in_a = format!(
-            "{a_text}\ncargo build --locked -p {PLANTED_SCOPED}\n\
-             {DECL_HASH} {PLANTED_SCOPED}{SEP}{a}{SEP}{PLANTED_REASON}\n"
-        );
-
-        let mut only_a = Overlay::new();
-        only_a.set(&a, declared_in_a.clone());
-        assert!(
-            failed_ids(only_a).is_empty(),
-            "the declared site in its own file must stay green"
-        );
-
-        let mut both = Overlay::new();
-        both.set(&a, declared_in_a);
-        both.set(
-            &b,
-            format!("{b_text}\ncargo build --locked -p {PLANTED_SCOPED}\n"),
-        );
-        let planted = cx().with_overlay(both);
-        let verdict = crate::gates::execute(&PackageSelectorsGate, &planted);
-        let red: Vec<_> = verdict
-            .rows
-            .iter()
-            .filter(|r| r.status != crate::ledger::Status::Pass)
-            .collect();
-        assert_eq!(
-            red.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-            vec![ROW_RESOLVES]
-        );
-        assert!(
-            red[0].detail.contains(&format!("{b}:")),
-            "{}",
-            red[0].detail
-        );
-        assert!(
-            !red[0].detail.contains(&format!("{a}:")),
-            "{}",
-            red[0].detail
-        );
-    }
-
-    /// The ids that went non-PASS under one planted overlay.
-    fn failed_ids(ov: Overlay) -> Vec<String> {
-        let planted = cx().with_overlay(ov);
-        crate::gates::execute(&PackageSelectorsGate, &planted)
-            .rows
-            .iter()
-            .filter(|r| r.status != crate::ledger::Status::Pass)
-            .map(|r| r.id.clone())
-            .collect()
-    }
-
-    /// EVERY PLANT MUST REDDEN ITS OWN ROW AND NOTHING ELSE — except the root-manifest plant, whose
-    /// whole point is that everything below it is unproven. A rule proven only alongside its
-    /// neighbours is a rule that could be deleted with the self-test still green.
-    #[test]
-    fn each_plant_reddens_exactly_its_own_row() {
-        for p in plants(&cx()) {
-            if p.rule == ROW_UNIVERSE {
-                continue;
-            }
-            let ov = p
-                .overlay
-                .unwrap_or_else(|| panic!("nothing to plant: {}", p.label));
-            assert_eq!(
-                failed_ids(ov),
-                vec![p.rule.to_string()],
-                "plant `{}` did not redden exactly `{}`",
-                p.label,
-                p.rule
-            );
-        }
-    }
-
-    #[test]
-    fn the_gate_is_green_on_the_workspace() {
-        let verdict = crate::gates::execute(&PackageSelectorsGate, &cx());
-        assert!(
-            !verdict.red,
-            "package-selectors is RED on the real tree: {:?}",
-            verdict
-                .rows
-                .iter()
-                .filter(|r| r.status != crate::ledger::Status::Pass)
-                .map(|r| format!("{} {}", r.id, r.detail))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn the_selftest_proves_every_owed_row() {
-        let cx = cx();
-        let report = PackageSelectorsGate.selftest(&cx);
-        crate::gates::verify_report(&PackageSelectorsGate, &report)
-            .unwrap_or_else(|errs| panic!("package-selectors selftest: {errs:#?}"));
-        assert_eq!(report.skipped(), 0, "a case had nothing to plant");
-    }
-}
+#[path = "tests/package_selectors_tests.rs"]
+mod tests;
