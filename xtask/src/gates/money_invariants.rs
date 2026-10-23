@@ -105,12 +105,12 @@ const PRICE_ALLOW: &[&str] = &["pricing_version", "priced_from_ms", "fee_count"]
 /// is in the population.
 const STORE_RECORDS_PATH: &str = "crates/busbar-contract/src/records.rs";
 
-/// The store file's declared-type count, MEASURED 2026-09-24: 15 structs + 3 enums — the 17
-/// top-level types item 9 counted, plus the nested `VirtualKeyWire` serde twin, which is what a
+/// The store file's declared-type count, pinned at today's measure: 19 — 15 structs + 4 enums
+/// among the top-level types, plus the nested `VirtualKeyWire` serde twin, which is what a
 /// `VirtualKey` is actually persisted as. Fewer is a type moved or split out of the file the
-/// population is drawn from — a record the rows would no longer see — and refuses. Arming at today's
-/// number; a reviewed diff lowers it with the move.
-const STORE_TYPE_FLOOR: usize = 18;
+/// population is drawn from — a record the rows would no longer see — and refuses. A reviewed diff
+/// moves it with the type.
+const STORE_TYPE_FLOOR: usize = 19;
 
 /// The durability seam, where most journal writers live. The gate does NOT read the journal from
 /// this one file (that was the hand-named denominator that left `durability/amend.rs`'s amendment

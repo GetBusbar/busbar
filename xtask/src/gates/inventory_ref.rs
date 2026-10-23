@@ -57,10 +57,10 @@ pub const ROW_BLANK: &str = "inventory-ref:blank-inventory";
 pub const BINDINGS_PATH: &str = "qa/design-bindings.json";
 pub const BINDINGS_KEY: &str = "bindings";
 
-/// The discovery floor under the binding count. Today's table carries ~103 bindings, so ordinary
-/// work never approaches this, but it is far enough above zero that a manifest whose shape moved
-/// cannot answer "no dangling references" by having no references.
-pub const BINDING_FLOOR: usize = 40;
+/// The discovery floor under the binding count. Pinned at today's measure: the table carries exactly 104
+/// bindings, so a binding that vanishes turns this row red instead of hiding under slack, and a
+/// manifest whose shape moved cannot answer "no dangling references" by having no references.
+pub const BINDING_FLOOR: usize = 104;
 
 /// File-prefix word (as it appears in a binding's `inventory` column) -> the inventory file it
 /// names. The order is the Python dict's order; no alias is a prefix of another, so the first
@@ -94,7 +94,11 @@ pub const ALIASES: &[(&str, &str)] = &[
 /// cell split it like any other column boundary, so the derived `inventory` field for that ONE row
 /// is a fragment of that string rather than a pointer. The row itself, read rendered, is
 /// unambiguous. Named here rather than swallowed silently by the prefix heuristic.
-pub const KNOWN_PARSE_ARTIFACTS: &[&str] = &["PB-20"];
+///
+/// The exemption is pinned to the artefact itself: (binding id, the exact fragment the table parse
+/// leaves in its `inventory` column). Once the source row is fixed and the fragment is gone, the
+/// exemption lapses and the binding is checked like any other.
+pub const KNOWN_PARSE_ARTIFACTS: &[(&str, &str)] = &[("PB-20", "seq")];
 
 /// The master rule's own row describes the whole inventory instead of pointing at one file.
 ///
@@ -219,7 +223,10 @@ fn scan(cx: &Ctx, bindings: &[Binding]) -> Findings {
     let mut exists_cache: BTreeMap<&str, bool> = BTreeMap::new();
 
     for b in bindings {
-        if KNOWN_PARSE_ARTIFACTS.contains(&b.id.as_str()) {
+        if KNOWN_PARSE_ARTIFACTS
+            .iter()
+            .any(|(id, fragment)| b.id == *id && b.inventory.trim() == *fragment)
+        {
             continue;
         }
         let inv = b.inventory.trim();
@@ -757,13 +764,26 @@ mod tests {
             },
             Binding {
                 id: "PB-20".to_string(),
-                inventory: "seq|ts|action".to_string(),
+                inventory: "seq".to_string(),
             },
         ];
         let found = scan(&cx, &bindings);
         assert!(found.unrecognized.is_empty(), "{:?}", found.unrecognized);
         assert!(found.missing.is_empty(), "{:?}", found.missing);
         assert!(found.blank.is_empty(), "{:?}", found.blank);
+    }
+
+    /// The artefact exemption lapses with the artefact: PB-20 whose column is no longer the parse
+    /// fragment is checked like any other binding.
+    #[test]
+    fn the_known_artifact_exemption_lapses_when_the_artifact_is_gone() {
+        let cx = cx();
+        let bindings = vec![Binding {
+            id: "PB-20".to_string(),
+            inventory: "not-a-real-file ZZZ-001".to_string(),
+        }];
+        let found = scan(&cx, &bindings);
+        assert!(!found.unrecognized.is_empty());
     }
 
     /// A BLANK COLUMN IS A FINDING, NOT A SKIP. The arm this gate could not produce a NO for.

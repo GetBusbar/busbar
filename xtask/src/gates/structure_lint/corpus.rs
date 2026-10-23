@@ -56,9 +56,10 @@ use crate::scan::{self, ScopeLine};
 
 pub const ROW_CANDIDATE_FLOOR: &str = "structure-lint:candidate-floor";
 
-/// Deliberately far below the real count (~1,500 files): a guard against ZERO and near-zero, not a
-/// census. A `const`, and the environment override the shell carried is gone.
-pub const CANDIDATE_FLOOR: usize = 200;
+/// Pinned at today's measure: 751 candidate files (`crates/**/*.rs` outside `tests/` and `benches/`).
+/// A file leaving the set turns the row red and a reviewed diff moves the number with it. A `const`,
+/// and the environment override the shell carried is gone.
+pub const CANDIDATE_FLOOR: usize = 751;
 
 const EXCLUDE_TESTS: &str = "/tests/";
 const EXCLUDE_BENCHES: &str = "/benches/";

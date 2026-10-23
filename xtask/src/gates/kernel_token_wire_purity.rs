@@ -57,12 +57,12 @@ const REQUIRED_KERNEL_CRATES: &[&str] = &[
     "busbar-kernel-wal",
 ];
 
-/// The denominator floor over the WHOLE kernel scan set. Measured 292 production files across the
-/// nine crates (busbar-kernel 200, -ledger 23, -egress 20, -identity 14, -breaker 8, -wal 8,
-/// -budget 7, -scope 2, and 10 in the audit crate) when it was raised from 8 (which was 4% of `busbar-kernel`
-/// alone). 200 leaves room for the 1.6.0 deletion lists and still refuses the failure the old floor
-/// admitted: `handlers/` + `ingress/` lifted into a crate outside the prefix drops the set to ~100.
-const SCAN_FLOOR: usize = 200;
+/// The denominator floor over the WHOLE kernel scan set, pinned at today's measure: 278 production
+/// files across the eight kernel crates (busbar-kernel 211, -ledger 21, -egress 13, -audit 10,
+/// -breaker 8, -wal 8, -identity 6, -scope 1). A file that leaves the set turns this red and a
+/// reviewed diff moves the number with it; `handlers/` + `ingress/` lifted into a crate outside the
+/// prefix drops the set to ~100.
+const SCAN_FLOOR: usize = 278;
 
 /// The `find … -name '*.rs'` exclusions the shell carried, verbatim: an integration-test tree and a
 /// `*_tests.rs` sibling are fixtures, and a wire literal in one is a fixture's literal.
