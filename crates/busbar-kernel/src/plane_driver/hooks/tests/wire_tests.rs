@@ -5,7 +5,7 @@
 //! P2 D4), and v1.5.5's hook reply tests (its `wire.rs`
 //! inline suite, M4 HOOK-PARITY), verbatim. The 1.5.5 host normalized a JSON reply here; on the
 //! memory ABI the reply is lowered by the hook SDK into the kind's fixed `out` and read back by the
-//! kernel (`policy::decision` / `transformed`), so `norm` runs that chain.
+//! kernel (`policy`'s two readers, `answered` here and `transformed`), so `norm` runs that chain.
 
 /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
 /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
@@ -135,9 +135,10 @@ fn status_metrics_validates_native_buckets() {
     );
 }
 
-use super::{decision, transformed};
+use super::{decision as answered, transformed};
 use crate::hooks::{
-    CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
+    CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision as RouteAnswer,
+    RoutingRequest,
 };
 use busbar_contract::abi::hook::{
     VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
@@ -263,10 +264,10 @@ fn opt_in_prompt_without_system_still_sends_messages() {
 
 /// A 1.5.5 `decide` reply, as the host now receives it: the hook SDK lowers the JSON
 /// (`lower_decide_reply`) and states it in the kind's fixed `out` (`write_verdict`: the verb bits,
-/// the stated status, the written parts); the kernel reads that back (`plugin::decision`). The
+/// the stated status, the written parts); the kernel reads that back (`answered`). The
 /// `out` encoding below is the hook ABI's, one line per verdict (the SDK's own tests prove
 /// `write_verdict` writes exactly this and the frame reads it back).
-fn norm(json: &str) -> RoutingDecision {
+fn norm(json: &str) -> RouteAnswer {
     let cands = [cand(0, &[]), cand(1, &[])];
     let (verbs, status, message, tags, order) =
         match lower_decide_reply(Ok(serde_json::from_str(json).unwrap())) {
@@ -285,7 +286,7 @@ fn norm(json: &str) -> RoutingDecision {
             Verdict::Abstain => (VERB_ABSTAIN, 0, String::new(), vec![], vec![]),
             Verdict::Failed(why) => panic!("the reply failed to parse: {why}"),
         };
-    decision(verbs, status, || message, || tags, || order, &cands)
+    answered(verbs, status, || message, || tags, || order, &cands)
 }
 
 /// A 1.5.5 `transform` reply, the same way (`lower_transform_reply`, `write_rewrite`,
@@ -312,7 +313,7 @@ fn reject_verbs(status: Option<u16>) -> u32 {
 #[test]
 fn reject_bare_uses_defaults() {
     match norm(r#"{"reject":{}}"#) {
-        RoutingDecision::Reject { status, message } => {
+        RouteAnswer::Reject { status, message } => {
             assert_eq!(status, 403);
             assert_eq!(message, REJECT_MESSAGE_DEFAULT);
         }
@@ -338,7 +339,7 @@ fn reject_status_clamps_to_4xx() {
         (-1, 403),
     ] {
         match norm(&format!(r#"{{"reject":{{"status":{sent}}}}}"#)) {
-            RoutingDecision::Reject { status, .. } => {
+            RouteAnswer::Reject { status, .. } => {
                 assert_eq!(status, want, "sent {sent}");
             }
             other => panic!("expected Reject for {sent}, got {other:?}"),
@@ -351,20 +352,20 @@ fn reject_status_clamps_to_4xx() {
 #[test]
 fn reject_message_is_sanitized() {
     match norm("{\"reject\":{\"message\":\"no\\r\\nSet-Cookie: x\\u0000!\"}}") {
-        RoutingDecision::Reject { message, .. } => {
+        RouteAnswer::Reject { message, .. } => {
             assert_eq!(message, "noSet-Cookie: x!");
         }
         other => panic!("expected Reject, got {other:?}"),
     }
     let long = "x".repeat(1000);
     match norm(&format!(r#"{{"reject":{{"message":"{long}"}}}}"#)) {
-        RoutingDecision::Reject { message, .. } => {
+        RouteAnswer::Reject { message, .. } => {
             assert_eq!(message.chars().count(), REJECT_MESSAGE_MAX_CHARS);
         }
         other => panic!("expected Reject, got {other:?}"),
     }
     match norm("{\"reject\":{\"message\":\"\\r\\n\\t\"}}") {
-        RoutingDecision::Reject { message, .. } => {
+        RouteAnswer::Reject { message, .. } => {
             assert_eq!(message, REJECT_MESSAGE_DEFAULT);
         }
         other => panic!("expected Reject, got {other:?}"),
@@ -379,7 +380,7 @@ fn reject_takes_precedence() {
         r#"{"abstain":true,"reject":{"status":451}}"#,
     ] {
         match norm(json) {
-            RoutingDecision::Reject { status, .. } => assert_eq!(status, 451),
+            RouteAnswer::Reject { status, .. } => assert_eq!(status, 451),
             other => panic!("expected Reject for {json}, got {other:?}"),
         }
     }
@@ -401,7 +402,7 @@ fn reject_is_fail_closed_on_malformed_values() {
         r#"{"reject":{"message":123}}"#,
     ] {
         match norm(json) {
-            RoutingDecision::Reject { status, message } => {
+            RouteAnswer::Reject { status, message } => {
                 assert_eq!(
                     status, 403,
                     "malformed reject must use the default status: {json}"
@@ -414,11 +415,11 @@ fn reject_is_fail_closed_on_malformed_values() {
     // The explicit opt-outs: false / null defer to the rest of the reply.
     assert!(matches!(
         norm(r#"{"order":[1,0],"reject":false}"#),
-        RoutingDecision::Prefer(o) if o == vec![1, 0]
+        RouteAnswer::Prefer(o) if o == vec![1, 0]
     ));
     assert!(matches!(
         norm(r#"{"order":[1,0],"reject":null}"#),
-        RoutingDecision::Prefer(o) if o == vec![1, 0]
+        RouteAnswer::Prefer(o) if o == vec![1, 0]
     ));
 }
 
@@ -428,12 +429,12 @@ fn reject_is_fail_closed_on_malformed_values() {
 #[test]
 fn reject_message_strips_unicode_line_separators() {
     match norm("{\"reject\":{\"message\":\"a\\u2028b\\u2029c\"}}") {
-        RoutingDecision::Reject { message, .. } => assert_eq!(message, "abc"),
+        RouteAnswer::Reject { message, .. } => assert_eq!(message, "abc"),
         other => panic!("expected Reject, got {other:?}"),
     }
     // Bidi override + isolate + zero-width + BOM all stripped; visible text intact.
     match norm("{\"reject\":{\"message\":\"ok\\u202Espoof\\u2066x\\u200By\\uFEFFz\"}}") {
-        RoutingDecision::Reject { message, .. } => assert_eq!(message, "okspoofxyz"),
+        RouteAnswer::Reject { message, .. } => assert_eq!(message, "okspoofxyz"),
         other => panic!("expected Reject, got {other:?}"),
     }
 }
@@ -486,44 +487,41 @@ fn opt_in_content_with_newlines_stays_one_line() {
 fn non_reject_replies_unchanged() {
     assert!(matches!(
         norm(r#"{"order":[1,0]}"#),
-        RoutingDecision::Prefer(o) if o == vec![1, 0]
+        RouteAnswer::Prefer(o) if o == vec![1, 0]
     ));
-    assert!(matches!(
-        norm(r#"{"abstain":true}"#),
-        RoutingDecision::Abstain
-    ));
-    assert!(matches!(norm(r#"{}"#), RoutingDecision::Abstain));
+    assert!(matches!(norm(r#"{"abstain":true}"#), RouteAnswer::Abstain));
+    assert!(matches!(norm(r#"{}"#), RouteAnswer::Abstain));
 }
 
-/// `normalize` maps `restrict` to `RoutingDecision::Restrict` with reject > restrict > order
+/// `normalize` maps `restrict` to `RouteAnswer::Restrict` with reject > restrict > order
 /// precedence; a malformed restrict is fail-closed to an EMPTY tag set (→ on_empty downstream),
 /// and `restrict: false` is the explicit opt-out.
 #[test]
 fn normalize_restrict_precedence_and_fail_closed() {
     // Well-formed restrict → the tags.
     match norm(r#"{"restrict":{"tags_any":["baa"]}}"#) {
-        RoutingDecision::Restrict { tags_any } => assert_eq!(tags_any, vec!["baa".to_string()]),
+        RouteAnswer::Restrict { tags_any } => assert_eq!(tags_any, vec!["baa".to_string()]),
         other => panic!("expected Restrict, got {other:?}"),
     }
     // reject WINS over a co-present restrict.
     assert!(matches!(
         norm(r#"{"reject":{"status":403},"restrict":{"tags_any":["baa"]}}"#),
-        RoutingDecision::Reject { .. }
+        RouteAnswer::Reject { .. }
     ));
     // restrict WINS over a co-present order.
     assert!(matches!(
         norm(r#"{"restrict":{"tags_any":["x"]},"order":[0,1]}"#),
-        RoutingDecision::Restrict { .. }
+        RouteAnswer::Restrict { .. }
     ));
     // Malformed restrict → fail-closed empty tag set (→ on_empty), never allow-all/order.
     match norm(r#"{"restrict":{"tags_any":[]}}"#) {
-        RoutingDecision::Restrict { tags_any } => assert!(tags_any.is_empty()),
+        RouteAnswer::Restrict { tags_any } => assert!(tags_any.is_empty()),
         other => panic!("malformed restrict must stay Restrict (fail-closed), got {other:?}"),
     }
     // Explicit opt-out: `restrict: false` is NOT a restriction.
     assert!(matches!(
         norm(r#"{"restrict":false,"order":[1,0]}"#),
-        RoutingDecision::Prefer(_)
+        RouteAnswer::Prefer(_)
     ));
 }
 

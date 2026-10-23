@@ -4,7 +4,7 @@
 //! THE HOOK STAGE ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "Hooks"; ARCHITECT K5,
 //! 2026-10-02): the request-stage hooks run at the head of the route leg, after admission, over the
 //! plane's own projection of the unit's request (`project`, pure, ticketless), in the order the
-//! previous release ran them for an LLM unit:
+//! previous release ran them:
 //!
 //! 1. the REWRITE chain (`prompt: rw` gates, the global ones then the pool's): each hook sees the
 //!    request as the previous one left it; a rewrite goes back to the plane (`ProjectIn::rewrite`),
@@ -39,7 +39,7 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext,
-    RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
+    RoutingDecision as RouteAnswer, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
@@ -799,29 +799,30 @@ fn fault_clear(key: &str) {
     }
 }
 
-/// Map a decision: an order normalised against the candidates (an empty one abstains), a reject
-/// clamped and sanitised (for every producer), a restrict carried with its `on_empty`.
-fn map_decision(
-    decision: RoutingDecision,
+/// Map a ranking hook's answer: an order normalised against the candidates (an empty one
+/// abstains), a reject clamped and sanitised (for every producer), a restrict carried with its
+/// `on_empty`.
+fn map_answer(
+    answer: RouteAnswer,
     name: &'static str,
     candidates: &[Candidate<'_>],
     on_empty: &PolicyOnError,
 ) -> Decided {
-    match decision {
-        RoutingDecision::Prefer(order) => {
+    match answer {
+        RouteAnswer::Prefer(order) => {
             let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-            match RoutingDecision::from_ranked(order, &valid) {
-                RoutingDecision::Prefer(order) => Decided::Order { order, name },
+            match RouteAnswer::from_ranked(order, &valid) {
+                RouteAnswer::Prefer(order) => Decided::Order { order, name },
                 _ => Decided::Weighted,
             }
         }
-        RoutingDecision::Abstain => Decided::Weighted,
-        RoutingDecision::Reject { status, message } => Decided::RejectRequest {
+        RouteAnswer::Abstain => Decided::Weighted,
+        RouteAnswer::Reject { status, message } => Decided::RejectRequest {
             status: clamp_reject_status(status),
             message: sanitize_reject_message(&message),
             name,
         },
-        RoutingDecision::Restrict { tags_any } => Decided::Restrict {
+        RouteAnswer::Restrict { tags_any } => Decided::Restrict {
             tags_any,
             name,
             on_empty: on_empty.clone(),
@@ -910,9 +911,9 @@ impl Asked<'_> {
         )
         .await
         {
-            Ok(Ok(decision)) => {
+            Ok(Ok(answer)) => {
                 fault_clear(&key);
-                map_decision(decision, policy.name(), self.candidates, on_empty)
+                map_answer(answer, policy.name(), self.candidates, on_empty)
             }
             Ok(Err(e)) => {
                 if fault_enter(&key) {
@@ -993,7 +994,7 @@ impl Asked<'_> {
             )
             .await
             {
-                Ok(Ok(decision)) => {
+                Ok(Ok(answer)) => {
                     fault_clear(&key);
                     crate::diag_debug!(
                         ON_ERROR_FALLBACK_ANSWERED,
@@ -1002,7 +1003,7 @@ impl Asked<'_> {
                         pool = self.pool,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return map_decision(decision, fb.policy.name(), self.candidates, &fb.on_empty);
+                    return map_answer(answer, fb.policy.name(), self.candidates, &fb.on_empty);
                 }
                 Ok(Err(e)) => {
                     if fault_enter(&key) {
@@ -1122,12 +1123,19 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
 /// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
 /// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
 /// as one, and the plane applies it as nothing, as 1.5.5 did
-/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines).
+/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines). The reply is
+/// serialized straight from the hook's values, never copied into a JSON tree first; its two keys
+/// keep the order a JSON object of them serializes in.
 fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "messages": rw.messages,
-        "tools": rw.tools,
-    }))
+    #[derive(serde::Serialize)]
+    struct Crossing<'a> {
+        messages: &'a [serde_json::Value],
+        tools: &'a [serde_json::Value],
+    }
+    serde_json::to_vec(&Crossing {
+        messages: &rw.messages,
+        tools: &rw.tools,
+    })
     .unwrap_or_default()
 }
 
@@ -2111,7 +2119,7 @@ impl SessionStage {
             let decided =
                 tokio::time::timeout(*timeout, policy.decide(&req, &[], &ctx, *timeout)).await;
             match decided {
-                Ok(Ok(RoutingDecision::Reject { status, message })) => {
+                Ok(Ok(RouteAnswer::Reject { status, message })) => {
                     // 1.5.5's one clamp rule (outside 400..=499 is 403), never a saturating one.
                     return StageAnswer::Stop {
                         status: clamp_reject_status(status),
