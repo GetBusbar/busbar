@@ -206,6 +206,30 @@ impl ServiceStore {
         self.lock().retain(|t, _| decode(t.slot).0 != worker);
     }
 
+    /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the
+    /// ticket called leaves it.
+    #[cfg(test)]
+    pub(crate) fn keep(&self, ticket: Ticket, seq: u32) {
+        let epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
+        self.lock()
+            .entry(ticket)
+            .or_insert_with(|| Held {
+                epoch,
+                entries: HashMap::new(),
+            })
+            .entries
+            .insert(
+                seq,
+                (
+                    Bound { op: 0, req: 0 },
+                    Entry::Done {
+                        stored: Stored::ready(1),
+                        shorts: 0,
+                    },
+                ),
+            );
+    }
+
     /// How many results the store holds.
     #[cfg(test)]
     pub(crate) fn held(&self) -> usize {
