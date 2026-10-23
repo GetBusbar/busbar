@@ -448,9 +448,9 @@ fn a_crossing_with_its_scoped_capture_allocates_nothing() {
     // The worker's first crossings build its capture slot.
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     assert_eq!(tick(inst), (Outcome::Ready, 42));
-    crate::abi::CountingAlloc::reset();
+    crate::alloc_counter::reset();
     let answered = tick(inst);
-    let allocations = crate::abi::CountingAlloc::count();
+    let allocations = crate::alloc_counter::allocations();
     assert_eq!(answered, (Outcome::Ready, 42));
     assert_eq!(allocations, 0, "a warm crossing allocated");
     assert_eq!(close(inst, 0), Outcome::Ready);

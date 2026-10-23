@@ -3547,3 +3547,129 @@ fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
         "the client-drop cancel named the unit its op serves"
     );
 }
+
+/// RED (audit loader-src PL1#7; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.13 M1, l.1652-1653:
+/// "`close` is refused while units are in flight"): an admitted unit's op (a plane's `on_piece` or
+/// `serve`, [`Dispatcher::submit_unit`]) holds no `max_inflight` unit, yet while one is in flight
+/// `close` is REFUSED and never crosses, called or submitted. RED: the unit op left `inflight` at 0,
+/// so `close` took every unit and closed the instance under a pending unit, whose resume then
+/// answered FAULT and cut a stream already answered to its caller. The GREEN twin: once the unit's
+/// op has ended, `close` crosses and closes.
+#[test]
+fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_unit(
+        &p,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Stream,
+        0,
+        Arc::new(()),
+    );
+    until("the unit's held op", || d.is_pending(t));
+    let n = crossings(&p);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Refused,
+        "close crossed while a unit's op was in flight"
+    );
+    let c = d.mint(1).unwrap();
+    let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
+    assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
+    assert_eq!(crossings(&p), n, "a refused close never crossed");
+    assert!(p.is_open());
+    d.drop_client(t);
+    let _ = held.wait(WAIT).unwrap();
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Ready
+    );
+    assert!(!p.is_open());
+}
+
+/// RED (audit loader-src PL1#8; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.324-325: "The memory a
+/// call lends a plugin lives until that call completes, abandoned or not, for every kind"): when
+/// one plugin wedges a worker and the watchdog replaces it, a HEALTHY instance's op that was
+/// PENDING on that worker is sent `cancel` before its frame and lent memory go, so the plugin
+/// learns its op ended (a store op's checked-out connection is released on `cancel`). Its caller is
+/// answered FAULT, and the lent memory goes only after the `cancel`. RED: the replacement dropped
+/// the op with no `cancel`, and the plugin was never told.
+#[test]
+fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_its_memory_goes() {
+    let d = Dispatcher::new(config());
+    let (healthy, sink) = opened(&d);
+    let (owner, dropped) = lent(plug::PEND_HOLD);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_lent(
+        &healthy,
+        t,
+        TICK,
+        lent_frame(&owner),
+        DeadlineClass::Call,
+        0,
+        owner.clone(),
+    );
+    drop(owner);
+    until("the healthy op pends", || d.is_pending(t));
+    let (wedger, _) = opened(&d);
+    let h = d.mint(0).unwrap();
+    let hung = d.submit(
+        &wedger,
+        h,
+        TICK,
+        frame(b"hang:orphan"),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the watchdog replaced the wedged worker", || {
+        d.stats().replacements == 1
+    });
+    until("the healthy instance's orphaned op is cancelled", || {
+        count(&healthy, &sink).1 >= 1
+    });
+    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Fault);
+    until("the orphan's lent memory goes after its cancel", || {
+        dropped.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    // Release the hang from a third instance (the wedger is faulted).
+    let (releaser, _) = opened(&d);
+    assert_eq!(
+        releaser.call(TICK, &mut frame(b"unhang:orphan")).outcome,
+        Outcome::Ready
+    );
+    drop(hung);
+}
+
+/// RED (audit loader-src PL1#6; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.12, "the host never
+/// runs a service twice", and l.1509, "a late wake cannot resume a slot the host has since recycled
+/// to a different call"): the results an op on an INLINE ticket kept are that op's own. A resume
+/// reads them; the next NEW op on the ticket, whose handles count from 0 again, starts with none,
+/// and a dropped inline ticket takes them with it. RED: nothing forgot an inline ticket's results,
+/// so the next op on a carrier's connection side redeemed the last op's answer on its handle 0 (the
+/// same random bytes, a stale verdict), and the entries outlived the ticket.
+#[test]
+fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let side = d.inline_ticket().expect("an inline ticket");
+    let t = side.ticket();
+    d.services().keep(t, 0);
+    let _ = p.call_inline(t, true, TICK, &mut frame(answer(1)));
+    assert_eq!(d.services().held(), 1, "a resume reads what its op kept");
+    let _ = p.call_inline(t, false, TICK, &mut frame(answer(1)));
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a new op on an inline ticket redeems the last op's kept results"
+    );
+    d.services().keep(t, 0);
+    drop(side);
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a dropped inline ticket's kept results outlive it"
+    );
+}
