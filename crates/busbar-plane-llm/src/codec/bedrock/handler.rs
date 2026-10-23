@@ -135,10 +135,10 @@ pub fn write_image_request(r: &crate::codec::ir::image::ImageReq) -> Bytes {
     });
     for (name, present) in [
         ("negative_prompt", r.negative_prompt.is_some()),
-        ("seed", r.seed.is_some()),
+        (keys::SEED, r.seed.is_some()),
         ("guidance_scale", r.guidance_scale.is_some()),
         ("size", r.size.is_some()),
-        ("quality", r.quality.is_some()),
+        (keys::QUALITY, r.quality.is_some()),
     ] {
         if present {
             invoke_drop(name);
@@ -212,7 +212,7 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     // `crates/busbar/src/handlers/bedrock.rs:196-228`): a `normalize` the IR carries is dropped
     // with a warn ([`invoke_drop`]), and Titan applies its own default.
     if r.normalize.is_some() {
-        invoke_drop("normalize");
+        invoke_drop(super::NORMALIZE);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -270,7 +270,7 @@ pub fn write_rerank_request(r: &crate::codec::ir::rerank::RerankReq) -> Bytes {
     // `crates/busbar/src/handlers/bedrock.rs:311-324`): a `return_documents` the IR carries is
     // dropped with a warn ([`invoke_drop`]).
     if r.return_documents.is_some() {
-        invoke_drop("return_documents");
+        invoke_drop(keys::RETURN_DOCUMENTS);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -282,7 +282,7 @@ pub fn write_rerank_response(r: &crate::codec::ir::rerank::RerankResp) -> WireBo
     // `crates/busbar/src/handlers/bedrock.rs:334-348`): a ranked `document` the IR carries is
     // dropped with a warn ([`invoke_drop`]).
     if r.results.iter().any(|x| x.document.is_some()) {
-        invoke_drop("document");
+        invoke_drop(keys::DOCUMENT);
     }
     let results: Vec<Value> = r
         .results
