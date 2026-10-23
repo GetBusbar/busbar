@@ -3065,7 +3065,8 @@ fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_and_named_by_verify
         "no figure is served for a checkpoint the chain cannot vouch for"
     );
 
-    let answer = crate::root::units_admin::bound::verify_effect(&view).expect("verify answers");
+    let answer =
+        crate::root::units_admin::bound::verify_effect(&view, None).expect("verify answers");
     let verified: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let named = format!(
         "checkpoint {}: no record on the chain carries it",

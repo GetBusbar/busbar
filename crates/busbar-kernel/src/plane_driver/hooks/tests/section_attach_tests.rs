@@ -32,6 +32,7 @@ impl CallerFacts for NoCaller {
     fn budget(&self, _principal: &str) -> Vec<BudgetBucketState> {
         Vec::new()
     }
+    fn hook_read(&self, _: &str, _: Option<&str>, _: &str, _: bool) {}
 }
 
 /// A `kind: gate` on the in-process hook double, holding `prompt` (a `rw` one is a rewrite).
