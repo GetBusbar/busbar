@@ -60,8 +60,12 @@
 //! (default `..`, the sibling-checkout convention `release-check.sh` and qa-gate use), by its `repo`
 //! name or that name without its `busbar-` prefix. A clone that exists is scanned by the same rules
 //! (its `tests/`, `benches/`, `target/` skipped) and held to the ledger's rows that carry
-//! `repo = "<repo>"`; one that does not exist is SKIPPED AND NAMED in the row's detail — never a
-//! silent green. CI checks out no siblings, so there the row says exactly that.
+//! `repo = "<repo>"`; one that does not exist is NAMED in the row's detail — never a silent green.
+//!
+//! CI checks out no siblings, so a plugin with no sibling clone is read from the checkout cargo
+//! fetched for the rev `Cargo.lock` pins it at (the directory beside its `manifest_path` in
+//! `cargo metadata`), scanned by the same rules. The row reads ZERO plugins as RED: a scan that
+//! read nothing proved nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -855,6 +859,7 @@ fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
             return ext;
         }
     };
+    let mut pinned: Option<BTreeMap<String, PathBuf>> = None;
     for p in &fleet.plugins {
         let candidates = [
             p.repo.clone(),
@@ -863,19 +868,34 @@ fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
                 .unwrap_or(&p.repo)
                 .to_string(),
         ];
-        let Some(dir) = candidates
+        let sibling = candidates
             .iter()
             .map(|c| root.join(c))
-            .find(|d| d.join("Cargo.toml").is_file())
-        else {
-            ext.absent.push(p.repo.clone());
-            continue;
+            .find(|d| d.join("Cargo.toml").is_file());
+        let (dir, how) = match sibling {
+            Some(d) => (d, "clone"),
+            None => {
+                let map = pinned.get_or_insert_with(|| match pinned_checkouts(cx) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        ext.errors.push(e);
+                        BTreeMap::new()
+                    }
+                });
+                match candidates.iter().find_map(|c| map.get(c)) {
+                    Some(d) => (d.clone(), "pinned checkout"),
+                    None => {
+                        ext.absent.push(p.repo.clone());
+                        continue;
+                    }
+                }
+            }
         };
         let mut files = Vec::new();
         collect_rs(&dir, &dir, &mut files);
         files.sort();
         ext.scanned.push(format!(
-            "{} ({} files, {})",
+            "{} ({} files, {how} {})",
             p.repo,
             files.len(),
             dir.display()
@@ -891,6 +911,33 @@ fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
         }
     }
     ext
+}
+
+/// The plugin logic crates this binary pins from their own repositories, as `package -> the directory
+/// cargo checked the pinned rev out into` (the parent of the package's `manifest_path`). A `-plugin`
+/// cdylib twin is its generated binding, not a plugin's own source.
+fn pinned_checkouts(cx: &Ctx) -> Result<BTreeMap<String, PathBuf>, String> {
+    let meta: serde_json::Value =
+        serde_json::from_str(&cx.cargo_metadata_all_features("Cargo.toml")?)
+            .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
+    let mut out = BTreeMap::new();
+    for p in meta["packages"].as_array().into_iter().flatten() {
+        let (Some(name), Some(src), Some(manifest)) = (
+            p["name"].as_str(),
+            p["source"].as_str(),
+            p["manifest_path"].as_str(),
+        ) else {
+            continue;
+        };
+        if !src.starts_with("git+") || name.ends_with("-plugin") {
+            continue;
+        }
+        if let Some(dir) = Path::new(manifest).parent() {
+            out.entry(name.to_string())
+                .or_insert_with(|| dir.to_path_buf());
+        }
+    }
+    Ok(out)
 }
 
 /// Every `.rs` under `dir`, relative, skipping build output, VCS and hidden directories.
@@ -1392,7 +1439,12 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
             )
         }
     };
-    let ext = scan_external(cx, &ledger.external_root, &sigs);
+    external_result(scan_external(cx, &ledger.external_root, &sigs), ledger)
+}
+
+/// The `abi-location:external-plugins` row for one external scan. A scan that read no plugin at
+/// all is RED: no sibling clone and no pinned checkout means nothing was held to the ABI.
+fn external_result(ext: External, ledger: &Ledger) -> Row {
     let present: Vec<&str> = ext
         .scanned
         .iter()
@@ -1409,6 +1461,18 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
     let stale = minus(&ext_ledger, &keys);
 
     let mut problems = ext.errors.clone();
+    if ext.scanned.is_empty() {
+        problems.push(format!(
+            "scanned 0 plugins: no registered plugin has a clone under {} or a pinned checkout \
+             (absent: {}); a scan that read nothing proved nothing",
+            ext.root.display(),
+            if ext.absent.is_empty() {
+                "none registered".to_string()
+            } else {
+                ext.absent.join(", ")
+            }
+        ));
+    }
     let mut pending = new.clone();
     for f in &ext.findings {
         if let Some(i) = pending.iter().position(|k| *k == f.key()) {
@@ -1425,7 +1489,7 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
         String::new()
     } else {
         format!(
-            "; SKIPPED (no local clone under {}): {}",
+            "; NOT READ (no clone under {} and not pinned): {}",
             ext.root.display(),
             ext.absent.join(", ")
         )
@@ -1437,11 +1501,7 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
             format!(
                 "scanned {}: {}{skipped}",
                 ext.scanned.len(),
-                if ext.scanned.is_empty() {
-                    "none".to_string()
-                } else {
-                    ext.scanned.join(", ")
-                }
+                ext.scanned.join(", ")
             ),
         )
     } else {
@@ -1456,6 +1516,34 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RED: an external scan that read no plugin (no sibling clone, no pinned checkout) is no
+    /// green. On dev the same scan was `Row::pass("scanned 0 ... SKIPPED")`.
+    #[test]
+    fn an_external_scan_that_read_no_plugin_is_refused() {
+        let ledger = Ledger::default();
+        let ext = External {
+            findings: Vec::new(),
+            scanned: Vec::new(),
+            absent: vec!["busbar-store-memory".to_string()],
+            errors: Vec::new(),
+            root: PathBuf::from("/nowhere"),
+        };
+        let row = external_result(ext, &ledger);
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{row:?}");
+        assert!(row.detail.contains("scanned 0 plugins"), "{}", row.detail);
+        let ext = External {
+            findings: Vec::new(),
+            scanned: vec!["busbar-store-memory (1 files, pinned checkout /x)".to_string()],
+            absent: Vec::new(),
+            errors: Vec::new(),
+            root: PathBuf::from("/nowhere"),
+        };
+        assert_eq!(
+            external_result(ext, &ledger).status,
+            crate::ledger::Status::Pass
+        );
+    }
 
     /// The memo answers exactly what a fresh scan answers: on the first read, on the second, and
     /// when the bytes or the ABI's fn types change under the same path.

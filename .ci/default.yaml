@@ -42,10 +42,6 @@ ratchets:
     format: toml
     rows:
       finding: { key: [rule, file, item], strike: tightens }
-  - path: qa/abi-freeze.toml
-    format: toml
-    rows:
-      frozen: { key: [dir], lower: [lines], strike: tightens }
   # Allow lists: a struck entry allows less. `reason`/`class` are NOT ignored: a changed reason or a
   # keep->port flip goes to a person.
   - path: qa/scripts-allowlist.toml
