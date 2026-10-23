@@ -2056,9 +2056,13 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # away is RED (VACUITY), never a green that ran nothing.
 # The mcp, a2a and streaming planes are pinned git rows (see pinned_plane_cargo_test): their pins
 # run in the plane's pinned checkout. The refusal-collapse count is 8 here (contract 4, plane-llm 1,
-# xtask 3) plus one per pinned plane (mcp's door witness, a2a, streaming).
+# xtask 3) plus one per pinned plane (mcp's door witness, a2a, streaming). The plane-llm pin lives in
+# `crates/busbar-plane-llm/tests/on_driver/`, which has no `main.rs`: the root's `hook_parity_driver`
+# test binary compiles it (its `driver-proofs` row), so that pin runs under `-p busbar`, not under
+# `-p busbar-plane-llm`.
 step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo_test_runs \
   cargo test -p busbar-contract -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse :: \
+  cargo test -p busbar --test hook_parity_driver --features test-harness --quiet p_item_refusal_reason_collapse :: \
   pinned_plane_cargo_test cargo test -p busbar-plane-mcp --with-twin --quiet p_item_refusal_reason_collapse :: \
   pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_refusal_reason_collapse :: \
   pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_refusal_reason_collapse
