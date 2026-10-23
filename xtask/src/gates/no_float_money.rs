@@ -1609,6 +1609,9 @@ struct FloatDecls {
 #[cfg(test)]
 type FileDecls = (Vec<(String, bool)>, Vec<(String, bool)>);
 
+/// `(name, type text)` pairs.
+type NameTypes = Vec<(String, String)>;
+
 /// One file's declarations with the TYPE TEXT kept raw, because whether a type is a float depends
 /// on the aliases the whole tree declares ([`float_decls`] resolves them): `fns` as `(name,
 /// return type)`, `fields` as `(name, type)`, `aliases` as `(name, right-hand side)` and `consts`
@@ -1844,7 +1847,7 @@ fn read_raw_decls(text: &str) -> RawDecls {
 /// Every `type <Name><..> = <rhs>;` and every `const|static [mut] <NAME>: <type> =` in `code` (the
 /// blanked source), as `(name, rhs)` and `(name, type)`. A `type` with no `=` (a trait's
 /// associated type) names no alias.
-fn read_aliases_and_consts(code: &str) -> (Vec<(String, String)>, Vec<(String, String)>) {
+fn read_aliases_and_consts(code: &str) -> (NameTypes, NameTypes) {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut aliases = Vec::new();
     for at in word_positions(code, "type") {
