@@ -7622,7 +7622,7 @@ mod pools_door_refusals {
             panic!("the direct admission refuses a key naming an unconfigured group");
         };
         let (direct_status, direct_kind, direct_message, _) =
-            busbar_kernel::ingress::limit_refusal("", &blocked);
+            busbar_kernel::ingress::limit_refusal(&blocked);
 
         // The over-quota kind is OpenAI's own `insufficient_quota`, which the chat dialect's native
         // envelope carries as both its `type` and its `code` (1.5.5's pairing, never a null code).
