@@ -2284,7 +2284,7 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "7539cbcc61bc17b06f24c685e10c18afe0b8b135867b360bd4c565a3657218de",
+   "tree_hash": "685784cb16bd7a4be15cbead170b6205ec44ed0da1a0bbd42cc67b1f32f9030f",
    "audited_at": "a88c8109b44c896e4300410e33e7efaf776f1265",
    "round": 3,
    "result": "findings",
@@ -2294,7 +2294,7 @@
    },
    "report": "The plane serves the session revisions and the legacy event stream inbound and relays tool results unchanged. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller. The task path drops the caller's down-scope, lets an answer rewrite admitted arguments and fails on stdio servers. The operator connect verb blocks calls to session servers, streamed answers are re-encoded, and without a signing key all callers share one owner. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": "70bb025045c7b09c76639bc6dfeb4d10614d8725",
+   "fixed_at": "feb31d515ebd223a414e55de6ef28242dd104b9b",
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
    ],
@@ -2383,7 +2383,7 @@
    "paths": [
     "crates/busbar-plane-mcp-plugin/src"
    ],
-   "tree_hash": "584a30356cd0e893fcda3cd6b1c0f576f331bb6df59227cf5cc9ef33f54a2fe4",
+   "tree_hash": "8d249bca867ee96eff46c247bc0e586e1dea4c56012507bc9123b9a758743565",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -2395,7 +2395,7 @@
    },
    "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does. Its doc also names a predecessor example that no longer exists. Read fully.",
    "auditor": "opus-r159c-plane-twins",
-   "fixed_at": "70bb025045c7b09c76639bc6dfeb4d10614d8725",
+   "fixed_at": "feb31d515ebd223a414e55de6ef28242dd104b9b",
    "exclude": [
     "crates/busbar-plane-mcp-plugin/src/tests"
    ],
@@ -4014,7 +4014,7 @@
    "paths": [
     "crates/busbar-plane-mcp/declares.json"
    ],
-   "tree_hash": "08e7d9bedd21fc46f4c69878d382c60430c7373050c3a427e2b6769e2f8b94d0",
+   "tree_hash": "4954d8d434d231090fc0908bc12a20ad634e5b45186e6ee50dea26024ff73de1",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -4026,7 +4026,7 @@
    },
    "report": "The tool plane keeps two declares documents. This one, which the release signs into a dropped-in plane's manifest, lists the right needs, http and stdio, plus a retired contract-ABI range the host's declares gate now refuses. The breaker fact and the ten diagnostics live only in a second file the linked build reads. A dropped-in copy therefore benches a member on any transient failure below the trip threshold, where the linked plane does not, and its codes never join the catalogue. Read fully.",
    "auditor": "opus-r159c-declares",
-   "fixed_at": "70bb025045c7b09c76639bc6dfeb4d10614d8725",
+   "fixed_at": "feb31d515ebd223a414e55de6ef28242dd104b9b",
    "rounds": [
     {
      "round": 1,
