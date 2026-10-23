@@ -208,6 +208,10 @@ fn span_macros_with(
     aliases: &[(String, Option<&'static str>)],
 ) -> Vec<(String, Option<&'static str>, usize)> {
     let mut hits = Vec::new();
+    // A line with no `!` invokes no macro: the common case, answered without a needle per name.
+    if !line.contains('!') {
+        return hits;
+    }
     let names = SPAN_MACROS
         .iter()
         .map(|(name, level)| ((*name).to_string(), *level))
@@ -412,14 +416,54 @@ fn names_hotpath(level: &str, hot: &str, rebound: bool) -> bool {
     }
 }
 
-/// The hand-rolled spans of one file (its code blanked of literals and comments): how many it
-/// holds, and each one whose level is not HOTPATH_LEVEL's.
-fn scan_macros(rel: &str, text: &str, rule: &SpanRule) -> (usize, Vec<String>) {
+/// What the scan reads of ONE FILE before any rule is applied: its code blanked of literals and
+/// comments (one lexer pass, line for line), its `X as Y` renames and its bindings of
+/// `HOTPATH_LEVEL`. None of it depends on any other file, so it is read once per file's bytes and
+/// shared by every run that sees those bytes: the self-test's plants change a file or two, and the
+/// rest of the walk is read once between them rather than once each.
+struct Prescan {
+    code: Vec<String>,
+    renames: Vec<(String, String)>,
+    bindings: Vec<String>,
+}
+
+/// [`Prescan`] of `rel` holding `text`, memoised on the path AND its bytes: a planted file is a
+/// different text, so it is a fresh read, never the base file's answer.
+fn prescan(rel: &str, text: &str) -> std::sync::Arc<Prescan> {
+    type Memo = std::collections::HashMap<String, Vec<(String, std::sync::Arc<Prescan>)>>;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    if let Some(hit) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(rel))
+        .and_then(|seen| seen.iter().find(|(t, _)| t == text))
+        .map(|(_, p)| p.clone())
+    {
+        return hit;
+    }
     let mut lex = scan::LexState::default();
-    let lines: Vec<String> = text
+    let code: Vec<String> = text
         .lines()
         .map(|l| scan::blank_code(l, &mut lex))
         .collect();
+    let found = std::sync::Arc::new(Prescan {
+        renames: renames(&code.join("\n")),
+        bindings: hotpath_bindings(rel, &code),
+        code,
+    });
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .entry(rel.to_string())
+        .or_default()
+        .push((text.to_string(), found.clone()));
+    found
+}
+
+/// The hand-rolled spans of one file (its code blanked of literals and comments): how many it
+/// holds, and each one whose level is not HOTPATH_LEVEL's.
+fn scan_macros(rel: &str, lines: &[String], rule: &SpanRule) -> (usize, Vec<String>) {
     let hot = rule.hot.as_deref();
     let (mut spans, mut findings) = (0usize, Vec::new());
     for (i, line) in lines.iter().enumerate() {
@@ -427,7 +471,7 @@ fn scan_macros(rel: &str, text: &str, rule: &SpanRule) -> (usize, Vec<String>) {
             spans += 1;
             let level = match fixed {
                 Some(level) => level.to_string(),
-                None => first_argument(&lines, i, open).trim().to_string(),
+                None => first_argument(lines, i, open).trim().to_string(),
             };
             let ok = match hot {
                 Some(h) => match fixed {
@@ -456,21 +500,21 @@ fn scan_macros(rel: &str, text: &str, rule: &SpanRule) -> (usize, Vec<String>) {
 /// The statement-window accumulator, per file. An attribute's token stream may span any number of
 /// lines (a multi-line `fields(…)` list is the common shape); it is complete once the accumulated
 /// code has equal `(` and `)` counts — true immediately for a bare `#[instrument]`.
-fn scan_file(rel: &str, text: &str, rule: &SpanRule) -> Findings {
+fn scan_file(rel: &str, text: &str, pre: &Prescan, rule: &SpanRule) -> Findings {
     let mut out = Findings::default();
-    let (macro_spans, macro_findings) = scan_macros(rel, text, rule);
+    let (macro_spans, macro_findings) = scan_macros(rel, &pre.code, rule);
     out.spans += macro_spans;
     out.level.extend(macro_findings);
     let mut in_attr = false;
     let mut start_line = 0usize;
     let mut code = String::new();
-    let mut lex = scan::LexState::default();
 
     for (i, line) in text.lines().enumerate() {
         let is_comment = line.trim_start().starts_with("//");
         // A paren inside a STRING LITERAL or a COMMENT is text, not structure. The state is carried
-        // so a `fields(…)` list interrupted by a multi-line literal is still read as one attribute.
-        let nostr = scan::blank_code(line, &mut lex);
+        // so a `fields(…)` list interrupted by a multi-line literal is still read as one attribute:
+        // the file's blanked code, lexed once in [`prescan`], line for line.
+        let nostr = pre.code.get(i).map_or("", String::as_str);
 
         if !in_attr {
             if is_comment || !opens_instrument_attr(line) {
@@ -478,10 +522,10 @@ fn scan_file(rel: &str, text: &str, rule: &SpanRule) -> Findings {
             }
             in_attr = true;
             start_line = i + 1;
-            code = nostr;
+            code = nostr.to_string();
         } else {
             code.push('\n');
-            code.push_str(&nostr);
+            code.push_str(nostr);
         }
 
         let opens = code.matches('(').count();
@@ -641,23 +685,21 @@ impl Gate for TracingGate {
             hot: cx.read(HOTPATH_HOME).ok().and_then(|t| hotpath_level(&t)),
             ..SpanRule::default()
         };
+        let pre: Vec<std::sync::Arc<Prescan>> = files
+            .iter()
+            .map(|f| prescan(&f.rel_str(), &f.text))
+            .collect();
         let mut all_renames = Vec::new();
-        for f in &files {
-            let mut lex = scan::LexState::default();
-            let code: Vec<String> = f
-                .text
-                .lines()
-                .map(|l| scan::blank_code(l, &mut lex))
-                .collect();
-            all_renames.extend(renames(&code.join("\n")));
-            rule.rebound.extend(hotpath_bindings(&f.rel_str(), &code));
+        for p in &pre {
+            all_renames.extend(p.renames.iter().cloned());
+            rule.rebound.extend(p.bindings.iter().cloned());
         }
         rule.aliases = macro_aliases(&all_renames);
         let mut level = Vec::new();
         let mut unclosed = Vec::new();
         let mut spans = 0usize;
-        for f in &files {
-            let found = scan_file(&f.rel_str(), &f.text, &rule);
+        for (f, p) in files.iter().zip(&pre) {
+            let found = scan_file(&f.rel_str(), &f.text, p, &rule);
             spans += found.spans;
             level.extend(found.level);
             unclosed.extend(found.unclosed);
