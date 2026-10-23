@@ -5,14 +5,57 @@ use super::*;
 
 #[test]
 fn both_yaml_spellings_of_a_tag_trigger_are_caught() {
-    assert!(has_v_star_tag_trigger(
-        "on:\n  push:\n    tags:\n      - \"v*\"\n"
+    let hit = |on: &str| !tag_triggers(on).is_empty();
+    assert!(hit("on:\n  push:\n    tags:\n      - \"v*\"\n"));
+    assert!(hit("on:\n  push:\n    tags: [\"v*\"]\n"));
+    assert!(hit("on:\n  push:\n    tags: v*\n"));
+    assert!(!hit("on:\n  push:\n    branches: [main]\n"));
+}
+
+#[test]
+fn every_way_a_tag_can_start_a_workflow_is_caught() {
+    let hit = |on: &str| !tag_triggers(on).is_empty();
+    // One-line spellings.
+    assert!(hit("on: push\n"));
+    assert!(hit("on: [pull_request, push]\n"));
+    assert!(hit("on: release\n"));
+    assert!(hit("on: { push: { tags: [\"v*\"] } }\n"));
+    assert!(hit(
+        "on: { pull_request: null, release: { types: [published] } }\n"
     ));
-    assert!(has_v_star_tag_trigger("on:\n  push:\n    tags: [\"v*\"]\n"));
-    assert!(has_v_star_tag_trigger("on:\n  push:\n    tags: v*\n"));
-    assert!(!has_v_star_tag_trigger(
-        "on:\n  push:\n    branches: [main]\n"
+    assert!(!hit("on: { push: { branches: [dev] } }\n"));
+    assert!(!hit("on: [pull_request, workflow_dispatch]\n"));
+    // Globs that do not start `v*`.
+    for glob in ["*", "**", "[0-9]*", "1.*", "V1"] {
+        assert!(
+            hit(&format!("on:\n  push:\n    tags: [\"{glob}\"]\n")),
+            "{glob}"
+        );
+    }
+    assert!(!hit("on:\n  push:\n    tags: [\"nightly-*\", \"!v*\"]\n"));
+    // Unfiltered push and release, block spelling.
+    assert!(hit("on:\n  push:\n  pull_request:\n"));
+    assert!(hit("on:\n  push:\n    paths: [src/**]\n"));
+    assert!(hit("on:\n  push:\n    tags-ignore: [\"v1.*\"]\n"));
+    assert!(!hit("on:\n  push:\n    tags-ignore: [\"**\"]\n"));
+    assert!(hit("on:\n  - push\n"));
+    assert!(hit("on:\n  release:\n    types: [published]\n"));
+    assert!(!hit(
+        "on:\n  push:\n    branches:\n      - dev\n  workflow_call:\n"
     ));
+}
+
+#[test]
+fn a_docker_step_is_judged_by_its_digest() {
+    let digest = "a".repeat(64);
+    assert!(is_digest_pinned_image(&format!("alpine@sha256:{digest}")));
+    assert!(is_digest_pinned_image(&format!(
+        "ghcr.io/o/i:3.20@sha256:{digest}"
+    )));
+    assert!(!is_digest_pinned_image("alpine:3.20"));
+    assert!(!is_digest_pinned_image("alpine"));
+    assert!(!is_digest_pinned_image("alpine@sha256:abc"));
+    assert!(!is_digest_pinned_image(&format!("@sha256:{digest}")));
 }
 
 #[test]
