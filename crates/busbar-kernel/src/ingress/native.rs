@@ -18,6 +18,10 @@ use axum::response::Response;
 
 use crate::plane_driver::claims::Ingress;
 
+/// The planes' path rules, folded: the label the first rule that holds gives a path, by its shape
+/// alone ([`PathDialects::claimed`]).
+pub type PathLabel = std::sync::Arc<dyn Fn(&str) -> Option<&'static str> + Send + Sync>;
+
 /// THE DIALECTS A PATH NAMES BY ITS SHAPE ALONE, as the linked declarations state them: the label
 /// an authentication refusal's `response` tap is told (`ingress_protocol`). v1.5.5 labelled that
 /// tap off the path alone (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path(path)`),
@@ -29,7 +33,7 @@ use crate::plane_driver::claims::Ingress;
 pub struct PathDialects {
     /// The label the planes' rules give `path` by its shape alone, the first rule that holds in
     /// the linked order; `None` when no rule holds.
-    pub claimed: std::sync::Arc<dyn Fn(&str) -> Option<&'static str> + Send + Sync>,
+    pub claimed: PathLabel,
     /// The label of a path no rule holds for, when a plane states one.
     pub residual: Option<&'static str>,
 }
