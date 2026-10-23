@@ -755,6 +755,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // #1276): `PlaneMoney` re-exported as `Node` from another file and imported plainly (G) or by a
     // glob (H), and a raw identifier, `as r#Node` (I). A name any file binds to another type is read
     // as neither in every file, and `r#Node` is `Node`.
+    // qa-names: crates/busbar/src/root/zz_g_reexport.rs -- xtask/src/gates/construction/selftest.rs -- an overlay-only plant path this selftest writes into a virtual tree, never a file on disk; the sibling zz_planted_*.rs literals beside it are not consts so qa-names never asked about them
     const ZZ_REEXPORT: (&str, &str) = (
         "crates/busbar/src/root/zz_g_reexport.rs",
         "pub use crate::plane_driver::PlaneMoney as Node;\n",
