@@ -3016,7 +3016,7 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": "841cdf14fcff6d7745642a6375c920bf8ffe573d0f36d942142df9db8ed3d7e7",
+   "tree_hash": "1865bfa1e59cc903a1277429c4d2e15a3d2f9d28b32aa7ac4f717e9a8cd35d5f",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 3,
    "result": "findings",
@@ -3028,7 +3028,7 @@
    },
    "report": "The ws plugin is one sans-IO framer behind its memory-ABI door, running tungstenite over an in-memory pipe and handing a dial's switching response up as the stream's head. Its admitted claim row still contradicts its own declaration, and it claims ws without wss, so a wss target finds no transport. An IPv6-literal target cannot be dialled and a dial's Host gains the default port. A dropped connection is reported as a framing failure. All connections share two instance-wide locks that one panic poisons, and each message is copied several times. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "e1a6fdc638f7a3dbe14985af16a96e71ac123c5c",
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
    ],
