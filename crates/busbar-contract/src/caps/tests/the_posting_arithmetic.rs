@@ -13,7 +13,8 @@
 //! that re-recorded the first one's shortfall would bill the same overdraft twice.
 //!
 //! The flags are a bitset, which means every one of them is a claim that can be silently merged with
-//! its neighbour; they are checked here as eight distinct bits and as a set that only ever grows.
+//! its neighbour; they are checked here as distinct bits, every one the type declares, and as a set
+//! that only ever grows.
 //!
 //! The tests in this file that have to MINT a token live in the kernel, under the same file name
 //! in `busbar-kernel/src/tests/caps_tests/` (construction `token-sealed`); what stays here needs
@@ -21,20 +22,46 @@
 
 use crate::caps::*;
 
+/// Every flag `PostingFlags` declares. Hand-kept, so the cell below holds it to the type's own
+/// declarations (Law 8: a list somebody typed is checked against the thing it enumerates).
+const FLAGS: &[PostingFlags] = &[
+    PostingFlags::ESTIMATED,
+    PostingFlags::METER_DISPUTED,
+    PostingFlags::OVERDRAFT,
+    PostingFlags::LATE_ACCRUAL,
+    PostingFlags::RECOVERED,
+    PostingFlags::VOIDED,
+    PostingFlags::UNPOSTED,
+    PostingFlags::DOWNGRADED,
+    PostingFlags::UNDECLARED,
+];
+
+/// The flag list above names every bit `hold.rs` declares: one `PostingFlags(1 << n)` constant
+/// apiece. A flag added to the type and not to the list is a bit the distinctness check never sees.
 #[test]
-fn the_eight_posting_flags_are_eight_distinct_bits() {
+fn the_flag_list_names_every_declared_flag() {
+    let hold = include_str!("../hold.rs");
+    let declared = hold
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("pub const ") && t.contains(": PostingFlags = PostingFlags(1 <<")
+        })
+        .count();
+    assert!(declared > 0, "the scan found the flag declarations");
+    assert_eq!(
+        FLAGS.len(),
+        declared,
+        "hold.rs declares {declared} posting flags and the list names {}",
+        FLAGS.len()
+    );
+}
+
+#[test]
+fn every_posting_flag_is_a_distinct_bit() {
     // A bitset is where two claims quietly become one. Each flag puts the posting on a report
     // somebody reads, so two that shared a bit would put a unit on the wrong one.
-    let flags = [
-        PostingFlags::ESTIMATED,
-        PostingFlags::METER_DISPUTED,
-        PostingFlags::OVERDRAFT,
-        PostingFlags::LATE_ACCRUAL,
-        PostingFlags::RECOVERED,
-        PostingFlags::VOIDED,
-        PostingFlags::UNPOSTED,
-        PostingFlags::DOWNGRADED,
-    ];
+    let flags = FLAGS;
     assert!(PostingFlags::NONE.is_clean());
     assert!(PostingFlags::default().is_clean());
     for (i, flag) in flags.iter().enumerate() {
