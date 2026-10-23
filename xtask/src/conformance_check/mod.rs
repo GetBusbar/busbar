@@ -34,6 +34,11 @@
 //! judges no plane included, cannot shrink the MUST set. Adding a suite to the registry adds it to
 //! the MUST set, and arms it in the same commit.
 //!
+//! A manifest read from the checkout is also held to the verdict files it renders: a pass row is
+//! admitted only if `conformance/verdicts/<suite>.json` exists, judges that suite, is `armed`, says
+//! `pass` and is about the candidate sha. A suite id the manifest names twice is a refusal of the
+//! whole manifest, so an earlier pass row can never outrank a later fail row.
+//!
 //! ## Freshness
 //!
 //! A suite is admitted iff its manifest row is `status:"pass"` AND its `commit` equals the
@@ -203,6 +208,18 @@ fn load_manifest(cx: &Ctx, path: &str) -> Result<Vec<SuiteEntry>, String> {
             reason,
         });
     }
+    // A SUITE ID APPEARS ONCE. Resolving by `find` would let an earlier pass row beat a later fail
+    // row for the same suite, so a manifest that names a suite twice admits nothing at all.
+    let mut seen = std::collections::BTreeSet::new();
+    for e in &out {
+        if !seen.insert(e.suite.as_str()) {
+            return Err(format!(
+                "{path}: suite `{}` appears more than once — which row is the verdict cannot be \
+                 told, so no suite in this manifest can be trusted",
+                e.suite
+            ));
+        }
+    }
     if out.is_empty() {
         return Err(format!(
             "{path}: the `suites` array is empty — an empty manifest admits nothing"
@@ -226,8 +243,67 @@ fn short(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
 
-/// One suite's admission fact: `status:"pass"` AND `commit == sha`, or a refusal that names why.
-fn admit(entry: &SuiteEntry, sha: &str) -> Row {
+/// Where a suite's verdict artifact lives in the checkout.
+fn verdict_path(suite: &str) -> String {
+    format!(
+        "{}/{suite}.json",
+        gates::conformance_sync::render::VERDICT_DIR
+    )
+}
+
+/// WHAT THE VERDICT ARTIFACT SAYS AGAINST THE MANIFEST ROW, or the reason it does not back it.
+///
+/// The manifest is a render of the verdicts, so a pass in it is only as good as the verdict under
+/// it: that verdict must judge this suite, be ARMED (an unarmed rig did not judge), say `pass`, and
+/// be about the candidate sha. A manifest read from the checkout (a relative `--manifest`) is held
+/// to its verdicts; an absolute `--manifest` is a downloaded copy whose verdicts are not in this
+/// checkout, so it is held to its own row alone.
+fn verdict_refusal(cx: &Ctx, suite: &str, sha: &str) -> Option<String> {
+    let path = verdict_path(suite);
+    let text = match cx.read(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(format!(
+                "the manifest says pass but {path} cannot be read ({e}): a pass with no verdict \
+                 artifact under it is not evidence"
+            ))
+        }
+    };
+    let v: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => return Some(format!("{path} is not valid JSON ({e})")),
+    };
+    let field = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    if field("suite") != suite {
+        return Some(format!(
+            "{path} judges suite `{}`, not `{suite}`",
+            field("suite")
+        ));
+    }
+    if v.get("armed").and_then(Value::as_bool) != Some(true) {
+        return Some(format!(
+            "{path} is not armed: a rig that did not judge cannot back a pass"
+        ));
+    }
+    if field("status") != "pass" {
+        return Some(format!(
+            "{path} says status `{}`, not `pass`, whatever the manifest row says",
+            field("status")
+        ));
+    }
+    if field("commit") != sha {
+        return Some(format!(
+            "{path} is about commit {}, not the candidate sha {}",
+            short(field("commit")),
+            short(sha)
+        ));
+    }
+    None
+}
+
+/// One suite's admission fact: `status:"pass"` AND `commit == sha` (AND, for a manifest read from
+/// the checkout, an armed passing verdict at that sha under it), or a refusal that names why.
+fn admit(cx: &Ctx, manifest_path: &str, entry: &SuiteEntry, sha: &str) -> Row {
     let id = format!("conformance-check:{}", entry.suite);
     if entry.status != "pass" {
         return Row::fail(
@@ -251,15 +327,26 @@ fn admit(entry: &SuiteEntry, sha: &str) -> Row {
             format!("suite `{}` pass carries no commit", entry.suite),
             "a pass with no recorded commit cannot be proven fresh — deny-safe.".to_string(),
         ),
-        Some(c) if c == sha => Row::pass(
-            id,
-            format!("suite `{}` is a fresh pass", entry.suite),
-            format!(
-                "manifest status pass, commit {} matches candidate sha {}",
-                short(c),
-                short(sha)
-            ),
-        ),
+        Some(c) if c == sha => {
+            if !std::path::Path::new(manifest_path).is_absolute() {
+                if let Some(why) = verdict_refusal(cx, &entry.suite, sha) {
+                    return Row::fail(
+                        id,
+                        format!("suite `{}` pass is not backed by its verdict", entry.suite),
+                        why,
+                    );
+                }
+            }
+            Row::pass(
+                id,
+                format!("suite `{}` is a fresh pass", entry.suite),
+                format!(
+                    "manifest status pass, commit {} matches candidate sha {}",
+                    short(c),
+                    short(sha)
+                ),
+            )
+        }
         Some(c) => Row::fail(
             id,
             format!("suite `{}` pass is STALE", entry.suite),
@@ -290,7 +377,7 @@ fn check_one_suite(cx: &Ctx, manifest_path: &str, id: &str, sha: &str) -> Row {
         }
     };
     match entries.iter().find(|e| e.suite == id) {
-        Some(e) => admit(e, sha),
+        Some(e) => admit(cx, manifest_path, e, sha),
         None => {
             let known: Vec<&str> = entries.iter().map(|e| e.suite.as_str()).collect();
             Row::fail(
@@ -337,7 +424,7 @@ fn check_musts(cx: &Ctx, manifest_path: &str, sha: &str) -> Vec<Row> {
     let mut rows: Vec<Row> = registered
         .iter()
         .map(|id| match entries.iter().find(|e| &e.suite == id) {
-            Some(e) => admit(e, sha),
+            Some(e) => admit(cx, manifest_path, e, sha),
             None => Row::fail(
                 format!("conformance-check:{id}"),
                 format!("MUST suite `{id}` is absent from the manifest"),
