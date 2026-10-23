@@ -70,7 +70,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Overlay, WalkError, WalkSpec};
 use crate::gates::{prove_green, prove_rows_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::scan::{self, ScopeLine};
@@ -84,6 +84,37 @@ pub const ROW_EXTERNAL: &str = "abi-location:external-plugins";
 pub const LEDGER: &str = "qa/abi-location.toml";
 /// THE ONE HOME. Everything under it is the ABI; nothing outside it may define a piece of it.
 pub const ONE_HOME: &str = "crates/busbar-contract/src/abi/";
+
+/// THE CONDEMNED LANES. `BUSBAR-1.6.0.md` THE DESIGN, §11 replaces the HOT and COLD plugin lanes
+/// with the one memory ABI, and both directories are deleted (row 84). A directory that holds a
+/// file again is a lane regrown, and the ledger row is RED on it: this is the guard the retired
+/// `abi-freeze` gate carried, and it is the only one.
+const CONDEMNED: &[&str] = &[
+    // qa-names: crates/busbar-contract/src/abi/hot -- xtask/src/gates/abi_location.rs -- the hot lane is deleted (row 84); it stays condemned so a directory that grows back there is RED, and this declaration reds the day the path exists again
+    "crates/busbar-contract/src/abi/hot",
+    // qa-names: crates/busbar-contract/src/abi/cold -- xtask/src/gates/abi_location.rs -- the cold lane is deleted (row 84, #961); it stays condemned so a directory that grows back there is RED, and this declaration reds the day the path exists again
+    "crates/busbar-contract/src/abi/cold",
+];
+
+/// The condemned directories that hold files. The walk is asked, not the directory: an overlay
+/// alone can lay a directory a stat cannot see, and a root none of the layers lays is the one
+/// "nothing here" that reads as clean.
+fn condemned_regrown(cx: &Ctx) -> Vec<String> {
+    let mut out = Vec::new();
+    for dir in CONDEMNED {
+        match cx.list(&WalkSpec::new([*dir]).allow_empty()) {
+            Ok(files) if files.is_empty() => {}
+            Ok(files) => out.push(format!(
+                "CONDEMNED lane regrown: {dir} holds {} file(s); the HOT and COLD lanes are deleted \
+                 and the memory ABI is their replacement, so the growth belongs in {ONE_HOME}",
+                files.len()
+            )),
+            Err(WalkError::MissingRoot { .. }) => {}
+            Err(e) => out.push(format!("{dir}: the condemned lane could not be read: {e}")),
+        }
+    }
+    out
+}
 
 /// The workspace scan's floor: the tree holds well over a thousand Rust files, and a scan that saw
 /// a fraction of them has gone blind rather than found a clean tree.
@@ -1126,6 +1157,7 @@ impl Gate for AbiLocationGate {
 
         let mut ledger_problems: Vec<String> = ledger.errors.clone();
         ledger_problems.extend(against_base(cx, &ledger));
+        ledger_problems.extend(condemned_regrown(cx));
         ledger_problems.extend(stale.iter().map(|k| {
             format!(
                 "STALE row (no such shape in the tree — strike it in the draining commit): {}",
@@ -1323,6 +1355,24 @@ impl Gate for AbiLocationGate {
             "the same slot, once abi/ declares its fn type, implements the ABI and is GREEN",
             &[ROW_EXTERN],
         ));
+
+        // A DELETED LANE GROWING BACK, ONE PLANT EACH. Both lanes are gone, so a file under either
+        // is a condemned directory that holds code again, and the ledger row is RED naming it.
+        for (lane, name) in [(CONDEMNED[0], "HOT"), (CONDEMNED[1], "COLD")] {
+            let mut ov = Overlay::new();
+            ov.set(
+                format!("{lane}/mod.rs"),
+                "pub struct PlantedRegrownShape;\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                &format!("a deleted {name} lane that grows back is RED"),
+                &[ROW_LEDGER],
+                ov,
+                &["CONDEMNED lane regrown", lane],
+            ));
+        }
 
         // THE LEDGER CANNOT OUTLIVE ITS DEBT: a row naming a shape the tree does not hold is RED.
         let ledger = cx.read(LEDGER).unwrap_or_default();
