@@ -2173,7 +2173,7 @@ pub(super) mod session_door {
 
     /// A provider on loopback that places calls and serves its realtime socket: a `POST` (the SDP
     /// offer) is answered `201` with an SDP answer and a `Location` naming [`PLACED_CALL`]; a
-    /// WebSocket upgrade is answered `101`. It reports `POST <head>` for each offer, `DIAL <request
+    /// WebSocket upgrade is answered `101`. It reports `OFFER <head>` for each offer, `DIAL <request
     /// line>` for each upgrade, and `TEXT <payload>` for every text frame a socket is sent.
     async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
@@ -2210,7 +2210,7 @@ pub(super) mod session_door {
                         if socket.read_exact(&mut body).await.is_err() {
                             return;
                         }
-                        let _ = sent.send(format!("POST {head}"));
+                        let _ = sent.send(format!("OFFER {head}"));
                         let reply = format!(
                             "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
                              location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
@@ -2362,7 +2362,10 @@ pub(super) mod session_door {
         let posted = next_report(&mut s.heard)
             .await
             .expect("the offer reached the provider");
-        assert!(posted.starts_with("POST /v1/realtime/calls "), "{posted}");
+        assert!(
+            posted.starts_with("OFFER POST /v1/realtime/calls "),
+            "{posted}"
+        );
 
         // The sideband naming the placed call dials the provider's socket attached to it.
         let attached = SIDEBAND.replace("{call_id}", PLACED_CALL);
