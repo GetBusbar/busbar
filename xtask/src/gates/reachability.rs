@@ -620,7 +620,7 @@ fn local_path_words(code: &str) -> Vec<String> {
                 i += 1;
             }
             let w: String = chars[st..i].iter().collect();
-            if prev.as_deref().map_or(true, |p| LOCAL_ROOTS.contains(&p)) {
+            if prev.as_deref().is_none_or(|p| LOCAL_ROOTS.contains(&p)) {
                 out.push(w.clone());
             }
             let mut j = i;
