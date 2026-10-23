@@ -46,7 +46,7 @@ pub const SPEC: Spec = Spec {
         (ROW_STATIC, "no `static` item in busbar-contract"),
         (
             ROW_ONCE,
-            "no OnceLock / LazyLock / OnceCell / Lazy in busbar-contract",
+            "no OnceLock / LazyLock / OnceCell / LazyCell / Lazy / lazy_static in busbar-contract",
         ),
         (ROW_THREAD_LOCAL, "no thread_local! in busbar-contract"),
     ],
@@ -57,7 +57,17 @@ pub const SPEC: Spec = Spec {
 };
 
 /// The once-cell spellings, each read as a word.
-const ONCE: &[&str] = &["OnceLock", "LazyLock", "OnceCell", "Lazy"];
+/// `lazy_static!` and its `static ref` item are the once-cell the macro spells; `LazyCell` is the
+/// std cell beside `LazyLock`.
+const ONCE: &[&str] = &[
+    "OnceLock",
+    "LazyLock",
+    "OnceCell",
+    "LazyCell",
+    "Lazy",
+    "lazy_static",
+    "static ref",
+];
 
 /// The attributes that confine a module to tests and the dev-only `test-seal` and `alloc-counter`
 /// features.
@@ -218,6 +228,18 @@ impl Gate for ContractStatelessGate {
                     "a OnceLock in the contract is RED",
                     plant("pub struct Planted(std::sync::OnceLock<u8>);\n"),
                     vec![file, "OnceLock"],
+                ),
+                (
+                    ROW_ONCE,
+                    "a lazy_static `static ref` in the contract is RED",
+                    plant("lazy_static! {\n    static ref PLANTED_LAZY: u8 = 0;\n}\n"),
+                    vec![file, "static ref"],
+                ),
+                (
+                    ROW_ONCE,
+                    "a LazyCell in the contract is RED",
+                    plant("pub struct Planted(std::cell::LazyCell<u8>);\n"),
+                    vec![file, "LazyCell"],
                 ),
                 (
                     ROW_THREAD_LOCAL,

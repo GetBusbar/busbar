@@ -656,23 +656,151 @@ fn is_comment(raw: &str, counted: &str) -> bool {
     !raw.trim().is_empty() && counted.trim().is_empty()
 }
 
-fn carries_allow_marker(line: &str) -> bool {
+/// The reason an allow marker states: what follows `allow` on its line, minus the dash or colon
+/// that joins them. `None` when the line carries no allow marker at all.
+fn allow_marker_reason(line: &str) -> Option<String> {
     let mut rest = line;
     while let Some(i) = rest.find(ALLOW_MARKER) {
-        if rest[i + ALLOW_MARKER.len()..]
-            .trim_start()
-            .starts_with("allow")
-        {
-            return true;
+        let after = rest[i + ALLOW_MARKER.len()..].trim_start();
+        if let Some(reason) = after.strip_prefix("allow") {
+            let reason = reason.trim_start_matches(|c: char| {
+                c.is_whitespace() || "-\u{2014}\u{2013}:".contains(c)
+            });
+            return Some(reason.trim().to_string());
         }
         rest = &rest[i + ALLOW_MARKER.len()..];
     }
-    false
+    None
+}
+
+/// An allow marker must say WHY: at least this many words after `allow`.
+const MIN_REASON_WORDS: usize = 4;
+
+/// The waiver ledger: every allow marker in the tree is a row here, keyed by its file and the
+/// reason it states, and every row must still name a marker. A marker nobody recorded is an
+/// exemption nobody reviewed; a row without a marker is a waiver the code no longer needs.
+const WAIVER_LEDGER: &str = "qa/blocking-ffi-waivers.toml";
+
+/// The real ledger plus planted rows, for a selftest overlay.
+fn ledger_plus(cx: &Ctx, ov: &mut Overlay, file: &str, reason: &str) {
+    let mut text = cx.read(WAIVER_LEDGER).unwrap_or_default();
+    text.push_str(&format!(
+        "\n[[waiver]]\nfile = \"{file}\"\nreason = \"{reason}\"\n"
+    ));
+    ov.set(WAIVER_LEDGER, text);
+}
+
+/// One allow marker a scan met.
+#[derive(Clone, Debug)]
+struct Waiver {
+    line: usize,
+    reason: String,
+}
+
+/// The `(file, reason)` rows of the waiver ledger. Plain `key = "value"` lines under `[[waiver]]`.
+fn parse_waiver_ledger(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut rows = Vec::new();
+    let mut cur: Option<(Option<String>, Option<String>)> = None;
+    let mut close = |cur: &mut Option<(Option<String>, Option<String>)>| -> Result<(), String> {
+        if let Some((f, r)) = cur.take() {
+            match (f, r) {
+                (Some(f), Some(r)) => rows.push((f, r)),
+                _ => return Err("a [[waiver]] row lacks `file` or `reason`".to_string()),
+            }
+        }
+        Ok(())
+    };
+    for raw in text.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if l == "[[waiver]]" {
+            close(&mut cur)?;
+            cur = Some((None, None));
+            continue;
+        }
+        let Some((k, v)) = l.split_once('=') else {
+            return Err(format!("unreadable ledger line `{l}`"));
+        };
+        let v = v.trim();
+        let v = v
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .ok_or_else(|| format!("ledger value of `{}` is not a quoted string", k.trim()))?
+            .replace("\\\"", "\"");
+        let Some(row) = cur.as_mut() else {
+            return Err(format!("`{l}` sits outside a [[waiver]] row"));
+        };
+        match k.trim() {
+            "file" => row.0 = Some(v),
+            "reason" => row.1 = Some(v),
+            other => return Err(format!("unknown ledger key `{other}`")),
+        }
+    }
+    close(&mut cur)?;
+    Ok(rows)
+}
+
+/// Judge every marker the scan met against the ledger. Returns findings.
+fn judge_waivers(
+    met: &[(String, Waiver)],
+    ledger: &Result<Vec<(String, String)>, String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (rel, w) in met {
+        if w.reason.split_whitespace().count() < MIN_REASON_WORDS {
+            out.push(finding(
+                rel,
+                w.line,
+                &format!(
+                    "a `blocking-ffi-lint: allow` marker states no reason (needs at least \
+                     {MIN_REASON_WORDS} words naming which call and why it is off the worker pool)"
+                ),
+            ));
+        }
+    }
+    let rows = match ledger {
+        Ok(r) => r,
+        Err(why) => {
+            out.push(format!(
+                "{WAIVER_LEDGER}: the waiver ledger is unreadable: {why}"
+            ));
+            return out;
+        }
+    };
+    let mut unused: Vec<bool> = vec![true; rows.len()];
+    for (rel, w) in met {
+        let hit = rows
+            .iter()
+            .enumerate()
+            .find(|(i, (f, r))| unused[*i] && f == rel && *r == w.reason);
+        match hit {
+            Some((i, _)) => unused[i] = false,
+            None => out.push(finding(
+                rel,
+                w.line,
+                &format!(
+                    "this allow marker has no row in {WAIVER_LEDGER} (file + its stated reason)"
+                ),
+            )),
+        }
+    }
+    for (i, (f, r)) in rows.iter().enumerate() {
+        if unused[i] {
+            out.push(format!(
+                "{WAIVER_LEDGER}: stale waiver for {f} (\"{r}\") names no allow marker in the tree"
+            ));
+        }
+    }
+    out
 }
 
 /// What one file's scan produced, and whether it finished in a state the reader can trust.
 struct FileScan {
     hits: Vec<String>,
+    /// Every allow marker met outside test scope.
+    waivers: Vec<Waiver>,
     /// The scan ended with a counter still open. The Rust analogue of the shell's aborted awk: the
     /// window never closed, so everything after the opener was judged in a state the scanner had
     /// already lost track of, and the answer it gives is not "clean".
@@ -902,13 +1030,21 @@ fn scan_file(rel: &str, text: &str, table: &[Seam]) -> FileScan {
     let mut off_b: i64 = -1;
     let mut off_p: i64 = 0;
     let mut prev_allow = false;
+    let mut waivers = Vec::new();
     // A spawner whose `async` block opens on a LATER line (`tokio::spawn(\n    async move {`).
     let mut spawn_pending = false;
 
     for (idx, sl) in scope.iter().enumerate() {
         let code = lines[idx];
         let comment = is_comment(&sl.raw, code);
-        let marker = carries_allow_marker(&sl.raw);
+        let marker_reason = allow_marker_reason(&sl.raw);
+        if let (Some(reason), false) = (&marker_reason, sl.gated) {
+            waivers.push(Waiver {
+                line: idx + 1,
+                reason: reason.clone(),
+            });
+        }
+        let marker = marker_reason.is_some();
         let allow = marker || prev_allow;
         prev_allow = marker || (comment && prev_allow);
 
@@ -971,7 +1107,11 @@ fn scan_file(rel: &str, text: &str, table: &[Seam]) -> FileScan {
         )
     });
 
-    FileScan { hits, lost_track }
+    FileScan {
+        hits,
+        waivers,
+        lost_track,
+    }
 }
 
 // ── THE DOOR SEAMS, DERIVED FROM THE LOADER ──────────────────────────────────────────────────────
@@ -1708,15 +1848,23 @@ impl Gate for BlockingFfiGate {
 
         let mut hits = Vec::new();
         let mut broke = Vec::new();
+        let mut met: Vec<(String, Waiver)> = Vec::new();
         for f in &files {
             let scan = scan_file_memo(&f.rel_str(), &f.text, &table, tkey);
             match &scan.lost_track {
                 // A FILE THE SCANNER DID NOT GET THROUGH CONTRIBUTES NO FINDINGS AND IS NOT CLEAN.
                 // Banking its empty output as "no findings" is the defect this row exists for.
                 Some(why) => broke.push(why.clone()),
-                None => hits.extend(scan.hits.iter().cloned()),
+                None => {
+                    hits.extend(scan.hits.iter().cloned());
+                    met.extend(scan.waivers.iter().map(|w| (f.rel_str(), w.clone())));
+                }
             }
         }
+        // EVERY ALLOW MARKER IS A RECORDED, REASONED WAIVER (XF#18): a marker without a stated
+        // reason, without a ledger row, or a ledger row without its marker is a finding.
+        let ledger = cx.read(WAIVER_LEDGER).and_then(|t| parse_waiver_ledger(&t));
+        hits.extend(judge_waivers(&met, &ledger));
         hits.sort();
         broke.sort();
 
@@ -1922,6 +2070,12 @@ impl Gate for BlockingFfiGate {
              \x20   let server_config = tls::build_server_config(&tls, &secret_resolver);\n}\n\n\
              // A doc comment naming m.module.begin_login(&begin) inside an async fn is prose.\n",
         );
+        ledger_plus(
+            cx,
+            &mut ov,
+            &format!("{CORE}/planted_offloaded.rs"),
+            "BOOT ONLY, before this listener serves anything.",
+        );
         report.push(prove_green(
             &cx.with_overlay(ov),
             self,
@@ -1943,6 +2097,12 @@ impl Gate for BlockingFfiGate {
              \x20   let c = env.resolve_hook_settings(&hook.settings);\n\
              \x20   let d = env.resolve_hook_settings(&hook.settings);\n}\n",
         );
+        ledger_plus(
+            cx,
+            &mut ov,
+            &format!("{CORE}/planted_scope.rs"),
+            "covers the NEXT call only (and this reason may run",
+        );
         report.push(prove_red(
             cx,
             self,
@@ -1950,6 +2110,68 @@ impl Gate for BlockingFfiGate {
             &[ROW_NO_INLINE],
             ov,
             &["2 finding(s)", "planted_scope.rs:7", "planted_scope.rs:11"],
+        ));
+
+        // XF#18: AN ALLOW MARKER IS A REASONED, LEDGERED WAIVER. Each plant is the otherwise
+        // silent shape (a marker over a real inline call) with ONE thing wrong.
+        let call = "async fn boot(env: &HookEnv) {\n\x20   // blocking-ffi-lint: allow REASON\n\
+                    \x20   let a = env.resolve_hook_settings(&hook.settings);\n}\n";
+        let planted = format!("{CORE}/planted_waiver.rs");
+        let mut ov = Overlay::new();
+        ov.set(
+            &planted,
+            call.replace("REASON", "\u{2014} boot only, before any listener serves"),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an allow marker with no row in the waiver ledger is a finding",
+            &[ROW_NO_INLINE],
+            ov,
+            &["has no row", "planted_waiver.rs:2"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(&planted, call.replace(" REASON", ""));
+        ledger_plus(cx, &mut ov, &planted, "");
+        report.push(prove_red(
+            cx,
+            self,
+            "an allow marker that states no reason is a finding even when ledgered",
+            &[ROW_NO_INLINE],
+            ov,
+            &["states no reason", "planted_waiver.rs:2"],
+        ));
+        let mut ov = Overlay::new();
+        ledger_plus(
+            cx,
+            &mut ov,
+            &planted,
+            "boot only, before any listener serves",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a ledger row whose marker is gone is stale and refused",
+            &[ROW_NO_INLINE],
+            ov,
+            &["stale waiver", "planted_waiver.rs"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(
+            &planted,
+            call.replace("REASON", "\u{2014} boot only, before any listener serves"),
+        );
+        ledger_plus(
+            cx,
+            &mut ov,
+            &planted,
+            "boot only, before any listener serves",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "a reasoned, ledgered allow marker stays silent",
+            &[ROW_NO_INLINE],
         ));
 
         // AN IN-FILE `#[cfg(test)]` MODULE is exempt — the kind a `tests/`-directory exclusion

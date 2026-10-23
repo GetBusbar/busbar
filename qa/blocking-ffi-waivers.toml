@@ -1,0 +1,12 @@
+# blocking-ffi: the waiver ledger. Every `// blocking-ffi-lint: allow <reason>` marker in the tree
+# is one row here: the file it sits in and the reason its first line states, verbatim. A marker
+# with no row, a marker whose reason is under four words, and a row whose marker is gone are all
+# findings of `cargo xtask gate blocking-ffi`.
+
+[[waiver]]
+file = "crates/busbar/src/main.rs"
+reason = "BOOT. Two independent reasons, either sufficient: (1) `run()` is"
+
+[[waiver]]
+file = "crates/busbar/src/main.rs"
+reason = "BOOT, once per listener, before that listener accepts."

@@ -107,7 +107,9 @@ exhaustion to the calling runtime's blocking pool (each data-plane runtime and t
 control runtime has its own, capped at 512 threads), so take a semaphore permit and
 **fail closed** when you cannot get one. Only a boot-time call, or one in an
 `async fn` that is provably driven off the worker pool, may be marked, and the
-marker must carry a reason naming which call and where:
+marker must carry a reason (at least four words) naming which call and where, and
+every marker is a row in `qa/blocking-ffi-waivers.toml` (file and the first line of its
+reason); a marker with no row, or a row with no marker, fails the gate:
 
 ```rust
 // blocking-ffi-lint: allow [...]

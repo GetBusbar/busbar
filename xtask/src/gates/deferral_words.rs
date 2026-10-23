@@ -998,11 +998,53 @@ impl Gate for DeferralWordsGate {
         ov.set_command(format!("git-show:{base}:{planted}"), planted_text);
         ov.set(planted, planted_text);
         report.push(prove_green(
-            &cx.with_overlay(ov),
+            &cx.with_overlay(ov.clone()),
             self,
             "a planted deferral is listed by the report-only scan rows, not scored",
             &[ROW_L1, ROW_L2],
         ));
+
+        // POSITIVE CONTROL OF THE REPORT-ONLY ROWS (XF#19): green alone proves nothing, since a
+        // scan that read no line is green too. Plant ONE line only Layer 1 names and ONE line only
+        // Layer 2 names, and require each row to LIST its own planted line. A row that stopped
+        // reporting fails here, not silently.
+        let both = "docs/design/1.6.0-PLANTED-BOTH.md";
+        let mut ov2 = Overlay::new();
+        based(&mut ov2);
+        let both_text = "# planted\nThe remaining call sites are deferred.\n\
+                         We will circle back to the retry budget after the duplex landing.\n";
+        ov2.set_command(format!("git-show:{base}:{both}"), both_text);
+        ov2.set(both, both_text);
+        let ctrl_cx = cx.with_overlay(ov2);
+        let ctrl_name = "the report-only scan rows each list the line planted for them".to_string();
+        report.push(crate::gates::CasePlan::new(move || {
+            let verdict = crate::gates::execute(self, &ctrl_cx);
+            let detail = |id: &str| {
+                verdict
+                    .rows
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| r.detail.clone())
+                    .unwrap_or_default()
+            };
+            let mut missing = Vec::new();
+            if !detail(ROW_L1).contains(&format!("{both}:2 ")) {
+                missing.push(format!("{ROW_L1} does not list {both}:2"));
+            }
+            if !detail(ROW_L2).contains(&format!("{both}:3 ")) {
+                missing.push(format!("{ROW_L2} does not list {both}:3"));
+            }
+            crate::gates::Case {
+                name: ctrl_name,
+                covers: vec![ROW_L1.to_string(), ROW_L2.to_string()],
+                expected: crate::gates::Expect::Green,
+                got: if missing.is_empty() {
+                    crate::gates::Expect::Green
+                } else {
+                    crate::gates::Expect::Red { naming: missing }
+                },
+            }
+        }));
 
         // BATCH 1 / 2: a phrase BOTH layers miss, and a phrase a named shape was expected to catch
         // that only Layer 2 does. The script's `bad` counter, both arms.
