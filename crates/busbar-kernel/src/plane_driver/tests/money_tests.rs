@@ -1483,14 +1483,17 @@ fn the_checkpoint_check_agrees_with_the_checked_sums() {
     let one = ["input".to_string(), "output".to_string()];
     let twice = ["input".to_string(), "input".to_string()];
     let cases: [(&[String], Vec<UnitCount>); 8] = [
-        (&one, vec![]),
-        (&one, vec![unit(0, 3), unit(1, 4)]),
-        (&one, vec![unit(0, u64::MAX), unit(1, u64::MAX)]),
-        (&one, vec![unit(0, u64::MAX), unit(0, 1)]),
-        (&one, vec![unit(1, 1), unit(0, 2), unit(1, u64::MAX)]),
-        (&one, vec![unit(7, u64::MAX), unit(7, u64::MAX)]),
-        (&twice, vec![unit(0, u64::MAX), unit(1, 1)]),
-        (&twice, vec![unit(0, u64::MAX / 2), unit(1, u64::MAX / 2)]),
+        (&one[..], vec![]),
+        (&one[..], vec![unit(0, 3), unit(1, 4)]),
+        (&one[..], vec![unit(0, u64::MAX), unit(1, u64::MAX)]),
+        (&one[..], vec![unit(0, u64::MAX), unit(0, 1)]),
+        (&one[..], vec![unit(1, 1), unit(0, 2), unit(1, u64::MAX)]),
+        (&one[..], vec![unit(7, u64::MAX), unit(7, u64::MAX)]),
+        (&twice[..], vec![unit(0, u64::MAX), unit(1, 1)]),
+        (
+            &twice[..],
+            vec![unit(0, u64::MAX / 2), unit(1, u64::MAX / 2)],
+        ),
     ];
     for (classes, units) in &cases {
         let counts: Vec<(u32, u64)> = units.iter().map(|u| (u.class, u.amount)).collect();

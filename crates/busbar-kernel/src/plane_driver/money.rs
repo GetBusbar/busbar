@@ -467,7 +467,7 @@ fn adds_up(classes: &[String], units: &[UnitCount]) -> bool {
         }
         units[at..]
             .iter()
-            .filter(|v| name(v) == Some(this))
+            .filter(|&v| name(v) == Some(this))
             .try_fold(0u64, |sum, v| sum.checked_add(v.amount))
             .is_some()
     })
