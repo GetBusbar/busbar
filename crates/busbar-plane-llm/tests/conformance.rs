@@ -755,8 +755,8 @@ mod door_units {
     use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome};
     use busbar_contract::abi::plane::{
         slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
-        UnitCount, EMIT_DONE, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FINAL,
-        PIECE_HAS_STATUS, PIECE_LAST, VERDICT_HARD, VERDICT_OK, VERDICT_RETRY,
+        UnitCount, EMIT_DONE, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS,
+        PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_HARD, VERDICT_OK, VERDICT_RETRY,
     };
     use busbar_plane_llm::plane_door;
     use busbar_plugin_loader::dispatch::kinds::plane::Plane;
@@ -1264,6 +1264,124 @@ mod door_units {
         arrive_with(&p, 33, STREAM_CHAT);
         attempt_with(&p, 33, b"large", 1, STREAM_CHAT);
         assert_eq!(cancel(&p), busbar_contract::abi::plane::CANCEL_ABORTED);
+    }
+
+    /// The cancel disposition the door answers for `unit`, the cancel naming the unit by its key.
+    fn cancel_unit(p: &Plugin<Plane>, unit: u64) -> u32 {
+        let mut x: Frame<
+            busbar_contract::abi::plane::PlaneCancelIn,
+            busbar_contract::abi::plane::PlaneCancelOut,
+        > = Frame::new(z(), z());
+        (x.input.cancel.head, x.out.cancel.head) = (in_head(), out_head());
+        x.input.unit = unit;
+        assert_eq!(
+            p.call(
+                busbar_contract::abi::mechanism::lifecycle::slot::CANCEL,
+                &mut x
+            )
+            .outcome,
+            Outcome::Ready
+        );
+        x.out.cancel.disposition
+    }
+
+    /// A UNIT CANCELLED BEFORE ITS FIRST PIECE IS RECLAIMED (row 159, plane-llm LLM1#4): a caller
+    /// that leaves during admission or the hooks is cancelled by the unit's key (the contract's
+    /// `PlaneCancelIn::unit`), before any piece bound the unit to a ticket. Nothing of it stays:
+    /// its next piece finds no unit. It bills nothing. RED: the cancel read only the ticket, which
+    /// no piece had carried, so the unit (its whole body and parsed JSON) stayed for the life of
+    /// the instance and its ATTEMPT was still served.
+    #[test]
+    fn a_unit_cancelled_before_its_first_piece_leaves_nothing() {
+        let (_d, p) = door();
+        arrive(&p, 41);
+        assert_eq!(
+            cancel_unit(&p, 41),
+            busbar_contract::abi::plane::CANCEL_ABORTED
+        );
+        let after = piece(&p, 41, FROM_KERNEL, 0, 0, b"", b"large", 1);
+        assert_eq!(
+            after.outcome,
+            Outcome::Fault,
+            "nothing left behind: {after:?}"
+        );
+    }
+
+    /// A UNIT WHOSE FAR END ANSWERED AND LEFT THE CALLER NOTHING USABLE FAILED (row 159, plane-llm
+    /// LLM1#1): its cancel answers `CANCEL_FAILED` (the contract's "the unit failed"), never
+    /// `CANCEL_ABORTED`, which says the plane aborted the unit before the far end answered. Both
+    /// bill nothing. RED: every cancel that was not partial answered ABORTED.
+    #[test]
+    fn a_unit_whose_far_end_answered_a_failure_is_cancelled_as_failed() {
+        let (_d, p) = door();
+        arrive(&p, 43);
+        attempt(&p, 43, b"small", 1);
+        let failed = piece(
+            &p,
+            43,
+            FROM_FAR_END,
+            PIECE_HAS_STATUS | PIECE_LAST,
+            400,
+            TOO_LONG,
+            b"small",
+            0,
+        );
+        assert_eq!(
+            failed.verdict, VERDICT_RETRY,
+            "kept for the walk: {failed:?}"
+        );
+        assert_eq!(
+            cancel_unit(&p, 43),
+            busbar_contract::abi::plane::CANCEL_FAILED
+        );
+    }
+
+    /// THE FAR END'S TRAILERS ARE IGNORED (row 159, plane-llm LLM1#3; the contract's
+    /// `PIECE_FIELDS`: "any other ignores the piece"): a field block the far end sends after its
+    /// body reaches neither the caller's body nor the usage read, and a last one ends the answer
+    /// as the body ended it, billing what the body reported (7 in, 3 out). RED: the trailers were
+    /// fed to the reply as body bytes, appended to the caller's answer and to the copy the usage
+    /// is read from, which then failed to read.
+    #[test]
+    fn the_far_ends_trailers_reach_neither_the_caller_nor_the_usage() {
+        let (_d, p) = door();
+        arrive(&p, 45);
+        attempt(&p, 45, b"large", 1);
+        let body = piece(
+            &p,
+            45,
+            FROM_FAR_END,
+            PIECE_HAS_STATUS,
+            200,
+            ANSWER,
+            b"large",
+            0,
+        );
+        assert_eq!(body.outcome, Outcome::Ready, "{body:?}");
+        let trailers = piece(
+            &p,
+            45,
+            FROM_FAR_END,
+            PIECE_FIELDS | PIECE_LAST,
+            0,
+            b"x-trailer: 1\r\n",
+            b"large",
+            0,
+        );
+        assert_eq!(trailers.outcome, Outcome::Ready, "{trailers:?}");
+        assert!(
+            trailers.done,
+            "the last trailers end the answer: {trailers:?}"
+        );
+        assert_eq!(trailers.verdict, VERDICT_OK, "{trailers:?}");
+        assert!(
+            !trailers.emitted.contains("x-trailer"),
+            "no trailer byte reaches the caller: {trailers:?}"
+        );
+        assert!(
+            trailers.units.contains(&(0, 7)) && trailers.units.contains(&(1, 3)),
+            "the body's 7 in and 3 out bill: {trailers:?}"
+        );
     }
 }
 

@@ -32,8 +32,10 @@
 //! arrival as the previous release's did.
 //!
 //! An answer is computed ONCE per piece and kept with its unit: a re-call after a short answer or
-//! `more = 1` re-delivers it, never re-computes it. Every kernel or far-end piece reads the host's
-//! `clock.now` once ([`Services::clock_now`]); the plane reads no clock of its own.
+//! `more = 1` re-delivers it, never re-computes it. The host's `clock.now`
+//! ([`Services::clock_now`]) is read at an ATTEMPT (the attempt's start) and on the last piece of
+//! an answer taken whole (its creation stamp and elapsed milliseconds), never per relayed chunk;
+//! the plane reads no clock of its own.
 //!
 //! COUNTS, NEVER MONEY: a unit reports the far end's cumulative token counts, and each open count
 //! it counted beside them ([`OPEN_CLASSES`]), in the tail's billable classes; the kernel prices
@@ -62,12 +64,12 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_REQUIRED, REFUSAL_GATE, REFUSED_UNSUPPORTED_ACTION, ROUTE_DIRECT, ROUTE_POOL,
-    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
-    VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
+    PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, REFUSED_UNSUPPORTED_ACTION, ROUTE_DIRECT,
+    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
+    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{CatalogIn, CatalogOut, CLAIM_CATALOG, DIALECT_PROVIDER};
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
@@ -348,8 +350,7 @@ const fn need(auth: &'static str) -> Need {
 }
 
 /// THE PLANE'S NEEDS: outbound to a configured provider over the claim's transport, one per
-/// outbound style a member may be bound under ([`EGRESS_STYLES`]), each naming its style, as the
-/// decisions plane's one need names its.
+/// outbound style a member may be bound under ([`EGRESS_STYLES`]), each naming its style.
 pub const NEEDS: &[Need] = &[
     need(EGRESS_STYLES[0]),
     need(EGRESS_STYLES[1]),
@@ -549,9 +550,10 @@ impl UnitState {
 }
 
 /// THE DOOR'S UNIT BOOK: each unit the door holds, by the kernel's key, from its `arrive` to its
-/// end, and the ticket its pieces last came on (the key a `cancel` names it by). Every way a unit
-/// ends leaves NOTHING of it here, its ticket binding included (THE DESIGN section 2: what a plugin
-/// keeps is bounded by its units), so neither map grows with the units the instance has served.
+/// end, and the ticket its pieces last came on (how a `cancel` that names no unit finds it). Every
+/// way a unit ends leaves NOTHING of it here, its ticket binding included (THE DESIGN section 2:
+/// what a plugin keeps is bounded by its units), so neither map grows with the units the instance
+/// has served.
 #[derive(Debug)]
 pub struct UnitBook<S> {
     units: HashMap<u64, S>,
@@ -580,11 +582,6 @@ impl<S> UnitBook<S> {
         self.units.remove(&unit)
     }
 
-    /// The held unit, in place.
-    pub fn get_mut(&mut self, unit: u64) -> Option<&mut S> {
-        self.units.get_mut(&unit)
-    }
-
     /// The unit's pieces come on `ticket`: a `cancel` on it finds the unit. A ticket the unit came
     /// on before is unbound.
     pub fn bind(&mut self, ticket: Ticket, unit: u64) {
@@ -604,10 +601,19 @@ impl<S> UnitBook<S> {
         }
     }
 
-    /// A `cancel` on `ticket`: the unit it names leaves the book, and its state is handed back.
-    pub fn cancel(&mut self, ticket: Ticket) -> Option<S> {
-        let unit = self.tickets.remove(&ticket)?;
-        self.ticket_of.remove(&unit);
+    /// A `cancel` of `unit` (the kernel's key the cancel names; `0` names none) else of the unit
+    /// bound to `ticket`: that unit leaves the book, its ticket binding with it, and its state is
+    /// handed back. Keyed on the unit first, so a unit cancelled before any piece bound a ticket
+    /// (its caller left during admission or the hooks) leaves nothing either.
+    pub fn cancel(&mut self, ticket: Ticket, unit: u64) -> Option<S> {
+        let unit = if unit == 0 {
+            *self.tickets.get(&ticket)?
+        } else {
+            unit
+        };
+        if let Some(bound) = self.ticket_of.remove(&unit) {
+            self.tickets.remove(&bound);
+        }
         self.units.remove(&unit)
     }
 
@@ -642,11 +648,6 @@ impl LlmDoor {
             .map(|(_, s)| Arc::clone(s))
     }
 
-    /// One reading of the host's clock; none when the host serves no clock.
-    fn clock(&self) -> Option<ClockReading> {
-        self.services.and_then(|s| s.clock_now(UNTICKETED).ok())
-    }
-
     /// The codec host this instance hands its codecs: the host services it was given at open.
     fn host(&self) -> DoorHost {
         DoorHost(self.services)
@@ -667,6 +668,13 @@ const UNTICKETED: CompletionHandle = CompletionHandle {
 /// answers each one's failure path: no entropy, no clock.
 #[derive(Clone, Copy)]
 struct DoorHost(Option<StaticServices>);
+
+impl DoorHost {
+    /// One reading of the host's clock; none when the host serves no clock.
+    fn clock(&self) -> Option<ClockReading> {
+        self.0.and_then(|s| s.clock_now(UNTICKETED).ok())
+    }
+}
 
 impl busbar_contract::codec::CodecHost for DoorHost {
     fn fill_entropy(&self, out: &mut [u8]) -> bool {
@@ -1041,7 +1049,7 @@ fn answered(r: refuse::Rendered) -> Answer {
     }
 }
 
-/// The time-like inputs of a far-end piece, from the host's clock.
+/// The time-like inputs of a far-end piece, from one reading of the host's clock.
 fn at(clock: Option<ClockReading>, started: Option<u64>) -> At {
     match clock {
         Some(c) => At {
@@ -1064,7 +1072,6 @@ struct PieceIn<'a> {
     member: &'a [u8],
     pool: &'a [u8],
     passthrough: bool,
-    clock: Option<ClockReading>,
 }
 
 /// An ATTEMPT: the far-end request for the member the walk picked.
@@ -1074,7 +1081,7 @@ fn attempt(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer
     unit.reply = None;
     unit.request = None;
     unit.far_status = 0;
-    unit.started = piece.clock.map(|c| c.mono_ns);
+    unit.started = host.clock().map(|c| c.mono_ns);
     let built = if unit.probe {
         unit.shaping
             .lane(&unit.member)
@@ -1167,7 +1174,7 @@ fn far_end(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer
         let mut fed = if arrived.is_empty() {
             Piece::default()
         } else {
-            reply.feed(host, &ctx, arrived, false, at(piece.clock, unit.started))
+            reply.feed(host, &ctx, arrived, false, At::default())
         };
         let mut cut = reply.cut(host, &ctx, true);
         if matches!(cut.fault, Some(Fault::Transient(_))) {
@@ -1184,13 +1191,14 @@ fn far_end(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer
         }
         return far_answer(cut, unit.far_status);
     }
-    let mut fed = reply.feed(
-        host,
-        &ctx,
-        piece.bytes,
-        piece.last,
-        at(piece.clock, unit.started),
-    );
+    // The host's clock is read only for the piece whose answer states the time (zero host calls
+    // per relayed chunk).
+    let time = if reply.takes_time(piece.last) {
+        at(host.clock(), unit.started)
+    } else {
+        At::default()
+    };
+    let mut fed = reply.feed(host, &ctx, piece.bytes, piece.last, time);
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
     let dropped = std::mem::take(&mut fed.dropped);
@@ -1448,21 +1456,23 @@ slot!(
 );
 
 slot!(
-    /// `cancel`: the unit on the cancelled ticket ends; nothing it owed is delivered.
+    /// `cancel`: the cancelled unit (the unit the cancel names, else the one on its ticket) ends;
+    /// nothing it owed is delivered.
     Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
-        let mut partial = false;
-        if let Some(door) = instance.get() {
-            partial = guard(&door.units)
-                .cancel(input.cancel().ticket())
-                .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
-        }
+        let cancelled = instance
+            .get()
+            .and_then(|door| guard(&door.units).cancel(input.cancel().ticket(), input.unit()));
         // A caller that left a usable part of the answer leaves a PARTIAL unit: the units the
         // answer stated so far bill (1.5.5's drop arm; a same-dialect whole body states none while
-        // it relays, so it bills none, as 1.5.5's did). Any other cancel bills nothing.
-        out.set(
-            |o| &o.cancel.disposition,
-            if partial { CANCEL_OK_PARTIAL } else { CANCEL_ABORTED },
-        );
+        // it relays, so it bills none, as 1.5.5's did). A unit whose far end answered and left the
+        // caller nothing usable FAILED; one cancelled before its far end answered was ABORTED.
+        // Neither bills.
+        let disposition = match cancelled.as_ref().and_then(|u| u.reply.as_ref()) {
+            Some(reply) if reply.partial() => CANCEL_OK_PARTIAL,
+            Some(_) => CANCEL_FAILED,
+            None => CANCEL_ABORTED,
+        };
+        out.set(|o| &o.cancel.disposition, disposition);
         Outcome::Ready
     }
 );
@@ -1616,20 +1626,29 @@ slot!(
             if input.from() == FROM_FAR_END && input.flags() & PIECE_FINAL != 0 {
                 unit.final_answer = true;
             }
+            // THE FAR END'S TRAILERS (`PIECE_FIELDS`): no far end this plane speaks reports its
+            // outcome there, so the plane ignores the piece (the contract's "any other ignores
+            // the piece"): none of its bytes reach the caller or the usage read, and no status on
+            // it re-opens the answer. Only its place in the answer stands: a last one ends it.
+            let trailers = input.from() == FROM_FAR_END && input.flags() & PIECE_FIELDS != 0;
             let piece = PieceIn {
                 last: input.flags() & PIECE_LAST != 0,
                 cut: input.from() == FROM_FAR_END && input.flags() & PIECE_CUT != 0,
-                status: (input.flags() & PIECE_HAS_STATUS != 0).then_some(input.status_code()),
-                fields: input
-                    .head_fields()
-                    .iter()
-                    .map(|f| (f.name().bytes(), f.value().bytes()))
-                    .collect(),
-                bytes: input.bytes().bytes(),
+                status: (input.flags() & PIECE_HAS_STATUS != 0 && !trailers)
+                    .then_some(input.status_code()),
+                fields: if trailers {
+                    Vec::new()
+                } else {
+                    input
+                        .head_fields()
+                        .iter()
+                        .map(|f| (f.name().bytes(), f.value().bytes()))
+                        .collect()
+                },
+                bytes: if trailers { &[] } else { input.bytes().bytes() },
                 member: input.member().bytes(),
                 pool: input.pool().bytes(),
                 passthrough: input.passthrough() != 0,
-                clock: if input.from() == FROM_CALLER { None } else { door.clock() },
             };
             let mut answer = answer(&door.host(), &mut unit, input.from(), &piece);
             fee_unit(&mut unit, &mut answer);
@@ -1761,9 +1780,15 @@ slot!(
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let mut units = guard(&door.units);
+        // The unit leaves the map for the call, as on `on_piece`, so the rewrite and the projection
+        // (a whole body's read) run with no lock held: no other unit waits on this one's parse.
+        let key = input.unit();
+        let Some(mut unit) = guard(&door.units).take(key) else {
+            return Outcome::Refused;
+        };
         // A unit that never arrived (or arrived declined, or as a probe) has nothing to project.
-        let Some(arrived) = units.get_mut(input.unit()).and_then(|u| u.arrived.as_mut()) else {
+        let Some(arrived) = unit.arrived.as_mut() else {
+            guard(&door.units).hold(key, unit);
             return Outcome::Refused;
         };
         let rewrite = input.rewrite().bytes();
@@ -1775,7 +1800,7 @@ slot!(
         let view = project::project(arrived);
         let dialect = arrived.dialect;
         let pool = arrived.model.clone();
-        drop(units);
+        guard(&door.units).hold(key, unit);
         let (signals, mut arena, mut turns) =
             (input.signals_buf(), input.arena_buf(), input.messages_buf());
         let pool = arena.span(pool.as_bytes());

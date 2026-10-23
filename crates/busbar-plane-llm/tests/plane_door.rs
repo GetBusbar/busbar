@@ -652,7 +652,7 @@ fn every_way_a_unit_ends_leaves_nothing_in_the_doors_book() {
     let unit = book.take(9).expect("arrived");
     book.bind(t(3), 9);
     book.hold(9, unit);
-    assert_eq!(book.cancel(t(3)), Some("cancelled"));
+    assert_eq!(book.cancel(t(3), 0), Some("cancelled"));
     assert_eq!(book.held(), (0, 0), "a cancelled unit keeps nothing");
 
     // A unit whose pieces move to another ticket is bound by that one alone.
@@ -660,9 +660,28 @@ fn every_way_a_unit_ends_leaves_nothing_in_the_doors_book() {
     book.bind(t(4), 10);
     book.bind(t(5), 10);
     assert_eq!(book.held(), (1, 1), "the old ticket is unbound");
-    assert_eq!(book.cancel(t(4)), None);
+    assert_eq!(book.cancel(t(4), 0), None);
     book.ends(10);
     assert_eq!(book.held(), (0, 0));
+
+    // LLM1#4: a unit cancelled BEFORE ITS FIRST PIECE (its caller left during admission or the
+    // hooks) is bound to no ticket; the cancel names it by its key, and it leaves nothing. RED: a
+    // cancel read only the ticket, so the arrived unit (its whole body and parsed JSON) stayed.
+    book.hold(11, "unbound");
+    assert_eq!(book.cancel(t(6), 11), Some("unbound"));
+    assert_eq!(
+        book.held(),
+        (0, 0),
+        "a unit cancelled before its first piece keeps nothing"
+    );
+
+    // A cancel naming the unit takes its ticket binding with it.
+    book.hold(12, "bound");
+    let unit = book.take(12).expect("arrived");
+    book.bind(t(7), 12);
+    book.hold(12, unit);
+    assert_eq!(book.cancel(t(8), 12), Some("bound"));
+    assert_eq!(book.held(), (0, 0), "its ticket goes with it");
 }
 
 /// THE SIGNED PATHS ARE THE PREVIOUS RELEASE'S (ARCHITECT rulings 2026-10-16, 3b A, and

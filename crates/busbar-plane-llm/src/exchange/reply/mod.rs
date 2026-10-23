@@ -196,9 +196,11 @@ pub struct Reply {
     state: State,
     /// The relayed answer ended a usable success the caller was reading (its first byte reached
     /// the caller and its stream ended clean): a caller that leaves while its last window is still
-    /// being written bills the units it stated, as one that left mid-relay does (L1#5). A whole
-    /// answer handed to the caller (a delivery, or a failed generation that keeps its usage) sets
-    /// it too: its body may span several windows, and its units bill however many the caller read.
+    /// being written bills the units it stated, as one that left mid-relay does (L1#5). A relayed
+    /// end that failed after the caller's first byte yet bills what the far end reported (a failed
+    /// generation, an aborted translation) sets it too, and so does a whole answer handed to the
+    /// caller (a delivery, or a failed generation that keeps its usage): its body may span several
+    /// windows, and its units bill however many the caller read.
     ended_partial: bool,
     /// A streamed answer over the invoke envelope, re-framed into its carried dialect's events
     /// before it is read ([`invoke::Transcoder`]).
@@ -498,16 +500,26 @@ impl Reply {
                 // it bills what the far end reported before it (#62, OWNER-LOCKED 2026-09-20;
                 // ruled for this case 2026-10-17), as a caller that leaves after it does.
                 let translate_aborted = end.stream_fault == Some("stream-translate-abort");
-                let units =
-                    if end.stream_fault.is_some() && !failed_generation && !translate_aborted {
-                        Units::default()
-                    } else {
-                        Units {
-                            stated: units.floor,
-                            ..Units::of(end.usage.as_ref(), end.open_units)
-                        }
-                    };
-                self.ended_partial = partial && fault.is_none();
+                let bills = end.stream_fault.is_none() || failed_generation || translate_aborted;
+                let units = if bills {
+                    Units {
+                        stated: units.floor,
+                        ..Units::of(end.usage.as_ref(), end.open_units)
+                    }
+                } else {
+                    Units::default()
+                };
+                // AN END THAT BILLS ITS UNITS BILLS THEM WHETHER OR NOT THE CALLER STAYS FOR ITS
+                // LAST WINDOW (LLM1#1), as a whole answer's does: a clean end the caller had a
+                // usable part of, and an end that failed after the caller's first byte yet still
+                // bills what the far end reported (a failed generation, Q31/Q37; a translation
+                // that aborted, #62). A caller that leaves while that end is still being written
+                // bills the same units the end states. An end that bills nothing bills nothing.
+                self.ended_partial = if fault.is_none() {
+                    partial
+                } else {
+                    relay.had_first() && bills
+                };
                 self.state = State::Done;
                 Piece {
                     head,
@@ -525,6 +537,14 @@ impl Reply {
                 }
             }
         }
+    }
+
+    /// The piece fed next reads its [`At`]: only the last piece of an answer taken whole (its
+    /// creation stamp and elapsed milliseconds). A relayed or judged answer reads none, so the door
+    /// reads no clock for its pieces (zero host calls per chunk).
+    #[must_use]
+    pub fn takes_time(&self, last: bool) -> bool {
+        last && matches!(self.state, State::Whole { .. })
     }
 
     /// The caller had a usable part of a success answer when it left (see [`relay::Relay::partial`]):

@@ -4743,6 +4743,139 @@ mod rehomed_metering {
             "v1.5.5's figure: the readable count, nothing else"
         );
     }
+
+    // ── a caller that leaves while a relayed end's last window is written (row 159 LLM1#1) ────
+
+    /// One answer read to its end in one far-end piece: the reply (for its cancel reading) and
+    /// the end.
+    fn ended(ctx: &ReplyCtx<'_>, head: &[(&[u8], &[u8])], far: &[u8]) -> (Reply, Piece<'static>) {
+        let mut reply = Reply::new(HOST, ctx, 200, head);
+        let end = owned(reply.feed(HOST, ctx, far, true, AT));
+        assert!(end.done, "{end:?}");
+        (reply, end)
+    }
+
+    /// A RELAYED END THAT BILLS ITS UNITS BILLS THEM WHEN THE CALLER LEAVES DURING ITS LAST WINDOW
+    /// (row 159, plane-llm LLM1#1, HIGH; "Billing never moves", BUSBAR-1.6.0.md). The door writes
+    /// a relayed end to the caller in windows; a caller that leaves before the last one is a
+    /// cancel, which bills the units the end stated only when the reply reads as PARTIAL. A
+    /// relayed body or stream whose generation FAILED bills its far-end-reported units on
+    /// completion (owner ruling Q31; 1.5.5 billed them at the stream's end), and a translation that
+    /// aborted after the first byte bills what streamed (#62): each is that partial too. A stream
+    /// the far end itself ended as FAILED bills nothing on completion, and nothing on a cancel.
+    /// RED on dev: `ended_partial = partial && fault.is_none()`, so every failed end read as
+    /// nothing usable, and the cancel billed 0 tokens and no fee for an answer that bills 10 / 5
+    /// (or 600 / 400) when the caller stays.
+    #[test]
+    fn a_relayed_end_that_bills_bills_when_the_caller_leaves_during_its_last_window() {
+        // A same-dialect whole body whose stop reason is a failed generation.
+        let (arrived, lane) = ask("cohere", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let (reply, end) = ended(&ctx, JSON_HEAD, &cohere_body("ERROR"));
+        assert_eq!(
+            end.fault,
+            Some(Fault::Transient("upstream-generation-failed"))
+        );
+        assert_eq!((end.units.tokens_in, end.units.tokens_out), (10, 5));
+        assert!(
+            reply.partial(),
+            "a same-dialect failed generation bills its 10 / 5 on a cancel in its last window"
+        );
+
+        // A translated stream that ends in a failed generation.
+        let (arrived, lane) = ask("openai", "gemini", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let (reply, end) = ended(&ctx, SSE_HEAD, &gemini_stream("MALFORMED_FUNCTION_CALL"));
+        assert_eq!(end.verdict, Verdict::Hard);
+        assert_eq!((end.units.tokens_in, end.units.tokens_out), (10, 5));
+        assert!(
+            reply.partial(),
+            "a streamed failed generation bills its 10 / 5 on a cancel in its last window"
+        );
+
+        // A translated stream whose reframing gave up after its first byte.
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let mut reply = Reply::new(HOST, &ctx, 200, SSE_HEAD);
+        let _ = reply.feed(HOST, &ctx, USAGE_CHUNK, false, AT);
+        let end = reply.feed(HOST, &ctx, &overflow(), true, AT);
+        assert_eq!(end.fault, Some(Fault::Transient("stream-translate-abort")));
+        assert_eq!((end.units.tokens_in, end.units.tokens_out), (600, 400));
+        assert!(
+            reply.partial(),
+            "an aborted translation bills what streamed on a cancel in its last window (#62)"
+        );
+
+        // THE CONTROLS: a clean end bills on a late cancel; a stream the far end itself ended as
+        // FAILED (its in-band terminal error, not a failed generation) bills nothing either way.
+        let (arrived, lane) = ask("openai", "gemini", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let (reply, end) = ended(&ctx, SSE_HEAD, &gemini_stream("STOP"));
+        assert_eq!(end.fault, None);
+        assert!(
+            reply.partial(),
+            "a clean streamed end bills on a late cancel"
+        );
+
+        let mut arrived = arrived_for(
+            "responses",
+            OpVerb::CHAT,
+            Some(json!({"model": "p", "stream": true, "input": "hi"})),
+            false,
+        );
+        arrived.path = "/v1/responses".to_string();
+        let responses = super::lane("responses");
+        let ctx = reply_ctx(&arrived, &responses);
+        let failed = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"m-1\",\"output\":[]}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hel\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m-1\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2,\"total_tokens\":7}}}\n\n",
+        );
+        let (reply, end) = ended(&ctx, SSE_HEAD, failed.as_bytes());
+        assert_eq!((end.units.tokens_in, end.units.tokens_out), (0, 0));
+        assert!(
+            !reply.partial(),
+            "a stream the far end failed bills nothing on a late cancel"
+        );
+    }
+
+    /// LLM1#7: ZERO HOST CALLS PER CHUNK (Appendix A B.6, `on_piece`). The door reads the host's
+    /// clock for a far-end piece only when the reply says the piece states the time: the last
+    /// piece of an answer taken whole (its creation stamp and elapsed milliseconds). A relayed
+    /// answer's pieces, and a whole answer's earlier ones, read none. RED: the door read the clock
+    /// on every far-end and kernel piece.
+    #[test]
+    fn only_the_last_piece_of_a_whole_answer_reads_the_time() {
+        let (arrived, lane) = ask("openai", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let reply = Reply::new(HOST, &ctx, 200, JSON_HEAD);
+        assert!(
+            !reply.takes_time(false),
+            "an earlier piece of a whole answer"
+        );
+        assert!(reply.takes_time(true), "the whole answer's last piece");
+
+        let (arrived, lane) = ask("openai", "anthropic", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let reply = Reply::new(HOST, &ctx, 200, SSE_HEAD);
+        assert!(
+            !reply.takes_time(false) && !reply.takes_time(true),
+            "a relayed stream"
+        );
+
+        let (arrived, lane) = ask("cohere", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let reply = Reply::new(HOST, &ctx, 200, JSON_HEAD);
+        assert!(!reply.takes_time(true), "a same-dialect body relays");
+
+        let mut reply = Reply::new(HOST, &ctx, 500, JSON_HEAD);
+        assert!(!reply.takes_time(true), "a judged failure");
+        let _ = reply.feed(HOST, &ctx, b"{}", true, AT);
+        assert!(!reply.takes_time(true), "a finished answer");
+    }
 }
 
 /// Q128 arch u59: A TRANSLATED STREAM IS TIMED ON THE HOST'S ONE CLOCK. A Bedrock caller's
