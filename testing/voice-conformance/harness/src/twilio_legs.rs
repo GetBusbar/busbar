@@ -1367,6 +1367,7 @@ fn meter_expected() -> Vec<String> {
         "unanswered start Ready units=[]".to_string(),
         "unanswered audio 1s Ready units=[4:1=1]".to_string(),
         "unanswered stop Ready units=[4:1=1] done=true".to_string(),
+        "settled start Ready units=[]".to_string(),
         format!("settled stop Ready units=[{}] done=true", usage_units(2)),
     ]
 }
