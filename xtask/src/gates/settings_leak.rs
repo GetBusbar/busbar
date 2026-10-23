@@ -241,7 +241,8 @@ fn may_declare_settings(text: &str) -> bool {
         }
         from = from + i + 1;
     }
-    false
+    // A serde rename gives a field the settings name without the ident: `rename = "settings"`.
+    lower.contains("serde") && lower.contains("settings\"")
 }
 
 /// `[pub[(…)]] <keyword> <Name>` at the head of a line, for the declaration INDEX: `struct`,
@@ -335,12 +336,97 @@ enum Kind {
     /// A struct with named fields, a unit struct, a multi-field tuple struct, an enum or a union: a
     /// shape the tree writes down field by field.
     Typed,
+    /// A struct or enum serde writes out THROUGH other types: a `#[serde(flatten)]` field's type
+    /// is spliced into the object, `#[serde(transparent)]` serializes as the one field, and
+    /// `#[serde(into = "T")]` serializes as `T`. Judged as each of those types: it is a bag if
+    /// any is, because a flattened `Map<String, Value>` makes the struct an open bag however many
+    /// named fields sit beside it.
+    Through(Vec<Shape>),
     /// `type X = …;`, or a single-field newtype over a concrete type: judged as what it stands for.
     Alias(Shape),
     /// A generic newtype over its own parameter (`Redacted<T>(T)`). If nothing in the tree
     /// serializes it, it is one of the tree's REDACTED wrappers and safe; if something does, it is
     /// as transparent as `Option` and judged by its type argument.
     GenericNewtype { derives_serialize: bool },
+}
+
+/// What a field's or item's `#[serde(…)]` attributes say about how it is serialized.
+#[derive(Default, Debug)]
+struct SerdeAttrs {
+    /// `flatten`: the field's contents are spliced into the parent object.
+    flatten: bool,
+    /// `transparent`: the item serializes as its one field.
+    transparent: bool,
+    /// Every name the item or field is serialized under (`rename = "x"`,
+    /// `rename(serialize = "x")`).
+    renames: Vec<String>,
+    /// `into = "T"`: the item serializes as `T`.
+    into: Option<String>,
+}
+
+fn serde_attrs(attrs: &[syn::Attribute]) -> SerdeAttrs {
+    let mut out = SerdeAttrs::default();
+    for a in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let _ = a.parse_nested_meta(|m| {
+            if m.path.is_ident("flatten") {
+                out.flatten = true;
+            } else if m.path.is_ident("transparent") {
+                out.transparent = true;
+            } else if m.path.is_ident("rename") && m.input.peek(syn::Token![=]) {
+                let v: syn::LitStr = m.value()?.parse()?;
+                out.renames.push(v.value());
+            } else if m.path.is_ident("rename") {
+                m.parse_nested_meta(|n| {
+                    let v: syn::LitStr = n.value()?.parse()?;
+                    if n.path.is_ident("serialize") {
+                        out.renames.push(v.value());
+                    }
+                    Ok(())
+                })?;
+            } else if m.path.is_ident("into") && m.input.peek(syn::Token![=]) {
+                let v: syn::LitStr = m.value()?.parse()?;
+                out.into = Some(v.value());
+            } else if m.input.peek(syn::Token![=]) {
+                let _: syn::Expr = m.value()?.parse()?;
+            } else if m.input.peek(syn::token::Paren) {
+                let content;
+                syn::parenthesized!(content in m.input);
+                let _: TokenStream = content.parse()?;
+            }
+            Ok(())
+        });
+    }
+    out
+}
+
+/// The shapes an item (a struct's or enum's fields, and its own `into`/`transparent`) is
+/// serialized through, beyond the named fields it writes down one by one.
+fn serialized_through(attrs: &[syn::Attribute], fields: &[&syn::Fields]) -> Vec<Shape> {
+    let own = serde_attrs(attrs);
+    let mut out = Vec::new();
+    if let Some(into) = own.into.as_deref() {
+        out.push(
+            syn::parse_str::<syn::Type>(into)
+                .map(|t| shape(&t))
+                .unwrap_or(Shape::Opaque),
+        );
+    }
+    for f in fields.iter().flat_map(|f| f.iter()) {
+        let field = serde_attrs(&f.attrs);
+        if field.flatten || own.transparent {
+            out.push(shape(&f.ty));
+        }
+    }
+    out
+}
+
+fn through_or_typed(attrs: &[syn::Attribute], fields: &[&syn::Fields]) -> Kind {
+    let through = serialized_through(attrs, fields);
+    if through.is_empty() {
+        Kind::Typed
+    } else {
+        Kind::Through(through)
+    }
 }
 
 fn derives_serialize(attrs: &[syn::Attribute]) -> bool {
@@ -416,7 +502,13 @@ fn use_leaves(tree: &syn::UseTree, root: Option<&str>, out: &mut Vec<(String, St
 impl<'ast> Visit<'ast> for Collect {
     fn visit_field(&mut self, f: &'ast syn::Field) {
         if let Some(id) = &f.ident {
-            if names_settings(&id.to_string()) {
+            // A field is named by what it is SERIALIZED as: `#[serde(rename = "settings")] cfg`
+            // is the settings member of the object whatever the Rust ident says.
+            let renamed = serde_attrs(&f.attrs)
+                .renames
+                .iter()
+                .any(|n| names_settings(n));
+            if names_settings(&id.to_string()) || renamed {
                 self.summary.fields.push(FieldDecl {
                     line: id.span().start().line,
                     ty: Some(shape(&f.ty)),
@@ -446,14 +538,17 @@ impl<'ast> Visit<'ast> for Collect {
                     Kind::Alias(shape(ty))
                 }
             }
-            _ => Kind::Typed,
+            _ => through_or_typed(&it.attrs, &[&it.fields]),
         };
         self.summary.decls.push((it.ident.to_string(), kind));
         syn::visit::visit_item_struct(self, it);
     }
 
     fn visit_item_enum(&mut self, it: &'ast syn::ItemEnum) {
-        self.summary.decls.push((it.ident.to_string(), Kind::Typed));
+        let fields: Vec<&syn::Fields> = it.variants.iter().map(|v| &v.fields).collect();
+        self.summary
+            .decls
+            .push((it.ident.to_string(), through_or_typed(&it.attrs, &fields)));
         syn::visit::visit_item_enum(self, it);
     }
 
@@ -740,6 +835,7 @@ impl<'f> TypeTree<'f> {
         }
         kinds.iter().any(|(kind, at)| match kind {
             Kind::Typed => false,
+            Kind::Through(shapes) => shapes.iter().any(|t| self.is_bag(t, *at, depth + 1)),
             Kind::Alias(target) => self.is_bag(target, *at, depth + 1),
             Kind::GenericNewtype { derives_serialize } => {
                 (*derives_serialize || self.serialize_impl(name)) && judge_arg()
@@ -806,16 +902,39 @@ fn macro_struct_fields(ts: TokenStream, out: &mut Vec<FieldDecl>) {
     }
 }
 
+/// Does a `serde(…)` attribute's token stream carry a string literal naming settings?
+fn attr_names_settings(ts: TokenStream) -> bool {
+    let toks: Vec<TokenTree> = ts.into_iter().collect();
+    if !matches!(toks.first(), Some(TokenTree::Ident(id)) if id == "serde") {
+        return false;
+    }
+    fn any_literal(ts: TokenStream) -> bool {
+        ts.into_iter().any(|t| match t {
+            TokenTree::Literal(l) => names_settings(l.to_string().trim_matches('"')),
+            TokenTree::Group(g) => any_literal(g.stream()),
+            _ => false,
+        })
+    }
+    toks.into_iter().skip(1).any(|t| match t {
+        TokenTree::Group(g) => any_literal(g.stream()),
+        _ => false,
+    })
+}
+
 /// The named fields of one struct body, as tokens: `#[attr]* vis? name : Type ,`.
 fn body_fields(ts: TokenStream, out: &mut Vec<FieldDecl>) {
     let toks: Vec<TokenTree> = ts.into_iter().collect();
     for chunk in toks.split(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ',')) {
         let mut k = 0;
-        // attributes
+        // attributes: a `#[serde(… "…settings" …)]` string names the field as serialized.
+        let mut renamed = false;
         while k + 1 < chunk.len()
             && matches!(&chunk[k], TokenTree::Punct(p) if p.as_char() == '#')
             && matches!(&chunk[k + 1], TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket)
         {
+            if let TokenTree::Group(g) = &chunk[k + 1] {
+                renamed |= attr_names_settings(g.stream());
+            }
             k += 2;
         }
         // visibility
@@ -834,7 +953,7 @@ fn body_fields(ts: TokenStream, out: &mut Vec<FieldDecl>) {
         if colon.as_char() != ':' || colon.spacing() != Spacing::Alone {
             continue;
         }
-        if !names_settings(&id.to_string()) {
+        if !names_settings(&id.to_string()) && !renamed {
             continue;
         }
         let ty_tokens: TokenStream = chunk[k + 2..].iter().cloned().collect();
@@ -1305,6 +1424,75 @@ impl Gate for SettingsLeakGate {
                 "planted_types.rs:13:",
                 "planted_types.rs:19:",
             ],
+        ));
+
+        // SERDE SHAPES THE FIELD LIST DOES NOT SHOW. A struct with named fields used to be "typed"
+        // whatever serde does with it: a `#[serde(flatten)]` Map splices an open bag into the
+        // object, `#[serde(transparent)]` serializes as its one field, and a rename gives a field
+        // the `settings` name its ident does not carry. Each is named by LINE.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_serde.rs",
+            "use serde_json::{Map, Value};\n\n\
+             #[derive(Serialize)]\npub(crate) struct PlantedExtras {\n\
+             \x20   pub(crate) name: String,\n\
+             \x20   #[serde(flatten)]\n\
+             \x20   pub(crate) rest: Map<String, Value>,\n}\n\n\
+             #[derive(Serialize)]\n#[serde(transparent)]\npub(crate) struct PlantedOpen {\n\
+             \x20   pub(crate) inner: Map<String, Value>,\n}\n\n\
+             #[derive(Serialize)]\npub(crate) struct PlantedView {\n\
+             \x20   pub(crate) settings: PlantedExtras,\n\
+             \x20   pub(crate) hook_settings: PlantedOpen,\n\
+             \x20   #[serde(rename = \"settings\")]\n\
+             \x20   pub(crate) cfg: Value,\n\
+             \x20   #[serde(rename(serialize = \"x_settings\"))]\n\
+             \x20   pub(crate) other: Map<String, Value>,\n}\n\n\
+             macro_rules! planted_renamed {\n\
+             \x20   () => {\n\
+             \x20       pub struct PlantedMacro {\n\
+             \x20           #[serde(rename = \"settings\")]\n\
+             \x20           pub cfg: HashMap<String, String>,\n\
+             \x20       }\n\
+             \x20   };\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a flattened or transparent bag, and a serde-renamed settings field, are flagged",
+            &[ROW_NO_RAW_BAG],
+            ov,
+            &[
+                "5 finding(s)",
+                "planted_serde.rs:18:",
+                "planted_serde.rs:19:",
+                "planted_serde.rs:21:",
+                "planted_serde.rs:23:",
+                "planted_serde.rs:30:",
+            ],
+        ));
+
+        // THE SAME SHAPES, SAFE: a flatten of a typed struct is typed, and a flattened Map in a
+        // struct no settings field reaches is not a settings bag.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_serde_typed.rs",
+            "#[derive(Serialize)]\npub(crate) struct PlantedInner {\n\
+             \x20   pub(crate) a: String,\n}\n\n\
+             #[derive(Serialize)]\npub(crate) struct PlantedOuter {\n\
+             \x20   pub(crate) n: String,\n\
+             \x20   #[serde(flatten)]\n\
+             \x20   pub(crate) inner: PlantedInner,\n}\n\n\
+             #[derive(Serialize)]\npub(crate) struct PlantedLoose {\n\
+             \x20   #[serde(flatten)]\n\
+             \x20   pub(crate) rest: std::collections::BTreeMap<String, String>,\n}\n\n\
+             #[derive(Serialize)]\npub(crate) struct PlantedTypedView {\n\
+             \x20   pub(crate) settings: PlantedOuter,\n}\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "a flatten of a typed struct, and a flattened map no settings field reaches, stay silent",
+            &[ROW_NO_RAW_BAG],
         ));
 
         // A MARKER WITHOUT A REASON IS NOT AN ALLOWANCE. `carries_allow_marker` took the bare words
