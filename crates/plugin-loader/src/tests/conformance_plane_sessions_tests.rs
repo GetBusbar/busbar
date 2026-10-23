@@ -328,9 +328,9 @@ mod pieces_on_tickets {
             if !have.is_null() {
                 return have;
             }
+            let real: Door = *crate::plane_door_plugin::door();
             // SAFETY: the fixture's door and its plane table are `'static`.
-            let real: Door = unsafe { crate::plane_door_plugin::door().read_unaligned() };
-            let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+            let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
             REAL_ON_PIECE.store(
                 ops.on_piece.expect("the fixture answers pieces") as *mut (),
                 Ordering::SeqCst,

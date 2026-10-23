@@ -1086,9 +1086,9 @@ mod hook_on_tickets {
             if !have.is_null() {
                 return have;
             }
+            let real: Door = *conforming::door();
             // SAFETY: the fixture's door and its hook table are `'static`.
-            let real: Door = unsafe { conforming::door().read_unaligned() };
-            let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+            let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
             REAL_DECIDE.store(
                 ops.decide.expect("the fixture decides") as *mut (),
                 Ordering::SeqCst,
@@ -1225,7 +1225,8 @@ mod dropped_image {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-    use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::sdk::door::RawDoorFn;
 
     use super::super::{cdylib_of, choose_cdylib_by, distinct, test_door, TestDoor, CDYLIB_ENV};
 
@@ -1375,10 +1376,14 @@ mod dropped_image {
         // Absent, the example cdylib fails the test naming its build command; never a skip.
         crate::both_ways::example_cdylib("plane_door_plugin");
         let path = cdylib_of("plane_door_plugin");
-        distinct(crate::plane_door_plugin::door, &path).unwrap_or_else(|e| panic!("{e}"));
+        distinct(
+            crate::dispatch::load::raw(crate::plane_door_plugin::door),
+            &path,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
         let lib = unsafe { libloading::Library::new(&path) }.expect("the image loads");
-        let door: DoorFn = *unsafe { lib.get::<DoorFn>(b"busbar_plugin_door\0") }
+        let door: RawDoorFn = *unsafe { lib.get::<RawDoorFn>(b"busbar_plugin_door\0") }
             .expect("the image exports its door");
         std::mem::forget(lib);
         DROPPED_DOOR.store(door().cast_mut(), Ordering::SeqCst);
@@ -1736,7 +1741,8 @@ fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike
     let by_macro = super::Subject::of_macro(macro_door, "plane_door_plugin", "{}");
     assert_eq!(by_fn.door as usize, by_macro.door as usize);
     // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
-    let restated = unsafe { crate::dispatch::LoadedDoor::from_raw(door) };
+    let restated =
+        unsafe { crate::dispatch::LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
     let by_loaded = super::Subject::of_loaded(restated, "plane_door_plugin", "{}");
     assert_eq!(by_fn.door as usize, by_loaded.door as usize);
     let row = LinkedRow::of(door).expect("the door states its Statement");
@@ -1756,7 +1762,7 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
     let macro_door = crate::plane_door_plugin::MACRO_DOOR;
     // A restated door (a hand-built one, in a plugin's own test) and a macro door's own.
     // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
-    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let restated = unsafe { LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
     let by_restated = LinkedRow::of_loaded(restated).expect("the door states its Statement");
     let by_macro = LinkedRow::of_loaded(LoadedDoor::from(macro_door)).expect("states");
     let by_fn = LinkedRow::of(door).expect("states");
@@ -1783,7 +1789,7 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
     );
     assert!(linked_macro.linked()[0].door().is_some());
     // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
-    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let restated = unsafe { LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
     let linked_loaded = crate::PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::of_loaded(manifest(), restated)])
         .expect("the restated door links");

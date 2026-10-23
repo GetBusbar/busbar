@@ -555,7 +555,7 @@ mod door {
     extern "C" fn lifecycle_open_door() -> *const Door {
         // SAFETY: the macro's `'static` door and its plane table.
         let (d, ops) = unsafe {
-            let d = &*plug::door();
+            let d = plug::door();
             (d, *d.ops().cast::<plane::Ops>())
         };
         let mut ops = ops;
@@ -565,7 +565,7 @@ mod door {
         Box::leak(Box::new(unsafe {
             Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
                 ops: std::ptr::from_ref(ops).cast(),
-                ..*d
+                ..d.parts()
             })
         }))
     }

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use crate::dispatch_test_plugin as plug;
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
-use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, OpenIn, OpenOut, OpsHead, RefreshIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
@@ -33,7 +33,7 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Budgets, Diagnostic,
+    in_head, load_dropped, load_linked, now_ns, out_head, Bind, Budgets, Diagnostic,
     DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LinkedRow, LoadError,
     ManifestFacts, Metric, Plugin, NO_BLOB,
 };
@@ -1327,10 +1327,12 @@ fn red_every_door_refusal() {
     let ops: OpsHead = unsafe { *real.ops() };
     let st = unsafe { *real.statement() };
     let leak_ops = |o: OpsHead| Box::leak(Box::new(o)) as *const OpsHead;
-    let with = |f: &dyn Fn(&mut Door)| {
-        let mut d = real;
+    let with = |f: &dyn Fn(&mut DoorParts)| {
+        let mut d = real.parts();
         f(&mut d);
-        validate_door::<TestKind>(Box::leak(Box::new(d))).err()
+        // SAFETY: a copy of the real door with one field wrong, which the loader reads only
+        // through its checks (the refusal under test).
+        validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
     };
     assert!(validate_door::<TestKind>(&real).is_ok(), "the GREEN twin");
     assert_eq!(
@@ -1750,11 +1752,12 @@ fn red_one_recall_a_second_short_answer_is_fault() {
 
 // ── EXACT VERSIONS: older, newer and a wrong magic are each refused ─────────────────────────────
 
-fn door_with(f: impl Fn(&mut Door)) -> Option<LoadError> {
-    // SAFETY: the real door is `'static`.
-    let mut d = unsafe { *plug::busbar_plugin_door() };
+fn door_with(f: impl Fn(&mut DoorParts)) -> Option<LoadError> {
+    let mut d = plug::door().parts();
     f(&mut d);
-    validate_door::<TestKind>(Box::leak(Box::new(d))).err()
+    // SAFETY: a copy of the real door with one field wrong, which the loader reads only through
+    // its checks (the refusal under test).
+    validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
 }
 
 #[test]
@@ -2639,17 +2642,15 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             claims_len: NAMES.len(),
             ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
         }));
-        let door = unsafe {
-            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
-                magic: DOOR_MAGIC,
-                mechanism_version: MECHANISM_VERSION,
-                size: std::mem::size_of::<Door>() as u32,
-                kind: KindCode::Transport as u32,
-                kind_abi: KindCode::Transport.abi_version(),
-                statement: st,
-                ops: std::ptr::null(),
-                ready: None,
-            })
+        let door = DoorParts {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: KindCode::Transport as u32,
+            kind_abi: KindCode::Transport.abi_version(),
+            statement: st,
+            ops: std::ptr::null(),
+            ready: None,
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -2716,17 +2717,15 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
             kind_tail,
             ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
         }));
-        let door = unsafe {
-            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
-                magic: DOOR_MAGIC,
-                mechanism_version: MECHANISM_VERSION,
-                size: std::mem::size_of::<Door>() as u32,
-                kind: KindCode::Plane as u32,
-                kind_abi: KindCode::Plane.abi_version(),
-                statement: st,
-                ops: std::ptr::null(),
-                ready: None,
-            })
+        let door = DoorParts {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: KindCode::Plane as u32,
+            kind_abi: KindCode::Plane.abi_version(),
+            statement: st,
+            ops: std::ptr::null(),
+            ready: None,
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };

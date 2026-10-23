@@ -473,8 +473,8 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     use std::sync::OnceLock;
 
     extern "C" fn bad_door() -> &'static Door {
-        static BAD: OnceLock<&'static Door> = OnceLock::new();
-        BAD.get_or_init(|| {
+        static BAD: OnceLock<usize> = OnceLock::new();
+        let at = *BAD.get_or_init(|| {
             let good = plug::door();
             // SAFETY: `plug::door` answers the fixture's `'static` Door, Statement and tail.
             let mut tail = unsafe {
@@ -500,13 +500,16 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
             let st: &'static Statement = Box::leak(Box::new(st));
             // SAFETY: the fixture's own door with a `'static` Statement restated over its own lists
             // and a leaked tail.
-            Box::leak(Box::new(unsafe {
+            let door: &'static Door = Box::leak(Box::new(unsafe {
                 Door::__from_parts(DoorParts {
                     statement: st,
                     ..good.parts()
                 })
-            }))
-        })
+            }));
+            std::ptr::from_ref(door) as usize
+        });
+        // SAFETY: the address of the door leaked above, for the process.
+        unsafe { &*(at as *const Door) }
     }
 
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();

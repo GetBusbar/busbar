@@ -104,9 +104,9 @@ impl TestDoor for FaultingDoor {
         if !have.is_null() {
             return have;
         }
+        let real: Door = *crate::export_door::tests::SCRAPE_DOOR();
         // SAFETY: the real sink's door and its export table are `'static`.
-        let real: Door = unsafe { crate::export_door::tests::SCRAPE_DOOR().read_unaligned() };
-        let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+        let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops: &'static Ops = Box::leak(Box::new(Ops {
             status: Some(test_op::<StatusFaults>),
             check: Some(test_op::<CheckFaults>),
