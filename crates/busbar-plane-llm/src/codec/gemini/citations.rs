@@ -433,12 +433,14 @@ fn grounding_citations_at(
             .map(Vec::as_slice)
             .unwrap_or_default()
         {
-            let Some(chunk) = idx.as_u64().and_then(|i| chunks.get(i as usize)) else {
+            let Some((i, chunk)) = idx
+                .as_u64()
+                .and_then(|i| chunks.get(i as usize).map(|c| (i, c)))
+            else {
                 continue;
             };
             // A chunk named twice by one support yields the identical citation; naming it N times
             // must not clone it N times.
-            let i = idx.as_u64().unwrap_or_default();
             if !seen.insert(i) {
                 continue;
             }
