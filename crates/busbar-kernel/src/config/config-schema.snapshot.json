@@ -339,6 +339,7 @@
       "deny_unknown_fields": false,
       "kind": "enum",
       "transparent": false,
+      "untagged": true,
       "variants": [
         "Plain",
         "Secret"
@@ -1594,6 +1595,7 @@
     "PromptContentCfg": {
       "deny_unknown_fields": false,
       "kind": "enum",
+      "tag": "type",
       "transparent": false,
       "variants": [
         "audio",
@@ -2442,6 +2444,7 @@
           "type": "u32"
         },
         "session": {
+          "deserialize_with": "strict_session",
           "optional": true,
           "type": "SessionConfig"
         },
