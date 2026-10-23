@@ -25,29 +25,3 @@ file = "crates/busbar-kernel/src/egress/trust/mod.rs"
 item = "EGRESS_TRUST"
 count = 1
 
-
-# THE SEAMS BEHIND AN ALIAS. The static-seam rule read only the words on a static's own line, so a
-# function pointer or trait object named through a type alias passed it. The scan now resolves
-# aliases, and three seams were in the tree, unseen, before it could see them. They are drain-only
-# architecture debt at today's measured count (honest measurement of debt already there, not a
-# narrowing; Law 9: the ceiling only falls). Each names its drain PR.
-# drain PR: #1408 (strikes them when it next merges dev)
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/ingress/arrival.rs"
-item = "INSTALLED_BODY_INGRESS"
-count = 1
-
-# drain PR: #1408
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane_host/mod.rs"
-item = "ONE_SHOT_RUNNERS"
-count = 1
-
-# drain PR: #1408
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane_host/mod.rs"
-item = "SESSION_RUNNERS"
-count = 1
