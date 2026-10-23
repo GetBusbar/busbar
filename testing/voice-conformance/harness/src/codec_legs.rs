@@ -41,7 +41,8 @@ use bytes::Bytes;
 use serde_json::Value;
 
 use crate::door::{
-    judge_planted, open, result, Emission, Log, Plant, Rig, Session, PUBLIC, SESSION,
+    judge_planted, open, result, Emission, Log, Plant, Rig, Session, PUBLIC, REALTIME_CLAIM,
+    SESSION,
 };
 
 // ── the two dialects ────────────────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ use crate::door::{
 /// A duplex dialect the plane dials, and the session door that speaks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
-    /// OpenAI Realtime: the browser's sideband socket (claim 2).
+    /// OpenAI Realtime: the plain realtime socket (`GET /v1/realtime`, [`REALTIME_CLAIM`]).
     OpenAi,
     /// Gemini Live: the Gemini socket (claim 3).
     Gemini,
@@ -76,7 +77,7 @@ impl Dialect {
     /// The door claim that opens a session in it.
     pub const fn claim(self) -> u32 {
         match self {
-            Dialect::OpenAi => 2,
+            Dialect::OpenAi => REALTIME_CLAIM,
             Dialect::Gemini => 3,
         }
     }

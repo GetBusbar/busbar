@@ -51,6 +51,11 @@ pub const MODEL: &str = "m-cap";
 /// The kernel's opaque reference for the caller (never the principal, never a credential).
 pub const CALLER_REF: &str = "c0ffee";
 
+/// The door's plain OpenAI Realtime socket (`GET /v1/realtime`): a session on it is attached to no
+/// call. The sideband (claim 2) attaches only to a call the SDP door placed for its caller
+/// (ARCHITECT ruling 2026-10-23 on `BUSBAR-1.6.0.md` Part 2 #45), so a plain session is opened here.
+pub const REALTIME_CLAIM: u32 = 5;
+
 /// A value all of whose bytes are zero.
 pub fn z<T>() -> T {
     // SAFETY: called only for the plane ABI's plain C structs (`in`/`out` frames, `UnitCount`,
