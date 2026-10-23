@@ -37,6 +37,15 @@
 //!   right line scores 1.00 on every claim and a line one off scores at most 0.58. An unreadable
 //!   document is RED, never "no drift".
 //!
+//! * `documented-claims:live` — arm 7. The cross-check document is the 1.5.5 inventory; the
+//!   documents customers read are the LIVE `README.md` and `CHANGELOG.md`, and they move. Every
+//!   claim must therefore be found, word for word, in the live document its id names: its `live`
+//!   fragments if it carries them (the live wording of the same claim), else its own `quote`
+//!   fragments (split at `…` / `...`, a leading version tag dropped). A claim the live document no
+//!   longer makes says so with a `gone` reason, and `gone` is itself checked: if the live document
+//!   carries the quote again the claim is RED until `gone` is removed. An unreadable live document
+//!   is RED. A register can no longer quote a document that is not the one shipped.
+//!
 //! Existence and content only; nothing is executed and no cell is recorded.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +63,7 @@ pub const ROW_RUN: &str = "documented-claims:run";
 pub const ROW_COUNTS: &str = "documented-claims:counts";
 pub const ROW_CONTRADICTED: &str = "documented-claims:contradicted";
 pub const ROW_ADDRESSES: &str = "documented-claims:addresses";
+pub const ROW_LIVE: &str = "documented-claims:live";
 
 const ROWS: &[&str] = &[
     ROW_REGISTER,
@@ -63,11 +73,14 @@ const ROWS: &[&str] = &[
     ROW_COUNTS,
     ROW_CONTRADICTED,
     ROW_ADDRESSES,
+    ROW_LIVE,
 ];
 
 const CLAIMS: &str = "qa/documented-claims.json";
 const CELLS: &str = "testing/shadow-oracle/cells.json";
 const LEDGER: &str = "testing/shadow-oracle/golden/1.5.5/ledger.tsv";
+const README: &str = "README.md";
+const CHANGELOG: &str = "CHANGELOG.md";
 const DOC: &str = "qa/evidence/inventory/1.5.5-ops-observability.md";
 
 /// Arm 6: the fraction of a quote's words that must appear on the line its id addresses.
@@ -283,6 +296,118 @@ pub fn address_drift(
     bad
 }
 
+// ── arm 7: the live documents ───────────────────────────────────────────────────────────────────
+
+/// The word runs a claim's text is made of: split at `…` / `...`, a leading version tag dropped,
+/// pieces with no word left out.
+fn fragments(text: &str) -> Vec<Vec<String>> {
+    drop_version_tag(text)
+        .replace("...", "…")
+        .split('…')
+        .map(words)
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Whether `frag` is a contiguous run of words in `doc`.
+fn carried(doc: &[String], frag: &[String]) -> bool {
+    !frag.is_empty() && doc.windows(frag.len()).any(|w| w == frag)
+}
+
+/// Arm 7: every claim is found in the live document its id names (see the module doc).
+pub fn live_drift(
+    claims: &[Value],
+    readme: Result<&str, String>,
+    changelog: Result<&str, String>,
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    let mut docs: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (prefix, name, text) in [
+        ("README", README, readme),
+        ("CHANGELOG", CHANGELOG, changelog),
+    ] {
+        match text {
+            Ok(t) => {
+                docs.insert(prefix, words(t));
+            }
+            Err(e) => bad.push(format!(
+                "{name}: unreadable live document ({e}) -- the {prefix} claims are quoted from nothing that can be checked"
+            )),
+        }
+    }
+    for c in claims {
+        let Some(c) = c.as_object() else { continue };
+        let id = get_str(c, "id");
+        let Some((prefix, _)) = parse_id(&id) else {
+            continue;
+        };
+        let Some(doc) = docs.get(prefix) else {
+            continue; // the unreadable document is already reported once
+        };
+        let name = if prefix == "README" {
+            README
+        } else {
+            CHANGELOG
+        };
+        let gone = c.get("gone");
+        let live = c.get("live");
+        if gone.is_some() && live.is_some() {
+            bad.push(format!(
+                "{id}: carries both `gone` and `live`; a claim is in the live {name} or it is not"
+            ));
+            continue;
+        }
+        if let Some(g) = gone {
+            if g.as_str().is_none_or(|s| s.trim().is_empty()) {
+                bad.push(format!("{id}: `gone` must state why the claim left {name}"));
+                continue;
+            }
+            let frags = fragments(&get_str(c, "quote"));
+            if !frags.is_empty() && frags.iter().all(|f| carried(doc, f)) {
+                bad.push(format!(
+                    "{id}: marked `gone` but the live {name} carries its quote -- remove `gone`"
+                ));
+            }
+            continue;
+        }
+        let (wanted, source): (Vec<String>, &str) = match live {
+            Some(l) => match l.as_array() {
+                Some(a)
+                    if !a.is_empty()
+                        && a.iter()
+                            .all(|x| x.as_str().is_some_and(|s| !words(s).is_empty())) =>
+                {
+                    (
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect(),
+                        "`live` text",
+                    )
+                }
+                _ => {
+                    bad.push(format!(
+                        "{id}: `live` must be a non-empty list of the live {name}'s own wording"
+                    ));
+                    continue;
+                }
+            },
+            None => (vec![get_str(c, "quote")], "quote"),
+        };
+        for w in &wanted {
+            for frag in fragments(w) {
+                if !carried(doc, &frag) {
+                    bad.push(format!(
+                        "{id}: the {source} \"{}\" is not in the live {name} -- give the claim its live wording in `live`, or mark it `gone`",
+                        frag.join(" ")
+                    ));
+                }
+            }
+        }
+    }
+    bad
+}
+
 // ── the golden ledger ───────────────────────────────────────────────────────────────────────────
 
 /// Cell ids the pinned golden actually recorded a comparable answer for (PASS rows only).
@@ -310,6 +435,7 @@ pub struct Findings {
     pub counts: Vec<String>,
     pub contradicted: Vec<String>,
     pub addresses: Vec<String>,
+    pub live: Vec<String>,
     /// The `counts` block for the green line.
     pub summary: String,
 }
@@ -508,7 +634,7 @@ pub fn check(cx: &Ctx) -> Findings {
     let id_of = |c: &Map<String, Value>| c.get("id").map(py_str).unwrap_or_default();
     let status_is =
         |c: &Map<String, Value>, s: &str| c.get("status").and_then(Value::as_str) == Some(s);
-    let got: [(&str, u64); 6] = [
+    let got: [(&str, u64); 7] = [
         ("total", claims.len() as u64),
         (
             "readme",
@@ -535,6 +661,10 @@ pub fn check(cx: &Ctx) -> Findings {
             objs.iter()
                 .filter(|c| c.get("contradicted") == Some(&Value::Bool(true)))
                 .count() as u64,
+        ),
+        (
+            "gone",
+            objs.iter().filter(|c| c.get("gone").is_some()).count() as u64,
         ),
     ];
     let said = register
@@ -604,16 +734,24 @@ pub fn check(cx: &Ctx) -> Findings {
         cx.read(DOC).as_deref().map_err(Clone::clone),
     );
 
+    // 7. every claim is in the live README / CHANGELOG
+    f.live = live_drift(
+        claims,
+        cx.read(README).as_deref().map_err(Clone::clone),
+        cx.read(CHANGELOG).as_deref().map_err(Clone::clone),
+    );
+
     let cn = register.get("counts");
     let show = |k: &str| cn.and_then(|c| c.get(k)).map_or("None".to_string(), py_str);
     f.summary = format!(
-        "{} claims ({} README + {} CHANGELOG), {} pinned by a recorded cell, {} excused as prose, {} pinned code-wins",
+        "{} claims ({} README + {} CHANGELOG), {} pinned by a recorded cell, {} excused as prose, {} pinned code-wins, {} gone from the live documents",
         show("total"),
         show("readme"),
         show("changelog"),
         show("cell"),
         show("prose"),
-        show("contradicted")
+        show("contradicted"),
+        show("gone")
     );
     f
 }
@@ -698,6 +836,12 @@ impl Gate for DocumentedClaimsGate {
                 "every claim id addresses the line that carries its quote",
                 &f.addresses,
                 "every id's line carries its quote",
+            ),
+            row(
+                ROW_LIVE,
+                "every claim is found in the live README.md / CHANGELOG.md, or says it is gone",
+                &f.live,
+                "every claim is in the live document it quotes, or is marked gone and is",
             ),
         ])
     }
@@ -890,6 +1034,60 @@ impl Gate for DocumentedClaimsGate {
                 &["unreadable cross-check document"],
             ));
         }
+        // (l) arm 7: the live README rewords a claim (the XF#13 case: "Six wire protocols" in the
+        //     register, "Six model wire protocols" in the README)
+        {
+            let cxc = cx.clone();
+            report.push(prove_red(
+                cx,
+                self,
+                "a live README that no longer carries a claim's wording is caught",
+                &[ROW_LIVE],
+                move || {
+                    let mut ov = Overlay::new();
+                    let doc = cxc.read(README).unwrap_or_default();
+                    ov.set(README, doc.replace("Six model wire protocols", "Six wire"));
+                    ov
+                },
+                &["README:1048", "is not in the live README.md"],
+            ));
+        }
+        // (m) a claim whose `live` wording is dropped falls back to the 1.5.5 quote, which the
+        //     live README does not carry
+        report.push(prove_red(
+            cx,
+            self,
+            "a claim reworded in the live document with no `live` text is caught",
+            &[ROW_LIVE],
+            plant(|d| {
+                claim(d, "README:1048").remove("live");
+            }),
+            &["README:1048", "give the claim its live wording"],
+        ));
+        // (n) `gone` is checked too: a claim the live document still makes cannot be waved off
+        report.push(prove_red(
+            cx,
+            self,
+            "a `gone` claim the live document still carries is caught",
+            &[ROW_LIVE],
+            plant(|d| {
+                claim(d, "README:1055").insert("gone".into(), Value::from("selftest"));
+            }),
+            &["README:1055", "marked `gone`"],
+        ));
+        // (o) a missing live document is RED
+        {
+            let mut ov = Overlay::new();
+            ov.remove(CHANGELOG);
+            report.push(prove_red(
+                cx,
+                self,
+                "a missing live CHANGELOG is RED, not 'no drift'",
+                &[ROW_LIVE],
+                ov,
+                &["unreadable live document"],
+            ));
+        }
         report
     }
 }
@@ -943,6 +1141,39 @@ mod tests {
             got[0].contains("README:2") && got[0].contains("it is at line 3"),
             "{got:?}"
         );
+    }
+
+    #[test]
+    fn a_register_quote_the_live_readme_rewords_is_red() {
+        let claims = vec![
+            json!({"id": "README:1", "quote": "Six wire protocols, first class on both sides."}),
+        ];
+        let readme = "Six model wire protocols, first class on both sides.\n";
+        let got = live_drift(&claims, Ok(readme), Ok(""));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].contains("not in the live README.md"), "{got:?}");
+        let ok = vec![json!({"id": "README:1", "quote": "Six wire protocols.",
+            "live": ["Six model wire protocols, first class on both sides."]})];
+        assert!(live_drift(&ok, Ok(readme), Ok("")).is_empty());
+    }
+
+    #[test]
+    fn gone_is_judged_both_ways() {
+        let c = |extra: Value| {
+            let mut v = json!({"id": "CHANGELOG:9", "quote": "1.5.5: There is no config change."});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            vec![v]
+        };
+        let present = "There is no config change.\n";
+        assert!(live_drift(&c(json!({"gone": "no 1.5.5"})), Ok(""), Ok("other\n")).is_empty());
+        let got = live_drift(&c(json!({"gone": "no 1.5.5"})), Ok(""), Ok(present));
+        assert!(got[0].contains("marked `gone`"), "{got:?}");
+        let both = live_drift(&c(json!({"gone": "x", "live": ["y"]})), Ok(""), Ok(present));
+        assert!(both[0].contains("both"), "{both:?}");
+        let unread = live_drift(&c(json!({})), Ok(""), Err("absent".into()));
+        assert!(unread[0].contains("unreadable live document"), "{unread:?}");
     }
 
     #[test]
