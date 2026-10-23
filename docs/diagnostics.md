@@ -1427,15 +1427,15 @@ busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is config
 **What to do:** Configure a durable store plugin so plane task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
 
 <a id="webhook-exporter-disabled"></a>
-### BUSBAR-7070 — Webhook log exporter disabled (invalid configuration)
+### BUSBAR-7070 — Webhook log exporter disabled (its target was refused)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `webhook-exporter-disabled`
 
-A request-log webhook exporter could not be built from its configuration and has been disabled, so its request logs are NOT delivered. This is a config problem surfaced at boot, not a transient delivery failure.
+The host refused the webhook exporter's target URL when the exporter opened, so the exporter is disabled and its request logs are NOT delivered. This is a configuration problem surfaced at open, not a transient delivery failure.
 
-**What to do:** Fix the named webhook exporter's configuration (URL, auth header, or projection) and restart to re-enable delivery.
+**What to do:** Fix the named webhook exporter's `url` (a destination the host's egress policy admits) and reload the configuration; the reload re-enables delivery.
 
 <a id="webhook-delivery-non-2xx"></a>
 ### BUSBAR-7071 — Webhook log delivery returned non-2xx (log dropped)
@@ -1446,7 +1446,7 @@ A request-log webhook exporter could not be built from its configuration and has
 
 A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). It is warned on every dropped line, as 1.5.5 warned it: an unhealthy sink is the operator's to fix.
 
-**What to do:** If logs are being lost, check the webhook sink's health and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
+**What to do:** If logs are being lost, check the webhook sink's health: each dropped line is its own warn line. `busbar_webhook_logs_dropped_total` counts only lines shed by the in-flight bound, not failed deliveries.
 
 <a id="webhook-delivery-transport-error"></a>
 ### BUSBAR-7072 — Webhook log delivery transport error (log dropped)
@@ -1457,7 +1457,7 @@ A request-log webhook delivery got a non-2xx response from the sink, so that one
 
 A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried. It is warned on every dropped line, as 1.5.5 warned it: an unreachable sink is the operator's to fix.
 
-**What to do:** If logs are being lost, check the webhook sink's reachability and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
+**What to do:** If logs are being lost, check the webhook sink's reachability: each dropped line is its own warn line. `busbar_webhook_logs_dropped_total` counts only lines shed by the in-flight bound, not failed deliveries.
 
 <a id="file-log-append-failed"></a>
 ### BUSBAR-7073 — Request-log file append failed (log dropped)
@@ -1755,6 +1755,17 @@ RETIRED. Nothing emits this code: the verify-on-call gate that re-fetched a stal
 The submit-time retention sweep found an ACTIVE task idle past the abandonment ceiling (24h since its last update) and tried to settle it as `canceled` through the normal durable write path, but the row upsert or chained event append failed. The task stays active in the working set (never ahead of the store) and the next sweep retries. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug to avoid spam.
 
 **What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
+
+<a id="webhook-batch-dropped-on-reload"></a>
+### BUSBAR-7100 — Webhook log batch cut short by a settings reload (logs dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `webhook-batch-dropped-on-reload`
+
+A request-log webhook delivery was in flight when the exporter's settings were reloaded. The line in flight finished on the settings it started under; the batch's remaining lines were dropped rather than sent with the old settings' credentials to the new target, or with the new ones on a batch begun elsewhere. Warned once per cut batch, with the count dropped.
+
+**What to do:** Expected around a reload of the named webhook exporter; if it recurs without reloads, check what is reloading the configuration.
 
 ## 8xxx — Governance & cost
 
