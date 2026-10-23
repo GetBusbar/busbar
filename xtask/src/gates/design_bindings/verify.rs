@@ -78,6 +78,19 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn build(cells_doc: &J, crates: &Path, root: &Path, ledger: &Path) -> Result<Ctx, String> {
+        Ctx::build_sharing(cells_doc, crates, root, ledger, true)
+    }
+
+    /// [`Ctx::build`], with `share` saying whether the tree's indexes may come from (and go to) the
+    /// per-process memo. A run whose overlay plants or removes a `.rs` file is not the tree on disk
+    /// and takes `false`: it gets an index of its own.
+    pub fn build_sharing(
+        cells_doc: &J,
+        crates: &Path,
+        root: &Path,
+        ledger: &Path,
+        share: bool,
+    ) -> Result<Ctx, String> {
         let empty: Vec<J> = Vec::new();
         let cells = cells_doc
             .get("cells")
@@ -95,7 +108,11 @@ impl Ctx {
         }
         Ok(Ctx {
             idx: if crates.exists() {
-                memo_test_index(crates, root)?
+                if share {
+                    memo_test_index(crates, root)?
+                } else {
+                    test_index(crates, root)?
+                }
             } else {
                 BTreeMap::new()
             },
@@ -117,7 +134,11 @@ impl Ctx {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
             symbols: if crates.exists() {
-                memo_symbol_index(crates, &root.join("xtask"))
+                if share {
+                    memo_symbol_index(crates, &root.join("xtask"))
+                } else {
+                    symbol_index(crates, &root.join("xtask"))
+                }
             } else {
                 BTreeSet::new()
             },

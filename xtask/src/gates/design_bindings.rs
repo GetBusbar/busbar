@@ -61,11 +61,18 @@ impl DesignBindingsGate {
             .read(OUT_JSON_REL)
             .map_err(|e| format!("{e} -- run `cargo xtask gate design-bindings --write` first"))?;
         let ledger = json::parse(&ledger_text)?;
-        let mut ctx = verify::Ctx::build(
+        // THE INDEXES ARE SHARED ONLY BETWEEN IDENTICAL TREES. A case that plants or removes a
+        // source file is a different tree and builds its own. (Today every case plants only
+        // `qa/` and cells documents, so all share the base index; the guard keeps it true.)
+        let plants_source = cx
+            .overlay()
+            .is_some_and(|ov| ov.paths().any(|p| p.extension().is_some_and(|e| e == "rs")));
+        let mut ctx = verify::Ctx::build_sharing(
             &cells,
             &cx.abs("crates"),
             cx.root(),
             &cx.abs(GOLDEN_LEDGER_REL),
+            !plants_source,
         )?;
         if let Some(planted) = cx.overlay_command(NOTE_TABLE_KEY) {
             let table: Vec<(String, String)> = planted
