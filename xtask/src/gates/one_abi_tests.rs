@@ -20,3 +20,15 @@ fn write_carries_each_rows_count() {
         "--write must carry the key's count of 2:\n{text}"
     );
 }
+
+/// `[ package ]` IS `[package]`: a header spelled with spaces names its crate (the census gap
+/// kind-isolation closed, here in this gate's own reader). RED before the shared header reading:
+/// the crate had no name.
+#[test]
+fn a_spaced_package_header_names_its_crate() {
+    assert_eq!(
+        package_name("[ package ]\nname = \"busbar-plane-spaced\"\n").as_deref(),
+        Some("busbar-plane-spaced")
+    );
+    assert_eq!(package_name("[[bin]]\nname = \"tool\"\n"), None);
+}

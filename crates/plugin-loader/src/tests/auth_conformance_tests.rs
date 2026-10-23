@@ -27,8 +27,8 @@
 //! vacuous. [`a_door_handed_no_connection_table_identifies_no_one`] opens it with no table: it
 //! cannot fetch the JWKS, so it identifies no one — the table is what carries the fetch.
 //! [`a_third_party_signature_is_a_different_row`] signs the same `cdylib` as a third party: the scan
-//! skips it under the egress grant, so it is never the first-party row and the row equality is not
-//! vacuous either.
+//! admits it (its `operator-infrastructure` needs are any trusted plugin's) as a row that is not the
+//! first-party one, so the row equality is not vacuous either.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -97,8 +97,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 /// The fixture's `cdylib`: the `-plugin` crate of its row's logic crate.
 fn fixture_cdylib() -> Vec<u8> {
     let (krate, _) = door_fixture(PROOF);
-    let path = cdylib(&format!("{krate}_plugin"));
-    std::fs::read(path).expect("read the cdylib")
+    std::fs::read(cdylib(krate)).expect("read the cdylib")
 }
 
 /// The linked and dropped-in registries of the fixture; a `cdylib` not built is a hard failure
@@ -298,33 +297,28 @@ fn a_door_handed_no_connection_table_identifies_no_one() {
     );
 }
 
-/// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party is not the
-/// linked first-party row: its needs declare `operator-infrastructure`, an egress class the host
-/// grants to a first-party plugin only (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT
-/// 2026-10-03), so the scan skips it and names the grant.
+/// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party the operator
+/// trusts (an allowlisted publisher) is ADMITTED, as 1.5.5 loaded it, and is a different row from the
+/// linked first-party one. Its needs declare `operator-infrastructure`, which the host grants to any
+/// plugin the operator's trust admitted (`BUSBAR-1.6.0.md` §5 egress-class table, l.604-611; l.613,
+/// l.364-365: the default is 1.5.5's behaviour), so the scan does not skip it at the egress grant.
 #[test]
 fn a_third_party_signature_is_a_different_row() {
     let [linked, dropped] = doors(true);
     let dropped_row = row(&dropped, NAME);
+    assert!(
+        dropped.resolve(NAME).is_some(),
+        "an operator-trusted third party's operator-infrastructure plugin is admitted: \
+         {dropped_row} ({:?})",
+        dropped.unresolved_reason(NAME).map(|s| s.reason.clone())
+    );
+    assert!(
+        !dropped.resolve(NAME).is_some_and(|r| r.first_party()),
+        "a third-party signature is not first-party: {dropped_row}"
+    );
     assert_ne!(
         row(&linked, NAME),
         dropped_row,
         "a third-party row must not compare equal to the first-party one"
-    );
-    assert!(
-        dropped.resolve(NAME).is_none(),
-        "never admitted: {dropped_row}"
-    );
-    let skipped = dropped
-        .unresolved_reason(NAME)
-        .expect("the scan names its refusal");
-    assert_eq!(skipped.kind, crate::sign::RejectKind::EgressGrant);
-    assert!(
-        skipped.reason.contains(
-            "in the `operator-infrastructure` egress class, which the host grants to a \
-                       first-party plugin only"
-        ),
-        "{}",
-        skipped.reason
     );
 }
