@@ -13,7 +13,11 @@
 //! 5. `segregation:oracle-clean` — no file under `testing/shadow-oracle/` carries the token
 //!    `xtask`: not an invocation, not an import, not a comment that would tempt the next person.
 //! 6. `segregation:oracle-data-allow` — an oracle path read from `xtask/src/` must be on
-//!    [`ORACLE_DATA_ALLOW`]. Reading a TSV is data; running the oracle's code is not.
+//!    [`ORACLE_DATA_ALLOW`]. Reading a TSV is data; running the oracle's code is not. A path is
+//!    seen in all three shapes a read can take: a literal FILE path, a literal DIRECTORY root a
+//!    read is composed from (`format!("{ROOT}/{v}/meta.json")` -- no dot, so it once passed as
+//!    prose; it must be on [`ORACLE_DATA_DIR_ALLOW`], scoped to the naming file), and the
+//!    directory's own name quoted on its own (`.join("<name>")`, the root built from parts).
 
 use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Case, Gate, Report};
@@ -95,6 +99,26 @@ pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
         "testing/shadow-oracle/record.sh",
     ),
 ];
+
+/// Oracle DIRECTORY roots a gate may compose a data read from, as `(naming file, directory)`. A
+/// directory has no extension, so rule 6's file-path test never saw one: `GOLDEN_ROOT` is read as
+/// `{GOLDEN_ROOT}/{baseline}/meta.json` and the rule certified nothing about it (XH2#9). Like
+/// [`ORACLE_PROSE_CITATION_ALLOW`] this is one file's licence, not xtask's, and the second row is
+/// this file naming the directory in order to list it.
+pub const ORACLE_DATA_DIR_ALLOW: &[(&str, &str)] = &[
+    (
+        "xtask/src/gates/changelog_register.rs",
+        "testing/shadow-oracle/golden",
+    ),
+    (
+        "xtask/src/gates/segregation.rs",
+        "testing/shadow-oracle/golden",
+    ),
+];
+
+/// The oracle directory's own name, built from parts so that this file can plant it (and rule 6
+/// can look for it quoted on its own) without being reported for containing it.
+const ORACLE_DIR_NAME: &str = concat!("shadow", "-oracle");
 
 /// The `xtask/src/**` walk's denominator floor. An emptied or moved `src/` scans nothing, and zero
 /// is the passing answer to every ban here.
@@ -268,7 +292,7 @@ impl Gate for SegregationGate {
         // self-test that spells an offending oracle path in the gate's own source would be
         // planting that violation into the real tree permanently, and rule 6 would be red on
         // itself. The gate must not be a violation of the rule it enforces.
-        let oracle_dir = format!("testing/{}/", "shadow-oracle");
+        let oracle_dir = format!("testing/{ORACLE_DIR_NAME}/");
         report.push(plant(
             cx,
             self,
@@ -294,6 +318,30 @@ impl Gate for SegregationGate {
             &["capture.py"],
         ));
 
+        // XH2#9: a directory root a read is composed from has no dot, and passed as prose.
+        report.push(plant(
+            cx,
+            self,
+            "xtask composes an oracle read from a directory root",
+            &[ROW_ORACLE_DATA],
+            "xtask/src/scan.rs",
+            Edit::Append(format!(
+                "\npub const PLANTED_ROOT: &str = \"{oracle_dir}planted-root\";\n"
+            )),
+            &["planted-root"],
+        ));
+        report.push(plant(
+            cx,
+            self,
+            "xtask builds an oracle path from the directory's own name",
+            &[ROW_ORACLE_DATA],
+            "xtask/src/scan.rs",
+            Edit::Append(format!(
+                "\npub fn planted() -> std::path::PathBuf {{ std::path::Path::new(\"testing\").join(\"{ORACLE_DIR_NAME}\") }}\n"
+            )),
+            &["quoted on its own"],
+        ));
+
         // THE IGNORED FILE IS NOT PART OF THE TREE. `find` reads whatever a build left behind, and
         // this rule's walk has no extension filter, so an untracked `__pycache__/*.pyc` under the
         // oracle made the whole gate red on "the oracle tree could not be scanned" — a verdict
@@ -302,7 +350,7 @@ impl Gate for SegregationGate {
         // content being harmless.
         let mut ov = Overlay::new();
         ov.set(
-            format!("testing/{}/__pycache__/planted.pyc", "shadow-oracle"),
+            format!("testing/{ORACLE_DIR_NAME}/__pycache__/planted.pyc"),
             format!("compiled bytecode naming {}\n", "xtask"),
         );
         report.push(prove_green(
@@ -567,18 +615,29 @@ fn rule_oracle_data(files: &[crate::ctx::SourceFile]) -> Row {
                     })
                     .unwrap_or(tail.len());
                 let path = &tail[..end];
-                // A bare directory mention is prose; a FILE path is a read.
+                // A FILE path is a read. So is a DIRECTORY root, because the read is composed from
+                // it further down (`{ROOT}/{v}/meta.json`); the bare prefix alone is prose.
                 let cited_in_prose = ORACLE_PROSE_CITATION_ALLOW
                     .iter()
                     .any(|(file, cited)| *file == f.rel_str() && *cited == path);
-                if path.len() > prefix.len()
-                    && path.contains('.')
-                    && !ORACLE_DATA_ALLOW.contains(&path)
-                    && !cited_in_prose
+                let is_file = path.len() > prefix.len() && path.contains('.');
+                let is_dir = path.len() > prefix.len() && !path.contains('.');
+                if (is_file && !ORACLE_DATA_ALLOW.contains(&path) && !cited_in_prose)
+                    || (is_dir
+                        && !ORACLE_DATA_DIR_ALLOW
+                            .iter()
+                            .any(|(file, dir)| *file == f.rel_str() && *dir == path))
                 {
                     offenders.push(format!("{}:{lineno}: {path}", f.rel_str()));
                 }
                 rest = &tail[end.max(1)..];
+            }
+            // The root built from parts: `.join("<oracle dir name>")`.
+            if code.contains(&format!("\"{ORACLE_DIR_NAME}\"")) {
+                offenders.push(format!(
+                    "{}:{lineno}: the oracle directory's name quoted on its own -- a path composed from parts",
+                    f.rel_str()
+                ));
             }
         }
     }
@@ -699,53 +758,5 @@ fn rule_oracle(cx: &Ctx) -> Row {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ledger::Status;
-
-    /// ITEM 219: a manifest OUTSIDE `crates/` and `xtask/` that depends on xtask reds the reverse
-    /// row. `fuzz/Cargo.toml` is one of three tracked manifests the old three-root walk never read.
-    #[test]
-    fn a_manifest_outside_the_workspace_roots_depending_on_xtask_is_red() {
-        let cx = Ctx::workspace().expect("workspace context");
-        let text = cx
-            .read("fuzz/Cargo.toml")
-            .expect("fuzz/Cargo.toml is tracked");
-        let mut ov = Overlay::new();
-        ov.set(
-            "fuzz/Cargo.toml",
-            format!("{text}\n[dev-dependencies]\nxtask = {{ path = \"../xtask\" }}\n"),
-        );
-        let row = rule_reverse(&cx.with_overlay(ov));
-        assert_eq!(row.status, Status::Fail, "{}", row.detail);
-        assert!(row.detail.contains("fuzz/Cargo.toml"), "{}", row.detail);
-        let clean = rule_reverse(&cx);
-        assert_eq!(clean.status, Status::Pass, "{}", clean.detail);
-    }
-
-    /// ITEM 219: the floors sit near the populations they guard, not 5-20x beneath them. A floor
-    /// under a fifth of what it guards cannot tell a narrowed walk from a whole one.
-    #[test]
-    fn the_walk_floors_guard_most_of_their_populations() {
-        let cx = Ctx::workspace().expect("workspace context");
-        let src = cx
-            .walk(&WalkSpec::new(["xtask/src"]).ext("rs").allow_empty())
-            .expect("xtask/src walk")
-            .len();
-        let manifests = cx
-            .walk(&WalkSpec::new(["."]).ext("toml").allow_empty())
-            .expect("tree walk")
-            .iter()
-            .filter(|f| f.rel_str() == "Cargo.toml" || f.rel_str().ends_with("/Cargo.toml"))
-            .count();
-        assert!(
-            SRC_FLOOR * 4 >= src * 3 && SRC_FLOOR <= src,
-            "SRC_FLOOR {SRC_FLOOR} against {src} files: a floor must guard at least three quarters \
-             of its population and never exceed it"
-        );
-        assert!(
-            MANIFEST_FLOOR * 4 >= manifests * 3 && MANIFEST_FLOOR <= manifests,
-            "MANIFEST_FLOOR {MANIFEST_FLOOR} against {manifests} manifests"
-        );
-    }
-}
+#[path = "tests/segregation_tests.rs"]
+mod tests;

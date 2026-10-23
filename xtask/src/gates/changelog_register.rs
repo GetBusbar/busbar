@@ -67,7 +67,17 @@
 //!   premise is false or unevaluable, but it HONOURS an entry with no premise at all (reported
 //!   UNCHECKED-PREMISE); this row is what makes a missing premise red in this repository, and it
 //!   refuses a probe naming a cell the corpus does not have, which the runner could only ever
-//!   score unevaluable.
+//!   score unevaluable. Two more things are judged, because a premise that passes on grammar and on
+//!   probed cells existing ties an entry to nothing: (1) the premise must PROBE AT LEAST ONE OF THE
+//!   ENTRY'S OWN CELLS (a cell its `cells` pattern selects), so the forgiveness is conditioned on
+//!   the surface it forgives and not on some unrelated cell answering; (2) it must carry a WITNESS,
+//!   a probe of the answer's content (`body_contains`, `pointer`), because `status`/`status_not`/
+//!   `recorded` alone are true of the published 1.5.5 as well and witness nothing about the new
+//!   behaviour -- unless the entry's accepted `classes` include `status`, where the status IS the
+//!   difference. Entries that predate the two rules are named in [`PREMISE_UNTIED`] and
+//!   [`PREMISE_STATUS_ONLY`]: those lists only DRAIN. An entry on one that now satisfies the rule
+//!   must come off it, an entry not on one must satisfy it, and a listed id the register no longer
+//!   holds is refused.
 
 use serde_json::Value;
 
@@ -516,10 +526,7 @@ impl Gate for ChangelogRegisterGate {
                     &full(
                         r#""id":"P-4","kind":"improvement","changelog":"the grass is now greener""#,
                     )
-                    .replace(
-                        &format!("{{\"cell\":\"{FIXTURE_CELL}\",\"status_not\":404}}"),
-                        "{\"all\":[]}",
-                    ),
+                    .replace(FIXTURE_PREMISE, "{\"all\":[]}"),
                 ]),
                 GOOD_CHANGELOG,
             ),
@@ -534,6 +541,53 @@ impl Gate for ChangelogRegisterGate {
                 "P-4",
                 "non-empty list",
             ],
+        ));
+
+        // THE PREMISE IS ABOUT THE ENTRY (XF#8): grammar plus an existing probed cell is not enough.
+        let status_only = FIXTURE_PREMISE.replace(
+            ",{\"cell\":\"cli|--version\",\"body_contains\":\"busbar\"}",
+            "",
+        );
+        report.push(prove_red(
+            cx,
+            &gate,
+            "a premise that probes none of the entry's own cells, or only a status, is refused",
+            &[ROW_PREMISE],
+            plant(
+                &register(&[
+                    // probes a real cell, but not one this entry's `cells` selects
+                    &full(
+                        r#""id":"T-1","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("^cli\\\\|--version$", "^cli\\\\|--help$"),
+                    // ties to its own cell, witnesses nothing
+                    &full(
+                        r#""id":"T-2","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace(FIXTURE_PREMISE, &status_only),
+                ]),
+                GOOD_CHANGELOG,
+            ),
+            &[
+                ROW_PREMISE,
+                "T-1",
+                "probes none of the cells its own `cells` pattern selects",
+                "T-2",
+                "only status/recorded probes",
+            ],
+        ));
+        // ... and the status class is the one case a status-only premise IS the witness.
+        report.push(prove_green(
+            &cx.with_overlay(plant(
+                &register(&[&full(
+                    r#""id":"T-3","kind":"breaking","classes":["status"],"changelog":"the grass is now greener""#,
+                )
+                .replace(FIXTURE_PREMISE, &status_only)]),
+                GOOD_CHANGELOG,
+            )),
+            &gate,
+            "a status-only premise on an entry that accepts the status class",
+            &[ROW_PREMISE],
         ));
 
         report.push(prove_red(
@@ -1508,6 +1562,101 @@ fn premise_shape(p: &Value, probed: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Entries whose premise probes none of the cells their own `cells` pattern selects, as measured
+/// when the rule was armed. DRAIN-ONLY: see the module doc.
+pub const PREMISE_UNTIED: &[&str] = &[
+    "F-011r hook write readback gains fires_at/groups/phase beside the kept `at`",
+    "S-9 responses url citations survive the hop",
+    "S-11 a refused responses function-call open emits no output_item.added",
+    "Q40 busbar_lane_state reads the pool's own breaker cell (a tripped lane reads 2, not 1)",
+    "Q41 an audit entry carries its record's scheme (teller audit-record script)",
+    "AUTH-ROW the operator credential is chosen by the provider's module, not its name",
+    "HOOK-Q1 a failing transform under on_error: reject answers 503",
+    "HOOK-Q2 a prompt hook sees tool-call arguments and tool results",
+    "ORPH-Q3a Bedrock usage carries cacheDetails",
+    "ORPH-Q3b buffered OpenAI chat citations are nested url_citation annotations",
+    "Q33c a streamed chat whose stream_options is not an object is refused 400",
+    "R21 an OpenAI transcription answered in its own dialect is metered",
+    "#62 a stream the client cancels after its first byte keeps its charge",
+    "#62 an upstream cut after the first byte bills what streamed",
+    "#62 a stream whose translation aborts after its first byte bills what streamed",
+    "S-16b relayed upstream server/date on the raw header-order cells",
+    "DF-DROP an untranslatable content block is dropped, not sent as empty text",
+    "DF-SITES no value is substituted for one the target dialect cannot carry",
+    "Q133 a wedged hook is quarantined and comes back through a timed trial call",
+    "Q134 503 when an auth verifier's max_inflight is full",
+    "EGRESS-WIDEN the one destination guard also judges a2a peer fetches, streaming upstreams and duplex dials",
+    "FID-CHAT translated Chat answers and requests carry the Chat members the IR maps",
+    "FID-RESPONSES translated Responses requests and answers carry the Responses members the IR maps",
+    "FID-GEMINI translated Gemini requests and answers carry the Gemini members the IR maps",
+    "R-22 a translated Anthropic stream's error event carries request_id",
+    "GEN-LIMITS an apply's limits are in force only once its generation is live",
+    "row 194 the sigv4 door signs the walked request's method, query and content type",
+    "row 194 the oidc door refuses a redirect to a private, loopback or cloud-metadata host",
+];
+
+/// Entries whose premise holds only `status`/`status_not`/`recorded` probes though the entry does
+/// not accept the `status` class, as measured when the rule was armed. DRAIN-ONLY.
+pub const PREMISE_STATUS_ONLY: &[&str] = &[
+    "Q66 the providers.<name> unknown-key refusal lists the four lane-capability keys",
+    "F-015 an inline secret is refused without echoing it",
+    "F-019 a service-account key file that cannot be read is not echoed",
+    "S-1 bedrock text blocks carry no contentBlockStart",
+    "PR2-D1 degraded non-2xx breaker recording",
+    "PR2-D3 degraded client-fault counter",
+    "PR2-D9 degraded transport-error telemetry",
+    "S-9 responses url citations survive the hop",
+    "S-10 a cachePoint before a bedrock document does not double the document",
+    "S-11 a refused responses function-call open emits no output_item.added",
+    "S-12 a deferred anthropic redacted_thinking start no longer orphans its stop",
+    "S-15 a duplicate message start keeps the stream id it opened with",
+    "HOOK-Q2 a prompt hook sees tool-call arguments and tool results",
+    "ORPH-Q3a Bedrock usage carries cacheDetails",
+    "ORPH-Q3b buffered OpenAI chat citations are nested url_citation annotations",
+    "R21 an OpenAI transcription answered in its own dialect is metered",
+    "#62 a stream the client cancels after its first byte keeps its charge",
+    "#62 an upstream cut after the first byte bills what streamed",
+    "#62 a stream whose translation aborts after its first byte bills what streamed",
+    "S-16 same-dialect response headers are the upstream's, all but the governed",
+    "S-16b relayed upstream server/date on the raw header-order cells",
+    "DF-DROP an untranslatable content block is dropped, not sent as empty text",
+    "Q133 a wedged hook is quarantined and comes back through a timed trial call",
+    "NEUT-U-models the models.<name> unknown-key refusal lists `protocol`",
+    "N34-BOOT-135 plugin name busbar-webrequest -> busbar-hook-webrequest",
+    "N34-BOOT-138a plugin name busbar-auth-oidc-plugin -> busbar-auth-oidc",
+    "N34-BOOT-171 plugin name busbar-store-sqlite-plugin -> busbar-store-sqlite",
+    "FID-CHAT translated Chat answers and requests carry the Chat members the IR maps",
+    "FID-RESPONSES translated Responses requests and answers carry the Responses members the IR maps",
+    "FID-GEMINI translated Gemini requests and answers carry the Gemini members the IR maps",
+    "R-22 a translated Anthropic stream's error event carries request_id",
+    "GEN-LIMITS an apply's limits are in force only once its generation is live",
+    "M-2R the openai and cohere doors trip the breaker on an in-band error inside a 200 stream",
+];
+
+/// Whether any probe of the premise reads the answer's content rather than its status.
+fn premise_has_witness(p: &Value) -> bool {
+    let Some(o) = p.as_object() else {
+        return false;
+    };
+    if let Some(v) = o.get("all").or_else(|| o.get("any")) {
+        return v
+            .as_array()
+            .is_some_and(|a| a.iter().any(premise_has_witness));
+    }
+    if let Some(v) = o.get("not") {
+        return premise_has_witness(v);
+    }
+    o.keys()
+        .any(|k| !matches!(k.as_str(), "cell" | "status" | "status_not" | "recorded"))
+}
+
+/// The accepted `classes` include `status`: the status is the difference the entry forgives.
+fn accepts_status(raw: &Value) -> bool {
+    raw.get("classes")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(|c| c.as_str() == Some("status")))
+}
+
 fn rule_premise(entries: &[Entry], cx: &Ctx) -> Row {
     let ids = match corpus_ids(cx) {
         Ok(ids) => ids,
@@ -1545,6 +1694,54 @@ fn rule_premise(entries: &[Entry], cx: &Ctx) -> Row {
             }
         }
         probes += probed.len();
+        // THE PREMISE IS ABOUT THE ENTRY: it probes one of the entry's own cells, and it witnesses
+        // the answer, not just the status.
+        let tied = match e.raw.get("cells").and_then(Value::as_str) {
+            None => true,
+            Some(pat) => match crate::ere::Ere::new(pat) {
+                Ok(re) => probed.iter().any(|c| re.is_match(c)),
+                Err(why) => {
+                    offenders.push(format!(
+                        "{}: `cells` is not a pattern this gate can read ({why})",
+                        e.id
+                    ));
+                    continue;
+                }
+            },
+        };
+        let witnessed = premise_has_witness(p) || accepts_status(&e.raw);
+        for (ok, debt, why) in [
+            (
+                tied,
+                PREMISE_UNTIED,
+                "its premise probes none of the cells its own `cells` pattern selects, so the \
+                 forgiveness is conditioned on nothing the entry forgives",
+            ),
+            (
+                witnessed,
+                PREMISE_STATUS_ONLY,
+                "its premise holds only status/recorded probes, which are as true of 1.5.5 as of \
+                 this build, and the entry does not accept the `status` class: add a \
+                 `body_contains` or `pointer` probe of the new behaviour",
+            ),
+        ] {
+            let listed = debt.contains(&e.id.as_str());
+            if !ok && !listed {
+                offenders.push(format!("{}: {why}", e.id));
+            } else if ok && listed {
+                offenders.push(format!(
+                    "{}: now satisfies this rule but is still on its drain-only list -- remove it",
+                    e.id
+                ));
+            }
+        }
+    }
+    for id in PREMISE_UNTIED.iter().chain(PREMISE_STATUS_ONLY) {
+        if !entries.iter().any(|e| e.id == *id) {
+            offenders.push(format!(
+                "{id}: on a premise drain-only list but the register holds no such entry -- remove it"
+            ));
+        }
     }
     if offenders.is_empty() {
         Row::pass(
@@ -1572,6 +1769,10 @@ const GOOD_CHANGELOG: &str = "## [1.6.0], unreleased\n\n- the grass is now green
 /// against the real `cells.json` without a 1 MB overlay.
 const FIXTURE_CELL: &str = "cli|--version";
 
+/// The fixture premise: tied to the fixture entry's own `cells` pattern (it probes
+/// [`FIXTURE_CELL`]) and carrying a content witness beside the status.
+const FIXTURE_PREMISE: &str = r#"{"all":[{"cell":"cli|--version","status_not":404},{"cell":"cli|--version","body_contains":"busbar"}]}"#;
+
 /// The fixture's signer: the owner, with evidence citing the fixture spec's decision row #59.
 const FIXTURE_SIGNER: &str = r##""who":"owner (Matthew Jackson)","signed":"#59""##;
 
@@ -1598,7 +1799,7 @@ fn full(head: &str) -> String {
 /// [`full`] with the given `who` (and `signed`, if any) in place of the fixture's signer.
 fn signed_as(head: &str, signer: &str) -> String {
     format!(
-        r#"{{{head},"signoff":{{{signer},"when":"2026-09-24","ruling":"Q0 fixture"}},"expires":{{"baseline":"1.5.5","by":"2999-12-31"}},"premise":{{"cell":"{FIXTURE_CELL}","status_not":404}}}}"#
+        r#"{{{head},"signoff":{{{signer},"when":"2026-09-24","ruling":"Q0 fixture"}},"expires":{{"baseline":"1.5.5","by":"2999-12-31"}},"cells":"^cli\\|--version$","premise":{FIXTURE_PREMISE}}}"#
     )
 }
 
