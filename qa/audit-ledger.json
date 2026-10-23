@@ -4031,6 +4031,21 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-streaming/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streaming/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-secret-env/declares.json",
    "kind": "production",
    "paths": [
@@ -4501,10 +4516,40 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-auth-header/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-header/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-auth-oauth/src/tests",
    "kind": "test",
    "paths": [
     "crates/busbar-auth-oauth/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4700,6 +4745,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-export-prometheus/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-export-prometheus/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-export-prometheus/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -5430,6 +5490,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-http/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-stdio/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

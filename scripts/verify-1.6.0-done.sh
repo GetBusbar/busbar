@@ -1801,7 +1801,7 @@ if [ -f qa/audit-ledger.json ]; then
   # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
   # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
   # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 41 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 48 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
