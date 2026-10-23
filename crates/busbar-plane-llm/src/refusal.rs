@@ -10,17 +10,12 @@
 //! |---|---|---|---|
 //! | unauthenticated | bedrock | 403 | `AccessDeniedException` |
 //! | unauthenticated | gemini | 400 | `API_KEY_INVALID` |
-//! | no rate | every dialect | 400 | `invalid_request_error`, "no configured rate for model 'X'" |
-//! | no destination | every dialect | 404 | `not_found_error`, the dialect's model-not-found sentence |
 //! | scheme not declared | every dialect | 400 | none: this plane's status before the one classification |
 //! | challenge exhausted | every dialect | 503 | none: this plane's status before the one classification |
 //! | cursor budget | every dialect | 503 | none: this plane's status before the one classification |
 //! | credential budget | every dialect | 503 | none: this plane's status before the one classification |
 //!
-//! The no-destination row is pinned from 1.5.5's source (a model that names no pool and no
-//! configured model answers the dialect's not-found envelope, 404) until the oracle records its cell
-//! (ARCHITECT ruling Q-FL3, 2026-10-02). The rest of the first three are proved against recorded
-//! cells.
+//! The first two are proved against recorded cells.
 //!
 //! Over budget is NOT stated: it answers the class default, 429, on every dialect. 1.5.5 answered
 //! 400 `ServiceQuotaExceededException` on bedrock, an exception Converse does not declare; the
@@ -29,12 +24,25 @@
 //! Converse error").
 //!
 //! The kernel's default is a status per refusal CLASS (`busbar_contract::abi::plane::RefusalClass`,
-//! the one classification; the P-item "refusal-reason collapse"). Two rows this plane used to state
+//! the one classification; the P-item "refusal-reason collapse"). Four rows this plane used to state
 //! are now the class default and are gone: destination unreachable answers 503 (its class,
-//! `Unreachable`; proved against the recorded `upstream_down` cells) and a frozen group 403 (its
-//! class, `Forbidden`; 1.5.5's limit refusal for a disabled group). The last four rows go the other
-//! way: their reasons joined a class whose default differs from what this plane answered, and no
-//! 1.5.5 cell records them, so each keeps this plane's answer and no llm byte moves.
+//! `Unreachable`; proved against the recorded `upstream_down` cells), a frozen group 403 (its
+//! class, `Forbidden`; 1.5.5's limit refusal for a disabled group), and, since a policy refusal
+//! answers its 4xx rather than 503 (ARCHITECT ruling: a policy refusal is a refusal, not a server
+//! fault), no rate 400 (its class, `Rejected`; proved against the recorded
+//! `http.crosscut|unknown-path|openai-suffix` cell, `invalid_request_error`, "no configured rate for
+//! model 'X'") and no destination 404 (its class, `NotFound`; 1.5.5's not-found envelope with the
+//! dialect's model-not-found sentence, pinned from 1.5.5's source, ARCHITECT ruling Q-FL3,
+//! 2026-10-02). The last four rows go the other way: their reasons joined a class whose default
+//! differs from what this plane answered, and no 1.5.5 cell records them, so each keeps this
+//! plane's answer and no llm byte moves.
+//!
+//! The policy-refusal ruling moved the rest of the `Rejected` and `Busy` classes off 503 (unpriced,
+//! replayed, superseded and method-not-allowed now 400; in-flight cap and in-flight 429). No row
+//! keeps 503 for any of them: no 1.5.5 cell records one (1.5.5 answered an unbillable name 400
+//! `invalid_request_error` and its in-flight limit 429 `rate_limit_error`, the kinds this plane
+//! already renders those classes in; its wrong-method 405 is the kernel's own stated status, and
+//! its node-wide inbound shed 503 is the router's, neither a class default).
 //!
 //! A hook's veto is not stated here: the hook's own status rides the refusal.
 
@@ -104,11 +112,9 @@ const fn row(dialect: u32, reason: u32, status: u32) -> RefusalStatus {
 }
 
 /// The plane's refusal statuses, in its statement's order.
-pub const REFUSAL_STATUSES: [RefusalStatus; 8] = [
+pub const REFUSAL_STATUSES: [RefusalStatus; 6] = [
     row(dialect_index("bedrock"), reason::UNAUTHENTICATED, 403),
     row(dialect_index("gemini"), reason::UNAUTHENTICATED, 400),
-    row(REFUSAL_ANY_DIALECT, reason::NO_RATE, 400),
-    row(REFUSAL_ANY_DIALECT, reason::NO_DESTINATION, 404),
     row(REFUSAL_ANY_DIALECT, reason::SCHEME_NOT_DECLARED, 400),
     row(REFUSAL_ANY_DIALECT, reason::CHALLENGE_EXHAUSTED, 503),
     row(REFUSAL_ANY_DIALECT, reason::CURSOR_BUDGET, 503),

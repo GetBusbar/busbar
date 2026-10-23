@@ -196,7 +196,9 @@ pub struct Reply {
     state: State,
     /// The relayed answer ended a usable success the caller was reading (its first byte reached
     /// the caller and its stream ended clean): a caller that leaves while its last window is still
-    /// being written bills the units it stated, as one that left mid-relay does (L1#5).
+    /// being written bills the units it stated, as one that left mid-relay does (L1#5). A whole
+    /// answer handed to the caller (a delivery, or a failed generation that keeps its usage) sets
+    /// it too: its body may span several windows, and its units bill however many the caller read.
     ended_partial: bool,
     /// A streamed answer over the invoke envelope, re-framed into its carried dialect's events
     /// before it is read ([`invoke::Transcoder`]).
@@ -258,6 +260,9 @@ fn answered<'a>(r: Rendered, units: Units, verdict: Verdict, fault: Option<Fault
         tap_fault: None,
     }
 }
+
+/// The transient reason a far end's reported generation failure is recorded under.
+const FAILED_GENERATION: &str = "upstream-generation-failed";
 
 fn pending<'a>() -> Piece<'a> {
     Piece::default()
@@ -428,7 +433,18 @@ impl Reply {
                     .iter()
                     .map(|(n, v)| (n.as_slice(), v.as_slice()))
                     .collect();
-                whole_piece(host, ctx, status, &body, &far_head, at)
+                let piece = whole_piece(host, ctx, status, &body, &far_head, at);
+                // A WHOLE ANSWER THAT REACHES THE CALLER BILLS WHAT IT REPORTED, whether or not
+                // the caller stays for its last window. 1.5.5 billed a buffered translated answer
+                // before it wrote a byte of it (v1.5.5 `proxy/engine/mod.rs`
+                // `translate_response_cross_protocol`: `record_resp_usage` runs before the
+                // response is built), so a caller that leaves while a body larger than one
+                // window is still being written bills its units: the delivered answer and the
+                // failed generation that keeps its usage. An end that delivers nothing bills
+                // nothing.
+                self.ended_partial = piece.verdict == Verdict::Ok
+                    || piece.fault == Some(Fault::Transient(FAILED_GENERATION));
+                piece
             }
             State::Relay { relay, head, units } => {
                 let (fed, _) = relay.feed(host, bytes);
@@ -470,7 +486,7 @@ impl Reply {
                 }
                 let fault = end.stream_fault.map(Fault::Transient).or(end
                     .generation_failed
-                    .then_some(Fault::Transient("upstream-generation-failed")));
+                    .then_some(Fault::Transient(FAILED_GENERATION)));
                 // The end's report replaces a floor stated while relaying, even when it is zero.
                 // A stream the far end itself ended as FAILED (its in-band terminal error)
                 // delivered no completed generation and bills no tokens, as 1.5.5 billed none
@@ -657,10 +673,9 @@ fn whole_piece<'a>(
     };
     let (verdict, fault) = match w.end {
         whole::WholeEnd::Delivered => (Verdict::Ok, None),
-        whole::WholeEnd::FailedGeneration => (
-            Verdict::Hard,
-            Some(Fault::Transient("upstream-generation-failed")),
-        ),
+        whole::WholeEnd::FailedGeneration => {
+            (Verdict::Hard, Some(Fault::Transient(FAILED_GENERATION)))
+        }
         whole::WholeEnd::NotTranslatable => {
             (Verdict::Hard, Some(Fault::Transient("untranslatable-2xx")))
         }

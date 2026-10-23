@@ -542,6 +542,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "bytes",
+ "futures",
  "http",
  "http-body-util",
  "oauth-as",
@@ -553,6 +554,7 @@ dependencies = [
  "serde_yaml_ng",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -777,7 +779,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=b2eda8a33db4ab2a7bbcaa5fc45cc4f31f5d9a16#b2eda8a33db4ab2a7bbcaa5fc45cc4f31f5d9a16"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=2345681a614939ac51371c14db05ded1a00190ad#2345681a614939ac51371c14db05ded1a00190ad"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -840,6 +842,15 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "busbar-plane-streaming-plugin"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=03cb3eb5d9c98b010c57fac4f75eabf874361d60#03cb3eb5d9c98b010c57fac4f75eabf874361d60"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-streaming",
 ]
 
 [[package]]
@@ -4006,7 +4017,9 @@ name = "voice-conformance-harness"
 version = "0.0.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel",
  "busbar-plane-streaming",
+ "busbar-plane-streaming-plugin",
  "busbar-plugin-loader",
  "bytes",
  "serde_json",
