@@ -2689,9 +2689,12 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
 
 impl OutboundAuths {
     /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
-    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
-    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
-    /// credential or no row states the style.
+    /// serving `style`, loaded as a CHECK bind (`ConnTable::Probe`: a need it declares is not
+    /// declared and it is handed no table, so it reaches nothing), and the refusals it names for the
+    /// credential itself — its `credential:` lines, their text. Empty when it accepts the credential
+    /// or no row states the style. A `ConnTable::NoNeeds` bind would REFUSE every plugin that
+    /// declares a need (a token endpoint), so the styles that mint would be passed over and their
+    /// malformed credentials pass `--validate` that boot refuses (oracle BOOT-035).
     ///
     /// # Errors
     ///
@@ -2705,7 +2708,7 @@ impl OutboundAuths {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         use crate::root::loader::dispatch::ConnTable;
         for row in self.stating(style) {
-            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::Probe) else {
                 continue;
             };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
