@@ -130,15 +130,15 @@ pub fn check_tail(t: &Tail) -> Result<(), Fault> {
 ///
 /// # Errors
 /// The rule an entry breaks.
-pub fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(), Fault> {
-    for (i, s) in streams.iter().enumerate() {
+pub fn check_tail_entries(codes: &[u8], routes: &[Route]) -> Result<(), Fault> {
+    for (i, s) in codes.iter().enumerate() {
         code(
             u64::from(*s),
             0,
             ExportStream::ALL.len() as u64 - 1,
             "tail.streams.code",
         )?;
-        if streams[..i].contains(s) {
+        if codes[..i].contains(s) {
             return Err(fault(Rule::Contradiction, "tail.streams.repeat"));
         }
     }

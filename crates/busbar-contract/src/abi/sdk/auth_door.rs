@@ -191,14 +191,14 @@ impl From<Verdict> for Answer {
     /// The verdict with no strips and its default decision: [`Decision::Continue`] for an
     /// identity or a pass, [`Decision::Stop`] for a reject.
     fn from(verdict: Verdict) -> Self {
-        let decision = match verdict {
+        let flow = match verdict {
             Verdict::Identity(_) | Verdict::Pass => Decision::Continue,
             Verdict::Reject => Decision::Stop,
         };
         Self {
             verdict,
             strips: Vec::new(),
-            decision,
+            decision: flow,
         }
     }
 }
@@ -430,13 +430,13 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
         Verdict::Reject => (None, VERDICT_REJECT),
         Verdict::Pass => (None, VERDICT_PASS),
     };
-    let decision = match answer.decision {
+    let flow = match answer.decision {
         Decision::Continue => DECISION_CONTINUE,
         Decision::Stop => DECISION_STOP,
     };
     write(
         id,
-        Some((answer.strips.as_slice(), input.strip(), decision)),
+        Some((answer.strips.as_slice(), input.strip(), flow)),
         input.field(|i| &i.out_buf),
         out,
         verdict,
@@ -468,8 +468,8 @@ fn write(
 ) -> Outcome {
     let mut bytes: HostBuf<'_, u8> = buf.buf();
     let mut groups: HostBuf<'_, Span> = buf.groups();
-    let (strips, mut strip_buf, decision) = match strip {
-        Some((strips, host, decision)) => (strips, Some(host), decision),
+    let (strips, mut strip_buf, flow) = match strip {
+        Some((strips, host, flow)) => (strips, Some(host), flow),
         None => (&[][..], None, 0),
     };
     // The FULL sizes first: a short answer writes nothing into the host's buffers.
@@ -536,7 +536,7 @@ fn write(
             |o| &o.strip_len,
             u32::try_from(host.written()).unwrap_or(u32::MAX),
         );
-        out.set(|o| &o.decision, decision);
+        out.set(|o| &o.decision, flow);
     }
     let Some(id) = id else {
         out.set(|o| &o.verdict, verdict);
