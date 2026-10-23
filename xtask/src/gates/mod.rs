@@ -1043,7 +1043,7 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         measured: MEASURED_TELLER_STEPS,
         allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
         taken: TAKEN,
-        why: "Twenty-two cases over the teller-step table, its roster derived from the tree, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+        why: "Twenty-five cases over the teller-step table, its roster derived from the tree, its cleanliness rows, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
         gate: "config-schema",
