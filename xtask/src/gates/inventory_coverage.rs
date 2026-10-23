@@ -9,7 +9,7 @@
 //!    row is literally `| id | ...` count;
 //! 2. reads `testing/shadow-oracle/cells.json` (read-only — that tree belongs to another owner)
 //!    and asks, for each inventory id, whether any oracle cell cites it: the id text appears
-//!    word-bounded anywhere in the cell's own JSON, or — for the `ADM` family specifically — an
+//!    word-bounded in the cell's `id`, its `inventory` list or its `exec.config` (never in prose), or — for the `ADM` family specifically — an
 //!    `admin.ops` cell's second id-segment is the exact `operationId` the ADM row names;
 //! 3. reads the golden ledger (read-only) for PASS/SKIP per citing cell, and classifies every id as
 //!    `covered` (a citer is PASS), `partial` (cited, but nothing executed against it) or `none`;
@@ -335,6 +335,20 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     false
 }
 
+/// The text of a cell that CITES inventory ids: the fields that name what the cell exercises, and
+/// only those -- its own `id`, the `inventory` list it declares, and the `exec.config` mutation it
+/// runs (`mutation:BOOT-P03`). Prose (`why`, request bodies, captured configs) is not a citation:
+/// a sentence that mentions an id ("Inventory ADM-022: handler returns 200 ...") executes nothing
+/// against that row, and counting it would turn an id nothing exercises into `partial`/`covered`.
+fn citation_text(cell: &Json) -> String {
+    let mut parts: Vec<&str> = vec![cell.get("id").as_str().unwrap_or_default()];
+    if let Some(list) = cell.get("inventory").as_array() {
+        parts.extend(list.iter().filter_map(Json::as_str));
+    }
+    parts.push(cell.get("exec").get("config").as_str().unwrap_or_default());
+    parts.join("\n")
+}
+
 fn compute_coverage(
     ids: &[InventoryId],
     cells: &[Json],
@@ -344,7 +358,7 @@ fn compute_coverage(
         .iter()
         .map(|c| {
             let id = c.get("id").as_str().unwrap_or_default().to_string();
-            (id, json_lite::dump_python(c))
+            (id, citation_text(c))
         })
         .collect();
 
@@ -1271,6 +1285,42 @@ impl Gate for InventoryCoverageGate {
                 ov,
                 &["family CONF:"],
             ));
+        }
+
+        // ── PROSE IS NOT A CITATION: a sentence naming a `none` id must not move it ──────────────────
+        {
+            let cells = load_cells(cx);
+            let ledger = load_ledger(cx);
+            let ids = parse_inventory_ids(cx).unwrap_or_default();
+            let coverage = compute_coverage(&ids, &cells, &ledger);
+            if let Some(target) = ids.iter().find(|i| coverage[&i.id].status == Status::None) {
+                let mut cell = Obj::new();
+                cell.insert("id", Json::Str("selftest|prose-only".to_string()));
+                cell.insert(
+                    "why",
+                    Json::Str(format!("this sentence merely mentions {}", target.id)),
+                );
+                let mut all = cells.clone();
+                all.push(Json::Object(cell));
+                let mut root = Obj::new();
+                root.insert("cells", Json::Array(all));
+                let mut ov = Overlay::new();
+                ov.set(
+                    CELLS_JSON,
+                    format!("{}\n", json_lite::dump_python(&Json::Object(root))),
+                );
+                report.push(prove_green(
+                    &cx.with_overlay(ov),
+                    self,
+                    "an id named only in a cell's prose stays uncited (the committed artifacts stay fresh)",
+                    &[ROW_COVERAGE_ARTIFACT, ROW_GAPS_ARTIFACT],
+                ));
+            } else {
+                report.note_infra_failure(
+                    "inventory-coverage selftest: no currently-uncovered id in the real tree to plant the prose case against"
+                        .to_string(),
+                );
+            }
         }
 
         // ── GAPS NAMED: an id that lost its only PASSing citer becomes an unnamed gap ──────────────
