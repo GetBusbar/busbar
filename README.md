@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml"><img src="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="https://codecov.io/gh/GetBusbar/busbar"><img src="https://codecov.io/gh/GetBusbar/busbar/branch/main/graph/badge.svg" alt="Coverage"></a>
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
 <a href="https://hub.docker.com/r/getbusbar/busbar"><img src="https://img.shields.io/docker/image-size/getbusbar/busbar?sort=semver&label=image" alt="Image size"></a>
@@ -349,3 +348,13 @@ fail-closed boot rather than silent behavior changes.
 Single Rust binary, MSRV 1.97, Apache-2.0. Docs at
 [getbusbar.com](https://getbusbar.com), contributor documentation in
 [`docs/`](docs/).
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=getbusbar%2Fbusbar&type=date&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=getbusbar/busbar&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=getbusbar/busbar&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=getbusbar/busbar&type=date&legend=bottom-right" />
+ </picture>
+</a>
