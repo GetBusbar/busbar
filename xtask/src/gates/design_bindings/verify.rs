@@ -139,19 +139,19 @@ impl Ctx {
     }
 }
 
-/// fn name -> the files declaring it under a test attribute. The attribute may sit a few lines
-/// above the `fn`, so the arming counter walks down through further attribute and blank lines and
-/// gives up on anything else.
+/// fn name -> the files declaring it under a test attribute that RUNS: not `#[ignore]`d (a test
+/// the runner skips compares nothing) and in a file the crate compiles (see [`module_is_declared`]).
+/// The attribute may sit a few lines above the `fn`, so the arming counter walks down through
+/// further attribute and blank lines and gives up on anything else.
 pub fn test_index(
     crates: &Path,
     root: &Path,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    let attr = Regex::new(r"^\s*#\[\s*(tokio::test|test|async_std::test|rstest|test_case)")?;
-    let func = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)")?;
     let mut idx: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut files = Vec::new();
     collect_rs(crates, &mut files);
     files.sort();
+    let mut declared: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
     for f in files {
         let rel = f
             .strip_prefix(root)
@@ -164,27 +164,146 @@ pub fn test_index(
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        let mut armed = 0i32;
-        for l in text.split('\n') {
-            if attr.match_at(l.as_bytes(), 0).is_some() {
-                armed = 8;
-                continue;
-            }
-            if armed > 0 {
-                if let Some(m) = func.match_at(l.as_bytes(), 0) {
-                    if let Some(name) = m.str_of(l.as_bytes(), 1) {
-                        idx.entry(name).or_default().insert(rel.clone());
-                    }
-                    armed = 0;
-                } else if l.trim().starts_with("#[") || l.trim().is_empty() {
-                    armed -= 1;
-                } else {
-                    armed = 0;
-                }
-            }
+        let names = running_tests(&text)?;
+        if names.is_empty() || !module_is_declared(&f, &mut declared) {
+            continue;
+        }
+        for name in names {
+            idx.entry(name).or_default().insert(rel.clone());
         }
     }
     Ok(idx)
+}
+
+/// The fns of one source text that carry a test attribute and are not `#[ignore]`d.
+pub fn running_tests(text: &str) -> Result<Vec<String>, String> {
+    let attr = Regex::new(r"^\s*#\[\s*(tokio::test|test|async_std::test|rstest|test_case)")?;
+    let func = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)")?;
+    let mut out = Vec::new();
+    let (mut armed, mut is_test, mut ignored) = (0i32, false, false);
+    for l in text.split('\n') {
+        let t = l.trim();
+        // `#[ignore]` / `#[ignore = "why"]` / `#[cfg_attr(..., ignore)]` before or after the test
+        // attribute: the runner lists the test and skips it.
+        let ignores = t.starts_with("#[ignore")
+            || (t.starts_with("#[cfg_attr(")
+                && t.trim_end_matches(']')
+                    .trim_end_matches(')')
+                    .ends_with("ignore"));
+        if attr.match_at(l.as_bytes(), 0).is_some() {
+            if armed == 0 {
+                ignored = false;
+            }
+            armed = 8;
+            is_test = true;
+            ignored |= ignores;
+            continue;
+        }
+        if ignores {
+            if armed == 0 {
+                (armed, is_test, ignored) = (8, false, false);
+            }
+            ignored = true;
+            continue;
+        }
+        if armed > 0 {
+            if let Some(m) = func.match_at(l.as_bytes(), 0) {
+                if let Some(name) = m.str_of(l.as_bytes(), 1) {
+                    if is_test && !ignored {
+                        out.push(name);
+                    }
+                }
+                armed = 0;
+            } else if t.starts_with("#[") || t.is_empty() {
+                armed -= 1;
+            } else {
+                armed = 0;
+            }
+            if armed == 0 {
+                (is_test, ignored) = (false, false);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Does the crate COMPILE this file? A file under a crate's `src/` is part of the build only when
+/// some `mod <stem>;` (or a `#[path = "…/<stem>.rs"]`) names it somewhere in that crate; a test
+/// written in a file nothing declares never runs. Crate roots, `src/bin/*` and anything outside
+/// `src/` (integration tests, examples, benches are targets of their own) are compiled by cargo's
+/// own discovery.
+fn module_is_declared(
+    file: &Path,
+    cache: &mut BTreeMap<PathBuf, BTreeSet<String>>,
+) -> bool {
+    let comps: Vec<String> = file
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let Some(src) = comps.iter().rposition(|c| c == "src") else {
+        return true;
+    };
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if src + 2 == comps.len() && (stem == "lib" || stem == "main")
+        || comps.get(src + 1).is_some_and(|c| c == "bin")
+    {
+        return true;
+    }
+    let mut crate_dir = PathBuf::new();
+    for c in &comps[..src] {
+        crate_dir.push(c);
+    }
+    let names = cache.entry(crate_dir.clone()).or_insert_with(|| {
+        let mut all = Vec::new();
+        collect_rs(&crate_dir, &mut all);
+        let mut names = BTreeSet::new();
+        for f in all {
+            let Ok(text) = std::fs::read_to_string(&f) else {
+                continue;
+            };
+            for line in text.split('\n') {
+                let t = line.trim_start();
+                if let Some(rest) = t.strip_prefix("#[path") {
+                    if let Some(q) = rest.split('"').nth(1) {
+                        if let Some(n) = Path::new(q).file_stem().and_then(|s| s.to_str()) {
+                            names.insert(n.to_string());
+                        }
+                    }
+                }
+                let t = t.strip_prefix("pub").map_or(t, |r| {
+                    let r = r.trim_start();
+                    if r.starts_with('(') {
+                        r.split_once(')').map_or(r, |(_, a)| a.trim_start())
+                    } else {
+                        r
+                    }
+                });
+                if let Some(rest) = t.strip_prefix("mod ") {
+                    let name: String = rest
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if rest.trim_start()[name.len()..]
+                        .trim_start()
+                        .starts_with(';')
+                    {
+                        names.insert(name);
+                    }
+                }
+            }
+        }
+        names
+    });
+    let wanted = if stem == "mod" {
+        comps
+            .get(comps.len().wrapping_sub(2))
+            .map(String::as_str)
+            .unwrap_or("")
+    } else {
+        stem
+    };
+    names.contains(wanted)
 }
 
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -703,6 +822,42 @@ pub fn note_witness_offenders(ctx: &Ctx) -> Vec<(String, String)> {
     out.sort();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod running_test_tests {
+    use super::{running_tests, test_index};
+
+    /// XE#13: an `#[ignore]`d test is listed by the runner and never run, so it proves nothing.
+    #[test]
+    fn an_ignored_test_is_not_a_running_test() {
+        let src = "#[test]\nfn runs() {}\n#[test]\n#[ignore]\nfn skipped_after() {}\n\
+                   #[ignore = \"slow\"]\n#[test]\nfn skipped_before() {}\n#[tokio::test]\nasync fn also_runs() {}\n";
+        assert_eq!(running_tests(src).unwrap(), vec!["runs", "also_runs"]);
+    }
+
+    /// An ignore on one test does not leak to the next.
+    #[test]
+    fn an_ignore_does_not_leak_to_the_next_test() {
+        let src = "#[test]\n#[ignore]\nfn a() {}\n#[test]\nfn b() {}\n";
+        assert_eq!(running_tests(src).unwrap(), vec!["b"]);
+    }
+
+    /// XE#13: a test in a file no `mod` declares is never compiled; one that is declared counts.
+    #[test]
+    fn a_test_in_an_undeclared_module_is_not_indexed() {
+        let root = std::env::temp_dir().join(format!("xtask-vb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("crates/c/src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod live;\n").unwrap();
+        std::fs::write(src.join("live.rs"), "#[test]\nfn live_one() {}\n").unwrap();
+        std::fs::write(src.join("orphan.rs"), "#[test]\nfn orphan_one() {}\n").unwrap();
+        let idx = test_index(&root.join("crates"), &root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(idx.contains_key("live_one"), "{idx:?}");
+        assert!(!idx.contains_key("orphan_one"), "{idx:?}");
+    }
 }
 
 #[cfg(test)]
