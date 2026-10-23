@@ -151,21 +151,50 @@ pub fn test_index(
     let mut files = Vec::new();
     collect_rs(crates, &mut files);
     files.sort();
-    let mut declared: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
-    for f in files {
+    // EVERY FILE IS READ ONCE. The module declarations of a crate are collected from the same
+    // texts the test fns are read from, in one pass, never by re-walking the crate per test file.
+    let texts: Vec<(PathBuf, String)> = files
+        .into_iter()
+        .filter_map(|f| std::fs::read_to_string(&f).ok().map(|t| (f, t)))
+        .collect();
+    let mut found: Vec<(PathBuf, String, Vec<String>)> = Vec::new();
+    for (f, text) in &texts {
         let rel = f
             .strip_prefix(root)
-            .unwrap_or(&f)
+            .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
         if rel.contains("/target/") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&f) else {
-            continue;
-        };
-        let names = running_tests(&text)?;
-        if names.is_empty() || !module_is_declared(&f, &mut declared) {
+        let names = running_tests(text)?;
+        if !names.is_empty() {
+            found.push((f.clone(), rel, names));
+        }
+    }
+    let crate_dirs: BTreeSet<PathBuf> = found
+        .iter()
+        .filter_map(|(f, _, _)| crate_dir_of(f))
+        .collect();
+    let mut declared: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    if !crate_dirs.is_empty() {
+        for (f, text) in &texts {
+            let owners: Vec<&PathBuf> = crate_dirs.iter().filter(|d| f.starts_with(d)).collect();
+            if owners.is_empty() {
+                continue;
+            }
+            let mut names = BTreeSet::new();
+            declared_modules(text, &mut names);
+            for d in owners {
+                declared
+                    .entry(d.clone())
+                    .or_default()
+                    .extend(names.iter().cloned());
+            }
+        }
+    }
+    for (f, rel, names) in found {
+        if !module_is_declared(&f, &declared) {
             continue;
         }
         for name in names {
@@ -175,10 +204,70 @@ pub fn test_index(
     Ok(idx)
 }
 
+/// The directory of the crate a source file belongs to: everything before its last `src`.
+fn crate_dir_of(file: &Path) -> Option<PathBuf> {
+    let comps: Vec<String> = file
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let src = comps.iter().rposition(|c| c == "src")?;
+    let mut dir = PathBuf::new();
+    for c in &comps[..src] {
+        dir.push(c);
+    }
+    Some(dir)
+}
+
+/// The module names one source text declares: every brace-less `mod name;` and every `#[path]`
+/// stem.
+fn declared_modules(text: &str, names: &mut BTreeSet<String>) {
+    for line in text.split('\n') {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("#[path") {
+            if let Some(q) = rest.split('"').nth(1) {
+                if let Some(n) = Path::new(q).file_stem().and_then(|s| s.to_str()) {
+                    names.insert(n.to_string());
+                }
+            }
+        }
+        let t = t.strip_prefix("pub").map_or(t, |r| {
+            let r = r.trim_start();
+            if r.starts_with('(') {
+                r.split_once(')').map_or(r, |(_, a)| a.trim_start())
+            } else {
+                r
+            }
+        });
+        if let Some(rest) = t.strip_prefix("mod ") {
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if rest.trim_start()[name.len()..]
+                .trim_start()
+                .starts_with(';')
+            {
+                names.insert(name);
+            }
+        }
+    }
+}
+
 /// The fns of one source text that carry a test attribute and are not `#[ignore]`d.
 pub fn running_tests(text: &str) -> Result<Vec<String>, String> {
-    let attr = Regex::new(r"^\s*#\[\s*(tokio::test|test|async_std::test|rstest|test_case)")?;
-    let func = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)")?;
+    static RES: std::sync::OnceLock<Result<(Regex, Regex), String>> = std::sync::OnceLock::new();
+    let (attr, func) = RES
+        .get_or_init(|| {
+            Ok((
+                Regex::new(r"^\s*#\[\s*(tokio::test|test|async_std::test|rstest|test_case)")
+                    .map_err(|e| e.to_string())?,
+                Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)")
+                    .map_err(|e| e.to_string())?,
+            ))
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
     let mut out = Vec::new();
     let (mut armed, mut is_test, mut ignored) = (0i32, false, false);
     for l in text.split('\n') {
@@ -201,7 +290,7 @@ pub fn running_tests(text: &str) -> Result<Vec<String>, String> {
         }
         if ignores {
             if armed == 0 {
-                (armed, is_test, ignored) = (8, false, false);
+                (armed, is_test) = (8, false);
             }
             ignored = true;
             continue;
@@ -232,7 +321,7 @@ pub fn running_tests(text: &str) -> Result<Vec<String>, String> {
 /// written in a file nothing declares never runs. Crate roots, `src/bin/*` and anything outside
 /// `src/` (integration tests, examples, benches are targets of their own) are compiled by cargo's
 /// own discovery.
-fn module_is_declared(file: &Path, cache: &mut BTreeMap<PathBuf, BTreeSet<String>>) -> bool {
+fn module_is_declared(file: &Path, declared: &BTreeMap<PathBuf, BTreeSet<String>>) -> bool {
     let comps: Vec<String> = file
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -250,48 +339,8 @@ fn module_is_declared(file: &Path, cache: &mut BTreeMap<PathBuf, BTreeSet<String
     for c in &comps[..src] {
         crate_dir.push(c);
     }
-    let names = cache.entry(crate_dir.clone()).or_insert_with(|| {
-        let mut all = Vec::new();
-        collect_rs(&crate_dir, &mut all);
-        let mut names = BTreeSet::new();
-        for f in all {
-            let Ok(text) = std::fs::read_to_string(&f) else {
-                continue;
-            };
-            for line in text.split('\n') {
-                let t = line.trim_start();
-                if let Some(rest) = t.strip_prefix("#[path") {
-                    if let Some(q) = rest.split('"').nth(1) {
-                        if let Some(n) = Path::new(q).file_stem().and_then(|s| s.to_str()) {
-                            names.insert(n.to_string());
-                        }
-                    }
-                }
-                let t = t.strip_prefix("pub").map_or(t, |r| {
-                    let r = r.trim_start();
-                    if r.starts_with('(') {
-                        r.split_once(')').map_or(r, |(_, a)| a.trim_start())
-                    } else {
-                        r
-                    }
-                });
-                if let Some(rest) = t.strip_prefix("mod ") {
-                    let name: String = rest
-                        .trim_start()
-                        .chars()
-                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                        .collect();
-                    if rest.trim_start()[name.len()..]
-                        .trim_start()
-                        .starts_with(';')
-                    {
-                        names.insert(name);
-                    }
-                }
-            }
-        }
-        names
-    });
+    let empty = BTreeSet::new();
+    let names = declared.get(&crate_dir).unwrap_or(&empty);
     let wanted = if stem == "mod" {
         comps
             .get(comps.len().wrapping_sub(2))
