@@ -42,6 +42,15 @@ pub const ROW_PERM: &str = "no-self-filed-issues:no-issues-permission";
 
 const WF_DIR: &str = ".github/workflows";
 
+/// The other files that RUN: ModernCI's moves (`.ci/*.yaml`), the pre-push hook, `bin/`, and the
+/// release/gate shell under `scripts/`. A filing call in any of them files an issue exactly as a
+/// workflow does, so each is read with the same patterns. A root that resolves to nothing is an
+/// error from the walk, never a clean pass.
+const CI_DIR: &str = ".ci";
+const HOOKS_DIR: &str = ".githooks";
+const BIN_DIR: &str = "bin";
+const SCRIPTS_DIR: &str = "scripts";
+
 /// A discovery step that finds nothing passes everything. The floor is the workflow count, a `const`
 /// with no environment override: the four reusable `plugin-*.yml` workflows the plugin repos call.
 /// It was the shell's 5 while `promote.yml` (the busbar-release hop) stood; that file is deleted
@@ -178,28 +187,88 @@ fn match_words(hay: &str, words: &[&str]) -> Option<usize> {
     None
 }
 
-/// (A) The issue-writing operations, one alternative per line of the shell's `ISSUE_WRITE_RE`.
-fn writes_an_issue(line: &str) -> bool {
-    for verb in ["create", "edit", "close", "comment", "reopen"] {
-        if match_words(line, &["gh", "issue", verb]).is_some() {
+/// The verbs of `gh issue` that change an issue. Every one is a write; `list`, `view` and `status` are not.
+const GH_ISSUE_WRITES: [&str; 12] = [
+    "create", "edit", "close", "comment", "reopen", "delete", "transfer", "pin", "unpin", "lock",
+    "unlock", "develop",
+];
+
+/// The `issues.<method>` prefixes of the REST client (`github.rest.issues.`, `octokit.issues.`)
+/// that mutate. A read (`issues.get`, `issues.list`) is not a hit.
+const ISSUE_METHOD_PREFIXES: [&str; 8] = [
+    "create", "update", "add", "remove", "set", "delete", "lock", "unlock",
+];
+
+/// The GraphQL mutations that change an issue.
+const ISSUE_MUTATIONS: [&str; 6] = [
+    "createIssue",
+    "updateIssue",
+    "closeIssue",
+    "reopenIssue",
+    "deleteIssue",
+    "transferIssue",
+];
+
+/// A request carrying one of these is not a GET, whatever it names: an explicit mutating method, or
+/// a body flag (`gh api` and `curl` both turn a body into a POST).
+fn request_mutates(segment: &str) -> bool {
+    let words: Vec<&str> = segment
+        .split(|c: char| c.is_whitespace() || c == '=' || c == '"' || c == '\'')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut previous = "";
+    for w in &words {
+        let upper = w.to_ascii_uppercase();
+        let method = matches!(upper.as_str(), "POST" | "PATCH" | "PUT" | "DELETE");
+        if method && matches!(previous, "-X" | "--method" | "--request") {
             return true;
         }
-    }
-    if match_words(line, &["gh", "label", "create"]).is_some() {
-        return true;
-    }
-    for call in [
-        "issues.create",
-        "issues.update",
-        "issues.createComment",
-        "issues.addLabels",
-    ] {
-        if line.contains(call) {
+        // `-XPATCH`, the glued short form.
+        if let Some(rest) = upper.strip_prefix("-X") {
+            if matches!(rest, "POST" | "PATCH" | "PUT" | "DELETE") {
+                return true;
+            }
+        }
+        if matches!(
+            *w,
+            "-d" | "--data"
+                | "--data-raw"
+                | "--data-binary"
+                | "--data-urlencode"
+                | "--json"
+                | "-F"
+                | "--field"
+                | "--raw-field"
+                | "--input"
+        ) {
             return true;
         }
+        previous = *w;
     }
-    // A POST — however it is spelled — reaching an `/issues` endpoint, with no `|` between the two.
-    // The pipe bound is the shell's: past a pipe the POST is feeding something else's stdin.
+    false
+}
+
+/// A client command (`gh api`, `curl`, `wget`) whose request, up to the first pipe, reaches an
+/// `/issues` endpoint with a mutating method or a body. Past a pipe the request is feeding
+/// something else's stdin — the shell's bound.
+fn mutating_issue_request(line: &str) -> bool {
+    for client in [&["curl"][..], &["wget"][..]] {
+        let mut from = 0;
+        let chars: Vec<char> = line.chars().collect();
+        while let Some(end) = match_words(&chars[from..].iter().collect::<String>(), client) {
+            let tail: String = chars[from + end..].iter().collect();
+            let segment = tail.split('|').next().unwrap_or("");
+            if segment.contains("/issues") && request_mutates(segment) {
+                return true;
+            }
+            from += end;
+            if from >= chars.len() {
+                break;
+            }
+        }
+    }
+    // The shell's own shapes: a POST however spelled reaching `/issues`, and ANY `gh api` call to
+    // an `/issues` endpoint (a read of the queue is not what this repository's runners do either).
     let posts: [&[&str]; 3] = [&["POST"], &["--method", "POST"], &["-X", "POST"]];
     for spelling in posts {
         if let Some(end) = match_words(line, spelling) {
@@ -222,17 +291,119 @@ fn writes_an_issue(line: &str) -> bool {
     false
 }
 
-/// (B) `issues:` followed by optional whitespace and `write`.
-fn requests_issues_write(line: &str) -> bool {
+/// `<client>.issues.<write method>` or `.issues.<write method>(`: the REST client calls.
+fn issue_client_write(line: &str) -> bool {
     let mut rest = line;
+    while let Some(i) = rest.find("issues.") {
+        let after = &rest[i + "issues.".len()..];
+        if ISSUE_METHOD_PREFIXES.iter().any(|p| after.starts_with(p)) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+/// A step that USES an action whose name says it writes issues (`peter-evans/create-issue-from-file`,
+/// `actions-ecosystem/action-create-issue`, `JasonEtco/create-an-issue`, `dacbd/create-issue-action`).
+fn uses_an_issue_action(line: &str) -> bool {
+    let t: String = line.chars().filter(|c| *c != '"' && *c != '\'').collect();
+    let Some(i) = t.find("uses:") else {
+        return false;
+    };
+    let action = t[i + "uses:".len()..].trim().to_ascii_lowercase();
+    let action = action.split('@').next().unwrap_or("");
+    action.contains("issue")
+}
+
+/// (A) The issue-writing operations, one alternative per line of the shell's `ISSUE_WRITE_RE`, and
+/// then the spellings the shell never listed: every mutating `gh issue` verb, every mutating REST
+/// client method, a GraphQL issue mutation, a non-GET request to `/issues` (POST, PATCH, PUT,
+/// DELETE, or any body), and a `uses:` of an issue action.
+fn writes_an_issue(line: &str) -> bool {
+    for verb in GH_ISSUE_WRITES {
+        if match_words(line, &["gh", "issue", verb]).is_some() {
+            return true;
+        }
+    }
+    for verb in ["create", "edit", "delete"] {
+        if match_words(line, &["gh", "label", verb]).is_some() {
+            return true;
+        }
+    }
+    if issue_client_write(line) {
+        return true;
+    }
+    if ISSUE_MUTATIONS.iter().any(|m| line.contains(m)) {
+        return true;
+    }
+    if uses_an_issue_action(line) {
+        return true;
+    }
+    mutating_issue_request(line)
+}
+
+/// The text with quotes removed and the spaces around a `:` collapsed, so `"issues": "write"`,
+/// `issues : write` and `{issues: write}` all read as `issues:write`.
+fn flatten_yaml(line: &str) -> String {
+    let unquoted: String = line.chars().filter(|c| *c != '"' && *c != '\'').collect();
+    let mut out = String::new();
+    let mut chars = unquoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            // Drop whitespace that sits against a colon on either side.
+            if out.ends_with(':') {
+                continue;
+            }
+            let mut ahead = chars.clone();
+            while ahead.peek().is_some_and(|n| n.is_whitespace()) {
+                ahead.next();
+            }
+            if ahead.peek() == Some(&':') {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// (B) A token scope that lets the run write issues: `issues: write`, or `permissions: write-all`
+/// (every scope, this one included).
+fn requests_issues_write(line: &str) -> bool {
+    let flat = flatten_yaml(line);
+    let mut rest = flat.as_str();
     while let Some(i) = rest.find("issues:") {
-        let tail = rest[i + "issues:".len()..].trim_start();
-        if tail.starts_with("write") {
+        let boundary = i == 0 || !rest[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_');
+        if boundary && rest[i + "issues:".len()..].starts_with("write") {
             return true;
         }
         rest = &rest[i + "issues:".len()..];
     }
+    let mut rest = flat.as_str();
+    while let Some(i) = rest.find("permissions:") {
+        if rest[i + "permissions:".len()..].starts_with("write-all") {
+            return true;
+        }
+        rest = &rest[i + "permissions:".len()..];
+    }
     false
+}
+
+fn unreadable(what: &str, why: String) -> Verdict {
+    Verdict::of(vec![
+        Row::fail(ROW_FLOOR, what, why),
+        Row::fail(
+            ROW_WRITE,
+            "the runner-file scan did not run",
+            "broken discovery reports a clean tree".to_string(),
+        ),
+        Row::fail(
+            ROW_PERM,
+            "the runner-file scan did not run",
+            "broken discovery reports a clean tree".to_string(),
+        ),
+    ])
 }
 
 pub struct NoSelfFiledIssuesGate;
@@ -254,29 +425,11 @@ impl Gate for NoSelfFiledIssuesGate {
         // `find "$WF_DIR" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \)`. The walk has
         // no depth control, so the depth is imposed here: a path with a further `/` under the
         // directory is a nested file the shell never saw.
-        let files = match cx.walk(&WalkSpec::new([WF_DIR])) {
+        let workflows = match cx.walk(&WalkSpec::new([WF_DIR])) {
             Ok(f) => f,
-            Err(e) => {
-                return Verdict::of(vec![
-                    Row::fail(
-                        ROW_FLOOR,
-                        "the workflow directory could not be read",
-                        e.to_string(),
-                    ),
-                    Row::fail(
-                        ROW_WRITE,
-                        "the workflow scan did not run",
-                        "broken discovery reports a clean tree".to_string(),
-                    ),
-                    Row::fail(
-                        ROW_PERM,
-                        "the workflow scan did not run",
-                        "broken discovery reports a clean tree".to_string(),
-                    ),
-                ]);
-            }
+            Err(e) => return unreadable("the workflow directory could not be read", e.to_string()),
         };
-        let files: Vec<_> = files
+        let workflows: Vec<_> = workflows
             .into_iter()
             .filter(|f| {
                 let rel = f.rel_str();
@@ -286,8 +439,23 @@ impl Gate for NoSelfFiledIssuesGate {
                 !base.contains('/') && (base.ends_with(".yml") || base.ends_with(".yaml"))
             })
             .collect();
+        let mut files = workflows;
+        let floor_count = files.len();
+        let others = [
+            WalkSpec::new([CI_DIR]).ext("yaml"),
+            WalkSpec::new([CI_DIR]).ext("yml").allow_empty(),
+            WalkSpec::new([HOOKS_DIR]),
+            WalkSpec::new([BIN_DIR]),
+            WalkSpec::new([SCRIPTS_DIR]).ext("sh"),
+        ];
+        for spec in &others {
+            match cx.walk(spec) {
+                Ok(more) => files.extend(more),
+                Err(e) => return unreadable("a runner file set could not be read", e.to_string()),
+            }
+        }
 
-        if files.len() < DISCOVERY_FLOOR {
+        if floor_count < DISCOVERY_FLOOR {
             return Verdict::of(vec![
                 Row::fail(
                     ROW_FLOOR,
@@ -295,7 +463,7 @@ impl Gate for NoSelfFiledIssuesGate {
                     format!(
                         "found only {} workflow file(s) (floor {DISCOVERY_FLOOR}). Discovery is \
                          broken, and broken discovery reports a clean tree.",
-                        files.len()
+                        floor_count
                     ),
                 ),
                 Row::fail(
@@ -406,6 +574,95 @@ impl Gate for NoSelfFiledIssuesGate {
             &["planted-files-issue.yml"],
         ));
 
+        // THE RUNNER FILES BEYOND THE WORKFLOWS. A filing call in a ModernCI move, the pre-push
+        // hook, `bin/` or a gate script files an issue exactly as a workflow does.
+        for (path, body) in [
+            (
+                format!("{CI_DIR}/planted-files-issue.yaml"),
+                format!("name: files\nsteps:\n  - run: {filing} --title b\n"),
+            ),
+            (
+                format!("{HOOKS_DIR}/planted-files-issue"),
+                format!("#!/usr/bin/env bash\n{filing} --title b\n"),
+            ),
+            (
+                format!("{BIN_DIR}/planted-files-issue"),
+                format!("#!/usr/bin/env bash\n{filing} --title b\n"),
+            ),
+            (
+                format!("{SCRIPTS_DIR}/planted-files-issue.sh"),
+                format!("#!/usr/bin/env bash\n{filing} --title b\n"),
+            ),
+        ] {
+            report.push(prove_red(
+                cx,
+                self,
+                format!("a filing call in `{path}` is flagged"),
+                &[ROW_WRITE],
+                planted_at(&path, &body),
+                &["planted-files-issue"],
+            ));
+        }
+
+        // THE SPELLINGS THE FIRST PATTERN LIST NEVER HAD.
+        let patch = format!(
+            "curl -X {} -H \"A: t\" https://api.github.com/repos/o/r/issues/1",
+            "PATCH"
+        );
+        let create_issue = format!("{}{}", "github.rest.issues.", "create({})");
+        let graphql = format!(
+            "gh api graphql -f query='mutation {{ {}(input: {{}}) {{ id }} }}'",
+            "createIssue"
+        );
+        let lock = format!("gh {} {} 12", "issue", "lock");
+        let body_post = "gh api repos/o/r/issues -f title=b".to_string();
+        let action = format!("uses: peter-evans/{}-from-file@v5", "create-issue");
+        for (what, step) in [
+            ("a PATCH to an issues endpoint", patch),
+            ("a REST client issues write", create_issue),
+            ("a GraphQL issue mutation", graphql),
+            ("a `gh issue` verb outside create/edit", lock),
+            ("a body-carrying gh api call to issues", body_post),
+            ("a `uses:` of an issue action", action),
+        ] {
+            let yaml = if step.starts_with("uses:") {
+                format!("name: x\njobs:\n  a:\n    steps:\n      - {step}\n")
+            } else {
+                format!("name: x\njobs:\n  a:\n    steps:\n      - run: {step}\n")
+            };
+            report.push(prove_red(
+                cx,
+                self,
+                format!("{what} is flagged"),
+                &[ROW_WRITE],
+                planted(&yaml),
+                &["planted-files-issue.yml"],
+            ));
+        }
+
+        for (what, perms) in [
+            ("`permissions: write-all`", "permissions: write-all\n"),
+            (
+                "a flow-mapping `issues: write`",
+                "permissions: { issues: write }\n",
+            ),
+            (
+                "a quoted `\"issues\": \"write\"`",
+                "permissions:\n  \"issues\": \"write\"\n",
+            ),
+        ] {
+            report.push(prove_red(
+                cx,
+                self,
+                format!("{what} is the issues scope"),
+                &[ROW_PERM],
+                planted(&format!(
+                    "name: grants\n{perms}jobs:\n  a:\n    steps:\n      - run: echo hi\n"
+                )),
+                &["planted-files-issue.yml"],
+            ));
+        }
+
         // A COMMENT-ONLY MENTION IS PROSE — the workflows explain the ban, and a lint its own
         // explanation fails is a lint people learn to skip. And a continuation INSIDE prose is
         // still prose: joining lines must not resurrect a comment.
@@ -449,8 +706,12 @@ impl Gate for NoSelfFiledIssuesGate {
 }
 
 fn planted(body: &str) -> Overlay {
+    planted_at(&format!("{WF_DIR}/planted-files-issue.yml"), body)
+}
+
+fn planted_at(path: &str, body: &str) -> Overlay {
     let mut ov = Overlay::new();
-    ov.set(format!("{WF_DIR}/planted-files-issue.yml"), body);
+    ov.set(path.to_string(), body);
     ov
 }
 
