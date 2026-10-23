@@ -1255,14 +1255,6 @@ mod tests {
         assert_eq!(run(&["gate", "segregation", "--execute"]), 2);
     }
 
-    /// The known spellings still parse: the value after `--jobs` is not a gate name, and the
-    /// parity arm's legacy argv after `--` is not this parser's to judge.
-    ///
-    /// PARSED IS NOT 2, AND THAT IS ALL THIS TEST OWNS. A spelling that parses runs its gate, and
-    /// what the gate then answers (0 or 1) is the gate's verdict over the tree, including the
-    /// self-test's work budget, which a loaded box can push over. That verdict is owned by
-    /// `xtask/tests/cli.rs` and the gate's own selftest test; asserting it here made a parser test
-    /// fail on the box's load.
     /// RED: `--shard` that is not K/N with 1 <= K <= N, or one beside a gate name, is refused (2)
     /// before any battery runs; a refused spelling never falls into the whole-registry arm.
     #[test]
@@ -1317,6 +1309,14 @@ mod tests {
         assert!(gaps.iter().any(|g| g.contains("no-such-gate")), "{gaps:?}");
     }
 
+    /// The known spellings still parse: the value after `--jobs` is not a gate name, and the
+    /// parity arm's legacy argv after `--` is not this parser's to judge.
+    ///
+    /// PARSED IS NOT 2, AND THAT IS ALL THIS TEST OWNS. A spelling that parses runs its gate, and
+    /// what the gate then answers (0 or 1) is the gate's verdict over the tree, including the
+    /// self-test's work budget, which a loaded box can push over. That verdict is owned by
+    /// `xtask/tests/cli.rs` and the gate's own selftest test; asserting it here made a parser test
+    /// fail on the box's load.
     #[test]
     fn the_known_spellings_still_parse() {
         assert_eq!(run(&["gate", "--list"]), 0);
