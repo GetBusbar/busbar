@@ -1,34 +1,25 @@
 #!/usr/bin/env bash
-# SCRATCH DIAGNOSTIC (draft PR, never to land): one MCP h2 call on a billing-ON node with every
-# reading dumped, and the A2A subject's answer to the TCK's first send. Compact, at the end.
+# SCRATCH DIAGNOSTIC (draft PR, never to land): why the A2A subject refuses the TCK's sends as
+# decode_failed. Compact, at the very end of the log.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 R="$(pwd)"; D="$R/target/vd-diag"; rm -rf "$D"; mkdir -p "$D"
 cargo build --release --locked -p busbar >"$D/build.out" 2>&1; brc=$?
-export MCP_SUBJECT_BUSBAR_BIN="$R/target/release/busbar"
-node_dir="$(bash scripts/mcp-conformance.sh --node-bin 2>"$D/node-pin.log")" && export PATH="${node_dir}:${PATH}"
-(
-  source scripts/mcp-subject/h2-lib.sh
-  trap 'h2_stop 2>/dev/null' EXIT
-  H2_GROUPS='groups:
-  h2-oracle:
-    limits:
-      - { budget: 1000000, per: day }'
-  h2_boot "$D/mcp" "$H2_GROUPS" >"$D/mcp-boot.out" 2>&1 || { echo "MCP BOOT FAILED"; tail -n 6 "$D/mcp-boot.out"; tail -n 6 "$D/mcp/busbar.log" 2>/dev/null; tail -n 3 "$D/node-pin.log"; exit 0; }
-  read -r kid tok <<<"$(h2_mint h2-oracle)"
-  bound="$(h2_bind "$tok")"
-  echo "USAGE before: $(h2_usage "$kid" | cut -c1-300)"
-  echo "CALL: $(h2_call "$bound" meter | cut -c1-300)"
-  sleep 3
-  echo "USAGE after: $(h2_usage "$kid" | cut -c1-400)"
-  echo "ADMIN usage: $(curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/usage" | cut -c1-700)"
-  echo "BUSBAR log:"; grep -viE "^\s*$" "$D/mcp/busbar.log" | tail -n 12 | cut -c1-260
-) >"$D/mcp.diag" 2>&1
-bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check >"$D/rigs.out" 2>&1
-G=target/rigs-ledger
+W2="$D/tck"; mkdir -p "$W2"
+A2A_SUBJECT_BUSBAR_BIN="$R/target/release/busbar" A2A_TCK_WORK="$W2" A2A_TCK_OUT="$W2/out" \
+  bash scripts/a2a-subject/boot.sh --tck >"$D/tck.log" 2>&1
+S=.a2a-conformance/subject-run
 echo "######## SUMMARY ########"
-echo "BUILD rc=$brc"
-cat "$D/mcp.diag"
-echo "== A2A subject logs"; ls "$G/a2a-tck-work" | tr '\n' ' '; echo
-for f in $(find "$G/a2a-tck-work" -maxdepth 3 -name '*.log' 2>/dev/null | grep -v venv | head -n 6); do echo "-- $f"; grep -iE "decode|refus|400|error" "$f" | sort | uniq -c | sort -rn | head -n 4 | cut -c1-260; done
+echo "BUILD rc=$brc"; ls "$S" | tr '\n' ' '; echo
+echo "== busbar.log refusals"; grep -iE "decode|refus|warn|error" "$S/busbar.log" | sed -E 's/\x1b\[[0-9;]*m//g; s/^[0-9TZ:.-]+ +//' | cut -c1-230 | sort | uniq -c | sort -rn | head -n 14
+echo "== scenario agent"; tail -n 4 "$S/scenario-agent.log" 2>/dev/null | cut -c1-200
+python3 - "$W2/out/subject.json" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception as e: print("no report", e); sys.exit()
+s=json.dumps(d)
+for k in ["CORE-SEND-002","DM-MSG-001","CORE-GET-002"]:
+    i=s.find('"%s"'%k); print(s[i:i+420])
+PY
+grep -n -iE "CORE-SEND-001" "$D/tck.log" | head -n 4 | cut -c1-230
 exit 1
