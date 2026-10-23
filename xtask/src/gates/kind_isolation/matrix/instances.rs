@@ -1471,6 +1471,22 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         reserved(shape, "PLANTED_PLACEMENT_KEY"),
     ));
+    // …AND A RESERVATION THIS BRANCH WROTE IS A RESERVATION NOBODY GRANTED (row 159, XC2#1). The
+    // same row, minted beside the literal it swallows, with no row struck anywhere: the hit never
+    // reaches a Law 0 cell, so the merge-base row refuses the row itself.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[shape-word]]` row the merge-base ledger does not carry is refused unless one is \
+         struck (kind-isolation:law0-base)",
+        &[super::ROW_LAW0_BASE],
+        reserved(shape, "PLANTED_PLACEMENT_KEY"),
+        &[
+            "shape-word-minted",
+            "planted_shape.rs",
+            "PLANTED_PLACEMENT_KEY",
+        ],
+    ));
     report.push(prove_rows_red(
         cx,
         gate,

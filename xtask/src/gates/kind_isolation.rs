@@ -7406,6 +7406,32 @@ impl KindIsolationGate {
     }
 }
 
+impl KindIsolationGate {
+    /// ONE RULE OF THIS GATE, OVER THE CENSUS THE GATE READS, WITHOUT THE OTHER FIFTEEN. A battery
+    /// case that asks about one row (the matrix total, the closure's cargo cross-check) reads it
+    /// here rather than running the whole registered gate: the answer is the same row, computed by
+    /// the same function over the same mounted census, at the cost of that row alone.
+    fn rows_of(
+        &self,
+        cx: &Ctx,
+        rule: impl Fn(&Ctx, &[CrateInfo], &KindRegistry) -> Vec<Row>,
+    ) -> Result<Vec<Row>, String> {
+        let mounted = pinned::with_pinned(cx);
+        let mut crates = census(&mounted)?;
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        let reg = load_registry(&mounted)?;
+        Ok(rule(&mounted, &crates, &reg))
+    }
+
+    /// The matrix row exactly as this registration emits it.
+    fn matrix_rows(&self, cx: &Ctx) -> Result<Vec<Row>, String> {
+        self.rows_of(cx, |cx, crates, reg| {
+            matrix::rule_matrix_rows(cx, crates, reg, self.ship, self.matrix_gating)
+        })
+    }
+}
+
 impl Gate for KindIsolationGate {
     fn name(&self) -> &'static str {
         if self.ship {
@@ -10935,6 +10961,9 @@ impl Gate for KindIsolationGate {
         // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
         // ceilings and the ship twin holds zero, and neither is a claim the other proves.
         matrix::selftest(cx, subject, self, self.ship, &mut report);
+        // Row 159 (audit XC2): the build-input spellings and the closure's cargo cross-check.
+        inputs::selftest(cx, subject, &mut report);
+        closure::selftest(cx, self, &mut report);
 
         if !self.ship {
             // AN ANNOUNCED CRATE LANDING IS GREEN — no unknown kind, no dead kind, no new edge
