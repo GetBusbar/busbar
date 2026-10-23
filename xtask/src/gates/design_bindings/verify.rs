@@ -77,20 +77,11 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    pub fn build(cells_doc: &J, crates: &Path, root: &Path, ledger: &Path) -> Result<Ctx, String> {
-        Ctx::build_sharing(cells_doc, crates, root, ledger, true)
-    }
-
-    /// [`Ctx::build`], with `share` saying whether the tree's indexes may come from (and go to) the
-    /// per-process memo. A run whose overlay plants or removes a `.rs` file is not the tree on disk
-    /// and takes `false`: it gets an index of its own.
-    pub fn build_sharing(
-        cells_doc: &J,
-        crates: &Path,
-        root: &Path,
-        ledger: &Path,
-        share: bool,
-    ) -> Result<Ctx, String> {
+    /// Everything a run reads. The source indexes are built through `cx` (`cx.walk`, `cx.read`), so
+    /// a file the overlay plants, removes or rewrites counts exactly as the same change on disk.
+    pub fn build(cells_doc: &J, cx: &crate::ctx::Ctx, ledger: &Path) -> Result<Ctx, String> {
+        let root = cx.root();
+        let sources = source_files(cx)?;
         let empty: Vec<J> = Vec::new();
         let cells = cells_doc
             .get("cells")
@@ -107,15 +98,7 @@ impl Ctx {
             *families.entry(fam).or_default() += 1;
         }
         Ok(Ctx {
-            idx: if crates.exists() {
-                if share {
-                    memo_test_index(crates, root)?
-                } else {
-                    test_index(crates, root)?
-                }
-            } else {
-                BTreeMap::new()
-            },
+            idx: test_index_of(&sources)?,
             cell_ids: cells
                 .iter()
                 .map(|c| c.str_of("id").unwrap_or("").to_string())
@@ -133,15 +116,7 @@ impl Ctx {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
-            symbols: if crates.exists() {
-                if share {
-                    memo_symbol_index(crates, &root.join("xtask"))
-                } else {
-                    symbol_index(crates, &root.join("xtask"))
-                }
-            } else {
-                BTreeSet::new()
-            },
+            symbols: symbol_index_of(&sources),
         })
     }
 
@@ -162,100 +137,92 @@ impl Ctx {
 
 type TestIdx = BTreeMap<String, BTreeSet<String>>;
 
-/// [`test_index`] ONCE PER TREE PER PROCESS. Both indexes read the files on disk (a selftest case
-/// plants into the [`Ctx`] it builds, never into the files), so the 24 cases of one battery share
-/// one walk of the tree instead of paying for it each.
-fn memo_test_index(crates: &Path, root: &Path) -> Result<TestIdx, String> {
-    type Memo = BTreeMap<(PathBuf, PathBuf), TestIdx>;
-    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
-    let memo = MEMO.get_or_init(Default::default);
-    let key = (crates.to_path_buf(), root.to_path_buf());
-    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Ok(hit.clone());
+/// One source file as the indexes see it: repo-relative path (`/`-separated) and text.
+pub type Source = (String, String);
+
+/// THE `.rs` FILES UNDER `crates/` AND `xtask/` AS THE TREE READS THEM, overlay included. Built
+/// through `cx.walk`, so a file the overlay plants, removes or rewrites is judged exactly as the
+/// same change on disk would be. A missing root is no files, as an absent `crates/` always was.
+fn source_files(cx: &crate::ctx::Ctx) -> Result<Vec<Source>, String> {
+    use crate::ctx::{WalkError, WalkSpec};
+    let spec = WalkSpec::new(["crates", "xtask"]).ext("rs").allow_empty();
+    match cx.walk(&spec) {
+        Ok(files) => Ok(files
+            .into_iter()
+            .map(|f| (f.rel_str(), f.text))
+            .filter(|(rel, _)| !rel.contains("/target/"))
+            .collect()),
+        Err(WalkError::MissingRoot { .. }) => Ok(Vec::new()),
+        Err(e) => Err(format!("{e:?}")),
     }
-    let built = test_index(crates, root)?;
-    memo.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, built.clone());
-    Ok(built)
 }
 
-/// [`symbol_index`] once per tree per process, as [`memo_test_index`].
-fn memo_symbol_index(crates: &Path, xtask: &Path) -> BTreeSet<String> {
-    type Memo = BTreeMap<(PathBuf, PathBuf), BTreeSet<String>>;
+/// What one file says, for the three indexes: its running tests, the modules it declares, its fns.
+#[derive(Default)]
+struct Facts {
+    tests: Vec<String>,
+    mods: BTreeSet<String>,
+    fns: BTreeSet<String>,
+}
+
+/// [`Facts`] of a text, remembered by the text's CONTENT (length and two independent hashes). A
+/// result keyed by what was read cannot go stale: a file changed on disk, a file rewritten by an
+/// overlay and a file written by `write_file` are different texts and get their own facts, while a
+/// battery's 24 cases over one tree parse each file once.
+fn facts_of(text: &str) -> Result<std::sync::Arc<Facts>, String> {
+    use std::hash::{Hash, Hasher};
+    type Memo = std::collections::HashMap<(usize, u64, u64), std::sync::Arc<Facts>>;
     static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
     let memo = MEMO.get_or_init(Default::default);
-    let key = (crates.to_path_buf(), xtask.to_path_buf());
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h1);
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    0xA5A5_u16.hash(&mut h2);
+    text.len().hash(&mut h2);
+    text.hash(&mut h2);
+    let key = (text.len(), h1.finish(), h2.finish());
     if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return hit.clone();
+        return Ok(std::sync::Arc::clone(hit));
     }
-    let built = symbol_index(crates, xtask);
+    let mut facts = Facts {
+        tests: running_tests(text)?,
+        ..Facts::default()
+    };
+    declared_modules(text, &mut facts.mods);
+    facts.fns = fn_names(text);
+    let facts = std::sync::Arc::new(facts);
     memo.lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(key, built.clone());
-    built
+        .insert(key, std::sync::Arc::clone(&facts));
+    Ok(facts)
 }
 
 /// fn name -> the files declaring it under a test attribute that RUNS: not `#[ignore]`d (a test
 /// the runner skips compares nothing) and in a file the crate compiles (see [`module_is_declared`]).
 /// The attribute may sit a few lines above the `fn`, so the arming counter walks down through
-/// further attribute and blank lines and gives up on anything else.
-pub fn test_index(
-    crates: &Path,
-    root: &Path,
-) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    let mut idx: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut files = Vec::new();
-    collect_rs(crates, &mut files);
-    files.sort();
-    // EVERY FILE IS READ ONCE. The module declarations of a crate are collected from the same
-    // texts the test fns are read from, in one pass, never by re-walking the crate per test file.
-    let texts: Vec<(PathBuf, String)> = files
-        .into_iter()
-        .filter_map(|f| std::fs::read_to_string(&f).ok().map(|t| (f, t)))
-        .collect();
-    let mut found: Vec<(PathBuf, String, Vec<String>)> = Vec::new();
-    for (f, text) in &texts {
-        let rel = f
-            .strip_prefix(root)
-            .unwrap_or(f)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if rel.contains("/target/") {
-            continue;
-        }
-        let names = running_tests(text)?;
-        if !names.is_empty() {
-            found.push((f.clone(), rel, names));
-        }
-    }
-    let crate_dirs: BTreeSet<PathBuf> = found
-        .iter()
-        .filter_map(|(f, _, _)| crate_dir_of(f))
-        .collect();
+/// further attribute and blank lines and gives up on anything else. Only `crates/` is indexed.
+pub fn test_index_of(sources: &[Source]) -> Result<TestIdx, String> {
+    let mut found: Vec<(&str, std::sync::Arc<Facts>)> = Vec::new();
     let mut declared: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
-    if !crate_dirs.is_empty() {
-        for (f, text) in &texts {
-            let owners: Vec<&PathBuf> = crate_dirs.iter().filter(|d| f.starts_with(d)).collect();
-            if owners.is_empty() {
-                continue;
-            }
-            let mut names = BTreeSet::new();
-            declared_modules(text, &mut names);
-            for d in owners {
-                declared
-                    .entry(d.clone())
-                    .or_default()
-                    .extend(names.iter().cloned());
-            }
+    for (rel, text) in sources.iter().filter(|(rel, _)| rel.starts_with("crates/")) {
+        let facts = facts_of(text)?;
+        if let Some(dir) = crate_dir_of(Path::new(rel)) {
+            declared
+                .entry(dir)
+                .or_default()
+                .extend(facts.mods.iter().cloned());
+        }
+        if !facts.tests.is_empty() {
+            found.push((rel, facts));
         }
     }
-    for (f, rel, names) in found {
-        if !module_is_declared(&f, &declared) {
+    let mut idx: TestIdx = BTreeMap::new();
+    for (rel, facts) in found {
+        if !module_is_declared(Path::new(rel), &declared) {
             continue;
         }
-        for name in names {
-            idx.entry(name).or_default().insert(rel.clone());
+        for name in &facts.tests {
+            idx.entry(name.clone()).or_default().insert(rel.to_string());
         }
     }
     Ok(idx)
@@ -275,14 +242,15 @@ fn crate_dir_of(file: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
-/// The module names one source text declares: every brace-less `mod name;` and every `#[path]`
-/// stem.
+/// The module names one source text declares: every brace-less `mod name;` (the name may follow
+/// the keyword after any whitespace, a tab or a line break included) and every `#[path]` stem.
 fn declared_modules(text: &str, names: &mut BTreeSet<String>) {
     // Most files declare nothing: skip them before splitting into lines.
-    if !text.contains("mod ") && !text.contains("#[path") {
+    if !text.contains("mod") && !text.contains("#[path") {
         return;
     }
-    for line in text.split('\n') {
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
         let t = line.trim_start();
         if let Some(rest) = t.strip_prefix("#[path") {
             if let Some(q) = rest.split('"').nth(1) {
@@ -299,18 +267,27 @@ fn declared_modules(text: &str, names: &mut BTreeSet<String>) {
                 r
             }
         });
-        if let Some(rest) = t.strip_prefix("mod ") {
-            let name: String = rest
-                .trim_start()
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if rest.trim_start()[name.len()..]
-                .trim_start()
-                .starts_with(';')
-            {
-                names.insert(name);
-            }
+        let Some(rest) = t.strip_prefix("mod") else {
+            continue;
+        };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        // The name and its `;` may be on the next line (`mod\nname;`).
+        let joined;
+        let rest = if rest.trim().is_empty() {
+            joined = lines.get(i + 1).map_or(String::new(), |n| (*n).to_string());
+            joined.as_str()
+        } else {
+            rest
+        };
+        let rest = rest.trim_start();
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() && rest[name.len()..].trim_start().starts_with(';') {
+            names.insert(name);
         }
     }
 }
@@ -411,20 +388,6 @@ fn module_is_declared(file: &Path, declared: &BTreeMap<PathBuf, BTreeSet<String>
         stem
     };
     names.contains(wanted)
-}
-
-fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in rd.filter_map(Result::ok) {
-        let p = e.path();
-        if p.is_dir() {
-            collect_rs(&p, out);
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.push(p);
-        }
-    }
 }
 
 /// The cell ids the pinned golden actually recorded a comparable answer for (status PASS). An
@@ -795,38 +758,37 @@ pub fn verify_rows(doc: &J, ctx: &Ctx) -> Vec<(String, String, String, String)> 
 /// a helper, a production fn, a file — and the defect being caught is a name that resolves to
 /// NOTHING. Narrowing the haystack here would turn every prose mention of a production fn into a
 /// failure, which is how a true rule acquires a waiver.
-pub fn symbol_index(crates: &Path, xtask: &Path) -> BTreeSet<String> {
+pub fn symbol_index_of(sources: &[Source]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    let mut files = Vec::new();
-    collect_rs(crates, &mut files);
-    collect_rs(xtask, &mut files);
-    for f in files {
-        if f.to_string_lossy().contains("/target/") {
-            continue;
-        }
-        if let Some(stem) = f.file_stem().and_then(|s| s.to_str()) {
+    for (rel, text) in sources {
+        if let Some(stem) = Path::new(rel).file_stem().and_then(|s| s.to_str()) {
             out.insert(stem.to_string());
         }
-        let Ok(text) = std::fs::read_to_string(&f) else {
-            continue;
-        };
-        for (i, _) in text.match_indices("fn ") {
-            // `fn` must be its own token: the preceding byte cannot continue an identifier, which
-            // is what keeps `fn` inside a longer word from opening a declaration that is not one.
-            if i > 0 {
-                let p = text.as_bytes()[i - 1];
-                if p.is_ascii_alphanumeric() || p == b'_' {
-                    continue;
-                }
+        if let Ok(facts) = facts_of(text) {
+            out.extend(facts.fns.iter().cloned());
+        }
+    }
+    out
+}
+
+/// Every `fn` name a text declares, `fn` as its own token.
+fn fn_names(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (i, _) in text.match_indices("fn ") {
+        // `fn` must be its own token: the preceding byte cannot continue an identifier, which
+        // is what keeps `fn` inside a longer word from opening a declaration that is not one.
+        if i > 0 {
+            let p = text.as_bytes()[i - 1];
+            if p.is_ascii_alphanumeric() || p == b'_' {
+                continue;
             }
-            let rest = &text[i + 3..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() {
-                out.insert(name);
-            }
+        }
+        let name: String = text[i + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            out.insert(name);
         }
     }
     out
@@ -933,7 +895,7 @@ pub fn note_witness_offenders(ctx: &Ctx) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod running_test_tests {
-    use super::{running_tests, test_index};
+    use super::{running_tests, test_index_of};
 
     /// XE#13: an `#[ignore]`d test is listed by the runner and never run, so it proves nothing.
     #[test]
@@ -951,18 +913,24 @@ mod running_test_tests {
     }
 
     /// XE#13: a test in a file no `mod` declares is never compiled; one that is declared counts.
+    /// A declaration may put a tab, or a line break, between `mod` and the name.
     #[test]
     fn a_test_in_an_undeclared_module_is_not_indexed() {
-        let root = std::env::temp_dir().join(format!("xtask-vb-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let src = root.join("crates/c/src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod live;\n").unwrap();
-        std::fs::write(src.join("live.rs"), "#[test]\nfn live_one() {}\n").unwrap();
-        std::fs::write(src.join("orphan.rs"), "#[test]\nfn orphan_one() {}\n").unwrap();
-        let idx = test_index(&root.join("crates"), &root).unwrap();
-        let _ = std::fs::remove_dir_all(&root);
+        let src = |rel: &str, text: &str| (format!("crates/c/src/{rel}"), text.to_string());
+        let idx = test_index_of(&[
+            src(
+                "lib.rs",
+                "#[cfg(test)]\nmod live;\nmod\ttabbed;\nmod\nsplit;\n",
+            ),
+            src("live.rs", "#[test]\nfn live_one() {}\n"),
+            src("tabbed.rs", "#[test]\nfn tabbed_one() {}\n"),
+            src("split.rs", "#[test]\nfn split_one() {}\n"),
+            src("orphan.rs", "#[test]\nfn orphan_one() {}\n"),
+        ])
+        .unwrap();
         assert!(idx.contains_key("live_one"), "{idx:?}");
+        assert!(idx.contains_key("tabbed_one"), "{idx:?}");
+        assert!(idx.contains_key("split_one"), "{idx:?}");
         assert!(!idx.contains_key("orphan_one"), "{idx:?}");
     }
 }
