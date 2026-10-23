@@ -72,8 +72,12 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
-  manual: [oracle-record, oracle, test-docs-whole]
+  # selftest-1..4 run absolute on dev's head (.ci/dev.yaml, DEV-GREEN) and on demand here: on every
+  # lane they were red on dev too, so each train prefix waited on a comparison with dev for them.
+  # TEMPORARY: they return to on.move in the first save after busbar #1421 lands AND ModernCI's
+  # release with queue v2 fix 12 (#2213/#2217) is live on the install.
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
+  manual: [oracle-record, oracle, test-docs-whole, selftest-1, selftest-2, selftest-3, selftest-4]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -387,9 +391,10 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The nextest limit: every test is cut at five minutes. Every registered gate's RED proof runs
-      # in the selftest-1..4 checks (`cargo xtask selftest --shard=K/4`), on every move.
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
+      # The nextest limits: every test is cut at five minutes, except the gate list-and-run over the
+      # real tree (#1623), which gets twelve and starts first. Every registered gate's RED proof runs in the
+      # selftest-1..4 checks (`cargo xtask selftest --shard=K/4`).
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(/list_and_a_named_gate_run_over_the_real_tree$/)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
     scope: affected
@@ -446,7 +451,13 @@ checks:
       cargo build --workspace --locked
       cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
       cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+      # D, the three checks no other step ran (#1599): the loom models through their xtask command
+      # (the count floor refuses a run of fewer than both models), the transaction compile fence
+      # (its pass condition is a build failure for three named reasons), and the wire locks
+      # against their pinned provider specs.
+      timeout 3000 cargo xtask loom
+      cargo xtask txn-fence
+      cargo xtask dialect wire all
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
