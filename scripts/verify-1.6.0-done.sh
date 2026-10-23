@@ -1,19 +1,43 @@
 #!/usr/bin/env bash
-# SCRATCH DIAGNOSTIC (draft PR, never to land): the plane-rig ledger's reds, by family, and the
-# MCP h2 money legs' own words. Compact output at the end of the log.
+# SCRATCH DIAGNOSTIC (draft PR, never to land): the Twilio metering leg's line diff, and why the A2A
+# TCK subject and the battery's deep-nesting case fail. Compact output at the end of the log.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 R="$(pwd)"; D="$R/target/vd-diag"; rm -rf "$D"; mkdir -p "$D"
-cargo build --release --locked -p busbar >"$D/build.out" 2>&1; brc=$?
-bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check >"$D/rigs.out" 2>&1; rrc=$?
-L=target/rigs-ledger/ledger.tsv
+bash testing/voice-conformance/voice-conformance.sh --leg twilio-metering >"$D/meter.out" 2>&1
+cargo build --release --locked -p busbar >"$D/build.out" 2>&1
+A2A_SUBJECT_BUSBAR_BIN="$R/target/release/busbar" A2A_TCK_WORK="$D/tck" A2A_TCK_OUT="$D/tck/out" \
+  bash scripts/a2a-subject/boot.sh --tck >"$D/tck.log" 2>&1
 echo "######## SUMMARY ########"
-echo "BUILD rc=$brc RIGS rc=$rrc"
-awk -F'\t' '{split($1,a,"|"); k=a[1]; if (a[1]=="baseline") k="baseline:" a[2]; c[k" "$2]++} END{for (x in c) print c[x], x}' "$L" | sort -k2 | tr '\n' ';'; echo
-echo "TCK FAIL ids: $(awk -F'\t' '$1 ~ /^a2a.tck\|/ && $2=="FAIL"{sub(/^a2a.tck\|/,"",$1); printf "%s ", $1}' "$L" | cut -c1-900)"
-echo "BATTERY non-pass: $(awk -F'\t' '$1 ~ /^a2a.battery\|/ && $2!="PASS" && $2!="SKIP"{sub(/^a2a.battery\|/,"",$1); printf "%s(%s) ", $1, $4}' "$L" | cut -c1-400)"
-echo "MCP non-pass: $(awk -F'\t' '$1 ~ /^mcp.rig\|/ && $2!="PASS" && $2!="SKIP"{sub(/^mcp.rig\|/,"",$1); printf "%s ", $1}' "$L" | cut -c1-300)"
-awk -F'\t' '$1=="mcp.rig|h2-meter-row"||$1=="mcp.rig|h2-exit-terminal"{print $1": "substr($4,1,420)}' "$L"
-grep -E "control-scenario|ceiling|MUST requirements|battery test ids|scenarios:" "$D/rigs.out" | head -n 5 | cut -c1-200
-tail -n 30 target/rigs-ledger/a2a-tck.log 2>/dev/null | grep -iE "passed|failed|error" | tail -n 4 | cut -c1-200
+python3 - "$D/meter.out" <<'PY'
+import sys
+t=open(sys.argv[1],encoding="utf-8",errors="replace").read()
+def lst(s, i):
+    j=s.index("[", i); depth=0; q=False; k=j
+    while True:
+        c=s[k]
+        if q:
+            if c=="\\": k+=1
+            elif c=='"': q=False
+        elif c=='"': q=True
+        elif c=="[": depth+=1
+        elif c=="]":
+            depth-=1
+            if depth==0: return s[j:k+1], k+1
+        k+=1
+try:
+    a,e=lst(t, t.index("the session reported "))
+    b,_=lst(t, t.index("want ", e))
+    import json
+    got=json.loads(a); want=json.loads(b)
+    for i,(g,w) in enumerate(zip(got,want)):
+        if g!=w: print(f"METER[{i}] got {g[:140]}\n         want {w[:140]}")
+    if len(got)!=len(want): print("METER len", len(got), len(want))
+except Exception as ex:
+    print("METER parse", ex); print(t[-600:])
+PY
+grep -E "^(FAILED|ERROR) " "$D/tck.log" | head -n 3 | cut -c1-230
+grep -E "^E  " "$D/tck.log" | sort | uniq -c | sort -rn | head -n 6 | cut -c1-230
+grep -iE "passed|failed" "$D/tck.log" | tail -n 2 | cut -c1-200
+grep -iE "deep_nesting" -A3 testing/a2a-harness/reports/subject.json 2>/dev/null | head -n 6 | cut -c1-230
 exit 1
