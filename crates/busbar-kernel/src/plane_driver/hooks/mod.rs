@@ -52,11 +52,11 @@ use crate::diagnostics::{
     ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
+use crate::hooks::taps::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::hooks::{
     content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
-use crate::proxy::proxy_vocab::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hook_wire::HookStageProjection;
@@ -675,10 +675,17 @@ pub(crate) enum Stopped {
     /// The plane could not read the request a hook had to see.
     Unreadable,
     /// The plane answered FAULT to a `project` where no rewrite hook was known to be configured
-    /// (the gate-first stage's first `project`, made before its entry is bound): the caller decides
-    /// whether a configured rewrite hook makes it the shared 500 ([`fault_veto`]) or the unit is
-    /// as unreadable as any other refused `project`.
-    Unparseable,
+    /// (the unit's first `project`; the gate-first stage's is made before its entry is bound): the
+    /// caller decides whether a configured rewrite hook makes it the shared 500 ([`fault_veto`]) or
+    /// the hooks judge the body as 1.5.5 judged one it could not parse, a Null body, and the
+    /// request proceeds. `marked`: the plane marked the FAULT as its own word on an unparseable
+    /// body (`abi::plane::project_fault_unparseable`); an unmarked FAULT (a panic, no crossing, a
+    /// quarantined or broken plane) never takes the Null view, and is the shared 500 where a
+    /// rewrite is configured or unreadable otherwise.
+    Unparseable {
+        /// The plane's unparseable-body mark was on the FAULT.
+        marked: bool,
+    },
 }
 
 /// A hook's refusal, clamped and sanitised.
@@ -1222,15 +1229,21 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // document is materialized before any hook runs, and a body that will not parse is the
         // shared 500) or the call carried a rewrite: always the shared 500, whatever the hook's
         // `on_error` says, and the body is never forwarded (`abi::plane::project_faults`).
-        if busbar_contract::abi::plane::project_faults(outcome, true) {
-            if !faultable && rewrite.is_none() {
-                return Err(Stopped::Unparseable);
-            }
+        if busbar_contract::abi::plane::project_faults(outcome, faultable || rewrite.is_some()) {
             tracing::error!(
                 "the plane could not apply a request rewrite it must not leave unapplied; \
                  rejecting rather than forwarding the body un-rewritten"
             );
             return Err(fault_veto());
+        }
+        // The plane's own FAULT over a body it could not parse (`PROJECT_FAULT_UNPARSEABLE`), with
+        // no rewrite configured or carried, is no 500: the caller judges the request as 1.5.5
+        // judged a body it could not parse, a Null body (`proxy/engine/mod.rs:957-961`). Every
+        // other FAULT (a panic, no crossing, a quarantined or broken plane, no mark) is unreadable.
+        if outcome == AbiOutcome::Fault {
+            return Err(Stopped::Unparseable {
+                marked: busbar_contract::abi::plane::project_fault_unparseable(outcome, &o),
+            });
         }
         if outcome != AbiOutcome::Ready {
             return Err(Stopped::Unreadable);
@@ -1393,11 +1406,24 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
         // shared 500 and no hook is invoked.
         let faultable = !hooks.rewrites.is_empty();
-        let mut view = match self.project(None, faultable).map_err(|e| match e {
-            Stopped::Unparseable => Stopped::Unreadable,
+        // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+        let first = self.project(None, faultable).map_err(|e| match e {
+            Stopped::Unparseable { marked: false } => Stopped::Unreadable,
             other => other,
-        }) {
+        });
+        let mut view = match first {
             Ok(view) => view,
+            // FAULT with no rewrite configured (no hook, no pool rewrite): 1.5.5 materialized the
+            // document for the gates and, when it would not parse, the gates judged a Null body
+            // and the request proceeded (v1.5.5 `proxy/engine/mod.rs:957-961`); the base policy
+            // and the taps read no document (`.ok()`, `:170`, `:1330`). Only a configured rewrite
+            // made it the shared 500. The gates and the policy judge the zeroed view, the request
+            // proceeding.
+            Err(Stopped::Unparseable { .. }) => Projection {
+                pool: walk_pool.clone(),
+                dialect: hooks.dialect.clone(),
+                ..Projection::default()
+            },
             // A request the plane cannot read is the request's failure where a hook must judge
             // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
             // shape (the previous release's stage capture), the request proceeding.

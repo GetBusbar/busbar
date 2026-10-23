@@ -105,6 +105,11 @@ impl RoutingPolicy for Gate {
 }
 
 fn gate(reject: Option<(u16, &'static str)>) -> (Seen, ResolvedPolicy) {
+    gate_granted(reject, true)
+}
+
+/// [`gate`], with or without the prompt granted.
+fn gate_granted(reject: Option<(u16, &'static str)>, send_prompt: bool) -> (Seen, ResolvedPolicy) {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     (
         seen.clone(),
@@ -113,7 +118,7 @@ fn gate(reject: Option<(u16, &'static str)>) -> (Seen, ResolvedPolicy) {
             on_error: PolicyOnError::default(),
             on_error_chain: Vec::new(),
             timeout: Duration::from_millis(500),
-            send_prompt: true,
+            send_prompt,
             send_user: false,
             on_empty: PolicyOnError::Reject,
         },
@@ -508,6 +513,7 @@ impl busbar_kernel::plane_driver::HookBinder for GatedRewrites {
             rewrites: self.rewrites.clone(),
             key: None,
             scan: None,
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
         })
     }
 }
@@ -875,4 +881,312 @@ async fn with_no_rewrite_configured_project_is_not_called_up_front() {
     assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
     assert!(r.projects().is_empty(), "project was never asked");
     assert_eq!(far.sent().len(), 1, "the body went through");
+}
+
+/// What [`unparseable_under`] answers: the unit's outcome, the rendered refusal (status, body), the
+/// attempts the far end received and every `project` crossing (body, rewrite).
+type Driven = (
+    Outcome,
+    Option<(u32, Vec<u8>)>,
+    usize,
+    Vec<(Vec<u8>, Vec<u8>)>,
+);
+
+/// Drive one unit of `/unparseable` (the double answers FAULT to its every `project`) under
+/// `hooks`: the outcome, what was rendered, and how many attempts reached the far end.
+async fn unparseable_under(hooks: BoundHooks) -> Driven {
+    unparseable_over(hooks, Far::new(&["ok"], &[b"done"])).await
+}
+
+/// [`unparseable_under`], over `far`.
+async fn unparseable_over(hooks: BoundHooks, far: Far) -> Driven {
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(hooks),
+    );
+    let (steps, caller) = (TestUnits::passing(), Caller::default());
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        arrival("/unparseable", b"user:hello"),
+        0,
+    );
+    let outcome = drive(&units).await;
+    let rendered = units
+        .take_rendered()
+        .map(|rendered| (rendered.status, rendered.body));
+    (outcome, rendered, far.sent().len(), r.projects())
+}
+
+/// RED (opus review B1; v1.5.5 `proxy/engine/mod.rs:957-961`): with a decision gate bound and no
+/// rewrite configured (no hook, no pool rewrite), a body the plane cannot parse is no 500 and no
+/// 400. 1.5.5 materialized the document for its gates and, when it would not parse, the gates
+/// judged a Null body and the request proceeded: the gate judges the zeroed view (no turns) and
+/// the unit is served. RED before: the FAULT was read as an unreadable request, 400 `DecodeFailed`.
+#[tokio::test]
+async fn an_unparseable_body_with_only_a_gate_is_judged_as_a_null_body_and_served() {
+    let (seen, g) = gate(None);
+    let (outcome, rendered, sent, projects) =
+        unparseable_under(bound(Vec::new(), vec![(0, g)])).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert_eq!(rendered, None, "nothing was refused");
+    assert_eq!(sent, 1, "the body went through");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![Vec::<(String, String)>::new()],
+        "the gate judged once, over a Null body: no turns"
+    );
+    assert_eq!(projects.len(), 1, "one project, with no rewrite");
+    assert!(
+        projects[0].1.is_empty(),
+        "the up-front project carries no rewrite"
+    );
+    // The gate still judges: one that rejects refuses the unit with its own status and words.
+    let (_, g) = gate(Some((451, "blocked")));
+    let (_, rendered, sent, _) = unparseable_under(bound(Vec::new(), vec![(0, g)])).await;
+    assert_eq!(rendered, Some((451, b"refused:451:blocked".to_vec())));
+    assert_eq!(sent, 0, "never dialled");
+}
+
+/// GREEN twin: gates only, a body the plane parses. The up-front `project` answers the view and
+/// the gate judges the request's own turns, the unit served.
+#[tokio::test]
+async fn with_only_a_gate_a_parseable_body_is_judged_over_its_own_turns() {
+    let (seen, g) = gate(None);
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(bound(Vec::new(), vec![(0, g)])),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+    let outcome = drive(&units).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert_eq!(far.sent().len(), 1, "the body went through");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![vec![("user".to_string(), "hello".to_string())]],
+        "the gate judged the request's own turn"
+    );
+}
+
+/// RED (opus review B1; v1.5.5 `proxy/engine/mod.rs:1330`, the policy's document read `.ok()`):
+/// the same with only a base routing policy bound for the pool: it judges the zeroed view and the
+/// unit is served. RED before: 400 `DecodeFailed`.
+#[tokio::test]
+async fn an_unparseable_body_with_only_a_policy_is_judged_as_a_null_body_and_served() {
+    let (seen, policy) = gate(None);
+    let mut hooks = bound(Vec::new(), Vec::new());
+    hooks.pool_policies.insert("pool-a".to_string(), policy);
+    let far = Far::new(&["ok"], &[b"done"]).naming_its_pool();
+    let (outcome, rendered, sent, _) = unparseable_over(hooks, far).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert_eq!(rendered, None, "nothing was refused");
+    assert_eq!(sent, 1, "the body went through");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![Vec::<(String, String)>::new()],
+        "the policy judged once, over a Null body: no turns"
+    );
+}
+
+/// A gate-first binder attaching `gates` (and no rewrite) to every entry.
+struct GatedGates {
+    gates: Vec<(u16, ResolvedPolicy)>,
+}
+
+impl busbar_kernel::plane_driver::HookBinder for GatedGates {
+    fn bind(
+        &self,
+        _bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        panic!("a gate-first plane binds no routed hooks")
+    }
+
+    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
+        busbar_kernel::plane_driver::HookOrder::Gated
+    }
+
+    fn bind_gated(
+        &self,
+        _container: &str,
+        _principal: Option<&str>,
+    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
+        Some(busbar_kernel::plane_driver::GatedHooks {
+            request_id: 7,
+            gates: self.gates.clone(),
+            rewrites: Vec::new(),
+            key: None,
+            scan: None,
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
+        })
+    }
+}
+
+/// RED, the gate-first twin (opus review B1): the entry has gates and no rewrite, and the first
+/// `project` FAULTs. The gates judge a view with no body and the unit is served: a gate shown the
+/// shape judges it (one that rejects refuses, with its status and words), and a gate granted the
+/// content applies its `on_error` (here `weighted`, which proceeds), as it does for any body it
+/// cannot read. RED before: refused as unreadable.
+#[tokio::test]
+async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
+    for (send_prompt, reject, want_sent, want_seen) in [
+        (false, None, 1, 1),
+        (true, None, 1, 0),
+        (false, Some((451, "blocked")), 0, 1),
+    ] {
+        let (seen, g) = gate_granted(reject, send_prompt);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r.driver.with_hooks(Arc::new(GatedGates {
+            gates: vec![(0, g)],
+        }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/unparseable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        let case = format!("send_prompt {send_prompt}, reject {reject:?}");
+        assert_eq!(far.sent().len(), want_sent, "{case}: {outcome:?}");
+        assert_eq!(seen.lock().unwrap().len(), want_seen, "{case}");
+        match reject {
+            None => assert!(matches!(outcome, Outcome::Completed), "{case}: {outcome:?}"),
+            Some((status, _)) => {
+                let rendered = units.take_rendered().expect("the veto is rendered");
+                assert_eq!(rendered.status, u32::from(status), "{case}");
+            }
+        }
+    }
+}
+
+/// GUARD (lead rulings on #1500; dev answers these 400 too): only the plane's own FAULT marked
+/// `PROJECT_FAULT_UNPARSEABLE` takes
+/// the Null-view path. Every other FAULT on a gate-only route is a broken plane and fails closed,
+/// unreadable (400), before any gate judges it and before any attempt: a slot that panicked (its
+/// door writes nothing but the outcome), a frame refused before the crossing or a quarantined
+/// instance (the `out` as the host lent it), a FAULT the plane answered without the mark, and a
+/// READY answer the host's kind check refused (a FAULT the host minted, the mark's bit among the
+/// plane's own view flags even). The same at a gate-first screen.
+#[tokio::test]
+async fn every_fault_but_the_marked_unparseable_one_on_a_gate_only_route_is_refused_400() {
+    for target in [
+        "/panics",
+        "/no-crossing",
+        "/fault-unmarked",
+        "/broken-answer",
+    ] {
+        let (seen, g) = gate(None);
+        let r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(Vec::new(), vec![(0, g)])),
+        );
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Failed(_, ReasonCode::DecodeFailed)),
+            "{target}: {outcome:?}"
+        );
+        assert_eq!(
+            units.take_rendered().map(|r| r.status),
+            Some(400),
+            "{target}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{target}: no gate judged it"
+        );
+        assert!(far.sent().is_empty(), "{target}: never dialled");
+
+        let (seen, g) = gate_granted(None, false);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r.driver.with_hooks(Arc::new(GatedGates {
+            gates: vec![(0, g)],
+        }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            !matches!(outcome, Outcome::Completed),
+            "{target}, gate-first: refused, {outcome:?}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{target}, gate-first: no gate judged it"
+        );
+        assert!(far.sent().is_empty(), "{target}, gate-first: never dialled");
+    }
+}
+
+/// RED (opus review of #1500): at a gate-first screen the first `project` is made before the entry
+/// is bound, so it cannot know a rewrite is configured. An UNMARKED FAULT there (a panicking slot, no
+/// crossing, a FAULT without the mark, a READY answer the host's check refused) over an entry that
+/// carries a rewrite is the shared 500, no hook invoked and nothing dialled, as dev answered it and
+/// as the routed path does. RED before: 400, the unit read as unreadable without the rewrite looked at.
+#[tokio::test]
+async fn a_gate_first_unmarked_fault_with_a_configured_rewrite_is_the_shared_500() {
+    for target in [
+        "/panics",
+        "/no-crossing",
+        "/fault-unmarked",
+        "/broken-answer",
+    ] {
+        let (calls, chain) = counting(|| TransformOutcome::Abstain);
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let driver = r
+            .driver
+            .with_hooks(Arc::new(GatedRewrites { rewrites: chain }));
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+            "{target}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the 500 is rendered");
+        assert_eq!(
+            (rendered.status, rendered.body),
+            (500, shared_500()),
+            "{target}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{target}: no hook ran"
+        );
+        assert!(far.sent().is_empty(), "{target}: never dialled");
+    }
 }

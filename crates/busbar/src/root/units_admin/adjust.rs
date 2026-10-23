@@ -21,7 +21,7 @@
 //! here prices.
 
 use super::AdminAnswer;
-use crate::root::durability::{Durability, Posting, PostingKind, RecordEra};
+use crate::root::durability::{ChainAt, Posting, PostingKind, RecordEra};
 use busbar_contract::count::Count;
 use busbar_core_admin::GovernanceError;
 use busbar_kernel::audit::amend::{
@@ -49,10 +49,11 @@ pub struct RecordedCounts {
 /// carries no counts to correct: a hold, a claim, an overdraft carry, an audit record, or a
 /// figures-era posting written before the chain carried counts.
 ///
-/// Read-only: a replay of the node's own journal, nothing written.
+/// Read-only: a replay of the node's own journal as of the hold `chain` was taken under, read
+/// without the book's lock ([`crate::root::durability::Durability::chain_at`]), nothing written.
 #[must_use]
-pub fn recorded_in(durability: &Durability, amends: &str) -> Option<RecordedCounts> {
-    let Ok(Ok(records)) = durability.chain() else {
+pub fn recorded_in(chain: ChainAt, amends: &str) -> Option<RecordedCounts> {
+    let Ok(Ok(records)) = chain.read() else {
         return None;
     };
     let record = records
