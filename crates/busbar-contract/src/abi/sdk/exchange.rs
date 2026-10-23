@@ -144,6 +144,10 @@ pub struct Exchange {
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
+    /// The handle of the read whose piece the exchange refused, and why: a replay of that read
+    /// refuses again, so the entry that re-issues the close a failure pended on answers the same
+    /// failure (a replayed piece is not applied again, so it cannot refuse on its own).
+    refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
     /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
@@ -187,6 +191,7 @@ impl Exchange {
             head_seen: false,
             applied: 0,
             ended: None,
+            refused_at: None,
             within: String::new(),
             member: None,
             observe: false,
@@ -502,7 +507,10 @@ fn exchange_once(
             state.applied = this + 1;
         }
         let p = got.piece;
-        let applied = apply(state, p, got.len, fresh);
+        let applied = match state.refused_at {
+            Some((at, text)) if at == this => Err(text),
+            _ => apply(state, p, got.len, fresh),
+        };
         // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
         // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
         // the read this entry has yet to apply (the one that pended on the last entry).
@@ -512,6 +520,7 @@ fn exchange_once(
             }
         }
         if let Err(text) = applied {
+            state.refused_at = Some((this, text));
             return failed(text);
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
