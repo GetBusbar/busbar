@@ -7411,7 +7411,7 @@ impl KindIsolationGate {
     /// case that asks about one row (the matrix total, the closure's cargo cross-check) reads it
     /// here rather than running the whole registered gate: the answer is the same row, computed by
     /// the same function over the same mounted census, at the cost of that row alone.
-    pub(super) fn rows_of(
+    fn rows_of(
         &self,
         cx: &Ctx,
         rule: impl Fn(&Ctx, &[CrateInfo], &KindRegistry) -> Vec<Row>,
@@ -7425,7 +7425,7 @@ impl KindIsolationGate {
     }
 
     /// The matrix row exactly as this registration emits it.
-    pub(super) fn matrix_rows(&self, cx: &Ctx) -> Result<Vec<Row>, String> {
+    fn matrix_rows(&self, cx: &Ctx) -> Result<Vec<Row>, String> {
         self.rows_of(cx, |cx, crates, reg| {
             matrix::rule_matrix_rows(cx, crates, reg, self.ship, self.matrix_gating)
         })

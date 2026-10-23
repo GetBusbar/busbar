@@ -156,8 +156,10 @@ fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
     let Ok(manifest) = cx.read(&krate.manifest) else {
         return Vec::new();
     };
+    // A value this reader cannot read is reported by [`manifest_build`]; the default script is
+    // still scanned here, so an unreadable key hides nothing that a missing one would show.
     let named = match package_build(&manifest) {
-        None | Some(BuildKey::On) => Some("build.rs".to_string()),
+        None | Some(BuildKey::On) | Some(BuildKey::Unread(_)) => Some("build.rs".to_string()),
         Some(BuildKey::Off) => None,
         Some(BuildKey::Path(p)) => Some(p),
     };
@@ -187,12 +189,27 @@ fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
     out
 }
 
-/// What a manifest's `package.build` says: on (`true`), off (`false`), or a script path.
+/// THE BUILD SCRIPT A CRATE'S MANIFEST NAMES EXPLICITLY, resolved against the crate: `None` when
+/// the manifest names none (no key, `true`, `false`), `Ok` with the path when it names one, and
+/// `Err` with what stood there when the value is one this reader refuses ([`toml_scalar`]).
+fn manifest_build(cx: &Ctx, krate: &CrateInfo) -> Option<Result<String, String>> {
+    let manifest = cx.read(&krate.manifest).ok()?;
+    match package_build(&manifest)? {
+        BuildKey::Path(p) => Some(Ok(resolve(&krate.dir, &p))),
+        BuildKey::Unread(what) => Some(Err(what)),
+        BuildKey::On | BuildKey::Off => None,
+    }
+}
+
+/// What a manifest's `package.build` says: on (`true`), off (`false`), a script path, or a value
+/// this reader refuses (an escape it does not decode, a multi-line string, no scalar at all),
+/// carried as what stood there so the rule can report it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BuildKey {
     On,
     Off,
     Path(String),
+    Unread(String),
 }
 
 /// THE `package.build` KEY, READ AS TOML WRITES IT (`None` when the manifest does not state it).
@@ -205,8 +222,8 @@ enum BuildKey {
 /// string state with [`multiline_after`] (a `[package]` line inside a `"""` block is string
 /// content), and the value with [`toml_scalar`]. No TOML crate is in this workspace's lock, and
 /// `toml_doc` refuses the inline tables every manifest's dependency tables carry, so this reads
-/// the one key it needs rather than the whole document; a value it cannot read is kept as the
-/// path text it wrote, never dropped, so the script is still looked for.
+/// the one key it needs rather than the whole document; a value it cannot read is
+/// [`BuildKey::Unread`], which the rule reports, never a path guessed from the raw text.
 fn package_build(manifest: &str) -> Option<BuildKey> {
     let mut table: Vec<String> = Vec::new();
     let mut multiline: Option<&'static str> = None;
@@ -247,15 +264,22 @@ fn package_build(manifest: &str) -> Option<BuildKey> {
     found
 }
 
-/// One `build` value: `true`, `false`, or the path a string spells.
+/// One `build` value: `true`, `false`, the path a string spells, or what stood there when it is
+/// none of those this reader can read. NEVER A GUESS: the old fallback kept the raw text as a
+/// path, so `"""` became the path `""` and the script cargo runs was never looked for.
 fn build_value(value: &str) -> BuildKey {
     match toml_scalar(value) {
         Some((Scalar::Bool(true), _)) => BuildKey::On,
         Some((Scalar::Bool(false), _)) => BuildKey::Off,
         Some((Scalar::Str(p), _)) => BuildKey::Path(p),
         None => {
-            let raw = value.split('#').next().unwrap_or("").trim();
-            BuildKey::Path(raw.trim_matches(['"', '\'']).to_string())
+            let t = value.trim_start();
+            let shown: String = t.chars().take(60).collect();
+            if t.starts_with("\"\"\"") || t.starts_with("'''") {
+                BuildKey::Unread(format!("a multi-line string (`{}`)", shown.trim_end()))
+            } else {
+                BuildKey::Unread(format!("`{}`", shown.trim_end()))
+            }
         }
     }
 }
@@ -268,6 +292,11 @@ enum Scalar {
 }
 
 /// The scalar at the head of `s` and the text after it, or `None` when `s` opens with none.
+///
+/// A basic string's escapes are decoded as TOML defines them (`\b \t \n \f \r \" \\`, `\uXXXX`,
+/// `\UXXXXXXXX`); any other escape, and any `\u` that is not a scalar value, is `None`, never a
+/// character kept as written: `"tools/ge\u006E.rs"` is `tools/gen.rs` to cargo, and reading it
+/// as `tools/geu006E.rs` named a file nobody looked for. A multi-line string is `None` too.
 fn toml_scalar(s: &str) -> Option<(Scalar, &str)> {
     let s = s.trim_start();
     if let Some(r) = s.strip_prefix("true") {
@@ -293,9 +322,24 @@ fn toml_scalar(s: &str) -> Option<(Scalar, &str)> {
         match c {
             '"' => return Some((Scalar::Str(out), &r[i + 1..])),
             '\\' => match chars.next()?.1 {
-                'n' => out.push('\n'),
+                'b' => out.push('\u{8}'),
                 't' => out.push('\t'),
-                other => out.push(other),
+                'n' => out.push('\n'),
+                'f' => out.push('\u{c}'),
+                'r' => out.push('\r'),
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                u @ ('u' | 'U') => {
+                    let n = if u == 'u' { 4 } else { 8 };
+                    let hex: String = (0..n)
+                        .map(|_| chars.next().map(|(_, c)| c))
+                        .collect::<Option<String>>()?;
+                    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return None;
+                    }
+                    out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                _ => return None,
             },
             _ => out.push(c),
         }
@@ -676,21 +720,98 @@ fn first_literal(s: &str) -> Option<String> {
     Some(s[open + 1..open + 1 + close].to_string())
 }
 
-/// The text inside a `(…)` group that `s` opens, balanced.
+/// Does a token start at `i`: no identifier character before it, or only a `b` prefix (`br"…"`)?
+fn starts_token(b: &[u8], i: usize) -> bool {
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    match i {
+        0 => true,
+        1 => !ident(b[0]) || b[0] == b'b',
+        _ => !ident(b[i - 1]) || (b[i - 1] == b'b' && !ident(b[i - 2])),
+    }
+}
+
+/// The text inside a `(…)` group that `s` opens, balanced AS RUST READS IT: a paren inside a
+/// comment (`//`, `/* … */`, nested), a string (`"…"`, `r#"…"#`) or a char literal (`'('`) opens
+/// and closes nothing. `None` when the group never closes. A counter that read `/* ( */` as an
+/// open paren found no end to `read_to_string("../x" /* ( */)`, and the caller skipped the call.
 fn balanced(s: &str) -> Option<&str> {
-    let s = s.strip_prefix('(')?;
+    let body = s.strip_prefix('(')?;
+    let b = body.as_bytes();
     let mut depth = 1i32;
-    for (i, c) in s.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'(' => depth += 1,
+            b')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(&s[..i]);
+                    return Some(&body[..i]);
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                i = b[i..]
+                    .iter()
+                    .position(|c| *c == b'\n')
+                    .map_or(b.len(), |n| i + n);
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut nest = 1usize;
+                i += 2;
+                while i < b.len() && nest > 0 {
+                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                        nest += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                        nest -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if nest > 0 {
+                    return None;
+                }
+                continue;
+            }
+            b'r' if starts_token(b, i) && matches!(b.get(i + 1), Some(b'"' | b'#')) => {
+                let hashes = b[i + 1..].iter().take_while(|c| **c == b'#').count();
+                if b.get(i + 1 + hashes) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                let close = format!("\"{}", "#".repeat(hashes));
+                let from = i + 2 + hashes;
+                i = from + body[from..].find(&close)? + close.len();
+                continue;
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                if i >= b.len() {
+                    return None;
+                }
+            }
+            b'\'' => {
+                // A char literal (`'('`, `'\''`, `'\u{28}'`), never a lifetime (`'a`).
+                if b.get(i + 1) == Some(&b'\\') {
+                    let after = b.get(i + 3..).unwrap_or(&[]);
+                    if let Some(n) = after.iter().take(10).position(|c| *c == b'\'') {
+                        i += 3 + n + 1;
+                        continue;
+                    }
+                } else if let Some(n) = body[i + 1..].chars().next() {
+                    if b.get(i + 1 + n.len_utf8()) == Some(&b'\'') {
+                        i += 2 + n.len_utf8();
+                        continue;
+                    }
                 }
             }
             _ => {}
         }
+        i += 1;
     }
     None
 }
@@ -746,12 +867,17 @@ fn build_script_reach(
             let at = cut + p + marker.len();
             cut = at;
             // THE ARGUMENT, NOT THE LINE (Q128). `rest` is the file from this line on, so a path
-            // rustfmt moved onto the next line is still the argument, and the window stops short of
-            // borrowing a literal from the next function.
-            let end = (at + 400..=rest.len())
-                .find(|i| rest.is_char_boundary(*i))
-                .unwrap_or(rest.len());
-            let tail = &rest[at..end];
+            // rustfmt moved onto the next line is still the argument. There is no window: the
+            // argument ends where its paren closes, however long it is, and [`balanced`] reads
+            // comments and literals as Rust does, so it closes neither early nor late and never
+            // borrows a literal from the next function.
+            //
+            // A CALL IT CANNOT CLOSE IS NOT SKIPPED. The line reader before this one read the
+            // line's literals and caught `read_to_string("../x" /* ( */)`; skipping it made that a
+            // regression. So the line's literals after the marker are read instead, and a call
+            // with none is refused as unresolvable. A marker that opens no call at all (prose, a
+            // `use` line, a function passed by name) is read the line reader's way too.
+            let tail = rest.get(at..).unwrap_or("");
             let opened;
             let call: &str = if marker.ends_with('(') {
                 opened = format!("({tail}");
@@ -759,10 +885,23 @@ fn build_script_reach(
             } else {
                 tail.trim_start()
             };
-            let Some(arg) = balanced(call) else {
-                continue;
+            let lits = match balanced(call) {
+                Some(arg) => literals(arg),
+                None => {
+                    let lits = literals(raw.get(at..).unwrap_or(""));
+                    if lits.is_empty() && call.starts_with('(') {
+                        out.push(unresolvable(
+                            rel,
+                            line_no + 1,
+                            &me.name,
+                            marker,
+                            "a call whose argument never closes",
+                        ));
+                        continue;
+                    }
+                    lits
+                }
             };
-            let lits = literals(arg);
             // `concat!(env!("CARGO_MANIFEST_DIR"), "…")` is the crate directory and the path after
             // it — the idiom this module names; `OUT_DIR` is the script's own output.
             let (shown, target) = match lits.first().map(String::as_str) {
@@ -870,22 +1009,20 @@ struct Compiled {
 fn hidden_sources(
     cx: &Ctx,
     scanned: &BTreeSet<String>,
-    files: &[crate::ctx::SourceFile],
+    facts: &[std::sync::Arc<FileFacts>],
     spliced: &[Compiled],
     listed: &BTreeSet<String>,
 ) -> Vec<String> {
-    // Each file's compiled set is a pure function of its path and bytes ([`compiled_in`]): read
-    // across the cores, gathered in walk order.
-    let mut compiled: Vec<Compiled> = Vec::new();
-    for found in crate::par::par_map(files, |f| compiled_in(&f.rel_str(), &f.text)) {
-        compiled.extend(found.iter().cloned());
-    }
+    // Each file's compiled set is a pure function of its path and bytes ([`file_facts`]), read
+    // once by the caller, gathered in walk order.
+    let compiled: Vec<&Compiled> = facts.iter().flat_map(|f| f.compiled.iter()).collect();
 
     // ONE `check-ignore` FOR THE WHOLE COMPILED SET. A tracked path is never reported by git, so
     // what comes back is exactly the dangerous population: a file the compiler opens and no scanner
     // in this repository will ever be handed.
     let asked: Vec<String> = compiled
         .iter()
+        .copied()
         .chain(spliced)
         .flat_map(|c| c.candidates.iter().cloned())
         .collect();
@@ -894,7 +1031,7 @@ fn hidden_sources(
     let mut out = Vec::new();
     let judged = compiled
         .iter()
-        .map(|c| (c, scanned))
+        .map(|c| (*c, scanned))
         .chain(spliced.iter().map(|c| (c, listed)));
     for (c, scanned) in judged {
         for cand in &c.candidates {
@@ -929,30 +1066,87 @@ fn hidden_sources(
     out
 }
 
-/// THE COMPILED SET OF ONE FILE, MEMOISED — a pure function of its path and its bytes.
+/// One include marker ([`INCLUDE_MARKERS`]) as a file writes it: the line, which marker, the byte
+/// offset just past it in the file's text, and whether it stands in CODE rather than in a comment
+/// or a string literal (the blanker keeps one char per char).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MarkerHit {
+    line: usize,
+    marker: usize,
+    at: usize,
+    in_code: bool,
+}
+
+/// EVERYTHING THIS ROW READS OFF ONE FILE THAT DEPENDS ON THE FILE ALONE: its compiled set
+/// ([`read_compiled`]), its `path = …` attributes ([`path_attrs`]) and its include markers
+/// ([`marker_hits`]).
+struct FileFacts {
+    compiled: Vec<Compiled>,
+    attrs: Vec<PathAttr>,
+    hits: Vec<MarkerHit>,
+}
+
+/// ONE FILE'S [`FileFacts`], MEMOISED — a pure function of its path and its bytes.
 ///
 /// The reasoning is `matrix.rs`'s, and so is the arithmetic: every planted case re-runs the whole
-/// gate, a plant changes ONE file, and re-lexing 1 600 of them for each of 120 plants is the
-/// difference between a battery that runs in minutes and one nobody waits for. The key is the path
-/// and the text, because the answer depends on nothing else.
-fn compiled_in(rel: &str, text: &str) -> std::sync::Arc<Vec<Compiled>> {
+/// gate, a plant changes ONE file, and re-lexing every source file under `crates/` for every plant
+/// is what put this battery over its budget. The lexer pass that says whether a marker stands in
+/// code, and the one [`path_attrs`] makes, were both run per file PER RUN; they run once per
+/// distinct file now. The key is the path and the text, because the answer depends on nothing
+/// else: a planted file has other bytes, so it is read afresh, and no case reads another tree's
+/// facts.
+fn file_facts(rel: &str, text: &str) -> std::sync::Arc<FileFacts> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     rel.hash(&mut h);
     text.hash(&mut h);
     let key = h.finish();
-    static MEMO: std::sync::OnceLock<
-        std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<Compiled>>>>,
-    > = std::sync::OnceLock::new();
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<FileFacts>>>> =
+        std::sync::OnceLock::new();
     let memo = MEMO.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
     if let Some(hit) = memo.lock().ok().and_then(|m| m.get(&key).cloned()) {
         return hit;
     }
-    let built = std::sync::Arc::new(read_compiled(rel, text));
+    let attrs = path_attrs(text);
+    let built = std::sync::Arc::new(FileFacts {
+        compiled: read_compiled(rel, text, &attrs),
+        hits: marker_hits(text),
+        attrs,
+    });
     if let Ok(mut m) = memo.lock() {
         m.insert(key, built.clone());
     }
     built
+}
+
+/// Every [`INCLUDE_MARKERS`] occurrence in `text`, off the RAW line (the path is a string literal
+/// the blanker would erase), with whether it stands in code.
+fn marker_hits(text: &str) -> Vec<MarkerHit> {
+    let mut out = Vec::new();
+    let mut lex = crate::scan::LexState::default();
+    let mut line_start = 0usize;
+    for (line, raw) in text.lines().enumerate() {
+        let code = crate::scan::blank_code(raw, &mut lex);
+        for (marker, (needle, _, _)) in INCLUDE_MARKERS.iter().enumerate() {
+            let mut cut = 0usize;
+            while let Some(p) = raw[cut..].find(needle) {
+                let in_code = code
+                    .chars()
+                    .skip(raw[..cut + p].chars().count())
+                    .take(needle.chars().count())
+                    .eq(needle.chars());
+                cut += p + needle.len();
+                out.push(MarkerHit {
+                    line,
+                    marker,
+                    at: line_start + cut,
+                    in_code,
+                });
+            }
+        }
+        line_start += raw.len() + 1;
+    }
+    out
 }
 
 /// One `path = …` an attribute writes: the line the `path` key sits on, the line the attribute
@@ -1099,11 +1293,11 @@ fn literal_at(raw: &[char], at: usize) -> Result<String, String> {
     Err(format!("`path = {}`", shown.trim()))
 }
 
-fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
+fn read_compiled(rel: &str, text: &str, attrs: &[PathAttr]) -> Vec<Compiled> {
     let mut compiled: Vec<Compiled> = Vec::new();
-    let attrs: BTreeMap<usize, Option<String>> = path_attrs(text)
-        .into_iter()
-        .map(|a| (a.end_line, a.path.ok()))
+    let attrs: BTreeMap<usize, Option<String>> = attrs
+        .iter()
+        .map(|a| (a.end_line, a.path.clone().ok()))
         .collect();
     {
         let root_dir = module_dir(rel);
@@ -1499,25 +1693,52 @@ pub fn rule_inputs(
     // THE BUILD SCRIPTS THE MANIFESTS NAME, and the modules they declare (Q128), of the files the
     // walk found; the crates that have one, for `OUT_DIR`.
     let walked: BTreeSet<String> = files.iter().map(|f| f.rel_str()).collect();
-    let build_scripts: BTreeSet<String> = crates
+    let scripts: Vec<(&CrateInfo, Vec<String>)> = crates
         .iter()
-        .flat_map(|c| build_scripts_of(cx, c))
-        .filter(|s| walked.contains(s))
+        .map(|c| (c, build_scripts_of(cx, c)))
         .collect();
-    let build_dirs: BTreeSet<&str> = crates
+    let build_scripts: BTreeSet<String> = scripts
         .iter()
-        .filter(|c| {
-            build_scripts_of(cx, c)
-                .first()
-                .is_some_and(|s| walked.contains(s))
-        })
-        .map(|c| c.dir.as_str())
+        .flat_map(|(_, s)| s.iter())
+        .filter(|s| walked.contains(*s))
+        .cloned()
         .collect();
+    let build_dirs: BTreeSet<&str> = scripts
+        .iter()
+        .filter(|(_, s)| s.first().is_some_and(|s| walked.contains(s)))
+        .map(|(c, _)| c.dir.as_str())
+        .collect();
+    // A BUILD SCRIPT THE MANIFEST NAMES IS READ, OR IT IS RED. The filter above drops the module
+    // candidates a `mod x;` did not use (`x.rs` or `x/mod.rs`, one of which is never there); it
+    // must not drop the script itself. A `build` value this reader cannot read, or a path the walk
+    // never yields, is a build script cargo runs and no rule here has scanned.
+    for c in crates {
+        match manifest_build(cx, c) {
+            Some(Err(what)) => offenders.push(format!(
+                "unreadable-build-script\t{}\t{}'s `[package] build` is {what}, which this gate \
+                 cannot read as a path. Cargo runs the script it names with the whole checkout \
+                 under it, and a script nobody can name is one no rule has scanned. Write the \
+                 path as a one-line string with no escape this reader refuses. {MAKE_A_NEW_KIND}",
+                c.manifest, c.name
+            )),
+            Some(Ok(script)) if !walked.contains(&script) => offenders.push(format!(
+                "unscanned-build-script\t{}\t{}'s `[package] build` names `{script}`, and the \
+                 source walk yields no such file. Cargo runs that script; a build script outside \
+                 the scanned set is one no rule here has read. Move it under the crate's own \
+                 scanned source, or name the file that is there. {MAKE_A_NEW_KIND}",
+                c.manifest, c.name
+            )),
+            _ => {}
+        }
+    }
     // A module only `cfg(test)` compiles is a test target ([`is_test_file`]).
     let test_only = super::test_only_modules(&files);
+    // Each file's facts are a pure function of its path and bytes ([`file_facts`]): read across
+    // the cores, in walk order.
+    let facts = crate::par::par_map(&files, |f| file_facts(&f.rel_str(), &f.text));
     let mut scanned = 0usize;
     let mut spliced: Vec<Compiled> = Vec::new();
-    for f in &files {
+    for (f, facts) in files.iter().zip(&facts) {
         let rel = f.rel_str();
         let Some(dir) = owning_dir(&rel) else {
             continue;
@@ -1527,12 +1748,11 @@ pub fn rule_inputs(
         };
         scanned += 1;
         let here = dir_of(&rel);
-        let mut line_start = 0usize;
-        let mut lex = crate::scan::LexState::default();
-        for (line_no, raw) in f.text.lines().enumerate() {
-            // THE ATTRIBUTE IS READ OFF THE RAW LINE. `blank_literals` would erase the very string
-            // this rule is about — which is exactly why `#[path]` was invisible to `:vocab`.
-            if build_scripts.contains(&rel) {
+        // THE ATTRIBUTE IS READ OFF THE RAW LINE. `blank_literals` would erase the very string
+        // this rule is about — which is exactly why `#[path]` was invisible to `:vocab`.
+        if build_scripts.contains(&rel) {
+            let mut line_start = 0usize;
+            for (line_no, raw) in f.text.lines().enumerate() {
                 offenders.extend(build_script_reach(
                     &by_dir,
                     me,
@@ -1541,92 +1761,81 @@ pub fn rule_inputs(
                     raw,
                     f.text.get(line_start..).unwrap_or(""),
                 ));
+                line_start += raw.len() + 1;
             }
-            let code = crate::scan::blank_code(raw, &mut lex);
-            for (marker, label, what) in INCLUDE_MARKERS {
-                let mut cut = 0usize;
-                while let Some(p) = raw[cut..].find(marker) {
-                    let at = line_start + cut + p + marker.len();
-                    // IN CODE, OR IN A COMMENT OR A LITERAL: the blanker keeps one char per char.
-                    let in_code = code
-                        .chars()
-                        .skip(raw[..cut + p].chars().count())
-                        .take(marker.chars().count())
-                        .eq(marker.chars());
-                    cut += p + marker.len();
-                    // THE ARGUMENT, NOT THE REST OF THE FILE. Far enough to cross the two or three
-                    // lines a wrapped `concat!(` spans, and no further, so a marker that carries no
-                    // argument cannot borrow a literal from the next function.
-                    let end = (at + 400..=f.text.len())
-                        .find(|i| f.text.is_char_boundary(*i))
-                        .unwrap_or(f.text.len());
-                    let has_build_script = build_dirs.contains(me.dir.as_str());
-                    for target in
-                        include_targets(&f.text[at..end], &me.dir, &here, has_build_script, in_code)
-                    {
-                        // A PATH THIS GATE CANNOT RESOLVE IS RED, NOT SKIPPED. Splicing is not a
-                        // spelling this row is allowed to read past: an input it cannot resolve is
-                        // one it cannot score, and the softest possible failure of the rule that
-                        // matters most is to resolve a path the compiler never opens and say
-                        // nothing about the one it does.
-                        let target = match target {
-                            Ok(t) => t,
-                            Err(built_with) => {
-                                offenders.push(unresolvable(
-                                    &rel,
-                                    line_no + 1,
-                                    &me.name,
-                                    marker,
-                                    &built_with,
-                                ));
-                                continue;
-                            }
-                        };
-                        // `OUT_DIR` is the build script's output, scored by `build_script_reach`.
-                        if in_code
-                            && *marker != "#[path"
-                            && by_dir.keys().any(|d| inside(d, &target))
-                            && !target.starts_with(&format!("{}/OUT_DIR/", me.dir))
-                        {
-                            spliced.push(Compiled {
-                                at: format!("{rel}:{}", line_no + 1),
-                                how: format!("{marker}(\"{target}\")"),
-                                candidates: vec![target.clone()],
-                            });
-                        }
-                        let Some(theirs) = foreign_owner(
-                            &by_dir,
-                            me,
-                            &target,
-                            is_test_file(&rel, &me.dir, &test_only),
-                        ) else {
-                            continue;
-                        };
-                        offenders.push(reach(
-                            label,
+        }
+        let has_build_script = build_dirs.contains(me.dir.as_str());
+        for hit in &facts.hits {
+            let (marker, label, what) = INCLUDE_MARKERS[hit.marker];
+            let (at, line_no, in_code) = (hit.at, hit.line, hit.in_code);
+            // THE ARGUMENT, NOT THE REST OF THE FILE. Far enough to cross the two or three lines a
+            // wrapped `concat!(` spans, and no further, so a marker that carries no argument cannot
+            // borrow a literal from the next function.
+            let end = (at + 400..=f.text.len())
+                .find(|i| f.text.is_char_boundary(*i))
+                .unwrap_or(f.text.len());
+            for target in
+                include_targets(&f.text[at..end], &me.dir, &here, has_build_script, in_code)
+            {
+                // A PATH THIS GATE CANNOT RESOLVE IS RED, NOT SKIPPED. Splicing is not a spelling
+                // this row is allowed to read past: an input it cannot resolve is one it cannot
+                // score, and the softest possible failure of the rule that matters most is to
+                // resolve a path the compiler never opens and say nothing about the one it does.
+                let target = match target {
+                    Ok(t) => t,
+                    Err(built_with) => {
+                        offenders.push(unresolvable(
                             &rel,
                             line_no + 1,
                             &me.name,
-                            what,
-                            &target,
-                            &theirs.name,
+                            marker,
+                            &built_with,
                         ));
+                        continue;
                     }
+                };
+                // `OUT_DIR` is the build script's output, scored by `build_script_reach`.
+                if in_code
+                    && marker != "#[path"
+                    && by_dir.keys().any(|d| inside(d, &target))
+                    && !target.starts_with(&format!("{}/OUT_DIR/", me.dir))
+                {
+                    spliced.push(Compiled {
+                        at: format!("{rel}:{}", line_no + 1),
+                        how: format!("{marker}(\"{target}\")"),
+                        candidates: vec![target.clone()],
+                    });
                 }
+                let Some(theirs) = foreign_owner(
+                    &by_dir,
+                    me,
+                    &target,
+                    is_test_file(&rel, &me.dir, &test_only),
+                ) else {
+                    continue;
+                };
+                offenders.push(reach(
+                    label,
+                    &rel,
+                    line_no + 1,
+                    &me.name,
+                    what,
+                    &target,
+                    &theirs.name,
+                ));
             }
-            line_start += raw.len() + 1;
         }
         // EVERY SPELLING OF `path = …` (row 159, XC2#7): `#[ path = … ]` and `#[cfg_attr(…, path =
         // …)]` reach another crate's source exactly as `#[path = …]` does, and a value no reader
         // can name is refused. A plain `#[path = …]` is also read by the marker loop above; the
         // two findings are one line and the list is de-duplicated below.
-        for a in path_attrs(&f.text) {
-            match a.path {
+        for a in &facts.attrs {
+            match &a.path {
                 Err(what) => {
-                    offenders.push(unresolvable(&rel, a.line + 1, &me.name, "#[path", &what))
+                    offenders.push(unresolvable(&rel, a.line + 1, &me.name, "#[path", what))
                 }
                 Ok(p) => {
-                    let target = resolve(&here, &p);
+                    let target = resolve(&here, p);
                     if let Some(theirs) = foreign_owner(
                         &by_dir,
                         me,
@@ -1671,7 +1880,7 @@ pub fn rule_inputs(
             BTreeSet::new()
         }
     };
-    offenders.extend(hidden_sources(cx, &scan_set, &files, &spliced, &listed));
+    offenders.extend(hidden_sources(cx, &scan_set, &facts, &spliced, &listed));
 
     // ── 2 and 5. THE PATHS AND THE NAMES A MANIFEST WRITES ───────────────────────────────────────
     for c in crates {
@@ -2393,5 +2602,175 @@ mod q128_tests {
                 "crates/busbar-transport-stdio/tools/gen.rs:2",
             ],
         );
+    }
+
+    // ── a call the reader could not close, and the `build` value it misread ────────────────
+
+    /// A paren inside a comment opens nothing. The old counter read `/* ( */` as an open paren,
+    /// found no end to the call and skipped it; the line reader on dev had caught it.
+    #[test]
+    fn a_build_script_read_with_a_paren_in_a_comment_is_reported() {
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/build.rs"),
+            "fn main() {\n    let _ = std::fs::read_to_string(\"../busbar-plane-llm/src/lib.rs\" /* ( */);\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/build.rs:2",
+                "busbar-plane-llm",
+            ],
+        );
+    }
+
+    /// An argument longer than the 400-character window the reader once cut at: the call closes
+    /// where its paren does, however far that is.
+    #[test]
+    fn a_build_script_read_whose_argument_outruns_the_old_window_is_reported() {
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/build.rs"),
+            format!(
+                "fn main() {{\n    let _ = std::fs::read_to_string(\n        // {}\n        \"../busbar-plane-llm/src/lib.rs\",\n    );\n}}\n",
+                "x".repeat(450)
+            ),
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/build.rs:2",
+                "busbar-plane-llm",
+            ],
+        );
+    }
+
+    /// `n` is `n` to cargo: the script is `tools/gen.rs`, and it is held to the rule. The
+    /// reader once kept the escape as written, named `tools/geu006E.rs`, and the walk filter
+    /// dropped the name it could not find.
+    #[test]
+    fn a_build_script_named_with_a_unicode_escape_is_held_to_the_rule() {
+        let base = planted(Overlay::new());
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/Cargo.toml"),
+            wire_manifest(&base).replacen(
+                "[package]\n",
+                "[package]\nbuild = \"tools/ge\\u006E.rs\"\n",
+                1,
+            ),
+        );
+        ov.set(
+            format!("{WIRE}/tools/gen.rs"),
+            "fn main() {\n    let _ = std::fs::read_dir(\"..\");\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/tools/gen.rs:2",
+            ],
+        );
+    }
+
+    /// A multi-line `build = """…"""` is refused by name. The reader once read it as the path
+    /// `""`, which resolved to the crate directory and was filtered out.
+    #[test]
+    fn a_build_script_named_by_a_multiline_string_is_refused() {
+        let base = planted(Overlay::new());
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/Cargo.toml"),
+            wire_manifest(&base).replacen(
+                "[package]\n",
+                "[package]\nbuild = \"\"\"\ntools/gen.rs\"\"\"\n",
+                1,
+            ),
+        );
+        ov.set(
+            format!("{WIRE}/tools/gen.rs"),
+            "fn main() {\n    let _ = std::fs::read_dir(\"..\");\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "unreadable-build-script",
+                "crates/busbar-transport-stdio/Cargo.toml",
+                "multi-line",
+            ],
+        );
+    }
+
+    /// A build script the manifest names and the walk never yields is RED, not filtered out.
+    #[test]
+    fn a_named_build_script_the_walk_cannot_find_is_reported() {
+        let base = planted(Overlay::new());
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/Cargo.toml"),
+            wire_manifest(&base).replacen(
+                "[package]\n",
+                "[package]\nbuild = \"tools/absent.rs\"\n",
+                1,
+            ),
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "unscanned-build-script",
+                "crates/busbar-transport-stdio/tools/absent.rs",
+            ],
+        );
+    }
+
+    /// TOML's escapes decode; one this reader does not decode, and a multi-line string, refuse.
+    #[test]
+    fn a_build_value_decodes_its_escapes_or_is_refused() {
+        use super::{package_build, BuildKey};
+        let p = |s: &str| Some(BuildKey::Path(s.to_string()));
+        assert_eq!(
+            package_build("[package]\nbuild = \"tools/ge\\u006E.rs\"\n"),
+            p("tools/gen.rs")
+        );
+        assert_eq!(
+            package_build("[package]\nbuild = \"tools/ge\\U0000006E.rs\"\n"),
+            p("tools/gen.rs")
+        );
+        assert_eq!(
+            package_build("[package]\nbuild = \"a\\\\b\\\"c.rs\"\n"),
+            p("a\\b\"c.rs")
+        );
+        assert!(matches!(
+            package_build("[package]\nbuild = \"tools/\\x41.rs\"\n"),
+            Some(BuildKey::Unread(_))
+        ));
+        assert!(matches!(
+            package_build("[package]\nbuild = \"tools/\\uD800.rs\"\n"),
+            Some(BuildKey::Unread(_))
+        ));
+        assert!(matches!(
+            package_build("[package]\nbuild = '''\ntools/gen.rs'''\n"),
+            Some(BuildKey::Unread(w)) if w.contains("multi-line")
+        ));
+    }
+
+    /// The argument reader closes where Rust does: not inside a comment, a string or a char.
+    #[test]
+    fn the_argument_reader_closes_where_rust_does() {
+        use super::balanced;
+        assert_eq!(balanced("(\"a\" /* ( */)"), Some("\"a\" /* ( */"));
+        assert_eq!(balanced("(\"a(\")"), Some("\"a(\""));
+        assert_eq!(balanced("(r#\"a)\"#)"), Some("r#\"a)\"#"));
+        assert_eq!(balanced("('(', x)"), Some("'(', x"));
+        assert_eq!(balanced("('\\'', x)"), Some("'\\'', x"));
+        assert_eq!(balanced("(x // )\n)"), Some("x // )\n"));
+        assert_eq!(balanced("(\"a\" /* ( */"), None);
     }
 }
