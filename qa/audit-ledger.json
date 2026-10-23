@@ -741,7 +741,7 @@
    "paths": [
     "crates/busbar-core-admin/src"
    ],
-   "tree_hash": "90f2b67a445df20ccc2083aea274fc97f1213f53e9495be02286027ce54674b0",
+   "tree_hash": "d9624046a78132782237edc337e363c12c29c2487b27f7ec1e93536518f01caa",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -753,7 +753,7 @@
    },
    "report": "The operator surface still reaches the process's rate history through a static seam of its own, still presents itself to the registry as a plane-kind plugin, and still sums money figures itself. Key rotation ignores the configured lifetime ceiling, and an empty admin chain is refused where the published release applied it. Several reads and one write still block async workers, the error envelope splices caller text into JSON unescaped, and the unit tests link a real plane and auth plugin. Read fully except the generated verb table, sampled.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "85e59fc5fcc5a859aa4554354dbf6c1fbd14ac6f",
    "exclude": [
     "crates/busbar-core-admin/src/tests"
    ],
