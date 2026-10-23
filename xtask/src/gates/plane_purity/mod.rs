@@ -186,6 +186,10 @@ pub const NEUTRAL_KINDS: &[&str] = &["kernel", "contract", "plugin-tooling", "cl
 /// one scanner, four passes, and the accounting the zero-file guard reports.
 pub struct Measurement {
     pub neutral_roots: Vec<String>,
+    /// THE NEUTRAL WALK ITSELF: every `.rs` under the present neutral roots, as the forward scan
+    /// read it. The freeze witness measures the same population, so it reads this list rather than
+    /// walking the same roots a second time on every run.
+    pub neutral: Vec<SourceFile>,
     pub plane_roots: Vec<String>,
     /// `(crates/<dir>, why)` for every crate the census cannot classify: in no population, so in no
     /// scan, and RED on [`ROW_ROOTS`].
@@ -367,6 +371,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         plane_roots,
         unclassified: census.unclassified,
         pragmas: claims::collect(&neutral),
+        neutral,
         vocab,
         ir_types,
         ir_declared,
@@ -689,14 +694,11 @@ impl Gate for PlanePurityGate {
         // Every PRESENT neutral root: a missing one is `ROW_ROOTS`'s finding, and handing it to
         // the walk would turn this row into "could not be scanned" instead of the count it owns.
         // THE FREEZE WALKS THE SAME DERIVED POPULATION AND IS HELD TO THE SAME FLOOR. It was `1`.
-        let freeze_roots: Vec<String> = m
-            .neutral_roots
-            .iter()
-            .filter(|r| root_present(cx, r))
-            .cloned()
-            .collect();
-        match cx.walk(&WalkSpec::new(freeze_roots).ext("rs").allow_empty()) {
-            _ if m.ir_declared < freeze::DECLARED_FLOOR => rows.push(Row::fail(
+        // It is the forward scan's own walk (the present neutral roots, `.rs`, empty allowed), read
+        // once in `measure`: walking the same roots again here doubled every run's reads.
+        let core: &[SourceFile] = &m.neutral;
+        if m.ir_declared < freeze::DECLARED_FLOOR {
+            rows.push(Row::fail(
                 ROW_FREEZE,
                 "the LLM IR family could not be derived",
                 format!(
@@ -706,8 +708,9 @@ impl Gate for PlanePurityGate {
                     m.ir_declared,
                     freeze::DECLARED_FLOOR
                 ),
-            )),
-            Ok(core) if core.len() < NEUTRAL_FLOOR => rows.push(Row::fail(
+            ));
+        } else if core.len() < NEUTRAL_FLOOR {
+            rows.push(Row::fail(
                 ROW_FREEZE,
                 "core could not be scanned for concrete LLM-family types",
                 format!(
@@ -715,29 +718,23 @@ impl Gate for PlanePurityGate {
                      walk is not a freeze met",
                     core.len()
                 ),
-            )),
-            Ok(core) => {
-                let homonyms = freeze::neutral_homonyms(&core, &m.neutral_roots, &m.ir_types);
-                let needles: Vec<String> = m
-                    .ir_types
-                    .iter()
-                    .filter(|t| !homonyms.contains(t))
-                    .cloned()
-                    .collect();
-                let mut row = freeze_row(&freeze::measure(&core, &m.neutral_roots, &needles));
-                if !homonyms.is_empty() {
-                    row.detail.push_str(&format!(
-                        " homonyms={} (bound by the neutral set itself, not counted)",
-                        homonyms.join(",")
-                    ));
-                }
-                rows.push(row);
+            ));
+        } else {
+            let homonyms = freeze::neutral_homonyms(core, &m.neutral_roots, &m.ir_types);
+            let needles: Vec<String> = m
+                .ir_types
+                .iter()
+                .filter(|t| !homonyms.contains(t))
+                .cloned()
+                .collect();
+            let mut row = freeze_row(&freeze::measure(core, &m.neutral_roots, &needles));
+            if !homonyms.is_empty() {
+                row.detail.push_str(&format!(
+                    " homonyms={} (bound by the neutral set itself, not counted)",
+                    homonyms.join(",")
+                ));
             }
-            Err(e) => rows.push(Row::fail(
-                ROW_FREEZE,
-                "core could not be scanned for concrete LLM-family types",
-                e.to_string(),
-            )),
+            rows.push(row);
         }
         Verdict::of(rows)
     }
