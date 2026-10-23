@@ -827,7 +827,7 @@ pub struct TestApp {
     admin_modules: Option<crate::auth::AdminAuthChain>,
     /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
     /// drives `GET /auth/token` populates this with a test login module.
-    login_methods: Option<crate::auth::token::LoginMethods>,
+    login_methods: Option<crate::auth::login::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
     /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
@@ -1344,12 +1344,12 @@ impl TestApp {
     ) -> Self {
         let lm = self
             .login_methods
-            .get_or_insert_with(|| crate::auth::token::LoginMethods {
+            .get_or_insert_with(|| crate::auth::login::LoginMethods {
                 methods: indexmap::IndexMap::new(),
             });
         lm.methods.insert(
             name.to_string(),
-            crate::auth::token::LoginMethod {
+            crate::auth::login::LoginMethod {
                 module: calls,
                 has_button,
                 issuer: None,
@@ -1918,7 +1918,7 @@ impl TestApp {
             },
             login_methods: std::sync::Arc::new(
                 self.login_methods
-                    .unwrap_or_else(crate::auth::token::LoginMethods::empty),
+                    .unwrap_or_else(crate::auth::login::LoginMethods::empty),
             ),
             public_url: self.public_url,
             // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /

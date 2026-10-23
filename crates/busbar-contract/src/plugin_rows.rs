@@ -147,6 +147,11 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     /// rebuild).
     fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String;
 
+    /// The secret reference keys the row `name_or_alias` resolves to states in its Statement
+    /// (`secret_refs`): the settings keys the loader lifts out and lends as secret blobs. Empty when
+    /// the row resolves to nothing, states none, or states a Statement that does not read back.
+    fn secret_slots(&self, name_or_alias: &str) -> Vec<String>;
+
     /// The rows as the composition root's own type, for the root's per-kind axes over them.
     fn as_any(&self) -> &dyn Any;
 
