@@ -105,38 +105,44 @@ leaf_op! {
     }
 }
 
+/// A request or answer member the Bedrock InvokeModel writers do not send, DROPPED WITH A WARN
+/// (the one drop path, `codec::drops`). These writers send exactly the members v1.5.5 sent
+/// (architect ruling 2026-10-23 R-1: customer-visible behaviour stays v1.5.5's; LLM2#7). Carrying
+/// more put new bytes on the far end's wire: an OpenAI `quality` (`hd`, `high`, `auto`) or size
+/// is off Titan's vocabulary (`standard|premium`), so a request 1.5.5 served could be refused
+/// upstream with a 400.
+fn invoke_drop(name: &'static str) {
+    crate::codec::drops::writer_drop!(
+        crate::codec::drops::member(name),
+        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+        [member = name,],
+        "Bedrock InvokeModel: dropping `{name}`, a member v1.5.5 never sent on this operation \
+         (it is not carried)"
+    );
+}
+
 /// IR → Titan image request wire (the body of [`BedrockImage::write_request`], moved behind the
-/// `(image, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+/// `(image, bedrock)` key — G6 A4b option-a). Byte-identical to v1.5.5's write (v1.5.5
+/// `crates/busbar/src/handlers/bedrock.rs:121-131`): `taskType`, the prompt `text` and
+/// `numberOfImages`, nothing else. Every other generation control the IR carries (a negative
+/// prompt, a seed, a guidance scale, a size, a quality tier) is dropped with a warn
+/// ([`invoke_drop`]).
 pub fn write_image_request(r: &crate::codec::ir::image::ImageReq) -> Bytes {
-    let mut body = json!({
+    let body = json!({
         "taskType": "TEXT_IMAGE",
         (super::TEXT_TO_IMAGE_PARAMS): { (keys::TEXT): r.prompt.clone().unwrap_or_default() },
         (super::IMAGE_GENERATION_CONFIG): { (super::NUMBER_OF_IMAGES): r.n.unwrap_or(1) },
     });
-    // Re-emit the generation controls `read_image_request` captures, in Titan's native shape, so
-    // they survive egress instead of being dropped (round-trip loss). `negativeText` rides
-    // `textToImageParams`; `seed` and `cfgScale` ride `imageGenerationConfig` (Titan's own
-    // TextToImageParams / ImageGenerationConfig layout). Emitted only when present so a request
-    // that never carried them gains no fabricated field.
-    if let Some(neg) = &r.negative_prompt {
-        body[super::TEXT_TO_IMAGE_PARAMS][super::NEGATIVE_TEXT] = json!(neg);
-    }
-    if let Some(seed) = r.seed {
-        body[super::IMAGE_GENERATION_CONFIG][keys::SEED] = json!(seed);
-    }
-    if let Some(cfg) = r.guidance_scale {
-        body[super::IMAGE_GENERATION_CONFIG][super::CFG_SCALE] = json!(cfg);
-    }
-    // Titan's ImageGenerationConfig takes explicit `width`/`height` (from the IR's pixel geometry)
-    // and a `quality` (standard|premium) — both Titan-native. The old writer dropped them, so an
-    // openai->bedrock image request lost its size and quality tier. Only an explicit W×H is emitted
-    // (Titan has no `auto`); `quality` is carried verbatim.
-    if let Some(crate::codec::ir::image::ImageSize::Wh { width, height }) = r.size {
-        body[super::IMAGE_GENERATION_CONFIG][super::WIDTH] = json!(width);
-        body[super::IMAGE_GENERATION_CONFIG][super::HEIGHT] = json!(height);
-    }
-    if let Some(q) = &r.quality {
-        body[super::IMAGE_GENERATION_CONFIG][keys::QUALITY] = json!(q);
+    for (name, present) in [
+        ("negative_prompt", r.negative_prompt.is_some()),
+        ("seed", r.seed.is_some()),
+        ("guidance_scale", r.guidance_scale.is_some()),
+        ("size", r.size.is_some()),
+        ("quality", r.quality.is_some()),
+    ] {
+        if present {
+            invoke_drop(name);
+        }
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -202,12 +208,11 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     if let Some(d) = r.dimensions {
         body[keys::DIMENSIONS] = json!(d);
     }
-    // Titan v2 embeddings takes a top-level `normalize` boolean, which `read_embeddings_request`
-    // captures — emit it when present so it survives egress instead of being dropped (round-trip
-    // loss). Titan's own default is `true`, so omit the key when the request never set it rather
-    // than fabricate a value.
-    if let Some(n) = r.normalize {
-        body[super::NORMALIZE] = json!(n);
+    // `inputText` and `dimensions` only, as v1.5.5 wrote them (v1.5.5
+    // `crates/busbar/src/handlers/bedrock.rs:196-228`): a `normalize` the IR carries is dropped
+    // with a warn ([`invoke_drop`]), and Titan applies its own default.
+    if r.normalize.is_some() {
+        invoke_drop("normalize");
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -261,10 +266,11 @@ pub fn write_rerank_request(r: &crate::codec::ir::rerank::RerankReq) -> Bytes {
     if let Some(n) = r.top_n {
         body[keys::TOP_N] = json!(n);
     }
-    // Carry `return_documents` so a rerank hop into Bedrock echoes the ranked text (shared with the
-    // Cohere rerank surface, whose response shape Bedrock mirrors).
-    if let Some(rd) = r.return_documents {
-        body[keys::RETURN_DOCUMENTS] = json!(rd);
+    // `query`, `documents`, `api_version` and `top_n` only, as v1.5.5 wrote them (v1.5.5
+    // `crates/busbar/src/handlers/bedrock.rs:311-324`): a `return_documents` the IR carries is
+    // dropped with a warn ([`invoke_drop`]).
+    if r.return_documents.is_some() {
+        invoke_drop("return_documents");
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -272,17 +278,16 @@ pub fn write_rerank_request(r: &crate::codec::ir::rerank::RerankReq) -> Bytes {
 /// IR → bedrock rerank response wire (the body of [`BedrockRerank::write_response`], moved behind the
 /// `(rerank, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_rerank_response(r: &crate::codec::ir::rerank::RerankResp) -> WireBody {
+    // `index` and `relevance_score` per result, and the `id`, as v1.5.5 wrote them (v1.5.5
+    // `crates/busbar/src/handlers/bedrock.rs:334-348`): a ranked `document` the IR carries is
+    // dropped with a warn ([`invoke_drop`]).
+    if r.results.iter().any(|x| x.document.is_some()) {
+        invoke_drop("document");
+    }
     let results: Vec<Value> = r
         .results
         .iter()
-        .map(|x| {
-            let mut o = json!({"index": x.index, "relevance_score": x.relevance_score});
-            // Echo the ranked document (Cohere/Bedrock `{text}` shape) when present.
-            if let Some(doc) = &x.document {
-                o[keys::DOCUMENT] = json!({ (keys::TEXT): doc });
-            }
-            o
-        })
+        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
         .collect();
     let mut body = json!({ (keys::RESULTS): results });
     if let Some(id) = &r.id {
@@ -421,6 +426,21 @@ pub fn read_embeddings_request(
     })
 }
 
+/// One billed usage count that is present and unreadable, REFUSED ON ITS OWN (ARCHITECT ruling
+/// 2026-10-15, the per-field rule `usage_count::read_usage` holds for the Converse table): said
+/// loudly, it bills nothing, nothing stands in for it, and the answer it rode on is served. v1.5.5
+/// read the Titan count as `.and_then(Value::as_u64)` and served every such answer; refusing the
+/// whole answer over one count was a 500 with no usage where 1.5.5 delivered it.
+fn refused_count(unreadable: &crate::codec::usage_count::UnreadableCount) {
+    tracing::warn!(
+        protocol = super::VENDOR_NAME,
+        field = unreadable.field,
+        spelling = %unreadable.spelling,
+        "usage count is present but unreadable: REFUSED, it bills nothing and is never read as \
+         zero (#42, #81); the answer is served and the readable counts bill as stated"
+    );
+}
+
 /// Wire -> concrete `EmbeddingsResp` parse, extracted from the `OperationHandler::read_response`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
@@ -440,11 +460,16 @@ pub fn read_embeddings_response(
             ),
         );
     }
-    // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
-    // count REFUSES rather than reading as "no usage reported".
+    // BILLED COUNT: absent or `null` is no usage (unchanged); an UNREADABLE one is refused on its
+    // own (`refused_count`): it bills nothing and the vector is served. That is v1.5.5's figure for
+    // the body: `.and_then(Value::as_u64).map(..)` read no usage (v1.5.5
+    // `crates/busbar/src/handlers/bedrock.rs:243-249`).
     let usage =
         crate::codec::usage_count::billed_count_opt(Some(&v), super::INPUT_TEXT_TOKEN_COUNT)
-            .map_err(|e| CodecError::Malformed(e.to_string()))?
+            .unwrap_or_else(|unreadable| {
+                refused_count(&unreadable);
+                None
+            })
             .map(|n| busbar_contract::billing::TokenUsage {
                 input: n,
                 ..Default::default()
@@ -506,12 +531,16 @@ pub fn read_rerank_response(
         results: crate::codec::rerank_wire::read_results(v.get(keys::RESULTS)),
         // A Bedrock-hosted Cohere rerank model answers in Cohere's shape; the search units it billed
         // (`meta.billed_units.search_units`) are read EXACTLY, as the Cohere reader reads them. A body
-        // without them stays the flat marker — nothing is estimated.
+        // without them stays the flat marker — nothing is estimated. An UNREADABLE count is refused
+        // on its own (`refused_count`): the ranking is served on the flat marker.
         search_units: crate::codec::usage_count::billed_count_opt(
             v.get("meta").and_then(|m| m.get("billed_units")),
             "search_units",
         )
-        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+        .unwrap_or_else(|unreadable| {
+            refused_count(&unreadable);
+            None
+        }),
         ..Default::default()
     })
 }

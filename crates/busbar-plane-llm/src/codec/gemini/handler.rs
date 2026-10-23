@@ -4,13 +4,14 @@
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
 use super::{
-    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_BYTES_BASE64_ENCODED, FIELD_CANDIDATES,
-    FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON, FIELD_GENERATE_CONTENT,
-    FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA, FIELD_INLINE_DATA_SNAKE,
-    FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT, FIELD_OUTPUT_DIMENSIONALITY,
-    FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREDICTIONS, FIELD_PROMPT_TOKEN_COUNT,
-    FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT, FIELD_SAMPLE_IMAGE_SIZE,
-    FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT, FIELD_USAGE_METADATA, FIELD_VALUES,
+    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_BYTES_BASE64_ENCODED, FIELD_CACHED_CONTENT_TOKEN_COUNT,
+    FIELD_CANDIDATES, FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON,
+    FIELD_GENERATE_CONTENT, FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA,
+    FIELD_INLINE_DATA_SNAKE, FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT,
+    FIELD_OUTPUT_DIMENSIONALITY, FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREDICTIONS,
+    FIELD_PROMPT_TOKEN_COUNT, FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT,
+    FIELD_SAMPLE_IMAGE_SIZE, FIELD_STREAM_GENERATE_CONTENT, FIELD_THOUGHTS_TOKEN_COUNT,
+    FIELD_TOOL_USE_PROMPT_TOKEN_COUNT, FIELD_TOTAL_TOKEN_COUNT, FIELD_USAGE_METADATA, FIELD_VALUES,
     GEMINI_AUDIO, GEMINI_FINISH_STOP,
 };
 use crate::codec::ir::audio::{SpeechResp, TranscriptionResp};
@@ -575,6 +576,49 @@ pub fn read_transcription_request(
     })
 }
 
+/// One billed usage count that is present and unreadable, REFUSED ON ITS OWN (ARCHITECT ruling
+/// 2026-10-15, the per-field rule `usage_count::read_usage` holds for the chat table): said loudly,
+/// it bills nothing, nothing stands in for it, and the answer it rode on is served. v1.5.5 read
+/// these counts as `.and_then(Value::as_u64)` and served every such answer (v1.5.5
+/// `crates/busbar/src/handlers/gemini.rs:229-241`, `:605-612`); refusing the whole answer over one
+/// count was a 500 with no usage where 1.5.5 delivered and billed the readable counts.
+fn refused_count(unreadable: &crate::codec::usage_count::UnreadableCount) {
+    tracing::warn!(
+        protocol = COUNT_LABEL,
+        field = unreadable.field,
+        spelling = %unreadable.spelling,
+        "usage count is present but unreadable: REFUSED, it bills nothing and is never read as \
+         zero (#42, #81); the answer is served and the readable counts bill as stated"
+    );
+}
+
+/// The `usageMetadata` counts a transcription answer reports beside the two it bills. The chat table
+/// (`gemini::usage::USAGE`) itemizes them into meter classes, but a transcription bills only the
+/// prompt and candidates counts, as v1.5.5 did, so these are RECORDED as residual units, keyed by
+/// Google's own count name and never billed (owner LEDGER-100: a reported unit is never left
+/// unledgered; MONEY LAW: the billed figures do not move).
+const TRANSCRIPTION_RESIDUAL_COUNTS: [&str; 3] = [
+    FIELD_THOUGHTS_TOKEN_COUNT,
+    FIELD_CACHED_CONTENT_TOKEN_COUNT,
+    FIELD_TOOL_USE_PROMPT_TOKEN_COUNT,
+];
+
+/// The residual units of a transcription answer's `usageMetadata` ([`TRANSCRIPTION_RESIDUAL_COUNTS`]).
+/// Each is read through the one count seam (`usage_count::recorded_count`): an absent or zero count
+/// is left off (sparse, as `TokenUsage::residual_units` is), and an unreadable one is UNKNOWN, left
+/// off and named in a warning log line, never recorded as 0 and never a refusal.
+fn transcription_residual_units(usage: &Value) -> std::collections::BTreeMap<String, u64> {
+    let mut warnings = Vec::new();
+    TRANSCRIPTION_RESIDUAL_COUNTS
+        .iter()
+        .filter_map(|&field| {
+            crate::codec::usage_count::recorded_count(usage, field, &mut warnings)
+                .filter(|n| *n != 0)
+                .map(|n| (field.to_string(), n))
+        })
+        .collect()
+}
+
 /// Wire -> concrete `TranscriptionResp` parse, extracted from the `OperationHandler::read_response`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
@@ -584,33 +628,27 @@ pub fn read_transcription_response(
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let text = joined_text(&v, "/candidates/0/content/parts");
-    let usage = v
-        .get(FIELD_USAGE_METADATA)
-        .map(
-            |u| -> Result<busbar_contract::billing::Billing, CodecError> {
-                // Only the token fields are read, exactly as 1.5.5 read them (v1.5.5
-                // `crates/busbar/src/handlers/gemini.rs:229-241`): an upstream cannot pick the
-                // duration meter (`audio_ms`) by sending an `audioDurationSeconds` member Gemini's
-                // `UsageMetadata` does not define. A real Gemini upstream sends only token counts.
-                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
-                // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
-                // this build could not read, and every money view over that row was then faithfully
-                // wrong with nothing to show for it.
-                Ok(busbar_contract::billing::Billing::Tokens(
-                    busbar_contract::billing::TokenUsage {
-                        input: crate::codec::usage_count::billed_count(u, FIELD_PROMPT_TOKEN_COUNT)
-                            .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                        output: crate::codec::usage_count::billed_count(
-                            u,
-                            FIELD_CANDIDATES_TOKEN_COUNT,
-                        )
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                        ..Default::default()
-                    },
-                ))
-            },
-        )
-        .transpose()?;
+    let usage = v.get(FIELD_USAGE_METADATA).map(|u| {
+        // Only the token fields are BILLED, exactly as 1.5.5 billed them (v1.5.5
+        // `crates/busbar/src/handlers/gemini.rs:229-241`): an upstream cannot pick the duration
+        // meter (`audio_ms`) by sending an `audioDurationSeconds` member Gemini's `UsageMetadata`
+        // does not define. A real Gemini upstream sends only token counts.
+        // BILLED COUNTS, each judged on its own: absent is zero; an UNREADABLE one is refused
+        // ([`refused_count`]): it bills nothing, and the transcript and the readable count are
+        // served and billed, v1.5.5's `.and_then(Value::as_u64).unwrap_or(0)` figure.
+        let billed = |field: &'static str| {
+            crate::codec::usage_count::billed_count(u, field).unwrap_or_else(|unreadable| {
+                refused_count(&unreadable);
+                0
+            })
+        };
+        busbar_contract::billing::Billing::Tokens(busbar_contract::billing::TokenUsage {
+            input: billed(FIELD_PROMPT_TOKEN_COUNT),
+            output: billed(FIELD_CANDIDATES_TOKEN_COUNT),
+            residual_units: transcription_residual_units(u),
+            ..Default::default()
+        })
+    });
     Ok(TranscriptionResp {
         text,
         usage,
@@ -912,13 +950,18 @@ pub fn read_embeddings_response(
             ),
         );
     }
-    // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
-    // count REFUSES rather than reading as "no usage reported".
+    // BILLED COUNT: absent or `null` is no usage (unchanged); an UNREADABLE one is refused on its
+    // own ([`refused_count`]): it bills nothing and the vectors are served. That is v1.5.5's figure
+    // for the body: `.and_then(Value::as_u64).map(..)` read no usage (v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:605-612`).
     let usage = crate::codec::usage_count::billed_count_opt(
         v.get(FIELD_USAGE_METADATA),
         FIELD_PROMPT_TOKEN_COUNT,
     )
-    .map_err(|e| CodecError::Malformed(e.to_string()))?
+    .unwrap_or_else(|unreadable| {
+        refused_count(&unreadable);
+        None
+    })
     .map(|n| busbar_contract::billing::TokenUsage {
         input: n,
         ..Default::default()

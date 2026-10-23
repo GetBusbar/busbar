@@ -180,21 +180,24 @@ fn truncated_recovery_refuses_an_unreadable_cache_tier_on_its_own() {
     assert_eq!((u.input, u.output), (5, 9));
 }
 
-// ── EMBEDDINGS (item 133 remainder) ──────────────────────────────────────────────────────────────
+// ── EMBEDDINGS AND RERANK (LLM3#6, LLM2#12) ──────────────────────────────────────────────────────
 //
-// `read_embeddings_response` read `inputTextTokenCount` as
-// `.and_then(read_count_u64).map(|n| TokenUsage{input:n,..})` — a lenient read whose `None` flowed
-// straight through the `.map`, so a stringified `"1500"` was billed as NO usage at all (0 input)
-// rather than refusing. Now read through `billed_count_opt`.
+// The Titan embeddings and the rerank answers judge their billed count the same way the Converse
+// table does: an unreadable one is refused ON ITS OWN, it bills nothing, and the answer is served.
+// Refusing the whole answer turned a delivered answer into a 500 with no usage, where v1.5.5's
+// `.and_then(Value::as_u64)` served it and billed no usage (v1.5.5 `handlers/bedrock.rs:243-249`).
 
 #[test]
-fn embeddings_response_refuses_an_unreadable_billed_input() {
+fn embeddings_response_refuses_an_unreadable_billed_input_on_its_own() {
     use crate::codec::bedrock::handler::read_embeddings_response;
     let wire = |n: &str| format!(r#"{{"embedding":[0.1],"inputTextTokenCount":{n}}}"#);
-    assert!(
-        read_embeddings_response(wire(r#""1500""#).as_bytes()).is_err(),
-        "inputTextTokenCount:\"1500\" is present and unreadable: a refusal, never \"no usage reported\""
+    let served = read_embeddings_response(wire(r#""1500""#).as_bytes())
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!(
+        served.usage, None,
+        "inputTextTokenCount:\"1500\" bills nothing: v1.5.5's figure for the body"
     );
+    assert_eq!(served.embeddings.len(), 1, "the vector is served");
     assert_eq!(
         read_embeddings_response(wire("1500").as_bytes())
             .expect("readable")
@@ -206,4 +209,27 @@ fn embeddings_response_refuses_an_unreadable_billed_input() {
         .expect("null is absence")
         .usage
         .is_none());
+}
+
+#[test]
+fn rerank_response_refuses_unreadable_search_units_on_its_own() {
+    use crate::codec::bedrock::handler::read_rerank_response;
+    let wire = |su: &str| {
+        format!(
+            r#"{{"id":"r1","results":[{{"index":0,"relevance_score":0.5}}],"meta":{{"billed_units":{{"search_units":{su}}}}}}}"#
+        )
+    };
+    let served = read_rerank_response(wire(r#""3""#).as_bytes())
+        .expect("an unreadable count refuses itself, never the ranking");
+    assert_eq!(
+        served.search_units, None,
+        "it bills the flat marker, as 1.5.5 did"
+    );
+    assert_eq!(served.results.len(), 1, "the ranking is served");
+    assert_eq!(
+        read_rerank_response(wire("3").as_bytes())
+            .expect("readable")
+            .search_units,
+        Some(3)
+    );
 }

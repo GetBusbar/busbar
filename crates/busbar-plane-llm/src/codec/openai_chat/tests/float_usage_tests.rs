@@ -207,15 +207,50 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     }
 }
 
-/// THE BUFFERED EMBEDDINGS READER REFUSES AN UNREADABLE BILLED COUNT.
+/// THE BUFFERED EMBEDDINGS READER REFUSES AN UNREADABLE BILLED COUNT ON ITS OWN (LLM3#6): it bills
+/// nothing and the vectors are served, v1.5.5's `.and_then(Value::as_u64).unwrap_or(0)` figure
+/// (v1.5.5 `handlers/openai.rs:586`). Refusing the whole answer was a 500 with no usage.
 #[test]
-fn an_unreadable_embeddings_count_refuses_instead_of_billing_zero() {
-    let wire = br#"{"model":"m","data":[],"usage":{"prompt_tokens":{"n":27}}}"#;
-    let err = crate::codec::openai_chat::handler::read_embeddings_response(wire)
-        .expect_err("a present, unreadable billed count is a refusal, never a zero");
-    assert!(
-        format!("{err:?}").contains("prompt_tokens"),
-        "the refusal names the field: {err:?}"
+fn an_unreadable_embeddings_count_refuses_itself_and_the_answer_is_served() {
+    let wire = br#"{"model":"m","data":[{"index":0,"embedding":[0.1]}],"usage":{"prompt_tokens":{"n":27}}}"#;
+    let resp = crate::codec::openai_chat::handler::read_embeddings_response(wire)
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!(
+        resp.usage.map(|u| u.input),
+        Some(0),
+        "the refused count bills nothing"
+    );
+    assert_eq!(resp.embeddings.len(), 1, "the vectors are served");
+}
+
+/// THE TRANSCRIPTION READER JUDGES ITS TOKEN COUNTS ONE BY ONE (LLM3#6), as v1.5.5 read them
+/// (v1.5.5 `handlers/openai.rs:362-376`): an unreadable `input_tokens` is no token billing at all
+/// (1.5.5's `.and_then(Value::as_u64).map(..)`), an unreadable `output_tokens` beside a readable
+/// input bills no output, and the transcript is served either way.
+#[test]
+fn an_unreadable_transcription_count_refuses_itself_and_the_transcript_is_served() {
+    use busbar_contract::billing::{Billing, TokenUsage};
+    let read = |usage: &str| {
+        let wire = format!(r#"{{"text":"hi","usage":{{"type":"tokens",{usage}}}}}"#);
+        crate::codec::openai_chat::handler::read_transcription_response(wire.as_bytes())
+            .expect("an unreadable count refuses itself, never the transcript")
+    };
+    let r = read(r#""input_tokens":"12","output_tokens":5"#);
+    assert_eq!(r.text, "hi");
+    assert_eq!(
+        r.usage, None,
+        "an unreadable input is no token billing, as 1.5.5"
+    );
+    let r = read(r#""input_tokens":12,"output_tokens":"5""#);
+    assert_eq!(r.text, "hi");
+    assert_eq!(
+        r.usage,
+        Some(Billing::Tokens(TokenUsage {
+            input: 12,
+            output: 0,
+            ..Default::default()
+        })),
+        "the readable input bills, the refused output bills nothing"
     );
 }
 

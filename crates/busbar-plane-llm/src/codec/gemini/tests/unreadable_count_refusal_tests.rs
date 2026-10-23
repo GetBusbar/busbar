@@ -90,23 +90,26 @@ fn truncated_recovery_refuses_a_stringified_count_and_recovers_the_readable_ones
     assert_eq!((u.input, u.output), (0, 9));
 }
 
-// ── EMBEDDINGS (item 133 remainder) ──────────────────────────────────────────────────────────────
+// ── EMBEDDINGS (LLM3#6) ──────────────────────────────────────────────────────────────────────────
 //
-// `read_embeddings_response` read `usageMetadata.promptTokenCount` as
-// `.and_then(read_count_u64).map(|n| TokenUsage{input:n,..})` — a lenient read whose `None` flowed
-// straight through the `.map`, so a stringified `"1500"` was billed as NO usage at all (0 input)
-// rather than refusing. Now read through `billed_count_opt`.
+// The embeddings answer judges its billed count the same way the chat table does: an unreadable one
+// is refused ON ITS OWN, it bills nothing, and the vector is served. Refusing the whole answer
+// turned a delivered answer into a 500 with no usage, where v1.5.5's `.and_then(Value::as_u64)`
+// served it and billed no usage (v1.5.5 `handlers/gemini.rs:605-612`).
 
 #[test]
-fn embeddings_response_refuses_an_unreadable_billed_input() {
+fn embeddings_response_refuses_an_unreadable_billed_input_on_its_own() {
     use crate::codec::gemini::handler::read_embeddings_response;
     let wire = |n: &str| {
         format!(r#"{{"embedding":{{"values":[0.1]}},"usageMetadata":{{"promptTokenCount":{n}}}}}"#)
     };
-    assert!(
-        read_embeddings_response(wire(r#""1500""#).as_bytes()).is_err(),
-        "promptTokenCount:\"1500\" is present and unreadable: a refusal, never \"no usage reported\""
+    let served = read_embeddings_response(wire(r#""1500""#).as_bytes())
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!(
+        served.usage, None,
+        "promptTokenCount:\"1500\" bills nothing: v1.5.5's figure for the body"
     );
+    assert_eq!(served.embeddings.len(), 1, "the vector is served");
     assert_eq!(
         read_embeddings_response(wire("1500").as_bytes())
             .expect("readable")

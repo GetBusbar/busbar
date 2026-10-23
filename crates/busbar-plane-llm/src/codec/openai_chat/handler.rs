@@ -448,12 +448,32 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
     ))
 }
 
+/// One billed usage count that is present and unreadable, REFUSED ON ITS OWN (ARCHITECT ruling
+/// 2026-10-15, the per-field rule `usage_count::read_usage` holds for the chat tables): said loudly,
+/// it bills nothing, nothing stands in for it, and the answer it rode on is served. v1.5.5 read
+/// these counts as `.and_then(Value::as_u64)` and served every such answer (v1.5.5
+/// `crates/busbar/src/handlers/openai.rs:369-372`, `:586`); refusing the whole answer over one count
+/// was a 500 with no usage where 1.5.5 delivered and billed the readable counts.
+fn refused_count(unreadable: &crate::codec::usage_count::UnreadableCount) {
+    tracing::warn!(
+        protocol = super::VENDOR_NAME,
+        field = unreadable.field,
+        spelling = %unreadable.spelling,
+        "usage count is present but unreadable: REFUSED, it bills nothing and is never read as \
+         zero (#42, #81); the answer is served and the readable counts bill as stated"
+    );
+}
+
 /// OpenAI transcription `usage` → `Billing`: `{type:"duration",seconds}` (whisper) or a token shape.
 ///
+/// The token counts are judged one by one ([`refused_count`]). The presence of a READABLE
+/// `input_tokens` is what says this response is token-metered, as in v1.5.5: an absent, `null` or
+/// unreadable `input_tokens` is no token billing at all (v1.5.5 `.and_then(Value::as_u64).map(..)`),
+/// and an unreadable `output_tokens` beside a readable input bills no output.
+///
 /// # Errors
-/// A token field is PRESENT and cannot be read as a count (#81/#42). Absence still means no token
-/// billing at all — the presence of `input_tokens` is what says this response is token-metered, and
-/// that gating is unchanged.
+/// The duration's `seconds` does not fit the exact decimal scale (#81, parked for the owner; see
+/// `a_duration_finer_than_the_scale_refuses_rather_than_being_rounded`).
 fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, CodecError> {
     match u.get(keys::TYPE).and_then(Value::as_str) {
         // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
@@ -471,19 +491,23 @@ fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, 
                 })?;
             Ok(Some(Billing::Duration { seconds }))
         }
-        // BILLED COUNTS: absent is not billed, UNREADABLE IS A REFUSAL (#81/#42). `.unwrap_or(0)`
-        // on the output leg used to record "no output tokens" for a count the provider really sent
-        // and this build could not read — a ledger row that is faithfully wrong all the way down.
-        _ => match u.get(keys::INPUT_TOKENS) {
+        // BILLED COUNTS, each judged on its own: absent is not billed, an UNREADABLE one is
+        // refused (it bills nothing, loudly) and never refuses the answer.
+        _ => match crate::codec::usage_count::billed_count_opt(Some(u), keys::INPUT_TOKENS) {
             // Absent, or spelled `null`: this response is not token-metered. Unchanged.
-            None => Ok(None),
-            Some(v) if v.is_null() => Ok(None),
-            Some(_) => Ok(Some(Billing::Tokens(
+            Ok(None) => Ok(None),
+            Err(unreadable) => {
+                refused_count(&unreadable);
+                Ok(None)
+            }
+            Ok(Some(input)) => Ok(Some(Billing::Tokens(
                 busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    input,
                     output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                        .unwrap_or_else(|unreadable| {
+                            refused_count(&unreadable);
+                            0
+                        }),
                     ..Default::default()
                 },
             ))),
@@ -1212,19 +1236,19 @@ pub fn read_embeddings_response(
                 .collect()
         })
         .unwrap_or_default();
-    let usage = v
-        .get(keys::USAGE)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                // BILLED COUNT: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, super::PROMPT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+    // BILLED COUNT: absent is zero; an UNREADABLE one is refused on its own ([`refused_count`]): it
+    // bills nothing and the vectors are served, v1.5.5's `.and_then(Value::as_u64).unwrap_or(0)`
+    // figure (v1.5.5 `crates/busbar/src/handlers/openai.rs:586`).
+    let usage =
+        v.get(keys::USAGE)
+            .map(|u| busbar_contract::billing::TokenUsage {
+                input: crate::codec::usage_count::billed_count(u, super::PROMPT_TOKENS)
+                    .unwrap_or_else(|unreadable| {
+                        refused_count(&unreadable);
+                        0
+                    }),
+                ..Default::default()
+            });
     Ok(EmbeddingsResp {
         model: v
             .get(keys::MODEL)

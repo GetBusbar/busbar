@@ -193,16 +193,26 @@ fn truncated_recovery_refuses_an_unreadable_billed_unit_on_its_own() {
     assert_eq!((u.input, u.output), (10, 5));
 }
 
+// ── RERANK AND EMBEDDINGS (LLM3#6, LLM2#12) ──────────────────────────────────────────────────────
+//
+// The leaf answers judge their billed count the same way the chat table does: an unreadable one is
+// refused ON ITS OWN, it bills nothing, and the answer is served. Refusing the whole answer turned a
+// delivered answer into a 500 with no usage, where v1.5.5's `.and_then(Value::as_u64)` served it
+// (v1.5.5 `handlers/cohere.rs:267-275`, `:409-413`).
+
 #[test]
-fn rerank_response_refuses_unreadable_search_units_rather_than_billing_flat() {
+fn rerank_response_refuses_unreadable_search_units_on_its_own() {
     use crate::codec::cohere::handler::read_rerank_response;
     let wire = |su: &str| {
         format!(r#"{{"id":"r1","results":[],"meta":{{"billed_units":{{"search_units":{su}}}}}}}"#)
     };
-    assert!(
-        read_rerank_response(wire(r#""3""#).as_bytes()).is_err(),
-        "search_units:\"3\" is present and unreadable: a refusal, never the flat marker"
+    let served = read_rerank_response(wire(r#""3""#).as_bytes())
+        .expect("an unreadable count refuses itself, never the ranking");
+    assert_eq!(
+        served.search_units, None,
+        "search_units:\"3\" bills the flat marker: v1.5.5's figure for the body"
     );
+    assert_eq!(served.id.as_deref(), Some("r1"), "the ranking is served");
     assert_eq!(
         read_rerank_response(wire("3").as_bytes())
             .expect("readable")
@@ -218,17 +228,20 @@ fn rerank_response_refuses_unreadable_search_units_rather_than_billing_flat() {
 }
 
 #[test]
-fn embeddings_response_refuses_an_unreadable_billed_input() {
+fn embeddings_response_refuses_an_unreadable_billed_input_on_its_own() {
     use crate::codec::cohere::handler::read_embeddings_response;
     let wire = |n: &str| {
         format!(
             r#"{{"id":"e1","embeddings":{{"float":[[0.1]]}},"meta":{{"billed_units":{{"input_tokens":{n}}}}}}}"#
         )
     };
-    assert!(
-        read_embeddings_response(wire(r#""1500""#).as_bytes()).is_err(),
-        "billed input_tokens:\"1500\" is a refusal, never \"no usage reported\""
+    let served = read_embeddings_response(wire(r#""1500""#).as_bytes())
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!(
+        served.usage, None,
+        "billed input_tokens:\"1500\" bills nothing: v1.5.5's figure for the body"
     );
+    assert_eq!(served.embeddings.len(), 1, "the vectors are served");
     assert_eq!(
         read_embeddings_response(wire("1500").as_bytes())
             .expect("readable")

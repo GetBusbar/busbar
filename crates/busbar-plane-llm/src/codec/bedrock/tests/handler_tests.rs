@@ -138,12 +138,14 @@ fn embeddings_write_read_roundtrip_preserves_input_text() {
     assert_eq!(r.input, EmbInput::Text(vec!["roundtrip".to_string()]));
 }
 
-// carryable-flatten #8: the Titan image writer dropped `size` (->width/height) and `quality`
-// (->standard|premium), both Titan-native. Carry them; capture them on read. Fails pre-fix: an
-// openai->bedrock image request lost its pixel geometry and quality tier. Round-trips through bedrock.
+// LLM2#7 (architect ruling 2026-10-23 R-1): the Titan image writer sends v1.5.5's members only
+// (`taskType`, `text`, `numberOfImages`; v1.5.5 `handlers/bedrock.rs:121-131`). An OpenAI-ingress
+// size and quality are DROPPED WITH A WARN, never carried verbatim: Titan's quality vocabulary is
+// `standard|premium`, so an OpenAI `hd` on the far end's wire is a 400 where 1.5.5 served the
+// request. Fails on the pre-fix writer, which put `width`/`height`/`quality: "hd"` on the wire.
 #[test]
-fn bedrock_titan_image_carries_size_and_quality() {
-    // An openai-ingress ImageReq (explicit W×H + a Titan-valid quality) crossing to bedrock egress.
+fn bedrock_titan_image_drops_size_and_quality_as_1_5_5_did() {
+    use busbar_contract::testkit::WarnCapture;
     let ir = crate::codec::ir::image::ImageReq {
         model: "amazon.titan-image-generator-v1".into(),
         prompt: Some("a cat".into()),
@@ -151,35 +153,28 @@ fn bedrock_titan_image_carries_size_and_quality() {
             width: 1024,
             height: 768,
         }),
-        quality: Some("premium".into()),
+        quality: Some("hd".into()),
         ..Default::default()
     };
-    let out = super::super::super::leaf_codec::image_write_request("bedrock", &ir);
+    let cap = WarnCapture::default();
+    let out = tracing::subscriber::with_default(cap.clone(), || {
+        super::super::super::leaf_codec::image_write_request("bedrock", &ir)
+    });
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
-        v.pointer("/imageGenerationConfig/width"),
-        Some(&json!(1024)),
-        "{v}"
+        v,
+        json!({
+            "taskType": "TEXT_IMAGE",
+            "textToImageParams": {"text": "a cat"},
+            "imageGenerationConfig": {"numberOfImages": 1}
+        }),
+        "exactly v1.5.5's Titan body: {v}"
     );
-    assert_eq!(
-        v.pointer("/imageGenerationConfig/height"),
-        Some(&json!(768))
+    assert!(
+        cap.contains("dropping `size`") && cap.contains("dropping `quality`"),
+        "each drop is warned: {:?}",
+        cap.messages()
     );
-    assert_eq!(
-        v.pointer("/imageGenerationConfig/quality"),
-        Some(&json!("premium"))
-    );
-    let back =
-        super::super::super::leaf_codec::image_read_request("bedrock", &out, "application/json")
-            .expect("re-read");
-    assert_eq!(
-        back.size,
-        Some(crate::codec::ir::image::ImageSize::Wh {
-            width: 1024,
-            height: 768
-        })
-    );
-    assert_eq!(back.quality.as_deref(), Some("premium"));
 }
 
 // L5: the arrival `bedrock_converse`/`_stream` reject arm (now routed through `finish_rejected` for

@@ -346,6 +346,21 @@ pub fn read_embeddings_request(
     })
 }
 
+/// One billed usage count that is present and unreadable, REFUSED ON ITS OWN (ARCHITECT ruling
+/// 2026-10-15, the per-field rule `usage_count::read_usage` holds for the chat table): said loudly,
+/// it bills nothing, nothing stands in for it, and the answer it rode on is served. v1.5.5 read
+/// these counts as `.and_then(Value::as_u64)` and served every such answer; refusing the whole
+/// answer over one count was a 500 with no usage where 1.5.5 delivered it.
+fn refused_count(unreadable: &crate::codec::usage_count::UnreadableCount) {
+    tracing::warn!(
+        protocol = super::VENDOR_NAME,
+        field = unreadable.field,
+        spelling = %unreadable.spelling,
+        "usage count is present but unreadable: REFUSED, it bills nothing and is never read as \
+         zero (#42, #81); the answer is served and the readable counts bill as stated"
+    );
+}
+
 /// Wire -> concrete `EmbeddingsResp` parse, extracted from the `OperationHandler::read_response`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
@@ -402,13 +417,18 @@ pub fn read_embeddings_response(
             item
         })
         .collect();
-    // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
-    // count REFUSES rather than reading as "no usage reported".
+    // BILLED COUNT: absent or `null` is no usage (unchanged); an UNREADABLE one is refused on its
+    // own (`refused_count`): it bills nothing and the vectors are served. That is v1.5.5's figure
+    // for the body: `.and_then(Value::as_u64).map(..)` read no usage (v1.5.5
+    // `crates/busbar/src/handlers/cohere.rs:267-275`).
     let usage = crate::codec::usage_count::billed_count_opt(
         v.get(keys::META).and_then(|m| m.get(keys::BILLED_UNITS)),
         keys::INPUT_TOKENS,
     )
-    .map_err(|e| CodecError::Malformed(e.to_string()))?
+    .unwrap_or_else(|unreadable| {
+        refused_count(&unreadable);
+        None
+    })
     .map(|n| busbar_contract::billing::TokenUsage {
         input: n,
         ..Default::default()
@@ -474,13 +494,17 @@ pub fn read_rerank_response(
         id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
         results: crate::codec::rerank_wire::read_results(v.get(keys::RESULTS)),
         // The PRICED quantity (item 134, `RerankResp::billing`). Absent or `null` stays `None` (the
-        // flat marker); a present-but-UNREADABLE count REFUSES (item 133) — the lenient read made
-        // it `None`, so `"search_units":"3"` billed the flat marker instead of 3 counted units.
+        // flat marker); an UNREADABLE count is refused on its own (`refused_count`): the ranking is
+        // served on the flat marker, v1.5.5's `.and_then(Value::as_u64)` figure for the body
+        // (v1.5.5 `crates/busbar/src/handlers/cohere.rs:409-413`).
         search_units: crate::codec::usage_count::billed_count_opt(
             v.get(keys::META).and_then(|m| m.get(keys::BILLED_UNITS)),
             keys::SEARCH_UNITS,
         )
-        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+        .unwrap_or_else(|unreadable| {
+            refused_count(&unreadable);
+            None
+        }),
         ..Default::default()
     })
 }

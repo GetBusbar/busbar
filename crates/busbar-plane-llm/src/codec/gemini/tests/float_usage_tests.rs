@@ -234,18 +234,65 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     }
 }
 
-/// THE TRANSCRIPTION READER REFUSES AN UNREADABLE BILLED COUNT — and this one is reached on the
-/// CROSS-PROTOCOL seam (the op does not tap same-protocol usage), which is exactly where a
-/// zeroed count would have been hardest to notice.
+/// THE TRANSCRIPTION READER REFUSES AN UNREADABLE BILLED COUNT ON ITS OWN (LLM3#6) — reached on
+/// the CROSS-PROTOCOL seam (the op does not tap same-protocol usage). The refused count bills
+/// nothing, the readable one bills as stated and the transcript is served: v1.5.5's
+/// `.and_then(Value::as_u64).unwrap_or(0)` figure (v1.5.5 `handlers/gemini.rs:229-241`). Refusing
+/// the whole answer was a 500 with no usage.
 #[test]
-fn an_unreadable_transcription_count_refuses_instead_of_billing_zero() {
+fn an_unreadable_transcription_count_refuses_itself_and_the_transcript_is_served() {
     let wire = br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":[],"candidatesTokenCount":5}}"#;
-    let err = crate::codec::gemini::handler::read_transcription_response(wire)
-        .expect_err("a present, unreadable billed count is a refusal, never a zero");
-    assert!(
-        format!("{err:?}").contains("promptTokenCount"),
-        "the refusal names the field: {err:?}"
-    );
+    let resp = crate::codec::gemini::handler::read_transcription_response(wire)
+        .expect("an unreadable count refuses itself, never the transcript");
+    assert_eq!(resp.text, "hi");
+    match resp.billing() {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
+            assert_eq!((t.input, t.output), (0, 5));
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
+}
+
+/// THE TRANSCRIPTION READER LEDGERS EVERY COUNT GOOGLE REPORTS (LLM3#1, owner LEDGER-100), and its
+/// BILL STAYS v1.5.5's (prompt and candidates only; v1.5.5 `handlers/gemini.rs:229-241`): the
+/// thinking, cached-content and tool-use counts are RECORDED as residual units under Google's own
+/// names, never billed. Zero and absent counts are left off; an unreadable one is unknown, left
+/// off, and refuses nothing.
+#[test]
+fn transcription_records_thought_cached_and_tool_use_counts_as_residual_units() {
+    let wire = br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":5,"thoughtsTokenCount":40,"cachedContentTokenCount":8,"toolUsePromptTokenCount":3,"totalTokenCount":68}}"#;
+    let resp = crate::codec::gemini::handler::read_transcription_response(wire).expect("reads");
+    match resp.billing() {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
+            assert_eq!((t.input, t.output), (20, 5), "the bill is v1.5.5's");
+            assert_eq!((t.cache_read, t.cache_creation), (None, None));
+            assert!(t.open_units.is_empty(), "nothing new is billed");
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([
+                    ("cachedContentTokenCount".to_string(), 8),
+                    ("thoughtsTokenCount".to_string(), 40),
+                    ("toolUsePromptTokenCount".to_string(), 3),
+                ]),
+                "every other reported count is recorded"
+            );
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
+    let wire = br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":5,"thoughtsTokenCount":"40","cachedContentTokenCount":0}}"#;
+    let resp = crate::codec::gemini::handler::read_transcription_response(wire)
+        .expect("an unreadable recorded count refuses nothing");
+    match resp.billing() {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
+            assert_eq!((t.input, t.output), (20, 5));
+            assert!(
+                t.residual_units.is_empty(),
+                "an unknown or zero count is left off: {:?}",
+                t.residual_units
+            );
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
 }
 
 /// AN ABSENT COUNT IS STILL ZERO, AND A RESPONSE WITH NO `usageMetadata` STILL READS.
