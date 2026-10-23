@@ -1,25 +1,33 @@
 #!/usr/bin/env bash
-# SCRATCH DIAGNOSTIC (draft PR, never to land): the A2A TCK runner's own errors, the battery's
-# deep-nesting case, and the MCP h2 meter leg's node log. Compact, at the very end of the log.
+# SCRATCH DIAGNOSTIC (draft PR, never to land): one MCP h2 call on a billing-ON node with every
+# reading dumped, and the A2A subject's answer to the TCK's first send. Compact, at the end.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 R="$(pwd)"; D="$R/target/vd-diag"; rm -rf "$D"; mkdir -p "$D"
 cargo build --release --locked -p busbar >"$D/build.out" 2>&1; brc=$?
-bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check >"$D/rigs.out" 2>&1; rrc=$?
+export MCP_SUBJECT_BUSBAR_BIN="$R/target/release/busbar"
+(
+  source scripts/mcp-subject/h2-lib.sh
+  trap 'h2_stop' EXIT
+  H2_GROUPS='groups:
+  h2-oracle:
+    limits:
+      - { budget: 1000000, per: day }'
+  h2_boot "$D/mcp" "$H2_GROUPS" >"$D/mcp-boot.out" 2>&1 || { echo "MCP BOOT FAILED"; tail -n 8 "$D/mcp/busbar.log"; exit 0; }
+  read -r kid tok <<<"$(h2_mint h2-oracle)"
+  bound="$(h2_bind "$tok")"
+  echo "USAGE before: $(h2_usage "$kid" | cut -c1-300)"
+  echo "CALL: $(h2_call "$bound" meter | cut -c1-300)"
+  sleep 3
+  echo "USAGE after: $(h2_usage "$kid" | cut -c1-400)"
+  echo "ADMIN usage: $(curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/usage" | cut -c1-700)"
+  echo "BUSBAR log:"; grep -viE "^\s*$" "$D/mcp/busbar.log" | tail -n 12 | cut -c1-260
+) >"$D/mcp.diag" 2>&1
+bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check >"$D/rigs.out" 2>&1
 G=target/rigs-ledger
 echo "######## SUMMARY ########"
-echo "BUILD rc=$brc RIGS rc=$rrc"
-echo "== TCK log tail"; grep -vE "^\s*ok:" "$G/a2a-tck.log" | grep -iE "fail|error|assert|refus|status|exception|E  " | sort | uniq -c | sort -rn | head -n 10 | cut -c1-230
-echo "== TCK fold err"; tail -c 400 "$G/a2a-tck-fold.err" 2>/dev/null; echo
-R2=$(ls "$G"/a2a-tck-work/out/*.json 2>/dev/null | head -n 1); echo "report: $R2"
-[ -n "$R2" ] && python3 - "$R2" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1]))
-s=json.dumps(d)
-i=s.find("CORE-SEND-001"); print(s[max(0,i-100):i+700])
-PY
-echo "== battery deep_nesting"; grep -n -A6 "deep_nesting" "$G/a2a-battery.log" | cut -c1-230 | head -n 10
-echo "== mcp h2 meter-row log"; tail -n 14 "$G/mcp-h2-h2-meter-row.log" | cut -c1-230
-echo "== mcp h2 meter-row work"; ls "$G/mcp-h2-h2-meter-row" | tr '\n' ' '; echo
-f=$(ls "$G"/mcp-h2-h2-meter-row/*.yaml "$G"/mcp-h2-h2-meter-row/*/*.yaml 2>/dev/null | head -n 1); echo "config: $f"; [ -n "$f" ] && grep -nE "billing|rate_card|per_request|fee|ledger|mcp|server" "$f" | head -n 14 | cut -c1-200
+echo "BUILD rc=$brc"
+cat "$D/mcp.diag"
+echo "== A2A subject logs"; ls "$G/a2a-tck-work" | tr '\n' ' '; echo
+for f in $(find "$G/a2a-tck-work" -maxdepth 3 -name '*.log' 2>/dev/null | grep -v venv | head -n 6); do echo "-- $f"; grep -iE "decode|refus|400|error" "$f" | sort | uniq -c | sort -rn | head -n 4 | cut -c1-260; done
 exit 1
