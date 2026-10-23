@@ -51,10 +51,54 @@ fn base_manifest() -> serde_json::Value {
 
 fn planted(cx: &Ctx, manifest: &serde_json::Value) -> Ctx {
     let mut ov = Overlay::new();
+    // A verdict artifact under every pass row, armed and about the row's commit, as the
+    // conformance-sync render leaves them.
+    for row in manifest["suites"].as_array().into_iter().flatten() {
+        if row["status"] == "pass" {
+            ov.set(
+                format!(
+                    "conformance/verdicts/{}.json",
+                    row["suite"].as_str().unwrap_or("")
+                ),
+                verdict_text(row["suite"].as_str().unwrap_or(""), true, "pass", SHA),
+            );
+        }
+    }
     ov.set(
         DEFAULT_MANIFEST_PATH,
         serde_json::to_string_pretty(manifest).unwrap(),
     );
+    cx.with_overlay(ov)
+}
+
+fn verdict_text(suite: &str, armed: bool, status: &str, commit: &str) -> String {
+    serde_json::to_string_pretty(&json!({
+        "schema": "busbar.conformance.verdict/1",
+        "suite": suite,
+        "status": status,
+        "armed": armed,
+        "commit": commit,
+    }))
+    .unwrap()
+}
+
+/// `planted` plus one overridden verdict file.
+fn planted_with_verdict(cx: &Ctx, manifest: &serde_json::Value, suite: &str, text: &str) -> Ctx {
+    let mut ov = Overlay::new();
+    ov.set(
+        DEFAULT_MANIFEST_PATH,
+        serde_json::to_string_pretty(manifest).unwrap(),
+    );
+    for row in manifest["suites"].as_array().into_iter().flatten() {
+        let id = row["suite"].as_str().unwrap_or("");
+        if row["status"] == "pass" && id != suite {
+            ov.set(
+                format!("conformance/verdicts/{id}.json"),
+                verdict_text(id, true, "pass", SHA),
+            );
+        }
+    }
+    ov.set(format!("conformance/verdicts/{suite}.json"), text);
     cx.with_overlay(ov)
 }
 
@@ -140,6 +184,64 @@ pub fn run(cx: &Ctx) -> i32 {
         check_one_suite(&planted_cx, DEFAULT_MANIFEST_PATH, "beta", SHA),
         Status::Fail,
         "not a fresh pass",
+    ));
+
+    // ── RED: a suite named twice. The earlier pass row must not outrank the later fail row.
+    let mut dup = base_manifest();
+    dup["suites"].as_array_mut().unwrap().push(json!({
+        "suite": "alpha", "status": "fail", "commit": SHA, "reason": "planted: the second row fails"
+    }));
+    let dup_cx = planted(cx, &dup);
+    cases.push(expect(
+        "a suite named twice is refused, the earlier pass does not beat the later fail (RED)",
+        check_one_suite(&dup_cx, DEFAULT_MANIFEST_PATH, "alpha", SHA),
+        Status::Fail,
+        "appears more than once",
+    ));
+
+    // ── RED: the manifest says pass, the verdict under it does not back it.
+    let manifest = base_manifest();
+    for (name, text, want) in [
+        (
+            "a pass whose verdict is unarmed is refused (RED)",
+            verdict_text("alpha", false, "pass", SHA),
+            "not armed",
+        ),
+        (
+            "a pass whose verdict says fail is refused (RED)",
+            verdict_text("alpha", true, "fail", SHA),
+            "not `pass`",
+        ),
+        (
+            "a pass whose verdict is about another commit is refused (RED)",
+            verdict_text("alpha", true, "pass", OTHER_SHA),
+            "not the candidate sha",
+        ),
+        (
+            "a pass whose verdict judges another suite is refused (RED)",
+            verdict_text("beta", true, "pass", SHA),
+            "judges suite",
+        ),
+    ] {
+        let vcx = planted_with_verdict(cx, &manifest, "alpha", &text);
+        cases.push(expect(
+            name,
+            check_one_suite(&vcx, DEFAULT_MANIFEST_PATH, "alpha", SHA),
+            Status::Fail,
+            want,
+        ));
+    }
+    let mut ov = Overlay::new();
+    ov.set(
+        DEFAULT_MANIFEST_PATH,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    );
+    ov.remove("conformance/verdicts/alpha.json");
+    cases.push(expect(
+        "a pass with no verdict file under it is refused (RED)",
+        check_one_suite(&cx.with_overlay(ov), DEFAULT_MANIFEST_PATH, "alpha", SHA),
+        Status::Fail,
+        "cannot be read",
     ));
 
     // ── RED: a MISSING manifest — nothing to admit from, so nothing is admitted.
