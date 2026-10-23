@@ -358,7 +358,7 @@ pub fn live_drift(
             continue;
         }
         if let Some(g) = gone {
-            if g.as_str().map_or(true, |s| s.trim().is_empty()) {
+            if g.as_str().is_none_or(|s| s.trim().is_empty()) {
                 bad.push(format!("{id}: `gone` must state why the claim left {name}"));
                 continue;
             }
