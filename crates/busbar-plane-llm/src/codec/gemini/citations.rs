@@ -329,6 +329,10 @@ impl std::io::Write for ByteCount {
 /// one there would have `write_gemini_citation`'s raw short-circuit re-emit a grounding object in
 /// the citation slot on a foreign→Gemini hop. Same-protocol Gemini traffic is a verbatim byte
 /// passthrough that never reaches a writer, so nothing needs the escape hatch here.
+///
+/// Production reads reach this through [`read_gemini_citations`], which indexes the anchor text
+/// once for both citation slots; this entry reads the grounding slot alone, for the tests.
+#[cfg(test)]
 pub(super) fn read_gemini_grounding_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
