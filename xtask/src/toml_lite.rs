@@ -43,6 +43,11 @@ pub struct Document {
     /// X-1206: these used to vanish, so a document this reader misread was indistinguishable from
     /// one it read whole. [`parse_text_checked`] refuses a document that has any.
     pub unread: Vec<(usize, String)>,
+    /// Every key written twice in one table, and every table header written twice, as
+    /// `(1-based line, text)`. TOML refuses both; a reader that keeps the last one reads a
+    /// document the file does not say. [`parse_text_checked`] and [`parse`] refuse a document
+    /// that has any.
+    pub duplicates: Vec<(usize, String)>,
 }
 
 impl Document {
@@ -55,13 +60,22 @@ impl Document {
     }
 }
 
+/// The line without its trailing `#` comment. A `#` inside a quoted string (basic or literal) is
+/// the string's, not a comment's: `why = "see #12"` keeps its text.
 fn strip_comment(line: &str) -> &str {
-    // No string literal in either file this reader targets contains a `#`, so a plain scan is
-    // enough — the same "deliberately small" trade the ported Python parser makes.
-    match line.find('#') {
-        Some(i) => &line[..i],
-        None => line,
+    let (mut quote, mut escaped) = (None::<char>, false);
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '#' => return &line[..i],
+            None => {}
+        }
     }
+    line
 }
 
 fn unquote(tok: &str) -> String {
@@ -75,8 +89,26 @@ fn unquote(tok: &str) -> String {
     }
 }
 
+/// The array body split on every `,` OUTSIDE a quoted string: `"a,b"` is one item.
 fn split_array_items(body: &str) -> Vec<String> {
-    body.split(',')
+    let (mut items, mut quote, mut escaped, mut start) = (Vec::new(), None::<char>, false, 0);
+    for (i, c) in body.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == ',' => {
+                items.push(&body[start..i]);
+                start = i + 1;
+            }
+            None => {}
+        }
+    }
+    items.push(&body[start..]);
+    items
+        .into_iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(unquote)
@@ -89,7 +121,11 @@ fn split_array_items(body: &str) -> Vec<String> {
 pub fn parse(path: &Path) -> Document {
     let raw = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("toml_lite: cannot read {}: {e}", path.display()));
-    parse_text(&raw)
+    let doc = parse_text(&raw);
+    if let Some((n, what)) = doc.duplicates.first() {
+        panic!("toml_lite: {}: line {n}: {what}", path.display());
+    }
+    doc
 }
 
 /// [`parse_text`], refusing a document with any line it could not place (X-1206). The refusal
@@ -98,6 +134,9 @@ pub fn parse(path: &Path) -> Document {
 /// the file said.
 pub fn parse_text_checked(raw: &str) -> Result<Document, String> {
     let doc = parse_text(raw);
+    if let Some((n, what)) = doc.duplicates.first() {
+        return Err(format!("line {n}: {what}"));
+    }
     if doc.unread.is_empty() {
         return Ok(doc);
     }
@@ -164,15 +203,17 @@ pub fn parse_text(raw: &str) -> Document {
     };
 
     // Inside the body of a `key = """ .. """` block whose closing delimiter has not been seen yet.
-    let mut in_multiline_string = false;
+    let mut in_multiline_string: Option<&'static str> = None;
+    // Headers of the single `[table]`s seen so far: a second one is a re-opened table.
+    let mut seen_tables: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for (idx, raw_line) in raw.lines().enumerate() {
-        if in_multiline_string {
+        if let Some(delim) = in_multiline_string {
             // Scanned on the RAW line, not the comment-stripped one: `#` inside prose is ordinary
             // text, and stripping from it would hide a closing delimiter that follows on the same
             // line and leave the parser swallowing the rest of the file.
-            if raw_line.contains("\"\"\"") {
-                in_multiline_string = false;
+            if raw_line.contains(delim) {
+                in_multiline_string = None;
             }
             continue;
         }
@@ -218,7 +259,12 @@ pub fn parse_text(raw: &str) -> Document {
                 cur_is_array,
                 std::mem::take(&mut cur_table),
             );
-            cur_path = Some(trimmed[1..trimmed.len() - 1].trim().to_string());
+            let path = trimmed[1..trimmed.len() - 1].trim().to_string();
+            if !seen_tables.insert(path.clone()) {
+                doc.duplicates
+                    .push((idx + 1, format!("table `[{path}]` is written twice")));
+            }
+            cur_path = Some(path);
             cur_is_array = false;
             continue;
         }
@@ -236,6 +282,12 @@ pub fn parse_text(raw: &str) -> Document {
         {
             let key = key.trim().to_string();
             let value = value.trim();
+            if cur_table.values.contains_key(&key) {
+                doc.duplicates.push((
+                    idx + 1,
+                    format!("key `{key}` is written twice in one table"),
+                ));
+            }
             if let Some(rest) = value.strip_prefix('[') {
                 if let Some(body) = rest.strip_suffix(']') {
                     cur_table.values.insert(key, split_array_items(body));
@@ -243,7 +295,11 @@ pub fn parse_text(raw: &str) -> Document {
                     pending_key = Some(key);
                     pending_buf = rest.to_string();
                 }
-            } else if let Some(rest) = value.strip_prefix("\"\"\"") {
+            } else if let Some((rest, delim)) = value
+                .strip_prefix("\"\"\"")
+                .map(|r| (r, "\"\"\""))
+                .or_else(|| value.strip_prefix("'''").map(|r| (r, "'''")))
+            {
                 // A triple-quoted `why =` prose field: this tool never reads the text, so it is
                 // recorded as an opaque empty scalar. Its BODY still has to be consumed to the
                 // closing delimiter, though — otherwise every prose line falls through to this
@@ -251,8 +307,8 @@ pub fn parse_text(raw: &str) -> Document {
                 // of the enclosing table. That silently invents settings the file never declared,
                 // and a prose line reading `max_hits = 0` would be obeyed as configuration.
                 cur_table.values.insert(key, vec![String::new()]);
-                if !rest.contains("\"\"\"") {
-                    in_multiline_string = true;
+                if !rest.contains(delim) {
+                    in_multiline_string = Some(delim);
                 }
             } else {
                 cur_table.entries.push((unquote(&key), value.to_string()));
@@ -520,6 +576,45 @@ patterns = [ 'libc' ]
         let t = doc.table("rules.r");
         assert_eq!(t.get_list("pattern_families").len(), 3, "{:?}", t.values);
         assert_eq!(t.get_one("after"), Some("x"));
+    }
+
+    /// XA2#9 RED: a key written twice in one table, or a table header written twice, is a
+    /// document TOML refuses; the reader used to keep the last one and call the file whole.
+    #[test]
+    fn a_duplicate_key_or_reopened_table_is_refused() {
+        let err = parse_text_checked("[a]\nk = \"1\"\nk = \"2\"\n").expect_err("dup key");
+        assert!(err.contains("line 3") && err.contains("`k`"), "{err}");
+        let err =
+            parse_text_checked("[a]\nk = 1\n[b]\nj = 1\n[a]\nm = 2\n").expect_err("dup table");
+        assert!(err.contains("line 5") && err.contains("[a]"), "{err}");
+        // Entries of `[[a]]` repeat by design, and the same key in two tables is fine.
+        assert!(parse_text_checked("[[a]]\nk = 1\n[[a]]\nk = 2\n[b]\nk = 3\n").is_ok());
+    }
+
+    /// XA2#9 RED: `#` and `,` inside a quoted string belong to the string.
+    #[test]
+    fn quoting_is_respected_by_comments_and_array_items() {
+        let doc = parse_text_checked(
+            "[a]\nwhy = \"see #12\" # real comment\nlit = 'x # y'\nl = [\"a,b\", 'c,d', \"e\"] # tail\n",
+        )
+        .expect("read");
+        let t = doc.table("a");
+        assert_eq!(t.get_one("why"), Some("see #12"));
+        assert_eq!(t.get_one("lit"), Some("x # y"));
+        assert_eq!(t.get_list("l"), vec!["a,b", "c,d", "e"]);
+    }
+
+    /// XA2#9 RED: a `'''` literal block is consumed to its closing delimiter like `"""`.
+    #[test]
+    fn a_triple_single_quoted_block_is_consumed() {
+        let doc = parse_text_checked(
+            "[a]\nwhy = '''prose with max_hits = 0\nand more = 1\n'''\nk = \"v\"\n",
+        )
+        .expect("read");
+        let t = doc.table("a");
+        assert_eq!(t.get_one("max_hits"), None);
+        assert_eq!(t.get_one("more"), None);
+        assert_eq!(t.get_one("k"), Some("v"));
     }
 
     /// The committed configuration this reader serves is read WHOLE: no line of

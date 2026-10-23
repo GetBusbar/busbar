@@ -77,11 +77,14 @@ impl Table {
         &self.order
     }
 
-    fn insert(&mut self, key: String, value: Value) {
-        if !self.values.contains_key(&key) {
-            self.order.push(key.clone());
+    /// Insert `key`; `false` (and nothing changed) when the table already holds it.
+    fn insert(&mut self, key: String, value: Value) -> bool {
+        if self.values.contains_key(&key) {
+            return false;
         }
+        self.order.push(key.clone());
         self.values.insert(key, value);
+        true
     }
 
     pub fn str_of(&self, key: &str) -> Option<&str> {
@@ -406,6 +409,9 @@ pub fn parse_str(text: &str) -> Result<Document, String> {
     };
     let mut doc = Document::default();
     let mut cur = String::new();
+    // Tables named by an explicit `[header]`: writing the same one twice re-opens it, which TOML
+    // refuses and which would otherwise merge two blocks the file keeps apart.
+    let mut headers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     doc.table_mut("");
 
     loop {
@@ -443,6 +449,9 @@ pub fn parse_str(text: &str) -> Result<Document, String> {
                 cur = format!("{base}.{n}");
             } else {
                 cur = parts.join(".");
+                if !headers.insert(cur.clone()) {
+                    return sc.err(&format!("table `[{cur}]` is written twice"));
+                }
             }
             doc.table_mut(&cur);
             continue;
@@ -465,7 +474,9 @@ pub fn parse_str(text: &str) -> Result<Document, String> {
         } else {
             format!("{cur}.{}", prefix.join("."))
         };
-        doc.table_mut(&path).insert(leaf.clone(), value);
+        if !doc.table_mut(&path).insert(leaf.clone(), value) {
+            return sc.err(&format!("key `{leaf}` is written twice in `[{path}]`"));
+        }
     }
 }
 
@@ -477,6 +488,17 @@ pub fn parse(path: &Path) -> Result<Document, String> {
 
 #[cfg(test)]
 mod tests {
+    /// XA2#9 RED: a key written twice, or a table header written twice, is refused rather than
+    /// resolved to the last one.
+    #[test]
+    fn a_duplicate_key_or_reopened_table_is_refused() {
+        let e = super::parse_str("[a]\nk = 1\nk = 2\n").expect_err("dup key");
+        assert!(e.contains("`k`") && e.contains("line"), "{e}");
+        let e = super::parse_str("[a]\nk = 1\n[b]\nj = 1\n[a]\nm = 2\n").expect_err("dup table");
+        assert!(e.contains("`[a]`"), "{e}");
+        assert!(super::parse_str("[a.b]\nk = 1\n[a]\nj = 1\n[[r]]\nk = 1\n[[r]]\nk = 2\n").is_ok());
+    }
+
     /// `[[registered]]` is a repeated header, and it is read as one entry per repetition rather
     /// than as one table the last repetition wins. Reading it the other way would make a file with
     /// three registrations describe one.
