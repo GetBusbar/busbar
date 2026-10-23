@@ -13,7 +13,7 @@ use crate::gates::construction::model::{
     VACUOUS,
 };
 use crate::gates::construction::teller_paths::{expanded_paths, judge, summary, Allowance};
-use crate::gates::construction::tree::{fnmatch, Fnc, Line, Tree};
+use crate::gates::construction::tree::{fnmatch, memo_file_scan, Fnc, Line, Tree};
 use crate::ledger::Status;
 use crate::rx::{self, Regex};
 
@@ -677,59 +677,82 @@ fn owner_of_header(header: &str) -> Option<String> {
 fn impl_owner(tree: &Tree, rel: &str, line: usize) -> Option<String> {
     let lines = tree.files.get(rel)?;
     let mut best: Option<(usize, String)> = None;
-    for (i, l) in lines.iter().enumerate() {
-        if l.no > line {
-            break;
-        }
-        let t = l.blank.trim_start();
-        let t = t.strip_prefix("unsafe").map_or(t, str::trim_start);
-        let opens = t
-            .strip_prefix("impl")
-            .is_some_and(|r| r.starts_with('<') || r.starts_with(char::is_whitespace));
-        if !opens {
-            continue;
-        }
-        let (mut header, mut depth, mut opened, mut end) = (String::new(), 0i64, false, None);
-        'scan: for m in &lines[i..] {
-            for ch in m.blank.chars() {
-                if !opened {
-                    match ch {
-                        '{' => {
-                            opened = true;
-                            depth = 1;
-                        }
-                        ';' => break 'scan,
-                        _ => header.push(ch),
-                    }
-                    continue;
-                }
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = Some(m.no);
-                            break 'scan;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            header.push(' ');
-        }
-        let Some(end) = end else { continue };
-        if line > end {
-            continue;
-        }
-        let Some(owner) = owner_of_header(&header) else {
+    for entry in impl_blocks(lines).iter() {
+        let mut parts = entry.splitn(3, '\u{1}');
+        let (Some(start), Some(end), Some(owner)) = (parts.next(), parts.next(), parts.next())
+        else {
             continue;
         };
-        let span = end - l.no;
+        let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) else {
+            continue;
+        };
+        if start > line || line > end {
+            continue;
+        }
+        let span = end - start;
         if best.as_ref().is_none_or(|(b, _)| span < *b) {
-            best = Some((span, owner));
+            best = Some((span, owner.to_string()));
         }
     }
     best.map(|(_, owner)| owner)
+}
+
+/// Every closed `impl` block of one file with a readable self type, in file order, as
+/// `start\u{1}end\u{1}owner` (its opening and closing lines). ONE SCAN PER FILE, SHARED BY EVERY
+/// RUN: memoised on the file's scan ([`memo_file_scan`]), so the self-test's plants read the base
+/// tree's blocks once rather than re-walking every file a call sits in, per call, per plant.
+fn impl_blocks(lines: &std::sync::Arc<Vec<Line>>) -> std::sync::Arc<Vec<String>> {
+    memo_file_scan("single-terminal:impl-blocks".to_string(), lines, |lines| {
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if let Some((end, owner)) = impl_block_at(lines, i) {
+                out.push(format!("{}\u{1}{end}\u{1}{owner}", l.no));
+            }
+        }
+        out
+    })
+}
+
+/// The `impl` block opening on line `i` of `lines`: its closing line and its self type; `None`
+/// when the line opens no impl, the block never closes, or its header names no type.
+fn impl_block_at(lines: &[Line], i: usize) -> Option<(usize, String)> {
+    let t = lines[i].blank.trim_start();
+    let t = t.strip_prefix("unsafe").map_or(t, str::trim_start);
+    let opens = t
+        .strip_prefix("impl")
+        .is_some_and(|r| r.starts_with('<') || r.starts_with(char::is_whitespace));
+    if !opens {
+        return None;
+    }
+    let (mut header, mut depth, mut opened, mut end) = (String::new(), 0i64, false, None);
+    'scan: for m in &lines[i..] {
+        for ch in m.blank.chars() {
+            if !opened {
+                match ch {
+                    '{' => {
+                        opened = true;
+                        depth = 1;
+                    }
+                    ';' => break 'scan,
+                    _ => header.push(ch),
+                }
+                continue;
+            }
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(m.no);
+                        break 'scan;
+                    }
+                }
+                _ => {}
+            }
+        }
+        header.push(' ');
+    }
+    Some((end?, owner_of_header(&header)?))
 }
 
 /// How the enclosing fn is named for an allowed-callers list: `Type::fn` inside an impl, the bare
@@ -811,6 +834,29 @@ fn past_visibility(text: &str) -> &str {
         Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
         _ => t,
     }
+}
+
+/// [`type_aliases`] of one file of the tree. ONE SCAN PER FILE, SHARED BY EVERY RUN: memoised on
+/// the file's scan ([`memo_file_scan`]) as `X\u{1}Y` (resolved) or a bare `X` (unresolved), so the
+/// tree-wide read [`shadowed_owners`] makes, and the per-call read of a calling file, cost the
+/// self-test's plants one pass over the base tree between them rather than one each.
+fn file_aliases(lines: &std::sync::Arc<Vec<Line>>) -> BTreeMap<String, Option<String>> {
+    let entries = memo_file_scan("single-terminal:type-aliases".to_string(), lines, |lines| {
+        type_aliases(lines)
+            .into_iter()
+            .map(|(name, target)| match target {
+                Some(target) => format!("{name}\u{1}{target}"),
+                None => name,
+            })
+            .collect()
+    });
+    entries
+        .iter()
+        .map(|e| match e.split_once('\u{1}') {
+            Some((name, target)) => (name.to_string(), Some(target.to_string())),
+            None => (e.clone(), None),
+        })
+        .collect()
 }
 
 /// The type aliases a file declares: `type X = Y;` maps `X` to `Y`'s type (its last path segment,
@@ -1081,7 +1127,7 @@ fn calls_terminal(
         return true;
     };
     let no = lines[idx].no;
-    let mut aliases = type_aliases(lines);
+    let mut aliases = file_aliases(lines);
     // A NAME BOUND TWO WAYS IS UNRESOLVED: an alias spelled as a type that itself defines the
     // terminal's name (`use … PlaneMoney as Node;` beside the real `Node`) is read as neither, so a
     // call through it is counted (fail-closed).
@@ -1125,7 +1171,7 @@ fn calls_terminal(
 fn shadowed_owners(tree: &Tree, owners: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for lines in tree.files.values() {
-        for (name, target) in type_aliases(lines) {
+        for (name, target) in file_aliases(lines) {
             if owners.contains(&name) && target.as_deref() != Some(name.as_str()) {
                 out.push(name);
             }
