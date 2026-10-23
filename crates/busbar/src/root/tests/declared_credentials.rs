@@ -590,10 +590,17 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
 // the credential is presented for — the one version header its builder used to write beside the
 // credential, now declared data.
 
+/// One static-header case: its name, the recorded binding, and the static headers it declares.
+type StaticCase = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
 /// The static-header cases: a name, the recorded binding it is presented under, and the static
 /// headers it declares. Only the statics are the case's own; the credential's presentation is the
 /// recorded binding's.
-const STATIC_CASES: [(&str, &str, &[(&str, &str)]); 3] = [
+const STATIC_CASES: [StaticCase; 3] = [
     (
         "static-twin-versioned",
         "anthropic",
