@@ -95,7 +95,7 @@ impl Ctx {
         }
         Ok(Ctx {
             idx: if crates.exists() {
-                test_index(crates, root)?
+                memo_test_index(crates, root)?
             } else {
                 BTreeMap::new()
             },
@@ -117,7 +117,7 @@ impl Ctx {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
             symbols: if crates.exists() {
-                symbol_index(crates, &root.join("xtask"))
+                memo_symbol_index(crates, &root.join("xtask"))
             } else {
                 BTreeSet::new()
             },
@@ -137,6 +137,42 @@ impl Ctx {
             .find(|(k, _)| k == pb)
             .map(|(_, v)| v.as_str())
     }
+}
+
+type TestIdx = BTreeMap<String, BTreeSet<String>>;
+
+/// [`test_index`] ONCE PER TREE PER PROCESS. Both indexes read the files on disk (a selftest case
+/// plants into the [`Ctx`] it builds, never into the files), so the 24 cases of one battery share
+/// one walk of the tree instead of paying for it each.
+fn memo_test_index(crates: &Path, root: &Path) -> Result<TestIdx, String> {
+    type Memo = BTreeMap<(PathBuf, PathBuf), TestIdx>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let key = (crates.to_path_buf(), root.to_path_buf());
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(hit.clone());
+    }
+    let built = test_index(crates, root)?;
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, built.clone());
+    Ok(built)
+}
+
+/// [`symbol_index`] once per tree per process, as [`memo_test_index`].
+fn memo_symbol_index(crates: &Path, xtask: &Path) -> BTreeSet<String> {
+    type Memo = BTreeMap<(PathBuf, PathBuf), BTreeSet<String>>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let key = (crates.to_path_buf(), xtask.to_path_buf());
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return hit.clone();
+    }
+    let built = symbol_index(crates, xtask);
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, built.clone());
+    built
 }
 
 /// fn name -> the files declaring it under a test attribute that RUNS: not `#[ignore]`d (a test
@@ -221,6 +257,10 @@ fn crate_dir_of(file: &Path) -> Option<PathBuf> {
 /// The module names one source text declares: every brace-less `mod name;` and every `#[path]`
 /// stem.
 fn declared_modules(text: &str, names: &mut BTreeSet<String>) {
+    // Most files declare nothing: skip them before splitting into lines.
+    if !text.contains("mod ") && !text.contains("#[path") {
+        return;
+    }
     for line in text.split('\n') {
         let t = line.trim_start();
         if let Some(rest) = t.strip_prefix("#[path") {
