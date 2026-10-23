@@ -4953,7 +4953,7 @@ pub(crate) mod door_boundary {
         let slot = slot_over(row, tools.clone());
         // The operator credential's row on the auth axis, as boot links it: the admin chain the
         // admin router authenticates `x-admin-token` with.
-        busbar_kernel::preflight::install_linked_auth(
+        busbar_kernel::test_support::install_root_auth(
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
@@ -5088,7 +5088,7 @@ pub(crate) mod door_boundary {
                  "inputSchema": super::tool_door::tool_schema()}
             ])))
         };
-        busbar_kernel::preflight::install_linked_auth(
+        busbar_kernel::test_support::install_root_auth(
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );

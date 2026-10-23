@@ -1,32 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-kernel-identity — the chain walk and the identity types around it
+//! # busbar-kernel-identity — the identity pieces the kernel's authenticate step is built from
 //!
-//! One question: **who is calling?** This crate holds the walk that answers it over a configured
-//! chain of modules, the types a module and its answer are written in, the caller reference a plane
-//! attributes a request with, and the operator credential's words. It is not an authenticate step:
-//! the kernel's one chain serves that (BUSBAR-1.6.0.md THE DESIGN §11.11 R3).
+//! One question: **who is calling?** The kernel's one chain (`busbar_kernel::auth`) walks the
+//! configured chain and answers it. This crate holds the pieces that walk and the composition root
+//! are built from, and no walk of its own.
 //!
 //! ## What it holds
 //!
-//! - **The chain.** Config order. The first module to identify admits. A reject stops the chain. A
-//!   pass continues. The door is open only when the chain declares no module **and** no keys arm.
-//!   All-pass with a keys arm runs the keys arm; all-pass without one denies.
+//! - **The operator credential.** Its words ([`operator::OperatorWords`]), v1.5.5's refusal texts,
+//!   and the judgement of one request: the auth axis's `verify` answer read as a verdict, the replay
+//!   claim and the lines the transport strips ([`operator`]). The words and the linked auth rows are
+//!   the composition root's, handed to the kernel on its install record; this crate keeps neither.
 //! - **No credential cache.** A verified credential is cached by the auth plugin that verified it,
-//!   inside itself, and dropped on its `refresh` (BUSBAR-1.6.0.md THE DESIGN §11.11 R3, Q-INCACHE);
-//!   the walk keeps none.
-//! - **The module and the principal.** [`AuthModule`] and its three answers, [`AuthOutcome`]; and
-//!   [`Principal`]. The anonymous principal has no bucket and renders its actor id as the literal
-//!   word `anonymous` on every surface.
+//!   inside itself, and dropped on its `refresh` (BUSBAR-1.6.0.md THE DESIGN §11.11 R3, Q-INCACHE).
+//! - **The revocation view.** The set the authenticate step gates a NEW unit with
+//!   ([`RevocationView`]), which the root implements over the node's governance state.
+//! - **The anonymous caller.** [`ANONYMOUS`], the literal an unauthenticated caller renders as on
+//!   every surface.
 //! - **The caller reference.** What a plane sees in place of the principal ([`caller_ref`]).
-//! - **The operator credential.** Its provider key, principal id and refusal words ([`operator`]).
-//!
-//! ## What the caller supplies
-//!
-//! Anything that would have pulled in an HTTP stack or a clock arrives as a trait: [`KeyVerifier`]
-//! for the built-in signed-key arm, and [`RevocationView`] for the revocation set derived from the
-//! journal tail.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -34,14 +27,12 @@
 
 /// The caller reference a plane attributes a request with, in place of the principal.
 pub mod caller_ref;
-pub mod chain;
-pub mod module;
 pub mod operator;
 pub mod principal;
+pub mod revocation;
 
-pub use chain::{AuthChain, ChainEntry, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
-pub use module::{AuthModule, AuthOutcome};
-pub use principal::{Principal, ANONYMOUS};
+pub use principal::ANONYMOUS;
+pub use revocation::RevocationView;
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

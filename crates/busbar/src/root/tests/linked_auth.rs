@@ -32,7 +32,7 @@ const ROOT: RootInstall = RootInstall {
 /// first install stands, and every install in this binary is this one table). The linked protocol declarations go in too: a config fixture's provider names the registry's
 /// residual-default dialect, and which test installed it first must not decide a verdict.
 fn link() {
-    busbar_kernel::preflight::install_linked_auth(
+    busbar_kernel::test_support::install_root_auth(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );

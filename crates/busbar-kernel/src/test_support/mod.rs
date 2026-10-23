@@ -2081,13 +2081,13 @@ pub fn hook_needs(
 }
 
 /// Install a test build's linked auth rows and the operator credential's words, as boot does
-/// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
-/// result nor the types behind it.
+/// ([`install_root_auth`], which hands them to the install record); a cell calls this so it names
+/// neither the call's result nor the types behind it.
 pub fn install_linked_auth(
     rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
     words: busbar_kernel_identity::operator::OperatorWords,
 ) {
-    crate::preflight::install_linked_auth(rows, words);
+    install_root_auth(rows, words);
 }
 
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
@@ -2342,12 +2342,23 @@ pub fn install_operator_auth_row(door: AuthDoor) {
     install_operator_auth_row_as(words, door)
 }
 
-/// `install_operator_auth_row_as(words, door)`: [`install_operator_auth_row`] under a test binary's
-/// OWN operator words — a binary that links the operator plugin the composition root links, and pins
-/// the root's bytes, hands in the root's words as the root does. The first install stands.
-pub use busbar_kernel_identity::operator::{
-    install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
-};
+/// [`install_operator_auth_row`] under a test binary's OWN operator words — a binary that links the
+/// operator plugin the composition root links, and pins the root's bytes, hands in the root's words
+/// as the root does: `door` linked under the provider key of `words`. The first install stands.
+pub fn install_operator_auth_row_as(words: OperatorWords, door: AuthDoor) {
+    let _ =
+        crate::preflight::TEST_ROOT_AUTH.set((vec![(words.provider, words.provider, door)], words));
+}
+
+/// THE ROOT'S AUTH ROWS in a test binary of the composition root: its linked table's `auths` and
+/// the operator words off its legacy table, which the install record
+/// ([`crate::preflight::root_rows`]) then reports as the root's install record does. The first
+/// hand-in stands.
+pub fn install_root_auth(rows: &[crate::preflight::LinkedAuth], words: OperatorWords) {
+    let _ = crate::preflight::TEST_ROOT_AUTH.set((rows.to_vec(), words));
+}
+
+pub use busbar_kernel_identity::operator::{AuthDoor, OperatorWords};
 
 // FINAL-REPIN: delete with `preflight::install_auth_axis` when the pinned door root cells lend
 // their TestApp a record of their own (`TestApp::root`).
