@@ -939,9 +939,9 @@ impl ProtocolReader for GeminiReader {
                                         Some(ti) if !state.text_block_closed => ti,
                                         _ => {
                                             // A NEW text block: its citations are relative to
-                                            // where it begins in the streamed answer (GEM-16).
-                                            state.text_block_start =
-                                                state.streamed_text.chars().count();
+                                            // where it begins in the streamed answer (GEM-16),
+                                            // the character count kept as the text grew.
+                                            state.text_block_start = state.streamed_chars;
                                             state.claim_ir_index()
                                         }
                                     };
@@ -960,13 +960,19 @@ impl ProtocolReader for GeminiReader {
                                         });
                                     }
                                     // The answer text so far: a streamed citation's byte offsets
-                                    // index into it (GEM-16).
+                                    // index into it (GEM-16), so it is indexed as it grows.
                                     // Bounded by the translate cap's default (32 MiB): the copy
                                     // only anchors citation offsets, and a fragment that would
                                     // cross the bound is not recorded (offsets past it clamp).
                                     if state.streamed_text.len().saturating_add(text.len())
                                         <= busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
                                     {
+                                        extend_char_marks(
+                                            &mut state.streamed_char_marks,
+                                            &mut state.streamed_chars,
+                                            state.streamed_text.len(),
+                                            text,
+                                        );
                                         state.streamed_text.push_str(text);
                                     }
                                     out.push(IrStreamEvent::BlockDelta {
@@ -1137,15 +1143,20 @@ impl ProtocolReader for GeminiReader {
             //
             // A citation's `startIndex`/`endIndex` are UTF-8 BYTE offsets into the FULL answer
             // text, and the IR's are CHARACTERS (GEM-16): convert against the answer text streamed so
-            // far (`state.streamed_text`, every text delta above appends to it), exactly as the
-            // buffered path converts against the candidate's full text. Gemini sends the metadata
-            // after the text it cites, so the anchor holds that text; an offset past it clamps.
+            // far (`state.streamed_text`, every text delta above appends to it and to its index),
+            // exactly as the buffered path converts against the candidate's full text. Gemini sends
+            // the metadata after the text it cites, so the anchor holds that text; an offset past
+            // it clamps.
             // The list Gemini restates here is CUMULATIVE — every chunk that carries
             // `citationMetadata` repeats every source seen so far — so emit only the tail past the
             // watermark. Carrying the whole list each time made a client assembling the stream see
             // the first citation once per chunk. A shorter-than-watermark list (an upstream that
             // resets rather than accumulates) yields an empty tail and no delta, never a panic.
-            let all_citations = read_gemini_citations(candidate, Some(&state.streamed_text));
+            let all_citations = read_gemini_streamed_citations(
+                candidate,
+                &state.streamed_text,
+                &state.streamed_char_marks,
+            );
             // GEM-16: the converted offsets index the WHOLE streamed answer; the
             // IR's index the text block the citation annotates, so shift by where that block began.
             let block_start = i64::try_from(state.text_block_start).unwrap_or(i64::MAX);

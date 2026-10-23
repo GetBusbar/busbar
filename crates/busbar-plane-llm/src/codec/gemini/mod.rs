@@ -1752,11 +1752,15 @@ pub struct GeminiWriter {
 }
 
 /// The streamed answer text [`GeminiWriter::stream_text`] accumulates: the concatenated `text` and
-/// one `(ir_block_index, byte_start)` per text block, in the order the blocks first carried text.
+/// one `(ir_block_index, byte_start)` per text block, in the order the blocks first carried text,
+/// with the text's character count and index marks kept as it grows (so a citation converts without
+/// walking the text).
 #[derive(Clone, Debug, Default)]
 struct GeminiStreamText {
     text: String,
     block_starts: Vec<(usize, usize)>,
+    chars: usize,
+    marks: Vec<usize>,
 }
 
 /// Value-namespace constructor for [`GeminiWriter`]. A `const` and a struct may share a name (they
@@ -1780,6 +1784,8 @@ pub const GeminiWriter: GeminiWriter = GeminiWriter {
     stream_text: std::sync::Mutex::new(GeminiStreamText {
         text: String::new(),
         block_starts: Vec::new(),
+        chars: 0,
+        marks: Vec::new(),
     }),
     translate_cap: std::sync::atomic::AtomicUsize::new(
         busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,

@@ -23,55 +23,86 @@ use crate::codec::keys;
 /// panicking on a non-boundary slice.
 pub(super) struct GeminiCharIndex<'a> {
     text: &'a str,
-    /// Pure-ASCII text: a byte offset IS a character offset, so no index is held at all.
-    ascii: bool,
-    /// Byte offset of every [`CHAR_CHECKPOINT_STRIDE`]th character start, ascending. A lookup
-    /// binary-searches this and walks at most one stride of characters, so the index costs one
-    /// `usize` per stride instead of one per character.
-    checkpoints: Vec<usize>,
+    /// The byte offset of character `k * CHAR_MARK_STRIDE`, for every such character the text
+    /// holds, ascending. A lookup binary-searches the marks and walks at most one stride of
+    /// characters, so the index holds one `usize` per stride rather than one per character.
+    marks: std::borrow::Cow<'a, [usize]>,
 }
 
-/// Characters between two checkpoints of a [`GeminiCharIndex`].
-const CHAR_CHECKPOINT_STRIDE: usize = 64;
+/// Characters between two marks of a [`GeminiCharIndex`].
+pub(super) const CHAR_MARK_STRIDE: usize = 64;
+
+/// Characters an index walked (building or answering), for the work-bound tests. Per thread, so
+/// parallel tests cannot see each other's walks.
+#[cfg(test)]
+thread_local! {
+    pub(super) static CHARS_WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[inline]
+fn walked(n: usize) {
+    #[cfg(test)]
+    CHARS_WALKED.with(|w| w.set(w.get().saturating_add(n)));
+    let _ = n;
+}
+
+/// Extend the marks of an APPEND-ONLY text by `appended`, the bytes that now follow the `base` bytes
+/// already indexed (`chars` characters). The stream reader and writer call this as each text delta
+/// lands, so their anchor text is indexed once in total rather than once per citation chunk.
+pub(super) fn extend_char_marks(
+    marks: &mut Vec<usize>,
+    chars: &mut usize,
+    base: usize,
+    appended: &str,
+) {
+    for (b, _) in appended.char_indices() {
+        if *chars % CHAR_MARK_STRIDE == 0 {
+            marks.push(base + b);
+        }
+        *chars += 1;
+    }
+    walked(appended.len());
+}
 
 impl<'a> GeminiCharIndex<'a> {
     /// The single ordered pass. `char_indices()` yields character starts in ascending byte order, so
-    /// the checkpoints are sorted by construction.
+    /// the marks are sorted by construction.
     pub(super) fn build(text: &'a str) -> Self {
-        let ascii = text.is_ascii();
-        let checkpoints = if ascii {
-            Vec::new()
-        } else {
-            text.char_indices()
-                .step_by(CHAR_CHECKPOINT_STRIDE)
-                .map(|(b, _)| b)
-                .collect()
-        };
+        let mut marks = Vec::new();
+        let mut chars = 0;
+        extend_char_marks(&mut marks, &mut chars, 0, text);
         Self {
             text,
-            ascii,
-            checkpoints,
+            marks: std::borrow::Cow::Owned(marks),
+        }
+    }
+
+    /// The index over a stream's anchor text whose marks were kept as it grew
+    /// ([`extend_char_marks`]): no walk of the text at all.
+    pub(super) fn from_marks(text: &'a str, marks: &'a [usize]) -> Self {
+        Self {
+            text,
+            marks: std::borrow::Cow::Borrowed(marks),
         }
     }
 
     /// The character offset for a wire BYTE offset.
     pub(super) fn char_offset(&self, byte_idx: i64) -> i64 {
         let target = (byte_idx.max(0) as usize).min(self.text.len());
-        if self.ascii {
-            return target as i64;
-        }
-        // The last checkpoint at or before `target` (the first is byte 0 for any non-empty text).
-        let k = self.checkpoints.partition_point(|&s| s <= target);
+        // The last mark at or before `target` (the first is byte 0 for any non-empty text).
+        let k = self.marks.partition_point(|&s| s <= target);
         if k == 0 {
             return 0;
         }
-        let base = self.checkpoints[k - 1];
-        let mut before = (k - 1) * CHAR_CHECKPOINT_STRIDE;
+        let base = self.marks[k - 1];
+        let mut before = (k - 1) * CHAR_MARK_STRIDE;
         let mut boundary = target == self.text.len();
         // Count the character starts strictly below `target`; a start equal to it proves `target`
         // is a boundary. When it is NOT, the character containing it was counted, so drop it to
         // land on the nearest earlier boundary.
+        let mut steps = 0usize;
         for (b, _) in self.text[base..].char_indices() {
+            steps += 1;
             let start = base + b;
             if start >= target {
                 boundary = boundary || start == target;
@@ -79,10 +110,26 @@ impl<'a> GeminiCharIndex<'a> {
             }
             before += 1;
         }
+        walked(steps);
         if boundary {
             before as i64
         } else {
             before.saturating_sub(1) as i64
+        }
+    }
+
+    /// The BYTE offset of a CHARACTER offset (the inverse; `gemini_char_offset_to_byte`'s answer):
+    /// a negative offset clamps to 0, one at or past the character count to `text.len()`.
+    pub(super) fn byte_offset(&self, char_idx: i64) -> i64 {
+        let c = char_idx.max(0) as usize;
+        let Some(&base) = self.marks.get(c / CHAR_MARK_STRIDE) else {
+            return self.text.len() as i64;
+        };
+        let within = c % CHAR_MARK_STRIDE;
+        walked(within + 1);
+        match self.text[base..].char_indices().nth(within) {
+            Some((b, _)) => (base + b) as i64,
+            None => self.text.len() as i64,
         }
     }
 }
@@ -111,6 +158,10 @@ pub(super) fn gemini_byte_offset_to_char(text: &str, byte_idx: i64) -> i64 {
 
 /// The inverse of [`gemini_byte_offset_to_char`]: a CHARACTER offset (the IR contract) back to the
 /// BYTE offset Gemini's wire format expects. `char_idx` is clamped to the text's char count.
+///
+/// Kept as the REFERENCE [`GeminiCharIndex::byte_offset`] is measured against; production writes go
+/// through the index, so a text with many citations is not walked once per offset.
+#[cfg(test)]
 pub(super) fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
     let clamped = char_idx.max(0) as usize;
     match text.char_indices().nth(clamped) {
@@ -137,6 +188,50 @@ pub(super) fn read_gemini_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
 ) -> Vec<crate::codec::ir::IrCitation> {
+    read_citations_at(candidate, &Anchor::text(anchor_text))
+}
+
+/// The stream's read: `text` is the answer streamed so far and `marks` the index the reader kept
+/// as it grew ([`extend_char_marks`]), so a citation chunk converts without walking the answer.
+pub(super) fn read_gemini_streamed_citations(
+    candidate: &serde_json::Value,
+    text: &str,
+    marks: &[usize],
+) -> Vec<crate::codec::ir::IrCitation> {
+    read_citations_at(
+        candidate,
+        &Anchor {
+            text: Some(text),
+            index: std::cell::OnceCell::from(GeminiCharIndex::from_marks(text, marks)),
+        },
+    )
+}
+
+/// The text a candidate's citation offsets convert against, indexed on first use (once for both
+/// citation slots), or already indexed by the stream that grew it. No text leaves the wire bytes.
+struct Anchor<'a> {
+    text: Option<&'a str>,
+    index: std::cell::OnceCell<GeminiCharIndex<'a>>,
+}
+
+impl<'a> Anchor<'a> {
+    fn text(text: Option<&'a str>) -> Self {
+        Self {
+            text,
+            index: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn index(&self) -> Option<&GeminiCharIndex<'a>> {
+        let text = self.text?;
+        Some(self.index.get_or_init(|| GeminiCharIndex::build(text)))
+    }
+}
+
+fn read_citations_at(
+    candidate: &serde_json::Value,
+    anchor: &Anchor<'_>,
+) -> Vec<crate::codec::ir::IrCitation> {
     let sources = candidate
         .get(FIELD_CITATION_METADATA)
         .and_then(|m| m.get(FIELD_CITATION_SOURCES))
@@ -145,16 +240,16 @@ pub(super) fn read_gemini_citations(
         // No `citationMetadata`, but a GROUNDED answer carries its sources in the OTHER slot. Fall
         // through to it rather than returning empty (which is what stripped every Google-Search
         // grounded answer's sources on the way to a foreign client).
-        return read_gemini_grounding_citations(candidate, anchor_text);
+        return grounding_citations_at(candidate, anchor);
     };
     // One pass over the anchor text for the WHOLE candidate, rather than one per offset converted.
-    let char_index = anchor_text.map(GeminiCharIndex::build);
+    let char_index = anchor.index();
     let mut out: Vec<crate::codec::ir::IrCitation> = sources
         .iter()
         .map(|src| {
             let raw_start = src.get(FIELD_START_INDEX).and_then(|v| v.as_i64());
             let raw_end = src.get(FIELD_END_INDEX).and_then(|v| v.as_i64());
-            let (start_index, end_index) = match char_index.as_ref() {
+            let (start_index, end_index) = match char_index {
                 Some(idx) => (
                     raw_start.map(|b| idx.char_offset(b)),
                     raw_end.map(|b| idx.char_offset(b)),
@@ -186,7 +281,7 @@ pub(super) fn read_gemini_citations(
         .collect();
     // A response can carry BOTH slots (a grounded answer that also cites its own attached corpus).
     // Append rather than choose, so neither set of sources is dropped for the other's presence.
-    out.extend(read_gemini_grounding_citations(candidate, anchor_text));
+    out.extend(grounding_citations_at(candidate, anchor));
     out
 }
 
@@ -196,6 +291,20 @@ const FIELD_GROUNDING_CHUNKS: &str = "groundingChunks";
 
 /// Most bytes of grounding chunks and cited text one candidate may clone into citations.
 const MAX_GROUNDING_CLONE_BYTES: usize = 8 * 1024 * 1024;
+
+/// An [`std::io::Write`] that only counts what it is handed.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Map a Gemini candidate's `groundingMetadata` → neutral [`crate::codec::ir::IrCitation`]s.
 ///
@@ -224,6 +333,13 @@ pub(super) fn read_gemini_grounding_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
 ) -> Vec<crate::codec::ir::IrCitation> {
+    grounding_citations_at(candidate, &Anchor::text(anchor_text))
+}
+
+fn grounding_citations_at(
+    candidate: &serde_json::Value,
+    anchor: &Anchor<'_>,
+) -> Vec<crate::codec::ir::IrCitation> {
     let Some(gm) = candidate.get(FIELD_GROUNDING_METADATA) else {
         return Vec::new();
     };
@@ -236,8 +352,13 @@ pub(super) fn read_gemini_grounding_citations(
         return Vec::new();
     }
 
-    // Serialized size of a chunk, measured per (support, chunk) pair the budget below admits.
-    let chunk_bytes = |chunk: &serde_json::Value| -> usize { chunk.to_string().len() };
+    // Serialized size of a chunk, counted without building the string, per (support, chunk) pair
+    // the budget below admits (so the measuring is itself bounded by the budget).
+    let chunk_bytes = |chunk: &serde_json::Value| -> usize {
+        let mut n = ByteCount(0);
+        let _ = serde_json::to_writer(&mut n, chunk);
+        n.0
+    };
 
     // `{web: {uri, title}}` and `{retrievedContext: {uri, title}}` are the two documented chunk
     // members and carry the same two fields; read whichever is present rather than name only `web`.
@@ -270,8 +391,8 @@ pub(super) fn read_gemini_grounding_citations(
     // convention `citationSources[]` uses — convert with the same helper, and with no anchor text
     // leave the wire value rather than mislabel bytes as characters.
     // One pass over the anchor text for the whole grounding block, not one per offset converted.
-    let char_index = anchor_text.map(GeminiCharIndex::build);
-    let convert = |b: Option<i64>| match char_index.as_ref() {
+    let char_index = anchor.index();
+    let convert = |b: Option<i64>| match char_index {
         Some(idx) => b.map(|b| idx.char_offset(b)),
         None => b,
     };
@@ -351,8 +472,13 @@ pub(super) fn read_gemini_grounding_citations(
         }
     }
     if out.is_empty() {
-        // Sources with no support spans: still the answer's provenance.
+        // Sources with no support spans: still the answer's provenance (each chunk cloned once,
+        // under the same budget).
         for chunk in chunks {
+            cloned_bytes = cloned_bytes.saturating_add(chunk_bytes(chunk));
+            if cloned_bytes > MAX_GROUNDING_CLONE_BYTES {
+                break;
+            }
             let (url, title) = chunk_source(chunk);
             if url.is_none() && title.is_none() {
                 continue;
@@ -471,20 +597,18 @@ pub(super) fn attach_gemini_citations_to_text_blocks(
 /// all) would not be a valid Gemini source, so we ignore it and BUILD a Gemini source from the
 /// neutral fields — which are CHARACTERS (the IR contract) and must be converted back to the BYTES
 /// Gemini's wire format expects (the inverse of `gemini_byte_offset_to_char`),
-/// against `text` (this block's own text, the same anchor the reader converted against).
+/// against this block's own text (the same anchor the reader converted against).
 ///
-/// `byte_prefix` is the BYTE length of every text part that precedes this block's text in the
-/// candidate's full output (0 for the first/only text block). The IR's `start_index`/`end_index` on
-/// `c` are relative to THIS block's own text (the per-block-relative contract
-/// `attach_gemini_citations_to_text_blocks` establishes on read), but Gemini's wire
-/// `startIndex`/`endIndex` are candidate-relative byte offsets into the FULL concatenated text — so
-/// the block-local converted byte offset must be shifted by `byte_prefix` to become candidate-wide
-/// again. Callers with no multi-part accumulation (single text block, or the streaming call site
-/// with no anchor at all) pass `0`.
+/// `convert` maps a block-relative CHARACTER offset to Gemini's candidate-wide BYTE offset. The IR's
+/// `start_index`/`end_index` on `c` are relative to THIS block's own text (the per-block-relative
+/// contract `attach_gemini_citations_to_text_blocks` establishes on read), but Gemini's wire
+/// `startIndex`/`endIndex` are candidate-relative byte offsets into the FULL concatenated text, so
+/// the caller's converter adds the byte length of every text part before the block. `None` (no
+/// anchor text: an empty block, or a stream block that has carried no text) passes the value
+/// through UNCONVERTED: converting against an empty string would collapse every offset to 0.
 pub(super) fn write_gemini_citation(
     c: &crate::codec::ir::IrCitation,
-    text: &str,
-    byte_prefix: i64,
+    convert: Option<&dyn Fn(i64) -> i64>,
 ) -> serde_json::Value {
     if let Some(raw) = &c.raw {
         if raw.get(FIELD_URI).is_some()
@@ -494,17 +618,7 @@ pub(super) fn write_gemini_citation(
             return raw.clone();
         }
     }
-    // `text.is_empty()` marks "no anchor text available" (the streaming egress call site — see its
-    // caller comment): converting against an empty string would collapse every offset to 0, which
-    // is worse than the pre-fix behavior. Pass the value through UNCONVERTED there rather than
-    // corrupt it; the non-stream call site always supplies the real anchor text.
-    let convert = |v: i64| {
-        if text.is_empty() {
-            v
-        } else {
-            gemini_char_offset_to_byte(text, v) + byte_prefix
-        }
-    };
+    let convert = |v: i64| convert.map_or(v, |f| f(v));
     let mut obj = serde_json::Map::new();
     if let Some(s) = c.start_index {
         obj.insert(FIELD_START_INDEX.to_string(), serde_json::json!(convert(s)));

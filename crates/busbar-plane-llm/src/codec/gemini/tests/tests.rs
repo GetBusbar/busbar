@@ -7699,3 +7699,168 @@ fn grounding_clone_budget_bounds_total_cloned_bytes() {
         out.len()
     );
 }
+
+/// The CHARACTER to BYTE direction of the index answers as the per-offset walk does, and marks kept
+/// fragment by fragment (as a stream keeps them) are the marks one pass over the whole text builds.
+#[test]
+fn gemini_char_index_byte_offsets_and_streamed_marks_match_the_walk() {
+    let fragments: Vec<String> = (0..97)
+        .map(|i| "aé✓𝄞x".repeat(i % 7) + &"z".repeat(i % 3))
+        .collect();
+    let mut text = String::new();
+    let mut marks = Vec::new();
+    let mut chars = 0usize;
+    for f in &fragments {
+        citations::extend_char_marks(&mut marks, &mut chars, text.len(), f);
+        text.push_str(f);
+    }
+    assert_eq!(chars, text.chars().count());
+    let built = GeminiCharIndex::build(&text);
+    let kept = GeminiCharIndex::from_marks(&text, &marks);
+    for b in -2..=(text.len() as i64 + 3) {
+        assert_eq!(kept.char_offset(b), gemini_byte_offset_to_char(&text, b));
+        assert_eq!(built.char_offset(b), kept.char_offset(b));
+    }
+    for c in -2..=(chars as i64 + 3) {
+        assert_eq!(kept.byte_offset(c), gemini_char_offset_to_byte(&text, c));
+        assert_eq!(built.byte_offset(c), kept.byte_offset(c));
+    }
+    assert_eq!(
+        GeminiCharIndex::build("").byte_offset(5),
+        gemini_char_offset_to_byte("", 5)
+    );
+}
+
+/// LLM3#3 (reader): a stream whose every chunk carries answer text AND the candidate's citation
+/// metadata converts each chunk's offsets against the answer kept indexed as it grew. Rebuilding the
+/// index (or recounting the answer) per chunk walks the whole answer once per chunk, quadratic in the
+/// stream; the walk here stays within a small multiple of the answer's own size.
+#[test]
+fn streamed_citation_chunks_do_not_rewalk_the_answer() {
+    let mut state = StreamDecodeState::default();
+    let fragment = "é✓𝄞 grounded answer text ".repeat(20);
+    let chunks = 300usize;
+    let before = citations::CHARS_WALKED.with(std::cell::Cell::get);
+    let mut cites = 0usize;
+    for _ in 0..chunks {
+        let chunk = serde_json::json!({"candidates": [{
+            "content": {"role": "model", "parts": [{"text": fragment}]},
+            "citationMetadata": {"citationSources": [
+                {"startIndex": 0, "endIndex": 4, "uri": "https://example.com"}]}}]});
+        for ev in
+            GeminiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state)
+        {
+            if let IrStreamEvent::BlockDelta {
+                delta: IrDelta::CitationsDelta(c),
+                ..
+            } = ev
+            {
+                cites += c.len();
+            }
+        }
+    }
+    let walked = citations::CHARS_WALKED.with(std::cell::Cell::get) - before;
+    let answer = fragment.len() * chunks;
+    assert_eq!(cites, 1, "the cumulative list is carried once");
+    assert_eq!(state.streamed_chars, state.streamed_text.chars().count());
+    assert!(
+        walked <= 2 * answer,
+        "walked {walked} characters for a {answer}-byte answer: the index was rebuilt per chunk"
+    );
+}
+
+/// LLM3#3 (reader): the answer copy a stream keeps to anchor citation offsets is bounded by the
+/// translate cap; text past it is still delivered, only not copied.
+#[test]
+fn streamed_answer_copy_is_bounded_by_the_translate_cap() {
+    let cap = busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
+    let piece = "x".repeat(4 * 1024 * 1024);
+    let mut state = StreamDecodeState::default();
+    let mut delivered = 0usize;
+    for _ in 0..(cap / piece.len() + 2) {
+        let chunk = serde_json::json!({"candidates": [{
+            "content": {"role": "model", "parts": [{"text": piece}]}}]});
+        for ev in
+            GeminiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state)
+        {
+            if let IrStreamEvent::BlockDelta {
+                delta: IrDelta::TextDelta(t),
+                ..
+            } = ev
+            {
+                delivered += t.len();
+            }
+        }
+    }
+    assert!(delivered > cap, "every text delta is still delivered");
+    assert!(
+        state.streamed_text.len() <= cap,
+        "kept {} bytes past the {cap}-byte cap",
+        state.streamed_text.len()
+    );
+}
+
+/// LLM3#3 (writer): the answer copy the Gemini stream writer keeps is bounded by its translate cap.
+#[test]
+fn writer_stream_text_copy_is_bounded_by_the_translate_cap() {
+    let writer = GeminiWriter;
+    writer.set_translate_cap(1024);
+    for _ in 0..10 {
+        let _ = writer.write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::TextDelta("y".repeat(200)),
+            },
+        );
+    }
+    let kept = writer.stream_text.lock().expect("lock").text.len();
+    assert!(kept <= 1024, "kept {kept} bytes past the 1024-byte cap");
+}
+
+/// LLM3#3 (writer): many streamed citation frames against one long text block convert through the
+/// index the writer kept as the text grew, not a walk of the block per offset.
+#[test]
+fn writer_streamed_citations_do_not_rewalk_the_block() {
+    let writer = GeminiWriter;
+    let text = "é✓𝄞 cited answer ".repeat(2000);
+    let total_chars = text.chars().count() as i64;
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: IrDelta::TextDelta(text.clone()),
+        },
+    );
+    let before = citations::CHARS_WALKED.with(std::cell::Cell::get);
+    let frames = 500usize;
+    for i in 0..frames {
+        let at = total_chars - 1 - (i as i64 % 50);
+        let citation = crate::codec::ir::IrCitation {
+            url: Some("https://c".to_string()),
+            start_index: Some(at),
+            end_index: Some(total_chars),
+            ..Default::default()
+        };
+        let (_, frame) = writer
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockDelta {
+                    index: 0,
+                    delta: IrDelta::CitationsDelta(vec![citation]),
+                },
+            )
+            .expect("citation frame");
+        let src = &frame["candidates"][0]["citationMetadata"]["citationSources"][0];
+        assert_eq!(
+            src["startIndex"],
+            serde_json::json!(gemini_char_offset_to_byte(&text, at))
+        );
+        assert_eq!(src["endIndex"], serde_json::json!(text.len()));
+    }
+    let walked = citations::CHARS_WALKED.with(std::cell::Cell::get) - before;
+    assert!(
+        walked <= frames * 4 * 66,
+        "walked {walked} characters for {frames} frames: the block was walked per offset"
+    );
+}

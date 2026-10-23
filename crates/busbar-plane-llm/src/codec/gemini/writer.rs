@@ -1016,10 +1016,12 @@ impl ProtocolWriter for GeminiWriter {
                             .translate_cap
                             .load(std::sync::atomic::Ordering::Relaxed);
                         if st.text.len().saturating_add(text.len()) <= cap {
+                            let start = st.text.len();
                             if !st.block_starts.iter().any(|(i, _)| i == index) {
-                                let start = st.text.len();
                                 st.block_starts.push((*index, start));
                             }
+                            let st = &mut *st;
+                            extend_char_marks(&mut st.marks, &mut st.chars, start, text);
                             st.text.push_str(text);
                         }
                     }
@@ -1126,25 +1128,40 @@ impl ProtocolWriter for GeminiWriter {
                         // conversion the buffered writer makes (GEM-16). A citation whose block has
                         // carried no text yet has no anchor and passes through unconverted, as
                         // before; the `raw` short-circuit keeps a Gemini-sourced source byte-exact.
+                        // The stream's text is indexed as it grew, so each offset converts in at
+                        // most one index stride of work rather than a walk of the block.
                         let sources: Vec<serde_json::Value> = match self.stream_text.lock() {
                             Ok(st) => {
                                 let start = st
                                     .block_starts
                                     .iter()
                                     .find(|(i, _)| i == index)
-                                    .map(|(_, b)| *b);
-                                let (anchor, prefix) = match start {
-                                    Some(b) => (st.text.get(b..).unwrap_or(""), b as i64),
-                                    None => ("", 0),
-                                };
-                                citations
-                                    .iter()
-                                    .map(|c| write_gemini_citation(c, anchor, prefix))
-                                    .collect()
+                                    .map(|(_, b)| *b)
+                                    .filter(|b| *b < st.text.len());
+                                match start {
+                                    Some(b) => {
+                                        let idx = GeminiCharIndex::from_marks(&st.text, &st.marks);
+                                        // The block's first character, candidate-wide.
+                                        let block_char =
+                                            usize::try_from(idx.char_offset(b as i64)).unwrap_or(0);
+                                        let convert = |v: i64| {
+                                            let c = block_char.saturating_add(v.max(0) as usize);
+                                            idx.byte_offset(i64::try_from(c).unwrap_or(i64::MAX))
+                                        };
+                                        citations
+                                            .iter()
+                                            .map(|c| write_gemini_citation(c, Some(&convert)))
+                                            .collect()
+                                    }
+                                    None => citations
+                                        .iter()
+                                        .map(|c| write_gemini_citation(c, None))
+                                        .collect(),
+                                }
                             }
                             Err(_) => citations
                                 .iter()
-                                .map(|c| write_gemini_citation(c, "", 0))
+                                .map(|c| write_gemini_citation(c, None))
                                 .collect(),
                         };
                         Some((
@@ -1377,8 +1394,25 @@ impl ProtocolWriter for GeminiWriter {
                 crate::codec::ir::IrBlock::Text {
                     text, citations, ..
                 } => {
-                    for c in citations {
-                        citation_sources.push(write_gemini_citation(c, text, byte_prefix));
+                    if !citations.is_empty() {
+                        // One index over the block for all its citations, not a walk per offset.
+                        if text.is_empty() {
+                            for c in citations {
+                                citation_sources.push(write_gemini_citation(c, None));
+                            }
+                        } else {
+                            // Built on the first converted offset: a Gemini-sourced citation
+                            // re-emits its `raw` and converts nothing.
+                            let idx = std::cell::OnceCell::new();
+                            let convert = |v: i64| {
+                                idx.get_or_init(|| GeminiCharIndex::build(text))
+                                    .byte_offset(v)
+                                    + byte_prefix
+                            };
+                            for c in citations {
+                                citation_sources.push(write_gemini_citation(c, Some(&convert)));
+                            }
+                        }
                     }
                     byte_prefix += text.len() as i64;
                     if !text.is_empty() {

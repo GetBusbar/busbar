@@ -1759,6 +1759,14 @@ pub struct StreamDecodeState {
     /// so a citation on a later text block (text -> tool -> text) is shifted by this. 0 for the
     /// first text block (and for every other reader).
     pub text_block_start: usize,
+    /// GEM-16: the character count of [`Self::streamed_text`], kept as text is appended, so a new
+    /// text block's start is not a recount of the whole answer. Kept by the reader that keeps
+    /// [`Self::streamed_text`]; 0 for every other reader.
+    pub streamed_chars: usize,
+    /// GEM-16: the byte offset of every 64th character of [`Self::streamed_text`], extended as text
+    /// is appended, so a streamed citation converts its byte offsets without walking the whole
+    /// answer once per chunk. Empty wherever [`Self::streamed_text`] is.
+    pub streamed_char_marks: Vec<usize>,
 }
 
 impl StreamDecodeState {
