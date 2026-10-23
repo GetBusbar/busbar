@@ -1567,21 +1567,17 @@ fn retention_codes_round_trip_and_age_is_the_default() {
     assert_eq!(Retention::from_code(2), None);
 }
 
-/// **`RecordStore` has no default bodies** (BUSBAR-1.6.0.md Part 2 #38(a): "a default body is a
-/// plugin quietly declining to answer"). Reads the trait's own source: inside the trait's braces,
-/// every non-comment line must be brace-free, because the only way a method gets a `{` there is a
-/// body. A plugin that declines a surface states the no-support answer the method's doc names; it
-/// never inherits one.
-#[test]
-fn record_store_has_no_default_bodies() {
-    let src = include_str!("../records.rs");
+/// The lines inside `pub trait <name> { … }` (in `src`) that carry a brace. Every non-comment line
+/// inside a bodiless trait is brace-free, because the only way a method gets a `{` there is a body.
+fn bodied_lines(src: &str, name: &str) -> Vec<String> {
+    let head = format!("pub trait {name}");
     let open = src
-        .find("pub trait RecordStore")
-        .expect("records.rs declares `pub trait RecordStore`");
-    let mut bodied = Vec::new();
+        .find(&head)
+        .unwrap_or_else(|| panic!("the source declares `{head}`"));
     let mut lines = src[open..].lines();
-    let head = lines.next().expect("the trait's own line");
-    assert!(head.trim_end().ends_with('{'), "trait head: {head}");
+    let first = lines.next().expect("the trait's own line");
+    assert!(first.trim_end().ends_with('{'), "trait head: {first}");
+    let mut bodied = Vec::new();
     for line in lines {
         let code = line.trim_start();
         if code.starts_with("//") {
@@ -1594,8 +1590,28 @@ fn record_store_has_no_default_bodies() {
             bodied.push(line.trim().to_string());
         }
     }
+    bodied
+}
+
+/// **`RecordStore` has no default bodies** (BUSBAR-1.6.0.md Part 2 #38(a): "a default body is a
+/// plugin quietly declining to answer"). A plugin that declines a surface states the no-support
+/// answer the method's doc names; it never inherits one.
+#[test]
+fn record_store_has_no_default_bodies() {
+    let bodied = bodied_lines(include_str!("../records.rs"), "RecordStore");
     assert!(
         bodied.is_empty(),
         "RecordStore carries default bodies; every method must be bodiless (`;`): {bodied:?}"
+    );
+}
+
+/// **`StoreSlots` has no default bodies** either: it is the store kind's own table, and the same
+/// rule (BUSBAR-1.6.0.md Part 2 #38(a)) holds for every method a store plugin answers through it.
+#[test]
+fn store_slots_has_no_default_bodies() {
+    let bodied = bodied_lines(include_str!("../abi/sdk/store/mod.rs"), "StoreSlots");
+    assert!(
+        bodied.is_empty(),
+        "StoreSlots carries default bodies; every method must be bodiless (`;`): {bodied:?}"
     );
 }

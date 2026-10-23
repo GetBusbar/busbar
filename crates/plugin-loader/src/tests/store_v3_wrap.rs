@@ -16,7 +16,7 @@ use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 use crate::both_ways::store_fixture::MemoryStore;
@@ -827,5 +827,17 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         now: u64,
     ) -> Step<RecordStoreResult<bool>> {
         H::plane_token_live(&self.0, cx, kind, token, expires_at, now)
+    }
+    fn purge_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        match retention {
+            Retention::Age => StoreSlots::purge_plane_records_before(self, cx, kind, before),
+            Retention::TerminalOnly => Step::Ready(Ok(0)),
+        }
     }
 }

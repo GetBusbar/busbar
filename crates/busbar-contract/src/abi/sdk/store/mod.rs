@@ -187,14 +187,11 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// [`StoreSlots::open`] again. An `Err` fails the load with its text, verbatim, as an `open`
     /// refusal does, so a store that refused at open in 1.5.5 still refuses there, in its own
     /// words. The connection it checked out is closed when the step answers. A store that reaches
-    /// nothing at open answers `Ready(Ok(()))`, the default.
+    /// nothing at open answers `Ready(Ok(()))`.
     ///
     /// # Errors
     /// A text naming why the store does not open, carried verbatim to the operator.
-    fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>> {
-        let _ = cx;
-        Step::Ready(Ok(()))
-    }
+    fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>>;
 
     /// `add_usage` (slot 8): [`RecordStore::add_usage`], deduped on `op`.
     ///
@@ -634,9 +631,9 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
 
     /// RETENTION, with the predicate named (no slot of its own yet).
     ///
-    /// DEFAULTED: [`Retention::Age`] is [`StoreSlots::purge_plane_records_before`];
-    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
-    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+    /// A store without the terminal-only predicate answers [`Retention::Age`] as
+    /// [`StoreSlots::purge_plane_records_before`] and [`Retention::TerminalOnly`] as `Ready(Ok(0))`
+    /// — it purges nothing rather than dropping an ACTIVE row.
     ///
     /// # Errors
     /// The store's refusal, as [`StoreSlots::purge_plane_records_before`] states it.
@@ -646,12 +643,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         kind: &str,
         before: u64,
         retention: Retention,
-    ) -> Step<RecordStoreResult<u64>> {
-        match retention {
-            Retention::Age => self.purge_plane_records_before(cx, kind, before),
-            Retention::TerminalOnly => Step::Ready(Ok(0)),
-        }
-    }
+    ) -> Step<RecordStoreResult<u64>>;
 
     /// `delete_plane_record` (slot 30); absent is `Ok`.
     ///

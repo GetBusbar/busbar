@@ -33,7 +33,7 @@ use busbar_contract::abi::store::{
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -404,6 +404,21 @@ impl StoreSlots for Flat {
         _: u64,
     ) -> Step<RecordStoreResult<bool>> {
         unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn connect(&self, _cx: &mut StoreOp<'_>) -> Step<Result<(), String>> {
+        Step::Ready(Ok(()))
+    }
+    fn purge_plane_records(
+        &self,
+        cx: &mut StoreOp<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        match retention {
+            Retention::Age => StoreSlots::purge_plane_records_before(self, cx, kind, before),
+            Retention::TerminalOnly => Step::Ready(Ok(0)),
+        }
     }
 }
 

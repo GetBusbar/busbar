@@ -35,7 +35,7 @@ use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStore, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStore, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 use super::{MemoryStore, NAME};
@@ -943,5 +943,20 @@ impl StoreSlots for MemoryStore {
         Step::Ready(RecordStore::plane_token_live(
             self, kind, token, expires_at, now,
         ))
+    }
+    fn connect(&self, _cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        Step::Ready(Ok(()))
+    }
+    fn purge_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        match retention {
+            Retention::Age => StoreSlots::purge_plane_records_before(self, cx, kind, before),
+            Retention::TerminalOnly => Step::Ready(Ok(0)),
+        }
     }
 }

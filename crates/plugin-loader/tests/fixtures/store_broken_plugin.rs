@@ -19,7 +19,7 @@ use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 /// Its Statement name.
@@ -301,6 +301,21 @@ impl StoreSlots for HalfGrants {
         _: u64,
     ) -> Step<RecordStoreResult<bool>> {
         unreachable!("the broken store's test reaches only open and reserve")
+    }
+    fn connect(&self, _cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        Step::Ready(Ok(()))
+    }
+    fn purge_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        match retention {
+            Retention::Age => StoreSlots::purge_plane_records_before(self, cx, kind, before),
+            Retention::TerminalOnly => Step::Ready(Ok(0)),
+        }
     }
 }
 
