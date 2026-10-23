@@ -296,6 +296,18 @@ fn row_baseline(state: &BaselineState) -> Row {
                 schema::SNAPSHOT
             ),
         ),
+        BaselineState::NotAReleaseTag { r } => Row::fail(
+            ROW_BASELINE,
+            "the baseline ref is NOT a released tag",
+            format!(
+                "baseline ref '{r}' is not a release tag (`vMAJOR.MINOR.PATCH` that exists as a tag \
+                 here). The additive check answers a question about the PUBLISHED grammar, and \
+                 only a released tag is that; `HEAD`, a branch or a sha is the tree under judgment \
+                 or something its author moves, so a delta against it is empty by construction. \
+                 Unset CONFIG_SCHEMA_BASELINE_REF (default: {DEFAULT_BASELINE_REF}) or name a \
+                 release tag."
+            ),
+        ),
         BaselineState::Unresolvable { r } => Row::fail(
             ROW_BASELINE,
             "the baseline ref does NOT resolve",
@@ -365,6 +377,9 @@ enum BaselineState {
         types: usize,
     },
     Bootstrap {
+        r: String,
+    },
+    NotAReleaseTag {
         r: String,
     },
     Unresolvable {
@@ -515,9 +530,21 @@ impl Gate for ConfigSchemaGate {
 
         // ── THE DRIFT GUARD. One derivation, two arms: write it, or diff it.
         rows.push(row_drift(if cx.env().write {
-            match cx.write_file(schema::SNAPSHOT, &fresh_text) {
-                Ok(()) => DriftState::Written(n_types),
-                Err(e) => DriftState::Unwritable(e.to_string()),
+            // THE WRITE ARM COMMITS A RENDER TO THE REAL TREE, so it only ever commits the tree's
+            // own render. Under an overlay (`--selftest --write` runs every case planted) the
+            // render is a PLANT's, and writing it would replace the committed snapshot with a
+            // fingerprint of a source nobody wrote (XE#19).
+            if cx.overlay().is_some() {
+                DriftState::Unwritable(
+                    "refusing to write: this render is of a planted overlay, not of the tree \
+                     (`--write` belongs to a single un-planted gate run)"
+                        .to_string(),
+                )
+            } else {
+                match cx.write_file(schema::SNAPSHOT, &fresh_text) {
+                    Ok(()) => DriftState::Written(n_types),
+                    Err(e) => DriftState::Unwritable(e.to_string()),
+                }
             }
         } else {
             match cx.read(schema::SNAPSHOT) {
@@ -554,7 +581,11 @@ impl Gate for ConfigSchemaGate {
             .config_baseline_ref
             .clone()
             .unwrap_or_else(|| DEFAULT_BASELINE_REF.to_string());
-        let (state, baseline) = read_baseline(cx, &r);
+        let (state, baseline) = if is_release_tag(cx, &r) {
+            read_baseline(cx, &r)
+        } else {
+            (BaselineState::NotAReleaseTag { r: r.clone() }, None)
+        };
         rows.push(row_baseline(&state));
 
         match baseline {
@@ -602,6 +633,24 @@ impl Gate for ConfigSchemaGate {
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         selftest::run(self, cx)
     }
+}
+
+/// Is `r` a RELEASED TAG — the one thing [`row_baseline`] says its baseline is (XE#18)? The default
+/// is by construction. An override (`CONFIG_SCHEMA_BASELINE_REF`) must be spelled `vMAJOR.MINOR.PATCH`
+/// and be a tag of this repository: `HEAD`, a branch or a sha is the tree being judged (or something
+/// its author moves), and the additive check against it is empty by construction.
+fn is_release_tag(cx: &Ctx, r: &str) -> bool {
+    if r == DEFAULT_BASELINE_REF {
+        return true;
+    }
+    let shaped = r.strip_prefix('v').is_some_and(|v| {
+        let parts: Vec<&str> = v.split('.').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    });
+    shaped && cx.git_ref_resolves(&format!("refs/tags/{r}"))
 }
 
 /// Resolve the baseline ref and read the snapshot it carries. Returns the row state and, when there
@@ -762,3 +811,36 @@ fn see_through(
 }
 
 mod selftest;
+
+#[cfg(test)]
+mod baseline_ref_tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    /// XE#18: THE BASELINE ROW CLAIMS A RELEASED TAG, SO ONLY ONE CAN BE NAMED. `HEAD` is the tree
+    /// under judgment; a branch or a sha is something its author moves.
+    #[test]
+    fn only_a_release_tag_is_a_baseline() {
+        let cx = Ctx::workspace().expect("workspace context");
+        assert!(is_release_tag(&cx, DEFAULT_BASELINE_REF));
+        for not in [
+            "HEAD",
+            "main",
+            "origin/dev",
+            "v1.5",
+            "v1.5.x",
+            "1.5.3",
+            "v1.5.3-rc.1",
+            "",
+        ] {
+            assert!(!is_release_tag(&cx, not), "`{not}` is not a release tag");
+        }
+    }
+
+    #[test]
+    fn a_non_tag_baseline_is_a_red_row() {
+        let row = row_baseline(&BaselineState::NotAReleaseTag { r: "HEAD".into() });
+        assert_eq!(row.status, Status::Fail);
+        assert!(row.detail.contains("not a release tag"));
+    }
+}

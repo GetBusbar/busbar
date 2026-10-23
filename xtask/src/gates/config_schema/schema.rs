@@ -587,6 +587,97 @@ struct Container {
     rename_all: Option<String>,
     deny_unknown_fields: bool,
     transparent: bool,
+    /// The knobs that change HOW A DOCUMENT IS MATCHED to the type, recorded only when written so
+    /// a type without them keeps its node byte-for-byte: `untagged`, `tag`, `content`, `from`,
+    /// `try_from` (XE#6).
+    shape: Vec<(&'static str, Value)>,
+}
+
+/// One `#[serde(…)]` item: the key and, for `key = "value"`, the value.
+type SerdeItem = (String, Option<String>);
+
+/// EVERY item of every `#[serde(…)]` in `attrs`, in order. [`scan::serde_string`] answers for the
+/// FIRST `key = "…"` only, and a field may carry two `alias`es; this reads them all, with string
+/// literals opaque (a `,` or `)` inside one is not structure).
+fn serde_items(attrs: &str) -> Vec<SerdeItem> {
+    let a: Vec<char> = attrs.chars().collect();
+    let open: Vec<char> = "#[serde(".chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + open.len() <= a.len() {
+        if a[i..i + open.len()] != open[..] {
+            i += 1;
+            continue;
+        }
+        let mut j = i + open.len();
+        let mut depth = 1usize;
+        let mut in_str = false;
+        let mut cur = String::new();
+        let mut items: Vec<String> = Vec::new();
+        while j < a.len() {
+            let c = a[j];
+            if in_str {
+                cur.push(c);
+                if c == '\\' && j + 1 < a.len() {
+                    j += 1;
+                    cur.push(a[j]);
+                } else if c == '"' {
+                    in_str = false;
+                }
+            } else {
+                match c {
+                    '"' => {
+                        in_str = true;
+                        cur.push(c);
+                    }
+                    '(' => {
+                        depth += 1;
+                        cur.push(c);
+                    }
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        cur.push(c);
+                    }
+                    ',' if depth == 1 => items.push(std::mem::take(&mut cur)),
+                    _ => cur.push(c),
+                }
+            }
+            j += 1;
+        }
+        items.push(cur);
+        for item in items {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            match item.split_once('=') {
+                Some((k, v)) => {
+                    let v = v.trim();
+                    let v = v
+                        .strip_prefix('"')
+                        .and_then(|v| v.strip_suffix('"'))
+                        .unwrap_or(v);
+                    out.push((k.trim().to_string(), Some(v.to_string())));
+                }
+                None => out.push((item.to_string(), None)),
+            }
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Every value written for `key = "…"`, sorted and de-duplicated.
+fn serde_values(items: &[SerdeItem], key: &str) -> Vec<String> {
+    let set: BTreeSet<String> = items
+        .iter()
+        .filter(|(k, _)| k == key)
+        .filter_map(|(_, v)| v.clone())
+        .collect();
+    set.into_iter().collect()
 }
 
 fn container_serde(attrs: &str) -> Container {
@@ -595,6 +686,19 @@ fn container_serde(attrs: &str) -> Container {
         rename_all: scan::serde_string(attrs, "rename_all", false),
         deny_unknown_fields: scan::serde_flag(attrs, "deny_unknown_fields"),
         transparent: scan::serde_flag(attrs, "transparent"),
+        shape: {
+            let items = serde_items(attrs);
+            let mut shape: Vec<(&'static str, Value)> = Vec::new();
+            if items.iter().any(|(k, v)| k == "untagged" && v.is_none()) {
+                shape.push(("untagged", Value::Bool(true)));
+            }
+            for key in ["tag", "content", "from", "try_from"] {
+                if let Some(v) = serde_values(&items, key).into_iter().next() {
+                    shape.push((key, Value::String(v)));
+                }
+            }
+            shape
+        },
     }
 }
 
@@ -608,6 +712,9 @@ fn container_flags(csd: &Container, into: &mut Map<String, Value>) {
         Value::Bool(csd.deny_unknown_fields),
     );
     into.insert("transparent".into(), Value::Bool(csd.transparent));
+    for (k, v) in &csd.shape {
+        into.insert((*k).into(), v.clone());
+    }
 }
 
 struct FieldAttrs {
@@ -615,10 +722,20 @@ struct FieldAttrs {
     has_default: bool,
     skip: bool,
     flatten: bool,
+    /// Extra wire names the field is accepted under (`alias = "plugin"`), sorted.
+    aliases: Vec<String>,
+    /// `deserialize_with = "path"` / `with = "module"`: the field is read by hand, so its declared
+    /// type no longer says what parses.
+    deserialize_with: Option<String>,
+    with: Option<String>,
 }
 
 fn field_serde(attrs: &str) -> FieldAttrs {
+    let items = serde_items(attrs);
     FieldAttrs {
+        aliases: serde_values(&items, "alias"),
+        deserialize_with: serde_values(&items, "deserialize_with").into_iter().next(),
+        with: serde_values(&items, "with").into_iter().next(),
         rename: scan::serde_string(attrs, "rename", true),
         has_default: scan::serde_flag(attrs, "default"),
         skip: scan::serde_skip(attrs),
@@ -970,13 +1087,34 @@ fn parse_struct(
             fields.insert(format!("<<flatten:{inner}>>"), field_value(&inner, true));
             continue;
         }
-        fields.insert(serde_name, field_value(&inner, opt || fa.has_default));
+        let mut value = field_value(&inner, opt || fa.has_default);
+        field_knobs(&fa, &mut value);
+        fields.insert(serde_name, value);
     }
     let mut out = Map::new();
     out.insert("kind".into(), Value::String("struct".into()));
     out.insert("fields".into(), Value::Object(fields));
     container_flags(csd, &mut out);
     Ok(out)
+}
+
+/// The field knobs that change what a document may write there, recorded only when present.
+fn field_knobs(fa: &FieldAttrs, value: &mut Value) {
+    let Some(m) = value.as_object_mut() else {
+        return;
+    };
+    if !fa.aliases.is_empty() {
+        m.insert(
+            "aliases".into(),
+            Value::Array(fa.aliases.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    if let Some(w) = &fa.deserialize_with {
+        m.insert("deserialize_with".into(), Value::String(w.clone()));
+    }
+    if let Some(w) = &fa.with {
+        m.insert("with".into(), Value::String(w.clone()));
+    }
 }
 
 fn field_value(ty: &str, optional: bool) -> Value {
@@ -988,6 +1126,7 @@ fn field_value(ty: &str, optional: bool) -> Value {
 
 fn parse_enum(body: &str, csd: &Container) -> Result<Map<String, Value>, String> {
     let mut variants: BTreeSet<String> = BTreeSet::new();
+    let mut variant_knobs: Map<String, Value> = Map::new();
     let mut pending = String::new();
     for raw in split_top(body) {
         let seg = raw.trim();
@@ -1017,10 +1156,16 @@ fn parse_enum(body: &str, csd: &Container) -> Result<Map<String, Value>, String>
         if fa.skip {
             continue;
         }
-        variants.insert(match fa.rename {
-            Some(r) => r,
+        let wire = match &fa.rename {
+            Some(r) => r.clone(),
             None => rename(csd, Ident::Variant, &vname)?,
-        });
+        };
+        let mut knobs = Value::Object(Map::new());
+        field_knobs(&fa, &mut knobs);
+        if knobs.as_object().is_some_and(|m| !m.is_empty()) {
+            variant_knobs.insert(wire.clone(), knobs);
+        }
+        variants.insert(wire);
     }
     let mut out = Map::new();
     out.insert("kind".into(), Value::String("enum".into()));
@@ -1028,6 +1173,9 @@ fn parse_enum(body: &str, csd: &Container) -> Result<Map<String, Value>, String>
         "variants".into(),
         Value::Array(variants.into_iter().map(Value::String).collect()),
     );
+    if !variant_knobs.is_empty() {
+        out.insert("variant_knobs".into(), Value::Object(variant_knobs));
+    }
     container_flags(csd, &mut out);
     Ok(out)
 }
@@ -1662,5 +1810,109 @@ mod package_header_tests {
             Some("busbar-core-spaced")
         );
         assert_eq!(super::package_name("[[bin]]\nname = \"tool\"\n"), None);
+    }
+}
+
+#[cfg(test)]
+mod parse_knob_tests {
+    use super::*;
+
+    fn lift() -> Lift {
+        Lift {
+            keys: BTreeSet::new(),
+            carriers: BTreeMap::new(),
+            any: BTreeSet::new(),
+            owned: BTreeSet::new(),
+            raw: BTreeSet::new(),
+        }
+    }
+
+    fn struct_node(attrs: &str, body: &str) -> Value {
+        let csd = container_serde(attrs);
+        Value::Object(parse_struct(body, &csd, &lift(), &mut BTreeSet::new()).expect("parses"))
+    }
+
+    fn enum_node(attrs: &str, body: &str) -> Value {
+        let csd = container_serde(attrs);
+        Value::Object(parse_enum(body, &csd).expect("parses"))
+    }
+
+    /// XE#6: DROPPING `alias = "plugin"` CHANGES WHAT PARSES, SO IT MUST CHANGE THE FINGERPRINT.
+    /// RED before the knob was read: both bodies rendered the identical node.
+    #[test]
+    fn a_field_alias_is_in_the_fingerprint() {
+        let with = struct_node(
+            "#[derive(Deserialize)]",
+            "#[serde(rename = \"module\", alias = \"plugin\")]\n pub plugin: String,",
+        );
+        let without = struct_node(
+            "#[derive(Deserialize)]",
+            "#[serde(rename = \"module\")]\n pub plugin: String,",
+        );
+        assert_ne!(with, without, "an alias is a second wire key");
+        assert_eq!(
+            with["fields"]["module"]["aliases"],
+            serde_json::json!(["plugin"])
+        );
+        assert!(without["fields"]["module"].get("aliases").is_none());
+    }
+
+    #[test]
+    fn two_aliases_and_a_comma_in_a_literal_are_read_whole() {
+        let n = struct_node(
+            "#[derive(Deserialize)]",
+            "#[serde(alias = \"b\", alias = \"a,b\")]\n pub x: String,",
+        );
+        assert_eq!(n["fields"]["x"]["aliases"], serde_json::json!(["a,b", "b"]));
+    }
+
+    #[test]
+    fn a_hand_read_field_records_how_it_is_read() {
+        let n = struct_node(
+            "#[derive(Deserialize)]",
+            "#[serde(default, deserialize_with = \"double_option\")]\n pub x: Option<String>,",
+        );
+        assert_eq!(n["fields"]["x"]["deserialize_with"], "double_option");
+    }
+
+    /// XE#6: untagged / tagged / from / try_from change how a document is matched to the type.
+    #[test]
+    fn a_container_matching_knob_is_in_the_fingerprint() {
+        let body = "A(u8),\nB(String),";
+        let plain = enum_node("#[derive(Deserialize)]", body);
+        let untagged = enum_node("#[derive(Deserialize)]\n#[serde(untagged)]", body);
+        assert_ne!(plain, untagged);
+        assert_eq!(untagged["untagged"], true);
+        assert!(plain.get("untagged").is_none());
+        let tagged = enum_node(
+            "#[derive(Deserialize)]\n#[serde(tag = \"type\", content = \"data\")]",
+            body,
+        );
+        assert_eq!(tagged["tag"], "type");
+        assert_eq!(tagged["content"], "data");
+        let via = struct_node(
+            "#[derive(Deserialize)]\n#[serde(try_from = \"Raw\")]",
+            "pub x: u8,",
+        );
+        assert_eq!(via["try_from"], "Raw");
+        let from = struct_node(
+            "#[derive(Deserialize)]\n#[serde(from = \"Raw\")]",
+            "pub x: u8,",
+        );
+        assert_eq!(from["from"], "Raw");
+        assert!(from.get("try_from").is_none());
+    }
+
+    #[test]
+    fn a_variant_alias_is_in_the_fingerprint() {
+        let n = enum_node(
+            "#[derive(Deserialize)]",
+            "#[serde(alias = \"old\")]\nNew,\nOther,",
+        );
+        assert_eq!(
+            n["variant_knobs"]["New"]["aliases"],
+            serde_json::json!(["old"])
+        );
+        assert!(n["variant_knobs"].get("Other").is_none());
     }
 }

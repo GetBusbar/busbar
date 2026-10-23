@@ -755,6 +755,9 @@
           "type": "HookKind"
         },
         "module": {
+          "aliases": [
+            "plugin"
+          ],
           "optional": false,
           "type": "String"
         },
@@ -1325,6 +1328,7 @@
       "deny_unknown_fields": false,
       "kind": "enum",
       "transparent": false,
+      "untagged": true,
       "variants": [
         "Backend",
         "Disabled"
@@ -1403,6 +1407,7 @@
       "deny_unknown_fields": false,
       "kind": "enum",
       "transparent": false,
+      "untagged": true,
       "variants": [
         "Env",
         "Github",
