@@ -382,6 +382,7 @@ const FROZEN_HOOK_FILES: &[&str] = &[
 /// The words exempt in [`FROZEN_HOOK_FILES`], each citing v1.5.5 `crates/api/src/hooks.rs`.
 const FROZEN_HOOK_WORDS: &[&str] = &[
     "has_tools",        // hooks.rs:30
+    "tool_count",       // hooks.rs:29
     "prompt",           // hooks.rs:37 (the `prompt: ro|rw` grant)
     "Prompt",           // hooks.rs:56 (the prompt projection)
     "PromptProjection", // hooks.rs:56
