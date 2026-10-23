@@ -7406,6 +7406,32 @@ impl KindIsolationGate {
     }
 }
 
+impl KindIsolationGate {
+    /// ONE RULE OF THIS GATE, OVER THE CENSUS THE GATE READS, WITHOUT THE OTHER FIFTEEN. A battery
+    /// case that asks about one row (the matrix total, the closure's cargo cross-check) reads it
+    /// here rather than running the whole registered gate: the answer is the same row, computed by
+    /// the same function over the same mounted census, at the cost of that row alone.
+    pub(super) fn rows_of(
+        &self,
+        cx: &Ctx,
+        rule: impl Fn(&Ctx, &[CrateInfo], &KindRegistry) -> Vec<Row>,
+    ) -> Result<Vec<Row>, String> {
+        let mounted = pinned::with_pinned(cx);
+        let mut crates = census(&mounted)?;
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        let reg = load_registry(&mounted)?;
+        Ok(rule(&mounted, &crates, &reg))
+    }
+
+    /// The matrix row exactly as this registration emits it.
+    pub(super) fn matrix_rows(&self, cx: &Ctx) -> Result<Vec<Row>, String> {
+        self.rows_of(cx, |cx, crates, reg| {
+            matrix::rule_matrix_rows(cx, crates, reg, self.ship, self.matrix_gating)
+        })
+    }
+}
+
 impl Gate for KindIsolationGate {
     fn name(&self) -> &'static str {
         if self.ship {

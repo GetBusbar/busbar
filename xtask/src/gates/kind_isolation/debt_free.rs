@@ -196,6 +196,14 @@ impl<'a> HeadPinned<'a> {
     }
 }
 
+impl HeadPinned<'_> {
+    /// `cx` with the base pinned to the commit the battery stands on: the context the registered
+    /// gate runs in, for a case that reads one rule of it ([`KindIsolationGate::rows_of`]).
+    pub(super) fn pinned_cx(&self, cx: &Ctx) -> Ctx {
+        pinned(cx, self.base.as_deref())
+    }
+}
+
 impl Gate for HeadPinned<'_> {
     fn name(&self) -> &'static str {
         self.inner.name()

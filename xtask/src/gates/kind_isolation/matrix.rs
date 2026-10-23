@@ -4662,19 +4662,21 @@ pub(super) fn cell_subst(
 /// names which half did not hold.
 fn report_only_total_rises<'a>(
     cx: &Ctx,
-    registered: &'a dyn crate::gates::Gate,
+    registered: &'a super::KindIsolationGate,
+    pin: &'a super::debt_free::HeadPinned<'a>,
     name: &str,
     overlay: crate::ctx::Overlay,
 ) -> crate::gates::CasePlan<'a> {
-    use crate::gates::{execute, Case, CasePlan, Expect};
+    use crate::gates::{Case, CasePlan, Expect};
     use crate::ledger::Status;
     let name = name.to_string();
     let cx = cx.clone();
     CasePlan::new(move || {
+        // ONLY THE MATRIX ROW, as the registered gate emits it, over the HEAD-pinned base: the
+        // other rules of the gate say nothing about this total.
         let reading = |cx: &Ctx| -> Result<usize, String> {
-            let verdict = execute(registered, cx);
-            let row = verdict
-                .rows
+            let rows = registered.matrix_rows(&pin.pinned_cx(cx))?;
+            let row = rows
                 .iter()
                 .find(|r| r.id == ROW_MATRIX)
                 .ok_or_else(|| "the gate emitted no matrix row".to_string())?;
@@ -4704,7 +4706,7 @@ fn report_only_total_rises<'a>(
 pub fn selftest<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
-    registered: &'a dyn crate::gates::Gate,
+    registered_gate: &'a super::KindIsolationGate,
     ship: bool,
     report: &mut crate::gates::Report<'a>,
 ) {
@@ -4715,7 +4717,9 @@ pub fn selftest<'a>(
     // The cases that read the gate AS REGISTERED read it against the same HEAD-pinned base the
     // subject runs on ([`super::debt_free::HeadPinned`]): on a checkout with no derivable merge-base
     // they were red before any plant.
-    let registered: &'a dyn crate::gates::Gate = super::debt_free::HeadPinned::leak(cx, registered);
+    let pin: &'a super::debt_free::HeadPinned<'a> =
+        super::debt_free::HeadPinned::leak(cx, registered_gate);
+    let registered: &'a dyn crate::gates::Gate = pin;
 
     // THE ROW IS REPORT-ONLY, AND ITS NUMBER STILL COUNTS (owner 2026-10-03: "the matrix is a
     // measured to-do list, not a gate"). `gate` (the subject below) runs the rule with its findings
@@ -4728,7 +4732,8 @@ pub fn selftest<'a>(
     // below). What stays report-only is the count inside a cell that already existed.
     report.push(report_only_total_rises(
         cx,
-        registered,
+        registered_gate,
+        pin,
         "REPORT-ONLY: a plane named in a .rs file of a cell the base already has raises the \
          measured total and does not fail the row",
         plant(

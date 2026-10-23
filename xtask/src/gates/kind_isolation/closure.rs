@@ -654,14 +654,19 @@ pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 /// never runs.
 pub fn selftest<'a>(
     cx: &'a Ctx,
-    registered: &'a dyn crate::gates::Gate,
+    registered: &'a super::KindIsolationGate,
     report: &mut crate::gates::Report<'a>,
 ) {
-    use crate::gates::{execute, Case, CasePlan, Expect};
+    use crate::gates::{Case, CasePlan, Expect};
     let cx = cx.clone();
     report.push(CasePlan::new(move || {
-        let verdict = execute(registered, &cx);
-        let got = match verdict.rows.iter().find(|r| r.id == ROW_CLOSURE) {
+        // THE CLOSURE ROW ALONE, over the census the gate reads (not the whole registered gate).
+        let rows = registered.rows_of(&cx, |cx, crates, _| vec![rule_closure(cx, crates)]);
+        let got = match rows
+            .as_ref()
+            .ok()
+            .and_then(|r| r.iter().find(|r| r.id == ROW_CLOSURE))
+        {
             Some(r) if r.detail.contains("corroboration: not asked") => Expect::Red {
                 naming: vec![format!(
                     "{} {:?}: the unplanted, mounted tree was not cross-checked against `cargo \
