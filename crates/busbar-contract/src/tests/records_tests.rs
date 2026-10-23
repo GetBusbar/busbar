@@ -1034,3 +1034,36 @@ fn retention_codes_round_trip_and_age_is_the_default() {
     assert_eq!(Retention::TerminalOnly.code(), 1);
     assert_eq!(Retention::from_code(2), None);
 }
+
+/// **`RecordStore` has no default bodies** (BUSBAR-1.6.0.md Part 2 #38(a): "a default body is a
+/// plugin quietly declining to answer"). Reads the trait's own source: inside the trait's braces,
+/// every non-comment line must be brace-free, because the only way a method gets a `{` there is a
+/// body. A plugin that declines a surface states the no-support answer the method's doc names; it
+/// never inherits one.
+#[test]
+fn record_store_has_no_default_bodies() {
+    let src = include_str!("../records.rs");
+    let open = src
+        .find("pub trait RecordStore")
+        .expect("records.rs declares `pub trait RecordStore`");
+    let mut bodied = Vec::new();
+    let mut lines = src[open..].lines();
+    let head = lines.next().expect("the trait's own line");
+    assert!(head.trim_end().ends_with('{'), "trait head: {head}");
+    for line in lines {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        if code.contains('{') || code.contains('}') {
+            bodied.push(line.trim().to_string());
+        }
+    }
+    assert!(
+        bodied.is_empty(),
+        "RecordStore carries default bodies; every method must be bodiless (`;`): {bodied:?}"
+    );
+}
