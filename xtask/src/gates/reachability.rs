@@ -356,10 +356,6 @@ struct Scanned {
     /// `units_admin`, the directory it is the module of.
     stem: String,
     lines: Vec<ScopeLine>,
-    /// The whole file is test scope by its PATH — `…/tests/…`, `…/benches/…`, a `tests.rs`. A
-    /// per-line `#[cfg(test)]` cannot see this, because the attribute is in the file that DECLARES
-    /// the module, not in the module.
-    path_is_test: bool,
     /// The whole file is test scope because the `mod` statement that declares it is gated. This is
     /// the `#[path = "tests/units_a2a.rs"] #[cfg(test)] mod tests;` shape, and also the
     /// `#[cfg(any(test, feature = "test-harness"))] pub mod harness;` shape — without it, moving a
@@ -369,7 +365,7 @@ struct Scanned {
 
 impl Scanned {
     fn whole_file_is_test(&self) -> bool {
-        self.path_is_test || self.decl_is_test
+        self.decl_is_test
     }
     fn is_test_line(&self, idx: usize) -> bool {
         self.whole_file_is_test() || self.lines[idx].gated
@@ -401,14 +397,6 @@ fn normalize_test_cfgs(src: &str) -> String {
     out
 }
 
-fn path_is_test(rel: &str) -> bool {
-    rel.contains("/tests/")
-        || rel.contains("/benches/")
-        || rel.contains("/examples/")
-        || rel.ends_with("/tests.rs")
-        || rel.contains("/fixtures/")
-}
-
 /// `crates/busbar/src/root/units_a2a.rs` → `units_a2a`; `…/units_admin/mod.rs` → `units_admin`.
 fn stem_of(rel: &str) -> String {
     let (dir, name) = rel.rsplit_once('/').unwrap_or(("", rel));
@@ -430,7 +418,6 @@ fn scan(cx: &Ctx) -> Result<Vec<Scanned>, String> {
         .map(|f| {
             let rel = f.rel_str();
             Scanned {
-                path_is_test: path_is_test(&rel),
                 stem: stem_of(&rel),
                 rel,
                 lines: test_scope(&normalize_test_cfgs(&f.text)),
@@ -440,7 +427,19 @@ fn scan(cx: &Ctx) -> Result<Vec<Scanned>, String> {
         .collect();
 
     // THE SECOND PASS: a module whose `mod` statement is gated is test scope in its entirety.
-    let gated: BTreeSet<String> = test_scoped_module_files(&out);
+    // A file's scope is how it is DECLARED, never what it is called (XE#12): the shared
+    // `scan::cfg_test_module_files` (transitive, and the one every other gate asks) plus this
+    // gate's own pass, which also reads the test-only feature spellings.
+    let mut gated: BTreeSet<String> = test_scoped_module_files(&out);
+    let normalized: Vec<(String, String)> = files
+        .iter()
+        .map(|f| (f.rel_str(), normalize_test_cfgs(&f.text)))
+        .collect();
+    gated.extend(crate::scan::cfg_test_module_files(
+        normalized
+            .iter()
+            .map(|(r, t)| (r.clone(), t.as_str(), None)),
+    ));
     for s in &mut out {
         if gated.contains(&s.rel) {
             s.decl_is_test = true;
@@ -562,7 +561,7 @@ fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) ->
             }
             // `counted`, NEVER `code`: the blanked copy drops literal CONTENTS, so a module
             // name mentioned inside a string is not an edge. `code` deliberately keeps them.
-            for w in words(&l.counted) {
+            for w in local_path_words(&l.counted) {
                 if let Some(n) = names.get(w.as_str()) {
                     if *n != f.stem {
                         hit.insert(n);
@@ -594,6 +593,63 @@ fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) ->
         }
     }
     seen
+}
+
+/// The path segments that root a path in THIS crate: `crate::root::boot`, `self::boot`,
+/// `super::boot`.
+const LOCAL_ROOTS: &[&str] = &["root", "crate", "self", "super"];
+
+/// The words of a line that can name a module of THIS crate (XE#14). A word reached through `::`
+/// from anything other than a local path root is a member of that other path, not a module here:
+/// `busbar_kernel::boot::hydrate_all` names the kernel's `boot`, not `root/boot.rs`, and
+/// `units_a2a::boot()` calls a function. A `use a::{b, c}` group is read against its prefix `a`.
+/// A bare leading word (`boot::run()`, `use boot;`, `x.boot()`) keeps counting.
+fn local_path_words(code: &str) -> Vec<String> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = Vec::new();
+    // The segment before the `::` that leads to the next word, if any.
+    let mut prev: Option<String> = None;
+    let mut groups: Vec<Option<String>> = Vec::new();
+    let base = |g: &Vec<Option<String>>| g.last().cloned().flatten();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if is_word_char(c) {
+            let st = i;
+            while i < chars.len() && is_word_char(chars[i]) {
+                i += 1;
+            }
+            let w: String = chars[st..i].iter().collect();
+            if prev.as_deref().map_or(true, |p| LOCAL_ROOTS.contains(&p)) {
+                out.push(w.clone());
+            }
+            let mut j = i;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if chars.get(j) == Some(&':') && chars.get(j + 1) == Some(&':') {
+                prev = Some(w);
+                i = j + 2;
+            } else {
+                prev = base(&groups);
+            }
+            continue;
+        }
+        match c {
+            '{' => {
+                groups.push(prev.take());
+                prev = base(&groups);
+            }
+            '}' => {
+                groups.pop();
+                prev = base(&groups);
+            }
+            c if c.is_whitespace() => {}
+            _ => prev = base(&groups),
+        }
+        i += 1;
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1163,17 +1219,19 @@ fn door_serve(files: &[Scanned], items: &[Item], live: &BTreeSet<usize>) -> Door
             .enumerate()
             .filter(|(_, f)| f.rel == *rel)
             .find_map(|(fi, f)| {
+                let drivers = driver_names(f);
                 f.lines.iter().enumerate().find_map(|(i, l)| {
                     let reached = enclosing_item(items, fi, i).filter(|n| live.contains(n))?;
-                    (!f.is_test_line(i) && l.counted.contains(DRIVE_CALL))
+                    (!f.is_test_line(i) && drives_a_driver(&l.counted, &drivers))
                         .then(|| format!("{}:{} (in `{}`)", f.rel, l.no, items[reached].name))
                 })
             })
             .ok_or_else(|| {
                 format!(
                     "the drivers `{item}` ({rel}) builds are driven by nothing: no line reached \
-                     from fn main() in that module runs a unit (`{DRIVE_CALL}`) — a driver with no \
-                     data route is not a unit path"
+                     from fn main() in that module runs a unit (`{DRIVE_CALL}`) on a receiver \
+                     declared or built as a `{DRIVER_TYPE}` — a driver with no data route is not a \
+                     unit path"
                 )
             }),
     };
@@ -1181,6 +1239,57 @@ fn door_serve(files: &[Scanned], items: &[Item], live: &BTreeSet<usize>) -> Door
         composition: composition.map(|(rel, item)| format!("`{item}` in {rel}")),
         served,
     }
+}
+
+/// THE NAMES A [`DRIVER_TYPE`] IS HELD UNDER in one file (XE#15): the field, parameter or binding
+/// written just before the type (`driver: Arc<PlaneDriver>`, `let d = PlaneDriver::new(..)`).
+/// `.unit(` is also the name of other types' methods (`egress.unit(..)`); only a receiver that is
+/// one of these names is a driver being driven.
+fn driver_names(f: &Scanned) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (i, l) in f.lines.iter().enumerate() {
+        if f.is_test_line(i) {
+            continue;
+        }
+        let code = &l.counted;
+        let mut from = 0;
+        while let Some(at) = code[from..].find(DRIVER_TYPE).map(|a| a + from) {
+            from = at + DRIVER_TYPE.len();
+            let whole = !code[..at].chars().next_back().is_some_and(is_word_char)
+                && !code[from..].chars().next().is_some_and(is_word_char);
+            if !whole {
+                continue;
+            }
+            // The nearest `:` (not `::`) or `=` before the type, then the word before that.
+            let head: Vec<char> = code[..at].chars().collect();
+            let mut k = head.len();
+            while k > 0 {
+                k -= 1;
+                let single_colon = head[k] == ':'
+                    && head.get(k.wrapping_sub(1)) != Some(&':')
+                    && head.get(k + 1) != Some(&':');
+                let eq = head[k] == '=' && head.get(k + 1) != Some(&'=');
+                if single_colon || eq {
+                    let before: String = head[..k].iter().collect();
+                    if let Some(w) = words(&before).pop() {
+                        out.insert(w);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Does this line call [`DRIVE_CALL`] on a receiver that is one of `drivers`? The receiver is the
+/// word just before the `.` (`served.driver.unit(` → `driver`).
+fn drives_a_driver(counted: &str, drivers: &BTreeSet<String>) -> bool {
+    counted.match_indices(DRIVE_CALL).any(|(at, _)| {
+        words(&counted[..at])
+            .pop()
+            .is_some_and(|recv| counted[..at].ends_with(recv.as_str()) && drivers.contains(&recv))
+    })
 }
 
 /// The innermost non-test item whose span contains this line.
@@ -1701,7 +1810,6 @@ fn linked_export(
         };
     };
     let one = vec![Scanned {
-        path_is_test: false,
         stem: stem_of(&rel),
         rel: rel.clone(),
         lines: test_scope(&normalize_test_cfgs(&text)),
@@ -3857,6 +3965,77 @@ mod tests {
         assert_eq!(mod_statement("mod tests;").as_deref(), Some("tests"));
         assert_eq!(mod_statement("root::money_book::build();"), None);
         assert_eq!(mod_statement("mod inline {"), None);
+    }
+
+    /// XE#14: A PATH THROUGH ANOTHER CRATE IS NOT AN EDGE INTO THIS ONE. `busbar_kernel::boot::…`
+    /// names the kernel's `boot`; only a bare word or one rooted at `root`/`crate`/`self`/`super`
+    /// can name a module here.
+    #[test]
+    fn a_word_in_another_crates_path_is_not_a_module_edge() {
+        assert!(
+            !local_path_words("busbar_kernel::boot::hydrate_all();").contains(&"boot".to_string()),
+            "`busbar_kernel::boot` is the kernel's module"
+        );
+        assert!(
+            !local_path_words("use busbar_kernel::{boot, other};").contains(&"boot".to_string())
+        );
+        assert!(!local_path_words("units_a2a::boot();").contains(&"boot".to_string()));
+        for local in [
+            "root::boot::run();",
+            "crate::root::boot::run();",
+            "use crate::root::{boot, other};",
+            "boot::run();",
+            "use super::boot;",
+        ] {
+            assert!(
+                local_path_words(local).contains(&"boot".to_string()),
+                "`{local}` names this crate's boot"
+            );
+        }
+    }
+
+    /// XE#15: `.unit(` IS A DRIVER BEING DRIVEN ONLY ON A RECEIVER HELD AS A `PlaneDriver`.
+    #[test]
+    fn a_unit_call_counts_only_on_a_receiver_held_as_a_driver() {
+        let f = Scanned {
+            stem: "serve".into(),
+            rel: "crates/busbar/src/root/serve.rs".into(),
+            lines: test_scope(
+                "struct S {\n    driver: Arc<PlaneDriver>,\n}\nfn c() {\n    let d2 = PlaneDriver::new(1);\n}\n",
+            ),
+            decl_is_test: false,
+        };
+        let names = driver_names(&f);
+        assert_eq!(
+            names,
+            BTreeSet::from(["driver".to_string(), "d2".to_string()])
+        );
+        assert!(drives_a_driver(
+            "planes.iter().map(|p| p.driver.unit(1))",
+            &names
+        ));
+        assert!(drives_a_driver("d2.unit(1)", &names));
+        assert!(!drives_a_driver("egress.unit(UnitRoute {", &names));
+        assert!(!drives_a_driver("self.unit().state(1)", &names));
+    }
+
+    /// XE#15 end to end: the only `.unit(` in the composition module is on a receiver that is not a
+    /// driver, so the door plane has no served evidence.
+    #[test]
+    fn a_unit_call_on_a_non_driver_receiver_is_not_served_evidence() {
+        let mut ov = decision_door(true, true, false);
+        ov.set(
+            SERVE_RS,
+            "pub struct ServedPlane {\n    driver: PlaneDriver,\n}\n\n\
+             pub fn compose_planes() -> Vec<ServedPlane> {\n    let driver = PlaneDriver::new(1);\n    vec![ServedPlane { driver }]\n}\n\n\
+             pub fn serve(planes: &[ServedPlane]) -> u64 {\n    let egress = Egress::new();\n    egress.unit(planes.len() as u64)\n}\n",
+        );
+        let rows = run_green_with(evidenced(ov));
+        let (st, detail) = &rows[&row_unit_path("decision")];
+        assert!(
+            *st != Status::Pass && detail.contains("on a receiver"),
+            "a `.unit(` on a non-driver must not serve a door plane, got {st:?}: {detail}"
+        );
     }
 
     /// The green fixture with `plant` applied, run once; `(status, detail)` per row id.
