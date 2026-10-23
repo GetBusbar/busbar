@@ -218,7 +218,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// would otherwise wait on itself.
     fn claim(&self, scope: &str) -> RecordStoreResult<ScopeClaim<'_>> {
         let me = std::thread::current().id();
-        let deadline = Instant::now().checked_add(self.claim_wait);
+        let deadline = Instant::now() + self.claim_wait;
         let mut claimed = self.claimed.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             let holder = claimed.get(scope).copied();
@@ -232,11 +232,7 @@ impl<R: ChainedRecord> Journal<R> {
                     ));
                 }
                 Some(_) => {
-                    // `None` only for a wait too long to represent as an instant: no deadline then.
-                    let left = match deadline {
-                        Some(at) => at.saturating_duration_since(Instant::now()),
-                        None => self.claim_wait,
-                    };
+                    let left = deadline.saturating_duration_since(Instant::now());
                     if left.is_zero() {
                         return Err(RecordStoreError(
                             "a journal scope stayed claimed by another thread's store write past \
