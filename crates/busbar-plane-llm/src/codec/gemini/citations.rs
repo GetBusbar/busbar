@@ -301,7 +301,7 @@ pub(super) fn read_gemini_grounding_citations(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let mut seen: Vec<u64> = Vec::new();
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for idx in support
             .get("groundingChunkIndices")
             .and_then(|v| v.as_array())
@@ -314,7 +314,7 @@ pub(super) fn read_gemini_grounding_citations(
             // A chunk named twice by one support yields the identical citation; naming it N times
             // must not clone it N times.
             let i = idx.as_u64().unwrap_or_default();
-            if seen.contains(&i) {
+            if !seen.insert(i) {
                 continue;
             }
             // The clones (the chunk kept in `raw`, the cited text) are bounded per candidate, so a
