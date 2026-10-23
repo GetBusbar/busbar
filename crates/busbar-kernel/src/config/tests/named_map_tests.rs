@@ -60,6 +60,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "corp-ad",
             &serde_json::json!({"module": "ad", "max_admin_scope": "read-only"}),
+            &crate::test_support::lent_stand_in(),
             crate::config::Legacy::stand_in(),
         )
         .expect("a well-formed identity-provider definition is accepted");
@@ -76,6 +77,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "metrics",
             &serde_json::json!({"module": "prometheus", "modle": {}}),
+            &crate::test_support::lent_stand_in(),
             crate::config::Legacy::stand_in(),
         )
         .expect_err("a typo'd key must be rejected, never silently stored");
@@ -167,6 +169,7 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
             &mut base_deploy(),
             "dock",
             &serde_json::json!({}),
+            &crate::test_support::lent_stand_in(),
             crate::config::Legacy::stand_in(),
         )
         .expect_err("and refused on insert too");
