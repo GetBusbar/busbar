@@ -130,13 +130,13 @@ fn token_configured_description() -> String {
 
 /// Where a generated schema description names the operator credential's provider: the derive reads
 /// no install record, so it writes this mark, and the generator of the document fills it with the
-/// provider of the record it is lent ([`fill_operator_provider`]).
-#[cfg(feature = "openapi-schema")]
+/// provider of the record it is lent ([`fill_operator_provider`]). Compiled in every build, with no
+/// feature gate of its own, so the kernel's literals spell the document format no more often than
+/// `qa/c1-literals.toml` counts.
 pub const OPERATOR_PROVIDER_MARK: &str = "@@operator-credential-provider@@";
 
 /// Fill every [`OPERATOR_PROVIDER_MARK`] in the generated document `doc` with `provider`, the
 /// operator credential's provider the install record the document is generated under lends.
-#[cfg(feature = "openapi-schema")]
 pub fn fill_operator_provider(doc: &mut serde_json::Value, provider: &str) {
     match doc {
         serde_json::Value::String(text) if text.contains(OPERATOR_PROVIDER_MARK) => {
