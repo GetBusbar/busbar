@@ -34,6 +34,10 @@ pub const CLAIM_WORDS: &[&str] = &[
 /// The command a claim must name.
 const COMMAND: &str = "`cargo xtask gate ";
 
+/// This gate's own name. Citing it reproduces nothing (it only checks that a citation exists), so it
+/// never satisfies a measurement's "reproducing command".
+const SELF_NAME: &str = "default-measurements";
+
 /// The manifest the selftest plants into: the composition root's, which carries the defaults.
 const ROOT_MANIFEST: &str = "crates/busbar/Cargo.toml";
 
@@ -118,6 +122,13 @@ fn offenders(rel: &str, text: &str) -> Vec<String> {
             out.push(format!(
                 "{rel}:{} `{}`: its comment authorises a default by a measurement (\"{word}\") and \
                  names no `cargo xtask gate <name>` that reproduces it",
+                f.line, f.name
+            ));
+        } else if named.iter().all(|n| *n == SELF_NAME) {
+            out.push(format!(
+                "{rel}:{} `{}`: it names only `cargo xtask gate {SELF_NAME}`, the gate that judges \
+                 this citation: it re-runs no measurement, so the command that reproduces the \
+                 measurement must be another registered gate",
                 f.line, f.name
             ));
         } else if let Some(bad) = named.iter().find(|n| crate::gates::find(n).is_none()) {
@@ -230,13 +241,26 @@ impl Gate for DefaultMeasurementsGate {
         let mut ov = Overlay::new();
         ov.set(
             ROOT_MANIFEST,
-            plant("measured: `cargo xtask gate default-measurements` re-runs it"),
+            plant("measured: `cargo xtask gate duplex-ws-default-edge` re-runs it"),
         );
         report.push(prove_green(
             &cx.with_overlay(ov),
             self,
-            "a measurement that names a registered gate is green",
+            "a measurement that names another registered gate is green",
             &[ROW_CITED],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(
+            ROOT_MANIFEST,
+            plant("measured: `cargo xtask gate default-measurements` re-runs it"),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a measurement whose only command is this gate itself is RED",
+            &[ROW_CITED],
+            ov,
+            &["root-admin", "the gate that judges this citation"],
         ));
         report
     }
@@ -258,6 +282,17 @@ mod tests {
         let found = offenders("crates/x/Cargo.toml", MANIFEST);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("`on`"), "{found:?}");
+    }
+
+    #[test]
+    fn the_gate_itself_is_no_reproducing_command() {
+        let text = MANIFEST.replace(
+            "# measured: the golden",
+            "# measured by `cargo xtask gate default-measurements`: the golden",
+        );
+        let found = offenders("crates/x/Cargo.toml", &text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("the gate that judges"), "{found:?}");
     }
 
     #[test]
