@@ -213,6 +213,17 @@ pub fn tag_pinned_call(reference: &str, comment: Option<&str>) -> Option<Option<
     )))
 }
 
+/// `<image>@sha256:<64 lowercase hex>`: an image named by content, not by a movable tag.
+fn is_digest_pinned_image(image: &str) -> bool {
+    image.rsplit_once("@sha256:").is_some_and(|(name, hex)| {
+        !name.is_empty()
+            && hex.len() == 64
+            && hex
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    })
+}
+
 fn is_sha40(s: &str) -> bool {
     s.len() == 40
         && s.chars()
@@ -261,32 +272,191 @@ fn after_key<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
     rest.strip_prefix(':')
 }
 
-/// A `v*` tag trigger, in BOTH of YAML's sequence spellings.
-///
-/// The original test saw only the block form. The flow form (`tags: ["v*"]`) is ordinary,
-/// idiomatic YAML that the runner treats identically, and it is what a maintainer writes when
-/// compressing a trigger block — so the root rule of this whole design could be reinstated in the
-/// shorter of two spellings with the lint staying green. A rule a formatting choice can switch off
-/// is not a rule.
-fn has_v_star_tag_trigger(on_block: &str) -> bool {
-    for line in on_block.lines() {
-        let t = line.trim_start();
-        if let Some(rest) = t.strip_prefix('-') {
-            let r = rest.trim_start().trim_start_matches(['"', '\'']);
-            if r.starts_with("v*") {
-                return true;
+/// Split `s` at every `sep` that sits outside quotes, `[..]` and `{..}`.
+fn split_top_level(s: &str, sep: char) -> Vec<String> {
+    let (mut out, mut cur) = (Vec::new(), String::new());
+    let (mut depth, mut quote) = (0i32, None::<char>);
+    for c in s.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
             }
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth -= 1,
+                c if c == sep && depth == 0 => {
+                    out.push(std::mem::take(&mut cur));
+                    continue;
+                }
+                _ => {}
+            },
         }
-        if let Some(rest) = after_key(t, "tags") {
-            let r = rest.trim_start();
-            let r = r.strip_prefix('[').unwrap_or(r);
-            let r = r.trim_start().trim_start_matches(['"', '\'']);
-            if r.starts_with("v*") {
-                return true;
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn unquote(s: &str) -> &str {
+    s.trim().trim_matches(['"', '\'']).trim()
+}
+
+/// The `(event, body)` pairs of a workflow's `on:` value, in every spelling YAML has for it:
+/// scalar (`on: push`), flow sequence (`on: [push, release]`), flow mapping
+/// (`on: { push: { tags: ["v*"] } }`), block sequence and block mapping. `on_block` is the text
+/// `top_level_block` returns: the header line plus everything indented under it. A body is the
+/// text after the event's key (inline remainder and indented lines), `""` when it has none.
+fn on_events(on_block: &str) -> Vec<(String, String)> {
+    let mut lines = on_block.lines();
+    let header = lines.next().unwrap_or_default();
+    let inline = header
+        .split_once(':')
+        .map(|(_, v)| v)
+        .unwrap_or_default()
+        .trim();
+    let inline = inline.split(" #").next().unwrap_or_default().trim();
+    let mut out = Vec::new();
+    if let Some(inner) = inline.strip_prefix('[') {
+        for e in split_top_level(inner.trim_end_matches(']'), ',') {
+            out.push((unquote(&e).to_string(), String::new()));
+        }
+        return out;
+    }
+    if let Some(inner) = inline.strip_prefix('{') {
+        for e in split_top_level(inner.trim_end().strip_suffix('}').unwrap_or(inner), ',') {
+            let (k, v) = e.split_once(':').unwrap_or((e.as_str(), ""));
+            out.push((unquote(k).to_string(), v.trim().to_string()));
+        }
+        return out;
+    }
+    if !inline.is_empty() {
+        return vec![(unquote(inline).to_string(), String::new())];
+    }
+    let rest: Vec<&str> = lines.filter(|l| !l.trim().is_empty()).collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let Some(base) = rest.first().map(|&l| indent(l)) else {
+        return out;
+    };
+    for &l in &rest {
+        if indent(l) == base {
+            let t = l.trim();
+            if let Some(item) = t.strip_prefix('-') {
+                out.push((unquote(item).to_string(), String::new()));
+            } else if let Some((k, v)) = t.split_once(':') {
+                out.push((unquote(k).to_string(), v.trim().to_string()));
+            }
+        } else if indent(l) > base {
+            if let Some((_, body)) = out.last_mut() {
+                body.push('\n');
+                body.push_str(l);
             }
         }
     }
-    false
+    out
+}
+
+/// The values of `key:` inside an event body, in scalar, flow-sequence or block-sequence spelling.
+/// `None` when the key is absent (which is different from present and empty).
+fn filter_values(body: &str, key: &str) -> Option<Vec<String>> {
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find(key) {
+        let at = from + rel;
+        from = at + key.len();
+        let before_ok = body[..at]
+            .chars()
+            .next_back()
+            .map_or(true, |c| c.is_whitespace() || c == '{' || c == ',');
+        let after = body[from..].trim_start();
+        let Some(value) = after.strip_prefix(':') else {
+            continue;
+        };
+        if !before_ok {
+            continue;
+        }
+        let first = value.lines().next().unwrap_or_default().trim();
+        let first = first.split(" #").next().unwrap_or_default().trim();
+        if let Some(inner) = first.strip_prefix('[') {
+            let inner = inner.split(']').next().unwrap_or_default();
+            return Some(
+                split_top_level(inner, ',')
+                    .iter()
+                    .map(|v| unquote(v).to_string())
+                    .collect(),
+            );
+        }
+        if !first.is_empty() {
+            let first = first.split([',', '}']).next().unwrap_or_default();
+            return Some(vec![unquote(first).to_string()]);
+        }
+        let items: Vec<String> = value
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .take_while(|l| l.starts_with('-'))
+            .map(|l| unquote(l.trim_start_matches('-')).to_string())
+            .collect();
+        return Some(items);
+    }
+    None
+}
+
+/// Could a tag glob match a version tag? Any pattern that opens with `v`, a digit or a wildcard
+/// can; a `!` pattern only excludes. Over-matching is the safe direction for a ban.
+fn glob_can_match_version_tag(glob: &str) -> bool {
+    matches!(
+        glob.chars().next(),
+        Some('v' | 'V' | '*' | '?' | '[' | '0'..='9')
+    )
+}
+
+/// Every way a workflow's `on:` value lets a version tag start it. A tag is the OUTPUT of a
+/// verified release, never its trigger (R1), and the runner starts a workflow from a tag in more
+/// ways than a `tags: [v*]` filter:
+///
+/// * `push` with a `tags` filter holding any glob that can match a version tag (`v*`, `*`, `**`,
+///   `[0-9]*`, `1.*`);
+/// * `push` with NO `tags`/`branches` filter at all, whatever its other keys: an unfiltered push
+///   fires for tags too (`tags-ignore` alone still leaves every other tag);
+/// * the `release` event, which a version tag's publication fires.
+///
+/// The original test saw only the block form of `tags: v*`; the flow form, the one-line `on:`
+/// spellings and a glob not starting `v*` each switched the rule off. A rule a formatting choice
+/// can switch off is not a rule.
+fn tag_triggers(on_block: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (event, body) in on_events(on_block) {
+        match event.as_str() {
+            "release" => out.push(
+                "the `release` event: a published release is a tag the build keyed off".to_string(),
+            ),
+            "push" => {
+                if let Some(globs) = filter_values(&body, "tags") {
+                    if let Some(g) = globs.iter().find(|g| glob_can_match_version_tag(g)) {
+                        out.push(format!(
+                            "a `push` `tags` filter of `{g}`, which can match a version tag"
+                        ));
+                    }
+                } else if filter_values(&body, "branches").is_none()
+                    && filter_values(&body, "branches-ignore").is_none()
+                {
+                    let ignore = filter_values(&body, "tags-ignore").unwrap_or_default();
+                    if !ignore.iter().any(|g| g == "*" || g == "**") {
+                        out.push(
+                            "an unfiltered `push`, which fires for every pushed tag too"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Every `git push` command line in a workflow.
@@ -639,9 +809,10 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
     //
     // LOCAL `uses:` IS EXEMPT, AND ONLY LOCAL. A `./` reference resolves inside this repository at
     // the caller's own commit; there is no third party and nothing to force-move. A `docker://`
-    // reference is exempt for the same reason a SHA is required everywhere else: it names an image
-    // by DIGEST, not by a movable ref, so it is already the thing this rule wants and is judged
-    // instead by the digest-pin rule over `services:` images.
+    // reference is NOT exempt: it is third-party code too, and it is only as fixed as its name. It
+    // must carry `@sha256:<64 hex>`; a tag (`docker://alpine:3.20`) is as movable as an action tag.
+    // Nothing else reads a step's image digest (the digest-pin rule over `services:` images does
+    // not look at `uses: docker://`), so this is where it is judged.
     //
     // THE TRAILING TAG COMMENT IS PART OF THE PIN: without it Dependabot cannot tell what the sha
     // stands for and silently stops updating it, so the pin rots into a permanently stale,
@@ -657,7 +828,21 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
             let Some((reference, comment)) = parse_uses(line) else {
                 continue;
             };
-            if reference.starts_with("./") || reference.starts_with("docker://") {
+            if reference.starts_with("./") {
+                continue;
+            }
+            if let Some(image) = reference.strip_prefix("docker://") {
+                if !is_digest_pinned_image(image) {
+                    bad.push(Finding::new(
+                        "R14",
+                        format!(
+                            "{name}: `uses: {reference}` names a container image by a movable \
+                             tag (or by nothing), not by digest. A registry tag can be re-pointed \
+                             under a name we already trust, and the step runs with our tokens. \
+                             Pin it as `docker://<image>@sha256:<64 hex>`."
+                        ),
+                    ));
+                }
                 continue;
             }
             match tag_pinned_call(&reference, comment.as_deref()) {
@@ -780,14 +965,16 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
     // a tag is an OUTPUT of a green release, so nothing may key off one.
     for name in &names {
         let text = strip_comments(&read(name).unwrap_or_default());
-        if has_v_star_tag_trigger(&top_level_block(&text, "on")) {
+        let triggers = tag_triggers(&top_level_block(&text, "on"));
+        if !triggers.is_empty() {
             bad.push(Finding::new(
                 "R1",
                 format!(
-                "{name} is triggered by a `v*` tag push. A tag must be the RESULT of a verified \
+                "{name} is triggered by a version tag: {}. A tag must be the RESULT of a verified \
                  release, never its trigger: keying a build off a tag means the version name is \
                  public before one consumer check has run against it, which is how a release \
-                 shipped five of seven assets under a name that could not be taken back."
+                 shipped five of seven assets under a name that could not be taken back.",
+                triggers.join("; ")
             ),
             ));
         }
@@ -1181,6 +1368,51 @@ fn mutations() -> Vec<Mutation> {
             rule: "R1",
             apply: |t| replant_on(t, "on:\n  push:\n    tags: [\"v*\"]\n"),
             creates: false,
+        },
+        Mutation {
+            // The one-line spelling of the trigger, which the line-oriented scan walked past.
+            label: "R1 a v* tag trigger comes back as a one-line flow mapping",
+            file: "zz-planted-tag-trigger.yml",
+            rule: "R1",
+            apply: |_| {
+                "on: { push: { tags: [\"v*\"] } }\njobs:\n  j:\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R1 a tag glob that does not start with v comes back",
+            file: "zz-planted-tag-trigger.yml",
+            rule: "R1",
+            apply: |_| {
+                "on:\n  push:\n    tags: [\"[0-9]*\"]\njobs:\n  j:\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R1 an unfiltered push (which fires for tags) comes back",
+            file: "zz-planted-tag-trigger.yml",
+            rule: "R1",
+            apply: |_| "on: push\njobs:\n  j:\n    steps:\n      - run: true\n".to_string(),
+            creates: true,
+        },
+        Mutation {
+            label: "R1 a release trigger comes back",
+            file: "zz-planted-tag-trigger.yml",
+            rule: "R1",
+            apply: |_| {
+                "on:\n  release:\n    types: [published]\njobs:\n  j:\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R14 a docker:// step is pinned by tag, not digest",
+            file: "zz-planted-docker-pin.yml",
+            rule: "R14",
+            apply: |_| "jobs:\n  a:\n    steps:\n      - uses: docker://alpine:3.20\n".to_string(),
+            creates: true,
         },
         Mutation {
             // The refspec form a promote script documents, which the `HEAD:<dst>` test and the
