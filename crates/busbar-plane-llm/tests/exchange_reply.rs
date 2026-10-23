@@ -585,21 +585,15 @@ fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_iden
     }
 }
 
-/// One instant for the whole process: a relay timed on it reports a stream's latency as 0 however
-/// long the relay took.
-fn stopped_clock() -> std::time::Instant {
-    static AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    *AT.get_or_init(std::time::Instant::now)
-}
-
 /// A stream from a far end of every dialect reaches a caller of every dialect whole, whatever the
 /// piece boundaries, and its usage is read at the end.
 ///
 /// ONE CLOCK FOR BOTH RELAYS. A Bedrock caller's `metadata` frame reports the stream's real elapsed
-/// `metrics.latencyMs` (1.5.5 bytes), so two relays of one stream on the wall clock answer
-/// different bytes whenever they straddle a millisecond (bedrock<-responses, latencyMs 1 vs 0, on a
-/// loaded runner: merge-queue run 37136423381). The byte equality below is the piece-boundary claim,
-/// not a race against the clock, so both relays are timed on [`stopped_clock`].
+/// `metrics.latencyMs` (1.5.5 bytes), read off the HOST's monotonic clock, so two relays of one
+/// stream on a running clock answer different bytes whenever they straddle a millisecond
+/// (bedrock<-responses, latencyMs 1 vs 0, on a loaded runner: merge-queue run 37136423381). The
+/// byte equality below is the piece-boundary claim, not a race against the clock, so both relays
+/// are fed by [`HOST`], which holds no monotonic clock.
 #[test]
 fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
     let mut checked = 0;
@@ -608,11 +602,11 @@ fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
         assert!(!far.is_empty(), "{egress}");
         for ingress in SIX {
             let whole = relay_all(
-                &mut Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock),
+                &mut Relay::new(relay_ctx(ingress, egress, true)),
                 &far,
                 usize::MAX,
             );
-            let mut r = Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock);
+            let mut r = Relay::new(relay_ctx(ingress, egress, true));
             let pieces = relay_all(&mut r, &far, 7);
             assert!(!whole.is_empty(), "{ingress}<-{egress}");
             if ingress != "responses" && ingress != "anthropic" && ingress != "cohere" {
@@ -797,6 +791,51 @@ fn a_reply_takes_a_whole_answer_whole() {
     assert!(last.units.tokens_in > 0 && last.units.tokens_out > 0);
     let v: Value = serde_json::from_slice(&last.bytes).expect("JSON");
     assert_eq!(v["object"], "chat.completion", "{v}");
+}
+
+/// A TRANSLATED WHOLE ANSWER BILLS ON AN EARLY LEAVE (row 159, plane-llm HIGH). The door writes a
+/// whole answer to the caller in windows; a caller that leaves before the last one is a cancel, and
+/// the cancel bills the units the answer stated only when the reply says the caller had a usable
+/// part of it. 1.5.5 billed a buffered translated answer before writing a byte of it, so a delivered
+/// whole answer is that part from the moment it is handed over. An end that delivers nothing (here
+/// a body over the cap) is not.
+#[test]
+fn a_whole_answer_handed_to_the_caller_bills_when_the_caller_leaves_early() {
+    let arrived = arrival("openai", false);
+    let lane = lane("cohere");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    };
+    let (_, far) = native_answers("cohere")
+        .into_iter()
+        .next()
+        .expect("an answer");
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
+    let last = reply.feed(HOST, &ctx, &far, true, AT);
+    assert_eq!(last.verdict, Verdict::Ok);
+    assert!(last.units.tokens_in > 0 && last.units.tokens_out > 0);
+    assert!(
+        reply.partial(),
+        "a delivered whole answer must bill its stated units when the caller leaves before its \
+         last window"
+    );
+
+    let tight = ReplyCtx {
+        translate_cap: 4,
+        ..ctx
+    };
+    let mut over = Reply::new(HOST, &tight, 200, head);
+    let refused = over.feed(HOST, &tight, &far, true, AT);
+    assert_eq!(refused.verdict, Verdict::Hard);
+    assert!(
+        !over.partial(),
+        "an end that delivers nothing bills nothing"
+    );
 }
 
 /// A far-end error: a client fault is `Hard` with the caller's answer; a transient is `Retry`
@@ -4704,6 +4743,47 @@ mod rehomed_metering {
             "v1.5.5's figure: the readable count, nothing else"
         );
     }
+}
+
+/// Q128 arch u59: A TRANSLATED STREAM IS TIMED ON THE HOST'S ONE CLOCK. A Bedrock caller's
+/// `metadata` frame reports `metrics.latencyMs` as the host's monotonic time between the stream's
+/// first byte and that frame, so a host whose clock moved 250 ms reports 250 whatever the process
+/// clock did. RED: the relay read `std::time::Instant::now`, the plane's own clock, and reported the
+/// process time the test took (0).
+#[test]
+fn a_translated_stream_is_timed_on_the_hosts_clock() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Clocked(AtomicU64);
+    impl busbar_contract::codec::CodecHost for Clocked {
+        fn fill_entropy(&self, out: &mut [u8]) -> bool {
+            out.fill(7);
+            true
+        }
+        fn wall_clock_now(&self) -> Option<u64> {
+            Some(1_700_000_000)
+        }
+        fn monotonic_ns(&self) -> Option<u64> {
+            Some(self.0.load(Ordering::Relaxed))
+        }
+    }
+    let host = Clocked(AtomicU64::new(5_000_000_000));
+    let far = native_stream("anthropic");
+    let (first, rest) = far.split_at(far.len() / 2);
+    let mut r = Relay::new(relay_ctx("bedrock", "anthropic", true));
+    let mut out = Vec::new();
+    if let (Fed::Bytes(b), _) = r.feed(&host, first) {
+        out.extend_from_slice(&b);
+    }
+    host.0.fetch_add(250_000_000, Ordering::Relaxed);
+    if let (Fed::Bytes(b), _) = r.feed(&host, rest) {
+        out.extend_from_slice(&b);
+    }
+    out.extend(r.end(&host).bytes);
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("\"latencyMs\":250"),
+        "the metadata frame reports the host's 250 ms: {text}"
+    );
 }
 
 /// AN OPENAI FAR END'S WHOLE ANSWER READS AS AN ANTHROPIC MESSAGE: an anthropic caller served by an

@@ -506,8 +506,8 @@ fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
         wal.owed_to_store().len()
     );
     assert!(
-        wal.store_debt_dropped() > 0,
-        "and it says how much of the catch-up it gave up on"
+        wal.store_debt_on_medium() > 0,
+        "and it says how much of the catch-up it left on the medium"
     );
     assert_eq!(
         wal.read_back().unwrap().records.len() as u64,

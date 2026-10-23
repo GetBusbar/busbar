@@ -140,7 +140,7 @@ fn the_interval_seals_a_changed_book_and_never_an_unchanged_one() {
         .expect("due")
         .expect("sealed");
     assert_eq!(sealed.wall, armed + 60);
-    assert_eq!(durability.checkpoints, vec![sealed]);
+    assert_eq!(durability.checkpoints, vec![sealed.head()]);
     let replayed = durability
         .journal
         .replay()
@@ -309,6 +309,114 @@ fn the_checkpoint_ring_holds_the_latest_1024_and_evicts_the_oldest_at_1025() {
         durability.journal.next_seq(),
         1_026,
         "the journal is the durable record: it took every seal, the evicted one included"
+    );
+}
+
+/// N SEALS HOLD NO COPY OF THE BOOK BEYOND ONE RESIDENT SEALED COPY (Q128 kernel-ledger HIGH 1,
+/// ARCHITECT ruling A1): the node keeps one live book, the deltas not yet sealed, and one resident
+/// sealed copy (the newest kept seal, which the retirement measures against), however many seals it
+/// has made. RED before the ruling: the
+/// ring kept a full copy of the book per seal, so fifty seals of an eight-balance book held four
+/// hundred balances.
+#[test]
+fn n_seals_hold_no_copy_of_the_book_beyond_one_in_flight() {
+    let token = token();
+    let mut durability = memory_node();
+    for n in 0..8u64 {
+        let key = TotalsKey::new(
+            BucketId::new(format!("vk_bound_{n}")),
+            CapDimension::NanoUnits,
+            BucketScope::All,
+        );
+        durability.ledger.book_mut().entry(key, 86_400).settled = 1;
+    }
+    let book = durability.ledger.book().len();
+    assert_eq!(book, 8);
+    for n in 0..50u64 {
+        durability
+            .seal_checkpoint(&token, StepName::Meter, NOW + n)
+            .expect("the seal goes down");
+    }
+    assert!(
+        durability.sealed_balances_held() <= book,
+        "fifty seals hold {} sealed balances beside a live book of {book}: one resident sealed \
+         copy at most",
+        durability.sealed_balances_held()
+    );
+}
+
+/// **EVERY SEAL BOUNDS THE BOOK** at 1.5.5's thirty-one-day horizon. A window the last kept seal
+/// holds, past the horizon, leaves the book and the dual-write rows before the next seal, so that
+/// seal no longer carries it; a window inside the horizon and the all-time window are untouched,
+/// and the books still verify clean against the new seal. Before this, no production path retired
+/// a window, and every seal cloned every window the node had ever settled into.
+#[test]
+fn a_seal_retires_the_windows_past_the_horizon_the_last_seal_holds() {
+    use busbar_kernel_ledger::totals::{ALL_TIME_WINDOW, WINDOW_RETENTION_SECS};
+
+    let token = token();
+    let rows = RecordingRows::new();
+    let mut durability = build_priced(
+        &DurabilityConfig { data_dir: None },
+        3,
+        Box::new(NullShipper::new()),
+        Box::new(rows.clone()),
+        Box::new(|| None),
+    )
+    .expect("the book opens");
+    let key = TotalsKey::new(
+        BucketId::new("vk_retire"),
+        CapDimension::NanoUnits,
+        BucketScope::All,
+    );
+    let old = 86_400;
+    let today = NOW / 86_400 * 86_400;
+    for window in [ALL_TIME_WINDOW, old, today] {
+        durability.ledger.record_hold_opened(&key, window, 100);
+        durability.ledger.replay_post(
+            &key,
+            window,
+            "vk_retire",
+            Figures {
+                reserved: 100,
+                settled: 60,
+                fee_count: 1,
+            },
+        );
+    }
+    let inside = |book: &busbar_kernel_ledger::totals::Book| -> Vec<_> {
+        book.iter()
+            .filter(|((_, window), _)| *window != old)
+            .map(|(at, figures)| (at.clone(), *figures))
+            .collect()
+    };
+    let before = inside(durability.ledger.book());
+    assert!(old.saturating_add(WINDOW_RETENTION_SECS) <= NOW);
+
+    // The first seal has no seal before it, so it retires nothing and holds every window.
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, NOW)
+        .expect("the seal goes down");
+    assert!(first.totals.contains_key(&(key.clone(), old)));
+    assert_eq!(durability.ledger.book().len(), 3);
+
+    // The next one retires what the first holds past the horizon, and seals without it.
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, NOW + 1)
+        .expect("the seal goes down");
+    assert!(!second.totals.contains_key(&(key.clone(), old)));
+    assert_eq!(durability.ledger.book().get(&key, old), Totals::zero());
+    assert!(rows.written().iter().all(|row| row.window_start != old));
+    assert_eq!(rows.written().len(), 2, "the rows inside the horizon stay");
+    assert_eq!(
+        inside(durability.ledger.book()),
+        before,
+        "every balance inside the horizon is unchanged"
+    );
+    assert!(
+        busbar_kernel_ledger::verify::verify(&second, &durability.ledger.book().snapshot(), None)
+            .is_empty(),
+        "the books verify clean against the seal that no longer holds the retired window"
     );
 }
 
