@@ -39,7 +39,7 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext,
-    RoutingDecision as RouteAnswer, RoutingPolicy, RoutingRequest, TransformOutcome,
+    RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
@@ -803,26 +803,26 @@ fn fault_clear(key: &str) {
 /// abstains), a reject clamped and sanitised (for every producer), a restrict carried with its
 /// `on_empty`.
 fn map_answer(
-    answer: RouteAnswer,
+    answer: RoutingDecision,
     name: &'static str,
     candidates: &[Candidate<'_>],
     on_empty: &PolicyOnError,
 ) -> Decided {
     match answer {
-        RouteAnswer::Prefer(order) => {
+        RoutingDecision::Prefer(order) => {
             let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-            match RouteAnswer::from_ranked(order, &valid) {
-                RouteAnswer::Prefer(order) => Decided::Order { order, name },
+            match RoutingDecision::from_ranked(order, &valid) {
+                RoutingDecision::Prefer(order) => Decided::Order { order, name },
                 _ => Decided::Weighted,
             }
         }
-        RouteAnswer::Abstain => Decided::Weighted,
-        RouteAnswer::Reject { status, message } => Decided::RejectRequest {
+        RoutingDecision::Abstain => Decided::Weighted,
+        RoutingDecision::Reject { status, message } => Decided::RejectRequest {
             status: clamp_reject_status(status),
             message: sanitize_reject_message(&message),
             name,
         },
-        RouteAnswer::Restrict { tags_any } => Decided::Restrict {
+        RoutingDecision::Restrict { tags_any } => Decided::Restrict {
             tags_any,
             name,
             on_empty: on_empty.clone(),
@@ -2119,7 +2119,7 @@ impl SessionStage {
             let decided =
                 tokio::time::timeout(*timeout, policy.decide(&req, &[], &ctx, *timeout)).await;
             match decided {
-                Ok(Ok(RouteAnswer::Reject { status, message })) => {
+                Ok(Ok(RoutingDecision::Reject { status, message })) => {
                     // 1.5.5's one clamp rule (outside 400..=499 is 403), never a saturating one.
                     return StageAnswer::Stop {
                         status: clamp_reject_status(status),
