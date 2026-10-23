@@ -215,7 +215,9 @@ struct StaticFacts {
     weight: u32,
     context_max: Option<usize>,
     tier: Option<Box<str>>,
-    cost_per_mtok: Option<u64>,
+    /// The configured cost per million tokens, as its `f64` bit pattern: compared for identity,
+    /// never priced with.
+    cost_bits: Option<u64>,
     tags: Box<[Box<str>]>,
 }
 
@@ -227,7 +229,7 @@ impl StaticFacts {
             && self.weight == c.weight
             && self.context_max == c.context_max
             && self.tier.as_deref() == c.tier
-            && self.cost_per_mtok == c.cost_per_mtok.map(f64::to_bits)
+            && self.cost_bits == c.cost_per_mtok.map(f64::to_bits)
             && self.tags.len() == c.tags.len()
             && self.tags.iter().zip(c.tags).all(|(a, b)| **a == **b)
     }
@@ -283,7 +285,7 @@ impl CandidateStatics {
                 weight: c.weight,
                 context_max: c.context_max,
                 tier: c.tier.map(Into::into),
-                cost_per_mtok: c.cost_per_mtok.map(f64::to_bits),
+                cost_bits: c.cost_per_mtok.map(f64::to_bits),
                 tags: c.tags.iter().map(|t| t.as_str().into()).collect(),
             })
             .collect();

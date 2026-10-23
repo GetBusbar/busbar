@@ -154,9 +154,14 @@ impl PlaneCalls for Echo {
     fn recycle(&self, _: Ticket) {}
     fn drop_client(&self, _: Ticket) {}
     fn serve(&self, _: Ticket, i: ServeIn, mut o: ServeOut, _: Lent) -> Box<dyn ServeInFlight> {
-        // SAFETY: the driver's target and `fields_len` head fields, live for the crossing.
+        // SAFETY: the driver's target and `fields_len` head fields, live for the crossing. An empty
+        // head crosses as a null pointer (`FieldList::as_ptr`), which no slice may be built over.
         let target = unsafe { text(i.target) };
-        let fields: &[Field] = unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) };
+        let fields: &[Field] = if i.fields_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
+        };
         let names = fields.iter().map(|f| unsafe { text(f.name) }).collect();
         self.crossed.lock().unwrap().push((target, names));
         let (key, value) = ROW;
