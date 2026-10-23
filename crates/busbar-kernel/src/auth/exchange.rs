@@ -37,18 +37,13 @@ pub(crate) async fn exchange(
     req: Request<Body>,
 ) -> Response {
     let app = handle.load();
-    // A CREDENTIAL-flow form submission carries the browser login cookie (set by `begin` when a
-    // Credential method rendered its form). Route it to the credential completer, which verifies the
-    // submitted credential via the plugin and issues through the SAME seam. A headless IdP-bearer
-    // exchange (CI/BYOK) has NO login cookie and falls through to the chain path below.
-    if let Some(cookie) = crate::auth::token::read_login_cookie(&req) {
-        // Small, bounded read of the form body (credential fields + the CSRF `__state`).
-        let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
-            .await
-            .unwrap_or_default();
-        let form = crate::auth::token::parse_form_urlencoded(&String::from_utf8_lossy(&bytes));
-        return crate::auth::token::credential_submit(&app, &handle, cookie, form).await;
-    }
+    // A submission the hosted login flow owns (its credential form) is the flow's to answer
+    // (`busbar-core-oauth2`, through the login seam); any other request comes back untouched and is
+    // the headless exchange's (a CI/BYOK IdP-bearer exchange).
+    let req = match crate::auth::login::seam::credential_form(handle.clone(), req).await {
+        Ok(answered) => return answered,
+        Err(req) => *req,
+    };
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
     // carriers as any data-plane token (the default inbound style's, in its order).
     let candidate = app.auth.extract_client_token(req.headers());

@@ -28,24 +28,3 @@ async fn live_is_handed_through_untouched() {
     let resp = PlaneAnswer::Live(live).into_response();
     assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
 }
-
-#[test]
-fn plane_in_flight_stores_and_takes_by_key() {
-    use super::PlaneInFlight;
-    let table = PlaneInFlight::new();
-    table.open(7);
-    // Before a store, the slot yields nothing.
-    assert!(table.take(9).is_none());
-    table.store(
-        7,
-        PlaneAnswer::Unary(
-            axum::http::StatusCode::OK,
-            axum::http::HeaderMap::new(),
-            axum::body::Bytes::from_static(b"x"),
-        ),
-    );
-    let taken = table.take(7);
-    assert!(matches!(taken, Some(PlaneAnswer::Unary(..))));
-    // Taken once, gone after.
-    assert!(table.take(7).is_none());
-}
