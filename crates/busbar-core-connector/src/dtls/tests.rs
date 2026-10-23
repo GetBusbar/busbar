@@ -11,10 +11,7 @@ fn p(s: &str) -> SocketAddr {
 }
 
 fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
-    IceCredentials {
-        ufrag: ufrag.into(),
-        pwd: pwd.into(),
-    }
+    IceCredentials::new(ufrag.into(), pwd.into())
 }
 
 /// A Binding request as a peer sends it to the owner of `to`: USERNAME "to.ufrag:from_ufrag",

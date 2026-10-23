@@ -946,14 +946,8 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
     fingerprint.copy_from_slice(stated);
     Ok(Terms {
         role,
-        local: IceCredentials {
-            ufrag: utf8(t.local_user)?,
-            pwd: utf8(t.local_secret)?,
-        },
-        remote: IceCredentials {
-            ufrag: utf8(t.remote_user)?,
-            pwd: utf8(t.remote_secret)?,
-        },
+        local: IceCredentials::new(utf8(t.local_user)?, utf8(t.local_secret)?),
+        remote: IceCredentials::new(utf8(t.remote_user)?, utf8(t.remote_secret)?),
         fingerprint,
         candidates,
     })

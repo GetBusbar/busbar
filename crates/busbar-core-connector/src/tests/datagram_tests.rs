@@ -47,10 +47,7 @@ fn p(s: &str) -> SocketAddr {
 }
 
 fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
-    IceCredentials {
-        ufrag: ufrag.into(),
-        pwd: pwd.into(),
-    }
+    IceCredentials::new(ufrag.into(), pwd.into())
 }
 
 // ── STUN, as a full ICE agent writes it ─────────────────────────────────────────────────────────

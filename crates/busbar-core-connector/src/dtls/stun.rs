@@ -14,6 +14,7 @@
 //! own for ICE's sake; these are consent probes, answered by every full ICE agent.
 
 use ring::hmac;
+use zeroize::Zeroizing;
 
 /// STUN's magic cookie (RFC 8489 §5).
 const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
@@ -47,8 +48,18 @@ const PROBE_PRIORITY: u32 = 0x7eff_ffff;
 pub struct IceCredentials {
     /// The username fragment (`a=ice-ufrag`).
     pub ufrag: String,
-    /// The password (`a=ice-pwd`), an HMAC key.
-    pub pwd: String,
+    /// The password (`a=ice-pwd`), an HMAC key: zeroed on drop and never printed.
+    pub pwd: Zeroizing<String>,
+}
+
+impl IceCredentials {
+    /// Credentials for one side: the username fragment and the password.
+    pub fn new(ufrag: String, pwd: String) -> Self {
+        IceCredentials {
+            ufrag,
+            pwd: Zeroizing::new(pwd),
+        }
+    }
 }
 
 impl std::fmt::Debug for IceCredentials {
