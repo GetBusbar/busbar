@@ -76,8 +76,8 @@
 //!   behaviour -- unless the entry's accepted `classes` include `status`, where the status IS the
 //!   difference. Entries that predate the two rules are named in [`PREMISE_UNTIED`] and
 //!   [`PREMISE_STATUS_ONLY`]: those lists only DRAIN. An entry on one that now satisfies the rule
-//!   must come off it, an entry not on one must satisfy it, and a listed id the register no longer
-//!   holds is refused.
+//!   must come off it, and an entry not on one must satisfy it; a unit test refuses a listed id the
+//!   register no longer holds.
 
 use serde_json::Value;
 
@@ -1736,13 +1736,6 @@ fn rule_premise(entries: &[Entry], cx: &Ctx) -> Row {
             }
         }
     }
-    for id in PREMISE_UNTIED.iter().chain(PREMISE_STATUS_ONLY) {
-        if !entries.iter().any(|e| e.id == *id) {
-            offenders.push(format!(
-                "{id}: on a premise drain-only list but the register holds no such entry -- remove it"
-            ));
-        }
-    }
     if offenders.is_empty() {
         Row::pass(
             ROW_PREMISE,
@@ -1834,6 +1827,27 @@ mod tests {
             "every accepted difference must be named in the changelog: {:?}",
             verdict.problems
         );
+    }
+
+    /// A drain-only list that names an id the register no longer holds is a list that cannot drain.
+    /// Judged against the real register here, not inside the rule: the selftest plants registers
+    /// of its own, and a planted register rightly holds none of these ids.
+    #[test]
+    fn the_drain_only_lists_name_entries_the_register_holds() {
+        let text = cx().read(DEFAULT_REGISTER).expect("the register reads");
+        let doc: Value = serde_json::from_str(&text).expect("the register parses");
+        let ids: Vec<&str> = doc[ACCEPTED_KEY]
+            .as_array()
+            .expect("an accepted list")
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Value::as_str))
+            .collect();
+        for id in PREMISE_UNTIED.iter().chain(PREMISE_STATUS_ONLY) {
+            assert!(
+                ids.contains(id),
+                "{id} is on a premise drain-only list but the register holds no such entry"
+            );
+        }
     }
 
     #[test]
