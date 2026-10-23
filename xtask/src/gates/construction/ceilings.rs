@@ -147,9 +147,14 @@ pub fn add_to_list(text: &str, table: &str, key: &str, items: &[String]) -> Opti
         if !done && cur == table && !t.starts_with('#') {
             if let Some((k, v)) = t.split_once('=') {
                 if k.trim().trim_matches('"') == key && v.trim_start().starts_with('[') {
-                    let at = raw.find('[').unwrap_or(raw.len());
-                    let (head, tail) = raw.split_at(at + 1);
-                    out.push(format!("{head} {quoted},{tail}"));
+                    if items.is_empty() {
+                        // Nothing to add: writing `[ ,` here is invalid TOML.
+                        out.push(raw.to_string());
+                    } else {
+                        let at = raw.find('[').unwrap_or(raw.len());
+                        let (head, tail) = raw.split_at(at + 1);
+                        out.push(format!("{head} {quoted},{tail}"));
+                    }
                     done = true;
                     continue;
                 }
@@ -159,7 +164,9 @@ pub fn add_to_list(text: &str, table: &str, key: &str, items: &[String]) -> Opti
     }
     if !done {
         let at = header_at?;
-        out.insert(at, format!("{key} = [{quoted}]"));
+        if !items.is_empty() {
+            out.insert(at, format!("{key} = [{quoted}]"));
+        }
     }
     let mut s = out.join("\n");
     if text.ends_with('\n') {
@@ -469,5 +476,21 @@ mod tests {
         assert_eq!(parsed.table("a").expect("a").list_of("k"), vec!["y", "x"]);
         assert_eq!(parsed.table("b").expect("b").list_of("new-key"), vec!["z"]);
         assert!(add_to_list(doc, "nope", "k", &[]).is_none());
+    }
+
+    /// An EMPTY item list is a no-op that still yields valid TOML (it used to write `[ ,`), and an
+    /// empty `[]` list accepts items.
+    #[test]
+    fn the_fixture_editor_handles_empty_lists() {
+        let doc = "[a]\nk = []\n[b]\nn = 1\n";
+        let same = add_to_list(doc, "a", "k", &[]).expect("table a");
+        assert_eq!(same, doc);
+        let multi = "[a]\nm = [\n]\n";
+        assert_eq!(add_to_list(multi, "a", "m", &[]).expect("table a"), multi);
+        let made = add_to_list(doc, "b", "fresh", &[]).expect("table b");
+        crate::toml_doc::parse_str(&made).expect("still TOML");
+        let filled = add_to_list(doc, "a", "k", &["y".to_string()]).expect("table a");
+        let parsed = crate::toml_doc::parse_str(&filled).expect("still TOML");
+        assert_eq!(parsed.table("a").expect("a").list_of("k"), vec!["y"]);
     }
 }
