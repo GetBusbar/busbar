@@ -44,7 +44,11 @@ pub const NEEDLES: &[&str] = &[
 /// path, a method reference): `busbar_contract::redacted::Secret::expose` is the one way to reach
 /// the value inside a `Secret` (Part 2 #54), sealed by a `KernelSeal`. Each must be defined in the
 /// tree ([`undefined_names`]).
-pub const EXPOSERS: &[&str] = &["expose"];
+///
+/// `headers_for` and `prebuild_auth` are the kernel helpers that turn a resolved credential into
+/// request headers: the plaintext reaches a plane through them without ever passing an accessor
+/// named `expose`, so they are on the row by name too.
+pub const EXPOSERS: &[&str] = &["expose", "headers_for", "prebuild_auth"];
 
 pub const SPEC: Spec = Spec {
     gate: "plane-secret-blindness",

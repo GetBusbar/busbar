@@ -60,7 +60,18 @@ const ABI_DIR: &str = "crates/busbar-contract/src/abi";
 /// root that grows is fine. `plane` is the per-kind plane ABI (THE DESIGN's `abi/plane/`), `host`
 /// the host tables every kind calls (`abi/host/`: conn, hook, io, service). Lower a floor only in
 /// a reviewed diff that says which file left and why.
-const LIVE_ROOTS: &[(&str, usize)] = &[("plane", 2), ("host", 6)];
+const LIVE_ROOTS: &[(&str, usize)] = &[
+    ("plane", 2),
+    ("host", 6),
+    ("transport", 5),
+    ("mechanism", 11),
+    ("sdk", 51),
+];
+
+/// The abi module's own files, which sit beside the roots and are read with them: the module
+/// declaration file and the shared vocabulary. A banned noun in either is as much a leak as one in
+/// a root.
+const LIVE_FILES: &[&str] = &["mod.rs", "shared.rs"];
 
 /// The RETIRING lane: scanned while it holds Rust, and its deletion (M6-HOT-PLANE) is not red once
 /// the live roots above are read.
@@ -602,6 +613,20 @@ fn scan_roots(cx: &Ctx) -> Result<(Vec<crate::ctx::SourceFile>, Vec<String>), Ve
                 files.extend(found);
             }
             Err(e) => refusals.push(format!("{root} (floor {floor}): {e}")),
+        }
+    }
+    for name in LIVE_FILES {
+        let rel = format!("{ABI_DIR}/{name}");
+        match cx.read(&rel) {
+            Ok(text) => {
+                counts.push(format!("{rel}: file"));
+                files.push(crate::ctx::SourceFile {
+                    abs: cx.abs(&rel),
+                    rel: std::path::PathBuf::from(&rel),
+                    text,
+                });
+            }
+            Err(e) => refusals.push(format!("{rel}: {e}")),
         }
     }
     let hot = format!("{ABI_DIR}/{RETIRING_ROOT}");
