@@ -2284,8 +2284,8 @@ pub(super) mod session_door {
         (caller, head)
     }
 
-    /// THE SIDEBAND ATTACHES ONLY TO A PLACED CALL (busbar row 159, `crates/busbar-plane-streaming/src`
-    /// round 2: "The sideband door attaches to no call"; ARCHITECT ruling 2026-10-23 on
+    /// THE SIDEBAND ATTACHES ONLY TO A PLACED CALL (busbar row 159, the session door's audit round
+    /// 2: "The sideband door attaches to no call"; ARCHITECT ruling 2026-10-23 on
     /// `BUSBAR-1.6.0.md` Part 2 #45), at the session door's root leg: a sideband naming a call the
     /// SDP door never placed reaches the provider on no dial; once the caller's own offer has placed
     /// a call through `POST /v1/realtime/calls` (the provider's answer naming it in `Location`), a
