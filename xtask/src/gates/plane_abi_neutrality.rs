@@ -369,6 +369,24 @@ fn excused(ident: &str, hits: &[&str], line_idents: &[&str], rider_site: bool) -
             })
 }
 
+/// THE 1.5.5 HOOK CONTRACT'S OWN WORDS (architect ruling 2026-10-23, R-8). "Hooks: 1.5.5 behaviour
+/// frozen", so the words v1.5.5 `crates/api/src/hooks.rs` gave the hook contract stay as written:
+/// `has_tools` (hooks.rs:30), the `prompt: ro|rw` grant (:37) and the prompt projection `Prompt` /
+/// `PromptProjection` (:56). They are exempt POSITIONALLY, as R-3 exempts frozen 1.5.x words: in
+/// these two files and nowhere else. Any other banned noun in them, or any of these words anywhere
+/// else, stays a finding.
+const FROZEN_HOOK_FILES: &[&str] = &[
+    "crates/busbar-contract/src/abi/sdk/hook.rs",
+    "crates/busbar-contract/src/abi/sdk/tests/hook_tests.rs",
+];
+/// The words exempt in [`FROZEN_HOOK_FILES`], each citing v1.5.5 `crates/api/src/hooks.rs`.
+const FROZEN_HOOK_WORDS: &[&str] = &[
+    "has_tools",        // hooks.rs:30
+    "prompt",           // hooks.rs:37 (the `prompt: ro|rw` grant)
+    "Prompt",           // hooks.rs:56 (the prompt projection)
+    "PromptProjection", // hooks.rs:56
+];
+
 /// The scan. MATCHES THE CODE, NOT THE PATH: the shell greps an ABSOLUTE root, so under a checkout
 /// directory that happens to contain a banned noun — a git worktree is literally named
 /// `agent-<hash>`, and `agent` is banned — a naive match over the prefixed line matched the PATH on
@@ -422,6 +440,9 @@ fn scan(files: &[crate::ctx::SourceFile]) -> (Vec<String>, Vec<String>) {
             for id in &ids {
                 let hits = banned_hits(id);
                 if hits.is_empty() || excused(id, &hits, &ids, rider_site) {
+                    continue;
+                }
+                if FROZEN_HOOK_FILES.contains(&rel.as_str()) && FROZEN_HOOK_WORDS.contains(id) {
                     continue;
                 }
                 let site = format!("{rel}:{}", i + 1);
@@ -1109,6 +1130,36 @@ impl Gate for PlaneAbiNeutralityGate {
                     "plane-abi-neutrality selftest: a file of `{name}` could not be read"
                 )),
             }
+        }
+        // R-8: the 1.5.5 hook contract's words are exempt in the hook files and nowhere else.
+        match plant(&[(plane_mod.clone(), "pub fn has_tools() {}")]) {
+            Some(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a 1.5.5 hook word (has_tools) planted outside the hook files is a finding",
+                &[ROW_EXPORTED],
+                ov,
+                &["has_tools"],
+            )),
+            None => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {plane_mod} could not be read"
+            )),
+        }
+        match plant(&[(
+            format!("{ABI_DIR}/sdk/hook.rs"),
+            "pub struct PromptProjection;\npub fn prompt() {}\npub fn has_tools() {}",
+        )]) {
+            Some(ov) => report.push(crate::gates::prove_rows_green(
+                cx,
+                self,
+                "the 1.5.5 hook words (Prompt, PromptProjection, has_tools, prompt) in the hook \
+                 file are not a finding",
+                &[ROW_EXPORTED],
+                ov,
+            )),
+            None => report.note_infra_failure(
+                "plane-abi-neutrality selftest: abi/sdk/hook.rs could not be read".to_string(),
+            ),
         }
         match plant(&[(plane_mod.clone(), "pub struct BodyTooLargeNote;")]) {
             Some(ov) => report.push(crate::gates::prove_rows_green(
