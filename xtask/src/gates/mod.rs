@@ -826,13 +826,27 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// at `--jobs 1`.
 const TAKEN: &str = "2026-10-12 7a7091060e";
 
+/// When and on what `plane-purity`'s re-baselined measurement was taken (see
+/// [`MEASURED_PLANE_PURITY`]).
+const TAKEN_PLANE_PURITY: &str = "2026-10-23 0488060370";
+
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
 // self-test's own cost line (CPU-time units). Constants rather than literals inside the table so
 // that a re-baseline is a diff a reviewer can read as a list of numbers that moved. The note on
 // each is the battery's CPU and the 2026-10-07 wall-clock figure it replaces.
 const MEASURED_KIND_ISOLATION: f64 = 353_037.0; // 256 cases, 384.5 s CPU (wall unit: 711 866)
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 257_958.0; // 167 cases, 280.9 s CPU (wall unit: 536 090)
-const MEASURED_PLANE_PURITY: f64 = 63_115.0; // 25 cases, 68.8 s CPU (wall unit: 65 100)
+/// RE-BASELINED 2026-10-23 (ARCHITECT ruling on #1421), `plane-purity` alone, on its own
+/// [`TAKEN_PLANE_PURITY`]: 113 236 work units, 41 cases, 137.0 s CPU at 1.210 ms a unit, the serial
+/// re-take of `xtask selftest --shard=3/4` on ModernCI compute at 0488060370. It was 63 115 units
+/// over 25 cases at [`TAKEN`]. On dev's merged tree before 0488060370 the battery read 156 160,
+/// and two regressions in it were fixed there, not budgeted: 4998f42593 walked the neutral
+/// population a second time on every run for the freeze witness and searched each line once per
+/// derived IR name, and 077eef7ac8 copied every dialect on every line for the segment rule. What
+/// is left is the case count, 25 -> 41, from 4998f42593 (Q128 parts 5 and 22), 077eef7ac8 (the
+/// dialect-segment cases), 2b692177bc (the ratchet case) and 8729b322bf (the backwards-reach
+/// case), at about 2 762 units a case against 2 525 at [`TAKEN`]. The slack is unchanged.
+const MEASURED_PLANE_PURITY: f64 = 113_236.0; // 41 cases, 137.0 s CPU (was 63 115, 25 cases)
 const MEASURED_STRUCTURE_LINT: f64 = 25_120.0; // 43 cases, 27.2 s CPU (wall unit: 39 110)
 const MEASURED_PLANE_PURITY_STRICT: f64 = 22_934.0; // 11 cases, 24.8 s CPU (wall unit: 26 155)
 const MEASURED_TELLER_STEPS: f64 = 15_773.0; // 22 cases, 17.1 s CPU (wall unit: 21 803)
@@ -976,7 +990,7 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "plane-purity",
         measured: MEASURED_PLANE_PURITY,
         allowed: MEASURED_PLANE_PURITY * BUDGET_SLACK,
-        taken: TAKEN,
+        taken: TAKEN_PLANE_PURITY,
         why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
