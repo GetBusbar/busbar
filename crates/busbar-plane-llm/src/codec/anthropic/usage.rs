@@ -125,7 +125,8 @@ pub(super) fn write_server_tool_use(usage: &crate::codec::ir::IrUsage) -> serde_
 /// Every member the spec marks REQUIRED is always present, in the spec's own nullable/default shape
 /// when busbar has no value: the two cache counters as `0` (a real uncached Anthropic response
 /// reports zeros, never omits them), `cache_creation` as the zero tier object, `service_tier` as
-/// `"standard"` (the tier a request lands on unless it asked for another), and `inference_geo`,
+/// `"standard"` when no tier was reported (the tier a request lands on unless it asked for another)
+/// and `null` when the reported tier has no Anthropic word, and `inference_geo`,
 /// `output_tokens_details`, `server_tool_use` as `null`. A value the source reported is emitted
 /// unchanged. `None` (a cross-protocol stream whose first frame carried no usage) yields the
 /// zero-valued skeleton.
@@ -168,12 +169,15 @@ pub(super) fn write_usage_object(usage: Option<&crate::codec::ir::IrUsage>) -> s
         super::SERVER_TOOL_USE.to_string(),
         write_server_tool_use(usage),
     );
-    usage_map.insert(
-        keys::SERVICE_TIER.to_string(),
-        serde_json::json!(
-            anthropic_served_tier(usage.detail.service_tier.as_deref()).unwrap_or(super::STANDARD)
-        ),
-    );
+    // No tier reported: the tier a request lands on. A tier reported that Anthropic cannot name:
+    // the schema's `null`, never a word of busbar's own in its place (DF-SITES), so the buffered
+    // answer and the stream's `message_delta` (which omits the member) agree that no tier is named.
+    let tier = match usage.detail.service_tier.as_deref() {
+        None => serde_json::json!(super::STANDARD),
+        reported => anthropic_served_tier(reported)
+            .map_or(serde_json::Value::Null, |t| serde_json::json!(t)),
+    };
+    usage_map.insert(keys::SERVICE_TIER.to_string(), tier);
     serde_json::Value::Object(usage_map)
 }
 
@@ -181,7 +185,8 @@ pub(super) fn write_usage_object(usage: Option<&crate::codec::ir::IrUsage>) -> s
 /// Anthropic has no word for it. The IR slot can carry OpenAI-family words (a Chat backend's
 /// `flex` / `scale`, which the Chat reader keeps so the two OpenAI dialects agree); an Anthropic
 /// client's SDK types the member as `standard | priority | batch`, so an unknown word is never
-/// written — it is DROPPED with a warn and the member takes its absent form.
+/// written — it is DROPPED with a warn and the member takes its absent form (`null` on a buffered
+/// `Usage`, omitted from a `message_delta`).
 /// OpenAI's `default` IS the standard tier.
 pub(super) fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> {
     let word = tier?;
