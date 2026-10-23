@@ -5523,6 +5523,9 @@ pub fn selftest<'a>(
     // on the real tree and was struck. Re-targeted a fifth time: the subject was
     // `busbar-kernel-breaker × plane`, which went dead when the breaker stopped naming a plane
     // (row 66: it reads the transport's and the plane's fault readings) and was struck.
+    // Re-targeted a sixth time: the subject was `busbar-kernel-egress × plane`, which went dead on
+    // the real tree when the crate stopped naming a plane and was struck; the crate's
+    // `kernel` cell is the one that still exists.
     let mut ov = crate::ctx::Overlay::new();
     ov.remove("crates/busbar-kernel-egress/Cargo.toml");
     report.push(prove_rows_red(
@@ -5531,7 +5534,7 @@ pub fn selftest<'a>(
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-egress \u{d7} plane"],
+        &["dead-cell", "busbar-kernel-egress \u{d7} kernel"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
