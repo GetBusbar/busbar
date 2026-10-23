@@ -58,9 +58,11 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("node", "node", "install_node"),
 ];
 
-/// The transport axis (#3, #30): each row's entry exports its memory-ABI `door`, and nothing else is
-/// read off it: the row's key, the layers it composes over and whether it carries a session are its
-/// door's Statement's (`crate::root::linked::linked_transport!`); the root folds the rows bottom-up.
+/// The transport axis (#3, #30): each row's entry exports its memory-ABI `door` (every transport row
+/// is also a [`DOOR_AXIS`] row), and nothing else is read off it: the row's key, the layers it
+/// composes over and whether it carries a session are its door's Statement's
+/// (`crate::root::linked::linked_transport!`); the root builds each through
+/// `crate::root::doors::build` and folds them bottom-up.
 const TRANSPORT_AXIS: &str = "transport";
 
 /// Beside `transport`: the row's entry exports its memory-ABI `door` instead of a `build`, and the
@@ -68,10 +70,10 @@ const TRANSPORT_AXIS: &str = "transport";
 /// the host's sockets by the connector.
 pub(crate) const DOOR_AXIS: &str = "transport-door";
 
-/// Beside `transport`, for a wire whose row keeps its own `build`: the row's entry ALSO exports its
-/// memory-ABI `door`, which the root's one Connector opens as a framer entry, so a plugin's need over
-/// this scheme is served on the connector (an export sink's outbound `http`, `BUSBAR-1.6.0.md` Part 2
-/// #50) while the wire the registry folds is unchanged.
+/// Beside `transport-door`: the row's memory-ABI `door` is ALSO opened by the root's one Connector
+/// as a framer entry, so a plugin's need over this scheme is served on the connector (an export
+/// sink's outbound `http`, `BUSBAR-1.6.0.md` Part 2 #50) while the wire the registry folds is
+/// unchanged.
 pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
 
 /// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
@@ -92,7 +94,8 @@ const CLAIMS_AXIS: &str = "claims";
 /// build): each row's entry exports its memory-ABI `door`.
 const SECRET_AXIS: &str = "secret-doors";
 
-/// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
+/// The auth axis (#2 rule (1), #40): each row's entry (its crate root, unless a `linked-entry` row
+/// names another module) exports, at `door::door`, the
 /// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
 /// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
 /// `linked-name` row states and the canonical name its `linked-canonical` row states (the key, when

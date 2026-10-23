@@ -167,6 +167,15 @@ const CASES: &[Case] = &[
         flaw: Flaw::TestSubstring,
     },
     Case {
+        name: "cfg-any-test-default-feature-ships",
+        why: "`any(test, feature = \"root-admin\")` compiles into the default build: it is production code",
+        src: "#[cfg(any(test, feature = \"root-admin\"))]\n\
+              pub use inner::walk;\n\
+              pub fn always() -> u32 { 2 }\n",
+        want: counts(3, 0, 0, 0, 0),
+        flaw: Flaw::TestSubstring,
+    },
+    Case {
         name: "cfg-feature-named-test-support",
         why: "a FEATURE whose name contains `test` is a feature; the item ships when it is on",
         src: "#[cfg(feature = \"test-support\")]\n\
