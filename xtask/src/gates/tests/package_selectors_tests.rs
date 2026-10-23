@@ -312,7 +312,7 @@ fn a_rust_argv_array_is_read_only_when_it_is_a_cargo_command() {
     let got: Vec<(&str, usize)> = out.iter().map(|s| (s.pkg.as_str(), s.line)).collect();
     assert_eq!(
         got,
-        vec![("busbar-gone", 6), ("busbar-kernel", 17)],
+        vec![("busbar-gone", 5), ("busbar-kernel", 17)],
         "{out:?}"
     );
 }
