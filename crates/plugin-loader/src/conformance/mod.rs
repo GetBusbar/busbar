@@ -558,7 +558,11 @@ impl Subject {
     pub fn apply_env(&self) {
         static APPLIED: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
             std::sync::OnceLock::new();
-        let Some(env) = self.inputs.get("env").and_then(|e| e.as_object()) else {
+        let Some(env) = self
+            .inputs
+            .get(busbar_contract::conn::PROGRAM_ENV_KEY)
+            .and_then(|e| e.as_object())
+        else {
             return;
         };
         let applied = APPLIED.get_or_init(|| {
