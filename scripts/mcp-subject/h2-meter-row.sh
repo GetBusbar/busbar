@@ -70,16 +70,16 @@ spend_delta="$((spend_after - spend_before))"
 
 # THE METER ITSELF RAN — the assertion the old billing-OFF subject could not carry. The two deltas
 # above are the ADMISSION counter's; this one is the metering series', a different write on a
-# different path (`plane_host/govern.rs:226` → `GovState::record_metering`, state.rs:871). The row's
-# lane is the PUBLISHED tool name (`catalogue.rs:1050`, `{server}_{tool}` with `NAMESPACE_SEP = "_"`,
-# config.rs:83) -- `probe_ping` here, the same name `h2_call` sends -- and its provider is the
-# literal `"mcp"` (`method.rs:2517`). Write-behind, so the read waits a flush cadence with margin.
+# different path (the kernel's money step, `GovState::record_metering`). The row's lane is the
+# registration the plane ledgers the call under, `<scope kind>:<name>` (`PlaneSection::ledger_lanes`):
+# the server "probe" is `mcp_server:probe`, the lane the default card prices; its provider is the
+# plane's key, `"mcp"`. Write-behind, so the read waits a flush cadence with margin.
 sleep 2
-row_requests="$(h2_meter_row_field "probe_ping" "mcp" requests)"
-[ "$row_requests" = "1" ] || { failures=$((failures+1)); detail="${detail}metering rows for (probe_ping, mcp) report requests=${row_requests}(want exactly 1; '-' means the meter wrote no row at all); "; }
+row_requests="$(h2_meter_row_field "mcp_server:probe" "mcp" requests)"
+[ "$row_requests" = "1" ] || { failures=$((failures+1)); detail="${detail}metering rows for (mcp_server:probe, mcp) report requests=${row_requests}(want exactly 1; '-' means the meter wrote no row at all); "; }
 
 if [ "$failures" -eq 0 ]; then
-  h2_verdict PASS "one served tools/call settled to a usage delta of exactly 1 request priced at per_request_fee=1 cent, and posted exactly one metering row named (probe_ping, mcp)"
+  h2_verdict PASS "one served tools/call settled to a usage delta of exactly 1 request priced at per_request_fee=1 cent, and posted exactly one metering row named (mcp_server:probe, mcp)"
 else
   h2_verdict FAIL "$detail"
 fi

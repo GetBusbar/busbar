@@ -546,6 +546,13 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   # is the leg that restores the comparison — it judges THIS agent, directly, with no busbar in
   # the path — and it is that number, not the a2a-go one, that the subject number may be read
   # against.
+  # Its virtualenv needs Python >= 3.10 (a2a-sdk), which a runner's python3 may not be: the
+  # harness's one provisioner names the interpreter (python3 when new enough, else a pinned CPython).
+  if [ -z "${A2A_VENV_PYTHON:-}" ]; then
+    A2A_VENV_PYTHON="$(bash testing/a2a-harness/scripts/install-control.sh venv-python 2>"$dir/venv-python.log")" \
+      || die "no Python >= 3.11 for the scenario agent's virtualenv: $(tail -n 1 "$dir/venv-python.log")"
+  fi
+  export A2A_VENV_PYTHON
   testing/a2a-tck/scenario-agent/serve.sh "$agent_port" \
     >"$dir/scenario-agent.log" 2>&1 &
   subject_track_pid "$!"

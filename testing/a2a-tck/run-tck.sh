@@ -118,7 +118,7 @@ fetch_tck () {
 install_tck () {
   if [ ! -x "$VENV/bin/python" ]; then
     say "installing a2a-tck into $VENV"
-    python3 -m venv "$VENV" \
+    "${A2A_VENV_PYTHON:-python3}" -m venv "$VENV" \
       && "$VENV/bin/pip" -q install --upgrade pip \
       && ( cd "$TCK_DIR" && "$VENV/bin/pip" -q install -e . ) \
       || {
@@ -296,6 +296,22 @@ control_leg () {          # control_leg <transport> <port> <name>
   echo
   compare_control "$transport" "$name"
 }
+
+# THE VIRTUALENVS' PYTHON, for the verbs that build one (the suite's, and the scenario agent's
+# through serve.sh): the pinned a2a-tck needs Python >= 3.11, and a runner's python3 may be older
+# (Amazon Linux 2023 ships 3.9), so the interpreter comes from the harness's one provisioner,
+# `install-control.sh venv-python` (python3 when it is new enough, else a pinned CPython). A caller
+# that already chose one passes A2A_VENV_PYTHON. The selftest's stand-ins ARE python3, so it never
+# takes one from the environment.
+case "${1:-}" in
+  control-http-json|control-jsonrpc|control-scenario|subject|prepare|record-baselines)
+    # `subject` with no endpoint refuses below, before anything is installed.
+    if [ -z "${A2A_VENV_PYTHON:-}" ] && { [ "$1" != subject ] || [ -n "${BUSBAR_A2A_ENDPOINT:-}" ]; }; then
+      A2A_VENV_PYTHON="$(bash "$HERE/../a2a-harness/scripts/install-control.sh" venv-python)" || exit 2
+    fi
+    export A2A_VENV_PYTHON ;;
+  selftest) unset A2A_VENV_PYTHON ;;
+esac
 
 case "${1:-}" in
   control-http-json) control_leg http_json 9701 control-a2a-go-http-json ;;
