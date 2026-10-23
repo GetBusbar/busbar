@@ -72,7 +72,7 @@ ratchets:
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, test-docs-run, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [preflight, gates, clippy, compile, test, test-docs-whole, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
   manual: [oracle-record, oracle]
 env:
   RUSTFLAGS: "-D warnings"
@@ -450,32 +450,22 @@ checks:
     baseline: target
     requires: [cc, git-history]
     needs: [gates]
-  test-docs-run:
-    # Was `test-docs` (2026-10-22, ModernCI coordinator): its run limit is learned from its runs, and
-    # nearly all of them are the fast "touches no docs" exit (~20 s), so a change that touches docs
-    # and runs the build and suite whole was killed at a learned 60 s (#1414, #1427). A new name
-    # starts a fresh history (the branch deadline until five runs, then twice the slowest of the
-    # last 50, which a whole run now sets). The engine fix (a kill at a learned limit judges nothing
-    # once and runs again at the deadline) replaces this rename.
-    # MODERNCI_TO_SHA: the selection diffs against the target (it re-keys on every dev tip).
-    env_from_run: [MODERNCI_TO_SHA]
-    # `test` runs with `scope: affected`, and ModernCI's scoper reads docs/ and every *.md as no
-    # crate's code: a change to them alone skips `test`, and a mixed change runs only the crates its
-    # code reaches. Tests do read those files (qa/*.md bindings, docs/design, READMEs), so whenever
-    # the change touches docs/ or any *.md this runs `test`'s build and suite whole; else it has
-    # nothing to add. The target's own run (an empty diff), an octopus merge or an unreadable base runs it.
+  test-docs-whole:
+    # Was `test-docs`, then `test-docs-run` (ModernCI coordinator, 2026-10-22/23). It skipped itself
+    # (exit 0 in ~20 s) when a change touched no docs/ and no *.md, so nearly all of its runs were
+    # that skip, and ModernCI's learned run limit (twice the slowest of its last 50 runs, at least
+    # 60 s) killed every whole run at 60 s (#1414, #1427, #1373). A renamed check relearned the same
+    # 60 s within five skips. It now always runs `test`'s build and suite whole, so its history holds
+    # only whole runs and the limit fits them. Cost: one whole suite per change until the engine
+    # learns limits per kind of run (or a kill at a learned limit judges nothing once and runs again
+    # at the deadline); then the skip comes back.
+    # Tests read docs/ and *.md (qa/*.md bindings, docs/design, READMEs) that `test`'s scoper reads
+    # as no crate's code, so this is what judges a change to them.
     requires: [cc, git-history]
     run: |
       # Offered, not enforced: this check runs the candidate's own code, which calls bin/oracle itself;
       # it gets $BUSBAR_ORACLE_SHIM (the trusted copy) to call instead.
       eval "$ORACLE_TRUST_SH"; oracle_trust || echo "oracle-trust: no trusted shim offered to this check"
-      if [ -n "${MODERNCI_TO_SHA:-}" ] && ! git rev-parse -q --verify HEAD^3 >/dev/null &&
-        git cat-file -e "$MODERNCI_TO_SHA^{commit}" 2>/dev/null &&
-        changed=$(git diff --name-only --no-renames "$MODERNCI_TO_SHA"...HEAD) && [ -n "$changed" ] &&
-        ! printf '%s\n' "$changed" | grep -E '^docs/|\.md$' >/dev/null; then
-        echo "test-docs: this change touches no docs/ path and no *.md; test covers it"
-        exit 0
-      fi
       _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
