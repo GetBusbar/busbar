@@ -6,14 +6,15 @@ cd "$(dirname "$0")/.."
 R="$(pwd)"; D="$R/target/vd-diag"; rm -rf "$D"; mkdir -p "$D"
 cargo build --release --locked -p busbar >"$D/build.out" 2>&1; brc=$?
 export MCP_SUBJECT_BUSBAR_BIN="$R/target/release/busbar"
+node_dir="$(bash scripts/mcp-conformance.sh --node-bin 2>"$D/node-pin.log")" && export PATH="${node_dir}:${PATH}"
 (
   source scripts/mcp-subject/h2-lib.sh
-  trap 'h2_stop' EXIT
+  trap 'h2_stop 2>/dev/null' EXIT
   H2_GROUPS='groups:
   h2-oracle:
     limits:
       - { budget: 1000000, per: day }'
-  h2_boot "$D/mcp" "$H2_GROUPS" >"$D/mcp-boot.out" 2>&1 || { echo "MCP BOOT FAILED"; tail -n 8 "$D/mcp/busbar.log"; exit 0; }
+  h2_boot "$D/mcp" "$H2_GROUPS" >"$D/mcp-boot.out" 2>&1 || { echo "MCP BOOT FAILED"; tail -n 6 "$D/mcp-boot.out"; tail -n 6 "$D/mcp/busbar.log" 2>/dev/null; tail -n 3 "$D/node-pin.log"; exit 0; }
   read -r kid tok <<<"$(h2_mint h2-oracle)"
   bound="$(h2_bind "$tok")"
   echo "USAGE before: $(h2_usage "$kid" | cut -c1-300)"
