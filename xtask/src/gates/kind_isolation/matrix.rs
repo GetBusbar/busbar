@@ -218,8 +218,10 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 /// matrix row, so `busbar-kernel-scope`, drained to 0 by the Q128 kernel-scope lane, stood unarmed
 /// with nothing red. It is armed here.
 const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[
+    "busbar-core-oauth2",
     "busbar-kernel-audit",
     "busbar-kernel-identity",
+    "busbar-kernel-ledger",
     "busbar-kernel-scope",
     "busbar-kernel-wal",
 ];

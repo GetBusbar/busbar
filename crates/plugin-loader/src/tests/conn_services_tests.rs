@@ -345,6 +345,11 @@ fn settings(json: &'static [u8]) -> Blob {
     }
 }
 
+/// A settings document as the `'static` bytes `open_with` takes (leaked: a test process).
+fn json_bytes(v: serde_json::Value) -> &'static [u8] {
+    Box::leak(v.to_string().into_bytes().into_boxed_slice())
+}
+
 /// `open` with `json` as the instance's settings, ticket-less.
 fn open_with(p: &Plugin<TestKind>, json: &'static [u8]) -> Outcome {
     let mut f = Frame::new(
@@ -712,7 +717,7 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
 }
 
 /// RED (ARCHITECT round 4 (e)): a need whose `target_from` names a PROGRAM in the settings
-/// (`{command, args, env}`) is declared as that program, at `open` and every `refresh`; a program
+/// (`{command, args, <environment>}`) is declared as that program, at `open` and every `refresh`; a program
 /// the settings misspell (a bare command name) is declared with no target, which the table refuses.
 #[test]
 fn a_config_program_is_declared_as_a_program() {
@@ -721,7 +726,10 @@ fn a_config_program_is_declared_as_a_program() {
     assert_eq!(
         open_with(
             &p,
-            br#"{"upstream":{"command":"/usr/bin/server","args":["--serve"],"env":{"T":"v"}}}"#
+            json_bytes(
+                serde_json::json!({"upstream":{"command":"/usr/bin/server","args":["--serve"],
+                (busbar_contract::conn::PROGRAM_ENV_KEY):{"T":"v"}}})
+            )
         ),
         Outcome::Ready
     );
@@ -1764,7 +1772,7 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
 
 /// RED (ARCHITECT round 5, the member-program upstream ruling (A)): a need whose `target_from` is
 /// the member-program path is declared with ONE program per registration that names a `command` —
-/// its `command`, `args` and `env`, every other key ignored, an `env` secret reference kept as the
+/// its `command`, `args` and environment, every other key ignored, an environment secret reference kept as the
 /// reference (the host resolves it at the spawn, never at the declare) — at `open` and again at
 /// every `refresh` (so the table can retire a changed or removed member); a registration naming no
 /// program is no member, and one whose program does not read is left out.
@@ -1776,12 +1784,14 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
     assert_eq!(
         open_with(
             &p,
-            br#"{"one":{"transport":"piped","command":"/usr/bin/one","args":["--serve"],
-                 "env":{"PLAIN":"v","KEY":{"env":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
+            json_bytes(serde_json::json!({
+                "one":{"transport":"piped","command":"/usr/bin/one","args":["--serve"],
+                 (busbar_contract::conn::PROGRAM_ENV_KEY):{"PLAIN":"v","KEY":{
+                     (busbar_contract::secret_ref::SECRET_MODULE_ENV):"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
                  "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
                 "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
                 "bad":{"transport":"piped","command":"relative"},
-                "pools":{"p":{"members":["one"]}}}"#
+                "pools":{"p":{"members":["one"]}}}))
         ),
         Outcome::Ready
     );
@@ -2276,7 +2286,7 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     );
 }
 
-// A member program's `env` secret that does not resolve, at the request-time hand-off (coordinator
+// A member program's environment secret that does not resolve, at the request-time hand-off (coordinator
 // ruling 2026-10-07).
 #[path = "member_secret_tests.rs"]
 mod member_secret_tests;

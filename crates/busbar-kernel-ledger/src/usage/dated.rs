@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BUDGET LEDGER, DATED (OWNER RULING Q14, DECISION #79).
+//! THE BUDGET LEDGER, DATED (OWNER RULING Q14, #79).
 //!
 //! A budget cell counts what a bucket consumed in its window. Until this module it counted NOTHING
 //! ELSE, and a count with no instant can only be priced at one card: the current one. So a card

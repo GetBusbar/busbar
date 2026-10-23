@@ -154,7 +154,7 @@ pub struct Manifest {
     /// that hasn't been re-packed with a schema yet; serde-default so every existing manifest
     /// this session already produced still parses unchanged. A field marked `"x-busbar-secret":
     /// true` in the schema is validated by callers against a `oneOf` secret-reference shape
-    /// (`{"env": "..."}` / `{"file": "..."}` / `{"module": "...", "key": "..."}`), never a bare
+    /// (a one-key shorthand naming the module, or `{"module": "...", "key": "..."}`), never a bare
     /// string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_schema: Option<String>,
@@ -362,7 +362,7 @@ pub struct BreakerDecl {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EgressPolicy {
-    /// The open web (the request-log webhook's policy): `https://` only; loopback, link-local,
+    /// The open web (the outbound log delivery policy): `https://` only; loopback, link-local,
     /// private, CGNAT and cloud-metadata targets refused.
     #[default]
     OpenWeb,

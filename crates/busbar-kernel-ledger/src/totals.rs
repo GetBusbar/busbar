@@ -423,7 +423,7 @@ impl Statement {
 /// sum pinned at the ceiling would be a figure nobody posted (item 28).
 ///
 /// The tier is the line's own: a tier is a property of the chain a request was admitted through,
-/// and an amendment to the price of a token is not a re-decision about which chain admitted it.
+/// and an amendment to the price of a token is not a re-judgement about which chain admitted it.
 ///
 /// `lines` comes last because the first two arguments are the statement's identity — which
 /// history and which window — and the lines are what that identity is applied to.

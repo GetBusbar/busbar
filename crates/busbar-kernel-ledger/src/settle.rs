@@ -53,7 +53,7 @@
 //! The previous release keeps its own rows, and they must keep being written so that everything
 //! reading them sees no change. That is an integrator's binding, not this crate's business, so it
 //! is a trait: the ledger tells it what was posted, and what happens next is somebody else's
-//! decision. A crate that knew the shape of those rows would be a crate that has to change every
+//! call. A crate that knew the shape of those rows would be a crate that has to change every
 //! time they do.
 
 use busbar_contract::caps::{Grant, Hold, Posted, Usage, WriteMoney};

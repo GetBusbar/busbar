@@ -100,7 +100,7 @@ pub struct GuardPolicy {
     /// different, worse thing than a plaintext fetch of loopback: on the public one, anyone on the
     /// path rewrites the document and reads the credential that rode the request. `allow_private`
     /// admits plaintext too — an operator pointing busbar at `http://127.0.0.1` has made ONE
-    /// decision, and making them write two flags would teach that the second one is harmless.
+    /// verdict, and making them write two flags would teach that the second one is harmless.
     pub allow_plaintext: bool,
     /// How many redirects may be FOLLOWED. Zero is a legitimate setting: a 3xx is a URL nobody
     /// validated, arriving when the credential is already sent.
@@ -140,7 +140,7 @@ impl GuardPolicy {
 /// diagnose is a refusal an operator disables. Callers with an established vocabulary convert this
 /// into their own refusal type so an operator reading a log still sees the caller's own name for
 /// the destination; callers without one render it with the [`std::fmt::Display`] below. What no
-/// caller does is re-derive the DECISION, which is the whole reason this enum is here and not there.
+/// caller does is re-derive the VERDICT, which is the whole reason this enum is here and not there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AddressRefusal {
     /// The URL had no `http`/`https` scheme, or no scheme at all. Everything else — `file:`,
@@ -432,7 +432,7 @@ pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the decision is
+/// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the verdict is
 /// [`split_url`]'s allowlist — so a string with no `:` at all reports the empty scheme rather than
 /// failing to be reported.
 fn scheme_of(url: &str) -> String {
@@ -521,7 +521,7 @@ pub fn judge_addresses(
     judge_addresses_under(host, addrs, policy, &Denylist::default())
 }
 
-/// THE ADDRESS JUDGEMENT UNDER A DEPLOYMENT'S LISTS — the decision [`pin_answer`] and so
+/// THE ADDRESS JUDGEMENT UNDER A DEPLOYMENT'S LISTS — the verdict [`pin_answer`] and so
 /// [`resolve_and_pin`] ask. An address the list names (metadata, or operator-blocked) is refused
 /// unless the list's overrides lift it, and an address it lifts is admitted whole, as 1.5.5's
 /// `allow_all_metadata` / `allow_metadata_hosts` admitted it; every other address meets the policy's

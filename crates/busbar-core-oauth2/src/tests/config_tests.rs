@@ -364,7 +364,7 @@ fn an_unknown_key_in_the_block_is_refused_at_resolve() {
 fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     let resolved = resolve_block(serde_json::json!({
         "issuer": "https://gw.example.com",
-        "signing_key": { "env": "AS_SIGNING_KEY" },
+        "signing_key": { (busbar_contract::secret_ref::SECRET_MODULE_ENV): "AS_SIGNING_KEY" },
     }))
     .expect("valid");
     let checked = resolved.oauth_as.expect("accepted");

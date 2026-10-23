@@ -89,7 +89,7 @@ pub enum ReadEnd {
     TransportError,
 }
 
-/// Read an upstream response body, buffering at most `cap` bytes. Streams chunks with a running byte
+/// Read an upstream response body, buffering at most `cap` bytes. Reads chunks with a running byte
 /// counter rather than `r.bytes()` (which would buffer the entire — possibly multi-gigabyte — body
 /// before any cap could apply). Returns the buffered prefix and whether the body was TRUNCATED (more
 /// bytes remained at the cap), so a caller that must parse the whole body (cross-protocol 2xx

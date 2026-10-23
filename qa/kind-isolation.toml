@@ -319,10 +319,6 @@ crate = "busbar-kernel-egress"
 kind = "kernel"
 
 [[cell]]
-crate = "busbar-kernel-egress"
-kind = "plane"
-
-[[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
 
@@ -1194,10 +1190,6 @@ kind = "store"
 
 [[instance]]
 crate = "busbar-plugin-loader"
-kind = "export"
-
-[[instance]]
-crate = "busbar-plugin-loader"
 kind = "secret"
 
 # FIRST INSTANCE ROW of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.)
@@ -1445,8 +1437,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-oauth2"
 axis  = "instance:secret"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1 -> 0: the signing-key reference test spells the secret module through the contract's SECRET_MODULE_ENV (law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1535,8 +1527,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel-egress"
 axis  = "plane"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 5 -> 2 (Q128 kernel-egress): the dead verify-step trust cluster (counterparty, arity, guard, destination) is deleted (the gate's measure on this branch); LOWERED 2 -> 1 by Q128 kernel-egress LOW 3: the unconstructed pinned-arity reroute is deleted (the gate's measure on lane-q128-kernel-egress-lows, law0-slack)"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 5 -> 2 (Q128 kernel-egress): the dead verify-step trust cluster (counterparty, arity, guard, destination) is deleted (the gate's measure on this branch); LOWERED 2 -> 1 by Q128 kernel-egress LOW 3: the unconstructed pinned-arity reroute is deleted (the gate's measure on lane-q128-kernel-egress-lows, law0-slack); LOWERED 1 -> 0: the egress unit's comments name no plane instance (a streaming body is a long-lived one, the verdict replaces the decision) (law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel-egress"
@@ -1547,8 +1539,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel-ledger"
 axis  = "plane"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1 -> 0: the ledger's module docs and comments name no plane instance (law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel-scope"
@@ -1577,14 +1569,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:export"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 2 -> 1 (law0 P14): the export-kind signing fixture uses a neutral name (law0-slack)"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 2 -> 1 (law0 P14): the export-kind signing fixture uses a neutral name (law0-slack); LOWERED 1 -> 0: the egress-policy doc names no export instance (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "5"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); #787's 107 -> 21 (85 extern ABI strings, durable_tests.rs's `c` directory, store_money_acceptance.rs's `c` message: each a one-letter `c` read as the secret plugin) removes hits the 107 -> 12 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; LOWERED 12 -> 5 (law0 P14): the secret-module fixtures use neutral names (law0-slack)"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); #787's 107 -> 21 (85 extern ABI strings, durable_tests.rs's `c` directory, store_money_acceptance.rs's `c` message: each a one-letter `c` read as the secret plugin) removes hits the 107 -> 12 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; LOWERED 12 -> 5 (law0 P14): the secret-module fixtures use neutral names (law0-slack); LOWERED 5 -> 1: the manifest schema doc and the member-program settings test spell the secret module and the program environment key through the contract's SECRET_MODULE_ENV and PROGRAM_ENV_KEY; conformance/mod.rs keeps one (law0-slack)"
 
 [[law0]]
 crate = "busbar-plugin-loader"

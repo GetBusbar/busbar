@@ -13,7 +13,7 @@
 use crate::ports::DestinationId;
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
-/// every attempt including a streaming one.
+/// every attempt including a long-lived one.
 pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
 
 /// How many further members the walk may try after the first when the pool names no cap. The walk
