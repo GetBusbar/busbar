@@ -32,10 +32,14 @@ busbar-plane-streaming = { workspace = true }
 busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
 serde_json = { workspace = true }
 bytes = { workspace = true }
-
-[dev-dependencies]
 # THE DROPPED-IN DOOR, in this workspace's graph so `lib/conform-bin.sh` builds it with
 # `cargo build -p busbar-plane-streaming-plugin` against the host's busbar-contract (the root's
-# [patch]), the contract the loader admits it against. A dev edge only: the harness never links it;
-# it dlopens the cdylib cargo leaves beside the harness binary.
+# [patch]), the contract the loader admits it against. The harness names nothing from it, so its
+# rlib is never linked into the harness; it dlopens the cdylib cargo leaves beside the harness binary.
+#
+# A NORMAL EDGE, NOT A DEV EDGE. Cargo's feature resolver computes features for a dev-dependency
+# only when a test, bench or example target is built, so `cargo build -p` of a package this
+# workspace reaches by a dev edge alone panics in the resolver ("did not find features for
+# busbar-plane-streaming-plugin ... Normal"), and every leg read "harness build failed". As a normal
+# edge the package's features are resolved for a plain build, and `-p` builds and uplifts its cdylib.
 busbar-plane-streaming-plugin = { workspace = true }
