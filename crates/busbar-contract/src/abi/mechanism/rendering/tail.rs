@@ -4,8 +4,9 @@
 //! THE KIND TAIL'S FACTS (`kind_tail_facts` in the rendering's format): every field of a kind's
 //! Statement tail, so the signed manifest carries the tail itself and not only its size (ARCHITECT
 //! ruling 2026-10-20, audit root#7 and loader#9). A reader that must not open the plugin reads a
-//! dropped-in row's tail from its manifest ([`read_auth_tail`] for an auth row), and the admit
-//! comparison covers the tail, so a manifest stating another tail than the door's refuses the load.
+//! dropped-in row's tail from its manifest ([`read_auth_tail`] for an auth row,
+//! [`read_plane_cli_help`] for a plane's command-line help), and the admit comparison covers the
+//! tail, so a manifest stating another tail than the door's refuses the load.
 //!
 //! THE FORMAT. The tail is read as this host's tail type by THE KIND TAIL GROWTH RULE (the plugin's
 //! first `min(size, host)` bytes, the rest zero: a field the plugin predates renders absent), then
@@ -703,4 +704,42 @@ pub fn read_auth_tail(facts: &[u8]) -> Result<ReadAuthTail, Unreadable> {
         operator_principal,
         credential_kinds,
     })
+}
+
+// ── reading a plane's command-line help back (a dropped-in plane's `busbar --help` rows) ─────────
+
+/// A PLANE STATEMENT'S COMMAND-LINE HELP ([`plane::PlaneTail::cli_help`], in the
+/// [`plane::cli_help`] grammar), read back from its rendering's kind tail facts
+/// ([`super::Read::kind_tail`]) for a reader that must not open the plugin: the host's command
+/// line, read before any configuration is served, takes a dropped-in plane's rows, its line-serve
+/// flag among them, from its signed manifest as it takes a linked door's from its tail
+/// (BUSBAR-1.6.0.md l.2179, Part 2 #2). The tail's fields before the help are read past in their
+/// rendered order; the fields after it are not read. An empty help is a plane that states none.
+///
+/// # Errors
+///
+/// [`Unreadable`], at the first byte up to the help's end that is not what the format states (an
+/// empty input is the facts of a Statement that states no tail, and states no help).
+pub fn read_plane_cli_help(facts: &[u8]) -> Result<String, Unreadable> {
+    let mut i = In { b: facts, at: 0 };
+    for field in [
+        "plane.flags",
+        "plane.ingress",
+        "plane.dispatch_shape",
+        "plane.answer_layout",
+    ] {
+        i.u32(field)?;
+    }
+    for field in [
+        "plane.scope",
+        "plane.label",
+        "plane.subject_noun",
+        "plane.admin_noun",
+        "plane.audit_kind",
+        "plane.signing_domain",
+        "plane.signing_kid_prefix",
+    ] {
+        i.str(field)?;
+    }
+    i.str("plane.cli_help")
 }

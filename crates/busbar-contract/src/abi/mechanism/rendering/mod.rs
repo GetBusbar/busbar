@@ -63,7 +63,7 @@ use super::MECHANISM_VERSION;
 use crate::abi::host::conn::connector::Need;
 
 mod tail;
-pub use tail::{read_auth_tail, ReadAuthTail, ReadStyle};
+pub use tail::{read_auth_tail, read_plane_cli_help, ReadAuthTail, ReadStyle};
 
 /// The rendering's first eight bytes.
 pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT02";
