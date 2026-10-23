@@ -95,8 +95,7 @@ fn read_absent_or_corrupt_is_none() {
 fn minimal_cfg() -> RootCfg {
     let deploy: super::super::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    super::super::resolve(&deploy, &HashMap::new(), crate::config::Legacy::stand_in())
-        .expect("minimal config resolves")
+    super::super::resolve(&deploy, &HashMap::new()).expect("minimal config resolves")
 }
 
 /// merge_into adds overlay hooks to the resolved registry + unions global names; an overlay

@@ -72,7 +72,7 @@ fn resolved(sections: &str) -> RootCfg {
         ))
         .expect("provider def"),
     );
-    busbar_kernel::config::resolve(&deploy, &defs, busbar_kernel::config::Legacy::stand_in())
+    busbar_kernel::config::resolve(&deploy, &defs)
         .unwrap_or_else(|e| panic!("the document resolves: {e:?}"))
 }
 

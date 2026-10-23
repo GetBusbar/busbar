@@ -29,12 +29,7 @@ fn cfg() -> busbar_kernel::config::RootCfg {
         "oauth_as": { "issuer": "https://as.example.com" },
     }))
     .expect("a deploy config carrying `oauth_as:` parses");
-    busbar_kernel::config::resolve(
-        &deploy,
-        &HashMap::new(),
-        busbar_kernel::config::Legacy::stand_in(),
-    )
-    .expect("the config resolves")
+    busbar_kernel::config::resolve(&deploy, &HashMap::new()).expect("the config resolves")
 }
 
 /// One generation, built as boot (`prior` = `None`) or a reload builds it.

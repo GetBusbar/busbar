@@ -941,7 +941,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs, crate::root::legacy::table())
+    let cfg = busbar_kernel::config::resolve_under(&deploy, &defs, crate::root::legacy::table())
         .map_err(|e| e.join("; "))?;
     let providers = provider_routes(
         &cfg.providers,

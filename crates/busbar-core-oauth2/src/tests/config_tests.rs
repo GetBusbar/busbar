@@ -327,11 +327,7 @@ fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::Root
         "oauth_as": block,
     }))
     .expect("the document parses: the block is opaque to the kernel's own parse");
-    busbar_kernel::config::resolve(
-        &deploy,
-        &std::collections::HashMap::new(),
-        busbar_kernel::config::Legacy::stand_in(),
-    )
+    busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
 }
 
 /// An invalid `oauth_as:` block is refused by `resolve` with the owner's text, word for word.

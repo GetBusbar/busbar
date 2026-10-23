@@ -721,7 +721,7 @@ async fn node_boot_hooks_arm() {
     let cfg = || {
         let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
             .expect("a minimal deployment");
-        let mut cfg = busbar_kernel::config::resolve(
+        let mut cfg = busbar_kernel::config::resolve_under(
             &deploy,
             &Default::default(),
             crate::root::legacy::table(),

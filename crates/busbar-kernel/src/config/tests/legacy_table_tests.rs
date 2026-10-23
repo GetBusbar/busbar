@@ -101,7 +101,10 @@ fn shipped_statics_naming(words: &[&str]) -> Vec<String> {
 #[test]
 fn the_scan_sees_every_static_holding_the_legacy_table() {
     for (planted, why) in [
-        ("static TABLE: std::sync::OnceLock<Legacy> = std::sync::OnceLock::new();\n", "a OnceLock"),
+        (
+            "static TABLE: std::sync::OnceLock<Legacy> = std::sync::OnceLock::new();\n",
+            "a OnceLock",
+        ),
         (
             "static TABLE: std::sync::LazyLock<Legacy> =\n\
              std::sync::LazyLock::new(Legacy::stand_in);\n",
@@ -114,7 +117,10 @@ fn the_scan_sees_every_static_holding_the_legacy_table() {
              }\n",
             "a thread_local",
         ),
-        ("pub(crate) static mut TABLE: Option<Legacy> = None;\n", "a static mut"),
+        (
+            "pub(crate) static mut TABLE: Option<Legacy> = None;\n",
+            "a static mut",
+        ),
         (
             "static ROWS: std::sync::OnceLock<Rows> = std::sync::OnceLock::new();\n",
             "the rows themselves",

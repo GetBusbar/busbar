@@ -35,13 +35,9 @@ fn refusal_for(section: &str, hook: &str) -> String {
     );
     let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(&yaml) {
         Err(e) => vec![e.to_string()],
-        Ok(deploy) => busbar_kernel::config::resolve(
-            &deploy,
-            &std::collections::HashMap::new(),
-            busbar_kernel::config::Legacy::stand_in(),
-        )
-        .err()
-        .unwrap_or_default(),
+        Ok(deploy) => busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+            .err()
+            .unwrap_or_default(),
     };
     errors
         .into_iter()

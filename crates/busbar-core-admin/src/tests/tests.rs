@@ -3631,12 +3631,9 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     // "Restart": merge the overlay onto a fresh RESOLVED base config → the hook is restored.
     let fresh_deploy: busbar_kernel::config::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    let mut fresh = busbar_kernel::config::resolve(
-        &fresh_deploy,
-        &std::collections::HashMap::new(),
-        busbar_kernel::config::Legacy::stand_in(),
-    )
-    .expect("minimal config resolves");
+    let mut fresh =
+        busbar_kernel::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
+            .expect("minimal config resolves");
     busbar_kernel::config::overlay::merge_into(&mut fresh, doc);
     assert!(
         fresh.hooks.contains_key("persisted_gate"),

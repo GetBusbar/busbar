@@ -2015,10 +2015,21 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
 }
 
 /// A test build's [`resolve_in`], lent the record a test lends when it lends none of its own (the
-/// stand-in install record, [`crate::preflight::RootInstall::STAND_IN`]) where a composition root
-/// lends its own.
+/// stand-in install record, [`crate::preflight::RootInstall::STAND_IN`]) and the stand-in legacy
+/// table ([`Legacy::stand_in`]) where a composition root lends its own. The pinned door root cells
+/// resolve their fixtures through it in these two arguments.
 #[cfg(any(test, feature = "test-support"))]
 pub fn resolve(
+    deploy: &DeployCfg,
+    defs: &HashMap<String, ProviderDef>,
+) -> Result<RootCfg, Vec<String>> {
+    resolve_under(deploy, defs, Legacy::stand_in())
+}
+
+/// [`resolve`] under the legacy table a test lends (`legacy`): the composition root's test binary
+/// lends the root's own table.
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolve_under(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
     legacy: Legacy,

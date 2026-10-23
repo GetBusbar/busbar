@@ -5321,7 +5321,7 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     ))
     .unwrap();
     let defs = HashMap::from([("acme".to_string(), def)]);
-    config::resolve(&deploy, &defs, crate::config::Legacy::stand_in())
+    config::resolve(&deploy, &defs)
 }
 
 /// `--validate` and boot share ONE pipeline: DeployCfg yaml -> config::resolve -> RootCfg ->

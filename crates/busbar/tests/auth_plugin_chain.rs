@@ -542,12 +542,8 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("the configuration reads");
-    let cfg = busbar_kernel::config::resolve(
-        &loaded.deploy,
-        &loaded.defs,
-        busbar_kernel::config::Legacy::stand_in(),
-    )
-    .expect("the configuration resolves");
+    let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
+        .expect("the configuration resolves");
     let built = busbar_kernel::build_app_from_config(
         cfg,
         loaded.deploy.plugins.clone(),

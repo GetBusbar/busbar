@@ -37,12 +37,7 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
     .expect("a deployment");
     let mut deploy = super::tests::base_deploy();
     deploy.providers.insert("p".to_string(), dep);
-    let cfg = resolve(
-        &deploy,
-        &HashMap::from([("p".to_string(), def)]),
-        crate::config::Legacy::stand_in(),
-    )
-    .expect("it resolves");
+    let cfg = resolve(&deploy, &HashMap::from([("p".to_string(), def)])).expect("it resolves");
     let p = &cfg.providers["p"];
     assert_eq!(
         serde_json::Value::Object(p.table.clone()),

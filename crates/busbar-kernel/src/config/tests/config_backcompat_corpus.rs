@@ -196,7 +196,7 @@ fn snapshot_for(config_path: &Path) -> String {
     let deploy: DeployCfg = serde_yaml::from_str(&yaml)
         .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);
-    let cfg = resolve(&deploy, &defs, crate::config::Legacy::stand_in()).unwrap_or_else(|errs| {
+    let cfg = resolve(&deploy, &defs).unwrap_or_else(|errs| {
         panic!(
             "resolve refused corpus config {}:\n  - {}",
             config_path.display(),

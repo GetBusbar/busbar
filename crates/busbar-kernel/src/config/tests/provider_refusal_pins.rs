@@ -90,8 +90,7 @@ fn composed_refusals() -> Vec<String> {
     let mut deploy = super::tests::base_deploy();
     deploy.providers.insert("p".to_string(), dep);
     let defs = HashMap::from([("p".to_string(), def)]);
-    let cfg =
-        resolve(&deploy, &defs, crate::config::Legacy::stand_in()).expect("the provider resolves");
+    let cfg = resolve(&deploy, &defs).expect("the provider resolves");
     crate::config_validate::validate(&cfg)
         .expect_err("a metadata destination is refused")
         .into_iter()
