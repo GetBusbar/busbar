@@ -42,9 +42,13 @@ source "${H2_REPO}/testing/fleet-fixtures/lib.sh"
 # therefore the most a billing-ON mcp deployment can say today, and `h2-class-price.sh` is the leg
 # that says what that costs.
 # The card is the PLANE's own (`tools.rate_card`, keyed by lane): it must configure every class the plane
-# declares, and an explicit 0 counts. Written inside the `tools:` section, two-space indented.
+# declares, and an explicit 0 counts, and it must name every registration the plane ledgers, under the
+# lane the kernel ledgers it by (`<scope kind>:<name>`, `PlaneSection::ledger_lanes`): the server
+# "probe" is `mcp_server:probe`, as the a2a rigs' agent is `agent:probe`. A card keyed by the tool
+# (`probe_ping`) names no lane, and the node refuses it at boot ("1 MCP server has no rate entry").
+# Written inside the `tools:` section, two-space indented.
 H2_RATE_CARD_DEFAULT='  rate_card:
-    probe_ping: { units: { tool_calls: 0, bytes: 0 } }'
+    mcp_server:probe: { units: { tool_calls: 0, bytes: 0 } }'
 
 H2_BIN="${MCP_SUBJECT_BUSBAR_BIN:-${H2_REPO}/target/release/busbar}"
 # `--selftest` (bottom of this file) drives no busbar at all, so it is the one run that needs no binary.
@@ -348,7 +352,7 @@ def flow(text, i):
                 v, i = flow(text, i)
                 out.append(v)
                 continue
-            m = re.match(r'("(?:[^"\\]|\\.)*"|[^:,{}\[\]]+):\s', text[i:])
+            m = re.match(r'("(?:[^"\\]|\\.)*"|(?:[^:,{}\[\]]|:(?=[^\s,{}\[\]]))+):\s', text[i:])
             if not m:
                 fail("unreadable flow key at: " + text[i:])
             out[scalar(m.group(1))], i = flow(text, i + m.end())
@@ -381,7 +385,7 @@ def block(i, indent):
         return out, i
     out = {}
     while i < len(lines) and lines[i][0] == indent:
-        m = re.match(r'("(?:[^"\\]|\\.)*"|[^:]+):(?:\s+(.*))?$', lines[i][1])
+        m = re.match(r'("(?:[^"\\]|\\.)*"|(?:[^:]|:(?=\S))+):(?:\s+(.*))?$', lines[i][1])
         if not m:
             fail("unreadable mapping line: " + lines[i][1])
         key, rest = scalar(m.group(1)), m.group(2)

@@ -65,13 +65,12 @@ h2_arm() {
     # The metering write is write-behind (`usage_flush_interval_ms`, 100ms), so the read waits a
     # flush cadence with margin rather than racing it.
     sleep 2
-    printf "%s %s\n" "$st" "$(h2_meter_row_field "probe_ping" "mcp" requests)"
+    printf "%s %s\n" "$st" "$(h2_meter_row_field "mcp_server:probe" "mcp" requests)"
   ' _ "$here" "$1"
 }
 
-# The row's lane is the PUBLISHED tool name (`catalogue.rs:1050`, `{server}_{tool}` with
-# `NAMESPACE_SEP = "_"`, `config.rs:83`) -- `probe_ping` -- and its provider is the literal `"mcp"`
-# (`method.rs:2517`).
+# The row's lane is the registration the plane ledgers the call under, `<scope kind>:<name>`
+# (`PlaneSection::ledger_lanes`) -- `mcp_server:probe` -- and its provider is the plane's key, `"mcp"`.
 #
 # `H2_RATE_CARD_YAML=" "` is a card-ABSENT config: a blank line where the key would go. It is the
 # shape `h2-lib.sh` wrote for every rig before the billing switch landed, so this arm's subject is

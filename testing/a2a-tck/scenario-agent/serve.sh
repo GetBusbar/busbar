@@ -59,9 +59,12 @@ discard () {
   fi
 }
 
+# The interpreter the virtualenv is built with: A2A_VENV_PYTHON when the caller provisioned one
+# (`testing/a2a-harness/scripts/install-control.sh venv-python`: a2a-sdk needs Python >= 3.10, and a
+# runner's python3 may be older), else python3.
 if [ ! -x "$VENV/bin/python" ]; then
   echo "installing a2a-sdk ${CONTROL_PY_VERSION} into $VENV" >&2
-  python3 -m venv "$VENV" \
+  "${A2A_VENV_PYTHON:-python3}" -m venv "$VENV" \
     && "$VENV/bin/pip" -q install --upgrade pip \
     && "$VENV/bin/pip" -q install "a2a-sdk[http-server]==${CONTROL_PY_VERSION}" uvicorn starlette \
     || {

@@ -87,7 +87,7 @@ arm_off="$(
 # The card configures `tool_calls` and leaves `bytes` out: present, so billing is ON (#42), and silent
 # about a class the plane declares, so #77(5) refuses the boot.
 ARM2_CARD='  rate_card:
-    probe_ping: { units: { tool_calls: 0 } }'
+    mcp_server:probe: { units: { tool_calls: 0 } }'
 # The validator's named refusal, its stable part: the section, the rule, and the class it names.
 ARM2_REFUSAL='tools.rate_card does not configure billable unit(s) bytes declared by this plane'
 arm_on="$(
