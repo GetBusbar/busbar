@@ -9,16 +9,19 @@
 //! answered by the router's 405, rendered by the door that owns the path. So a request reaching
 //! this fallback is on a path no claimed row owns, and the kernel answers it itself: the 404 in the
 //! shape the mount table gives the path.
+//!
+//! THE BODY CAP TRIPS FIRST. The fallback buffers the request body before it refuses the path, so a
+//! body over `limits.request_body_max_bytes` is the reshaped 413 on every path, claimed or not, and
+//! never the 404. v1.5.5 did the same: its catch-all took the body as an extractor
+//! (`crates/busbar/src/ingress/dispatch.rs:299` at v1.5.5) before it identified or refused the path
+//! (`:302-319`), under the `DefaultBodyLimit` layer (`crates/busbar/src/main.rs:3877`).
 
 use super::*;
 
 /// THE UNCLAIMED-PATH ANSWER: the 404 for a path no claimed row owns. The kernel identifies no
 /// protocol here; it names the path's shape only through the mount table
-/// ([`crate::fallback_error_response`]).
-///
-/// THE BODY IS READ, AND LAST, so the body cap answers first: axum's `DefaultBodyLimit` fires only
-/// when an extractor reads the body, and 1.5.5 answered an oversized body with 413 before any 404.
-/// Dropping the read would turn that 413 into this 404.
+/// ([`crate::fallback_error_response`]). The body is read and dropped: the read is where the body
+/// cap trips, ahead of the refusal (module docs).
 pub(crate) async fn protocol_dispatch(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     OriginalUri(uri): OriginalUri,

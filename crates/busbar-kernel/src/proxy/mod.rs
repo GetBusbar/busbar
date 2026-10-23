@@ -5,13 +5,7 @@
 // content flattening. That second implementation is gone: the hook projection reads the IR the
 // protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
 // request SAYS any more.
-// The NEUTRAL proxy vocabulary that stays in core once a plane's engine moved out to its own crate.
-// Core's own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
-// engine names them across the crate boundary as `busbar_kernel::proxy::*`.
-pub mod proxy_vocab;
-pub use proxy_vocab::{
-    gate_rejected, max_upstream_buffered_bytes, read_capped, GateRejected, ReadEnd, StageShape,
-};
+// The stage taps (`StageShape`, the fan-out, the bounded spawn) are the hook kind's: `crate::hooks::taps`.
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
 // cross-protocol semantics; the engine is operation-blind. Precedence unit tests drive the IR method.
@@ -58,7 +52,7 @@ pub use busbar_kernel::egress::engine::{
 // The infallible per-lane egress-client shim now lives in the neutral substrate
 // (`busbar_kernel::proxy::build_egress_client`) so a plane crate builds its egress client without
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
-// call sites (`preflight`, `auth::token`).
+// call sites (`preflight`, `auth::login`).
 
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /
@@ -130,7 +124,7 @@ pub fn route_policy_headers_enabled() -> bool {
 }
 
 /// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
-/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
+/// (the default): the prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
 /// operator sets via `limits.hook_content_max_bytes`. Lives HERE so the plane's hook-projection
 /// enforcer names the ceiling without reaching into `busbar-core`; core's `proxy` re-exports it.
 pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
@@ -155,7 +149,7 @@ pub fn hook_content_max_bytes() -> usize {
 
 /// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
 /// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
-/// and neutral so it survives every LLM dialect being dropped from the build.
+/// and neutral so it survives every provider dialect being dropped from the build.
 pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
 }

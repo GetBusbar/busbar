@@ -24,7 +24,7 @@ const MIGRATED_FILES: &[&str] = &[
     "src/snapshot/mod.rs",
     "src/snapshot/money.rs",
     "src/auth/exchange.rs",
-    "src/auth/token.rs",
+    "src/auth/login.rs",
     "src/auth/mod.rs",
     "src/auth/self_keys.rs",
     // `egress_auth/` is DELETED (P2 D1, the auth split): each outbound style lives in the auth
@@ -54,6 +54,8 @@ const MIGRATED_FILES: &[&str] = &[
     // enforces this); each plane crate enforces its own uncoded-diagnostic floor. So none of those
     // plugin sources are listed here.
     "src/ir/mod.rs",
+    // `proto/mod.rs` is DELETED (status row 82 D2, #1376): the protocol registry left the kernel and
+    // each plane resolves its own dialects, so no diagnostic of it moved anywhere.
     // `plane/approvals.rs` is DELETED (status row 82): the spent-approval ledger redeemed nothing,
     // and approval redemption is `records.claim` alone, so no diagnostic of it moved anywhere.
     "src/trust/demotion.rs",

@@ -1360,22 +1360,19 @@ struct DoorRefusal {
 }
 
 /// THE DIALECT AN AUTHENTICATION REFUSAL IS TAPPED UNDER (the `ingress_protocol` a `response` tap
-/// is told): the dialect the door plane states for the refusals of the route the request's path
-/// matches (`CoreRouteTable::refusal_dialect`), else a mounted plane's own first wire format, else
-/// none. The kernel reads it off the plane's statement and
-/// never off the path's shape (spec Part 1, Law 5: dialects are internal to their plane), so the
-/// tap and the answer the plane rendered name one dialect.
-fn denial_dialect(
-    app: &crate::state::App,
-    path: &str,
-    dialect: Option<&'static str>,
-) -> &'static str {
-    match dialect {
-        Some(dialect) => dialect,
-        None => ingress_for_path(app, path)
-            .shaping_wire_format()
-            .unwrap_or(""),
-    }
+/// is told), read off the PATH ALONE, as v1.5.5 read it (`crates/busbar/src/auth/mod.rs:1167` at
+/// v1.5.5: `proto_for_path(path)`) and dev reads it: never the verb, never the door route the
+/// request matched. A mounted plane's path is that plane's first wire format; any other path is the
+/// dialect the linked declarations claim it for, else their residual default
+/// ([`crate::ingress::native::labelled_dialect`] over the path dialects the composition root
+/// installed); empty when none is named. The kernel names no dialect.
+fn denial_dialect(app: &crate::state::App, path: &str) -> &'static str {
+    crate::ingress::native::labelled_dialect(
+        ingress_for_path(app, path),
+        path,
+        crate::ingress::native::path_dialects(),
+    )
+    .unwrap_or("")
 }
 
 /// The words the kernel hands a plane with an authentication refusal, and its own answer's message
@@ -2054,10 +2051,9 @@ fn unauthorized_with_completion_taps(
     core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
     door: Option<&DoorRefusal>,
-    tap_dialect: Option<&'static str>,
 ) -> Response {
     let refused = unauthorized_response(app, core_routes, path, door);
-    let proto = denial_dialect(app, path, tap_dialect);
+    let proto = denial_dialect(app, path);
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
@@ -2069,17 +2065,16 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = refused.status().as_u16();
-        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
-        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
-        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
-        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
-        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
-        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
-        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
+        // Fired through the hook kind's one stage-tap fan-out, so this synthetic auth-denial tap shares
+        // the ONE 1024-permit bounded-spawn gate with every other stage tap (one cap, one
+        // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
+        // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
+        // group-scope walk folds `&app.groups_registry` in host-side.
         let host = crate::plane_driver::engine_host_value(app);
-        busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
+        let host: &dyn crate::plane_driver::EngineHost = &host;
+        crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,
             busbar_contract::hook_wire::HookStageProjection {
@@ -2095,8 +2090,7 @@ fn unauthorized_with_completion_taps(
             Default::default(),
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
-            None,
-            &host,
+            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
     refused
@@ -2161,8 +2155,6 @@ pub(crate) async fn auth_middleware(
                     .path_and_query()
                     .map_or_else(|| path.clone(), |t| t.as_str().to_owned()),
             });
-    // The dialect an authentication refusal here is tapped under, read off the door routes.
-    let tap_dialect = core_routes.refusal_dialect(&path, req.method());
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -2652,7 +2644,6 @@ pub(crate) async fn auth_middleware(
                 core_routes,
                 &path,
                 door.as_ref(),
-                tap_dialect,
             ));
         }
         Err(IdentityRefusal::NoGrant) => {
@@ -2669,7 +2660,6 @@ pub(crate) async fn auth_middleware(
                 core_routes,
                 &path,
                 door.as_ref(),
-                tap_dialect,
             ));
         }
     }
@@ -2877,11 +2867,11 @@ pub mod self_keys;
 /// the [`self_keys`] seam).
 pub mod exchange;
 
-/// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
-/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
-/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
-pub mod token;
+/// The hosted login's identity side (row 159, K3#2): the login methods, one login step on a
+/// plugin's door, and the self-serve key a verified identity is issued through the SAME
+/// [`self_keys`] seam as the headless `POST`. The flow itself (pages, cookie, PKCE) is
+/// `busbar-core-oauth2`'s, reached through [`login::seam`].
+pub mod login;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.
 #[cfg(any(test, feature = "test-support"))]

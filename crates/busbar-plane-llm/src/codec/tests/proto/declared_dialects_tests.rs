@@ -143,6 +143,59 @@ fn the_declared_stream_media_are_the_writers_streaming_content_types() {
     );
 }
 
+/// The `auth_labels` the plane's `declares` section states (the label an authentication refusal's
+/// tap is told, read off the path alone, as v1.5.5's `proto_for_path` read it) are its codec
+/// tables': for every path, the first rule whose path match holds names what the declarations'
+/// residual claims fold to, and a path none claims takes the residual default. RED arm: a rule
+/// edited away from a codec's claim (or a codec's claim moved) answers one path two ways.
+#[test]
+fn the_declared_auth_labels_are_the_codecs_residual_claims() {
+    let declares: serde_json::Value =
+        serde_json::from_str(crate::DECLARES).expect("the declares section is JSON");
+    let labels = &declares["auth_labels"];
+    let rules = labels["rules"].as_array().expect("auth_labels.rules");
+    let default = labels["default"].as_str();
+    let any_of = |list: &Value, holds: &dyn Fn(&str) -> bool| {
+        list.as_array()
+            .is_none_or(|l| l.iter().any(|s| holds(s.as_str().expect("a string"))))
+    };
+    let label = |path: &str| {
+        let last = path.rsplit('/').next().unwrap_or("");
+        rules
+            .iter()
+            .find(|r| {
+                let m = &r["path"];
+                m["exact"].as_str().is_none_or(|e| path == e)
+                    && m["prefix"].as_str().is_none_or(|p| path.starts_with(p))
+                    && any_of(&m["suffix"], &|s: &str| path.ends_with(s))
+                    && any_of(&m["last_segment_suffix"], &|s: &str| last.ends_with(s))
+            })
+            .map(|r| r["label"].as_str().expect("a label"))
+            .or(default)
+    };
+    let residual_default = decls()
+        .into_iter()
+        .find(|d| d.residual_default)
+        .map(|d| d.name);
+    assert_eq!(
+        default, residual_default,
+        "the declared default is the residual-default dialect"
+    );
+    let mut paths: Vec<&str> = strs(&FIXTURE["auth_label_paths"]);
+    paths.extend(strs(&FIXTURE["residual_none"]));
+    for case in FIXTURE["residual"].as_array().expect("residual") {
+        paths.push(case[0].as_str().expect("path"));
+    }
+    assert!(!paths.is_empty(), "the fixture names the paths");
+    for path in paths {
+        assert_eq!(
+            label(path),
+            residual_dialect_for_path(path).or(residual_default),
+            "the declared auth label of {path:?}"
+        );
+    }
+}
+
 /// A declaration that CLAIMS a verb it does not serve 404s a working route; one that HIDES a verb it
 /// serves makes the metric label space a lie. Both directions, over every declaration.
 #[test]

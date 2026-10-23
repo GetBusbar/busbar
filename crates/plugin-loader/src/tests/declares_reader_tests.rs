@@ -230,3 +230,40 @@ fn no_site_but_the_one_reader_deserializes_declares_bytes() {
         offenders.join("\n")
     );
 }
+
+/// A plane's `auth_labels` read whole and keep their canonical bytes; the first rule whose path
+/// match holds names a path's label, every stated condition holding; an unknown key in a rule or a
+/// path match is refused.
+#[test]
+fn declared_auth_labels_read_and_match_by_their_first_holding_rule() {
+    let doc = br#"{"auth_labels": {"rules": [
+        {"path": {"prefix": "/a/", "last_segment_suffix": [":x"]}, "label": "one"},
+        {"path": {"prefix": "/a/"}, "label": "two"},
+        {"path": {"prefix": "/m/", "suffix": ["/c", "/cs"]}, "label": "three"},
+        {"path": {"exact": "/e"}, "methods": ["GET"], "label": "four"}
+    ], "default": "zero"}}"#;
+    let read = Declares::from_declares_json(doc).expect("auth labels read");
+    assert!(!read.is_empty());
+    let labels = read.auth_labels.as_ref().expect("stated");
+    assert_eq!(labels.default.as_deref(), Some("zero"));
+    assert_eq!(labels.label("/a/b:x"), Some("one"));
+    assert_eq!(labels.label("/a/b:y"), Some("two"));
+    assert_eq!(labels.label("/m/k/c"), Some("three"));
+    assert_eq!(labels.label("/m/k/cs"), Some("three"));
+    assert_eq!(labels.label("/m/k/d"), None);
+    assert_eq!(labels.label("/e"), Some("four"));
+    assert_eq!(labels.label("/e/"), None);
+    assert_eq!(labels.rules[3].methods, vec!["GET".to_string()]);
+    let again =
+        Declares::from_declares_json(serde_json::to_string(&read).expect("encodes").as_bytes())
+            .expect("the encoding reads");
+    assert_eq!(again, read);
+    assert!(Declares::from_declares_json(
+        br#"{"auth_labels": {"rules": [{"path": {"glob": "/a/*"}, "label": "x"}]}}"#
+    )
+    .is_err());
+    assert!(Declares::from_declares_json(
+        br#"{"auth_labels": {"rules": [{"path": {}, "label": "x", "verb": "GET"}]}}"#
+    )
+    .is_err());
+}

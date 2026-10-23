@@ -18,6 +18,52 @@ use axum::response::Response;
 
 use crate::plane_driver::claims::Ingress;
 
+/// THE DIALECTS A PATH NAMES BY ITS SHAPE ALONE, as the linked declarations state them: the label
+/// an authentication refusal's `response` tap is told (`ingress_protocol`). v1.5.5 labelled that
+/// tap off the path alone (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path(path)`),
+/// whatever the verb. The table is not the kernel's: each plane states the labels of its own
+/// paths in its `declares` document (`auth_labels`: ordered path rules and a default), and the
+/// composition root folds the linked planes' into this value and installs it
+/// ([`install_path_dialects`]). The kernel names none.
+#[derive(Clone)]
+pub struct PathDialects {
+    /// The label the planes' rules give `path` by its shape alone, the first rule that holds in
+    /// the linked order; `None` when no rule holds.
+    pub claimed: std::sync::Arc<dyn Fn(&str) -> Option<&'static str> + Send + Sync>,
+    /// The label of a path no rule holds for, when a plane states one.
+    pub residual: Option<&'static str>,
+}
+
+/// The installed path dialects ([`install_path_dialects`]).
+static PATH_DIALECTS: std::sync::OnceLock<PathDialects> = std::sync::OnceLock::new();
+
+/// Install the linked planes' path labels, once, from the composition root. A second
+/// install is ignored: there is one composition root.
+pub fn install_path_dialects(dialects: PathDialects) {
+    let _ = PATH_DIALECTS.set(dialects);
+}
+
+/// The installed path dialects, or `None` in a build whose root installed none.
+pub fn path_dialects() -> Option<&'static PathDialects> {
+    PATH_DIALECTS.get()
+}
+
+/// THE DIALECT A REFUSAL AT `path` IS LABELLED IN, read off the path alone and never off the verb or
+/// a door route: a path mounted by a plane is that plane's first wire format; any other path is
+/// the dialect the declarations claim it for; failing either, the residual default. `None` when
+/// none of them names one.
+pub fn labelled_dialect(
+    ingress: Ingress,
+    path: &str,
+    by_path: Option<&PathDialects>,
+) -> Option<&'static str> {
+    match ingress {
+        Ingress::Mounted(_) => ingress.shaping_wire_format(),
+        Ingress::Fallback => by_path.and_then(|d| (d.claimed)(path)),
+    }
+    .or_else(|| by_path.and_then(|d| d.residual))
+}
+
 /// THE KERNEL'S OWN REFUSAL: the answer when no plane renders one (no plane's line and no fallback
 /// plane takes the path, or the plane's render failed). The kernel speaks no dialect (spec §1, "It
 /// is a byte pump"), so it is the neutral envelope, `application/json`, at the kernel's status: the

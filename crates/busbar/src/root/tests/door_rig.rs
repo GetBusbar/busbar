@@ -66,14 +66,6 @@ pub(super) use super::secret_source_tests::{
 
 // ── THE LINKED TABLE ─────────────────────────────────────────────────────────────────────────────
 
-/// Every linked protocol declaration registered on the kernel's test protocol set, as the root's
-/// config-fixture cells install it.
-pub(crate) fn register_linked_protocols() {
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
-}
-
 /// The breaker fact a linked plane door's `declares` section states, read by its Statement name
 /// as the root reads it.
 ///
