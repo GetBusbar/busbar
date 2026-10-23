@@ -210,7 +210,7 @@
    "paths": [
     "crates/busbar/src"
    ],
-   "tree_hash": "c438b4d9e19878806a1b3630f7ca62479591826ff40ba7c25396c2ee9c80e01e",
+   "tree_hash": "dc4c95620420c36c3e2726e61b3512cb60d1cdbb031a65222deb31caffedc8ad",
    "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
    "round": 4,
    "result": "findings",
@@ -222,7 +222,7 @@
    },
    "report": "The pools plane's config-apply refresh and health probes compile only when that plane is linked, so a dropped-in copy keeps its boot providers and pools and is never probed. A dropped-in plane's line-serve flag is never honoured, because the command line is read before any plugin is, and on the shutdown signal the line serve is dropped with its units in flight. Any plane flag counts as the line-serve flag, the table generator keeps axes and a swaps path no row fills, one connector axis selects nothing, the build stamp takes the first substring match of a flag, and several comments are false. Read fully.",
    "auditor": "opus-r159e-busbar-src",
-   "fixed_at": null,
+   "fixed_at": "460d8c0ca81f59e5d6af5f25f7c42be8ae37e59a",
    "exclude": [
     "crates/busbar/src/root",
     "crates/busbar/src/tests"
