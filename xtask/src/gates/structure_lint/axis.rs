@@ -105,14 +105,10 @@ pub fn table(a: &Addresses) -> Vec<AxisRow> {
         // The `Operation` axis's own home: moved module-path-only out of `busbar-api` into the contract
         // (DECISIONS #83/#84); `busbar_contract::operation` is a re-export of it.
         "crates/busbar-contract/src/operation.rs".to_string(),
-        format!("{}/proto/", a.core),
         format!("{}/handlers/", a.core),
     ];
     op_allowed.extend(a.proto_roots.iter().cloned());
-    let mut tr_allowed = vec![
-        format!("{}/proto/", a.core),
-        format!("{}/handlers/", a.core),
-    ];
+    let mut tr_allowed = vec![format!("{}/handlers/", a.core)];
     tr_allowed.extend(a.proto_roots.iter().cloned());
 
     vec![

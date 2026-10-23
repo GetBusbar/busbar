@@ -1315,6 +1315,362 @@ pub fn unit_no_finding_ids(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>
     )])
 }
 
+// ── 27b. kernel-no-protocol-registry ────────────────────────────────────────────────────────────
+
+/// The row id of the installed-store half.
+pub const ROW_INSTALLED_STORE: &str = "kernel-no-protocol-registry:installed-store";
+
+/// The row id of the counted debt: the plane- and protocol-keyed stores the kernel still holds.
+pub const ROW_STORE_DEBT: &str = "kernel-no-protocol-registry:debt";
+
+/// Every name an alias declared anywhere in the tree binds to one of `targets`, followed to a fixed
+/// point (an alias of an alias is an alias): `type X = …T…;`, `T as X` (a `use` or re-export), and a
+/// `const`/`static` bound to `T` (a fn pointer). Read over every file the tree holds, test or not.
+fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
+    let texts: Vec<String> = tree
+        .files
+        .values()
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|l| l.code.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+    let mut known: Vec<String> = targets.to_vec();
+    let mut i = 0;
+    while i < known.len() {
+        let t = rx::escape(&known[i]);
+        let shapes = [
+            Regex::new(&format!(r"\b{t}\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"))?,
+            Regex::new(&format!(
+                r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)[^=;]*=[^;]*\b{t}\b"
+            ))?,
+            Regex::new(&format!(
+                r"\b(?:const|static)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]*=\s*[A-Za-z0-9_:]*\b{t}\s*;"
+            ))?,
+        ];
+        let needle = known[i].clone();
+        let mut found = Vec::new();
+        for text in texts.iter().filter(|x| x.contains(needle.as_str())) {
+            for shape in &shapes {
+                for m in shape.find_iter(text.as_bytes()) {
+                    if let Some(alias) = m.str_of(text.as_bytes(), 1) {
+                        found.push(alias);
+                    }
+                }
+            }
+        }
+        for alias in found {
+            if !known.contains(&alias) {
+                known.push(alias);
+            }
+        }
+        i += 1;
+    }
+    Ok(known)
+}
+
+/// The installed stores of `rel`: each static whose type names a cell of `cells` and matches one of
+/// `holds`, with the `pub fn`s that take a value and name it. Returns `(line, static, installers)`.
+fn installed_stores_in(
+    tree: &Tree,
+    rel: &str,
+    cells: &Regex,
+    holds: &[Regex],
+) -> Result<Vec<(usize, String, Vec<String>)>, String> {
+    let decl = Regex::new(r"(?:^|[^A-Za-z0-9_])static\s+(?:mut\s+)?([A-Z_][A-Z0-9_]*)\s*:")?;
+    let pub_fn = Regex::new(
+        r#"(?:^|[^A-Za-z0-9_(])pub\s+(?:(?:const|async|unsafe)\s+|extern\s+"[^"]*"\s+)*fn\s"#,
+    )?;
+    let self_param = Regex::new(r"^\s*&?\s*(?:'[A-Za-z_]+\s+)?(?:mut\s+)?self\b")?;
+    let Some(lines) = tree.files.get(rel) else {
+        return Ok(Vec::new());
+    };
+    let fns = tree.fns.get(rel).map(|v| v.as_slice()).unwrap_or(&[]);
+    let mut out = Vec::new();
+    for (idx, l) in lines.iter().enumerate() {
+        if l.intest {
+            continue;
+        }
+        let Some(m) = decl.search(l.code_bytes()) else {
+            continue;
+        };
+        let Some(name) = m.str_of(l.code_bytes(), 1) else {
+            continue;
+        };
+        // The type: from the `:` to the first `=` that is not a `=>`, across lines.
+        let mut ty = l.code[m.end..].to_string();
+        let mut j = idx;
+        while !ty.replace("=>", "").contains('=') && j + 1 < lines.len() {
+            j += 1;
+            ty.push('\n');
+            ty.push_str(&lines[j].code);
+        }
+        let ty = ty
+            .char_indices()
+            .find(|&(i, ch)| ch == '=' && !ty[i + 1..].starts_with('>'))
+            .map_or(ty.as_str(), |(i, _)| &ty[..i])
+            .to_string();
+        if !cells.is_match_str(&ty) || !holds.iter().any(|h| h.is_match_str(&ty)) {
+            continue;
+        }
+        let named = Regex::new(&format!(
+            r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])",
+            rx::escape(&name)
+        ))?;
+        let mut installers = Vec::new();
+        for f in fns.iter().filter(|f| !f.intest) {
+            let header: String = lines
+                .iter()
+                .filter(|x| x.no >= f.start && x.no <= f.body_start)
+                .map(|x| x.code.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !pub_fn.is_match_str(&header) {
+                continue;
+            }
+            let Some(at) =
+                Regex::new(&format!(r"(?<![A-Za-z0-9_])fn\s+{}\b", rx::escape(&f.name)))?
+                    .search(header.as_bytes())
+            else {
+                continue;
+            };
+            let Some(open) = header[at.end..].find('(').map(|o| at.end + o) else {
+                continue;
+            };
+            let mut depth = 0i64;
+            let mut close = header.len();
+            for (i, ch) in header[open..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = open + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let takes_a_value = header[open + 1..close]
+                .split(',')
+                .any(|p| !p.trim().is_empty() && !self_param.is_match_str(p));
+            if !takes_a_value {
+                continue;
+            }
+            let names_it = lines
+                .iter()
+                .filter(|x| x.no >= f.start && x.no <= f.end && x.no != l.no)
+                .any(|x| named.is_match(x.code_bytes()));
+            if names_it {
+                installers.push(f.name.clone());
+            }
+        }
+        if !installers.is_empty() {
+            out.push((l.no, name, installers));
+        }
+    }
+    Ok(out)
+}
+
+/// THE KERNEL HOLDS NO PROTOCOL REGISTRY (status row 82, D2; spec Part 1, Law 5). The kernel's
+/// `proto/` registry left the tree, and with it the census row that held `fn decl_for(` to one
+/// site: a ban whose subject left reads green over nothing, and a registry grown back in the kernel
+/// (a `ProtocolDecl` table behind a static, an `install_protocols` seam the root fills, a by-name
+/// `decl_for`) would pass `no-uninstalled-seam` because the root installs it.
+///
+/// Two rows. The NAMES row refuses those spellings in the kernel's production code, and every alias
+/// of them the workspace declares, so a `pub type Dialect = ProtocolDecl;` in the contract hides
+/// nothing. The INSTALLED-STORE row refuses the same registry with no name to find, by its shape: a
+/// kernel static whose type is a once/lock cell holding a collection, a slice, an array or a trait
+/// object, reached by a `pub fn` that takes a value. The DEBT row counts the stores keyed by plane or
+/// protocol identity the kernel still holds (`debt_stores`, ceiling `max_debt`, which only falls);
+/// every other store it holds today is named in `exempt_stores` with why. A new store is a finding,
+/// and a named one that no longer matches is stale. Each row's floor is its scope: a kernel with no
+/// production source in the tree is refused.
+pub fn kernel_no_protocol_registry(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("kernel-no-protocol-registry")?;
+    let max_hits = need_int(c, "max_hits", "kernel-no-protocol-registry")?;
+    let (names, fn_names) = (c.list_of("names"), c.list_of("fn_names"));
+    if names.is_empty() && fn_names.is_empty() {
+        return Err("kernel-no-protocol-registry: no `names`, so it bans nothing".into());
+    }
+    let files = scoped_files(tree, &c.list_of("scope_globs"));
+
+    // ── NAMES, and every alias of them.
+    let mut targets = names.clone();
+    targets.extend(fn_names.iter().cloned());
+    let known = aliases_of(tree, &targets)?;
+    let mut alternatives: Vec<String> = known
+        .iter()
+        .filter(|n| !fn_names.contains(n))
+        .map(|n| format!(r"\b{}\b", rx::escape(n)))
+        .collect();
+    alternatives.extend(
+        fn_names
+            .iter()
+            .map(|n| format!(r"\bfn\s+{}\b", rx::escape(n))),
+    );
+    let rx_pat = Regex::new(&alternatives.join("|"))?;
+    let offenders: Vec<String> = tree
+        .grep(&rx_pat, true, Some(&files))
+        .into_iter()
+        .map(|(rel, l)| format!("{rel}:{}", l.no))
+        .collect();
+    let aliases: Vec<String> = known
+        .iter()
+        .filter(|n| !targets.contains(n))
+        .cloned()
+        .collect();
+    let current = offenders.len() as i64;
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no kernel production source is present in the scanned tree")
+    } else {
+        format!(
+            "{current} protocol-registry spelling(s) in the kernel's production code (ceiling \
+             {max_hits}; aliases read: {}): {}",
+            join_or_none(&aliases),
+            join_or_none(&offenders)
+        )
+    };
+    let names_row = plain(
+        "kernel-no-protocol-registry",
+        !files.is_empty() && current <= max_hits,
+        "the kernel holds no protocol registry: no ProtocolDecl, no install_protocols, no decl_for, \
+         under any alias",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    );
+
+    // ── THE INSTALLED STORE, by shape.
+    let cells = Regex::new(&format!(
+        r"\b(?:{})\b",
+        c.list_of("store_cells")
+            .iter()
+            .map(|w| rx::escape(w))
+            .collect::<Vec<_>>()
+            .join("|")
+    ))?;
+    let holds = c
+        .list_of("store_holds")
+        .iter()
+        .map(|h| Regex::new(h))
+        .collect::<Result<Vec<_>, _>>()?;
+    let skip = c.list_of("store_exempt_path_fragments");
+    let keys_of = |list: &str| -> Vec<String> {
+        c.list_of(list)
+            .iter()
+            .map(|e| {
+                e.split(" -- ")
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    };
+    let exempt = keys_of("exempt_stores");
+    let debt = keys_of("debt_stores");
+    let max_debt = need_int(c, "max_debt", "kernel-no-protocol-registry")?;
+    let mut stores = Vec::new();
+    let mut seen = Vec::new();
+    let mut debt_seen = Vec::new();
+    for rel in files
+        .iter()
+        .filter(|r| !skip.iter().any(|s| r.contains(s.as_str())))
+    {
+        for (no, name, installers) in installed_stores_in(tree, rel, &cells, &holds)? {
+            let key = format!("{rel}::{name}");
+            if debt.contains(&key) {
+                debt_seen.push(key);
+            } else if exempt.contains(&key) {
+                seen.push(key);
+            } else {
+                stores.push(format!(
+                    "static {name} at {rel}:{no}, installed through pub fn {}",
+                    installers.join(", ")
+                ));
+            }
+        }
+    }
+    let stale: Vec<String> = exempt
+        .iter()
+        .filter(|e| !seen.contains(e))
+        .map(|e| format!("stale exemption {e}: no installed store of that name"))
+        .collect();
+    let mut found = stores.clone();
+    found.extend(stale.iter().cloned());
+    let current = found.len() as i64;
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no kernel production source is present in the scanned tree")
+    } else {
+        format!(
+            "{} installed store(s) in the kernel outside the {} named ones, {} stale exemption(s) \
+             (ceiling {max_hits}): {}",
+            stores.len(),
+            exempt.len(),
+            stale.len(),
+            join_or_none(&found)
+        )
+    };
+    let store_row = plain(
+        ROW_INSTALLED_STORE,
+        !files.is_empty() && current <= max_hits,
+        "the kernel holds no installed store beside the named ones: no registry behind a type-erased \
+         static",
+        detail,
+        current,
+        max_hits,
+        found,
+    );
+
+    // ── THE DEBT: the stores keyed by plane or protocol identity the kernel still holds. The list
+    // may not grow past `max_debt`, a drained entry is struck, and `max_debt` falls to the count.
+    let mut debt_findings: Vec<String> = debt
+        .iter()
+        .filter(|d| !debt_seen.contains(d))
+        .map(|d| format!("drained debt {d}: strike it and lower max_debt"))
+        .collect();
+    let counted = debt_seen.len() as i64;
+    if debt.len() as i64 > max_debt {
+        debt_findings.push(format!(
+            "the debt list names {} store(s) over its ceiling of {max_debt}: it may not grow",
+            debt.len()
+        ));
+    }
+    if counted < max_debt {
+        debt_findings.push(format!(
+            "{counted} debt store(s) under a ceiling of {max_debt}: lower max_debt to {counted} in \
+             the commit that drained it"
+        ));
+    }
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no kernel production source is present in the scanned tree")
+    } else {
+        format!(
+            "{counted} installed store(s) keyed by plane or protocol identity (ceiling {max_debt}): \
+             {}; {}",
+            join_or_none(&debt_seen),
+            join_or_none(&debt_findings)
+        )
+    };
+    let debt_row = plain(
+        ROW_STORE_DEBT,
+        !files.is_empty() && debt_findings.is_empty() && counted <= max_debt,
+        "the kernel's plane- and protocol-keyed stores are counted debt, and the count only falls",
+        detail,
+        counted,
+        max_debt,
+        debt_findings,
+    );
+    Ok(vec![names_row, store_row, debt_row])
+}
+
 // ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
 
 /// The whole identifier containing `pos`, so a match on a fragment is judged as the word a reader

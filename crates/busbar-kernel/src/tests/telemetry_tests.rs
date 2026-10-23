@@ -15,7 +15,7 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// The plane every emission in this module drives: the FALLBACK (model) plane, whose
 /// `busbar_requests_total` / `busbar_request_duration_seconds` families carry NO `plane` label
 /// (v1.5.4-identical) and are the only ones the bank's fast path serves — `request_finished`
-/// branches on `crate::plane::is_fallback(plane)`, so the key handed in must be WHATEVER key is
+/// branches on `crate::plane_driver::doors::is_fallback(plane)`, so the key handed in must be WHATEVER key is
 /// currently registered fallback, never a hard-coded literal. Registers
 /// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
 /// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
@@ -25,21 +25,15 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// `plane::metrics_tests` / `a2a::relay_tests`.
 fn model_plane_key() -> &'static str {
     crate::test_support::register_neutral_test_plane();
-    crate::plane::fallback_key()
+    crate::plane_driver::doors::fallback_key()
 }
 
-/// Two DISTINCT shipped protocol names, read off the protocol registry's own codec list (the same
-/// list `known_protocols()` answers, which the bank sizes its request families and its translation
-/// table over), so this module names no dialect: what it asserts is the bank's routing over WHATEVER
-/// the registry ships, never anything about one dialect. `.0` is the lane's egress protocol, `.1` a
-/// different ingress. Read through `registry()`, which seeds this test binary's built-in set first:
-/// `known_protocols()` seeds nothing, and these tests ask before any request path has seeded it.
+/// Two DISTINCT provider dialects the neutral fallback plane declares
+/// ([`crate::test_support::NEUTRAL_DIALECTS`]), so this module names no dialect: what it asserts is
+/// the bank's routing over WHATEVER a plane declares, never anything about one dialect. `.0` is the
+/// lane's egress protocol, `.1` a different ingress.
 fn shipped_protocols() -> (&'static str, &'static str) {
-    let known = crate::proto::registry::registry().codec_protocols();
-    assert!(
-        known.len() >= 2,
-        "the test binary's protocol registry must ship at least two codecs; got {known:?}"
-    );
+    let known = crate::test_support::NEUTRAL_DIALECTS;
     (known[0], known[1])
 }
 

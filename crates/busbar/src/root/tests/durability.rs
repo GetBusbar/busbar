@@ -1218,6 +1218,297 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
         .expect("the journal takes the posting");
 }
 
+/// **1.5.5'S 31-DAY SWEEP, PINNED.** A window that opened 31 days and one day ago is gone from
+/// everything the totals read answers from — the book's balance and the counted lines the
+/// read-time totals price — once the seal after the one that holds it is taken, while a window
+/// inside the horizon reads exactly what it read before. The journal is not swept: the posting is
+/// still on the chain, and a restart rebuilds it.
+///
+/// The boundary is 1.5.5's: `v1.5.5:crates/store-memory/src/lib.rs` keeps a row while
+/// `window_start + MAX_RETENTION_SECS > now` (line 256, `MAX_RETENTION_SECS = 31 * 86_400` at line
+/// 23), and `v1.5.5:crates/busbar/src/governance/state.rs:1713-1716` keeps a budget cell on the same
+/// rule.
+#[test]
+fn a_window_a_day_past_the_31_day_horizon_leaves_the_totals_and_stays_on_the_journal() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let mut durability = memory_node();
+    let old_key = totals_key("vk_old");
+    let new_key = totals_key("vk_new");
+    let old = 86_400;
+    let now = old + WINDOW_RETENTION_SECS + 86_400;
+    let recent = now / 86_400 * 86_400;
+    settle_one(&mut durability, &old_key, 1_000, 900, 1);
+    settle_in(&mut durability, &new_key, recent, 1_000, 700, 2);
+
+    let lines_in = |durability: &Durability, window: u64| -> usize {
+        durability
+            .booked_lines()
+            .expect("every line carries counts")
+            .iter()
+            .filter(|line| line.window_start == window)
+            .count()
+    };
+    let recent_before = durability.ledger.book().get(&new_key, recent);
+    assert_eq!(lines_in(&durability, old), 1);
+    assert_eq!(lines_in(&durability, recent), 1);
+    assert_eq!(durability.ledger.book().get(&old_key, old).settled, 900);
+
+    let token = token();
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the first seal goes down");
+    assert_eq!(
+        lines_in(&durability, old),
+        1,
+        "no seal before it: nothing is retired yet"
+    );
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the second seal goes down");
+
+    assert_eq!(
+        lines_in(&durability, old),
+        0,
+        "the old window left the totals"
+    );
+    assert_eq!(
+        durability.ledger.book().get(&old_key, old),
+        Totals::zero(),
+        "and the book"
+    );
+    assert_eq!(lines_in(&durability, recent), 1);
+    assert_eq!(
+        durability.ledger.book().get(&new_key, recent),
+        recent_before,
+        "a window inside the horizon is unchanged"
+    );
+    assert!(
+        durability
+            .read_back()
+            .iter()
+            .any(|posting| posting.window == old && posting.kind == PostingKind::Settlement),
+        "the journal still holds the old window's posting"
+    );
+    assert!(durability
+        .read_back()
+        .iter()
+        .any(|posting| posting.window == recent && posting.kind == PostingKind::Settlement));
+}
+
+/// A shipper the test can take down: while `down` is set every batch is refused, so the journal
+/// append it backs fails as a durability loss.
+struct DownShipper(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for DownShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        if self.0.load(std::sync::atomic::Ordering::Acquire) {
+            Err(busbar_kernel_wal::ShipError::Unavailable(
+                "store down".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A memory-buffered node whose shipper `down` takes down.
+fn node_with_switch(down: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Durability {
+    build_priced(
+        &DurabilityConfig { data_dir: None },
+        0,
+        Box::new(DownShipper(std::sync::Arc::clone(down))),
+        rows(),
+        priced(),
+    )
+    .expect("memory-buffered")
+}
+
+/// The window 86,400 is past 1.5.5's horizon at this instant, by a day.
+fn a_day_past_the_horizon() -> u64 {
+    86_400 + busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS + 86_400
+}
+
+/// **A SEAL THAT FAILS RETIRES NOTHING.** The windows a seal leaves out leave the book only once
+/// that seal is signed and on the journal. A seal the journal refused is not a checkpoint anybody
+/// holds, so the book keeps every window, and `/verify` — which measures the book against the last
+/// KEPT seal — finds nothing. Retiring before the seal had landed would leave the book short of a
+/// window the kept seal still holds, and verify would name it.
+#[test]
+fn a_seal_that_fails_retires_nothing_and_verify_stays_clean() {
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut durability = node_with_switch(&down);
+    let key = totals_key("vk_failed_seal");
+    settle_one(&mut durability, &key, 1_000, 900, 1);
+    let now = a_day_past_the_horizon();
+    let token = token();
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the first seal goes down");
+
+    down.store(true, std::sync::atomic::Ordering::Release);
+    assert!(
+        durability
+            .seal_checkpoint(&token, StepName::Meter, now + 1)
+            .is_err(),
+        "the store refused the seal"
+    );
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400).settled,
+        900,
+        "a seal that failed retired the window anyway"
+    );
+    // The ring keeps heads (A1); the newest kept seal, whole, is the one the retirement measures
+    // against.
+    let kept = durability
+        .last_sealed
+        .as_ref()
+        .expect("the first seal is kept");
+    assert_eq!(
+        durability.checkpoints.last(),
+        Some(&kept.head()),
+        "and it is the ring's newest"
+    );
+    assert!(
+        busbar_kernel_ledger::verify::verify(kept, &durability.ledger.book().snapshot(), None)
+            .is_empty(),
+        "verify against the kept seal is clean"
+    );
+
+    // The store comes back: the next seal lands, and only then does the window go.
+    down.store(false, std::sync::atomic::Ordering::Release);
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 2)
+        .expect("the seal goes down");
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400),
+        Totals::zero(),
+        "retired once a seal without it is durable"
+    );
+}
+
+/// **A WINDOW IS NOT RETIRED WHILE A SETTLED FIGURE WAITS ON THE LOG.** A posting the journal lost
+/// is moved to `unreconciled` and moves back when the next append succeeds; retiring a window under
+/// it would land that move on a balance the book had let go. So while any figure is unconfirmed,
+/// no seal retires anything — and once the log confirms it, the next seal does.
+#[test]
+fn no_window_is_retired_while_a_settled_figure_is_unconfirmed() {
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut durability = node_with_switch(&down);
+    let old_key = totals_key("vk_old_window");
+    let new_key = totals_key("vk_unconfirmed");
+    settle_one(&mut durability, &old_key, 1_000, 900, 1);
+    let now = a_day_past_the_horizon();
+    let recent = now / 86_400 * 86_400;
+    let token = token();
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the first seal goes down");
+
+    // A settlement in a recent window the store refuses: its figure is unconfirmed.
+    down.store(true, std::sync::atomic::Ordering::Release);
+    let mut at = settling(&new_key, &token);
+    at.window = recent;
+    let hold = busbar_contract::caps::Hold::open(
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Admittance>(),
+        busbar_contract::caps::PrincipalId::new("vk_unconfirmed"),
+        0,
+    );
+    let usage = busbar_contract::caps::Usage::report(
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Consumption>(),
+        Vec::new(),
+    )
+    .expect("empty");
+    let lost = durability.settle(
+        &at,
+        hold,
+        250,
+        &usage,
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::WriteMoney>(),
+    );
+    assert!(lost.is_err(), "the store refused the batch");
+    assert_eq!(
+        durability.ledger.book().get(&new_key, recent).unreconciled,
+        250
+    );
+
+    // The store is back and a seal lands, but the figure is still unconfirmed: nothing goes.
+    down.store(false, std::sync::atomic::Ordering::Release);
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the seal goes down");
+    assert_eq!(
+        durability.ledger.book().get(&old_key, 86_400).settled,
+        900,
+        "a window was retired while a settled figure was unconfirmed"
+    );
+
+    // A serving append confirms it; the next seal retires the old window.
+    settle_in(&mut durability, &new_key, recent, 1_000, 700, 2);
+    assert_eq!(
+        durability.ledger.book().get(&new_key, recent).unreconciled,
+        0,
+        "the log confirmed the figure"
+    );
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 2)
+        .expect("the seal goes down");
+    assert_eq!(
+        durability.ledger.book().get(&old_key, 86_400),
+        Totals::zero()
+    );
+}
+
+/// [`settle_one`] in a named window.
+fn settle_in(
+    durability: &mut Durability,
+    key: &TotalsKey,
+    window: u64,
+    reserved: u64,
+    used: u64,
+    mono: u64,
+) {
+    use busbar_contract::caps::{
+        Admittance, Consumption, Hold, MeterClassId, Posted, PrincipalId, QuantitySource, Usage,
+        UsageLine, WriteMoney,
+    };
+    let principal = PrincipalId::new(key.bucket.as_str());
+    let durability_token = token();
+    let mut at = settling(key, &durability_token);
+    at.window = window;
+    at.stamp.mono = mono;
+    durability
+        .open_hold(&at, &principal, &inputs(reserved), ARRIVED_MS)
+        .expect("the journal takes the hold");
+    let hold = Hold::open(
+        &busbar_kernel::test_support::tokens::grant::<Admittance>(),
+        principal,
+        reserved,
+    );
+    let usage = Usage::report(
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
+        vec![UsageLine {
+            class: MeterClassId::new("input"),
+            quantity: used,
+            source: QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line");
+    let posted = Posted::settle(
+        hold,
+        u128::from(used),
+        &usage,
+        &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
+    );
+    durability
+        .settle_counted(&at, posted, &inputs(used), ARRIVED_MS)
+        .expect("the journal takes the posting");
+}
+
 /// PB-58: A SPEND PAST THE RESERVATION IS CARRIED OUT AS AN OVERDRAFT — the unit runs to its end
 /// and settles, and the part nothing reserved is carried, DERIVED AT READ (#71).
 ///
@@ -1338,9 +1629,21 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
     assert_eq!(restarted.recovered_holds, 0, "every hold was closed");
     assert_eq!(restarted.incarnation, 2, "the second boot of this journal");
 
-    // A book that lost both rows.
-    *restarted.ledger.book_mut().entry(key.clone(), 86_400) = Default::default();
-    *restarted.ledger.book_mut().entry(other.clone(), 86_400) = Default::default();
+    // A book that lost a row: its window let go past the horizon, which the chain still carries.
+    let sealed = Checkpoint::seal(
+        1,
+        7,
+        1_700_000_000,
+        Vec::new(),
+        restarted.ledger.book().snapshot(),
+        0,
+        0,
+        None,
+    )
+    .expect("an unsigned checkpoint seals");
+    let retired = restarted.ledger.retirable(&sealed, u64::MAX);
+    assert_eq!(retired.iter().copied().collect::<Vec<_>>(), vec![86_400]);
+    restarted.ledger.retire_windows(&retired);
     let findings = restarted.reconcile_with_journal();
     assert_eq!(
         findings.len(),
@@ -1360,18 +1663,15 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
         .contains("the journal rebuilds settled"));
 }
 
-/// And a single figure edited in memory, with no record behind it, is named too.
+/// And a single figure moved in memory, with no record behind it, is named too.
 #[test]
 fn the_reconciliation_names_a_figure_the_book_moved_without_a_record() {
     let mut durability = memory_node();
     let key = totals_key("vk_edit");
     settle_one(&mut durability, &key, 1_000, 900, 3);
     assert!(durability.reconcile_with_journal().is_empty());
-    durability
-        .ledger
-        .book_mut()
-        .entry(key.clone(), 86_400)
-        .settled += 1;
+    // A draw the ledger booked and the journal never recorded.
+    durability.ledger.record_draw(&key, 86_400, 1);
     assert_eq!(durability.reconcile_with_journal().len(), 1);
 }
 
@@ -2646,7 +2946,7 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
             1,
             "every plane linked: one declares itself the fallback"
         );
-        busbar_kernel::plane::door::fold(fallbacks.remove(0)).expect("the door folds")
+        busbar_kernel::plane_driver::door::fold(fallbacks.remove(0)).expect("the door folds")
     };
     let open: Vec<&str> = fallback
         .billable_classes
@@ -2966,6 +3266,71 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
+/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (audit root r4 B-3; ARCHITECT 2026-10-07 H3 ruling,
+/// the `durability` module docs: a full lane fails closed "until the store takes what waits" and "no
+/// record is dropped"; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998). With the store refusing, the journal
+/// keeps appending past the lane's bound — what a fail-closed node still writes (admin units, the
+/// checkpoint cadence, accruals) — so the batch it retains grows past the bound too. Once the store
+/// recovers and the lane drains, the next append's re-offer is taken whole: every record reaches the
+/// store and the book admits money again.
+///
+/// RED before the fix: the lane took a batch only if it fit beside what waits, so the retained
+/// batch, over the bound, was turned away even by an empty lane on every re-offer: the book refused
+/// new money-bearing work until a restart, and the retained records, only in memory, were lost by
+/// it.
+#[test]
+fn a_retained_batch_past_the_lanes_bound_drains_once_the_store_recovers() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mut durability = store_book_bounded(&slots, 15, 4);
+    drained(&durability);
+    slots.refuse(true);
+    // Past the lane's bound and then some: the lane holds four, the journal retains six.
+    for _ in 0..10 {
+        let _ = durability.journal.append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(RecordClass::Load, Vec::new())],
+        );
+    }
+    assert!(
+        durability.journal.buffered() > 4,
+        "the journal retains more than the lane's bound"
+    );
+    assert!(
+        durability.refuses_money().is_some(),
+        "the node fails closed"
+    );
+    assert_eq!(
+        durability.journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
+    let written = durability.journal.next_seq() - 1;
+
+    slots.refuse(false);
+    drained(&durability);
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(RecordClass::Load, Vec::new())],
+        )
+        .expect("the empty lane takes the retained batch and the new record");
+    drained(&durability);
+    assert_eq!(durability.journal.buffered(), 0, "the journal owes nothing");
+    assert!(
+        durability.refuses_money().is_none(),
+        "the node admits again"
+    );
+    let kept = read_chain(slots.calls().as_ref(), 15).expect("reads back");
+    assert_eq!(
+        kept.len() as u64,
+        written + 1,
+        "every record the journal sealed is in the store, once"
+    );
+}
+
 /// **A CHAIN READ WHILE THE LANE IS BETWEEN TWO PARTS OF A RECORD IS NOT A TORN RECORD.** A slot
 /// carries 510 bytes of a record, so a journal record past that (a 160-byte header and its body)
 /// crosses to the store as two or more puts, and the lane's worker runs beside the book. A chain read
@@ -3221,6 +3586,122 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
         walk.findings,
         Vec::<String>::new(),
         "the walk accepts the records under the node the store assigned"
+    );
+}
+
+/// **THE WALK OF EVERY STORED CHAIN FINDS AN UNSIGNED RECORD SEALED AFTER THAT CHAIN'S
+/// `Bootstrap`** (BUSBAR-1.6.0.md l.193, "integrity (prev hash)"; l.2285, #82(a) "sign at seal
+/// time, in the process that sealed it"): the signature is not in the digest and the journal's
+/// links are unkeyed, so an edit to a stored record that strips its signature and recomputes its
+/// digest and the links leaves a chain that verifies whole, and only the unsigned rule sees it. The
+/// stored walk keeps that rule per chain, as the retained walk keeps it for this node: every record
+/// from the first one journalled after the chain's `Bootstrap` on is signed. The peer's chain here
+/// is sealed unsigned past its `Bootstrap`, the bytes such an edit leaves, and the node walking it
+/// never held that record in its own retained cache.
+///
+/// RED before the fix: the walk skipped every record naming no key, and found nothing.
+#[test]
+fn the_stored_walk_finds_an_unsigned_record_after_a_chains_bootstrap() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let walking = node_id(slots.calls().as_ref(), "host-walking").expect("an id");
+    let peer = node_id(slots.calls().as_ref(), "host-stripped").expect("an id");
+    {
+        let mut durability = keyed_store_book(&slots, peer);
+        durability
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .expect("sealed");
+        // From here on the peer's chain seals unsigned, past its Bootstrap.
+        durability.record = AuditChain::resume(&durability.audit_records).sealing_as(peer);
+        let stripped = durability
+            .seal_unit(audit_inputs(2), audit_pass(), &token())
+            .expect("sealed");
+        assert!(stripped.key_id.is_none() && stripped.signature.is_none());
+        drained(&durability);
+    }
+    let durability = keyed_store_book(&slots, walking);
+    assert_eq!(
+        durability.retained_audit_findings(),
+        Vec::<String>::new(),
+        "this node's own retained records hold nothing of the peer's"
+    );
+    let (lane, own, keys) = durability
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert_eq!(
+        walk.findings,
+        vec![format!(
+            "node {peer}: audit record 2 is unsigned, sealed after the keyset was bound"
+        )]
+    );
+}
+
+/// **A STORED RECORD SEALED BEFORE ITS CHAIN'S `Bootstrap` IS UNSIGNED, AND THAT IS NOT A FINDING**
+/// (the green twin of the test above; BUSBAR-1.6.0.md l.2285, #82(a): "records sealed before"
+/// a key was bound stay unsigned, which is the truth about them): a chain a keyless boot began over
+/// the store, continued by a boot that binds the deployment keyset, walks clean.
+///
+/// Green before the fix and after it: the rule starts at the chain's `Bootstrap`, never before.
+#[test]
+fn the_stored_walk_accepts_records_sealed_before_a_chains_bootstrap() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = node_id(slots.calls().as_ref(), "host-keyless-first").expect("an id");
+    {
+        let mut keyless = store_book(&slots, node);
+        for unit in 1..=2 {
+            keyless
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        drained(&keyless);
+    }
+    let mut keyed = keyed_store_book(&slots, node);
+    let third = keyed
+        .seal_unit(audit_inputs(3), audit_pass(), &token())
+        .expect("sealed");
+    assert!(third.key_id.is_some(), "sealed under the bound key");
+    drained(&keyed);
+    let (lane, own, keys) = keyed.stored_walk_inputs().expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert_eq!(walk.chains, vec![node]);
+    assert_eq!(walk.findings, Vec::<String>::new());
+}
+
+/// **AN AUDIT BODY ON A STORED CHAIN THAT DOES NOT DECODE IS A FINDING OF THE WALK**, never a
+/// record silently dropped (BUSBAR-1.6.0.md l.193, "integrity"; the boot's resume reports the same
+/// record as a restart finding): a record the walk cannot read is one it cannot verify, so its
+/// digest, its link and its signature go unchecked, and the walk says so.
+///
+/// RED before the fix: the walk filtered the record out, and found nothing.
+#[test]
+fn the_stored_walk_reports_an_audit_body_that_does_not_decode() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = node_id(slots.calls().as_ref(), "host-undecodable").expect("an id");
+    let mut durability = keyed_store_book(&slots, node);
+    durability
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    let mut inputs = audit_inputs(2);
+    inputs.usage.lines.push(UsageLine {
+        class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
+        quantity: 3,
+        source: busbar_contract::caps::QuantitySource::Count,
+        estimated: false,
+    });
+    durability
+        .seal_unit(inputs, audit_pass(), &token())
+        .expect("sealed");
+    drained(&durability);
+    let (lane, own, keys) = durability
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert_eq!(walk.findings.len(), 1, "{:?}", walk.findings);
+    assert!(
+        walk.findings[0].starts_with(&format!("node {node}: record "))
+            && walk.findings[0].contains("a_class_this_node_never_registered"),
+        "{:?}",
+        walk.findings
     );
 }
 
@@ -4295,4 +4776,198 @@ fn a_store_resumed_chain_past_one_segment_re_derives_every_held_checkpoint() {
             "the seal holds the settlement made before the roll"
         );
     }
+}
+
+/// THE HELD CHECKPOINTS RE-DERIVE ACROSS A RETIREMENT (Q128 kernel-ledger HIGH 1 with row 159's
+/// 31-day retirement). The chain keeps every window the book let go; the seal that left a window out
+/// was taken from a book that no longer held it. The walk drops every window retired at or before
+/// each held seal, so the seal before the retirement is served WITH the window, the seal that left
+/// it out WITHOUT it, and both as they were sealed. RED with the walk folding the whole chain into
+/// the scratch book unfiltered: the second seal read as diverged.
+#[test]
+fn a_held_checkpoint_sealed_without_a_retired_window_still_re_derives() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_retired_held");
+    settle_one(&mut durability, &key, 1_000, 250, 1);
+    let window = 86_400;
+    assert_eq!(durability.ledger.book().get(&key, window).settled, 250);
+    let now = window + WINDOW_RETENTION_SECS + 10;
+
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the seal goes down");
+    assert!(
+        first.totals.contains_key(&(key.clone(), window)),
+        "the first seal has no kept seal before it, so it retires nothing"
+    );
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the seal goes down");
+    assert!(
+        !second.totals.contains_key(&(key.clone(), window)),
+        "the second seal leaves out the window the first holds past the horizon"
+    );
+    assert_eq!(durability.ledger.book().get(&key, window), Totals::zero());
+
+    let mut served = Vec::new();
+    durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives across the retirement");
+    assert_eq!(served, vec![first, second], "each as it was sealed");
+    // ONE resident sealed copy: the newest seal's balances and no other's. The ring holds two seals
+    // here, the first with a balance the second left out, so a copy per held seal would count it.
+    assert_eq!(durability.checkpoints.len(), 2);
+    assert_eq!(
+        durability.sealed_balances_held(),
+        durability.checkpoints.last().expect("a held seal").balances,
+        "the node holds the newest seal's balances and no other seal's"
+    );
+}
+
+/// RED (row 159 retirement x Q128 A1): WHAT THE NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS ACROSS
+/// RETIREMENTS IS BOUNDED BY THE 31-DAY HORIZON, not by how many windows it ever retired. Forty
+/// windows are sealed while young; each seal after it carries one more past the horizon, and the
+/// seal leaves it out. Once every one of them is retired, no held seal kept a window past its
+/// horizon, so nothing is kept. RED with a per-seal record of every retired window: forty instants,
+/// one more per retirement for the life of the process.
+#[test]
+fn many_retirements_across_seals_keep_only_what_the_horizon_requires() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+    const DAY: u64 = 86_400;
+    const WINDOWS: u64 = 40;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_bounded_retirement");
+    for day in 1..=WINDOWS {
+        durability
+            .ledger
+            .book_mut()
+            .entry(key.clone(), day * DAY)
+            .settled = 1;
+    }
+    durability
+        .seal_checkpoint(&token, StepName::Meter, DAY)
+        .expect("the seal goes down");
+    for day in 1..=WINDOWS {
+        durability
+            .seal_checkpoint(&token, StepName::Meter, day * DAY + WINDOW_RETENTION_SECS)
+            .expect("the seal goes down");
+        assert_eq!(
+            durability.ledger.book().get(&key, day * DAY),
+            Totals::zero(),
+            "window {day} leaves the book at the seal that carries it past the horizon"
+        );
+    }
+    assert!(durability.ledger.book().is_empty(), "every window retired");
+    assert_eq!(
+        durability.retirement_windows_held(),
+        0,
+        "no held seal kept a window past its horizon, so nothing is kept to re-derive them"
+    );
+}
+
+/// RED (row 159 retirement x Q128 A1): A WINDOW POSTED AGAIN AFTER ITS RETIREMENT STILL RE-DERIVES.
+/// The second seal leaves the window out and the book lets it go; a late posting then lands on that
+/// window, so the book holds it again with only the new figure, and the third seal carries it. The
+/// walk drops the retired window from its scratch book when it passes the seal that left it out, so
+/// the posting after the retirement rebuilds exactly what the book holds. RED with the walk
+/// filtering every snapshot by the windows retired so far: the third seal reads as diverged, the
+/// window it holds filtered away.
+#[test]
+fn a_window_posted_again_after_its_retirement_still_re_derives() {
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_reposted");
+    let window = 86_400;
+    settle_one(&mut durability, &key, 1_000, 250, 1);
+    let now = window + WINDOW_RETENTION_SECS + 10;
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the seal goes down");
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the seal goes down");
+    assert!(!second.totals.contains_key(&(key.clone(), window)));
+    assert_eq!(durability.ledger.book().get(&key, window), Totals::zero());
+
+    settle_one(&mut durability, &key, 1_000, 70, 2);
+    assert_eq!(
+        durability.ledger.book().get(&key, window).settled,
+        70,
+        "the late posting rebuilds the window with its own figure only"
+    );
+    let third = durability
+        .seal_checkpoint(&token, StepName::Meter, now + 2)
+        .expect("the seal goes down");
+    assert_eq!(third.totals_for(&key, window).settled, 70);
+
+    let mut served = Vec::new();
+    durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives, the reposted window included");
+    // The set the ring holds (the cadence may have sealed beside the explicit seals), in order,
+    // and every explicit seal among them with the very figures it sealed.
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        durability.checkpoints
+    );
+    for seal in [&first, &second, &third] {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+    }
+}
+
+/// RED (#1492 review BLOCKER): A SEAL'S HORIZON LEAVES WITH IT WHEN THE RING DROPS IT. One window
+/// past the horizon can never retire (its figures move before every seal), so every seal keeps it;
+/// after more seals than the ring holds, the node keeps a horizon for each seal the ring holds and
+/// no more, and the windows kept across them are bounded the same way. RED with the ring's prune of
+/// the horizons removed: one horizon, and one kept window, per seal ever made.
+#[test]
+fn the_horizons_kept_are_bounded_by_the_ring_when_a_window_can_never_retire() {
+    use super::CHECKPOINT_RING;
+    use busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS;
+
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_never_retires");
+    let window = 86_400;
+    let now = window + WINDOW_RETENTION_SECS + 10;
+    let seals = CHECKPOINT_RING as u64 + 8;
+    for n in 0..seals {
+        // The figures move before every seal, so the window is never held by the last seal at the
+        // book's own figures, and never retires.
+        durability
+            .ledger
+            .book_mut()
+            .entry(key.clone(), window)
+            .settled += 1;
+        durability
+            .seal_checkpoint(&token, StepName::Meter, now + n)
+            .expect("the seal goes down");
+    }
+    assert_eq!(
+        durability.ledger.book().get(&key, window).settled,
+        i128::from(u32::try_from(seals).expect("fits")),
+        "the window never retired"
+    );
+    assert_eq!(durability.checkpoints.len(), CHECKPOINT_RING);
+    assert!(
+        durability.seal_horizons_held() <= CHECKPOINT_RING,
+        "{} seal horizons kept beside a ring of {CHECKPOINT_RING}",
+        durability.seal_horizons_held()
+    );
+    assert!(
+        durability.retirement_windows_held() <= CHECKPOINT_RING,
+        "{} kept windows across a ring of {CHECKPOINT_RING} held seals",
+        durability.retirement_windows_held()
+    );
 }

@@ -324,6 +324,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: vec!["b".to_string(), "a".to_string()],
                 repeatable: vec!["read".to_string()],
+                breaker: None,
             },
         )]
         .into();
@@ -348,6 +349,53 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
     );
     assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
     assert_eq!(handed["a"], section["a"], "every other key as written");
+}
+
+/// A PLANE'S POOL CARRIES ITS `breaker:` BLOCK TO ITS DOOR'S EGRESS, AND ONLY THERE (BUSBAR-1.6.0.md
+/// THE DESIGN §1: "Any plugin gets all functionality"; §5: the breaker is the host's valve). The
+/// root writes the pool's block beside its members, the door's egress reads it back as the same
+/// block, and the plane is handed its section without it — byte-identical to a pool that states
+/// none. A pool with no block reads `None`, the defaults every default config runs under.
+#[test]
+fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
+    let block = busbar_kernel::config::BreakerCfg {
+        base_cooldown_secs: 30,
+        max_cooldown_secs: 300,
+        ..Default::default()
+    };
+    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [
+        (
+            "tuned".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: Some(block.clone()),
+            },
+        ),
+        (
+            "plain".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: None,
+            },
+        ),
+    ]
+    .into();
+    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    crate::root::serve::pools_into(&mut section, &stated);
+    let p = DoorPools::of(&section).expect("the pools");
+    assert_eq!(
+        p.breaker("tuned"),
+        Some(&block),
+        "the pool's own block, as stated"
+    );
+    assert_eq!(p.breaker("plain"), None, "no block: the defaults");
+    let handed = crate::root::serve::plane_settings(&section);
+    assert_eq!(
+        handed["pools"]["tuned"], handed["pools"]["plain"],
+        "the plane is handed the same pool whether or not the host tunes its breaker"
+    );
 }
 
 /// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
@@ -2493,6 +2541,26 @@ pub(crate) mod tool_door {
                 )
                 .expect("governance"),
             );
+            // The group the key is minted into, when the footing names limits: its cost model is
+            // the governance book's and the App's, so admission judges the key against them.
+            let group = format!("agents-{instance}");
+            let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> =
+                if footing.limits.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([(
+                        group.clone(),
+                        busbar_kernel::config::GroupCfg {
+                            limits: footing.limits.clone(),
+                            ..Default::default()
+                        },
+                    )])
+                };
+            let cost = if groups.is_empty() {
+                CostModel::flat(1)
+            } else {
+                CostModel::resolve_parts(None, 1, &groups)
+            };
             // A fleet node reads the first node's book: one key registry, one signing key.
             let (gov, key, token) = match footing.book {
                 Some(first) => (
@@ -2506,14 +2574,14 @@ pub(crate) mod tool_door {
                             NewKeySpec {
                                 name: "agent".to_string(),
                                 allowed_pools,
+                                group: (!groups.is_empty()).then(|| group.clone()),
                                 ..Default::default()
                             },
                             4_000_000_000,
                             1_700_000_000,
                         )
                         .expect("mint");
-                    gov.hydrate_budgets(&CostModel::flat(1), 0)
-                        .expect("hydrate");
+                    gov.hydrate_budgets(&cost, 0).expect("hydrate");
                     (
                         gov,
                         Arc::new(key),
@@ -2536,6 +2604,10 @@ pub(crate) mod tool_door {
                     wall: Arc::clone(&wall),
                 }),
             ));
+            // The transport doors bind on this dispatcher and reach its host services (the clock
+            // the program carrier supervises a member's program by), as main.rs hands the process's
+            // one dispatcher to `root::doors` before any door binds.
+            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -2642,7 +2714,7 @@ pub(crate) mod tool_door {
                 host: {
                     let live_app = Arc::clone(&live_app);
                     Arc::new(move || {
-                        busbar_kernel::plane_host::engine_host(
+                        busbar_kernel::plane_driver::engine_host(
                             live_app
                                 .get()
                                 .expect("the rig's App is built before any unit"),
@@ -2671,19 +2743,23 @@ pub(crate) mod tool_door {
             let live = Arc::clone(&composed.live);
             let plane_key = composed.facts.plane.clone();
             served.post = Some(Arc::clone(&post));
-            let app = configure(
-                busbar_kernel::test_support::TestApp::new()
+            let app = configure({
+                let app = busbar_kernel::test_support::TestApp::new()
                     .keys_chain()
-                    .governance(Arc::clone(&gov))
-                    .cost(CostModel::flat(1)),
-            )
+                    .governance(Arc::clone(&gov));
+                if groups.is_empty() {
+                    app.cost(cost)
+                } else {
+                    app.groups_tree(groups).cost(cost)
+                }
+            })
             .build();
             let _ = live_app.set(Arc::clone(&app));
             // The kernel re-resolves each unit's principal over this generation, as the root
             // attaches it over its live snapshot.
             if let Some(kernel) = late.kernel() {
                 let _attached = kernel
-                    .attach_standing(busbar_kernel::plane_host::standing_over(Arc::clone(&app)));
+                    .attach_standing(busbar_kernel::plane_driver::standing_over(Arc::clone(&app)));
             }
             // Its tick schedule and ready-session fan-out, as the process spawns them.
             served.spawn_ticks();
@@ -3122,6 +3198,9 @@ pub(crate) mod tool_door {
         /// `destinations.block_private_addresses`); `false` admits loopback, where the test servers
         /// listen.
         pub(crate) guarded: bool,
+        /// The limits of the group the rig's key is minted into; none (the default) mints the key
+        /// into no group.
+        pub(crate) limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     }
 
     impl Footing<'_> {
@@ -3131,6 +3210,7 @@ pub(crate) mod tool_door {
                 ledger: Ledger::Memory,
                 book: None,
                 guarded: false,
+                limits: Vec::new(),
             }
         }
     }
@@ -3411,6 +3491,154 @@ pub(crate) mod tool_door {
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
         assert!(rig.all_ended(), "no unit left open");
+    }
+
+    /// THE AUTHENTICATE STEP, A FORGED CREDENTIAL: a bearer the book never minted (the caller's
+    /// own token with its signature altered) is refused exactly as no credential is, before
+    /// anything is charged or dialled; the real token beside it is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_forged_bearer_is_refused_before_anything_is_charged_or_dialled() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-forged";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+
+        // The unkeyed refusal is the reference: a forged credential is refused in the same words.
+        let (_, unkeyed_body) = send(&rig.router, None, CALL).await;
+        // Alter a MIDDLE character of the signature segment (a full six-bit position, so the
+        // token still base64-decodes and only the signature check can refuse it), to a different
+        // valid base64url character, never the same one.
+        let forged = {
+            let dot = rig
+                .token
+                .rfind('.')
+                .expect("a token has a signature segment");
+            let at = dot + 1 + (rig.token.len() - dot - 1) / 2;
+            let mut bytes = rig.token.clone().into_bytes();
+            bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+            let t = String::from_utf8(bytes).expect("ASCII");
+            assert_ne!(t, rig.token, "the forged token differs from the real one");
+            t
+        };
+        let (status, body) = send(&rig.router, Some(&forged), CALL).await;
+        let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
+        assert_eq!(
+            status.as_u16(),
+            refused,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            String::from_utf8_lossy(&unkeyed_body),
+            "a forged bearer is refused in the same words as no credential"
+        );
+        assert_eq!(rig.admitted(), 0, "nothing charged");
+        assert!(heard.try_recv().is_err(), "nothing dialled");
+        assert!(rig.all_ended(), "no unit left open");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the real token is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            rig.admitted(),
+            1,
+            "the authenticated call is the one charged"
+        );
+    }
+
+    /// THE ADMIT STEP: a key whose group allows one request an hour is served once, and its second
+    /// call is refused by the group's limit before it is sent — the server hears the first
+    /// `tools/call` and never the second — with only the served call charged and every unit ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tools_call_past_the_callers_request_limit_is_refused_before_it_dials() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-over-limit";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let one_an_hour = busbar_kernel::config::groups::LimitCfg {
+            metric: busbar_kernel::config::groups::LimitMetric::Requests,
+            amount: 1,
+            per: Some(busbar_kernel::config::groups::LimitWindow::Hour),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        };
+        let rig = Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            None,
+            Footing {
+                limits: vec![one_an_hour],
+                ..Footing::own()
+            },
+            &|app| app,
+        );
+        let calls = |heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+            let mut n = 0usize;
+            while let Ok(r) = heard.try_recv() {
+                if r.contains("\"tools/call\"") {
+                    n += 1;
+                }
+            }
+            n
+        };
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "within its limit the call is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(calls(&mut heard), 1, "the served call reached the server");
+        assert_eq!(rig.admitted(), 1, "one admitted request");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let refused = u16::try_from(refusal_status(ReasonCode::RateLimited)).expect("a status");
+        assert_eq!(
+            status.as_u16(),
+            refused,
+            "past its limit the call is refused: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(calls(&mut heard), 0, "the refused call was never sent");
+        assert_eq!(rig.admitted(), 1, "only the served call is charged");
+        assert!(rig.all_ended(), "no unit left open");
+
+        // THE RED ARM: the same two calls against the planted fault, an admission that reads no
+        // group limit (the same rig with its key minted into no group), are both sent and served.
+        // So the refusal above is the group's limit, and an admission that ignored it fails here.
+        // The first door is withdrawn before the second is built: two doors cannot hold the
+        // same admin routes at once.
+        busbar_kernel::plane_driver::serve::withdraw(instance);
+        let red_instance = "serve-door-tools-over-limit-red";
+        let _red_published = Published(red_instance);
+        let (red_port, mut red_heard) = tool_server().await;
+        let red = Rig::new(red_instance, red_port, None);
+        for n in 1..=2 {
+            let (status, body) = send(&red.router, Some(&red.token), CALL).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "call {n} with no limit is served: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert_eq!(
+            calls(&mut red_heard),
+            2,
+            "with no limit read, the second call is sent"
+        );
     }
 
     /// THE DECODE STEP: a body that is not JSON is refused by the plane's own decode, in its own
@@ -4361,7 +4589,8 @@ pub(crate) mod door_boundary {
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+    use busbar_kernel::plane_driver::row::BuildCtx;
+    use busbar_kernel::plane_driver::row::PlaneDecl;
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
@@ -4386,7 +4615,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane::registry::register_test_plane(row);
+        busbar_kernel::plane_driver::doors::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -4615,15 +4844,14 @@ pub(crate) mod door_boundary {
             .map(|a| (a.audience, a.resource_metadata))
             .expect("the door binds an audience under the public base URL");
         let base_url = upstream.base_url();
+        // The dialect the linked plane's declarations claim its messages path for (named by no
+        // literal).
+        let dialect = crate::root::linked::dialect_for_path(&crate::LINKED, "/v1/messages")
+            .expect("a linked plane claims its messages path for a dialect");
         let rig = rig_with(instance, port, None, &|app| {
             dispatched(
                 app.lane(
-                    LaneSpec::new(
-                        "test-model",
-                        busbar_kernel::proto::PROTO_ANTHROPIC,
-                        &base_url,
-                    )
-                    .api_key("busbar-upstream-key"),
+                    LaneSpec::new("test-model", dialect, &base_url).api_key("busbar-upstream-key"),
                 )
                 .pool("pa", &[(0, 1)]),
                 row,
@@ -5159,6 +5387,7 @@ mod spent_ledger {
                 ledger,
                 book,
                 guarded: false,
+                limits: Vec::new(),
             },
         )
     }
@@ -6132,6 +6361,7 @@ mod task_continuation {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
                 guarded: false,
+                limits: Vec::new(),
             },
         )
     }
@@ -6682,12 +6912,17 @@ pub(crate) mod program_member {
 
     /// The section: one registration that is the program above, its one tool approved.
     fn section() -> serde_yaml::Value {
+        section_running(script())
+    }
+
+    /// The section: one registration whose program is `/bin/sh -c <script>`, its one tool approved.
+    pub(crate) fn section_running(script: String) -> serde_yaml::Value {
         let mut fs = serde_yaml::Mapping::new();
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
             "args".into(),
-            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script.into()]),
         );
         fs.insert(
             "pin".into(),
@@ -6764,6 +6999,52 @@ pub(crate) mod program_member {
             fact(&second, "pongs"),
             "1",
             "the child's own request was answered once: {second}"
+        );
+    }
+}
+
+/// THE PROGRAM'S SUPERVISOR, END TO END (THE DESIGN §2, l.388: the program's supervisor is its
+/// carrier transport's; 1.5.5's crash-loop policy): a registration whose program ends at once,
+/// called over and over through the composed door and the real connector for longer than the whole
+/// backoff (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute
+/// stops its restarts and every later call is refused without a spawn. The policy lives in the
+/// program's carrier, keyed by the member's supervision key the connector hands each spawn. RED
+/// with the connector's own supervisor deleted and the carrier's absent: every call spawns the
+/// program anew.
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
+mod program_member_supervised {
+    use super::program_member::section_running;
+    use super::tool_door::{rig_tools, send, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The section: one registration whose program appends a line to `spawns` and ends.
+    fn section(spawns: &std::path::Path) -> serde_yaml::Value {
+        section_running(format!("echo spawned >> '{}'; exit 1", spawns.display()))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_that_keeps_ending_is_spawned_five_times_then_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-supervised";
+        let _published = Published(instance);
+        let spawns =
+            std::env::temp_dir().join(format!("busbar-{instance}-{}-spawns", std::process::id()));
+        let _ = std::fs::remove_file(&spawns);
+        let rig = rig_tools(instance, 0, section(&spawns), &|app| app);
+
+        // Called every 150 ms for 3.6 s: well past the four backoffs (1.5 s), well inside a minute.
+        for _ in 0..24 {
+            let _ = send(&rig.router, Some(&rig.token), CALL).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        let spawned = std::fs::read_to_string(&spawns)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&spawns);
+        assert_eq!(
+            spawned, 5,
+            "five ends inside a minute stop the restarts: spawned {spawned} times"
         );
     }
 }
@@ -8044,6 +8325,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
         1,
     )
     .expect("the egress composes");
@@ -8406,7 +8688,9 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::doors::TestRegistryIsolation;
+    use busbar_kernel::plane_driver::row::PlaneDecl;
+    use busbar_kernel::plane_driver::row::PlaneDeclaration;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
@@ -8650,4 +8934,42 @@ fn red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its
         );
         assert!(!refused.contains(bad), "the value is not echoed: {refused}");
     }
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20
+/// on root#7 / loader#9): serving one configured outbound style binds the one linked auth row that
+/// states it, and no other. Which row states a style is read off each row's static Statement
+/// (reading, not loading), never by binding every row to ask.
+#[test]
+fn serving_a_style_binds_only_the_linked_row_that_states_it() {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let linked = crate::LINKED.auths;
+    assert!(
+        linked.len() > 1,
+        "the default build links more than one auth row: {}",
+        linked.len()
+    );
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let served = auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("the serving row opens");
+    assert!(served.is_some(), "a linked row states `bearer`");
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        bound.len(),
+        1,
+        "only the row serving the style is bound, once: {bound:?}"
+    );
 }

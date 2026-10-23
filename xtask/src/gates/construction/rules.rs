@@ -590,61 +590,643 @@ pub fn neutral_no_dialect(cfg: &Cfg, hits: Option<&str>) -> Result<Vec<CRow>, St
 
 // ── 6. single-terminal ───────────────────────────────────────────────────────────────────────────
 
-pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
-    let c = cfg.rule("single-terminal")?;
-    let term = need_str(c, "terminal", "single-terminal")?;
-    let ceiling = need_int(c, "max_extra_sites", "single-terminal")?;
-    let allowed = c.list_of("allowed_callers");
-    let call_rx = Regex::new(&format!(r"{}\s*\(", word(term)))?;
-    let defn_rx = Regex::new(&format!(r"fn\s+{}(?![A-Za-z0-9_])", rx::escape(term)))?;
+/// One configured terminal: its type when spelled `Type::fn` (`None`: a bare `fn`, matched by name
+/// alone), its fn name, its spelling, and the doors that may call it (each `Type::fn` or a bare
+/// name).
+struct Terminal {
+    ty: Option<String>,
+    name: String,
+    spelled: String,
+    allowed: Vec<String>,
+}
 
-    let (mut extra, mut seen_allowed) = (Vec::new(), Vec::new());
-    for (rel, l) in tree.grep(&call_rx, true, None) {
-        if defn_rx.is_match(l.code_bytes()) {
+/// `Type::fn` -> (`Some(Type)`, `fn`); a bare name -> (`None`, name). A longer path keeps only its
+/// last type segment, as an impl header does.
+fn split_spelling(spelled: &str) -> (Option<String>, String) {
+    match spelled.rsplit_once("::") {
+        Some((ty, name)) => (
+            Some(ty.rsplit("::").next().unwrap_or(ty).to_string()),
+            name.to_string(),
+        ),
+        None => (None, spelled.to_string()),
+    }
+}
+
+/// The terminals the rule judges: each `[rules.single-terminal.<x>]` sub-table, or (the one-
+/// terminal form) the rule table's own `terminal` and `allowed_callers`.
+fn terminals(cfg: &Cfg) -> Result<Vec<Terminal>, String> {
+    let c = cfg.rule("single-terminal")?;
+    let subs = cfg.doc.children("rules.single-terminal");
+    let tables: Vec<&crate::toml_doc::Table> = if subs.is_empty() {
+        vec![c]
+    } else {
+        subs.into_iter().map(|(_, t)| t).collect()
+    };
+    tables
+        .into_iter()
+        .map(|t| {
+            let spelled = need_str(t, "terminal", "single-terminal")?.to_string();
+            let (ty, name) = split_spelling(&spelled);
+            Ok(Terminal {
+                ty,
+                name,
+                spelled,
+                allowed: t.list_of("allowed_callers"),
+            })
+        })
+        .collect()
+}
+
+/// The type an `impl` header (its text up to the `{`) is for: the self type's last path segment,
+/// past any generics and any `Trait for`.
+fn owner_of_header(header: &str) -> Option<String> {
+    let mut rest = header.trim_start();
+    rest = rest.strip_prefix("unsafe").map_or(rest, str::trim_start);
+    rest = rest.strip_prefix("impl")?;
+    rest = rest.trim_start();
+    if rest.starts_with('<') {
+        let mut depth = 0i32;
+        let mut cut = rest.len();
+        for (i, ch) in rest.char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cut = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = rest[cut..].trim_start();
+    }
+    let ty = rest
+        .find(" for ")
+        .map_or(rest, |i| &rest[i + 5..])
+        .trim_start();
+    let ty = ty
+        .split(|ch: char| ch == '<' || ch == '{' || ch.is_whitespace())
+        .next()?;
+    let last = ty.rsplit("::").next()?.trim_start_matches('&');
+    (!last.is_empty()).then(|| last.to_string())
+}
+
+/// The type whose innermost `impl` block holds line `line` of `rel`; `None` outside every impl.
+fn impl_owner(tree: &Tree, rel: &str, line: usize) -> Option<String> {
+    let lines = tree.files.get(rel)?;
+    let mut best: Option<(usize, String)> = None;
+    for (i, l) in lines.iter().enumerate() {
+        if l.no > line {
+            break;
+        }
+        let t = l.blank.trim_start();
+        let t = t.strip_prefix("unsafe").map_or(t, str::trim_start);
+        let opens = t
+            .strip_prefix("impl")
+            .is_some_and(|r| r.starts_with('<') || r.starts_with(char::is_whitespace));
+        if !opens {
             continue;
         }
-        let fname = tree
-            .enclosing_fn(rel, l.no)
-            .map_or("<no enclosing fn>".to_string(), |f| f.name.clone());
-        if allowed.contains(&fname) {
-            seen_allowed.push(fname);
-        } else {
-            extra.push(format!("{fname} at {rel}:{}", l.no));
+        let (mut header, mut depth, mut opened, mut end) = (String::new(), 0i64, false, None);
+        'scan: for m in &lines[i..] {
+            for ch in m.blank.chars() {
+                if !opened {
+                    match ch {
+                        '{' => {
+                            opened = true;
+                            depth = 1;
+                        }
+                        ';' => break 'scan,
+                        _ => header.push(ch),
+                    }
+                    continue;
+                }
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(m.no);
+                            break 'scan;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            header.push(' ');
+        }
+        let Some(end) = end else { continue };
+        if line > end {
+            continue;
+        }
+        let Some(owner) = owner_of_header(&header) else {
+            continue;
+        };
+        let span = end - l.no;
+        if best.as_ref().is_none_or(|(b, _)| span < *b) {
+            best = Some((span, owner));
         }
     }
-    let current = extra.len() as i64;
-    let mut sorted_allowed = allowed.clone();
-    sorted_allowed.sort();
-    let seen = sorted_unique(&seen_allowed);
-    // ITEM 190: THE FLOOR FOR "I FOUND NONE". A terminal renamed away is called from nowhere, so
-    // zero extra sites was a pass forever while this same detail printed `allowed callers seen: []`.
-    // The rule is a statement about a function that exists and the doors that call it; a
-    // configured terminal with no production definition, or a configured door that never calls
-    // it, is the configuration having lost its subject — refused, and named.
-    let mut refusals = Vec::new();
-    if tree.find_fn_by_name(term).is_empty() {
-        refusals.push(format!(
-            "no production `fn {term}` found -- the configured terminal does not resolve, so zero \
-             calls of it proves nothing"
-        ));
-    }
-    let unseen: Vec<String> = sorted_allowed
-        .iter()
-        .filter(|a| !seen.contains(a))
-        .cloned()
+    best.map(|(_, owner)| owner)
+}
+
+/// How the enclosing fn is named for an allowed-callers list: `Type::fn` inside an impl, the bare
+/// name outside one.
+fn caller_of(tree: &Tree, rel: &str, f: &Fnc) -> (String, String) {
+    let qualified = impl_owner(tree, rel, f.start)
+        .map_or_else(|| f.name.clone(), |owner| format!("{owner}::{}", f.name));
+    (qualified, f.name.clone())
+}
+
+/// The receiver of a terminal-named call, as its line spells it.
+enum Receiver {
+    /// `Type::fn(`: the path's last segment as written (`Self`, an alias, a type).
+    Path(String),
+    /// `self.fn(`.
+    SelfValue,
+    /// `base.field.fn(`: the field, and the identifier it is read off (empty when none is).
+    Field { base: String, field: String },
+    /// `name.fn(`: a binding or an argument of the enclosing fn.
+    Local(String),
+}
+
+/// The identifier `text` ends with (empty when it ends with anything else).
+fn trailing_ident(text: &str) -> String {
+    let rev: String = text
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
         .collect();
-    if !unseen.is_empty() {
-        refusals.push(format!(
-            "allowed caller(s) never seen calling `{term}`: {}",
-            unseen.join(", ")
-        ));
+    rev.chars().rev().collect()
+}
+
+fn is_ident(word: &str) -> bool {
+    !word.is_empty() && word.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
+/// The receiver a call at byte `at` of line `idx` is made on, read off the line above for a chain
+/// broken before its `.`; `None` when no identifier names it (a call's result, an index, a
+/// generic or a qualified path).
+fn receiver_of(lines: &[Line], idx: usize, at: usize) -> Option<Receiver> {
+    let code = &lines[idx].code;
+    let pre = code.get(..at).unwrap_or_default().trim_end();
+    if let Some(path) = pre.strip_suffix("::") {
+        let ty = trailing_ident(path);
+        return (!ty.is_empty()).then_some(Receiver::Path(ty));
     }
+    let pre = pre.strip_suffix('.')?.trim_end();
+    let pre = if pre.is_empty() {
+        idx.checked_sub(1)
+            .map_or("", |up| lines[up].code.trim_end())
+            .to_string()
+    } else {
+        pre.to_string()
+    };
+    let ident = trailing_ident(&pre);
+    if ident.is_empty() {
+        return None;
+    }
+    if ident == "self" {
+        return Some(Receiver::SelfValue);
+    }
+    let before = pre[..pre.len() - ident.len()].trim_end();
+    Some(match before.strip_suffix('.') {
+        Some(base) => Receiver::Field {
+            base: trailing_ident(base.trim_end()),
+            field: ident,
+        },
+        None => Receiver::Local(ident),
+    })
+}
+
+/// `text` past a leading visibility (`pub`, `pub(crate)`, `pub(in path)`).
+fn past_visibility(text: &str) -> &str {
+    let t = text.trim_start();
+    match t.strip_prefix("pub") {
+        Some(rest) if rest.starts_with('(') => rest
+            .split_once(')')
+            .map_or(t, |(_, after)| after.trim_start()),
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => t,
+    }
+}
+
+/// The type aliases a file declares: `type X = Y;` maps `X` to `Y`'s type (its last path segment,
+/// past a reference, a lifetime and generics), and every `use … Y as X` rename (module-level, inside
+/// a fn, or in a `use` group broken over lines; read by [`crate::gates::tracing::renames`]) maps `X`
+/// to `Y`, its source path's last segment. An alias the file gives two different targets, or a
+/// target this cannot read off its line, maps to `None`: unresolved.
+fn type_aliases(lines: &[Line]) -> BTreeMap<String, Option<String>> {
+    let mut out: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let code: String = lines
+        .iter()
+        .filter(|l| !l.intest)
+        .map(|l| l.blank.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (from, to) in crate::gates::tracing::renames(&code) {
+        let resolved = is_ident(&from).then_some(from);
+        let entry = if out.get(&to).is_some_and(|seen| *seen != resolved) {
+            None
+        } else {
+            resolved
+        };
+        out.insert(to, entry);
+    }
+    for l in lines {
+        let Some(rest) = past_visibility(&l.code).strip_prefix("type") else {
+            continue;
+        };
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let name: String = rest
+            .chars()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+            .collect();
+        let Some((_, target)) = rest.split_once('=') else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let resolved = target.split_once(';').and_then(|(target, _)| {
+            let head = target.split('<').next().unwrap_or_default();
+            let last = head.split_whitespace().next_back()?.trim_start_matches('&');
+            let last = last.rsplit("::").next()?;
+            is_ident(last).then(|| last.to_string())
+        });
+        let entry = if out.get(&name).is_some_and(|seen| *seen != resolved) {
+            None
+        } else {
+            resolved
+        };
+        out.insert(name, entry);
+    }
+    out
+}
+
+/// `name` through the file's aliases, followed to the end of a chain: `None` when an alias on the
+/// way is unresolved, or the chain does not end.
+fn through_aliases(aliases: &BTreeMap<String, Option<String>>, name: &str) -> Option<String> {
+    let mut cur = name.to_string();
+    for _ in 0..=aliases.len() {
+        match aliases.get(&cur) {
+            None => return Some(cur),
+            Some(None) => return None,
+            Some(Some(next)) if *next == cur => return Some(cur),
+            Some(Some(next)) => cur = next.clone(),
+        }
+    }
+    None
+}
+
+/// The bytes where the whole-word occurrences of `ident` in `code` start.
+fn word_starts(code: &str, ident: &str) -> Vec<usize> {
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut out = Vec::new();
+    if ident.is_empty() {
+        return out;
+    }
+    let mut from = 0;
+    while let Some(i) = code[from..].find(ident) {
+        let at = from + i;
+        from = at + ident.len();
+        let before_ok = code[..at].chars().next_back().is_none_or(|ch| !is_word(ch));
+        let after_ok = code[from..].chars().next().is_none_or(|ch| !is_word(ch));
+        if before_ok && after_ok {
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// The type text of a declaration `ident: Type` whose `ident` starts at byte `at` of `code` (read
+/// to the declaration's end, across generics); `None` when `ident` there carries no type.
+fn declared_type_at(code: &str, at: usize, ident: &str) -> Option<String> {
+    let ty = code[at + ident.len()..].trim_start().strip_prefix(':')?;
+    if ty.starts_with(':') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let text: String = ty
+        .chars()
+        .take_while(|&ch| {
+            if depth == 0 && matches!(ch, ',' | ';' | '=' | '{' | ')' | '|') {
+                return false;
+            }
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' if depth > 0 => depth -= 1,
+                _ => {}
+            }
+            true
+        })
+        .collect();
+    Some(text)
+}
+
+/// Does the declared type `text` name, for certain, a type other than `ty` that also defines the
+/// terminal's name? Not when it names `ty`, names no defining type, or names an alias the file
+/// leaves unresolved.
+fn names_other_owner(
+    text: &str,
+    ty: &str,
+    owners: &[String],
+    aliases: &BTreeMap<String, Option<String>>,
+) -> bool {
+    let mut other = false;
+    for w in text
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+        .filter(|w| !w.is_empty())
+    {
+        let Some(w) = through_aliases(aliases, w) else {
+            return false;
+        };
+        if w == ty {
+            return false;
+        }
+        other |= owners.contains(&w);
+    }
+    other
+}
+
+/// The type text `field` is declared with in the one production `struct owner` of `lines`;
+/// `None` when the file holds no such struct, or more than one, or that struct has no such field.
+fn struct_field_type(lines: &[Line], owner: &str, field: &str) -> Option<String> {
+    let heads: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            !l.intest
+                && past_visibility(&l.blank)
+                    .strip_prefix("struct")
+                    .filter(|r| r.starts_with(char::is_whitespace))
+                    .is_some_and(|r| {
+                        let name: String = r
+                            .trim_start()
+                            .chars()
+                            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                            .collect();
+                        name == owner
+                    })
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if heads.len() != 1 {
+        return None;
+    }
+    let (mut depth, mut opened) = (0i64, false);
+    for l in &lines[heads[0]..] {
+        for at in word_starts(&l.code, field) {
+            if let Some(text) = declared_type_at(&l.code, at, field) {
+                return Some(text);
+            }
+        }
+        for ch in l.blank.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                ';' | '(' if !opened => return None,
+                _ => {}
+            }
+        }
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    None
+}
+
+/// Does the occurrence at byte `start` of `code` bind a name without a type: in a `let` pattern
+/// (before its `=`), a `for` pattern (before its `in`), a closure's `|…|`, or a match arm's
+/// pattern (before its `=>`)?
+fn binds_untyped(code: &str, start: usize) -> bool {
+    let before = &code[..start];
+    let after = &code[start..];
+    let opened_by = |kw: &str, closer: &str| {
+        word_starts(before, kw)
+            .last()
+            .is_some_and(|&k| !before[k..].contains(closer))
+    };
+    opened_by("let", "=")
+        || opened_by("for", " in ")
+        || before.matches('|').count() % 2 == 1
+        || (after.contains("=>") && !before.contains('='))
+}
+
+/// The type text the binding `ident` holds at the call at byte `at` of line `idx`, read off its own
+/// declaration in the enclosing fn `f`: the last one before the call (a shadowing `let` declares it
+/// again). `None` when that declaration carries no type (an untyped `let`, a pattern, a closure
+/// argument, a `for` variable), or when `f` declares no such binding.
+fn binding_type(lines: &[Line], f: &Fnc, idx: usize, at: usize, ident: &str) -> Option<String> {
+    let call_no = lines[idx].no;
+    let mut last: Option<Option<String>> = None;
+    for l in lines.iter().filter(|l| l.no >= f.start && l.no <= call_no) {
+        let code = if l.no == call_no {
+            l.code.get(..at).unwrap_or_default()
+        } else {
+            l.code.as_str()
+        };
+        for start in word_starts(code, ident) {
+            if let Some(text) = declared_type_at(code, start, ident) {
+                last = Some(Some(text));
+            } else if binds_untyped(code, start) {
+                last = Some(None);
+            }
+        }
+    }
+    last.flatten()
+}
+
+/// Is the call of `t.name` at byte `at` of line `idx` of `rel` a call of the TERMINAL? A bare
+/// terminal is matched by name. A `Type::fn` terminal whose name no other type defines is too; one
+/// whose name another type also defines is excluded only when its receiver is that other type FOR
+/// CERTAIN: a path naming it (`Self` read as the enclosing impl's type, a same-file `type` alias as
+/// its target), `self` in its impl, a `self.field` its struct (in the same file) declares with it,
+/// or a binding whose own declaration in the enclosing fn names it. Anything else (an untyped
+/// binding, a field of another value, a path to a type that defines no such fn, an unread
+/// receiver) is counted: fail-safe, an unread call is a finding, never a pass. A declaration of the
+/// same name elsewhere in the tree is never read as the receiver's type.
+fn calls_terminal(
+    tree: &Tree,
+    rel: &str,
+    idx: usize,
+    at: usize,
+    t: &Terminal,
+    owners: &[String],
+    shadowed: &[String],
+) -> bool {
+    let Some(ty) = &t.ty else {
+        return true;
+    };
+    if owners.iter().all(|o| o == ty) {
+        return true;
+    }
+    let Some(lines) = tree.files.get(rel) else {
+        return true;
+    };
+    let no = lines[idx].no;
+    let mut aliases = type_aliases(lines);
+    // A NAME BOUND TWO WAYS IS UNRESOLVED: an alias spelled as a type that itself defines the
+    // terminal's name (`use … PlaneMoney as Node;` beside the real `Node`) is read as neither, so a
+    // call through it is counted (fail-closed).
+    for (name, target) in &mut aliases {
+        if owners.contains(name) && target.as_deref() != Some(name.as_str()) {
+            *target = None;
+        }
+    }
+    // ... AND A NAME ANY FILE BINDS TWO WAYS IS UNRESOLVED IN EVERY FILE: a re-export (`pub use …
+    // PlaneMoney as Node;`) reaches its importers by a plain `use` or a glob, which this file's
+    // own renames do not show (fail-closed, tree-wide).
+    for name in shadowed {
+        aliases.insert(name.clone(), None);
+    }
+    match receiver_of(lines, idx, at) {
+        Some(Receiver::Path(path_ty)) => {
+            let named = if path_ty == "Self" {
+                impl_owner(tree, rel, no)
+            } else {
+                through_aliases(&aliases, &path_ty)
+            };
+            named.is_none_or(|n| n == *ty || !owners.contains(&n))
+        }
+        Some(Receiver::SelfValue) => {
+            impl_owner(tree, rel, no).is_none_or(|owner| &owner == ty || !owners.contains(&owner))
+        }
+        Some(Receiver::Field { base, field }) if base == "self" => impl_owner(tree, rel, no)
+            .and_then(|owner| struct_field_type(lines, &owner, &field))
+            .is_none_or(|text| !names_other_owner(&text, ty, owners, &aliases)),
+        Some(Receiver::Local(ident)) => tree
+            .enclosing_fn(rel, no)
+            .and_then(|f| binding_type(lines, f, idx, at, &ident))
+            .is_none_or(|text| !names_other_owner(&text, ty, owners, &aliases)),
+        Some(Receiver::Field { .. }) | None => true,
+    }
+}
+
+/// The names of `owners` (the types that define a terminal's name) that some production file binds
+/// to anything but itself, by a `use … as` rename or a `type` alias: such a name is unresolved in
+/// every file, since a re-export reaches its importers by a plain `use` or a glob.
+fn shadowed_owners(tree: &Tree, owners: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for lines in tree.files.values() {
+        for (name, target) in type_aliases(lines) {
+            if owners.contains(&name) && target.as_deref() != Some(name.as_str()) {
+                out.push(name);
+            }
+        }
+    }
+    sorted_unique(&out)
+}
+
+pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("single-terminal")?;
+    let ceiling = need_int(c, "max_extra_sites", "single-terminal")?;
+    let terms = terminals(cfg)?;
+
+    let (mut extra, mut seen_all, mut refusals, mut allowed_all) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for t in &terms {
+        let call_rx = Regex::new(&format!(r"{}\s*\(", word(&t.name)))?;
+        let defn_rx = Regex::new(&format!(r"fn\s+{}(?![A-Za-z0-9_])", rx::escape(&t.name)))?;
+        // The types that define a production fn of this name (`""`: a free fn).
+        let defined: Vec<(String, &Fnc)> = tree
+            .find_fn_by_name(&t.name)
+            .into_iter()
+            .map(|f| (impl_owner(tree, &f.path, f.start).unwrap_or_default(), f))
+            .collect();
+        let owners: Vec<String> =
+            sorted_unique(&defined.iter().map(|(o, _)| o.clone()).collect::<Vec<_>>());
+        let shadowed = shadowed_owners(tree, &owners);
+        let mut seen = Vec::new();
+        for (rel, l) in tree.grep(&call_rx, true, None) {
+            if defn_rx.is_match(l.code_bytes()) {
+                continue;
+            }
+            let Some(lines) = tree.files.get(rel) else {
+                continue;
+            };
+            let Some(idx) = lines.iter().position(|x| x.no == l.no) else {
+                continue;
+            };
+            for m in call_rx.find_iter(l.code_bytes()) {
+                if !calls_terminal(tree, rel, idx, m.start, t, &owners, &shadowed) {
+                    continue;
+                }
+                let (qualified, bare) = tree.enclosing_fn(rel, l.no).map_or_else(
+                    || {
+                        (
+                            "<no enclosing fn>".to_string(),
+                            "<no enclosing fn>".to_string(),
+                        )
+                    },
+                    |f| caller_of(tree, rel, f),
+                );
+                let door = t.allowed.iter().find(|a| {
+                    if a.contains("::") {
+                        **a == qualified
+                    } else {
+                        **a == bare
+                    }
+                });
+                match door {
+                    Some(a) => seen.push(a.clone()),
+                    None => extra.push(format!(
+                        "{qualified} at {rel}:{} calls `{}`",
+                        l.no, t.spelled
+                    )),
+                }
+            }
+        }
+        // ITEM 190: THE FLOOR FOR "I FOUND NONE". A terminal renamed away is called from nowhere,
+        // so zero extra sites was a pass forever while the detail printed `allowed callers seen:
+        // []`. A configured terminal with no production definition (on its type, when spelled
+        // with one), or a configured door that never calls it, is the configuration having lost
+        // its subject -- refused, and named.
+        let resolves = defined
+            .iter()
+            .any(|(owner, _)| t.ty.as_ref().is_none_or(|ty| ty == owner));
+        if !resolves {
+            refusals.push(format!(
+                "no production `fn {}` found -- the configured terminal does not resolve, so zero \
+                 calls of it proves nothing",
+                t.spelled
+            ));
+        }
+        let seen = sorted_unique(&seen);
+        let mut allowed = t.allowed.clone();
+        allowed.sort();
+        let unseen: Vec<String> = allowed
+            .iter()
+            .filter(|a| !seen.contains(a))
+            .cloned()
+            .collect();
+        if !unseen.is_empty() {
+            refusals.push(format!(
+                "allowed caller(s) never seen calling `{}`: {}",
+                t.spelled,
+                unseen.join(", ")
+            ));
+        }
+        seen_all.extend(seen.into_iter().map(|s| format!("{s} -> {}", t.spelled)));
+        allowed_all.extend(allowed.into_iter().map(|a| format!("{a} -> {}", t.spelled)));
+    }
+    let current = extra.len() as i64;
+    let spelled: Vec<String> = terms.iter().map(|t| format!("`{}`", t.spelled)).collect();
+    let spelled = spelled.join(", ");
     let detail = format!(
-        "{current} call(s) of `{term}` outside the allowed callers {} (ceiling {ceiling}): {}; \
+        "{current} call(s) of {spelled} outside the allowed callers {} (ceiling {ceiling}): {}; \
          allowed callers seen: {}{}",
-        py_list(&sorted_allowed),
+        py_list(&allowed_all),
         join_or_none(&extra),
-        py_list(&seen),
+        py_list(&seen_all),
         if refusals.is_empty() {
             String::new()
         } else {
@@ -657,7 +1239,7 @@ pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     Ok(vec![plain(
         "single-terminal",
         pass,
-        format!("`{term}` is called only from its allowed doors"),
+        format!("{spelled} is called only from its allowed doors"),
         detail,
         current,
         ceiling,

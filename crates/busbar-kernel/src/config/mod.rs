@@ -1031,7 +1031,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // config, where they can see the cross-section references a single entry cannot.
         let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
             deserializer,
-            crate::plane::fallback_key(),
+            crate::plane_driver::doors::fallback_key(),
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -1974,7 +1974,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
 /// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
 /// providers exactly as every prior release has rather than silently dropping configured providers
-/// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
+/// out of `RootCfg::providers`. See `crate::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
 /// why this section never evicts.
 pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
     ResolvedProvider::merge(def, deploy_cfg)
@@ -2005,7 +2005,7 @@ pub fn resolve(
     // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
     // kept for exactly that build.
     let resolve_provider_hook =
-        crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+        crate::plane_driver::doors::plane_decl_for(crate::plane_driver::doors::fallback_key())
             .and_then(|d| d.resolve_provider);
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
@@ -2186,7 +2186,7 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane::registry::plane_decls()
+            let parse = crate::plane_driver::doors::plane_decls()
                 .iter()
                 .find(|d| d.config_section == section)
                 .and_then(|d| d.parse_section)?;
@@ -2362,7 +2362,7 @@ pub fn resolve(
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
     // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
+    let lower = crate::plane_driver::doors::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
@@ -2518,6 +2518,7 @@ mod resolved_provider_tests;
 pub mod auth;
 pub mod hooks;
 pub mod limits;
+pub mod plane_refs;
 pub mod plane_sections;
 pub mod pools;
 pub mod providers;

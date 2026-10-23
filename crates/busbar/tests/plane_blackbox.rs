@@ -489,7 +489,7 @@ impl Case {
 }
 
 /// Whether this build links `axis`, named as the manifest's `linked-axes` rows name it
-/// (`body-ingress`); `BUSBAR_LINKED_AXES` states each as its cfg (`linked_axis_body_ingress`).
+/// (`plane-door`); `BUSBAR_LINKED_AXES` states each as its cfg (`linked_axis_plane_door`).
 fn axis_linked(axis: &str) -> bool {
     let cfg = format!("linked_axis_{}", axis.replace('-', "_"));
     env!("BUSBAR_LINKED_AXES")

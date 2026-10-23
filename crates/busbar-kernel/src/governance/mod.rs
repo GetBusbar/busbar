@@ -375,7 +375,8 @@ fn model_deltas<'r>(
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::doors::plane_decls;
+    use crate::plane_driver::row::TOKEN_FAMILY;
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -392,7 +393,8 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, u64>,
 ) -> Vec<(String, u64)> {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::doors::plane_decls;
+    use crate::plane_driver::row::TOKEN_FAMILY;
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {
@@ -800,6 +802,10 @@ pub struct GovState {
     caller_refs: crate::plane_driver::CallerRefs,
     /// The deployment keyset's caller-reference material, once the book binds the keyset.
     deployment_caller_ref: RwLock<Option<[u8; 32]>>,
+    /// This boot's random caller-reference key: the last resort when the node has neither signing
+    /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
+    /// Zeroised on drop and never logged (`GovState` has no `Debug`).
+    boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

@@ -3,14 +3,14 @@ THE ALL-GREEN FIXTURE for `cargo xtask gate reachability`.
 The same five planes as the all-red fixture next door, fully wired: every plane registered — a row
 of the manifest's linked table (`crates/busbar/Cargo.toml`) that `register_planes()` folds over
 `LINKED`, and a plane type in `plane_claims()` — and every plane given a LIVE UNIT PATH, both kinds:
-llm, mcp, a2a and streaming through the #28 rider (`root/gauntlet_install.rs` flips each key onto a
-runner in `root/gauntlet_kernel.rs` that builds a `Units` type, and `main.rs` calls `install()`),
-decision through a `Units` impl its linked entry (`root/plane_decisions.rs`, the manifest's
-`linked-entry` row) builds in `PLANE_HOOKS`. Every `root/*.rs` module is reached from `fn main()`.
-The self-test breaks each link in turn — a key never flipped, a flip in test scope, a runner that
-builds no unit, an install nobody calls, flips in an uncalled function whose name collides with a
-reached one, an entry that exports no unit — and plants a plugin crate's `linked` module and a fold
-over `LINKED` to prove both are read.
+llm, mcp and a2a through a `Units` impl their plugin crate's `linked` entry builds in `PLANE_HOOKS`,
+streaming through its served door (`root/serve.rs`), and decision through a `Units` impl its linked
+entry inside the root (`root/plane_decisions.rs`, the manifest's `linked-entry` row) builds in
+`PLANE_HOOKS`. Every `root/*.rs` module is reached from `fn main()`. The self-test breaks each link
+in turn — an entry gone, an entry whose type is no `Units` impl, a `Units` impl no exported item
+builds, a door with no data route, no door row, two compositions — and every plane in turn on the
+all-red fixture. (The #28 kernel-loop rider these planes once rode is deleted with the kernel's
+runner table, status row 82, D2.)
 
 It is the control without which every RED case in the self-test is satisfiable by a gate that is
 simply red about everything. It also carries the DECLARED/UNDECLARED pair: the self-test takes the

@@ -875,8 +875,8 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
 /// classes the spend gauges read, and nothing else a plane states.
 macro_rules! gauge_plane {
     ($name:ident, $key:literal, $fallback:literal, $classes:expr) => {
-        static $name: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+        static $name: crate::plane_driver::row::PlaneDecl = crate::plane_driver::row::PlaneDecl {
+            declaration: crate::plane_driver::row::PlaneDeclaration {
                 key: $key,
                 fallback: $fallback,
                 config_section: $key,
@@ -929,8 +929,8 @@ macro_rules! gauge_plane {
 const fn gauge_class(
     class: &'static str,
     family: &'static str,
-) -> crate::plane::registry::BillableClass {
-    crate::plane::registry::BillableClass { class, family }
+) -> crate::plane_driver::row::BillableClass {
+    crate::plane_driver::row::BillableClass { class, family }
 }
 
 // The fallback plane's shape: the four 1.5.5 token tiers, then a class in another family.
@@ -939,10 +939,10 @@ gauge_plane!(
     "gauge-fallback",
     true,
     &[
-        gauge_class("input", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("output", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("cache_read", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("cache_write", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("input", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("output", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("cache_read", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("cache_write", crate::plane_driver::row::TOKEN_FAMILY),
         gauge_class("search_units", "units"),
     ]
 );
@@ -953,8 +953,8 @@ gauge_plane!(
     "gauge-audio",
     false,
     &[
-        gauge_class("audio_tokens_in", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("audio_tokens_out", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("audio_tokens_in", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("audio_tokens_out", crate::plane_driver::row::TOKEN_FAMILY),
         gauge_class("audio_seconds_in", "duration"),
     ]
 );
@@ -977,7 +977,7 @@ fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     init();
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[
         &GAUGE_FALLBACK_PLANE,
         &GAUGE_AUDIO_PLANE,
     ]);
@@ -1045,7 +1045,7 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     init();
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[
         &GAUGE_FALLBACK_PLANE,
         &GAUGE_AUDIO_PLANE,
     ]);

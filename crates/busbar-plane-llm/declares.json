@@ -2,6 +2,36 @@
   "needs": [
     "http"
   ],
+  "stream_media": [
+    "application/vnd.amazon.eventstream"
+  ],
+  "auth_labels": {
+    "rules": [
+      { "path": { "prefix": "/v1beta/models" }, "label": "gemini" },
+      {
+        "path": {
+          "prefix": "/v1/models/",
+          "last_segment_suffix": [
+            ":generateContent",
+            ":streamGenerateContent",
+            ":countTokens",
+            ":embedContent",
+            ":batchGenerateContent",
+            ":generateAnswer",
+            ":batchEmbedContents"
+          ]
+        },
+        "label": "gemini"
+      },
+      { "path": { "prefix": "/v1/models/" }, "label": "openai" },
+      { "path": { "prefix": "/model/", "suffix": ["/converse", "/converse-stream"] }, "label": "bedrock" },
+      { "path": { "suffix": ["/v1/messages"] }, "label": "anthropic" },
+      { "path": { "exact": "/v1/chat/completions" }, "label": "openai" },
+      { "path": { "exact": "/v2/chat" }, "label": "cohere" },
+      { "path": { "exact": "/v1/responses" }, "label": "responses" }
+    ],
+    "default": "openai"
+  },
   "diagnostics": [
     {
       "code": 5027,

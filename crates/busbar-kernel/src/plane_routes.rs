@@ -69,6 +69,10 @@ pub struct KernelRefusal<'a> {
     pub path: &'a str,
     /// The request target the plane reads its path rule off (path and query).
     pub target: &'a str,
+    /// Whether the kernel's mount table puts `path` under a mounted plane's claim, at a segment
+    /// boundary: a line of that plane renders the refusal, never the fallback plane's path rule, and
+    /// with no such line the kernel answers in the mounted plane's own wire format.
+    pub mounted: bool,
 }
 
 /// THE DOOR PLANES' RENDERING OF A KERNEL-SHAPED REFUSAL, by path: the plane whose door owns the
@@ -244,7 +248,7 @@ pub struct PlaneReqCtx {
     /// by calling typed methods on it rather than naming `busbar_kernel::plane_host::*_over`. Carried
     /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
     /// App-sever removes, `host` is the durable seam that replaces it.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,

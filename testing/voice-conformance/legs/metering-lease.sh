@@ -17,7 +17,7 @@
 #
 # THE KERNEL'S HALF: the session account — reserving against the caller's budget chain, capping at its
 # tightest remaining bucket, ledgering the counts (served leg:
-# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_each_turn_per_declared_class).
+# crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

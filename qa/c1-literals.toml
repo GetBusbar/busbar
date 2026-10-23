@@ -64,12 +64,6 @@ item = "ranking"
 count = 3
 
 [[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane/registry.rs"
-item = "openapi"
-count = 6
-
-[[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
 item = "ws (duplex-ws)"
@@ -164,18 +158,6 @@ rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/fixtures.rs"
 item = "http"
 count = 2
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "http"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "https"
-count = 1
 
 [[finding]]
 rule = "c1-literals:literal"

@@ -2414,11 +2414,11 @@ pub(crate) async fn restart(
 ///
 /// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
 /// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
-/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
-/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
-/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
-/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
-/// with no restart).
+/// plane sections (each linked plane's declared section key) are lifted before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused
+/// every plane section as an unknown field, so a config that boots could not be applied (ARCHITECT,
+/// agent-plane flip: apply accepts exactly the boot config shape, plane sections included, and they
+/// flow to each plane's refresh with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
@@ -3913,7 +3913,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
     // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
     // pass, which looks each path up by the key inserted here.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
                 for (path, item) in obj {
@@ -4659,16 +4659,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
-    // THE PLANES' TRUST-VERB SCHEMAS, contributed through the registry rather than named here. Each
-    // plane attaches its own typed success-body (and, for the planes that need one, request-body)
-    // schemas onto the paths its `openapi()` fragment inserted above, using the SAME shared
-    // `gen`/`req_gen` — so the plane types register into `#/components/schemas` exactly as the
-    // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
-    // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
-    // those calls had.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
-        if let Some(schemas) = decl.openapi_schemas {
-            schemas(&mut gen, &mut req_gen, &mut paths);
+    // THE PLANES' COMPONENT SCHEMAS, contributed through the registry rather than named here. Each
+    // plane states the `components.schemas` its `openapi()` fragment's `$ref`s name, and they are
+    // inserted into the SAME shared `gen` as written — so the plane schemas register into
+    // `#/components/schemas` exactly as before, and this document is byte-identical while this
+    // function names no plane-specific view type. Folded in `plane_decls()` order.
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
+        if let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated()) {
+            gen.definitions_mut().extend(schemas);
         }
     }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
@@ -5013,7 +5011,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // document still describes every operation this BUILD can serve — one static document, served
     // identically whatever the deployment configured — and the mark is how a reader tells "present
     // on every node" from "present on a node that configured `<section>:`".
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
         if decl.openapi.is_none() && decl.named_def_list.is_none() {
             continue;
         }
@@ -5206,7 +5204,7 @@ pub(crate) async fn openapi(
     const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
     let app = handle.load();
     let configured = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section)
             .is_some_and(|decl| app.plane_configured(decl))
     };
     if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {

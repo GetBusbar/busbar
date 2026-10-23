@@ -18,10 +18,19 @@
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
-use busbar_kernel::plane::{
-    fallback_key, has_superset_ir, plane_decl, plane_keys, sole_of, sole_wire_format, superset_of,
-    wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
-};
+use busbar_kernel::plane_driver::claims::Ingress;
+use busbar_kernel::plane_driver::claims::PlaneDispatch;
+use busbar_kernel::plane_driver::claims::WIRE_GRPC;
+use busbar_kernel::plane_driver::claims::WIRE_JSONRPC;
+use busbar_kernel::plane_driver::doors::fallback_key;
+use busbar_kernel::plane_driver::doors::has_superset_ir;
+use busbar_kernel::plane_driver::doors::plane_decl;
+use busbar_kernel::plane_driver::doors::plane_keys;
+use busbar_kernel::plane_driver::doors::sole_of;
+use busbar_kernel::plane_driver::doors::sole_wire_format;
+use busbar_kernel::plane_driver::doors::superset_of;
+use busbar_kernel::plane_driver::doors::wire_format_names;
+use busbar_kernel::plane_driver::doors::wire_formats;
 
 mod linked;
 
@@ -51,11 +60,10 @@ fn door(key: &str) -> String {
     format!("/{key}")
 }
 
-/// WARM THE SHARED PROTOCOL REGISTRY. Reading `known_protocols()` once, up front, before any plane
-/// helper reaches it, keeps the dialect list populated order-independently of whatever order the
-/// harness runs tests in.
-fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::proto::known_protocols();
+/// The dialects the fallback plane's door states in its Statement tail, in their order (read
+/// through the plane ABI, BUSBAR-1.6.0.md l.4965; the kernel holds no protocol set).
+fn declared_codec_dialects() -> Vec<&'static str> {
+    linked::fallback_dialects()
 }
 
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
@@ -142,7 +150,6 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
 #[test]
 fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     register_planes();
-    warm_shared_protocol_registry();
     assert!(has_superset_ir(fallback()));
     assert!(!has_superset_ir(single()));
     assert!(
@@ -167,7 +174,7 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         wires,
         [
             WIRE_JSONRPC,
-            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON,
             WIRE_GRPC
         ]
         .as_slice(),
@@ -175,20 +182,15 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     );
 }
 
-/// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
-/// literal. An additional registered protocol must not require anyone to remember to bump a number
-/// here.
+/// The fallback plane's wire-format count is DERIVED from its own declarations, never a literal. An
+/// additional declared dialect must not require anyone to remember to bump a number here.
 #[test]
-fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
+fn the_fallback_wire_format_count_comes_from_its_declarations() {
     register_planes();
-    warm_shared_protocol_registry();
-    assert_eq!(
-        wire_formats(fallback()),
-        busbar_kernel::proto::known_protocols().len()
-    );
+    assert_eq!(wire_formats(fallback()), declared_codec_dialects().len());
     assert!(
         wire_formats(fallback()) >= 2,
-        "the registry itself is what earns the fallback plane its IR"
+        "its own declarations are what earn the fallback plane its IR"
     );
 }
 
@@ -209,7 +211,7 @@ fn transports_do_not_count_as_wire_formats() {
 fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     match d.ingress_of(path) {
         Ingress::Mounted(key) => key,
-        Ingress::Fallback(_) => fallback_key(),
+        Ingress::Fallback => fallback_key(),
     }
 }
 
@@ -339,7 +341,6 @@ fn a_mount_is_readable_back() {
 #[test]
 fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     register_planes();
-    warm_shared_protocol_registry();
     for p in plane_keys() {
         assert_eq!(
             sole_wire_format(p).is_some(),
@@ -422,18 +423,14 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
             Some(&WIRE_JSONRPC),
             "{p:?} is mountable and its canonical binding is not JSON-RPC"
         );
-        assert_eq!(
-            busbar_kernel::ingress::native::envelope_dialect(Ingress::Mounted(p)),
-            WIRE_JSONRPC,
-            "{p:?}'s door refusals must not fall through to a vendor envelope"
-        );
     }
 }
 
 // ── THE MERGED RESOLVER ──────────────────────────────────────────────────────────────────────────
 
-/// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE first, the path shape
-/// only for what is left over.
+/// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE, and the fallback for
+/// what is left over. The kernel reads no dialect off a path's shape (a plane matches its own
+/// claimed routes).
 #[test]
 fn the_mount_table_is_read_before_the_path_shape() {
     register_planes();
@@ -445,12 +442,9 @@ fn the_mount_table_is_read_before_the_path_shape() {
         d.ingress_of(&format!("{m}/tools/list")),
         Ingress::Mounted(s)
     );
-    assert_eq!(
-        d.ingress_of("/v1/chat/completions"),
-        Ingress::Fallback(Some("openai"))
-    );
-    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback(None));
-    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
+    assert_eq!(d.ingress_of("/v1/chat/completions"), Ingress::Fallback);
+    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback);
+    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback);
 }
 
 /// A MOUNT CANNOT BE INFERRED FROM A URL.
@@ -467,7 +461,7 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
     for path in &paths {
         assert_eq!(
             d.ingress_of(path),
-            Ingress::Fallback(None),
+            Ingress::Fallback,
             "{path} on a deployment with no plane mounted"
         );
     }
@@ -480,10 +474,8 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     let s = single();
     let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
     assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
-    assert_eq!(
-        d.ingress_of("/v1/messages").wire_format(),
-        Some("anthropic")
-    );
+    // A path no plane is mounted on names no wire format: the kernel reads none off a path.
+    assert_eq!(d.ingress_of("/v1/messages").wire_format(), None);
     assert_eq!(d.ingress_of("/stats").wire_format(), None);
     let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
@@ -543,23 +535,18 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_design() {
     assert!(superset_of(2));
 }
 
-/// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
-/// case.**
+/// **The fallback plane's dialect list IS its declarations', so the empty case is the empty
+/// declaration list's.**
 #[test]
-fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
+fn the_fallback_planes_dialects_are_its_declarations_so_none_empties_the_plane() {
     register_planes();
-    warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel::proto::known_protocols(),
-        "the fallback plane's wire formats must track the registry"
+        declared_codec_dialects().as_slice(),
+        "the fallback plane's wire formats must track its declarations"
     );
 
-    let empty = busbar_kernel::proto::registry::Registry::new(
-        busbar_kernel::proto::registry::merged_boot_decls(&[], &[]),
-    );
-    let names: &'static [&'static str] = empty.codec_protocols();
-    assert!(names.is_empty(), "premise: no declarations, no dialects");
+    let names: &'static [&'static str] = &[];
     assert_eq!(
         sole_of(names),
         None,

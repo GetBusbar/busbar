@@ -41,6 +41,7 @@ pub mod design_docs_allowlist;
 pub mod dialect_coverage;
 pub mod dialect_map;
 pub mod documented_claims;
+pub mod door_cells_rig;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
@@ -284,10 +285,10 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // no review had recorded (tokio, futures, rustls, hyper, ...); those names are now in
     // `[rules.manifest-allowlist.reviewed_extra]` for each of the four crates and the rows are
     // green.
-    // Four production call sites of `pick_among(` against a ceiling of 2: the kernel-egress exhaustion
-    // and walk sites beside busbar-llm's fallback and pipeline. DRAIN: Phase 4, when the plane's own
-    // pick moves behind the kernel loop and only the loop and the fallback re-entry remain.
-    "one-pick-site",
+    // `one-pick-site` STRUCK: drained. Dev measures 1 production call site of `pick_among(`
+    // (crates/busbar-kernel-egress/src/walk.rs) against its ceiling, so the row is green and the
+    // name was stale; `[rules.one-pick-site] max_sites` falls to the measured 1 in the same commit
+    // (Law 9).
     // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
     // list. Three names were STALE and are struck here in the same commit:
@@ -416,8 +417,10 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
 /// leading number of its detail, as the gate's own run records it ("3 production call site(s) of
 /// pick_among(" in ModernCI's judgements of predev at 00555bd98a and 40a4080937). A name alone
 /// excused every finding the row would ever hold, so a fourth pick site read as the standing red.
-/// A measurement above its figure is a NEW red; lower it in the commit that drains a site.
-pub const CONSTRUCTION_STANDING_FIGURES: &[(&str, u64)] = &[("one-pick-site", 3)];
+/// A measurement above its figure is a NEW red; lower it in the commit that drains a site. Empty:
+/// its one figure (`one-pick-site`, 3) was struck with its row when the row drained; a figure for a
+/// row no list excuses excuses nothing.
+pub const CONSTRUCTION_STANDING_FIGURES: &[(&str, u64)] = &[];
 
 /// THE FIGURE EACH STRUCTURE-LINT STANDING RED IS EXCUSED AT, read the same way. Empty: its one
 /// figure (`structure-lint:plane-dup:unledgered`, 22) was superseded when #787 armed that row at its
@@ -1039,7 +1042,7 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         measured: MEASURED_TELLER_STEPS,
         allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
         taken: TAKEN,
-        why: "Twenty-two cases over the teller-step table, its roster derived from the tree, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+        why: "Twenty-five cases over the teller-step table, its roster derived from the tree, its cleanliness rows, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
         gate: "config-schema",
@@ -3525,6 +3528,14 @@ pub static REGISTRY: &[Registration] = &[
                   fn-pointer seam but oauth2's and admin's (report-only ledger)",
     },
     Registration {
+        name: "door-cells-rig",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(door_cells_rig::DoorCellsRigGate),
+        summary: "a door plane's root cells name the composition root through super::door_rig \
+                  alone (counted drain-only ledger)",
+    },
+    Registration {
         name: "plane-secret-blindness",
         batch: 1,
         tier: Tier::Fast,
@@ -4467,20 +4478,60 @@ mod posture_tests {
         );
     }
 
+    /// THE STANDING-RED MECHANISM, ASKED OF A LIST THAT CARRIES A ROW. These cases were asked of
+    /// `CONSTRUCTION_STANDING_REDS` itself, and when its last row drained the list emptied and every
+    /// case below would have asked nothing (the precedent: e99edad294 emptied structure-lint's list
+    /// and its bare-count case with it). So they are asked of this fixture, through the same
+    /// [`only_rows_unexplained`] the construction posture's `OnlyRows` arm reads, with the figure
+    /// `one-pick-site` held: a row named, excused at 3 findings.
+    const FIXTURE_STANDING: StandingReds = StandingReds {
+        rows: &["zz-standing-pick"],
+        list: "CONSTRUCTION_STANDING_REDS",
+        mirror: None,
+        figures: &[("zz-standing-pick", 3)],
+    };
+
+    /// Whether `v` is red on exactly what [`FIXTURE_STANDING`] excuses.
+    fn fixture_excuses(v: &Verdict) -> bool {
+        only_rows_unexplained(&FIXTURE_STANDING, v).is_empty()
+    }
+
+    /// THE CONSTRUCTION POSTURE IS STILL `OnlyRows` OVER ITS NAMED LIST, AND WITH THE LIST EMPTY IT
+    /// EXCUSES NO RED AT ALL: any construction red is scored.
+    #[test]
+    fn the_construction_posture_with_an_empty_list_excuses_no_red() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        assert_eq!(
+            standing_list_of("construction"),
+            Some("CONSTRUCTION_STANDING_REDS")
+        );
+        for id in ["one-pick-site", "plane-no-dialect"] {
+            assert!(
+                excused_from_all(
+                    "construction",
+                    &cx,
+                    &verdict(vec![standing_at_figure(id, 0)])
+                )
+                .is_none(),
+                "{id}: a construction red no list names is a regression"
+            );
+        }
+    }
+
     /// THE CONSTRUCTION POSTURE, WHICH USED TO BE `Excused::Whole` — no fact-check, no expiry, no
     /// list. `gate --all` exited 0 however red construction got, so a real regression on a keep
     /// branch was indistinguishable from the standing red. All three arms of the replacement:
     #[test]
     fn the_construction_posture_excuses_its_named_rows_and_nothing_else() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let standing: Vec<Row> = CONSTRUCTION_STANDING_REDS
+        let standing: Vec<Row> = FIXTURE_STANDING
+            .rows
             .iter()
             .map(|id| standing_at_figure(id, 0))
             .collect();
 
         // 1. Red on exactly the named rows: excused.
         assert!(
-            excused_from_all("construction", &cx, &verdict(standing.clone())).is_some(),
+            fixture_excuses(&verdict(standing.clone())),
             "the standing reds are what the entry names, and naming them is the whole entry"
         );
 
@@ -4489,7 +4540,7 @@ mod posture_tests {
         let mut plus = standing.clone();
         plus.push(Row::fail("plane-no-dialect", "t", "a brand new coupling"));
         assert!(
-            excused_from_all("construction", &cx, &verdict(plus)).is_none(),
+            !fixture_excuses(&verdict(plus)),
             "a red the list does not name is a regression, and an excuse covering it would be a \
              switch nobody could see was off"
         );
@@ -4499,19 +4550,20 @@ mod posture_tests {
         let mut drained = standing;
         drained.pop();
         assert!(
-            excused_from_all("construction", &cx, &verdict(drained)).is_none(),
+            !fixture_excuses(&verdict(drained)),
             "a name that is no longer red must be struck, in the commit that drained it"
         );
     }
 
-    /// A construction standing red as its row records it: the held figure plus `over`, as the
-    /// leading count of the detail, the way `one-pick-site` writes `3 production call site(s)`.
+    /// A standing red as its row records it: the fixture's held figure plus `over`, as the leading
+    /// count of the detail, the way `one-pick-site` wrote `3 production call site(s)`. An id the
+    /// fixture holds no figure for is recorded at 0.
     fn standing_at_figure(id: &str, over: u64) -> Row {
-        let held = CONSTRUCTION_STANDING_FIGURES
+        let held = FIXTURE_STANDING
+            .figures
             .iter()
             .find(|(f, _)| *f == id)
-            .map(|(_, n)| *n)
-            .unwrap_or_else(|| panic!("{id} is on CONSTRUCTION_STANDING_REDS with no figure"));
+            .map_or(0, |(_, n)| *n);
         Row::fail(
             id,
             "t",
@@ -4527,56 +4579,43 @@ mod posture_tests {
     /// nothing. Each named row is held to its standing figure; one more finding is scored.
     #[test]
     fn a_standing_row_measuring_above_its_figure_is_not_excused() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let at: Vec<Row> = CONSTRUCTION_STANDING_REDS
-            .iter()
-            .map(|id| standing_at_figure(id, 0))
-            .collect();
+        let named = FIXTURE_STANDING.rows;
+        let at: Vec<Row> = named.iter().map(|id| standing_at_figure(id, 0)).collect();
         let mut v = verdict(at);
-        v.problems = CONSTRUCTION_STANDING_REDS
-            .iter()
-            .map(|id| format!("{id}: FAIL"))
-            .collect();
+        v.problems = named.iter().map(|id| format!("{id}: FAIL")).collect();
         assert!(
-            excused_from_all("construction", &cx, &v).is_some(),
+            fixture_excuses(&v),
             "at its figure, with the reconciler's FAIL line beside it, the standing red is excused"
         );
-        let over: Vec<Row> = CONSTRUCTION_STANDING_REDS
-            .iter()
-            .map(|id| standing_at_figure(id, 1))
-            .collect();
+        let over: Vec<Row> = named.iter().map(|id| standing_at_figure(id, 1)).collect();
         assert!(
-            excused_from_all("construction", &cx, &verdict(over)).is_none(),
+            !fixture_excuses(&verdict(over)),
             "a standing row one finding above its figure is a new red inside an excused row"
         );
-        // The bare-count case is asked of the list that still carries figures. It was asked of
-        // structure-lint's, which e99edad294 (fixfwd-2) emptied with its figure when #787 armed
-        // `plane-dup:unledgered`: an empty list builds no row, the verdict is green and excused,
-        // and the case asked nothing.
         assert!(
-            !CONSTRUCTION_STANDING_REDS.is_empty() && !CONSTRUCTION_STANDING_FIGURES.is_empty(),
+            !named.is_empty() && !FIXTURE_STANDING.figures.is_empty(),
             "the bare-count case needs a standing row with a figure"
         );
-        let bare: Vec<Row> = CONSTRUCTION_STANDING_REDS
+        let bare: Vec<Row> = named
             .iter()
             .map(|id| Row::fail(*id, "t", "no count at all"))
             .collect();
         assert!(
-            excused_from_all("construction", &cx, &verdict(bare)).is_none(),
+            !fixture_excuses(&verdict(bare)),
             "a standing row whose detail carries no count has nothing to hold to its figure"
         );
     }
 
-    /// XTASK-D FINDING 1, THE VANISHED ROW. Deleting `[rules.one-pick-site]` makes the rule Err,
-    /// its row is never emitted and the reconciler says `one-pick-site: owed but no row was
+    /// XTASK-D FINDING 1, THE VANISHED ROW. Deleting `[rules.one-pick-site]` made the rule Err,
+    /// its row was never emitted and the reconciler said `one-pick-site: owed but no row was
     /// recorded — DID NOT RUN`. The excuse swallowed every problem about a NAMED id and counted
     /// that same problem as "still red" for its staleness check, so the deleted table was excused
     /// for ever. A named row that did not run is never excused.
     #[test]
     fn a_named_row_that_did_not_run_is_not_excused() {
-        let cx = Ctx::workspace().expect("the workspace opens");
         let mut v = verdict(Vec::new());
-        v.problems = CONSTRUCTION_STANDING_REDS
+        v.problems = FIXTURE_STANDING
+            .rows
             .iter()
             .map(|id| {
                 format!("{id}: owed but no row was recorded — DID NOT RUN, which is not a pass")
@@ -4584,7 +4623,7 @@ mod posture_tests {
             .collect();
         v.red = true;
         assert!(
-            excused_from_all("construction", &cx, &v).is_none(),
+            !fixture_excuses(&v),
             "a standing red whose rule stopped running is not red for a known reason"
         );
     }
@@ -4594,9 +4633,9 @@ mod posture_tests {
     /// problem about an id the list does not name must fail the excuse like any new red.
     #[test]
     fn a_row_that_did_not_run_is_not_excused_by_the_standing_list() {
-        let cx = Ctx::workspace().expect("the workspace opens");
         let mut v = verdict(
-            CONSTRUCTION_STANDING_REDS
+            FIXTURE_STANDING
+                .rows
                 .iter()
                 .map(|id| standing_at_figure(id, 0))
                 .collect(),
@@ -4605,7 +4644,7 @@ mod posture_tests {
             .push("ceiling-census: owed but no row was recorded — DID NOT RUN".to_string());
         v.red = true;
         assert!(
-            excused_from_all("construction", &cx, &v).is_none(),
+            !fixture_excuses(&v),
             "a rule that vanished is not a rule that is red for a known reason"
         );
     }

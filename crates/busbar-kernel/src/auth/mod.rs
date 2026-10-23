@@ -1341,104 +1341,99 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
 /// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
 /// signals available for shaping a native 401 envelope.
 ///
-/// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
+/// A THIN delegation to the CANONICAL `crate::plane_driver::claims::PlaneDispatch::ingress_of`, which is the ONE
 /// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
 /// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
 /// in one dialect and another handler shapes it in a different dialect — or where auth answers a
 /// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
-fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
+fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::claims::Ingress {
     app.planes.ingress_of(path)
 }
 
-/// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
-/// CANONICAL `crate::proto::vendor_auth_failure_message` so the auth path and any other site that
-/// shapes a native bad-credential body cannot drift on the protocol's own copy. The string lands
-/// verbatim in the native error body — the exact field it lands in (and any wrapping shape) is a
-/// registry-resolved per-protocol writer's concern, not core's — so it MUST read like the copy the
-/// REAL protocol returns for a bad/missing credential and carry NO busbar-internal vocabulary
-/// ("virtual key", "client token", "allowlist", "disabled", "passthrough", …). The wording is chosen
-/// PURELY from the inferred protocol and is deliberately independent of WHY auth failed (missing
-/// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
-/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
-fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+/// THE DOOR ROUTE A REQUEST MATCHES, as the auth middleware words a `401` on it: the route's plane
+/// rendering and the request target it renders for (spec Part 3 section 12, "Refusals").
+struct DoorRefusal {
+    /// The route's plane rendering.
+    refuse: busbar_kernel::plane_routes::PlaneRefuseFn,
+    /// The request target (path and query) it renders for.
+    target: String,
 }
 
-/// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
-/// inferred ingress protocol. The pair is chosen to MATCH what the genuine protocol returns for a
-/// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
-/// deterministic protocol tells a native SDK keys its typed exception off — a native SDK's
-/// typed-exception match is often keyed off the exact status/error-shape pairing, so a mismatched
-/// pair (e.g. the right status with the wrong error code) is itself a deterministic proxy tell.
-///
-/// This function holds NO protocol-specific knowledge itself; the default (401,
-/// "authentication_error") is what an unknown or standard protocol gets. A registry-resolved
-/// per-protocol writer may override that default to match its own genuine failure shape (a
-/// different status code, a different `kind`, or both) — that mapping lives entirely in the writer
-/// vtable, outside this crate, so a new protocol is onboarded there without touching this agnostic
-/// function.
-///
-/// Not a disposition/breaker match, so an unknown future proto falls back to the standard
-/// 401 authentication_error, keeping the request path panic-free.
-///
-/// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
-/// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
-// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
-// historical path are unchanged.
-pub use busbar_kernel::proxy::auth_failure_status_and_kind;
+/// THE DIALECT AN AUTHENTICATION REFUSAL IS TAPPED UNDER (the `ingress_protocol` a `response` tap
+/// is told), read off the PATH ALONE, as v1.5.5 read it (`crates/busbar/src/auth/mod.rs:1167` at
+/// v1.5.5: `proto_for_path(path)`) and dev reads it: never the verb, never the door route the
+/// request matched. A mounted plane's path is that plane's first wire format; any other path is the
+/// dialect the linked declarations claim it for, else their residual default
+/// ([`crate::ingress::native::labelled_dialect`] over the path dialects the composition root
+/// installed); empty when none is named. The kernel names no dialect.
+fn denial_dialect(app: &crate::state::App, path: &str) -> &'static str {
+    crate::ingress::native::labelled_dialect(
+        ingress_for_path(app, path),
+        path,
+        crate::ingress::native::path_dialects(),
+    )
+    .unwrap_or("")
+}
 
-/// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
-/// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
-/// hitting busbar in `token`/governance mode with a bad credential gets that protocol's own JSON
-/// error shape (`application/json`) instead of a bare `text/plain` 401 — removing a deterministic
-/// proxy tell. Falls back to the generic envelope for an unknown path.
+/// The words the kernel hands a plane with an authentication refusal, and its own answer's message
+/// when no plane renders one. A plane words a bad credential in its own dialect's vendor sentence,
+/// status and kind (spec §1: refusal texts that name instances are rendered from the plugins' rows,
+/// byte-identical to 1.5.5); these words carry no busbar-internal vocabulary ("virtual key",
+/// "allowlist", "disabled", …) and no reason the credential failed, because surfacing that
+/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
+const AUTH_REFUSED: &str = "authentication failed";
+
+/// THE DATA PLANE'S 401: the refusal the auth chain decided, worded by the plane that owns the
+/// path, through its `refusal` (spec Part 3 section 12, "Refusals"). The kernel words no dialect.
 ///
-/// The wire `message` comes from `vendor_auth_failure_message(proto)` — protocol-plausible copy
-/// keyed solely off the inferred protocol — NOT from the call site. Callers must never thread a
-/// busbar-internal reason ("invalid or disabled virtual key", "unauthorized", "admin unauthorized")
-/// onto the wire: that vocabulary is a protocol tell and an auth-model disclosure, and the
-/// invalid-vs-disabled / missing-vs-wrong distinction is itself an oracle. A caller may still log
-/// the real reason server-side; it just never reaches the client body.
+/// - A DOOR ROUTE's own plane renders it, unit-less, in the route's refusal dialect for the request
+///   target (`door`).
+/// - A path no door route takes at this verb is a kernel-shaped refusal (`KernelRefusal`): the
+///   plane whose line the guest list matches for the path, else the fallback plane (the catch-all
+///   every unclaimed path is), renders it by its own path rule, as 1.5.5's residual answered it.
+/// - No plane renders it (no plane served, or a failed render): the kernel's own neutral envelope.
 ///
-/// Status and the writer `kind` are protocol-shaped too (see `auth_failure_status_and_kind`): a
-/// registry-resolved per-protocol writer may override the default (401, "authentication_error") to
-/// match that protocol's own genuine failure status/headers/shape — for example, a protocol
-/// whose auth is inbound AWS SigV4 request-signing genuinely rejects with HTTP 403 and carries its
-/// own error-type/request-id headers, not the generic 401 pair. That per-protocol knowledge lives
-/// entirely in the writer, not in this crate.
+/// A caller may still log the real reason server-side; it never reaches the client body.
 ///
-/// No unwrap / expect / panic on this request path: `ingress_error` degrades a serialization failure
-/// to a generic JSON object internally.
-///
-/// The envelope is built by `crate::ingress::native::native_error`, the single source of truth for
-/// shaping an answer from a resolved ingress: on the residual it selects the protocol writer, sets
-/// `application/json` and attaches any protocol-specific error headers via the
-/// `ProtocolWriter::attach_error_response_headers` vtable method; on a MOUNTED, audience-bound plane
-/// it answers in that plane's own dialect instead of handing a JSON-RPC client the residual plane's
-/// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
-/// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
-/// status, and any header attach it needs consistent with each other, all outside this crate.
+/// No unwrap / expect / panic on this request path.
 fn unauthorized_response(
     app: &crate::state::App,
+    core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&DoorRefusal>,
 ) -> Response {
-    // A DOOR ROUTE'S 401 (spec Part 3 section 12, "Refusals"): the kernel decided it, exactly as on
-    // any data-plane path; the route's plane renders it, unit-less, in the route's refusal dialect
-    // for the request target. Every other path keeps the residual data plane's envelope.
-    if let Some((refuse, target)) = door {
-        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    if let Some(door) = door {
+        return (door.refuse)(
+            busbar_contract::caps::ReasonCode::Unauthenticated,
+            &door.target,
+        );
     }
     let ingress = ingress_for_path(app, path);
-    // The dialect names the PROTOCOL whose bad-credential status, `kind` and copy a client expects.
-    // A mounted, audience-bound plane names its own wire format, which has no registered protocol
-    // writer, so both lookups take their neutral defaults (401 + `authentication_error`) and the
-    // body is that plane's own — the same two facts a plane-specific 401 would have had to restate.
-    let dialect = crate::ingress::native::envelope_dialect(ingress);
-    let message = vendor_auth_failure_message(dialect);
-    let (status, kind) = auth_failure_status_and_kind(dialect);
-    crate::ingress::native::native_error(ingress, status, kind, message)
+    if let crate::plane_driver::claims::Ingress::Mounted(_) = ingress {
+        return crate::ingress::native::native_error(
+            ingress,
+            StatusCode::UNAUTHORIZED,
+            busbar_kernel::proxy::KIND_AUTHENTICATION,
+            AUTH_REFUSED,
+        );
+    }
+    // The plane reads its path rule off the path; the query names no dialect.
+    let refusal = busbar_kernel::plane_routes::KernelRefusal {
+        reason: busbar_contract::caps::ReasonCode::Unauthenticated,
+        status: StatusCode::UNAUTHORIZED.as_u16(),
+        text: AUTH_REFUSED,
+        path,
+        target: path,
+        // A mounted plane's path answered above.
+        mounted: false,
+    };
+    core_routes.kernel_refusal(&refusal).unwrap_or_else(|| {
+        crate::ingress::native::kernel_refusal(
+            StatusCode::UNAUTHORIZED,
+            busbar_kernel::proxy::KIND_AUTHENTICATION,
+            AUTH_REFUSED,
+        )
+    })
 }
 
 /// THE CREDENTIAL A STYLE'S CARRIERS YIELD on `headers`: the first carrier line, in `carriers`'
@@ -2047,21 +2042,18 @@ fn rate_limited_response() -> Response {
 /// Fire the synthetic `rejected_by_auth` response taps (fire-and-forget) and return the auth
 /// denial — so audit taps see auth denials, not just served traffic. The
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
-/// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
-/// PROTOCOL-NATIVE for an auth failure — the default is 401, but a registry-resolved per-protocol
-/// writer may override it to match that protocol's own genuine failure status (see
-/// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
-/// those overriding protocols contradict the response the client actually got.
+/// path-inferred protocol. The tap's `status` IS the client-visible HTTP status: the status of the
+/// answer [`unauthorized_response`] built, which the plane that words the refusal states (a
+/// dialect's own bad-credential status need not be 401). Hardcoding 401 made a tap watching an
+/// ingress denial on one of those dialects contradict the response the client actually got.
 fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
+    core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&DoorRefusal>,
 ) -> Response {
-    // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
-    // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
-    // dialect its path happens to resemble; a residual path that names none is labelled with the
-    // dialect its answer is shaped in, so the tap and the response can never disagree.
-    let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
+    let refused = unauthorized_response(app, core_routes, path, door);
+    let proto = denial_dialect(app, path);
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
@@ -2073,17 +2065,16 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
-        let status = auth_failure_status_and_kind(proto).0.as_u16();
-        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
-        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
-        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
-        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
-        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
-        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
-        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
-        let host = crate::plane_host::engine_host_value(app);
-        busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
+        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let status = refused.status().as_u16();
+        // Fired through the hook kind's one stage-tap fan-out, so this synthetic auth-denial tap shares
+        // the ONE 1024-permit bounded-spawn gate with every other stage tap (one cap, one
+        // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
+        // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
+        // group-scope walk folds `&app.groups_registry` in host-side.
+        let host = crate::plane_driver::engine_host_value(app);
+        let host: &dyn crate::plane_driver::EngineHost = &host;
+        crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,
             busbar_contract::hook_wire::HookStageProjection {
@@ -2099,11 +2090,10 @@ fn unauthorized_with_completion_taps(
             Default::default(),
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
-            None,
-            &host,
+            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
-    unauthorized_response(app, path, door)
+    refused
 }
 
 /// THE DATA PLANE'S ANSWER TO AN OVERLOADED VERIFIER (owner ruling Q134, 2026-10-07; THE DESIGN
@@ -2155,15 +2145,16 @@ pub(crate) async fn auth_middleware(
     // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
     // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
     // on every residual data-plane path, which keeps its envelope byte for byte.
-    // `(the route's plane rendering, the request target it renders for)`.
-    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
-        core_routes.door_refusal(&path, req.method()).map(|refuse| {
-            let target = req
-                .uri()
-                .path_and_query()
-                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-            (refuse.clone(), target)
-        });
+    let door: Option<DoorRefusal> =
+        core_routes
+            .door_refusal(&path, req.method())
+            .map(|spec| DoorRefusal {
+                refuse: spec.refuse.clone(),
+                target: req
+                    .uri()
+                    .path_and_query()
+                    .map_or_else(|| path.clone(), |t| t.as_str().to_owned()),
+            });
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -2256,7 +2247,7 @@ pub(crate) async fn auth_middleware(
                          did not verify.",
                         None,
                     ),
-                    None => unauthorized_response(&app, &path, door.as_ref()),
+                    None => unauthorized_response(&app, core_routes, &path, door.as_ref()),
                 });
             }
         }
@@ -2488,7 +2479,12 @@ pub(crate) async fn auth_middleware(
             let Ok(body_bytes) =
                 axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
             else {
-                return Err(unauthorized_response(&app, &path, door.as_ref()));
+                return Err(unauthorized_response(
+                    &app,
+                    core_routes,
+                    &path,
+                    door.as_ref(),
+                ));
             };
             let request = signed_request(&parts, &body_bytes);
             req = Request::from_parts(parts, Body::from(body_bytes));
@@ -2514,7 +2510,12 @@ pub(crate) async fn auth_middleware(
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
                     {
-                        return Err(unauthorized_response(&app, &path, door.as_ref()));
+                        return Err(unauthorized_response(
+                            &app,
+                            core_routes,
+                            &path,
+                            door.as_ref(),
+                        ));
                     }
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
@@ -2522,14 +2523,26 @@ pub(crate) async fn auth_middleware(
                             principal: principal_from_vkey(&key),
                             resolved: Some(std::sync::Arc::new(key)),
                         }),
-                        None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+                        None => {
+                            return Err(unauthorized_response(
+                                &app,
+                                core_routes,
+                                &path,
+                                door.as_ref(),
+                            ))
+                        }
                     }
                 }
                 // EVERY failure (malformed signature, unknown identifier, expired date, a body whose
                 // bytes don't match the signed hash, a verifier that did not answer) maps to the
                 // identical native auth error: there is no oracle.
                 Verified::Reject | Verified::Failed => {
-                    return Err(unauthorized_response(&app, &path, door.as_ref()))
+                    return Err(unauthorized_response(
+                        &app,
+                        core_routes,
+                        &path,
+                        door.as_ref(),
+                    ))
                 }
                 // The verifier's `max_inflight` is full: nothing was judged, so this is no answer
                 // about the credential. 503 with `Retry-After` (owner ruling Q134, 2026-10-07).
@@ -2628,6 +2641,7 @@ pub(crate) async fn auth_middleware(
             }
             return Err(unauthorized_with_completion_taps(
                 &app,
+                core_routes,
                 &path,
                 door.as_ref(),
             ));
@@ -2643,6 +2657,7 @@ pub(crate) async fn auth_middleware(
             }
             return Err(unauthorized_with_completion_taps(
                 &app,
+                core_routes,
                 &path,
                 door.as_ref(),
             ));
@@ -2852,11 +2867,11 @@ pub mod self_keys;
 /// the [`self_keys`] seam).
 pub mod exchange;
 
-/// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
-/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
-/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
-pub mod token;
+/// The hosted login's identity side (row 159, K3#2): the login methods, one login step on a
+/// plugin's door, and the self-serve key a verified identity is issued through the SAME
+/// [`self_keys`] seam as the headless `POST`. The flow itself (pages, cookie, PKCE) is
+/// `busbar-core-oauth2`'s, reached through [`login::seam`].
+pub mod login;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.
 #[cfg(any(test, feature = "test-support"))]

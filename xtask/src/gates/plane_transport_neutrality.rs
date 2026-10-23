@@ -88,7 +88,20 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-pub const MIN_FILES: usize = 1220;
+/// Lowered 1220 -> 1215 by status row 82 (D2), measured by the gate on GetBusbar/busbar#1376
+/// (cb700c4274 merged with dev af89c8fcf1): the kernel's protocol registry left the kernel
+/// (`busbar-kernel/src/proto/{mod,registry,installed}.rs`, `proto/tests/{installed_tests,
+/// neutral_protocols,registry_builtins}.rs`, `tests/proto.rs`) with the body-ingress arrival host
+/// it stacks on (#1276: `ingress/arrival_host.rs`, `ingress/tests/terminal_tests.rs`), against the
+/// files dev landed meanwhile. Lowered 1215 -> 1213 merging dev after GetBusbar/busbar#1299
+/// (`busbar-kernel/src/failover/mod.rs` and `failover/tests/failover_tests.rs` deleted), the
+/// gate's measure on 5989f0e117. Lowered 1213 -> 1210 by GetBusbar/busbar#1408 (row 82 D2): the root's
+/// kernel-loop rider (`root/gauntlet_install.rs`, `root/gauntlet_kernel.rs`) is deleted with its
+/// tests and the root tests gated on axes no linked row sets, the gate's measure on 5948c3ecf6.
+/// Raised 1210 -> 1211 to the true count on the merged tree (a6 measured it). Raised 1211 -> 1226 merging
+/// dev e4bd56e5ee into GetBusbar/busbar#1408: the gate's measure on 09883f2003 (`1226 file(s) across 14
+/// census-neutral root(s)`).
+pub const MIN_FILES: usize = 1226;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
@@ -169,9 +182,35 @@ fn camel_hit(code: &str) -> bool {
     false
 }
 
-/// Is this line covered by the tracked-twin exemption?
-fn tracked_twin(rel: &str, code: &str) -> bool {
-    rel == TWIN_FILE && TWIN_IDENTS.iter().any(|id| code.contains(id))
+/// THE TRACKED-TWIN EXEMPTION, KEYED TO THE IDENTIFIER, NOT THE LINE (Q128 part 5). In
+/// [`TWIN_FILE`], every whole-identifier occurrence of a [`TWIN_IDENTS`] name is blanked and the
+/// REST of the line is still scanned; the answer says whether one was. It used to skip every noun
+/// check on any line that merely CONTAINED a twin name, so `pub input_audio: u64, pub sdp_answer:
+/// u8` on one line, or `input_audio_rtp`, passed.
+fn blank_twins(rel: &str, code: &str) -> (String, bool) {
+    if rel != TWIN_FILE {
+        return (code.to_string(), false);
+    }
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = code.as_bytes().to_vec();
+    let mut fired = false;
+    for id in TWIN_IDENTS {
+        let starts: Vec<usize> = code.match_indices(id).map(|(i, _)| i).collect();
+        for i in starts {
+            let end = i + id.len();
+            let bounded = (i == 0 || !ident(code.as_bytes()[i - 1]))
+                && code.as_bytes().get(end).is_none_or(|b| !ident(*b));
+            if bounded {
+                out[i..end].fill(b' ');
+                fired = true;
+            }
+        }
+    }
+    // Only ASCII bytes were overwritten with ASCII, so the text is still UTF-8.
+    (
+        String::from_utf8(out).unwrap_or_else(|_| code.to_string()),
+        fired,
+    )
 }
 
 /// The per-file scan: comments stripped (string literals respected), `#[cfg(test)] mod { … }`
@@ -183,21 +222,21 @@ fn scan_file(rel: &str, text: &str, twin_seen: &mut bool) -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for (lineno, code) in scan::production_lines(text) {
-        if tracked_twin(rel, &code) {
+    for (lineno, raw_code) in scan::production_lines(text) {
+        let (code, fired) = blank_twins(rel, &raw_code);
+        if fired {
             // The exemption FIRED. Recorded so a carve-out that stops covering anything can be
             // reported as the dead row it has become.
             *twin_seen = true;
-            continue;
         }
         let lower = code.to_lowercase();
         for noun in NOUNS {
             if word_ci(&lower, noun) {
-                out.push(finding(noun, rel, lineno, &code));
+                out.push(finding(noun, rel, lineno, &raw_code));
             }
         }
         if camel_hit(&code) {
-            out.push(finding("CamelCase", rel, lineno, &code));
+            out.push(finding("CamelCase", rel, lineno, &raw_code));
         }
     }
     out
@@ -746,6 +785,36 @@ fn decolour(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE TWIN EXEMPTION EXCUSES THE IDENTIFIER, NOT THE LINE (Q128 part 5). A noun beside the
+    /// twin field on its line, and a noun glued onto the twin name, are still findings; the twin
+    /// field alone is not.
+    #[test]
+    fn the_twin_exemption_excuses_the_identifier_not_the_line() {
+        let mut seen = false;
+        let alone = scan_file(
+            TWIN_FILE,
+            "pub struct B { pub input_audio: u64 }\n",
+            &mut seen,
+        );
+        assert!(alone.is_empty(), "{alone:?}");
+        assert!(seen);
+        let mut seen = false;
+        let beside = scan_file(
+            TWIN_FILE,
+            "pub struct B { pub input_audio: u64, pub sdp_answer: u8 }\n",
+            &mut seen,
+        );
+        assert!(beside.iter().any(|f| f.starts_with("sdp\t")), "{beside:?}");
+        let mut seen = false;
+        let glued = scan_file(
+            TWIN_FILE,
+            "pub struct B { pub input_audio_rtp: u64 }\n",
+            &mut seen,
+        );
+        assert!(glued.iter().any(|f| f.starts_with("rtp\t")), "{glued:?}");
+        assert!(!seen, "a glued name is not the twin identifier");
+    }
 
     /// THE FLOOR PLANT ON A TREE THAT HAS GROWN PAST THE FLOOR. Removing one file proved the floor
     /// only while the census-neutral roots held exactly [`MIN_FILES`]; the merge group of #605 ran

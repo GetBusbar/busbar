@@ -49,3 +49,49 @@ fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
     assert!(!table.signed_ingress("/elsewhere/x/sign"));
     assert!(!super::CoreRouteTable::default().signed_ingress("/door/x/sign"));
 }
+
+/// THE AUTH-DENIAL TAP LABEL, WHATEVER THE VERB. v1.5.5 labelled a `rejected_by_auth` response tap
+/// with the dialect it read off the PATH alone (`crates/busbar/src/auth/mod.rs:1166-1167` at
+/// v1.5.5: `unauthorized_with_completion_taps` takes `proto_for_path(path)`), so an OPTIONS or HEAD
+/// at a dialect's path was tapped under that dialect, exactly as its POST was. The label is computed
+/// with no verb and no door route in hand ([`crate::ingress::native::labelled_dialect`]), so the
+/// request's verb (the closure's second argument) cannot reach it. RED arm (the door-route label
+/// this replaces): HEAD was read as GET, and took a wildcard `GET` route's dialect for a path a
+/// `POST` route names.
+#[test]
+fn an_auth_denial_is_tapped_under_the_paths_dialect_whatever_the_verb() {
+    use crate::ingress::native::{labelled_dialect, PathDialects};
+    use crate::plane_driver::claims::Ingress;
+    use std::sync::Arc;
+    let dialects = PathDialects {
+        claimed: Arc::new(|path: &str| (path == "/v1/messages").then_some("messages")),
+        residual: Some("residual"),
+    };
+    let at = |path: &str, _method: axum::http::Method| {
+        labelled_dialect(Ingress::Fallback, path, Some(&dialects))
+    };
+    // The verbs a door route takes: the path's own dialect.
+    assert_eq!(
+        at("/v1/messages", axum::http::Method::POST),
+        Some("messages")
+    );
+    assert_eq!(at("/elsewhere", axum::http::Method::GET), Some("residual"));
+    // The verbs no door route takes: still the path's own dialect.
+    for method in [axum::http::Method::OPTIONS, axum::http::Method::HEAD] {
+        assert_eq!(
+            at("/v1/messages", method.clone()),
+            Some("messages"),
+            "{method}"
+        );
+        assert_eq!(
+            at("/elsewhere", method.clone()),
+            Some("residual"),
+            "{method}"
+        );
+    }
+    // No path dialects installed: no dialect.
+    assert_eq!(
+        labelled_dialect(Ingress::Fallback, "/v1/messages", None),
+        None
+    );
+}

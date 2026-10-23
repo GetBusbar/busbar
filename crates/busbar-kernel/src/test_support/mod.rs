@@ -685,14 +685,14 @@ impl LaneSpec {
     /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `PlaneBuildInput` to the
     /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
     /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
-    fn to_lane_input(&self) -> busbar_kernel::plane_host::LaneInput {
+    fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
-            None => busbar_kernel::plane_host::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_host::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_host::AuthStyleInput::Bearer,
+            None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
+            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
+            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
             Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
         };
-        busbar_kernel::plane_host::LaneInput {
+        busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
             protocol: self.protocol.to_string(),
@@ -715,24 +715,23 @@ impl LaneSpec {
             token_userinfo: None,
             subject: None,
             error_map: self.error_map.clone(),
-            health: self
-                .health
-                .as_ref()
-                .map(|h| busbar_kernel::plane_host::HealthInput {
+            health: self.health.as_ref().map(|h| {
+                busbar_kernel::plane_driver::route_input::HealthInput {
                     mode: match h.mode {
                         crate::config::HealthMode::None => {
-                            busbar_kernel::plane_host::HealthModeInput::None
+                            busbar_kernel::plane_driver::route_input::HealthModeInput::None
                         }
                         crate::config::HealthMode::Dead => {
-                            busbar_kernel::plane_host::HealthModeInput::Dead
+                            busbar_kernel::plane_driver::route_input::HealthModeInput::Dead
                         }
                         crate::config::HealthMode::Active => {
-                            busbar_kernel::plane_host::HealthModeInput::Active
+                            busbar_kernel::plane_driver::route_input::HealthModeInput::Active
                         }
                     },
                     interval_secs: h.interval_secs,
                     timeout_secs: h.timeout_secs,
-                }),
+                }
+            }),
             allow_metadata_hosts: Vec::new(),
             context_max: self.context_max,
             lane_default_max_tokens: self.default_max_tokens,
@@ -797,13 +796,13 @@ pub type BuiltApp = crate::state::App;
 
 /// The default runtime of the plane that owns the tool-server section, for the current build
 /// surface: this crate's own `cfg(test)` binary seeds the registry's placeholder
-/// (`plane::registry::default_section_plane_test_runtime`, an empty value). An external
+/// (`plane_driver::doors::default_section_plane_test_runtime`, an empty value). An external
 /// `test-support` build seeds none; a test that registers that plane installs its own runtime. (A registration slot an
 /// external consumer could fill once stood here; nothing ever filled it, and a static fn-pointer
 /// seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    Some(crate::plane::registry::default_section_plane_test_runtime())
+    Some(crate::plane_driver::doors::default_section_plane_test_runtime())
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
@@ -828,7 +827,7 @@ pub struct TestApp {
     admin_modules: Option<crate::auth::AdminAuthChain>,
     /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
     /// drives `GET /auth/token` populates this with a test login module.
-    login_methods: Option<crate::auth::token::LoginMethods>,
+    login_methods: Option<crate::auth::login::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
     /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
@@ -847,7 +846,6 @@ pub struct TestApp {
     mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
-    failover_cfg: Option<crate::config::FailoverCfg>,
     /// Per-pool NEUTRAL overrides the `PoolInput` carrier fields the fixture assembles: the pool's
     /// own `failover:` / `affinity:` / resolved `breaker:` / `upstream_credentials:` override, plus its
     /// per-member `(tier, cost_per_mtok, tags)` routing metadata. Keyed by pool name; absent ⇒ the
@@ -855,7 +853,8 @@ pub struct TestApp {
     /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
     pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
     pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
-    pool_breaker: std::collections::HashMap<String, busbar_kernel::plane_host::BreakerInput>,
+    pool_breaker:
+        std::collections::HashMap<String, busbar_kernel::plane_driver::route_input::BreakerInput>,
     pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
     #[allow(clippy::type_complexity)]
     pool_member_meta: std::collections::HashMap<
@@ -879,11 +878,6 @@ pub struct TestApp {
     >,
     /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
     upstream_credentials: crate::auth::UpstreamCreds,
-    /// The operator's `limits.upstream_request_timeout_secs`, as the built plane's client settings
-    /// carry it. Zero is the historical stamp and means "leave it to the send site's floor"; a test
-    /// that wants the deadline to fire at a NAMED second sets it with
-    /// [`TestApp::upstream_request_timeout_secs`].
-    upstream_request_timeout_secs: u64,
     fallback_pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
@@ -927,7 +921,7 @@ pub struct TestApp {
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
     /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
-    plane_dispatch: crate::plane::PlaneDispatch,
+    plane_dispatch: crate::plane_driver::claims::PlaneDispatch,
     /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
     /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
     /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
@@ -978,7 +972,6 @@ impl TestApp {
         Self {
             plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
-            upstream_request_timeout_secs: 0,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
             auth: None,
@@ -992,7 +985,6 @@ impl TestApp {
             mint_policy: None,
             governance: None,
             cost: None,
-            failover_cfg: None,
             pool_failover: std::collections::HashMap::new(),
             pool_affinity: std::collections::HashMap::new(),
             pool_breaker: std::collections::HashMap::new(),
@@ -1021,7 +1013,7 @@ impl TestApp {
             disk_paths: None,
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
-            plane_dispatch: crate::plane::PlaneDispatch::default(),
+            plane_dispatch: crate::plane_driver::claims::PlaneDispatch::default(),
             container_hooks: std::collections::BTreeMap::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
@@ -1058,7 +1050,7 @@ impl TestApp {
     pub fn admit_plane(
         &mut self,
         key: &'static str,
-        admission: busbar_kernel::plane::PlaneAdmission,
+        admission: crate::plane_driver::claims::PlaneAdmission,
     ) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
         self.plane_dispatch = d.admit(key, admission);
@@ -1197,6 +1189,7 @@ impl TestApp {
                 crate::config::pools::CandidatePoolCfg {
                     members: members.iter().map(|m| (*m).to_string()).collect(),
                     repeatable: repeatable.iter().map(|o| (*o).to_string()).collect(),
+                    breaker: None,
                 },
             );
         self
@@ -1212,6 +1205,7 @@ impl TestApp {
                 crate::config::pools::CandidatePoolCfg {
                     members: members.iter().map(|m| (*m).to_string()).collect(),
                     repeatable: Vec::new(),
+                    breaker: None,
                 },
             );
         self
@@ -1260,16 +1254,6 @@ impl TestApp {
     /// overrides go on the pool's own `PoolRuntime` (see `.pool_runtime(...)`).
     pub fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
         self.upstream_credentials = uc;
-        self
-    }
-    /// Set the operator's `limits.upstream_request_timeout_secs` on the built plane.
-    ///
-    /// The fixture's historical stamp is 0, which the send site raises to its one-second floor, so a
-    /// deadline that fired at the FLOOR and a deadline that read the operator's number were
-    /// indistinguishable on this harness. A test that means to prove the deadline fires at the
-    /// CONFIGURED second names one here.
-    pub fn upstream_request_timeout_secs(mut self, secs: u64) -> Self {
-        self.upstream_request_timeout_secs = secs;
         self
     }
     /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
@@ -1360,12 +1344,12 @@ impl TestApp {
     ) -> Self {
         let lm = self
             .login_methods
-            .get_or_insert_with(|| crate::auth::token::LoginMethods {
+            .get_or_insert_with(|| crate::auth::login::LoginMethods {
                 methods: indexmap::IndexMap::new(),
             });
         lm.methods.insert(
             name.to_string(),
-            crate::auth::token::LoginMethod {
+            crate::auth::login::LoginMethod {
                 module: calls,
                 has_button,
                 issuer: None,
@@ -1466,10 +1450,6 @@ impl TestApp {
         g: std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
-    }
-    pub fn failover(mut self, f: crate::config::FailoverCfg) -> Self {
-        self.failover_cfg = Some(f);
-        self
     }
     /// Set a pool's own `failover:` override (deadline / exclusions / hop cap) — the granular successor
     /// to the former `.pool_runtime(PoolRuntime{ failover: … })` (the fixture is plane-agnostic now, so
@@ -1612,11 +1592,11 @@ impl TestApp {
         // `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture that
         // installed the plane's runtime keeps it; otherwise, in THIS crate's own `cfg(test)` binary,
         // the slot gets the registry's placeholder (`seeded_section_plane_runtime`: an empty value,
-        // `plane::registry::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
+        // `plane_driver::doors::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
         // build seeds none. With no plane registered for the section, nothing is seeded. The decl
         // key comes from the registry, never spelled as a literal.
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+        if let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = seeded_section_plane_runtime() {
@@ -1651,7 +1631,7 @@ impl TestApp {
             &ts_pools,
             &ts_by_model,
             |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-            crate::plane::fallback_key(),
+            crate::plane_driver::doors::fallback_key(),
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
@@ -1662,13 +1642,13 @@ impl TestApp {
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
         // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
-        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
+        // resolved decl ([`crate::plane_driver::doors::fallback_decl`]), never from `fallback_key()`: that degrades to
         // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
         // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
         // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
         // registers and a decl read after it named two different planes — the LLM runtime then landed
         // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
-        let fallback = crate::plane::fallback_decl();
+        let fallback = crate::plane_driver::doors::fallback_decl();
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
@@ -1678,14 +1658,12 @@ impl TestApp {
         // (a door plane), and reads the empty default when no fallback plane is registered.
         let mut config_tables =
             std::sync::Arc::<busbar_kernel::plane_driver::route_tables::ConfigTables>::default();
-        if let Some(decl) = fallback {
-            // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
-            // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
-            // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
-            // lowering production runs (egress targets, credentials, upstream client, probe schedule).
+        if fallback.is_some() {
+            // Assemble the neutral lane and pool rows exactly as production `appbuild` does, and build
+            // the kernel's own route tables over them.
             let member_input = |pool: &str, idx: usize, weight: u32| {
                 let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
-                busbar_kernel::plane_host::PoolMemberInput {
+                busbar_kernel::plane_driver::route_input::PoolMemberInput {
                     model: lane_inputs
                         .get(idx)
                         .map(|l| l.model.clone())
@@ -1706,36 +1684,36 @@ impl TestApp {
             for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
                 pool_map.insert(name.clone(), members.clone());
             }
-            let pool_inputs: Vec<busbar_kernel::plane_host::PoolInput> = pool_map
+            let pool_inputs: Vec<busbar_kernel::plane_driver::route_input::PoolInput> = pool_map
                 .into_iter()
-                .map(|(name, members)| busbar_kernel::plane_host::PoolInput {
+                .map(|(name, members)| busbar_kernel::plane_driver::route_input::PoolInput {
                     members: members
                         .iter()
                         .map(|(idx, w)| member_input(&name, *idx, *w))
                         .collect(),
                     failover: self.pool_failover.get(&name).map(|f| {
-                        busbar_kernel::plane_host::FailoverInput {
+                        busbar_kernel::plane_driver::route_input::FailoverInput {
                             timeout_secs: f.timeout_secs,
                             exclusions: f.exclusions.clone(),
                             max_hops: f.max_hops,
                         }
                     }),
                     affinity: self.pool_affinity.get(&name).map(|a| {
-                        busbar_kernel::plane_host::AffinityInput {
+                        busbar_kernel::plane_driver::route_input::AffinityInput {
                             header_name: a.header_name.clone(),
                         }
                     }),
                     on_exhausted: match self.on_exhausted_cfgs.get(&name) {
                         Some(crate::config::OnExhausted::FallbackPool(p)) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::FallbackPool(p.clone())
+                            busbar_kernel::plane_driver::route_input::OnExhaustedInput::FallbackPool(p.clone())
                         }
                         Some(crate::config::OnExhausted::LeastBad) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::LeastBad
+                            busbar_kernel::plane_driver::route_input::OnExhaustedInput::LeastBad
                         }
                         Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::Queue { max_ms: *max_ms }
+                            busbar_kernel::plane_driver::route_input::OnExhaustedInput::Queue { max_ms: *max_ms }
                         }
-                        _ => busbar_kernel::plane_host::OnExhaustedInput::Status503,
+                        _ => busbar_kernel::plane_driver::route_input::OnExhaustedInput::Status503,
                     },
                     upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
                     breaker: self.pool_breaker.get(&name).cloned(),
@@ -1749,51 +1727,6 @@ impl TestApp {
                     &by_model,
                     self.upstream_credentials,
                 ));
-            let default_failover = self
-                .failover_cfg
-                .as_ref()
-                .map(|f| busbar_kernel::plane_host::FailoverInput {
-                    timeout_secs: f.timeout_secs,
-                    exclusions: f.exclusions.clone(),
-                    max_hops: f.max_hops,
-                })
-                .unwrap_or(busbar_kernel::plane_host::FailoverInput {
-                    timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-                    exclusions: None,
-                    max_hops: crate::config::DEFAULT_FAILOVER_CAP,
-                });
-            let build_input = busbar_kernel::plane_host::PlaneBuildInput {
-                lanes: lane_inputs,
-                pools: pool_inputs,
-                upstream_credentials: self.upstream_credentials,
-                allow_metadata_hosts: Vec::new(),
-                allow_all_metadata: false,
-                blocked_metadata_hosts: Vec::new(),
-                client_settings: busbar_kernel::plane_host::ClientSettingsInput {
-                    upstream_request_timeout_secs: self.upstream_request_timeout_secs,
-                    pool_max_idle_per_host: 4,
-                    pool_idle_timeout_secs: 300,
-                    http1_only: false,
-                    h2_prior_knowledge: false,
-                },
-                // Byte-identical to the prior `TestApp` stamp of `App::default_max_tokens` /
-                // `App::reasoning_effort_budgets` (the LLM plane now carries these in its runtime).
-                global_default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
-                reasoning_budgets: [1024, 4096, 8192, 16384],
-                default_failover: Some(default_failover),
-                // The test build's auth axis: the kind-neutral outbound double
-                // (`test_support::outbound_auth`), so a lane's credential binds without naming a
-                // plugin.
-                auths: Some(busbar_kernel::plane_host::AuthReach(
-                    crate::test_support::outbound_auth::axis(),
-                )),
-            };
-            // A fallback plane that contributes no runtime of its own (a door plane) is read through
-            // the kernel's own tables above.
-            if let Some(build_runtime) = decl.build_runtime {
-                let slot = build_runtime(&build_input as &dyn std::any::Any, None);
-                plane_slots.insert(fallback_runtime_key, slot);
-            }
         }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
@@ -1829,7 +1762,9 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) =
+                    crate::plane_driver::doors::plane_decl_for_config_section(section)
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1845,6 +1780,21 @@ impl TestApp {
                     m.insert(decl.key, gates);
                 }
             }
+            // Every other plane a test-kit attached hooks for (a door plane's section-level
+            // `hooks:`, keyed by its registry key), resolved the same way.
+            for (&key, (containers, section_hooks)) in &self.container_hooks {
+                if m.contains_key(key) {
+                    continue;
+                }
+                let gates = crate::hooks::resolve_container_gates(
+                    containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
+                    section_hooks,
+                    &self.hook_registry,
+                    &hook_env,
+                    0,
+                );
+                m.insert(key, gates);
+            }
             m
         };
         // THE TAP twin of `plane_gates_map`, resolved the same way from the same per-plane container
@@ -1856,7 +1806,9 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) =
+                    crate::plane_driver::doors::plane_decl_for_config_section(section)
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1871,6 +1823,19 @@ impl TestApp {
                     );
                     m.insert(decl.key, rewrites);
                 }
+            }
+            for (&key, (containers, section_hooks)) in &self.container_hooks {
+                if m.contains_key(key) {
+                    continue;
+                }
+                let rewrites = crate::hooks::resolve_container_rewrites(
+                    containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
+                    section_hooks,
+                    &self.hook_registry,
+                    &hook_env,
+                    0,
+                );
+                m.insert(key, rewrites);
             }
             m
         };
@@ -1896,6 +1861,8 @@ impl TestApp {
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
+            // A hand-built generation publishes no limits: a test's own posture stays in force.
+            limits: None,
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
             // Each plane's pools under its decl key — resolved from the registry, never spelled as a
@@ -1905,7 +1872,7 @@ impl TestApp {
                 .plane_pools_by_section
                 .into_iter()
                 .filter_map(|(section, pools)| {
-                    crate::plane::registry::plane_decl_for_config_section(section)
+                    crate::plane_driver::doors::plane_decl_for_config_section(section)
                         .map(|decl| (decl.key, pools))
                 })
                 .collect(),
@@ -1956,7 +1923,7 @@ impl TestApp {
             },
             login_methods: std::sync::Arc::new(
                 self.login_methods
-                    .unwrap_or_else(crate::auth::token::LoginMethods::empty),
+                    .unwrap_or_else(crate::auth::login::LoginMethods::empty),
             ),
             public_url: self.public_url,
             // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /

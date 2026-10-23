@@ -8,7 +8,7 @@
 //! A `(session, owner) → opaque slot` store: core owns the **identity, lifecycle, TTL, eviction and
 //! bound**; each **owner** — the neutral gate, or a plane — writes an **opaque** value core never
 //! interprets. This is the *neutral mechanism + opaque payload* pattern applied to per-session state,
-//! exactly like [`crate::plane`]'s type-erased plane slots but keyed by session.
+//! exactly like [`crate::plane_driver::slots`]'s type-erased plane slots but keyed by session.
 //!
 //! It is core (not any one plane's feature) by the decision rule — **two or more planes need it:** a
 //! plane's cache-affinity and the gate's incremental-scan want an ephemeral per-session set; another

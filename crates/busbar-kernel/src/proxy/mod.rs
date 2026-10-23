@@ -5,13 +5,7 @@
 // content flattening. That second implementation is gone: the hook projection reads the IR the
 // protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
 // request SAYS any more.
-// The NEUTRAL proxy vocabulary that stays in core once a plane's engine moved out to its own crate.
-// Core's own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
-// engine names them across the crate boundary as `busbar_kernel::proxy::*`.
-pub mod proxy_vocab;
-pub use proxy_vocab::{
-    gate_rejected, max_upstream_buffered_bytes, read_capped, GateRejected, ReadEnd, StageShape,
-};
+// The stage taps (`StageShape`, the fan-out, the bounded spawn) are the hook kind's: `crate::hooks::taps`.
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
 // cross-protocol semantics; the engine is operation-blind. Precedence unit tests drive the IR method.
@@ -58,7 +52,7 @@ pub use busbar_kernel::egress::engine::{
 // The infallible per-lane egress-client shim now lives in the neutral substrate
 // (`busbar_kernel::proxy::build_egress_client`) so a plane crate builds its egress client without
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
-// call sites (`preflight`, `auth::token`).
+// call sites (`preflight`, `auth::login`).
 
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /
@@ -130,7 +124,7 @@ pub fn route_policy_headers_enabled() -> bool {
 }
 
 /// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
-/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
+/// (the default): the prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
 /// operator sets via `limits.hook_content_max_bytes`. Lives HERE so the plane's hook-projection
 /// enforcer names the ceiling without reaching into `busbar-core`; core's `proxy` re-exports it.
 pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
@@ -155,24 +149,9 @@ pub fn hook_content_max_bytes() -> usize {
 
 /// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
 /// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
-/// and neutral so it survives every LLM dialect being dropped from the build.
+/// and neutral so it survives every provider dialect being dropped from the build.
 pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
-}
-
-/// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
-/// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind` (which replaced the
-/// `ProtocolWriter` vtable method). `BedrockWriter` resolves to (403, "auth"); `GeminiWriter` to (400,
-/// "invalid_request_error"); every other dialect and an unknown/dropped protocol fall back to the
-/// default (401, [`KIND_AUTHENTICATION`]) so the request path stays panic-free. Neutral: reads only the
-/// protocol registry, so it survives every LLM dialect being dropped from the build.
-pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
-        .and_then(|d| {
-            let (status, kind) = d.auth_failure_status_and_kind;
-            Some((http::StatusCode::from_u16(status).ok()?, kind))
-        })
-        .unwrap_or((http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
 }
 
 tokio::task_local! {
@@ -199,48 +178,25 @@ pub fn build_egress_client(
         .expect("the base egress engine posture has no failing build arm")
 }
 
-// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────
-// The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
-// fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
-// the retired engine crate shapes an ingress error through the neutral ABI rather than reaching BACK into
-// `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
-// resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
-// being dropped with the the retired engine crate plane. `busbar-core` re-exports both at their historical
-// `busbar_kernel::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
-// unchanged.
+// ── THE KERNEL'S OWN ERROR ANSWER ──────────────────────────────────────────────────────────────
+// The kernel speaks no dialect (spec Part 1, Law 5: dialects are internal to their plane; Part 3
+// section 12: a plane renders its own refusals through its door). What the kernel answers itself, on
+// a path no plane renders for, is its own neutral envelope.
 
-/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
-/// response, attaching the protocol-appropriate headers via the resolved writer vtable. When `ingress`
-/// resolves to no protocol the body is the neutral `agnostic_error_envelope` and no protocol headers
-/// are attached — the shape that survives every LLM dialect being dropped with the the retired engine crate plane.
+/// THE KERNEL'S OWN ERROR ANSWER: `(status, kind, msg)` as the neutral [`agnostic_error_envelope`],
+/// `application/json`, at `status`, with no header of any dialect's. A plane that words a refusal in
+/// its own dialect renders it through its door; this is the answer where none does.
 pub fn ingress_error(
-    ingress: &str,
     status: axum::http::StatusCode,
     kind: &str,
     msg: &str,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
-    let envelope = match &dialect {
-        Some(di) => di.write_error(crate::proto::CODEC_HOST, status.as_u16(), kind, msg),
-        None => agnostic_error_envelope(kind, msg),
-    };
-    let body = crate::json::to_string(&envelope)
-        .unwrap_or_else(|_| agnostic_error_envelope(kind, msg).to_string());
-    let mut resp = axum::response::Response::builder()
+    let envelope = agnostic_error_envelope(kind, msg);
+    let body = crate::json::to_string(&envelope).unwrap_or_else(|_| envelope.to_string());
+    axum::response::Response::builder()
         .status(status)
         .header(axum::http::header::CONTENT_TYPE, APPLICATION_JSON)
         .body(axum::body::Body::from(body))
-        .unwrap_or_else(|_| status.into_response());
-    if let Some(di) = &dialect {
-        for (name, value) in di.error_response_fields(crate::proto::CODEC_HOST, kind, &envelope) {
-            if let (Ok(n), Ok(v)) = (
-                axum::http::HeaderName::from_bytes(name.as_bytes()),
-                axum::http::HeaderValue::from_bytes(&value),
-            ) {
-                resp.headers_mut().insert(n, v);
-            }
-        }
-    }
-    resp
+        .unwrap_or_else(|_| status.into_response())
 }

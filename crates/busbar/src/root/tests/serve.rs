@@ -820,9 +820,9 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
 
 /// THE SERVE PATH NAMES NO STREAM MEDIA TYPE OF ITS OWN (audit R1#4; Law 1, BUSBAR-1.6.0.md l.1895
 /// "Dialects are internal to their plane"): whether an answer that states its length still goes out
-/// piece by piece is read off the declared rows — the event stream the contract names, and the
-/// stream `Content-Type` each declared protocol states on its `ProtocolDecl` row — never off a
-/// dialect's media type spelled here. Every one of them goes out piece by piece, byte for byte as
+/// piece by piece is read off what the planes declare — the event stream the contract names, and
+/// each `stream_media` a plane's `declares` section states (ARCHITECT ruling on the stream-media
+/// carrier, l.246) — never off a dialect's media type spelled here. Every one of them goes out piece by piece, byte for byte as
 /// written. RED before: the root spelled a vendor framing's media type beside the event stream.
 #[tokio::test]
 async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spells_none() {
@@ -833,7 +833,7 @@ async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spell
         "the serve path spells a dialect's stream media type: it must read the declared rows"
     );
     let declared = std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied());
+        .chain(declared_stream_media().iter().map(String::as_str));
     for media in declared {
         let fields: HeadFields = vec![
             (b"content-type".to_vec(), media.as_bytes().to_vec()),

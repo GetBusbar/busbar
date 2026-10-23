@@ -17,7 +17,7 @@
 //! Nothing here asks where a row came from.
 //!
 //! What a plugin STATES about itself (its plane declaration) is contract data; what the kernel RUNS
-//! for it is typed by the kernel's own seams (its plane hooks, protocol declarations, arrivals,
+//! for it is typed by the kernel's own seams (its plane hooks, arrivals,
 //! diagnostics) — the split `PlaneDeclaration` / `PlaneHooks` already has, joined kernel-side by
 //! `PlaneDecl::assemble` in the generated plane table. The kernel defines nothing for this path.
 //!
@@ -28,10 +28,9 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::ingress::arrival::BodyIngressEntry;
-use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::PlaneDeclaration;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::row::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDeclaration;
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -72,10 +71,6 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-    /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
-    /// Body-model arrivals, by protocol name.
-    pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
     /// synthesizer, a stream-translator factory), each set once.
     pub protocol_seams: &'static [fn()],
@@ -100,10 +95,6 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
-    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
-    pub gauntlet_one_shot: &'static [&'static str],
-    pub gauntlet_session: &'static [&'static str],
     /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
     /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
@@ -127,7 +118,7 @@ pub mod node {
     use std::sync::Arc;
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
+    use busbar_kernel::plane_driver::PlaneAnswer;
     use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
@@ -309,24 +300,20 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its body-model arrivals, then each entry's
-/// protocol-axis seams. A dialect whose model rides the URL has no arrival here: its plane's door
-/// claims and serves those paths (ARCHITECT 2026-10-16 ruling 3 item 1). Then the node axis, which
-/// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
-/// through.
+/// THE PROTOCOL AXIS: each entry's protocol-axis seams. No arrival installs anywhere: a plane's door
+/// claims and serves its own paths (ARCHITECT 2026-10-16 ruling 3 item 1), and the kernel keeps no
+/// protocol-keyed arrival table (status row 82, D2). No dialect declaration installs anywhere but as
+/// the path labels an authentication refusal's tap is told ([`path_dialects`]): a plane resolves
+/// its own dialects (spec Part 1, Law 5). Then the node axis: every entry on it is handed the node
+/// a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
-        .protocols
-        .iter()
-        .flat_map(|decls| decls.iter().copied())
-        .collect();
-    busbar_kernel::proto::install_protocols(installed);
-    let body_ingress: Vec<BodyIngressEntry> = linked
-        .body_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
+    match path_dialects(linked) {
+        Ok(dialects) => busbar_kernel::ingress::native::install_path_dialects(dialects),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     for install in linked.protocol_seams {
         install();
     }
@@ -335,6 +322,124 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
             install(drive);
         }
     }
+}
+
+/// THE STREAM MEDIA the root relays piece by piece: the contract's event stream
+/// ([`busbar_contract::protocol::TEXT_EVENT_STREAM`], every host's default) and each `Content-Type`
+/// a loaded plane states under its `declares` section's `stream_media` (ARCHITECT ruling on the
+/// stream-media carrier; BUSBAR-1.6.0.md l.246, l.236: derived from what the plane states, never
+/// spelled by the root, Law 1) — a linked door's in its row's `declares.json`
+/// ([`Linked::plane_door_declares`]), a dropped-in plane's in its signed manifest (`dropped`),
+/// through the one declares reader. Sorted and deduped.
+///
+/// # Errors
+///
+/// A linked door's `declares` section that does not read.
+pub fn stream_media(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> Result<Vec<String>, String> {
+    let mut media = vec![busbar_contract::protocol::TEXT_EVENT_STREAM.to_string()];
+    for (row, _, json) in linked.plane_door_declares {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        media.extend(declares.stream_media);
+    }
+    let plane = |p: &&crate::root::loader::LoadablePlugin| {
+        p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE
+    };
+    for p in dropped
+        .iter()
+        .flat_map(|r| r.loadable().iter())
+        .filter(plane)
+    {
+        media.extend(p.manifest.declares.stream_media.iter().cloned());
+    }
+    media.sort_unstable();
+    media.dedup();
+    Ok(media)
+}
+
+/// The dialect a linked plane door's claims mount `path` under (its facing's claim on exactly that
+/// target, BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): a test's way to
+/// name a dialect a linked plane states without spelling one.
+#[cfg(test)]
+pub fn dialect_for_path(linked: &Linked, path: &str) -> Option<&'static str> {
+    use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+    linked.plane_doors.iter().find_map(|door| {
+        let reg = registration(linked_probe(*door, "dialect-for-path")).ok()?;
+        let facing = (reg.facing)(b"{}", b"", None, &[]).ok()?;
+        facing
+            .claims
+            .into_iter()
+            .find(|(target, _)| target == path)
+            .map(|(_, dialect)| dialect)
+    })
+}
+
+/// THE PATH LABELS an authentication refusal's tap is told
+/// (`busbar_kernel::ingress::native::PathDialects`), read off the path alone as v1.5.5 read it
+/// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path`): every linked plane's
+/// `declares.auth_labels` (ARCHITECT ruling on the tap label: the plane states its own labels,
+/// the root folds them), its rules in the plane's order and the planes in the linked order, the
+/// first rule whose path match holds naming the label; the first plane's `default` labels a path
+/// no rule matches. The root spells no label (Law 1).
+///
+/// # Errors
+///
+/// A linked door's `declares` section that does not read, or a rule that names verbs: the label is
+/// read with no verb in hand.
+pub fn path_dialects(
+    linked: &Linked,
+) -> Result<busbar_kernel::ingress::native::PathDialects, String> {
+    let mut rules: Vec<(crate::root::loader::sign::PathMatch, &'static str)> = Vec::new();
+    let mut residual: Option<&'static str> = None;
+    let mut names = busbar_kernel::Registration::new();
+    let mut label_of = |row: &str, label: &str| {
+        names.key(label).ok_or_else(|| {
+            format!(
+                "plugin '{row}' states the `auth_labels` label `{label}`, which the vocabulary \
+                 cannot take (boot is over, or it is full)"
+            )
+        })
+    };
+    for (row, _, json) in linked.plane_door_declares {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        let Some(labels) = declares.auth_labels else {
+            continue;
+        };
+        for rule in labels.rules {
+            if !rule.methods.is_empty() {
+                return Err(format!(
+                    "plugin '{row}' states an `auth_labels` rule for the verbs {:?}: an \
+                     authentication refusal's label is read off its path alone",
+                    rule.methods
+                ));
+            }
+            rules.push((rule.path, label_of(row, &rule.label)?));
+        }
+        if residual.is_none() {
+            residual = labels
+                .default
+                .as_deref()
+                .map(|label| label_of(row, label))
+                .transpose()?;
+        }
+    }
+    Ok(busbar_kernel::ingress::native::PathDialects {
+        claimed: Arc::new(move |path: &str| {
+            rules
+                .iter()
+                .find(|(path_match, _)| path_match.matches(path))
+                .map(|(_, label)| *label)
+        }),
+        residual,
+    })
 }
 
 /// THE STORE, AUTH, HOOK AND SECRET AXES: the linked store, auth and hook rows onto the kernel's
@@ -356,6 +461,7 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            secret_admit: Some(crate::root::boot::admit_secrets),
             // The root's card repricer is the kernel's rate holder and dater (the node unit, in
             // every build's root-unit table, arms its journal before the boot resolution:
             // `crate::root::kernel::install_card_repricer`).
@@ -391,7 +497,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
 
 /// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
 /// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
-/// ones each registry build replaces (`root::boot::registry`).
+/// ones each app build and boot's scan replace (`root::boot::admit_secrets`).
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
     std::sync::OnceLock::new();
 
@@ -456,11 +562,18 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 }
 
 /// THE PLANE AXIS: every entry's registry row and every plane door's — linked or dropped in —
-/// installed once. A plane whose declaration the loader will not admit refuses the boot (exit 2)
-/// whichever door it came in by, before any listener binds.
+/// folded into the process's ONE door set and installed once (status row 82, D2: plane registration
+/// is the loader's and the root's; the kernel holds the set only through its [`DoorSet`] handle). A
+/// plane whose declaration the loader will not admit refuses the boot (exit 2) whichever door it
+/// came in by, before any listener binds.
+///
+/// [`DoorSet`]: busbar_kernel::plane_driver::doors::DoorSet
 pub fn register_planes(linked: &Linked) {
     match plane_rows(linked) {
-        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Ok(rows) => {
+            let set: &'static RootDoors = Box::leak(Box::new(RootDoors::fold(&rows)));
+            busbar_kernel::plane_driver::doors::install_doors(set);
+        }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
@@ -468,10 +581,39 @@ pub fn register_planes(linked: &Linked) {
     }
 }
 
+/// THE ROOT'S DOOR SET: the rows [`register_planes`] built, folded once by the kernel's boot fold
+/// (`merged_boot_plane_decls`: ordered, one per key, every owned-config claim checked) and handed to
+/// the kernel through its [`busbar_kernel::plane_driver::doors::DoorSet`] seam. The root owns it; the
+/// kernel reads its rows.
+pub struct RootDoors {
+    /// The folded rows, in layering order.
+    rows: Vec<&'static PlaneDecl>,
+}
+
+impl RootDoors {
+    /// The set `rows` folds to.
+    ///
+    /// # Panics
+    /// A row set two of whose rows claim one config section, or a row claiming a section the
+    /// kernel's config owns: a mis-wired composition, refused at boot (the boot fold's guard).
+    #[must_use]
+    pub fn fold(rows: &[&'static PlaneDecl]) -> Self {
+        Self {
+            rows: busbar_kernel::plane_driver::doors::merged_boot_plane_decls(rows, &[]),
+        }
+    }
+}
+
+impl busbar_kernel::plane_driver::doors::DoorSet for RootDoors {
+    fn rows(&self) -> &[&'static PlaneDecl] {
+        &self.rows
+    }
+}
+
 /// The rows [`register_planes`] installs, in install order: the linked Rust-hook planes with each
-/// linked door's folded row at its manifest place, then the dropped-in doors' rows. The kernel's boot
-/// fold (`merged_boot_plane_decls`) then orders, dedups and claim-checks them without knowing which
-/// door any came in by.
+/// linked door's folded row at its manifest place, then the dropped-in doors' rows. The boot fold
+/// ([`RootDoors::fold`]) then orders, dedups and claim-checks them without knowing which door any
+/// came in by.
 pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
     let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
     // A linked door's folded row goes at its manifest row's place among the linked plane rows (the
@@ -563,12 +705,12 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
         .iter()
         .map(|candidate| {
             let name = candidate.name.clone();
-            let candidate = candidate.clone();
+            let bound = candidate.clone();
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
-                        std::slice::from_ref(&candidate),
+                        std::slice::from_ref(&bound),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),
                         probe.adopter(),
@@ -578,11 +720,11 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                     .into_iter()
                     .next()
                     .map(|(_, plane)| plane)
-                    .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
+                    .ok_or_else(|| format!("{}: the door bound nothing", bound.name))
                 });
             Ok((
                 name,
-                crate::root::loader::dispatch::kinds::plane::registration(bind)?,
+                crate::root::loader::dispatch::kinds::plane::stated_registration(candidate, bind)?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -754,7 +896,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
     busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
-    // `proxy_vocab`'s crate-private constant, spelled here as it renders.
+    // `hooks::taps`' crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
 
@@ -933,7 +1075,11 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
-#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
+// THE OPERATOR CREDENTIAL'S LINKED ROW, judged where it is linked. These cases were gated on a
+// `body-ingress` axis no linked row ever carried, so they never ran; the axis is deleted (status row
+// 82, D2) and they run wherever the operator row is linked, as the design bindings and the shadow
+// oracle's accepted differences that cite them require (Law 10).
+#[cfg(all(test, linked_operator_auth))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 

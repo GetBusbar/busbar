@@ -76,8 +76,15 @@ fn the_declares_file_states_the_catalog() {
         })
         .collect();
     let whole = serde_json::json!({ "needs": ["http"], "diagnostics": want });
+    // The file states more than the catalog (`stream_media`, the plane's relayed media, and
+    // `auth_labels`, its refusal taps' labels): the catalog half is its `needs` and `diagnostics`,
+    // and that half is what must equal the catalog.
+    let declared_catalog = serde_json::json!({
+        "needs": declared["needs"],
+        "diagnostics": declared["diagnostics"],
+    });
     assert_eq!(
-        declared,
+        declared_catalog,
         whole,
         "declares.json drifted from the catalog; expected:\n{}",
         serde_json::to_string_pretty(&whole).unwrap()

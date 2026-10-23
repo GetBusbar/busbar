@@ -10,7 +10,7 @@ use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
-use crate::plane::registry::plane_decl_for;
+use crate::plane_driver::doors::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
@@ -329,8 +329,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
-    for decl in crate::plane::registry::plane_decls()
+    let mut known_protocols: Vec<&str> = crate::plane_driver::doors::provider_dialects();
+    for decl in crate::plane_driver::doors::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
@@ -440,69 +440,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // produce a breaker that either never protects the backend or trips it open on the first
         // hiccup, defeating the failure-handling guarantee. Reject them at startup (fail-loud).
         if let Some(breaker) = &pool_cfg.breaker {
-            // A `base_cooldown_secs: 0` or `max_cooldown_secs: 0` parses fine but yields a degenerate
-            // breaker with NO cooldown: when the breaker trips open it would re-admit the failing
-            // backend immediately (the cooldown window is zero seconds), defeating the back-off the
-            // breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-floor
-            // guards below (min_requests/window_s/n >= 1) — reject a zero floor on EITHER cooldown
-            // field at boot rather than ship a breaker that never actually pauses the backend. (The
-            // inversion check below additionally requires max >= base; the two together pin both
-            // fields to >= 1 with max >= base.)
-            if breaker.base_cooldown_secs == 0 {
-                errors.push(format!(
-                    "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-                ));
-            }
-            if breaker.max_cooldown_secs == 0 {
-                errors.push(format!(
-                    "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-                ));
-            }
-            // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
-            // pin every cooldown below the configured base — reject the inversion.
-            if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
-                errors.push(format!(
-                    "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
-                    pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
-                ));
-            }
-            if let Some(trip) = &breaker.trip {
-                // min_requests is the floor below which error-rate trips are suppressed; 0 makes the
-                // floor vacuous so a single error in an otherwise-empty window can trip.
-                if trip.min_requests == 0 {
-                    errors.push(format!(
-                        "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
-                    ));
-                }
-                // window_s is the sliding-window length; a 0 window holds no outcomes so the
-                // count is always below min_requests and the error-rate breaker never trips.
-                if trip.window_secs == 0 {
-                    errors.push(format!(
-                        "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
-                    ));
-                }
-                match trip.mode {
-                    crate::config::BreakerTripMode::ErrorRate => {
-                        // threshold is an error-rate fraction; the rate is capped at 1.0, so a
-                        // threshold > 1.0 can never trip and <= 0.0 trips on the first error.
-                        if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
-                            errors.push(format!(
-                                "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
-                                pool_name, trip.threshold
-                            ));
-                        }
-                    }
-                    crate::config::BreakerTripMode::Consecutive => {
-                        // n is the consecutive-failure streak length; n == 0 makes `streak >= 0`
-                        // always true so the lane trips on every evaluation.
-                        if trip.consecutive_n == 0 {
-                            errors.push(format!(
-                                "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
-                            ));
-                        }
-                    }
-                }
-            }
+            check_pool_breaker(pool_name, breaker, &mut errors);
         }
 
         // Rule 6b: Validate the per-pool failover budget. `failover.timeout_secs == 0` is the exact
@@ -642,6 +580,16 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     ));
                 }
             }
+        }
+    }
+
+    // Rule 6, EVERY PLANE'S POOLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+    // functionality"): a pool written under another plane's section (`<verb>.pools`) is not in
+    // `pools`, but it carries the same `breaker:` block, so it is held to the same rules in the same
+    // words.
+    for (pool_name, pool_cfg) in cfg.plane_pools.values().flat_map(|pools| pools.iter()) {
+        if let Some(breaker) = &pool_cfg.breaker {
+            check_pool_breaker(pool_name, breaker, &mut errors);
         }
     }
 
@@ -1125,7 +1073,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::plane_driver::doors::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1291,6 +1239,79 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+/// Rule 6, for one pool's `breaker:` block: the pathological-but-parseable values that ship a
+/// breaker which never protects the backend or trips on the first hiccup. One body for every
+/// plane's pools, so a refusal reads the same whichever plane the pool belongs to.
+fn check_pool_breaker(
+    pool_name: &str,
+    breaker: &crate::config::BreakerCfg,
+    errors: &mut Vec<String>,
+) {
+    // A `base_cooldown_secs: 0` or `max_cooldown_secs: 0` parses fine but yields a degenerate
+    // breaker with NO cooldown: when the breaker trips open it would re-admit the failing
+    // backend immediately (the cooldown window is zero seconds), defeating the back-off the
+    // breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-floor
+    // guards below (min_requests/window_s/n >= 1) — reject a zero floor on EITHER cooldown
+    // field at boot rather than ship a breaker that never actually pauses the backend. (The
+    // inversion check below additionally requires max >= base; the two together pin both
+    // fields to >= 1 with max >= base.)
+    if breaker.base_cooldown_secs == 0 {
+        errors.push(format!(
+            "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+        ));
+    }
+    if breaker.max_cooldown_secs == 0 {
+        errors.push(format!(
+            "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+        ));
+    }
+    // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
+    // pin every cooldown below the configured base — reject the inversion.
+    if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
+        errors.push(format!(
+            "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
+            pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
+        ));
+    }
+    if let Some(trip) = &breaker.trip {
+        // min_requests is the floor below which error-rate trips are suppressed; 0 makes the
+        // floor vacuous so a single error in an otherwise-empty window can trip.
+        if trip.min_requests == 0 {
+            errors.push(format!(
+                "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
+            ));
+        }
+        // window_s is the sliding-window length; a 0 window holds no outcomes so the
+        // count is always below min_requests and the error-rate breaker never trips.
+        if trip.window_secs == 0 {
+            errors.push(format!(
+                "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
+            ));
+        }
+        match trip.mode {
+            crate::config::BreakerTripMode::ErrorRate => {
+                // threshold is an error-rate fraction; the rate is capped at 1.0, so a
+                // threshold > 1.0 can never trip and <= 0.0 trips on the first error.
+                if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
+                    errors.push(format!(
+                        "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
+                        pool_name, trip.threshold
+                    ));
+                }
+            }
+            crate::config::BreakerTripMode::Consecutive => {
+                // n is the consecutive-failure streak length; n == 0 makes `streak >= 0`
+                // always true so the lane trips on every evaluation.
+                if trip.consecutive_n == 0 {
+                    errors.push(format!(
+                        "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -1536,7 +1557,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
 /// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
 fn priced_classes(
-    d: &crate::plane::registry::PlaneDecl,
+    d: &crate::plane_driver::row::PlaneDecl,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
@@ -1557,8 +1578,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         for (key, r) in card {
             // `lane` is the whole key on the flat card; empty on a plane card's presence key.
             let (plane, lane) = split_plane_lane(key);
-            let at =
-                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let at = crate::plane_driver::doors::plane_decl_for(plane)
+                .map_or(plane, |d| d.config_section);
             let path = format!(
                 "{at}{}rate_card['{lane}']",
                 if at.is_empty() { "" } else { "." }
@@ -1679,7 +1700,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // units: exactly the classes the plane's lane was priced by before it was served through
         // its door, so a configuration that booted then boots now and an unpriced class still
         // refuses (#42).
-        for d in crate::plane::registry::plane_decls() {
+        for d in crate::plane_driver::doors::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
                 .iter()
@@ -2144,12 +2165,12 @@ fn validate_providers_with(
     // circuit breaker), exactly like the shipped built-in catalog entries that carry none. Only the
     // entries that ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
-        // construction. An unknown protocol used to escape this multi-error collection entirely and
-        // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
-        // config mistakes saw only the first one. Validate it HERE against the single source of
-        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
-        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // The provider's `protocol` names a dialect a plane declares. An unknown protocol used to
+        // escape this multi-error collection entirely and surface as a lone `die()` deep in
+        // `main.rs` (lane build) — so an operator with several config mistakes saw only the first
+        // one. Validate it HERE against the single source of truth (the provider dialects the
+        // registered planes declare, `plane::provider_dialects`) so a bad protocol is collected
+        // alongside every other error.
         // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
         //
         // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time

@@ -318,6 +318,119 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
+    /// THE STREAM MEDIA a plane relays piece by piece (ARCHITECT ruling on the stream-media
+    /// carrier, BUSBAR-1.6.0.md l.246: a structured fact the plane states once): each
+    /// `Content-Type` its replies stream under beyond the contract's event stream
+    /// (`busbar_contract::protocol::TEXT_EVENT_STREAM`, the default every host holds). A reply head
+    /// naming one goes out piece by piece even when it states a length. Left off the wire when
+    /// empty, so every manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stream_media: Vec<String>,
+    /// THE AUTHENTICATION-REFUSAL LABELS a plane states for the paths of its dialects (ARCHITECT
+    /// ruling on the tap label, row 82 D2): the `ingress_protocol` a `rejected_by_auth` response
+    /// tap is told for a request the auth chain refused, read off the path alone, as v1.5.5 read it
+    /// (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path`). Data the root folds into
+    /// the kernel's neutral path labels at link time ([`AuthLabels`]). Left off the wire when
+    /// absent, so every manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_labels: Option<AuthLabels>,
+    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
+    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
+    /// hook is judged and served as every hook before the field existed (it may order); left off
+    /// the wire when absent, so every manifest packed before the field existed keeps its canonical
+    /// bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookDecl>,
+}
+
+/// A plane's AUTHENTICATION-REFUSAL LABELS (`declares.auth_labels`): ordered rules, the first whose
+/// path match holds naming the label, and the label of a path no rule matches.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthLabels {
+    /// The rules, in the order they are tried; the first that matches names the label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<AuthLabelRule>,
+    /// The label of a path no rule matches; `None` names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+/// One AUTHENTICATION-REFUSAL LABEL RULE: a path match, the verbs it holds for, and its label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthLabelRule {
+    /// The paths the rule holds for.
+    pub path: PathMatch,
+    /// The verbs the rule holds for (upper-case HTTP methods); empty holds for any verb.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    /// The label a request the rule holds for is told.
+    pub label: String,
+}
+
+/// A PATH MATCH over a request path, every stated condition holding: `exact` the whole path,
+/// `prefix` its start, `suffix` its end (any one of them), `last_segment_suffix` the end of its
+/// last `/`-separated segment (any one of them). A match that states no condition holds for every
+/// path.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathMatch {
+    /// The whole path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<String>,
+    /// The path's start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// The path's end: any one of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suffix: Vec<String>,
+    /// The end of the path's last `/`-separated segment: any one of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_segment_suffix: Vec<String>,
+}
+
+impl PathMatch {
+    /// Whether every condition this match states holds for `path`.
+    pub fn matches(&self, path: &str) -> bool {
+        let last = path.rsplit('/').next().unwrap_or("");
+        self.exact.as_deref().is_none_or(|e| path == e)
+            && self.prefix.as_deref().is_none_or(|p| path.starts_with(p))
+            && (self.suffix.is_empty() || self.suffix.iter().any(|s| path.ends_with(s.as_str())))
+            && (self.last_segment_suffix.is_empty()
+                || self
+                    .last_segment_suffix
+                    .iter()
+                    .any(|s| last.ends_with(s.as_str())))
+    }
+}
+
+impl AuthLabels {
+    /// The label the first rule that holds for `path` names, whatever the verb; `None` when no rule
+    /// holds (the [`Self::default`] is the caller's to apply).
+    pub fn label(&self, path: &str) -> Option<&str> {
+        self.rules
+            .iter()
+            .find(|r| r.path.matches(path))
+            .map(|r| r.label.as_str())
+    }
+}
+
+/// A hook's declared FACTS (`declares.hook`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDecl {
+    /// Whether the hook's `decide` ever answers an order (PREFER). `false`: it always abstains, the
+    /// conformance suite judges it on abstain-only and fails it if it orders, and the loader refuses
+    /// an order it answers at run. Absent, `true`.
+    #[serde(default = "HookDecl::orders_by_default")]
+    pub orders: bool,
+}
+
+impl HookDecl {
+    const fn orders_by_default() -> bool {
+        true
+    }
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -421,6 +534,15 @@ impl Declares {
             && self.egress.is_default()
             && self.breaker.is_none()
             && !self.disk
+            && self.stream_media.is_empty()
+            && self.auth_labels.is_none()
+            && self.hook.is_none()
+    }
+
+    /// Whether the hook may answer an order: `declares.hook.orders`, `true` when not stated.
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.hook.is_none_or(|h| h.orders)
     }
 }
 
@@ -681,19 +803,22 @@ pub enum RejectKind {
     EgressGrant,
 }
 
-/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
-/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
-/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
-/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
-/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
-pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
+/// provider's allow-list and metadata hosts (a plane's upstreams) and a collector's loopback
+/// plaintext. The connector's default class and the open web are any trusted plugin's (ARCHITECT
+/// ruling EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+///
+/// `operator-infrastructure` is NOT here. §5's egress-class table gives it to "databases, vault,
+/// ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611): its
+/// targets come from operator settings, and the plugins that dial them (a store, a secret service, a
+/// directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an operator's
+/// `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted changes what
+/// 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the default is
+/// 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829, Part 2 #75 l.2276).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 2] = [
     (
         busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
         "provider",
-    ),
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
-        "operator-infrastructure",
     ),
     (
         busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
