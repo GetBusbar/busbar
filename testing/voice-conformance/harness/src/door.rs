@@ -112,7 +112,7 @@ fn at(buf: &[u8], s: Span) -> String {
 /// Keep a line printable: one line, bounded.
 pub fn clip(s: &str) -> String {
     let one: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
-    if one.chars().count() > 360 {
+    if one.chars().count() > 6000 {
         let head: String = one.chars().take(360).collect();
         format!("{head}…")
     } else {
