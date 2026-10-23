@@ -909,6 +909,10 @@ impl WakeRoute for Pool {
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         self.env.inline.waker_of(t)
     }
+
+    fn inline(&self) -> Option<Arc<super::inline::InlineTickets>> {
+        Some(Arc::clone(&self.env.inline))
+    }
 }
 
 impl Pool {
@@ -1985,15 +1989,16 @@ impl Dispatcher {
     ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
+        let services: Arc<ServiceStore> = Arc::default();
         let env = Arc::new(Env {
             budgets: config.budgets,
             quarantine_after: config.quarantine_after.max(1),
             stats: Arc::default(),
-            services: Arc::default(),
+            inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
+            services,
             provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
-            inline: Arc::new(super::inline::InlineTickets::new(ticket_key)),
             observing: Arc::default(),
             ticket_key,
             latch: std::sync::OnceLock::new(),
