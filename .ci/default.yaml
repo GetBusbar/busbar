@@ -327,7 +327,13 @@ checks:
       cargo build --workspace --locked
       cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
       cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+      # D, the three checks no other step ran: the loom models through their xtask command (the
+      # count floor refuses a run of fewer than both models), the transaction compile fence (its
+      # pass condition is a build failure for three named reasons), and the wire locks against
+      # their pinned provider specs (`gate field-inventory` reads only committed files).
+      timeout 3000 cargo xtask loom
+      cargo xtask txn-fence
+      cargo xtask dialect wire all
     baseline: target
     requires: [cc, git-history]
     needs: [gates]

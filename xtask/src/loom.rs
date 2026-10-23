@@ -34,6 +34,12 @@ pub fn ran_count(output: &str) -> u64 {
         .sum()
 }
 
+/// THE COUNT FLOOR: `txn_loom.rs` holds exactly two models, the positive `transaction_never_loses_a_swap`
+/// and its negative control `unsectioned_read_build_swap_loses_an_update`. A run that executed fewer
+/// has lost one of them (the control going missing leaves the positive model unable to fail), so
+/// one is not a pass. Adding a model raises this number in the same change.
+pub const MIN_MODELS: u64 = 2;
+
 /// The run, as one cargo command string (so `gate package-selectors` checks its selectors).
 pub const RUN: &str = "cargo test --release -p busbar -p busbar-kernel --bins --lib --features loom-model txn_loom -- --nocapture";
 
@@ -73,9 +79,9 @@ pub fn main(args: &[String]) -> i32 {
         return out.status.code().unwrap_or(1);
     }
     let ran = ran_count(&text);
-    if ran < 1 {
+    if ran < MIN_MODELS {
         eprintln!(
-            "loom gate VACUOUS: the txn_loom filter matched {ran} test(s) across busbar + busbar-kernel."
+            "loom gate VACUOUS: the txn_loom filter matched {ran} test(s) across busbar + busbar-kernel; the floor is {MIN_MODELS}."
         );
         eprintln!(
             "The models moved or were renamed; point this command at their new home. A green run that"
@@ -89,7 +95,7 @@ pub fn main(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cargo_args, ran_count};
+    use super::{cargo_args, ran_count, MIN_MODELS};
 
     /// THE VACUOUS RUN: a filter that selects nothing exits 0 and prints `0 passed`.
     #[test]
@@ -113,11 +119,21 @@ mod tests {
         );
     }
 
-    /// The floor itself: 0 refused, 1 or more accepted.
+    /// The floor itself: zero and one (a model or its control lost) refused, the full set accepted.
     #[test]
     fn the_floor_discriminates_zero_from_some() {
-        assert!(ran_count("test result: ok. 0 passed; 0 failed\n") < 1);
-        assert!(ran_count("test result: ok. 3 passed; 0 failed\n") >= 1);
+        assert!(ran_count("test result: ok. 0 passed; 0 failed\n") < MIN_MODELS);
+        assert!(ran_count("test result: ok. 1 passed; 0 failed\n") < MIN_MODELS);
+        assert!(ran_count("test result: ok. 2 passed; 0 failed\n") >= MIN_MODELS);
+    }
+
+    /// The floor is the number of `#[test]` models in `txn_loom.rs`, so a model added or removed
+    /// there without moving the floor is red here.
+    #[test]
+    fn the_floor_is_the_models_in_the_loom_file() {
+        let src = include_str!("../../crates/busbar-kernel/src/config/tests/txn_loom.rs");
+        let models = src.matches("#[test]").count() as u64;
+        assert_eq!(models, MIN_MODELS);
     }
 
     #[test]

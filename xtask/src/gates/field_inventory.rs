@@ -19,7 +19,7 @@
 //! | `:artifact-drift` | the generated `qa/field-inventory.json` IS the projection of the locks |
 //!
 //! Whether a committed lock is what its pinned spec generates needs the spec bytes, so that check is
-//! `cargo xtask dialect wire all` (it fetches and verifies through `vendor.sh`). The hand-copied
+//! `cargo xtask dialect wire all` (it fetches and verifies through `vendor.sh`). The `test-gated` check of `.ci/default.yaml` and `.ci/dev.yaml` runs it on every move, so a lock that drifts from its pinned spec is red there. The hand-copied
 //! `qa/field-schemas/*.json` lists this gate used to enumerate from are retired: they listed 412
 //! paths where the specs hold several thousand.
 
