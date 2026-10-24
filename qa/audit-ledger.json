@@ -2422,7 +2422,7 @@
    "paths": [
     "crates/busbar-plane-streaming/src"
    ],
-   "tree_hash": "6bc793bab7be46be669ecb800ff389672b234e8aef9bb704f438febfb7da62f2",
+   "tree_hash": "f3714b891f7225e5be8c89d1e19f1df7737c4bb053e076b49e8810ff48964522",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2434,7 +2434,7 @@
    },
    "report": "The streaming plane now has its own door, but a live session is still re-written rather than relayed: far-end events the model does not cover never reach the caller, a caller's session update is replaced whole, a Gemini tool call arrives twice, and on a barge-in busbar cancels and truncates upstream itself. A caller can override locked instructions per response. The telephony door never sends its locked audio format. A budget cut is told in the REST error shape. The sideband door attaches to no call. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "db408b6e8e49ad5fb3dedf415f5fa66f714a832f",
    "exclude": [
     "crates/busbar-plane-streaming/src/tests"
    ],

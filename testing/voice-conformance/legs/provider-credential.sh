@@ -7,7 +7,7 @@
 # LEG: provider-credential — the plane never holds the realtime provider's credential.
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): every far request the door answers — the mint,
-# the SDP offer, the sideband socket and the Gemini socket — names the declared OUTBOUND need it rides,
+# the SDP offer, the plain realtime socket and the Gemini socket — names the declared OUTBOUND need it rides,
 # under the auth style the kernel binds the provider credential to (`bearer` for OpenAI Realtime,
 # `x-goog-api-key` for Gemini Live) and with the member's address, never a plane config path; no
 # request carries a credential field, and the caller is named only by the kernel's opaque reference.
