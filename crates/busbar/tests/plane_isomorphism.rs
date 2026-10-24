@@ -69,18 +69,10 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
 /// well above zero so a set that quietly lost its rows cannot report isomorphism of nothing).
 const MIN_HOOK_FIELDS: usize = 15;
 
-/// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
-/// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
-/// (not derived) for the same reason `capability_equality.rs` pins its axes: it is the owner's ruling.
-fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
-    common::doctrine_rows("installed")
-        .into_iter()
-        .map(|r| {
-            let cols: &'static [&'static str] = Box::leak(r[1..].to_vec().into_boxed_slice());
-            (r[0], cols)
-        })
-        .collect()
-}
+/// THE INSTALLED-PLANE AXIS, PINNED: how many planes the composition root installs as a `PlaneDecl`
+/// from their own linked entry. It is the owner's ruling, so it is a number a diff must change, not
+/// a count read off the tree.
+const INSTALLED_PLANES: usize = 0;
 
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
 type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
@@ -335,15 +327,16 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15);
     }
-    // The doctrine's installed-plane axis, verbatim: EMPTY. P3 DEL-MCP (ARCHITECT 2026-10-05) and the
-    // door flips after it each took a plane off it, and the deletion of the model plane's retired
-    // engine crate (DEV-GREEN row 83, coordinator ruling 2026-10-18) took the last: every plane is
-    // served through its memory-ABI door alone and installs no PlaneDecl from a linked entry.
-    let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
-    assert!(
-        keys.is_empty(),
-        "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
-    );
+    // The doctrine's installed-plane axis: EMPTY. Each door flip (ARCHITECT 2026-10-05 onward) took a
+    // plane off it, and the deletion of the fallback plane's retired engine crate (DEV-GREEN row 83,
+    // coordinator ruling 2026-10-18) took the last: every plane is served through its memory-ABI door
+    // alone and installs no PlaneDecl from a linked entry.
+    const {
+        assert!(
+            INSTALLED_PLANES == 0,
+            "the installed-plane axis is the owner's ruling; changing it is a doctrine change"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
