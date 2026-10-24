@@ -143,6 +143,13 @@ pub fn xtask_gate_invocations(text: &str) -> Vec<String> {
             if crate::cli::NON_GATE_SUBCOMMANDS.contains(&name) {
                 continue;
             }
+            // A shell expansion (`cargo xtask selftest "$g"`) is a name read at run time, not a call
+            // site a static scan can resolve: the loops that spell it take their names from
+            // `cargo xtask gate --list`, so every name they run is a registered one by construction.
+            let bare = name.trim_start_matches(['"', '\'']);
+            if bare.starts_with('$') || bare.starts_with('`') {
+                continue;
+            }
             if !name.is_empty() && !name.starts_with('-') && !out.iter().any(|n| n == name) {
                 out.push(name.to_string());
             }
