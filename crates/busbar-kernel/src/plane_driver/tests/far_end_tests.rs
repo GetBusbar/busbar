@@ -2119,7 +2119,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
             restricts: vec![Restrict {
                 tags_any: vec!["baa".to_string()],
                 on_empty: crate::config::PolicyOnError::Reject,
-                name: "compliance",
+                name: "compliance".into(),
             }],
             ..Constraint::default()
         },
