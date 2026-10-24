@@ -39,11 +39,10 @@ use serde::Serialize;
 use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
-/// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
-/// outcome | principal)` FRAMED UNDER THIS RECORD'S OWN `scheme` (see [`AuditEntry::scheme`]), and
-/// `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
-/// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
-/// the whole chain; prevention is shipping the log off-box to a SIEM).
+/// HASH-CHAINED for tamper-EVIDENCE: `hash` is the SHA-256 of bytes fixed by this record's own
+/// `scheme` (the recipe is on `hash`), and `prev_hash` is the preceding entry's `hash`. Recomputing
+/// the chain detects any altered/reordered/deleted entry (detection, not prevention; a compromised
+/// host can still rewrite the whole chain; prevention is shipping the log off-box to a SIEM).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuditEntry {
@@ -65,20 +64,27 @@ pub struct AuditEntry {
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).
     pub prev_hash: String,
-    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
-    pub hash: String,
-    /// WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or
-    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.
+    /// The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.
+    /// Integers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.
     ///
-    /// `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed
-    /// simply lacks the key, and an absent tag means exactly scheme 1, because that is what every
-    /// such row actually is — no migration of stored data is required. A FRESH admin record (the
-    /// seam's `admin_suffix`) is sealed under [`AUDIT_SCHEME_PIPE`], so its `hash` is 1.5.5's own,
-    /// whenever its `action`, `resource` and `outcome` carry no `|`, and under
-    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] only when one of them does; the ring's own `link` writes
-    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`]. A verifier reads this straight off the record
-    /// (`ChainedRecord::framing`), so a chain mixing both schemes checks each entry under the rules
-    /// it actually used.
+    /// Scheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`
+    /// (1.5.5's formula).
+    ///
+    /// Scheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,
+    /// `resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed
+    /// by its bytes; `ts` is its 8-byte big-endian value, so its length is 8.
+    pub hash: String,
+    /// WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join) or 2 (length-prefixed fields);
+    /// both are stated on `hash`. A record is sealed under 1 when its `action`, `resource` and
+    /// `outcome` carry no `|`, and under 2 otherwise, so its fields always read back exactly. A
+    /// record without this field is scheme 1. A verifier checks each record under its own scheme.
+    //
+    // `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed
+    // lacks the key, and every such row was sealed under scheme 1, so no stored data migrates. The
+    // durable seam picks the scheme per record (`audit::auditlog::admin_suffix`); the in-process
+    // ring's `link` seals under [`AUDIT_SCHEME_LENGTH_PREFIXED`]. `ChainedRecord::framing` and
+    // `digest_fields` read the tag off the record (Q128 arch u26 #2; #82 (c): the recipe is
+    // published contract a verifier reproduces without the binary).
     #[serde(default = "audit_scheme_default")]
     pub scheme: u8,
     /// TRUE only for entries THIS process appended live (via `record_by` on this ring, or the seam's
@@ -114,10 +120,10 @@ pub struct AuditInput {
 /// such chain.
 const ADMIN_LOG: &str = "admin";
 
-/// Scheme 1: pipe-separated — every entry already on disk, whether its stored tag is explicitly `1`
-/// or simply absent (see [`AuditEntry::scheme`]'s `#[serde(default)]`). Nothing seals a FRESH entry
-/// under this any longer; it exists so an old entry keeps verifying under the exact rules it was
-/// always sealed with.
+/// Scheme 1: pipe-separated, 1.5.5's formula. Every entry already on disk whose stored tag is `1` or
+/// absent (see [`AuditEntry::scheme`]'s `#[serde(default)]`), and every record the durable seam
+/// seals today whose `action`, `resource` and `outcome` carry no `|`
+/// ([`crate::audit::auditlog::admin_suffix`]).
 pub const AUDIT_SCHEME_PIPE: u8 = 1;
 
 /// Scheme 2: length-prefixed content — the framing that makes the split between the caller-supplied
@@ -198,9 +204,10 @@ impl ChainedRecord for AuditEntry {
             hash: String::new(),
             // Reached only from `record_by`: THIS process is appending it live right now.
             recorded_here: true,
-            // EVERY entry built fresh seals under the current scheme -- never caller-chosen
+            // The ring seals every entry it builds under scheme 2 -- never caller-chosen
             // (`AuditInput` carries no scheme field), exactly like `seq`/`prev_hash`/`hash` are
-            // never caller-chosen. Nothing mints scheme 1 going forward.
+            // never caller-chosen. The durable seam, which `GET /audit` serves, picks per record
+            // (`audit::auditlog::admin_suffix`).
             scheme: AUDIT_SCHEME_LENGTH_PREFIXED,
         }
     }

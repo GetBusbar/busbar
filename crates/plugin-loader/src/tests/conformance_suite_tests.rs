@@ -1739,6 +1739,47 @@ fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike
     );
 }
 
+/// THE PUBLISHED SUITE HOLDS A PLUGIN TO WHAT PRODUCTION HOLDS IT TO (docs/design/BUSBAR-1.6.0.md
+/// §2: a compiled-in plugin and a dropped-in one are one contract). `conformance_suite!` reads the
+/// plugin's declares file whichever form names its door, so a hook declaring `hook.orders: false`
+/// is judged on abstain-only under `loaded:` as under `door:`, as the loader refuses its order at
+/// run. RED before: the `loaded:` form never read the declares file, its subject stated nothing,
+/// and a hook that orders passed `both_ways` there.
+#[test]
+fn a_suite_reads_the_declares_file_whichever_form_names_its_door() {
+    let root = std::env::temp_dir().join(format!("declares-forms-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("plugin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("declares.json"), r#"{"hook": {"orders": false}}"#).unwrap();
+    let at = dir.to_str().unwrap();
+    let by_door = crate::conformance_suite!(
+        @subject door: crate::plane_door_plugin::door,
+        manifest_dir: at,
+        cdylib: "plane_door_plugin",
+        inputs: "{}"
+    );
+    let by_loaded = crate::conformance_suite!(
+        @subject loaded: {
+            // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised
+            // door.
+            unsafe { crate::dispatch::LoadedDoor::from_raw(crate::plane_door_plugin::door) }
+        },
+        manifest_dir: at,
+        cdylib: "plane_door_plugin",
+        inputs: "{}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        !by_door.hook_orders(),
+        "the `door:` form reads the declares file"
+    );
+    assert!(
+        !by_loaded.hook_orders(),
+        "the `loaded:` form reads the declares file as the `door:` form does"
+    );
+}
+
 #[test]
 fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
     use crate::dispatch::{rendering_of, rendering_of_loaded, LinkedRow, LoadedDoor};
@@ -1781,4 +1822,35 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
         linked_loaded.linked()[0].door().map(|d| d as usize),
         linked_macro.linked()[0].door().map(|d| d as usize)
     );
+}
+
+/// THE SUITE'S DROPPED LEG LOADS AS PRODUCTION LOADS (THE DESIGN §11.4: one conformance suite runs
+/// the compiled-in build and the dropped-in build through the same table; status row 2: one loading
+/// path). Every production caller loads a dropped plugin from its verified bytes, staged by the
+/// loader's one staging path (`load_dropped_bytes`: a sealed `memfd` on Linux, a private `0700`
+/// copy elsewhere); the suite's dropped leg must run that staging too, never `dlopen` the build
+/// path. RED before: [`super::load`]'s dropped leg called `load_dropped` on the cdylib's path, and
+/// nothing was staged.
+#[test]
+fn the_dropped_leg_loads_the_cdylib_through_the_staging_production_uses() {
+    use super::{dispatcher, load, Leg, Subject};
+    use crate::dispatch::kinds::hook::Hook;
+    use crate::stage::STAGED_HERE;
+    crate::both_ways::example_cdylib("hook_door");
+    let s = Subject::new(
+        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+        "hook_door",
+        "{}",
+    );
+    let d = dispatcher();
+    let before = STAGED_HERE.with(std::cell::Cell::get);
+    let plugin = load::<Hook>(&s, Leg::Dropped, s.bind(&d, "staged-dropped"))
+        .expect("the dropped leg loads the honest library");
+    let staged = STAGED_HERE.with(std::cell::Cell::get) - before;
+    assert_eq!(
+        staged, 1,
+        "the suite's dropped leg staged {staged} library(ies): it opened the build path, not the \
+         verified bytes through the staging every production load runs"
+    );
+    drop(plugin);
 }

@@ -587,6 +587,7 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
         probe_schedule: Arc::clone(&composed.probe_schedule),
         scope_kinds: composed.scope_kinds.clone(),
         clock: Arc::clone(&composed.clock),
+        units: Arc::clone(&composed.units),
     });
     let kept = pools.current().generation;
     let providers = BTreeMap::new();

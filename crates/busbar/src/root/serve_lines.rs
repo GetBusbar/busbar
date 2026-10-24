@@ -370,6 +370,7 @@ where
                 .as_ref()
                 .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
             app: app.load(),
+            consumed_fields: Vec::new(),
         };
         let routes = Arc::clone(&routes);
         let caller = Arc::clone(&caller);
