@@ -42,7 +42,9 @@
     "                     says what the leg does instead. R-16: name a gap, never paper it.",
     "  not-applicable  -- the cell's own state is `not-applicable`, so the leg is owed nothing here.",
     "                     The two states move together: a cell is n/a on both paths or on neither.",
-    "`root_legs` declares the five legs and, per leg, the ledger columns it answers to. root-admin",
+    "`root_legs` declares the legs and, per leg, the ledger columns it answers to and the cargo",
+    "`feature` that compiles it into a build. `dialects` names what a plane speaks inside itself and",
+    "is never a column. root-admin",
     "answers to ZERO columns on purpose (admin is not one of the doctrine's protocol planes); its",
     "root leg is judged by qa/teller-steps.json's cleanliness row 'cleanliness_rows.admin' instead.",
     "The root column's evidence is verified for EXISTENCE by the gate on every build, and",
@@ -75,9 +77,13 @@
     "streaming-client": "busbar's outbound duplex leg: the dialed WSS to the realtime voice provider (OpenAI Realtime / Gemini Live) and the telephony media egress (Twilio g711); one session is pinned to one provider socket for its whole lifetime",
     "streaming-server": "busbar's voice front door: inbound session-open ingress -- the browser sideband WebSocket and the telephony (Twilio) media-stream webhook -- that opens a governed duplex session"
   },
+  "dialects": {
+    "voice": "the streaming plane's dialect (U14): it rides the streaming-client and streaming-server columns and is never a column of its own"
+  },
   "root_legs": {
     "root-llm": {
       "file": "crates/busbar/src/root/tests/serve_tests.rs",
+      "feature": "plane-llm",
       "columns": [
         "llm"
       ],
@@ -85,6 +91,7 @@
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/serve.rs",
+      "feature": "plane-mcp",
       "columns": [
         "mcp-client",
         "mcp-server"
@@ -93,6 +100,7 @@
     },
     "root-a2a": {
       "file": "crates/busbar-plane-a2a/tests/root/mod.rs",
+      "feature": "plane-a2a",
       "columns": [
         "a2a-client",
         "a2a-server"
@@ -101,6 +109,7 @@
     },
     "root-voice": {
       "file": "crates/busbar/src/root/tests/serve_tests.rs",
+      "feature": "plane-streaming",
       "columns": [
         "streaming-client",
         "streaming-server"
@@ -109,11 +118,13 @@
     },
     "root-admin": {
       "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs",
+      "feature": "root-admin",
       "columns": [],
       "note": "the admin plane is NOT one of the doctrine's eight protocol columns -- it carries no protocol and no upstream target -- so it owns no cell in this matrix. Its root leg is judged, step by step, by the cleanliness row 'cleanliness_rows.admin' of qa/teller-steps.json (admin is a cleanliness crate, not a plane, so it carries no 'matrix' row). Zero columns here is that statement, not an omission."
     },
     "root-decisions": {
       "file": "crates/busbar/src/root/serve.rs",
+      "feature": "plane-decisions",
       "columns": [
         "decisions"
       ],
@@ -453,8 +464,8 @@
       "capability": "audit-chain",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/root/tests/plane_node.rs::every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
-      "note": "the llm plane is served through the root's node (Node::answer, plane-llm on the node axis): every unit it answers, served (a dispatched completion) or refused (a body the arrival step cannot read), seals ONE record on the node's audit chain (busbar-kernel-audit, journalled as audit.v4 on the node's book), the second the first's successor; the chain walks clean, and a record altered after its seal breaks the walk. This is the node's per-unit chain, not the per-principal request chain proxy/reqlog.rs kept (deleted by the P2 ruling, escalate.q DEL-REQLOG Q1). Watched red: a node whose Driven::audited drops the audit door's pass (root/plane_node.rs) seals nothing.",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain",
+      "note": "the llm plane served through its door on the data router (the loader's one load, the model-serving walk over the kernel's lane cells, the node's book), in the build CI's test check compiles (linked_driver_proofs): every unit the door answers, served (a dispatched completion) or refused inside the loop (a key whose budget the first unit spent), seals ONE record on the node's audit chain (busbar-kernel-audit), the second the first's successor; the chain walks clean under AuditChain::verify_window, and a record altered after its seal breaks the walk. The node-axis cell this replaces (root/tests/plane_node.rs) compiles under cfg(linked_axis_node), which no CI build enables. Watched red: a door whose audit pass never reaches the node seals nothing.",
       "root": {
         "state": "proven",
         "leg": "root-llm",
