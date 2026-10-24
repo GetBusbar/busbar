@@ -22,6 +22,8 @@ guarded:
   # tree would grade itself (the #1556 review).
   - "bin/oracle"
   - "testing/shadow-oracle/oracle-rust.pin"
+  - "testing/shadow-oracle/accepted-differences.json"
+  - "testing/shadow-oracle/owed-baseline.txt"
   - "testing/shadow-oracle/golden/**"
   # The store-services helper the oracle checks bring the backends up with (sourced: it exports
   # env), and the scripts beside it.
@@ -74,10 +76,9 @@ ratchets:
 on:
   # selftest-1..4 run absolute on dev's head (.ci/dev.yaml, DEV-GREEN) and on demand here: on every
   # lane they were red on dev too, so each train prefix waited on a comparison with dev for them.
-  # TEMPORARY: they return to on.move in the first save after busbar #1421 lands AND ModernCI's
-  # release with queue v2 fix 12 (#2213/#2217) is live on the install.
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
-  manual: [oracle-record, oracle, test-docs-whole, selftest-1, selftest-2, selftest-3, selftest-4]
+  # Back on every move since 2026-10-24 (busbar #1421 landed 03:00Z; busbar-bc GO).
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  manual: [oracle-record, oracle, test-docs-whole]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -90,13 +91,13 @@ env:
   BUSBAR_ORACLE_RELEASE_REF: "151ad095a21819dca97e8bdb3384c3c3eb2eb806"
   BUSBAR_ORACLE_SHA256_LINUX_X86_64: "0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8"
   BUSBAR_ORACLE_SHA256_LINUX_AARCH64: "188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4"
-  BUSBAR_GOLDEN_1_5_5_TREE: "92c7d7f72af5a9e05195817ffa0523c13705c146"
+  BUSBAR_GOLDEN_1_5_5_TREE: "5e33e76f77af35b01674da6dedf37e8dd434602c"
   BUSBAR_ORACLE_CRATE: "busbar-release-oracle"
   BUSBAR_ORACLE_BIN: "busbar-oracle"
   # The trusted judge shim when the target holds no bin/oracle (qa): this commit's, and only if
   # its bin/oracle is this blob (verified against dev 17d824b657; dev's tip has the same blob).
-  BUSBAR_ORACLE_SHIM_COMMIT: "17d824b6576d57492055585bc905aee8a1521fd4"
-  BUSBAR_ORACLE_SHIM_BLOB: "c3cc236f061e3b9e191f50124049bc13ceb4ba4b"
+  BUSBAR_ORACLE_SHIM_COMMIT: "cf589ae412165f7fcaf111d8b2102f04febddf08"
+  BUSBAR_ORACLE_SHIM_BLOB: "9d9bbf99a962b8690efd23429a34008a28ef486a"
   # 0 until #1556 lands and the shim commit above is bumped to it: the oracle reports NOT JUDGED.
   BUSBAR_ORACLE_JUDGE_LIVE: "0"
   ORACLE_TRUST_SH: |
@@ -357,13 +358,15 @@ checks:
       cargo check --release -p busbar --bin busbar --locked
     baseline: target
   test:
-    env_from_run: [MODERNCI_ONLY]
+    env_from_run: [MODERNCI_ONLY, MODERNCI_TO_SHA]
     # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
     # dropped-in plugins the tests dlopen, then one build and one nextest run.
     run: |
       # Offered, not enforced: this check runs the candidate's own code, which calls bin/oracle itself;
       # it gets $BUSBAR_ORACLE_SHIM (the trusted copy) to call instead.
       eval "$ORACLE_TRUST_SH"; oracle_trust || echo "oracle-trust: no trusted shim offered to this check"
+      # Posture tests run real gates under nextest; a base-reading row needs the target (as gates do).
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA"
       _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
