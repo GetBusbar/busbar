@@ -438,6 +438,62 @@ pub fn build(
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
+/// A LINKED TRANSPORT ROW'S IDENTITY, read off its door's Statement and nothing else: the row's
+/// entry is its bare `door` (`BUSBAR-1.6.0.md` A.1, l.3560: the logic crate's only public item), and
+/// a linked row holds that door and reaches the same `'static` table a dropped-in copy does (l.3561),
+/// so its key, its layers and whether it carries a session are what that table states (A.2,
+/// l.3564-3577: the name, the claims and the kind tail), read by the one reader a load reads them by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowFacts {
+    /// The row's registry key: the door's own claim (its first), which is its Statement's name.
+    pub key: &'static str,
+    /// The layers its transport tail states it composes over (`TransportTail::composes_over`).
+    pub composes_over: Vec<&'static str>,
+    /// Whether a claim it answers carries a session (a claim row whose `session` is set).
+    pub session: bool,
+}
+
+/// [`RowFacts`] of a linked row's `door`, or the refusal: the door, its Statement or its tail is
+/// refused by the loader's checks, it claims no scheme, or its own claim is not its Statement's name
+/// (a row keyed by one and named by the other would register under a key no dropped-in copy of the
+/// same door answers to).
+///
+/// # Errors
+///
+/// The refusal, in words naming both spellings where they differ.
+pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
+    let facts = super::loader::dispatch::kinds::transport::linked_facts(door)?;
+    let Some(&key) = facts.claims.first() else {
+        return Err(format!(
+            "the transport door `{}` claims no scheme: a linked row's key is its door's own claim",
+            facts.name
+        ));
+    };
+    if key != facts.name {
+        return Err(format!(
+            "the transport door's Statement is named `{}` but its own claim (its first) is `{key}`: \
+             a linked row's key is its door's own claim, and the two must be one",
+            facts.name
+        ));
+    }
+    Ok(RowFacts {
+        key,
+        composes_over: facts.composes_over,
+        session: !facts.sessions.is_empty(),
+    })
+}
+
+/// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
+///
+/// # Panics
+///
+/// The build's own door is refused ([`stated_row`]), as [`build`] panics for it: the binary was
+/// built with a broken plugin, which no configuration can repair, so the boot is refused.
+#[must_use]
+pub fn row_facts(door: DoorFn) -> RowFacts {
+    stated_row(door).unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
 /// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
 /// PER PLUGIN: the schemes are its claims). The seal registers each under its own key.
 ///

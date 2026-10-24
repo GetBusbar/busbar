@@ -205,7 +205,8 @@ fn stated(s: &Subject) -> Stated {
     // are `'static` plain data (`abi/mechanism/door.rs`); an auth door's kind tail is an
     // `AuthTail` leading with its `KindTailHead` (`abi/auth/mod.rs`). Each is read unaligned.
     unsafe {
-        let st: *const Statement = std::ptr::addr_of!((*door).statement).read_unaligned();
+        let st: *const Statement =
+            busbar_contract::abi::mechanism::door::Door::read_parts(door).statement;
         assert!(!st.is_null(), "the door states no Statement");
         let st = st.read_unaligned();
         assert!(!st.kind_tail.is_null(), "an auth door states its auth tail");
