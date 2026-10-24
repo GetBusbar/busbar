@@ -351,6 +351,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
+        let name = row.manifest.name.clone();
         let Door::Memory(plugin, sink) = self.load(row, label, true)?;
         let kinds = plugin
             .context::<AuthFacts>()
@@ -367,7 +368,7 @@ impl AuthRows {
             text.as_bytes(),
             secrets,
         )
-        .map_err(|e| format!("auth plugin '{module}': {e}"))?;
+        .map_err(|e| format!("plugin '{name}' open failed: {e}"))?;
         Ok(Arc::new(opened))
     }
 
