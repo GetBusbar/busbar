@@ -840,10 +840,11 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(ct.starts_with("application/json"), "{ct}");
     assert_eq!(body["error"]["code"], "invalid_request");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .is_some_and(|m| m.starts_with("invalid plugin tarball")),
+    // The admission's own refusal, carried through the envelope as it answered it (the root's
+    // admission names an invalid tarball: `root::tests::admin_plugin_admission`).
+    assert_eq!(
+        body["error"]["message"],
+        "a test build has no plugin admission: the composition root's tests prove it",
         "{body}"
     );
     let resp = super::handlers::inspect_plugin(

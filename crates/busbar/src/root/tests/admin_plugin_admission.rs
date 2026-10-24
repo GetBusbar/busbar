@@ -1763,3 +1763,16 @@ async fn test_admin_v1_plugin_install_rejections() {
     let _ = std::fs::remove_dir_all(&dir);
     handle.abort();
 }
+
+/// THE INSPECT OF A BODY THAT IS NO TARBALL is refused as the invalid tarball it is, in the
+/// loader's words (`POST /plugins/inspect`'s 400 `invalid_request`; the admin crate proves the
+/// envelope carries the admission's refusal through).
+#[test]
+fn an_inspect_of_no_tarball_is_refused_as_an_invalid_plugin_tarball() {
+    let Err(Refusal::Validation(why)) =
+        ADMISSION.inspect(b"not a tarball at all", &strict_posture())
+    else {
+        panic!("a body that is no tarball is a validation refusal");
+    };
+    assert!(why.starts_with("invalid plugin tarball"), "{why}");
+}
