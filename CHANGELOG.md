@@ -6,6 +6,22 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **OTLP export headers.** The `otlp` export module takes an optional `settings.headers` map, so you
+  can send traces to hosted backends that authenticate with a header (Langfuse, Honeycomb, Datadog,
+  Axiom, …). Values use `${VAR}` interpolation. An invalid header name or value, a header the
+  exporter owns (`Host`, `Content-Type`, …), or an `Authorization` header together with URL userinfo
+  is a boot error. Admin reads list only the setting's key names. See
+  [configuration.md](docs/configuration.md#export).
+
+### Fixed
+
+- **OTLP trace export now works.** The exporter's HTTP client needs a tokio runtime, but the
+  OpenTelemetry batch processor calls it from its own plain thread. The first export panicked
+  ("there is no reactor running"), so no span was ever delivered. Export requests now run on
+  busbar's runtime.
+
 ## [1.5.5], 2026-08-20
 
 An emergency log-spam hotfix. 1.5.4 is otherwise fine, but if you run Busbar with a durable audit store

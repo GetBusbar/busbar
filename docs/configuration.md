@@ -1236,14 +1236,33 @@ export:
 | `prometheus` | Metrics (PULL) | `buffer_seconds` (**required**), `key_gauge_limit` (default 2000) | Installs the recorder and serves `/metrics` (auth-gated, same rules as `/stats`). At most ONE instance — it owns the one well-known route, so a second is a boot error rather than a silent loss. `buffer_seconds: 0` is a boot error (it would retain nothing while still paying the recording cost); OMIT the instance to turn metrics off. |
 | `request-log-webhook` | Logs (PUSH) | `url` (**required**, `https://`-only), `auth_header: { name, value }`, `max_inflight_deliveries` (default 64), `delivery_timeout_secs` (default 2) | Fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. SSRF-guarded. Drops rather than queues when saturated. Timeout is PER INSTANCE; the in-flight bound is shared across instances and takes the maximum. |
 | `request-log-file` | Logs (PUSH) | `path` (**required**), `rotate_mb` | Appends each request-log line as JSONL. |
-| `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. At most ONE instance (it installs the one process-global tracer subscriber). |
+| `otlp` | Traces | `url` (**required**), `headers` (map, optional) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. At most ONE instance (it installs the one process-global tracer subscriber). |
 
 The whole `export:` block is **restart-to-apply**: edit it in `config.yaml` and apply via a plugin
 reload / restart. It is deliberately NOT part of the single-value `PUT /config/settings` overlay — the
 sinks seed process-global `OnceLock`s (and, for OTLP, a one-shot `tracing_subscriber` init) that a
 live apply structurally cannot re-point.
 
-**OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
+**OTLP authentication.** Hosted backends authenticate with a request header. Set it under `settings.headers` and pull the secret from the environment with `${VAR}`:
+
+```yaml
+export:
+  traces:
+    module: otlp
+    settings:
+      url: "https://api.honeycomb.io/v1/traces"
+      headers:
+        x-honeycomb-team: "${HONEYCOMB_API_KEY}"
+  # Langfuse: Basic auth over base64("<public key>:<secret key>")
+  # traces: { module: otlp, settings: { url: "https://cloud.langfuse.com/api/public/otel/v1/traces",
+  #                                     headers: { Authorization: "Basic ${LANGFUSE_AUTH}" } } }
+```
+
+- For Basic auth you can instead put the credentials in the URL userinfo (`https://user:pass@collector.example.com/…`). Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging. Use one form or the other: an `Authorization` header together with userinfo is a boot error.
+- Header names must be valid HTTP header names. The exporter owns `Host`, `Content-Type`, `Content-Length`, `Content-Encoding`, `Transfer-Encoding` and `Connection`, so setting any of them is a boot error.
+- Values are percent-decoded (OTel convention), so write a literal `%` as `%25`.
+- Header values never appear in logs or admin API reads, which list only the setting's key names.
+- The standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` env vars are also honored (`k1=v1,k2=v2`). They override a config header of the same name and are not validated, so prefer `settings.headers`.
 
 **Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false` — see [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. `busbar --migrate-config` moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
 

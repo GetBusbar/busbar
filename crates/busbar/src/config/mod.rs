@@ -3486,6 +3486,11 @@ pub(crate) struct OtlpSettings {
     /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`) — REQUIRED. When an
     /// `otlp` export instance is present busbar installs an OpenTelemetry tracer + exports spans.
     pub(crate) url: String,
+    /// Extra request headers sent with every export (e.g. `x-honeycomb-team: "${HONEYCOMB_KEY}"`,
+    /// `Authorization: "Bearer ${TOKEN}"`). Values ride the config's `${VAR}` env interpolation, so a
+    /// secret is never stored literally. Validated by [`validate_otlp_headers`].
+    #[serde(default)]
+    pub(crate) headers: std::collections::BTreeMap<String, String>,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
     /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
@@ -3493,6 +3498,59 @@ pub(crate) struct OtlpSettings {
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
     pub(crate) projection: crate::export::projection::Projection,
+}
+
+/// Headers the OTLP exporter owns (or that control framing / the request target). Overriding one
+/// either breaks the export or re-points it away from the SSRF-validated `url`, so each is a boot error.
+const OTLP_RESERVED_HEADERS: &[&str] = &[
+    "host",
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "transfer-encoding",
+    "connection",
+];
+
+/// Validate an `otlp` instance's `headers:` map, pushing one error per bad entry and returning
+/// whether all of them passed. Errors name the HEADER, never its value (values carry secrets). Beyond
+/// parse-ability and [`OTLP_RESERVED_HEADERS`], an `Authorization` header is rejected when the `url`
+/// also carries userinfo: busbar turns userinfo into its own `Authorization: Basic` header, which the
+/// HTTP client inserts AFTER the configured headers — so one of the two would be silently dropped.
+fn validate_otlp_headers(instance: &str, s: &OtlpSettings, errors: &mut Vec<String>) -> bool {
+    let before = errors.len();
+    let url_has_userinfo = reqwest::Url::parse(&s.url)
+        .is_ok_and(|u| !u.username().is_empty() || u.password().is_some());
+
+    for (name, value) in &s.headers {
+        let Ok(header) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else {
+            errors.push(format!(
+                "export.{instance}.settings.headers: '{name}' is not a valid HTTP header name"
+            ));
+            continue;
+        };
+
+        if reqwest::header::HeaderValue::from_str(value).is_err() {
+            errors.push(format!(
+                "export.{instance}.settings.headers.{name}: value is not a valid HTTP header value \
+                 (control characters or non-visible-ASCII bytes)"
+            ));
+        }
+
+        if OTLP_RESERVED_HEADERS.contains(&header.as_str()) {
+            errors.push(format!(
+                "export.{instance}.settings.headers: '{name}' is set by the OTLP exporter itself and \
+                 cannot be overridden"
+            ));
+        }
+
+        if header == reqwest::header::AUTHORIZATION && url_has_userinfo {
+            errors.push(format!(
+                "export.{instance}.settings: both an `{name}` header and URL userinfo are set — they \
+                 are two spellings of the same credential; keep one"
+            ));
+        }
+    }
+    errors.len() == before
 }
 
 /// One `{ name, value }` auth header for a webhook export instance.
@@ -3586,7 +3644,7 @@ pub(crate) fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> Exp
                     continue;
                 }
                 otlp_owner = Some(name);
-                out.otlp = typed!(OtlpSettings);
+                out.otlp = typed!(OtlpSettings).filter(|s| validate_otlp_headers(name, s, errors));
             }
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \

@@ -331,6 +331,80 @@ fn test_otlp_folds_into_an_export_instance() {
     );
 }
 
+/// `otlp` `settings.headers` — the auth surface for header-auth SaaS backends (Honeycomb, Datadog,
+/// Axiom, …). A valid map resolves verbatim; every bad entry is a resolve error naming the HEADER and
+/// never echoing its (secret) value, and drops the instance rather than exporting half-configured.
+#[test]
+fn test_otlp_headers_resolve_and_validate() {
+    fn resolve(settings: &str) -> (Option<crate::config::OtlpSettings>, Vec<String>) {
+        let defs: crate::config::ExportDefs = serde_yaml::from_str(&format!(
+            "traces:\n  module: otlp\n  settings: {settings}\n"
+        ))
+        .expect("otlp instance parses");
+        let mut errors = Vec::new();
+        let otlp = crate::config::resolve_export(&defs, &mut errors).otlp;
+        (otlp, errors)
+    }
+
+    let (otlp, errors) = resolve(
+        r#"{ url: "https://api.honeycomb.io/v1/traces", headers: { x-honeycomb-team: "hc-secret", X-Dataset: busbar } }"#,
+    );
+
+    assert!(errors.is_empty(), "{errors:?}");
+    let headers = otlp.expect("valid headers resolve").headers;
+
+    assert_eq!(
+        headers.get("x-honeycomb-team").map(String::as_str),
+        Some("hc-secret")
+    );
+
+    assert_eq!(headers.get("X-Dataset").map(String::as_str), Some("busbar"));
+
+    // Absent `headers:` stays valid (pre-existing configs are unchanged).
+    let (otlp, errors) = resolve(r#"{ url: "http://localhost:4318/v1/traces" }"#);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(otlp.expect("resolves").headers.is_empty());
+
+    for (settings, needle) in [
+        (
+            r#"{ url: "https://c.example.com", headers: { "bad name": "s3cr3t" } }"#,
+            "bad name",
+        ),
+        (
+            r#"{ url: "https://c.example.com", headers: { x-key: "s3cr3t\n" } }"#,
+            "x-key",
+        ),
+        (
+            r#"{ url: "https://c.example.com", headers: { HOST: "s3cr3t" } }"#,
+            "HOST",
+        ),
+        (
+            r#"{ url: "https://c.example.com", headers: { Content-Type: "s3cr3t" } }"#,
+            "Content-Type",
+        ),
+        (
+            r#"{ url: "https://pk:sk@c.example.com", headers: { Authorization: "s3cr3t" } }"#,
+            "userinfo",
+        ),
+    ] {
+        let (otlp, errors) = resolve(settings);
+        assert!(
+            otlp.is_none(),
+            "invalid headers must drop the instance: {settings}"
+        );
+
+        assert!(
+            errors.iter().any(|e| e.contains(needle)),
+            "{settings}: {errors:?}"
+        );
+
+        assert!(
+            errors.iter().all(|e| !e.contains("s3cr3t")),
+            "header values must never be echoed: {errors:?}"
+        );
+    }
+}
+
 /// 1.5.3 observability→export lift-out: the retired `observability.request_log_webhook_url` and the
 /// top-level `metrics:` block are rejected at parse (`deny_unknown_fields`), and `augment_config_error`
 /// turns the bare serde error into an actionable hint naming the new export home + the migrator — the

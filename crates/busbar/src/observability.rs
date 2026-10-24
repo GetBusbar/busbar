@@ -434,7 +434,7 @@ fn log_levels() -> (
     )
 }
 
-pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
+pub(crate) fn init_logging(otlp: Option<&crate::config::OtlpSettings>) {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::Layer as _;
@@ -447,7 +447,7 @@ pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
     // metadata / an internal service (e.g. `https://169.254.169.254/v1/traces`) is rejected and OTLP
     // left disabled — span data carries key_ids, pool names, and governance decisions, so the export
     // sink must be SSRF-safe (parity with the request-log webhook; loopback collectors are allowed).
-    let validated_otlp = match validate_otlp_endpoint(otlp_endpoint) {
+    let validated_otlp = match validate_otlp_endpoint(otlp.map(|o| o.url.as_str())) {
         Ok(v) => v,
         Err(msg) => {
             eprintln!("busbar: {msg}; disabling OTLP trace export");
@@ -458,7 +458,9 @@ pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
 
     // Build the OTLP exporter/provider BEFORE installing the subscriber, but defer the global
     // side effect (`set_tracer_provider`) until we know the subscriber actually installed.
-    let otel = otlp_endpoint.and_then(build_otlp);
+    let otel = otlp
+        .zip(otlp_endpoint)
+        .and_then(|(o, endpoint)| build_otlp(endpoint, &o.headers));
     // Decompose into the layer (used to build the subscriber) and the provider (installed on
     // success). `Option<Layer>` is itself a `Layer`, so it composes cleanly when absent.
     let (otel_layer, otel_provider) = match otel {
@@ -763,12 +765,44 @@ fn is_alternate_loopback_v4(host: &str) -> bool {
     first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
 }
 
+type OtlpHyperClient = opentelemetry_http::hyper::HyperClient<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+>;
+
+/// Runs each OTLP export request on busbar's tokio runtime. The SDK's batch span processor drives
+/// the exporter from its OWN plain thread (`futures_executor::block_on`), but `HyperClient` needs a
+/// tokio reactor (connection I/O + its `tokio::time::timeout`) — called directly there, the first
+/// export panics with "there is no reactor running" and no span ever leaves the process. Spawning
+/// onto the captured handle gives the request the runtime it needs; the batch thread just awaits it.
+#[derive(Debug)]
+struct OnRuntime {
+    inner: OtlpHyperClient,
+    rt: tokio::runtime::Handle,
+}
+
+#[async_trait::async_trait]
+impl opentelemetry_http::HttpClient for OnRuntime {
+    async fn send_bytes(
+        &self,
+        request: opentelemetry_http::Request<opentelemetry_http::Bytes>,
+    ) -> Result<
+        opentelemetry_http::Response<opentelemetry_http::Bytes>,
+        opentelemetry_http::HttpError,
+    > {
+        let inner = self.inner.clone();
+        self.rt
+            .spawn(async move { inner.send_bytes(request).await })
+            .await?
+    }
+}
+
 /// Build the OpenTelemetry tracing layer + retained provider for OTLP/HTTP export to `endpoint`.
 /// Returns `None` (and logs to stderr — the subscriber isn't up yet) if the exporter can't be
 /// built. Does NOT install the global provider; the caller does so only after the subscriber is
 /// successfully installed.
 fn build_otlp<S>(
     endpoint: &str,
+    headers: &std::collections::BTreeMap<String, String>,
 ) -> Option<(
     impl tracing_subscriber::Layer<S>,
     opentelemetry_sdk::trace::SdkTracerProvider,
@@ -786,8 +820,19 @@ where
     // closing the redirect-SSRF vector the bundled reqwest client left open. Using hyper-rustls also
     // keeps OTLP on busbar's single client stack (no duplicate reqwest major). `https_or_http` accepts
     // an `http://` collector (e.g. a localhost sidecar) as well as `https://`.
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_webpki_roots()
+    // The ring provider is passed explicitly rather than read from the process default: no default
+    // may be installed yet (that only happens on the inbound-TLS path), and when workspace feature
+    // unification also enables rustls's aws-lc-rs, rustls can no longer pick one on its own.
+    let https = match hyper_rustls::HttpsConnectorBuilder::new()
+        .with_provider_and_webpki_roots(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("busbar: OTLP TLS setup failed ({e}); continuing with stderr logging");
+            return None;
+        }
+    };
+    let https = https
         .https_or_http()
         .enable_http1()
         .build();
@@ -797,16 +842,27 @@ where
     // must never carry the operator's secret. The credential travels as the `HyperClient::new` 3rd
     // argument (`authorization`), which the SDK injects per-request and does not log.
     let (clean_endpoint, authorization) = split_otlp_credentials(endpoint);
-    let http_client = opentelemetry_http::hyper::HyperClient::new(
-        https,
-        std::time::Duration::from_secs(10),
-        authorization,
-    );
+    let http_client = OnRuntime {
+        inner: opentelemetry_http::hyper::HyperClient::new(
+            https,
+            std::time::Duration::from_secs(10),
+            authorization,
+        ),
+        rt: match tokio::runtime::Handle::try_current() {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("busbar: OTLP exporter needs a tokio runtime ({e}); continuing with stderr logging");
+                return None;
+            }
+        },
+    };
 
     let exporter = match opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .with_http_client(http_client)
         .with_endpoint(&clean_endpoint)
+        // Operator `headers:` (validated at config resolve). Values never reach a log line.
+        .with_headers(headers.clone().into_iter().collect())
         .build()
     {
         Ok(e) => e,
@@ -1712,5 +1768,71 @@ mod tests {
             under_global.0.lock().unwrap().is_empty(),
             "a registry-level filter suppresses the callsite for every layer beneath it"
         );
+    }
+
+    /// Spin a loopback OTLP "collector" that records each export request's headers, export one span
+    /// through `build_otlp(endpoint, headers)`, and return the captured header map.
+    fn export_one_span_and_capture(
+        url_prefix: &str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::header::HeaderMap {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new().route(
+            "/v1/traces",
+            axum::routing::post(move |h: axum::http::HeaderMap| {
+                let _ = tx.send(h);
+                async { "" }
+            }),
+        );
+        rt.spawn(async move { axum::serve(listener, app).await });
+        let headers = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        // `build_otlp` captures the ambient runtime (in production: `run()`'s), as busbar's boot does.
+        let _guard = rt.enter();
+        let (layer, provider) = build_otlp::<tracing_subscriber::Registry>(
+            &format!("{url_prefix}127.0.0.1:{port}/v1/traces"),
+            &headers,
+        )
+        .expect("exporter builds");
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+            tracing::info_span!("probe").in_scope(|| {});
+        });
+        provider.force_flush().expect("flush exports the span");
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("collector received an export")
+    }
+
+    #[test]
+    fn otlp_custom_headers_reach_the_collector() {
+        let got = export_one_span_and_capture(
+            "http://",
+            &[
+                ("x-honeycomb-team", "hc-key"),
+                ("Authorization", "Bearer tok"),
+            ],
+        );
+        assert_eq!(got.get("x-honeycomb-team").unwrap(), "hc-key");
+        assert_eq!(got.get("authorization").unwrap(), "Bearer tok");
+        assert_eq!(got.get("content-type").unwrap(), "application/x-protobuf");
+    }
+
+    #[test]
+    fn otlp_userinfo_basic_auth_coexists_with_custom_headers() {
+        let got =
+            export_one_span_and_capture("http://pk:sk@", &[("x-langfuse-ingestion-version", "4")]);
+        // base64("pk:sk")
+        assert_eq!(got.get("authorization").unwrap(), "Basic cGs6c2s=");
+        assert_eq!(got.get("x-langfuse-ingestion-version").unwrap(), "4");
     }
 }

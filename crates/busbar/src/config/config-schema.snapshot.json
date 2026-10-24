@@ -726,6 +726,10 @@
     },
     "OtlpSettings": {
       "fields": {
+        "headers": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, String>"
+        },
         "url": {
           "optional": false,
           "type": "String"
