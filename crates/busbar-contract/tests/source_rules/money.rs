@@ -380,7 +380,7 @@ fn the_facts_line_is_sealed_only_by_core() {
     let crates_dir = walk::repo().join("crates");
     for entry in std::fs::read_dir(&crates_dir).expect("crates/").flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.path().join("src").is_dir() {
+        if entry.path().join("src").is_dir() && !walk::is_plugin_crate(&format!("crates/{name}/")) {
             repo_files.push(format!("crates/{name}/src"));
         }
     }

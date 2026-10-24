@@ -17,6 +17,18 @@ use crate::walk;
 
 const SNAPSHOT: &str = "crates/busbar-kernel/src/config/config-schema.snapshot.json";
 
+/// The 1.5.x top-level sections whose grammar a plane owns: each is accepted at boot by the linked
+/// plane's own declaration (`PlaneDeclaration`, `config/prepass.rs`), not by a `DeployCfg` field,
+/// so the plane's repo keeps its grammar and the oracle's config cells prove it reads.
+const PLANE_SECTIONS: &[(&str, &str)] = &[
+    ("DeployCfg", "agent_push"),
+    ("DeployCfg", "agents"),
+    ("DeployCfg", "decisions"),
+    ("DeployCfg", "mcp"),
+    ("DeployCfg", "streams"),
+    ("DeployCfg", "tools"),
+];
+
 /// Core's crates: a config type a plugin owns is that plugin's to keep.
 const CORE_SRC: &[&str] = &[
     "crates/busbar-kernel/src",
@@ -128,7 +140,7 @@ fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
         };
         checked += 1;
         for field in ty["fields"].as_object().expect("`fields`").keys() {
-            if !keys.contains(field) {
+            if !keys.contains(field) && !PLANE_SECTIONS.contains(&(name.as_str(), field.as_str())) {
                 removed.push(format!("{name}.{field}"));
             }
         }

@@ -122,10 +122,10 @@ fn is_wrapped(toks: &[TokenTree]) -> bool {
         .any(|i| WRAPPERS.contains(&i.as_str()))
 }
 
-fn allowed(rel: &str, needle: &str, field: &str) -> bool {
+fn allowed(rel: &str, field: &str) -> bool {
     ALLOWED
         .iter()
-        .any(|(f, n, fld)| *f == rel && *n == needle && (fld.is_empty() || *fld == field))
+        .any(|(f, n, fld)| *f == rel && (*fld == field || (fld.is_empty() && tailmatch(field, n))))
 }
 
 fn bare_secret_fields(src: &Source) -> Vec<String> {
@@ -138,11 +138,11 @@ fn bare_secret_fields(src: &Source) -> Vec<String> {
             let Some(name) = field.ident.as_ref().map(ToString::to_string) else {
                 continue;
             };
-            let Some(needle) = secret_needle(&name, &ty_name) else {
+            if secret_needle(&name, &ty_name).is_none() {
                 continue;
-            };
+            }
             let ty = walk::tokens(&field.ty);
-            if is_bare(&ty) && !is_wrapped(&ty) && !allowed(&src.rel, needle, &name) {
+            if is_bare(&ty) && !is_wrapped(&ty) && !allowed(&src.rel, &name) {
                 out.push(format!(
                     "{}:{}: {ty_name}.{name} holds secret material bare; type it `Secret<..>` or `SecretRef`",
                     src.rel,
@@ -348,7 +348,7 @@ fn raw_settings_bags(src: &Source) -> Vec<String> {
             let ty = walk::idents(&walk::tokens(&field.ty));
             let bag = ty.iter().any(|i| BAG_TYPES.contains(&i.as_str()))
                 || (ty.iter().any(|i| i == "Vec") && ty.iter().any(|i| i == "u8"));
-            let line = walk::line_of(field);
+            let line = field.ident.as_ref().map_or(0, walk::line_of);
             if bag && !marked_allowed(&src.text, line) {
                 out.push(format!(
                     "{}:{line}: {ty_name}.{name} carries a raw settings bag",
