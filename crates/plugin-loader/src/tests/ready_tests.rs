@@ -139,21 +139,27 @@ fn ready_before_open_is_refused_without_a_crossing() {
 /// and both numbers, never loaded and read past its size.
 #[test]
 fn a_door_that_ends_before_ready_predates_its_layout_and_is_refused() {
+    use busbar_contract::abi::mechanism::door::DoorParts;
     use busbar_contract::abi::mechanism::KindCode;
 
-    // SAFETY: the witness's door is `'static`.
-    let real: Door = unsafe { *with_ready::door() };
-    assert!(real.ready.is_some(), "the witness states ready");
-    let none: &'static Door = Box::leak(Box::new(Door {
-        ready: None,
-        ..real
+    let real: Door = *with_ready::door();
+    assert!(real.ready().is_some(), "the witness states ready");
+    // SAFETY: the witness's own parts, its `ready` dropped: a door the witness could have stated.
+    let none: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            ready: None,
+            ..real.parts()
+        })
     }));
     let v =
         validate_door::<Secret>(none).unwrap_or_else(|e| panic!("a door with no ready loads: {e}"));
     assert!(v.ready.is_none(), "a door stating no ready has none");
-    let older: &'static Door = Box::leak(Box::new(Door {
-        size: std::mem::offset_of!(Door, ready) as u32,
-        ..real
+    // SAFETY: the witness's own parts, its stated size ending before `ready` (and the fingerprint).
+    let older: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            size: Door::ready_at() as u32,
+            ..real.parts()
+        })
     }));
     let host = KindCode::Secret.layout_fingerprint();
     match validate_door::<Secret>(older).map(|_| ()) {

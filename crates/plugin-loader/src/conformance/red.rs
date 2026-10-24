@@ -36,10 +36,11 @@ use std::sync::Arc;
 use busbar_contract::abi::host::conn::connector::{service, EstablishIn, IoIn, StreamIn};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use busbar_contract::abi::mechanism::door::{Door, DoorFn, KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::{DoorParts, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
+use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
@@ -49,19 +50,18 @@ use super::{
     CONNECTED, FINGERPRINTED, LAID, PIECED, VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
-use crate::dispatch::{
-    load_linked, rendering_of, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
-};
+use crate::dispatch::load::rendering_of_raw;
+use crate::dispatch::{load_linked, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin};
 
 /// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
-const VERSIONED_DOOR: DoorFn = restated_door::<1>;
-const CONNECTED_DOOR: DoorFn = restated_door::<2>;
+const VERSIONED_DOOR: RawDoorFn = restated_door::<1>;
+const CONNECTED_DOOR: RawDoorFn = restated_door::<2>;
 /// The door function of [`PIECED`].
-const PIECED_DOOR: DoorFn = restated_door::<3>;
+const PIECED_DOOR: RawDoorFn = restated_door::<3>;
 /// The door function of [`LAID`].
-const LAID_DOOR: DoorFn = restated_door::<4>;
+const LAID_DOOR: RawDoorFn = restated_door::<4>;
 /// The door function of [`FINGERPRINTED`].
-const FINGERPRINTED_DOOR: DoorFn = restated_door::<5>;
+const FINGERPRINTED_DOOR: RawDoorFn = restated_door::<5>;
 
 /// Every kind the host has.
 const KINDS: [KindCode; 7] = [
@@ -78,7 +78,7 @@ const KINDS: [KindCode; 7] = [
 const OTHER_VERSION: &str = "0.0.0-conformance-restated";
 
 /// The real door restated with another version in its Statement.
-fn with_another_version(real: Door) -> Door {
+fn with_another_version(real: DoorParts) -> DoorParts {
     // SAFETY: a door's Statement is `'static`; only its version is restated.
     let st: Statement = unsafe { real.statement.read_unaligned() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
@@ -88,7 +88,7 @@ fn with_another_version(real: Door) -> Door {
         },
         ..st
     }));
-    Door {
+    DoorParts {
         statement: st,
         ..real
     }
@@ -159,8 +159,8 @@ pub fn red_kind_layout(s: &Subject) {
         load::<K>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
             .expect("the honest library loads dropped in");
         for stated in [host ^ 1, 0] {
-            let _held = FINGERPRINTED.hold(Door { layout: stated, ..real });
-            let refused = rendering_of(FINGERPRINTED_DOOR)
+            let _held = FINGERPRINTED.hold(DoorParts { layout: stated, ..real });
+            let refused = rendering_of_raw(FINGERPRINTED_DOOR)
                 .expect_err("the pack tool signs no door at another kind layout");
             let LoadError::KindLayout { kind: named, stated: said, host: read, .. } = &refused
             else {
@@ -183,7 +183,7 @@ pub fn red_kind_layout(s: &Subject) {
                 .map(|_| ())
                 .expect_err("a linked door at another kind layout is refused under its honest row");
             assert_eq!(linked, refused, "the same refusal, linked");
-            let own = LinkedRow::of(FINGERPRINTED_DOOR)
+            let own = LinkedRow::of_raw(FINGERPRINTED_DOOR)
                 .and_then(|row| {
                     load_linked::<K>(&row, s.bind(&d, "red-kind-layout-own")).map(|_| ())
                 })
@@ -194,7 +194,7 @@ pub fn red_kind_layout(s: &Subject) {
 }
 
 /// The real transport door restated with a tail stating a frame piece `stated` bytes long.
-fn with_another_piece(real: Door, stated: u32) -> Door {
+fn with_another_piece(real: DoorParts, stated: u32) -> DoorParts {
     // SAFETY: a door's Statement is `'static`.
     let st: Statement = unsafe { real.statement.read_unaligned() };
     // SAFETY: the honest door loaded, so its kind tail is a whole `'static` `TransportTail` (the
@@ -208,7 +208,7 @@ fn with_another_piece(real: Door, stated: u32) -> Door {
         kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
         ..st
     }));
-    Door {
+    DoorParts {
         statement: st,
         ..real
     }
@@ -235,8 +235,8 @@ pub fn red_frame_piece(s: &Subject) {
     load::<Transport>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
         .expect("the honest library loads dropped in");
     let _held = PIECED.hold(with_another_piece(real_door(s), stated));
-    let refused =
-        rendering_of(PIECED_DOOR).expect_err("the pack tool signs no door at another piece");
+    let refused = crate::dispatch::load::rendering_of_raw(PIECED_DOOR)
+        .expect_err("the pack tool signs no door at another piece");
     let LoadError::FramePieceSize {
         stated: said,
         host: read,
@@ -252,14 +252,14 @@ pub fn red_frame_piece(s: &Subject) {
             .contains("rebuild against this busbar-contract"),
         "{refused}"
     );
-    let linked = LinkedRow::of(PIECED_DOOR)
+    let linked = LinkedRow::of_raw(PIECED_DOOR)
         .and_then(|row| load_linked::<Transport>(&row, s.bind(&d, "red-piece")).map(|_| ()))
         .expect_err("a linked transport at another piece is refused");
     assert_eq!(linked, refused, "the same refusal, linked");
 }
 
 /// The real plane door restated with a tail stating answer layout `stated`.
-fn with_another_layout(real: Door, stated: u32) -> Door {
+fn with_another_layout(real: DoorParts, stated: u32) -> DoorParts {
     // SAFETY: a door's Statement is `'static`.
     let st: Statement = unsafe { real.statement.read_unaligned() };
     // The honest door loaded, so its kind tail is `'static` plugin data of its stated size, at
@@ -286,7 +286,7 @@ fn with_another_layout(real: Door, stated: u32) -> Door {
         kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
         ..st
     }));
-    Door {
+    DoorParts {
         statement: st,
         ..real
     }
@@ -314,8 +314,8 @@ pub fn red_plane_layout(s: &Subject) {
     load::<Plane>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
         .expect("the honest library loads dropped in");
     let _held = LAID.hold(with_another_layout(real_door(s), stated));
-    let refused =
-        rendering_of(LAID_DOOR).expect_err("the pack tool signs no door at another layout");
+    let refused = crate::dispatch::load::rendering_of_raw(LAID_DOOR)
+        .expect_err("the pack tool signs no door at another layout");
     let LoadError::PlaneLayout {
         stated: said,
         host: read,
@@ -331,7 +331,7 @@ pub fn red_plane_layout(s: &Subject) {
             .contains("rebuild against this busbar-contract"),
         "{refused}"
     );
-    let linked = LinkedRow::of(LAID_DOOR)
+    let linked = LinkedRow::of_raw(LAID_DOOR)
         .and_then(|row| load_linked::<Plane>(&row, s.bind(&d, "red-layout")).map(|_| ()))
         .expect_err("a linked plane at another layout is refused");
     assert_eq!(linked, refused, "the same refusal, linked");
@@ -474,7 +474,7 @@ fn close_stream<K: Kind>(p: &Plugin<K>, stream: u64) -> (Outcome, u64, String) {
 /// The door restated with one outbound need, bound linked as `instance` over `table`.
 fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<K> {
     let d = dispatcher();
-    let row = LinkedRow::of(CONNECTED_DOOR).expect("the restated door states its Statement");
+    let row = LinkedRow::of_raw(CONNECTED_DOOR).expect("the restated door states its Statement");
     load_linked::<K>(
         &row,
         Bind {

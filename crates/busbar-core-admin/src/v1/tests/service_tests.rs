@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/v1/service.rs`.
 
 use super::*;
-use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess, MIGRATED_STORE_MODULE};
+use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
@@ -635,7 +635,7 @@ fn install_catalog_remove_roundtrip() {
 
     // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
-    assert_eq!(cat[0].name, MIGRATED_STORE_MODULE);
+    assert_eq!(cat[0].name, migrated_store_module());
     let dyn_row = cat
         .iter()
         .find(|p| p.loader == "dynamic-library")
@@ -799,7 +799,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
         page.items
     );
-    assert_eq!(page.items[0].name, MIGRATED_STORE_MODULE);
+    assert_eq!(page.items[0].name, migrated_store_module());
     assert_eq!(page.items[0].loader, "compiled-in");
 }
 
