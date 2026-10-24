@@ -708,12 +708,13 @@ impl Registration {
 ///
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
-/// The `test:xtask-selftest` check runs `xtask selftest <gate>` for every registered gate, split
-/// across the check's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
-/// every gate's cases are driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's
-/// self-test, never all of them (verification runs once per input). That check is the only place
-/// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --
-/// and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
+/// The `selftest-1` .. `selftest-4` checks (.ci/dev.yaml on dev's head; on demand in
+/// .ci/default.yaml) run `xtask selftest --shard=K/4`, which takes `xtask selftest <gate>` for every
+/// registered gate in its slice (`cli::shard_of`: the registry dealt round-robin, every gate in
+/// exactly one shard), and that is the ONE place every gate's cases are driven: `cargo test -p
+/// xtask` pins the dispatcher's arms with one gate's self-test, never all of them (verification
+/// runs once per input). Those checks are the only place several of these gates are ever proven
+/// RED-able, so the shard cannot simply be made smaller -- and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
 /// on a runner whose ssh session dies at about fifty and whose gate job was cancelled at
 /// twenty-five. Nothing measured it. A rule that grew a
 /// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
@@ -757,10 +758,10 @@ impl Registration {
 ///   [`cpu::thread`]) on the thread that ran it, just before and just after the battery
 ///   ([`ruler_cpu`]).
 /// * BATTERIES NEVER OVERLAP IN ONE PROCESS while they are measured. `xtask selftest <gate>` takes
-///   one battery and `xtask selftest` takes them one after another; the `test:xtask-selftest` check
-///   runs `xtask selftest {part}`, ONE PROCESS PER GATE. A window that opens while another is open
-///   makes BOTH readings refused ([`BatteryReading::Refused`]) — an overlap is never guessed
-///   around.
+///   one battery and `xtask selftest` takes them one after another; the `selftest-1` ..
+///   `selftest-4` checks run `xtask selftest --shard=K/4`, ONE PROCESS PER GATE. A window that opens
+///   while another is open makes BOTH readings refused ([`BatteryReading::Refused`]) — an overlap
+///   is never guessed around.
 /// * PER-CASE FIGURES (`XTASK_SELFTEST_TIMING`) are the worker thread's own wall clock and CPU, for
 ///   diagnosis only: they do not sum to the battery's total, and no verdict reads them.
 /// * WHAT CPU TIME STILL FEELS. Not waiting — but a busy box still empties the caches a battery
@@ -825,13 +826,27 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// at `--jobs 1`.
 const TAKEN: &str = "2026-10-12 7a7091060e";
 
+/// When and on what `plane-purity`'s re-baselined measurement was taken (see
+/// [`MEASURED_PLANE_PURITY`]).
+const TAKEN_PLANE_PURITY: &str = "2026-10-23 0488060370";
+
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
 // self-test's own cost line (CPU-time units). Constants rather than literals inside the table so
 // that a re-baseline is a diff a reviewer can read as a list of numbers that moved. The note on
 // each is the battery's CPU and the 2026-10-07 wall-clock figure it replaces.
 const MEASURED_KIND_ISOLATION: f64 = 353_037.0; // 256 cases, 384.5 s CPU (wall unit: 711 866)
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 257_958.0; // 167 cases, 280.9 s CPU (wall unit: 536 090)
-const MEASURED_PLANE_PURITY: f64 = 63_115.0; // 25 cases, 68.8 s CPU (wall unit: 65 100)
+/// RE-BASELINED 2026-10-23 (ARCHITECT ruling on #1421), `plane-purity` alone, on its own
+/// [`TAKEN_PLANE_PURITY`]: 113 236 work units, 41 cases, 137.0 s CPU at 1.210 ms a unit, the serial
+/// re-take of `xtask selftest --shard=3/4` on ModernCI compute at 0488060370. It was 63 115 units
+/// over 25 cases at [`TAKEN`]. On dev's merged tree before 0488060370 the battery read 156 160,
+/// and two regressions in it were fixed there, not budgeted: 4998f42593 walked the neutral
+/// population a second time on every run for the freeze witness and searched each line once per
+/// derived IR name, and 077eef7ac8 copied every dialect on every line for the segment rule. What
+/// is left is the case count, 25 -> 41, from 4998f42593 (Q128 parts 5 and 22), 077eef7ac8 (the
+/// dialect-segment cases), 2b692177bc (the ratchet case) and 8729b322bf (the backwards-reach
+/// case), at about 2 762 units a case against 2 525 at [`TAKEN`]. The slack is unchanged.
+const MEASURED_PLANE_PURITY: f64 = 113_236.0; // 41 cases, 137.0 s CPU (was 63 115, 25 cases)
 const MEASURED_STRUCTURE_LINT: f64 = 25_120.0; // 43 cases, 27.2 s CPU (wall unit: 39 110)
 const MEASURED_PLANE_PURITY_STRICT: f64 = 22_934.0; // 11 cases, 24.8 s CPU (wall unit: 26 155)
 const MEASURED_TELLER_STEPS: f64 = 15_773.0; // 22 cases, 17.1 s CPU (wall unit: 21 803)
@@ -975,7 +990,7 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "plane-purity",
         measured: MEASURED_PLANE_PURITY,
         allowed: MEASURED_PLANE_PURITY * BUDGET_SLACK,
-        taken: TAKEN,
+        taken: TAKEN_PLANE_PURITY,
         why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
