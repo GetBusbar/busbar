@@ -457,7 +457,7 @@ pub(crate) fn base_data_router(
             crate::auth::exchange::AUTH_TOKEN_PATH,
             RouteMethod::Get,
             RouteAuth::None,
-            crate::auth::token::browser,
+            crate::auth::login::seam::browser,
         )
         .route(
             crate::auth::exchange::AUTH_TOKEN_PATH,
@@ -673,6 +673,10 @@ fn mount_plane_route(
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
             // before the context — and the HOT request head built from it — exists (#65, #40(b)).
+            // What an entry fact may read of a consumed field, kept before it goes: its name and
+            // its scheme word, never the credential (status row 173).
+            let consumed_fields =
+                auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
             let caller_credential = consumed
                 .as_deref()
@@ -709,6 +713,7 @@ fn mount_plane_route(
                     gov,
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
+                    consumed_fields,
                     engine,
                     host,
                     slot,
@@ -755,6 +760,10 @@ fn mount_plane_session(
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
+            // What an entry fact may read of a consumed field, kept before it goes: its name and
+            // its scheme word, never the credential (status row 173).
+            let consumed_fields =
+                auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
             let caller_credential = consumed
                 .as_deref()
@@ -788,6 +797,7 @@ fn mount_plane_session(
                     host,
                     slot,
                     caller_credential,
+                    consumed_fields,
                 };
                 match handler(ctx).await {
                     busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,

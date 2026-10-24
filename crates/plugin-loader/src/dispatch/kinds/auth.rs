@@ -34,7 +34,7 @@ use busbar_contract::abi::auth::{
     OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, TargetIn,
     TargetOut, VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
 use busbar_contract::abi::mechanism::door::{
     Statement, MARK_WORD_CARRIER, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
@@ -147,22 +147,23 @@ pub fn stated_facts(
     facts(&v.statement)
 }
 
-/// A `'static` Statement string, copied; `None` when malformed.
-fn owned(s: AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
+/// A Statement string, copied; refused (`over`) above
+/// [`MAX_TEXT`](crate::dispatch::plugin::MAX_TEXT) bytes, as a bind refuses a malformed one.
+fn fit(s: &str, over: &str) -> Result<String, String> {
+    if s.len() > crate::dispatch::plugin::MAX_TEXT {
+        return Err(over.to_string());
+    }
+    Ok(s.to_string())
 }
 
-/// The inbound carriers `st` states: its
+/// The inbound carriers a Statement's word marks state: its
 /// [`MARK_WORD_CARRIER`](busbar_contract::abi::mechanism::door::MARK_WORD_CARRIER) word marks,
 /// lower-case, in the Statement's order (the design's One Statement: a carrier is a Statement mark,
 /// never a tail fact). At most [`MAX_CARRIERS`].
-fn carriers(st: &Statement) -> Result<Vec<String>, String> {
+fn carriers(words: &[(u32, String)]) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
-    for i in 0..st.mark_words_len {
-        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
-        // `mark_words_len` `'static` word marks.
-        let w = unsafe { st.mark_words.add(i).read_unaligned() };
-        if w.class != MARK_WORD_CARRIER {
+    for (class, word) in words {
+        if *class != MARK_WORD_CARRIER {
             continue;
         }
         if out.len() == MAX_CARRIERS {
@@ -170,7 +171,7 @@ fn carriers(st: &Statement) -> Result<Vec<String>, String> {
                 "the auth Statement states more than {MAX_CARRIERS} carriers"
             ));
         }
-        let word = owned(w.word).ok_or("an auth carrier name is over-long")?;
+        let word = fit(word, "an auth carrier name is over-long")?;
         out.push(word.to_ascii_lowercase());
     }
     Ok(out)
@@ -180,11 +181,11 @@ fn carriers(st: &Statement) -> Result<Vec<String>, String> {
 /// OS CSPRNG picks one symbol, so an alphabet holds at most 256.
 const MAX_ISSUED: usize = 256;
 
-/// The issued credential's shape `st` states in its `MARK_WORD_ISSUED_*` word marks; `None` when it
-/// states none. Refused at load: a class stated twice, a shape missing a length or an alphabet, a
+/// The issued credential's shape a Statement's `MARK_WORD_ISSUED_*` word marks state; `None` when
+/// it states none. Refused at load: a class stated twice, a shape missing a length or an alphabet, a
 /// length that is not a decimal in `1..=256`, an alphabet that is empty, over 256, not ASCII graphic
 /// or repeats a character, and a prefix that is not ASCII graphic or leaves no room in the id.
-fn issued(st: &Statement) -> Result<Option<IssuedShape>, String> {
+fn issued(words: &[(u32, String)]) -> Result<Option<IssuedShape>, String> {
     let mut slots: [Option<String>; 5] = Default::default();
     let classes = [
         MARK_WORD_ISSUED_ID_PREFIX,
@@ -193,20 +194,16 @@ fn issued(st: &Statement) -> Result<Option<IssuedShape>, String> {
         MARK_WORD_ISSUED_SECRET_LENGTH,
         MARK_WORD_ISSUED_SECRET_ALPHABET,
     ];
-    for i in 0..st.mark_words_len {
-        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
-        // `mark_words_len` `'static` word marks.
-        let w = unsafe { st.mark_words.add(i).read_unaligned() };
-        let Some(slot) = classes.iter().position(|c| *c == w.class) else {
+    for (class, word) in words {
+        let Some(slot) = classes.iter().position(|c| c == class) else {
             continue;
         };
         if slots[slot].is_some() {
             return Err(format!(
-                "the auth Statement states issued-credential mark class {} twice",
-                w.class
+                "the auth Statement states issued-credential mark class {class} twice"
             ));
         }
-        slots[slot] = Some(owned(w.word).ok_or("an issued-credential mark is over-long")?);
+        slots[slot] = Some(fit(word, "an issued-credential mark is over-long")?);
     }
     if slots.iter().all(Option::is_none) {
         return Ok(None);
@@ -256,16 +253,64 @@ fn issued(st: &Statement) -> Result<Option<IssuedShape>, String> {
     Ok(Some(shape))
 }
 
-/// Read the auth tail, the carriers and the cache-flush family out of `st`.
+/// Read the auth tail, the carriers and the cache-flush family out of `st`, through its canonical
+/// rendering: a bind, a linked door's static read and a dropped-in row's signed manifest read the
+/// same facts the same way ([`rendered_facts`]).
 fn facts(st: &Statement) -> Result<AuthFacts, String> {
-    // SAFETY: `AuthTail` is a `#[repr(C)]` kind tail of integers, pointers and strings (all-zero
-    // valid: an appended field the plugin predates reads absent); a non-NULL kind tail is `'static`
-    // plugin data of its stated size.
-    let t: auth::AuthTail = unsafe {
-        crate::dispatch::plugin::kind_tail(st, "an auth plugin", auth::AUTH_TAIL_FROZEN)
-    }?;
-    let carriers = carriers(st)?;
-    let issued = issued(st)?;
+    // Read as the auth Statement it is bound as: its tail renders as an auth tail.
+    let st = Statement {
+        kind: KindCode::Auth as u32,
+        ..*st
+    };
+    // SAFETY: the loader's Statement check ran on `st`: every Statement list is its stated count of
+    // `'static` entries, and the rendering bounds each tail list and string before it reads it.
+    let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
+        .map_err(|e| e.to_string())?;
+    rendered_facts(&rendering)
+}
+
+/// EVERYTHING an auth Statement states (its auth tail, carriers and families), read from its
+/// canonical RENDERING: a dropped-in row's signed manifest rendering is read with no `dlopen`
+/// (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9: the rendering carries the whole kind
+/// tail, and the admit comparison refuses a door whose Statement is not the manifest's), and a
+/// linked door's is its own Statement rendered. A bind refuses exactly what this refuses.
+///
+/// # Errors
+///
+/// The rendering does not read back, is not an auth Statement's, or states a tail a bind refuses.
+pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
+    let r = busbar_contract::abi::mechanism::rendering::read(rendering).map_err(|e| {
+        format!(
+            "the auth Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    if r.kind != KindCode::Auth as u32 {
+        return Err(format!(
+            "the Statement rendering states kind {}, not auth",
+            r.kind
+        ));
+    }
+    // THE KIND TAIL GROWTH RULE: a tail smaller than the frozen auth tail refuses the load.
+    if r.kind_tail_size == 0 {
+        return Err("an auth plugin states no kind tail".to_string());
+    }
+    if (r.kind_tail_size as usize) < auth::AUTH_TAIL_FROZEN {
+        return Err(format!(
+            "an auth plugin states a {}-byte tail, smaller than its frozen {}",
+            r.kind_tail_size,
+            auth::AUTH_TAIL_FROZEN
+        ));
+    }
+    let t =
+        busbar_contract::abi::mechanism::rendering::read_auth_tail(&r.kind_tail).map_err(|e| {
+            format!(
+                "the auth tail's rendering does not read back: byte {} is not {}",
+                e.at, e.what
+            )
+        })?;
+    let carriers = carriers(&r.mark_words)?;
+    let issued = issued(&r.mark_words)?;
     // The default inbound style IS its carriers: a tail stating it with none refuses the load.
     if t.facts & auth::FACT_DEFAULT_INBOUND_STYLE != 0 && carriers.is_empty() {
         return Err(
@@ -296,8 +341,10 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     // The operator fact agrees with its principal, and with the inbound capability: the operator
     // credential is a `verify` that names the principal it identifies. Either without the other
     // refuses the load.
-    let principal =
-        owned(t.operator_principal).ok_or("the auth operator principal is over-long")?;
+    let principal = fit(
+        &t.operator_principal,
+        "the auth operator principal is over-long",
+    )?;
     let operator = t.facts & auth::FACT_OPERATOR != 0;
     if operator == principal.is_empty() || (operator && t.caps & auth::CAP_INBOUND == 0) {
         return Err(format!(
@@ -308,19 +355,17 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     // The credential-read fact agrees with its kinds, and with the inbound capability: a `verify`
     // that reads host-held credentials names exactly the kinds it reads. Either without the other
     // refuses the load.
-    if t.credential_kinds_len > MAX_CREDENTIAL_KINDS
-        || (t.credential_kinds.is_null() && t.credential_kinds_len != 0)
-    {
+    if t.credential_kinds.len() > MAX_CREDENTIAL_KINDS {
         return Err(format!(
             "the auth tail states {} credential kinds",
-            t.credential_kinds_len
+            t.credential_kinds.len()
         ));
     }
-    let credential_kinds = (0..t.credential_kinds_len)
-        // SAFETY: `credential_kinds` holds `credential_kinds_len` `'static` strings (checked above).
-        .map(|i| owned(unsafe { t.credential_kinds.add(i).read_unaligned() }))
-        .collect::<Option<Vec<_>>>()
-        .ok_or("an auth credential kind is over-long")?;
+    let credential_kinds = t
+        .credential_kinds
+        .iter()
+        .map(|k| fit(k, "an auth credential kind is over-long"))
+        .collect::<Result<Vec<_>, _>>()?;
     let reads = t.facts & auth::FACT_READS_CREDENTIALS != 0;
     let blank = credential_kinds.iter().any(String::is_empty);
     if reads == credential_kinds.is_empty() || blank || (reads && t.caps & auth::CAP_INBOUND == 0) {
@@ -339,41 +384,34 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         );
     }
     // Every style states known flags and the points it needs; a stray bit refuses the load.
-    if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
-        return Err(format!("the auth tail states {} styles", t.styles_len));
+    if t.styles.len() > MAX_STYLES {
+        return Err(format!("the auth tail states {} styles", t.styles.len()));
     }
-    let mut styles = Vec::with_capacity(t.styles_len);
-    for i in 0..t.styles_len {
-        // SAFETY: `styles` holds `styles_len` `'static` declarations (checked non-NULL above).
-        let d = unsafe { t.styles.add(i).read_unaligned() };
+    let mut styles = Vec::with_capacity(t.styles.len());
+    for d in &t.styles {
         styles.push(OutboundStyle {
-            name: owned(d.name).ok_or("an auth style name is over-long")?,
+            name: fit(&d.name, "an auth style name is over-long")?,
             flags: d.flags,
             points: d.points,
         });
         check_style_decl(d.flags, d.points).map_err(|f| {
             format!(
                 "auth style {} is refused: flags {:#x}, points {:#x}: {f:?}",
-                owned(d.name).unwrap_or_default(),
-                d.flags,
-                d.points
+                d.name, d.flags, d.points
             )
         })?;
     }
     let mut cache_family = None;
-    for i in 0..st.families_len {
-        // SAFETY: the loader's Statement check: `families` holds `families_len` `'static` entries.
-        let f = unsafe { st.families.add(i).read_unaligned() };
-        if owned(f.name).as_deref() == Some(auth::METRIC_CACHE_FLUSHED) {
+    for (i, f) in r.families.iter().enumerate() {
+        if f.name == auth::METRIC_CACHE_FLUSHED {
             cache_family = u32::try_from(i).ok();
         }
     }
-    let secret_refs = (0..st.secret_refs_len)
-        // SAFETY: the loader's Statement check refused a NULL `secret_refs` with a count; it holds
-        // `secret_refs_len` `'static` strings.
-        .map(|i| owned(unsafe { st.secret_refs.add(i).read_unaligned() }))
-        .collect::<Option<Vec<_>>>()
-        .ok_or("an auth secret-ref key is over-long")?;
+    let secret_refs = r
+        .secret_refs
+        .iter()
+        .map(|k| fit(k, "an auth secret-ref key is over-long"))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(AuthFacts {
         caps: t.caps,
         facts: t.facts,
