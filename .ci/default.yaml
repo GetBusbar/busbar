@@ -13,13 +13,10 @@ guarded:
   - "testing/shadow-oracle/owed-baseline.txt"
   - "testing/shadow-oracle/scripts/**"
 on:
-  # deny is on demand only until ModernCI 0.9.1 is live (2026-10-24): every PR's deny shares one
-  # result key, and on 0.8.16 the jobs waiting for that one run each hold a machine while its first
-  # cargo-vet build is killed at a stale 60 s limit (26 of 40 machines idle). Back on move after.
-  # oracle and deny are on demand only until ModernCI 0.9.1 is live (2026-10-24): 0.8.16 cannot give
-  # the oracle its judge, and its infra exits were counted as machine faults (the backend went down).
-  move: [fmt, clippy, test]
-  manual: [deny, oracle]
+  # oracle is on demand until the owner re-signs accepted-differences D-1 (509 -> 510 cells): every
+  # oracle run refuses before replay until then. deny is back on move with ModernCI 0.9.2 (#2398).
+  move: [fmt, clippy, test, deny]
+  manual: [oracle]
 env:
   # The oracle's judge, as bin/oracle reads it under ModernCI (only from the config's env, never the
   # candidate's pin): testing/shadow-oracle/oracle-rust.pin on dev; fetched with BUSBAR_RELEASE_TOKEN.
