@@ -30,6 +30,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         aliases: aliases.iter().map(|s| s.to_string()).collect(),
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
+        selecting: Vec::new(),
         schemes: Vec::new(),
         needs: Vec::new(),
         stated: Vec::new(),
@@ -40,6 +41,11 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         disk: false,
         orders: true,
     }
+}
+
+/// A document using the fixture plane door's verb (`door`), so the plane is selected.
+fn uses_door() -> Uses {
+    Uses::of(&doc(r#"{"door": {}}"#))
 }
 
 fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
@@ -460,6 +466,118 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     assert_eq!(shape(&linked), shape(&dropped_bound), "one load, one shape");
     assert_eq!(shape(&linked).len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// LAW 7, THE PLANES' ONE LOAD (BUSBAR-1.6.0.md §2 "A plugin loads if and only if config uses
+/// it. There are no special plugins.", §4 "A plane loads iff its verb is present."): a plane config
+/// does not use is never opened, compiled in or dropped in. The dropped-in plane here is a door whose
+/// library bytes are not a library: OPENING it is the only way to learn that, and refuses the load,
+/// so a load that answers proves it was never opened. RED before: every discovered plane was bound,
+/// the unused one's open refused the whole load, and with no plane used the linked one bound anyway.
+#[test]
+fn a_plane_config_does_not_use_is_never_opened() {
+    let rendering = crate::dispatch::LinkedRow::of(plug::door)
+        .unwrap()
+        .statement;
+    let linked = Candidate::linked(plug::door).expect("the linked plane states itself");
+    let unused = Candidate {
+        kind: KindCode::Plane,
+        name: "unused-plane".into(),
+        verbs: vec!["unused".into()],
+        stated: rendering,
+        origin: Origin::Dropped {
+            file: "unused-plane.tar.gz".into(),
+            bytes: Arc::new(b"not a library: opening this refuses the load".to_vec()),
+        },
+        ..cand(KindCode::Plane, "unused-plane", &[], &[], &["unused"])
+    };
+    let doors = vec![linked, unused];
+    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
+    let bind = |uses: &Uses| {
+        load_planes(
+            &used_planes(uses, &doors),
+            &logs,
+            Arc::new(NoSink),
+            Adopter::unwatched(),
+            8,
+            crate::dispatch::ConnTable::NoNeeds,
+        )
+        .map(|bound| bound.into_iter().map(|(i, _)| i).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        bind(&uses_door()).expect("the unused plane is never opened"),
+        vec![doors[0].name.clone()],
+        "only the plane config uses is bound"
+    );
+    assert_eq!(
+        bind(&Uses::of(&doc(r#"{"providers": {}}"#))).expect("nothing is opened"),
+        Vec::<String>::new(),
+        "a compiled-in plane config does not use is not bound either"
+    );
+    // The GREEN twin: config using the dropped-in plane's verb opens it, and its bytes refuse.
+    let err =
+        bind(&Uses::of(&doc(r#"{"unused": {}}"#))).expect_err("an opened non-library refuses");
+    assert!(err.contains("unused-plane"), "{err}");
+}
+
+/// A SECTION THAT SELECTS ITS PLANE (`SECTION_SELECTS`, Law 7): a plane is used when config carries
+/// its verb or a section its Statement marks as selecting it; a section it only consumes or
+/// requires selects nothing. The dropped-in plane's facts are read off its signed rendering, so
+/// nothing is opened to learn them. RED before: only the verb selected a plane, so a document
+/// routing to models directly (no `pools:`) used no plane.
+#[test]
+fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
+    use busbar_contract::abi::mechanism::door::{Section, SECTION_REQUIRED, SECTION_SELECTS};
+    const SECTIONS: &[Section] = &[
+        Section {
+            name: abi_str("pools"),
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        },
+        Section {
+            name: abi_str("providers"),
+            flags: SECTION_CONSUMED | SECTION_REQUIRED,
+            _reserved: 0,
+        },
+        Section {
+            name: abi_str("models"),
+            flags: SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS,
+            _reserved: 0,
+        },
+    ];
+    let st = busbar_contract::abi::mechanism::door::Statement {
+        kind: KindCode::Plane as u32,
+        sections: SECTIONS.as_ptr(),
+        sections_len: SECTIONS.len(),
+        ..statement("routing-plane", "1.0.0", 1)
+    };
+    // SAFETY: the sections list is a `'static` array of its stated count.
+    let stated = unsafe { render(&st) }.unwrap();
+    let c = Candidate::from_rendering(
+        stated,
+        None,
+        Origin::Dropped {
+            file: "routing-plane.tar.gz".into(),
+            bytes: Arc::new(Vec::new()),
+        },
+    )
+    .unwrap();
+    assert_eq!(c.verbs, vec!["pools".to_string()]);
+    assert_eq!(c.selecting, vec!["models".to_string()]);
+    let cands = vec![c];
+    let direct = Uses::of(&doc(r#"{"providers": {}, "models": {}}"#));
+    assert_eq!(plane_use(&direct, &cands[0]), Some("models"));
+    assert_eq!(
+        picked(&select(&direct, &cands), &cands),
+        vec![("routing-plane".into(), "pools".into())],
+        "selected by its selecting section, under its verb"
+    );
+    let pooled = Uses::of(&doc(r#"{"pools": {}}"#));
+    assert_eq!(plane_use(&pooled, &cands[0]), Some("pools"));
+    // A section it only consumes or requires is no use of it: `providers` alone selects nothing.
+    let catalog_only = Uses::of(&doc(r#"{"providers": {}}"#));
+    assert_eq!(plane_use(&catalog_only, &cands[0]), None);
+    assert!(select(&catalog_only, &cands).is_empty());
 }
 
 /// A plane whose Statement tail declares a rooted pin naming NO mechanism is refused at boot: the

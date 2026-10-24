@@ -1788,6 +1788,54 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
     assert_eq!(linked, dropped, "both doors are bounded the same");
 }
 
+/// **DROPPING AN INSTANCE NEVER WAITS ON A DELIVERY THAT NEVER WAKES** (`BUSBAR-1.6.0.md` §11.13
+/// M1: a host thread never waits on plugin code). The request-log WEBHOOK sink, LINKED, its one
+/// delivery pending on a far end that holds the request and never wakes it. Dropping the instance
+/// (a plugin removal, a config reload) gives the delivery a bounded grace, then abandons it on the
+/// dispatcher's client-drop path, the batch still lent to the op until it completes; the dropping
+/// thread returns. (RED: a write-behind delivery with no deadline is never cancelled or detached,
+/// the flusher's stop waited for it, and the drop joined the flusher, so the dropping thread hung
+/// forever.)
+#[test]
+fn dropping_an_instance_whose_delivery_never_wakes_returns() {
+    let name = "bn2-stuck";
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            stating(manifest(name, webhook_declares()), WEBHOOK_DOOR),
+            WEBHOOK_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    // No connection waker is installed: the held request is never woken.
+    let far = Arc::new(Far::default());
+    let sink = ExportRows::new(&registry, dispatcher())
+        .with_conns(far.clone())
+        .open(
+            name,
+            "export.bn2",
+            &serde_json::json!({
+                "url": format!("https://{STALL_TARGET}/in"),
+                "delivery_timeout_secs": 600,
+            }),
+        )
+        .expect("opens");
+    deliver(sink.as_ref(), &serde_json::json!({ "n": 0 }));
+    until("the delivery in flight", || far.stalled() == 1);
+    let (dropped, returned) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(sink);
+        let _ = dropped.send(());
+    });
+    let returned = returned.recv_timeout(Duration::from_secs(5));
+    if returned.is_err() {
+        // The dropping thread is stuck on the plugin: leave it, so the suite does not hang.
+        std::mem::forget(dropper);
+    }
+    assert!(
+        returned.is_ok(),
+        "dropping the instance returns within a bounded time while its delivery never wakes"
+    );
+}
+
 /// **K9e-2 — A FIRST-PARTY EGRESS CLASS IS GRANTED TO A FIRST-PARTY PLUGIN ONLY** (`BUSBAR-1.6.0.md`
 /// §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03). The OTLP trace sink's one need is in the
 /// `loopback-allowed` class (a collector's loopback plaintext), a first-party grant: LINKED, and
