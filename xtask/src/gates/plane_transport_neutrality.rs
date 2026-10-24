@@ -110,7 +110,9 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// `tests/durability_reads_unlocked.rs`) against its 4 departures (kernel `auth/token.rs`,
 /// `auth/tests/token_tests.rs`, `proxy/proxy_vocab.rs`, `tests/members/egress/trust_net_tests.rs`);
 /// the gate's count on the merge is 1243.
-pub const MIN_FILES: usize = 1243;
+/// Raised 1243 -> 1244 merging dev fcdca4e550 into GetBusbar/busbar#1287: the gate's measure on
+/// 956d719e1e (`1244 file(s) across 14 census-neutral root(s)`).
+pub const MIN_FILES: usize = 1244;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
