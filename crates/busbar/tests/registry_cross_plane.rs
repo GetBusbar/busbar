@@ -62,7 +62,7 @@ fn canonical_keys() -> Vec<&'static str> {
 
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
 /// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
-/// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.
+/// Stands in for a linked plane crate's own `PLANE_DECL`.
 static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
         key: "widget",
@@ -249,8 +249,8 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
 ///
 /// Checked field-by-field (a registry row is ASSEMBLED kernel-side from a plane's contract
 /// declaration and its hooks, so the property under test is that the by-key indirection reads the
-/// SAME declared facts). The literal values each plane publishes (`mcp_server`, `fronted agent`, …)
-/// are pinned by the plane that declares them, in its own crate.
+/// SAME declared facts). The literal values each plane publishes (its scope kinds, its subject noun,
+/// …) are pinned by the plane that declares them, in its own crate.
 #[test]
 fn every_plane_key_answers_from_its_declaration() {
     register_planes();
@@ -277,7 +277,7 @@ fn every_plane_key_answers_from_its_declaration() {
     }
 }
 
-/// THE LLM PLANE'S WIRE-FORMAT LIST IS STILL READ OFF THE LIVE PROTOCOL REGISTRY, through the decl's
+/// THE FALLBACK PLANE'S WIRE-FORMAT LIST IS STILL READ OFF THE LIVE PROTOCOL REGISTRY, through the decl's
 /// function pointer. This is the join between the two registries, and it is what keeps the
 /// superset-IR rule a RULE: a seventh dialect moves this list with nothing edited on the plane axis.
 #[test]
@@ -296,7 +296,7 @@ fn the_fallback_decl_reads_the_protocol_registry() {
 
 /// NO TWO PLANES MAY SHARE A SCOPE KIND OR AN AUDIT KIND — the collision rule the enum's docs state,
 /// now enforced over the FOLDED list rather than the three hardcoded variants. A registered plane
-/// that claimed `agent` as a scope kind would have its grants admit A2A traffic; that is a boot-time
+/// that claimed a sibling's scope kind would have its grants admit the sibling's traffic; that is a boot-time
 /// refusal's job, and this pins the property the refusal would defend.
 #[test]
 fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
@@ -337,7 +337,7 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 
 /// **THE SCOPE-KIND CODEC ROUND-TRIPS, so encode and decode cannot skew.** `scope_kind_at` (decode)
 /// and `scope_kind_index` (encode) each apply the base-first, first-seen dedup independently; if they
-/// ever disagreed a `pool` grant could resolve an `mcp_server` target (the entitlement escalation the
+/// ever disagreed a `pool` grant could resolve another plane's target (the entitlement escalation the
 /// dedup exists to prevent). This pins `scope_kind_at(scope_kind_index(k)) == k` over the FULL builtin
 /// kind set — the neutral base plus every registered plane's declared kinds — so any future encoder
 /// that routes through `scope_kind_index` is proven to invert the decoder here.
@@ -467,13 +467,13 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
     );
 }
 
-/// An example future plane's real claim, mirrored on the [`WIDGET_PLANE`] template — `streams` ∉
-/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is the shape a plugin
-/// declaring `streams` as its owned section will take once one exists).
-static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+/// A plane's owned-section claim, mirrored on the [`WIDGET_PLANE`] template — `gizmos` ∉
+/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (the shape any plugin declaring a
+/// top-level section it owns the grammar of takes).
+static ONE_CLAIMS_GIZMOS: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
         key: "one",
-        owned_config_sections: &["streams"],
+        owned_config_sections: &["gizmos"],
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
@@ -481,11 +481,11 @@ static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
     ..WIDGET_PLANE
 };
 
-/// A DIFFERENT plane also claiming `streams` — the collision the guard must refuse by construction.
-static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+/// A DIFFERENT plane also claiming `gizmos` — the collision the guard must refuse by construction.
+static TWO_CLAIMS_GIZMOS: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
         key: "two",
-        owned_config_sections: &["streams"],
+        owned_config_sections: &["gizmos"],
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
@@ -494,21 +494,21 @@ static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
 };
 
 #[test]
-fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
-    // `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so the lone claim is ADMITTED.
+fn dup_claim_guard_admits_a_lone_claim_and_refuses_a_section_collision() {
+    // `gizmos` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so the lone claim is ADMITTED.
     busbar_kernel::plane::registry::check_owned_config_claims(
-        &[&ONE_CLAIMS_STREAMS],
+        &[&ONE_CLAIMS_GIZMOS],
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
     )
-    .expect("`streams` is not core-owned and has one claimant — the lone claim must be admitted");
-    // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
+    .expect("`gizmos` is not core-owned and has one claimant — the lone claim must be admitted");
+    // A SECOND claimant of `gizmos` is refused by construction, naming both planes and the section.
     let err = busbar_kernel::plane::registry::check_owned_config_claims(
-        &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
+        &[&ONE_CLAIMS_GIZMOS, &TWO_CLAIMS_GIZMOS],
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
     )
-    .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
+    .expect_err("two planes claiming `gizmos` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
-        err.contains("streams") && err.contains("one") && err.contains("two"),
+        err.contains("gizmos") && err.contains("one") && err.contains("two"),
         "the refusal must name the contested section and both claimants, got: {err}"
     );
 }
@@ -801,8 +801,8 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
 /// **R2-boot — a plane whose `start` returns `Err` REFUSES BOOT.** The start fold
 /// [`busbar_kernel::boot::run_start_hooks`] (which `boot::start_planes` drives over the real plane
 /// list) propagates the hook's `Err` with `?`, so a plane that cannot start its background work — an
-/// A2A outbound client identity that does not resolve — aborts the boot with its OWN named message
-/// rather than yielding a running deployment that silently re-verifies nothing for that agent.
+/// outbound client identity that does not resolve — aborts the boot with its OWN named message
+/// rather than yielding a running deployment that silently re-verifies nothing for that peer.
 ///
 /// Driven over an INJECTED decl for the reason `build_dispatch` is: the ratchet is provable without
 /// the process plane `OnceLock` (once-per-binary) and without booting real listeners.
@@ -990,7 +990,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
 /// another plane's traffic, and two sharing an audit kind is how one plane's records answer
 /// another's question — a hazard that only bites once both colliding planes have a door.
 ///
-/// RED, watched: register a fourth plane that both MOUNTS and reuses `mcp_server` as a scope kind
+/// RED, watched: register a fourth plane that both MOUNTS and reuses a sibling's scope kind
 /// (a colliding widget in the mount set) and this fails on the scope-kind dedup.
 #[test]
 fn r3_no_vocabulary_collision_across_the_mounted_set() {
