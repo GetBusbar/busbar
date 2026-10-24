@@ -93,24 +93,15 @@ fn on(base: &Overlay) -> Overlay {
     base.clone()
 }
 
-/// One installed-store plant: `text` as the kernel module `file`, and a root caller handing its
-/// `install` a value.
-fn store_plant<'a>(
-    gate: &'a dyn Gate,
-    cx: &Ctx,
-    base: &Overlay,
-    name: &str,
-    file: &str,
-    text: &str,
-    naming: &[&str],
-) -> CasePlan<'a> {
-    let mut ov = on(base);
+/// One installed-store plant laid into the shared run's overlay: `text` as the kernel module `file`,
+/// and a root caller handing its `install` a value; what it must name joins the run's naming.
+fn store_plant(ov: &mut Overlay, naming: &mut Vec<String>, file: &str, text: &str, names: &[&str]) {
     ov.set(format!("crates/busbar-kernel/src/{file}.rs"), text);
     ov.set(
         format!("crates/busbar/src/root/{file}_root.rs"),
         format!("pub fn {file}_boot() {{\n    busbar_kernel::{file}::install(PLANTED);\n}}\n"),
     );
-    prove_red(cx, gate, name, &[rules2::ROW_INSTALLED_STORE], ov, naming)
+    naming.extend(names.iter().map(|n| (*n).to_string()));
 }
 
 fn ids(prefix: &str, names: &[String]) -> Vec<String> {
@@ -415,6 +406,86 @@ fn neutralise(line: &str, scans: &[crate::rx::Regex]) -> String {
     out
 }
 
+/// THE RENAME PLANTS of `single-terminal` (the approval desk's two plants on #1276), each its files
+/// and the caller it plants: `PlaneMoney` renamed to `Node` at module level (A), inside the calling
+/// fn (B), as a typed binding's type (C), beside the real `Node` (D), re-exported from another file
+/// and imported plainly (G) or by a glob (H), and as a raw identifier, `as r#Node` (I). A rename is
+/// followed, a name bound two ways is read as neither, a name any file binds to another type is
+/// read as neither in every file, and `r#Node` is `Node`: each caller is counted. One list for the
+/// battery's one run and the per-shape test over the rule alone.
+pub(crate) fn rename_plants() -> Vec<(Vec<(&'static str, &'static str)>, &'static str)> {
+    let reexport = (
+        "crates/busbar/src/root/zz_g_reexport.rs",
+        "pub use crate::plane_driver::PlaneMoney as Node;\n",
+    );
+    vec![
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_module.rs",
+                "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, \
+                 k: u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_rename_module",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
+                "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
+                 crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_rename_in_fn",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_binding.rs",
+                "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
+                 zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    \
+                 let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            )],
+            "zz_rename_binding",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_both.rs",
+                "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
+                 busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
+                 &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            )],
+            "zz_rename_both",
+        ),
+        (
+            vec![
+                reexport,
+                (
+                    "crates/busbar/src/root/zz_g_caller.rs",
+                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
+                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_g_caller",
+        ),
+        (
+            vec![
+                reexport,
+                (
+                    "crates/busbar/src/root/zz_h_caller.rs",
+                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
+                     {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_h_caller",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_i_caller.rs",
+                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
+                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_i_caller",
+        ),
+    ]
+}
+
 /// The attempt seam, the request terminal, the plane's doors and the plane/kernel wall.
 fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
@@ -633,10 +704,28 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
-    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
-    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
-    // why this rule exists; each of the three spellings is on its own line and each is named.
+    // THE KERNEL HOLDS NO PROTOCOL REGISTRY, AND ITS STORE DEBT ONLY FALLS: one run, every plant
+    // named distinctly. Each plant is its own file (or its own ledger entry), none names another's
+    // static, alias or entry, and none touches a money terminal, so each row is red for its own
+    // plants alone.
+    // * THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
+    //   holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
+    //   allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
+    //   why this rule exists; each of the three spellings is on its own line and each is named.
+    // * THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
+    //   `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel
+    //   spells neither banned word. The aliases are read across the workspace and banned in the
+    //   kernel too.
+    // * THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
+    //   `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
+    //   calling it. Refused by its shape.
+    // * THE INSTALLED-STORE ROW'S REACH (a6's reviews of #1406 and #1454): each store plant below
+    //   is one evasion the row read green before, in a kernel module of its own, and each names
+    //   its static.
+    // * THE DEBT ONLY FALLS, planted through the ceilings file so it holds whatever the list holds
+    //   today (an empty list included): a store that is gone left on the list under a ceiling
+    //   raised to cover it (the row is stale), and the list grown past that ceiling. And A NAMED
+    //   EXEMPTION WHOSE STORE IS GONE is stale: the list only shrinks.
     let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/proto/mod.rs",
@@ -650,23 +739,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "pub fn zz_planted_register_protocols() {\n    \
          busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a protocol registry grown back in the kernel, installed by the root",
-        &["kernel-no-protocol-registry"],
-        ov,
-        &[
-            "crates/busbar-kernel/src/proto/mod.rs:3",
-            "crates/busbar-kernel/src/proto/mod.rs:5",
-            "crates/busbar-kernel/src/proto/mod.rs:9",
-        ],
-    ));
-
-    // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
-    // `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel spells
-    // neither banned word. The aliases are read across the workspace and banned in the kernel too.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-contract/src/zz_planted_alias.rs",
         "pub type Dialect = crate::protocol::ProtocolDecl;\npub use crate::protocol::decl_for as \
@@ -678,25 +750,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
          Option<&'static str> {\n    busbar_contract::zz_planted_alias::find_dialect(name)\n}\n\n\
          pub fn zz_planted_kind(_: &Dialect) {}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a protocol registry the kernel reaches through workspace aliases of its banned names",
-        &["kernel-no-protocol-registry"],
-        ov,
-        &[
-            "Dialect",
-            "find_dialect",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
-        ],
-    ));
-
-    // THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
-    // `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
-    // calling it. Refused by its shape.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/zz_planted_erased.rs",
         "use std::any::Any;\nuse std::sync::OnceLock;\n\nstatic ZZ_TABLE: OnceLock<Box<dyn Any + \
@@ -707,344 +760,80 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "crates/busbar/src/root/zz_planted_wire.rs",
         "pub fn zz_planted_boot() {\n    busbar_kernel::zz_planted_erased::zz_planted_wire(PLANTED);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a registry behind a type-erased kernel static that the root fills",
-        &[rules2::ROW_INSTALLED_STORE],
-        ov,
-        &[
-            "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
-            "zz_planted_wire",
-        ],
-    ));
-
-    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores: a
-    // store drained without striking its row (the count falls under the ceiling, and the row is
-    // stale), and the list grown past its ceiling.
-    let rule_cfg = ConstructionGate::cfg(cx).ok();
-    let debt: Vec<String> = rule_cfg
-        .as_ref()
-        .and_then(|c| c.rule("kernel-no-protocol-registry").ok())
-        .map(|t| t.list_of("debt_stores"))
-        .unwrap_or_default();
-    match debt
-        .first()
-        .and_then(|d| d.split(" -- ").next()?.split_once("::"))
-    {
-        Some((file, name)) => {
-            let mut ov = on(base);
-            if let Ok(text) = cx.read(file) {
-                ov.set(file, text.replace(name, &format!("{name}_ZZ_DRAINED")));
-            }
-            r.push(prove_red(
-                cx,
-                gate,
-                "a debt store drained without its row struck and its ceiling lowered",
-                &[rules2::ROW_STORE_DEBT],
-                ov,
-                &["drained debt", name],
-            ));
-        }
-        None => r.push(Case {
-            name: "a debt store drained without its row struck and its ceiling lowered".to_string(),
-            covers: strings(&[rules2::ROW_STORE_DEBT]),
-            expected: Expect::Red { naming: vec![] },
-            got: Expect::Skipped,
-        }),
-    }
-    if let Ok(text) = cx.read(CEILINGS) {
-        let mut ov = on(base);
-        if let Some(grown) = ceilings::add_to_list(
-            &text,
-            "rules.kernel-no-protocol-registry",
-            "debt_stores",
-            &["crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string()],
-        ) {
-            ov.set(CEILINGS, grown);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            "the debt list grown past its ceiling",
-            &[rules2::ROW_STORE_DEBT],
-            ov,
-            &["may not grow"],
-        ));
-    }
-
-    // A `use … as` RENAME IS FOLLOWED (the approval desk's plant on #1276): `PlaneMoney` renamed to
-    // `Node`, the name of the other type that defines `settle_end`, at module level (A), inside the
-    // calling fn (B), and as a typed binding's type (C); and (D) the real `Node` and the rename both
-    // bound in one file. Each is the terminal called by a caller the config does not name, and each
-    // is counted: a rename is followed, and a name bound two ways is read as neither.
-    for (file, body, caller) in [
-        (
-            "crates/busbar/src/root/zz_planted_rename_module.rs",
-            "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, k: \
-             u64) {\n    Node::settle_end(m, k, 200);\n}\n",
-            "zz_rename_module",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
-            "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
-             crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
-            "zz_rename_in_fn",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_binding.rs",
-            "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
-             zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    let n: \
-             &Node = m;\n    n.settle_end(k, 200);\n}\n",
-            "zz_rename_binding",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_both.rs",
-            "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
-             busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
-             &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
-            "zz_rename_both",
-        ),
-    ] {
-        let mut ov = on(base);
-        ov.set(file, body);
-        r.push(prove_red(
-            cx,
-            gate,
-            format!("a terminal called through a `use … as` rename ({caller}) is counted"),
-            &["single-terminal"],
-            ov,
-            &[caller],
-        ));
-    }
-
-    // A RENAME THE CALLING FILE DOES NOT SHOW IS COUNTED TOO (the approval desk's second plant on
-    // #1276): `PlaneMoney` re-exported as `Node` from another file and imported plainly (G) or by a
-    // glob (H), and a raw identifier, `as r#Node` (I). A name any file binds to another type is read
-    // as neither in every file, and `r#Node` is `Node`.
-    // qa-names: crates/busbar/src/root/zz_g_reexport.rs -- xtask/src/gates/construction/selftest.rs -- an overlay-only plant path this selftest writes into a virtual tree, never a file on disk; the sibling zz_planted_*.rs literals beside it are not consts so qa-names never asked about them
-    const ZZ_REEXPORT: (&str, &str) = (
-        "crates/busbar/src/root/zz_g_reexport.rs",
-        "pub use crate::plane_driver::PlaneMoney as Node;\n",
-    );
-    for (files, caller) in [
-        (
-            vec![
-                ZZ_REEXPORT,
-                (
-                    "crates/busbar/src/root/zz_g_caller.rs",
-                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
-                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
-                ),
-            ],
-            "zz_g_caller",
-        ),
-        (
-            vec![
-                ZZ_REEXPORT,
-                (
-                    "crates/busbar/src/root/zz_h_caller.rs",
-                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
-                     {\n    Node::settle_end(m, k, 200);\n}\n",
-                ),
-            ],
-            "zz_h_caller",
-        ),
-        (
-            vec![(
-                "crates/busbar/src/root/zz_i_caller.rs",
-                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
-                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
-            )],
-            "zz_i_caller",
-        ),
-    ] {
-        let mut ov = on(base);
-        for (file, body) in files {
-            ov.set(file, body);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            format!(
-                "a terminal called through a rename its file does not show ({caller}) is counted"
-            ),
-            &["single-terminal"],
-            ov,
-            &[caller],
-        ));
-    }
-
-    // THE GREEN GROUP, one run: THE REAL TYPE STAYS ITS OWN. A binding declared in its own fn as the
-    // real `Node`, whatever another fn of its file declares the name as (the twin of the untyped
-    // binding above); the same shapes as the renames naming the real `Node`, imported plainly; and
-    // AN UNRELATED `fn settle_end` ON ANOTHER TYPE, NEITHER COUNTED NOR ALLOWED: the terminal is
-    // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
-    // `self`, is that type's business.
-    let mut ov = on(base);
-    for (file, body) in [
-        (
-            "crates/busbar/src/root/zz_planted_typed_own_fn.rs",
-            "use crate::root::plane_node::Node;\n\nfn zz_other_fn(n: &crate::plane_driver::PlaneMoney) \
-             {\n    let _ = n;\n}\n\npub fn zz_typed_own_fn(m: &Node) {\n    let n: &Node = m;\n    \
-             n.settle_end();\n}\n",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_real_node_path.rs",
-            "use crate::root::plane_node::Node;\n\npub fn zz_real_node_path(n: &Node) {\n    \
-             Node::settle_end(n);\n}\n",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_real_node_in_fn.rs",
-            "pub fn zz_real_node_in_fn(n: &crate::root::plane_node::Node) {\n    use \
-             crate::root::plane_node::Node;\n    Node::settle_end(n);\n}\n",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_real_node_binding.rs",
-            "use crate::root::plane_node::Node;\n\npub fn zz_real_node_binding(m: &Node) {\n    \
-             let n: &Node = m;\n    n.settle_end();\n}\n",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_unrelated_settle_end.rs",
-            "pub struct ZzUnrelated;\n\nimpl ZzUnrelated {\n    fn settle_end(&self) {}\n\n    \
-             fn zz_caller(&self) {\n        self.settle_end();\n    }\n}\n",
-        ),
-    ] {
-        ov.set(file, body);
-    }
-
-    // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
-    // `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel spells
-    // neither banned word. The aliases are read across the workspace and banned in the kernel too.
-    let mut ov = on(base);
-    ov.set(
-        "crates/busbar-contract/src/zz_planted_alias.rs",
-        "pub type Dialect = crate::protocol::ProtocolDecl;\npub use crate::protocol::decl_for as \
-         find_dialect;\n",
-    );
-    ov.set(
-        "crates/busbar-kernel/src/zz_planted_alias_use.rs",
-        "use busbar_contract::zz_planted_alias::Dialect;\n\npub fn zz_planted_lookup(name: &str) -> \
-         Option<&'static str> {\n    busbar_contract::zz_planted_alias::find_dialect(name)\n}\n\n\
-         pub fn zz_planted_kind(_: &Dialect) {}\n",
-    );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a protocol registry the kernel reaches through workspace aliases of its banned names",
-        &["kernel-no-protocol-registry"],
-        ov,
-        &[
-            "Dialect",
-            "find_dialect",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
-        ],
-    ));
-
-    // THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
-    // `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
-    // calling it. Refused by its shape.
-    let mut ov = on(base);
-    ov.set(
-        "crates/busbar-kernel/src/zz_planted_erased.rs",
-        "use std::any::Any;\nuse std::sync::OnceLock;\n\nstatic ZZ_TABLE: OnceLock<Box<dyn Any + \
-         Send + Sync>> = OnceLock::new();\n\npub fn zz_planted_wire(table: Box<dyn Any + Send + \
-         Sync>) {\n    let _ = ZZ_TABLE.set(table);\n}\n",
-    );
-    ov.set(
-        "crates/busbar/src/root/zz_planted_wire.rs",
-        "pub fn zz_planted_boot() {\n    busbar_kernel::zz_planted_erased::zz_planted_wire(PLANTED);\n}\n",
-    );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a registry behind a type-erased kernel static that the root fills",
-        &[rules2::ROW_INSTALLED_STORE],
-        ov,
-        &[
-            "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
-            "zz_planted_wire",
-        ],
-    ));
-
-    // THE INSTALLED-STORE ROW'S REACH (a6's review of #1406: the row caught much less than its
-    // title). Each plant below is one evasion the row read green before this change; each names
-    // its static. One root caller hands every planted installer its value.
+    let mut naming: Vec<String> = [
+        "crates/busbar-kernel/src/proto/mod.rs:3",
+        "crates/busbar-kernel/src/proto/mod.rs:5",
+        "crates/busbar-kernel/src/proto/mod.rs:9",
+        "Dialect",
+        "find_dialect",
+        "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
+        "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
+        "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
+        "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
+        "zz_planted_wire",
+    ]
+    .map(str::to_string)
+    .to_vec();
     // A. The type read through an alias: no cell and no map is spelled on the static's own line.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a type alias of a locked map",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_alias_store",
         "use std::any::{Any, TypeId};\nuse std::collections::HashMap;\nuse std::sync::{Arc, \
          OnceLock, RwLock};\n\ntype Erased = Arc<RwLock<HashMap<TypeId, Box<dyn Any + Send>>>>;\n\n\
          static S: OnceLock<Erased> = OnceLock::new();\n\npub fn install(table: Erased) {\n    let _ \
          = S.set(table);\n}\n",
         &["static S at crates/busbar-kernel/src/zz_planted_alias_store.rs"],
-    ));
+    );
     // A. The type read into a struct's fields: the map is a field of the held type.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a struct whose field is the map",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_field_store",
         "use std::collections::HashMap;\nuse std::sync::OnceLock;\n\npub struct Holder {\n    by_key: \
          HashMap<String, String>,\n}\n\nstatic HOLDER: OnceLock<Holder> = OnceLock::new();\n\npub fn \
          install(holder: Holder) {\n    let _ = HOLDER.set(holder);\n}\n",
         &["static HOLDER at crates/busbar-kernel/src/zz_planted_field_store.rs"],
-    ));
+    );
     // B. A lowercase name.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a lowercase static",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_lowercase_store",
         "use std::sync::OnceLock;\n\nstatic table: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
          fn install(rows: Vec<String>) {\n    let _ = table.set(rows);\n}\n",
         &["static table at crates/busbar-kernel/src/zz_planted_lowercase_store.rs"],
-    ));
+    );
     // B and C. A `thread_local!` RefCell.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a thread-local RefCell",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_thread_local_store",
         "use std::cell::RefCell;\n\nthread_local! {\n    static ROWS: RefCell<Vec<String>> = const \
          { RefCell::new(Vec::new()) };\n}\n\npub fn install(rows: Vec<String>) {\n    \
          ROWS.with(|r| *r.borrow_mut() = rows);\n}\n",
         &["static ROWS at crates/busbar-kernel/src/zz_planted_thread_local_store.rs"],
-    ));
+    );
     // B. A `lazy_static!` `static ref`.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a lazy_static",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_lazy_static_store",
         "use std::collections::HashMap;\nuse std::sync::Mutex;\n\nlazy_static! {\n    static ref \
          BY_NAME: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());\n}\n\npub fn \
          install(rows: HashMap<String, String>) {\n    *BY_NAME.lock().unwrap() = rows;\n}\n",
         &["static BY_NAME at crates/busbar-kernel/src/zz_planted_lazy_static_store.rs"],
-    ));
+    );
     // B. A `static mut`: the static is its own cell.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a static mut",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_static_mut_store",
         "static mut DECLS: Vec<String> = Vec::new();\n\npub fn install(rows: Vec<String>) {\n    \
          drop((rows, std::ptr::addr_of_mut!(DECLS)));\n}\n",
         &["static DECLS at crates/busbar-kernel/src/zz_planted_static_mut_store.rs"],
-    ));
+    );
     // B. A `pub static` the root sets directly: no installer fn at all.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/zz_planted_pub_static_store.rs",
         "use std::sync::OnceLock;\n\npub static TABLE: OnceLock<Vec<String>> = OnceLock::new();\n",
@@ -1054,19 +843,14 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "pub fn zz_planted_pub_static_boot() {\n    let _ = \
          busbar_kernel::zz_planted_pub_static_store::TABLE.set(PLANTED);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a registry behind a pub static the root sets directly",
-        &[rules2::ROW_INSTALLED_STORE],
-        ov,
-        &[
+    naming.extend(
+        [
             "static TABLE at crates/busbar-kernel/src/zz_planted_pub_static_store.rs",
             "pub static",
-        ],
-    ));
+        ]
+        .map(str::to_string),
+    );
     // B. An accessor that hands out the cell: the root sets it through the reference.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/zz_planted_accessor_store.rs",
         "use std::sync::OnceLock;\n\nstatic CELL: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
@@ -1077,23 +861,17 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "pub fn zz_planted_accessor_boot() {\n    let _ = \
          busbar_kernel::zz_planted_accessor_store::cell().set(PLANTED);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a registry behind an accessor that returns the cell",
-        &[rules2::ROW_INSTALLED_STORE],
-        ov,
-        &[
+    naming.extend(
+        [
             "static CELL at crates/busbar-kernel/src/zz_planted_accessor_store.rs",
             "pub fn cell (returns the cell)",
-        ],
-    ));
+        ]
+        .map(str::to_string),
+    );
     // B. A setter one call away: the `pub fn` never names the static, a private fn it calls does.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a private setter one call from a pub fn",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_one_hop_store",
         "use std::sync::OnceLock;\n\nstatic HIDDEN: OnceLock<Vec<String>> = OnceLock::new();\n\nfn \
          put(rows: Vec<String>) {\n    let _ = HIDDEN.set(rows);\n}\n\npub fn install(rows: \
@@ -1102,14 +880,12 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "static HIDDEN at crates/busbar-kernel/src/zz_planted_one_hop_store.rs",
             "pub fn install (through put)",
         ],
-    ));
+    );
     // C. The cells and maps the row did not know: ArcSwap, ArcSwapOption, AtomicPtr and DashMap,
     // holding an FxHashMap and an AnyMap.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "registries behind ArcSwap, ArcSwapOption, AtomicPtr and DashMap",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_new_cells_store",
         "static SWAPPED: ArcSwap<Vec<String>> = ArcSwap::from_pointee(Vec::new());\n\nstatic \
          SWAPPED_OPT: ArcSwapOption<FxHashMap<String, String>> = ArcSwapOption::const_empty();\n\n\
@@ -1123,25 +899,22 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "static POINTED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
             "static DASHED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
         ],
-    ));
+    );
     // a6's review of #1454: five evasions the row read green. Each names its static.
     // The type read to its top-level end: a `;` inside `[u8; 0]` and an `=` inside
     // `Iterator<Item = u8>` are the type's own, not its end. (#1408's row read the type to its first
     // `=`, `([u8; 0], Option<fn(&dyn Iterator<Item `, which names no cell, so this is red-first
     // against #1408 as well as against the `;`-ended read this PR first wrote.)
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a tuple whose earlier fields hold a `;` and an `=`",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_tupled_store",
         "use std::sync::OnceLock;\n\nstatic TUPLED: ([u8; 0], Option<fn(&dyn Iterator<Item = \
          u8>)>, OnceLock<Vec<String>>) = ([], None, OnceLock::new());\n\npub fn install(rows: \
          Vec<String>) {\n    let _ = TUPLED.2.set(rows);\n}\n",
         &["static TUPLED at crates/busbar-kernel/src/zz_planted_tupled_store.rs"],
-    ));
+    );
     // A setter imported with `use` (and under an alias) and called bare from another file.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/zz_planted_use_store.rs",
         "use std::sync::OnceLock;\n\nstatic IMPORTED: OnceLock<Vec<String>> = OnceLock::new();\n\n\
@@ -1157,36 +930,28 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "use crate::zz_planted_use_store::{put as stash};\n\npub fn zz_install_aliased(rows: \
          Vec<String>) {\n    stash(rows);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a registry behind a setter another file imports with `use` and calls bare",
-        &[rules2::ROW_INSTALLED_STORE],
-        ov,
-        &[
+    naming.extend(
+        [
             "static IMPORTED at crates/busbar-kernel/src/zz_planted_use_store.rs",
             "pub fn zz_install (through put)",
             "pub fn zz_install_aliased (through put)",
-        ],
-    ));
+        ]
+        .map(str::to_string),
+    );
     // A static a `macro_rules!` declares under a metavariable name, its type handed in.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a macro-generated static",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_macro_store",
         "use std::sync::OnceLock;\n\nmacro_rules! zz_store {\n    ($name:ident, $ty:ty) => {\n        \
          static $name: OnceLock<$ty> = OnceLock::new();\n    };\n}\n\nzz_store!(GENERATED, \
          Vec<String>);\n\npub fn install(rows: Vec<String>) {\n    let _ = GENERATED.set(rows);\n}\n",
         &["static GENERATED at crates/busbar-kernel/src/zz_planted_macro_store.rs"],
-    ));
+    );
     // A trait method (no `pub` on it) that takes the value and sets the store.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a trait-method installer",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_trait_store",
         "use std::sync::OnceLock;\n\nstatic BY_TRAIT: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
          trait ZzInstall {\n    fn install_rows(&self, rows: Vec<String>);\n}\n\npub struct \
@@ -1196,38 +961,32 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "static BY_TRAIT at crates/busbar-kernel/src/zz_planted_trait_store.rs",
             "pub fn install_rows",
         ],
-    ));
+    );
     // An `UnsafeCell` wrapper: the struct's field is the cell.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind an UnsafeCell wrapper",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_unsafe_cell_store",
         "use std::cell::UnsafeCell;\n\npub struct ZzSlot(UnsafeCell<Vec<String>>);\n\nstatic SLOT: \
          ZzSlot = ZzSlot(UnsafeCell::new(Vec::new()));\n\npub fn install(rows: Vec<String>) {\n    \
          drop((rows, SLOT.0.get()));\n}\n",
         &["static SLOT at crates/busbar-kernel/src/zz_planted_unsafe_cell_store.rs"],
-    ));
+    );
     // a6's second review of #1454. A `Cell` is a cell: a thread-local `Cell<&'static [String]>` the
     // root sets whole through a `pub fn` is a store.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind a thread-local Cell of a static slice",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_cell_store",
         "use std::cell::Cell;\n\nthread_local! {\n    static C: Cell<&'static [String]> = const \
          { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static [String]) {\n    C.with(|c| \
          c.set(rows));\n}\n",
         &["static C at crates/busbar-kernel/src/zz_planted_cell_store.rs"],
-    ));
+    );
     // `OnceBox` and `AtomicCell` are named, so the row fails closed on them too.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "registries behind OnceBox and AtomicCell",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_once_box_store",
         "static BOXED: OnceBox<Vec<String>> = OnceBox::new();\n\nstatic SWAPPED_SLICE: \
          AtomicCell<Option<&'static [String]>> = AtomicCell::new(None);\n\npub fn install(rows: \
@@ -1236,15 +995,13 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "static BOXED at crates/busbar-kernel/src/zz_planted_once_box_store.rs",
             "static SWAPPED_SLICE at crates/busbar-kernel/src/zz_planted_once_box_store.rs",
         ],
-    ));
+    );
     // A ptr/len pair of `AtomicUsize`s: the slice is laundered through two integers, so no cell
     // and no collection is spelled in either type. A fn of the file that names each and turns a
     // pointer into an integer (`as_ptr`) makes each a store.
-    r.push(store_plant(
-        gate,
-        cx,
-        base,
-        "a registry behind an AtomicUsize ptr/len pair",
+    store_plant(
+        &mut ov,
+        &mut naming,
         "zz_planted_ptr_len_store",
         "use std::sync::atomic::{AtomicUsize, Ordering};\n\nstatic PTR: AtomicUsize = \
          AtomicUsize::new(0);\nstatic LEN: AtomicUsize = AtomicUsize::new(0);\n\npub fn \
@@ -1254,21 +1011,64 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "static PTR at crates/busbar-kernel/src/zz_planted_ptr_len_store.rs",
             "static LEN at crates/busbar-kernel/src/zz_planted_ptr_len_store.rs",
         ],
-    ));
-    // AND NOT EVERY ATOMIC: a counter a `pub fn` adds to launders no pointer, and is no store.
-    let mut ov = on(base);
-    ov.set(
-        "crates/busbar-kernel/src/zz_planted_counter.rs",
-        "use std::sync::atomic::{AtomicUsize, Ordering};\n\nstatic SEEN: AtomicUsize = \
-         AtomicUsize::new(0);\n\npub fn zz_count(n: usize) {\n    SEEN.fetch_add(n, \
-         Ordering::Relaxed);\n}\n",
     );
-    r.push(prove_green(
-        &cx.with_overlay(ov),
+    let ledgers_planted = cx.read(CEILINGS).ok().and_then(|text| {
+        let max = ConstructionGate::cfg(cx)
+            .ok()
+            .and_then(|c| {
+                c.rule("kernel-no-protocol-registry")
+                    .ok()
+                    .and_then(|t| t.int_of("max_debt"))
+            })
+            .unwrap_or(0);
+        let t = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "debt_stores",
+            &[
+                "crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED -- planted".to_string(),
+                "crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string(),
+            ],
+        )?;
+        let t = ceilings::set_int(&t, "rules.kernel-no-protocol-registry", "max_debt", max + 1)?;
+        ceilings::add_to_list(
+            &t,
+            "rules.kernel-no-protocol-registry",
+            "exempt_stores",
+            &["crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE -- planted".to_string()],
+        )
+    });
+    match ledgers_planted {
+        Some(text) => ov.set(CEILINGS, text),
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] debt_stores/max_debt/exempt_stores could not be \
+             planted, so the debt and stale-exemption arms are unproven",
+        ),
+    }
+    naming.extend(
+        [
+            "drained debt crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED",
+            "may not grow",
+            "stale exemption crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE",
+        ]
+        .map(str::to_string),
+    );
+    let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+    r.push(prove_red(
+        cx,
         gate,
-        "an atomic counter a pub fn adds to is not an installed store",
-        &[rules2::ROW_INSTALLED_STORE],
+        "a protocol registry grown back in the kernel, reached through workspace aliases of its \
+         banned names, or behind a kernel store of any shape the root fills, and a debt list and an \
+         exemption list that name what is not there",
+        &[
+            "kernel-no-protocol-registry",
+            rules2::ROW_INSTALLED_STORE,
+            rules2::ROW_STORE_DEBT,
+        ],
+        ov,
+        &naming,
     ));
+
     // EACH ROW HOLDS ITS OWN CEILING (a6's second review of #1454). Under #1408's one shared
     // `max_hits`, raising it to 1 let a new store in beside the names it bans; the store row is
     // held to `max_stores` now, so the store stays red under a raised `max_hits`.
@@ -1320,74 +1120,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ));
     }
 
-    // AND NOT EVERY STATIC: a fn-local memo nothing outside the kernel reaches is not installed.
-    let mut ov = on(base);
-    ov.set(
-        "crates/busbar-kernel/src/zz_planted_private_memo.rs",
-        "use std::sync::OnceLock;\n\nfn zz_memo_len() -> usize {\n    static seen: \
-         OnceLock<Vec<String>> = OnceLock::new();\n    seen.get_or_init(Vec::new).len()\n}\n",
-    );
-    r.push(prove_green(
-        &cx.with_overlay(ov),
-        gate,
-        "a fn-local memo no code outside the kernel reaches is not an installed store",
-        &[rules2::ROW_INSTALLED_STORE],
-    ));
-
-    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores,
-    // planted through the ceilings file so they hold whatever the list holds today: a store that is
-    // gone left on the list under a ceiling raised to cover it (the count falls under the ceiling,
-    // and the row is stale), and the list grown past its ceiling.
-    if let Ok(text) = cx.read(CEILINGS) {
-        let mut ov = on(base);
-        let drained = ceilings::add_to_list(
-            &text,
-            "rules.kernel-no-protocol-registry",
-            "debt_stores",
-            &["crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED -- planted".to_string()],
-        )
-        .and_then(|t| {
-            let max = ConstructionGate::cfg(cx)
-                .ok()
-                .and_then(|c| {
-                    c.rule("kernel-no-protocol-registry")
-                        .ok()
-                        .and_then(|t| t.int_of("max_debt"))
-                })
-                .unwrap_or(0);
-            ceilings::set_int(&t, "rules.kernel-no-protocol-registry", "max_debt", max + 1)
-        });
-        if let Some(drained) = drained {
-            ov.set(CEILINGS, drained);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            "a debt store drained without its row struck and its ceiling lowered",
-            &[rules2::ROW_STORE_DEBT],
-            ov,
-            &["drained debt", "ZZ_DRAINED"],
-        ));
-    }
-    if let Ok(text) = cx.read(CEILINGS) {
-        let mut ov = on(base);
-        if let Some(grown) = ceilings::add_to_list(
-            &text,
-            "rules.kernel-no-protocol-registry",
-            "debt_stores",
-            &["crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string()],
-        ) {
-            ov.set(CEILINGS, grown);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            "the debt list grown past its ceiling",
-            &[rules2::ROW_STORE_DEBT],
-            ov,
-            &["may not grow"],
-        ));
-    }
     // THE CEILING ONLY FALLS: a `max_debt` left above the count is slack, and red.
     if let Ok(text) = cx.read(CEILINGS) {
         let mut ov = on(base);
@@ -1416,42 +1148,89 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             &["under a ceiling of", "lower max_debt"],
         ));
     }
-    // A NAMED EXEMPTION WHOSE STORE IS GONE is stale, and red: the list only shrinks.
-    if let Ok(text) = cx.read(CEILINGS) {
-        let mut ov = on(base);
-        if let Some(stale) = ceilings::add_to_list(
-            &text,
-            "rules.kernel-no-protocol-registry",
-            "exempt_stores",
-            &["crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE -- planted".to_string()],
-        ) {
-            ov.set(CEILINGS, stale);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            "an exemption naming a store that is not there",
-            &[rules2::ROW_INSTALLED_STORE],
-            ov,
-            &["stale exemption crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE"],
-        ));
-    }
 
-    // AN UNRELATED `fn settle_end` ON ANOTHER TYPE IS NEITHER COUNTED NOR ALLOWED: the terminal is
+    // THE RENAMES, ONE RUN ([`rename_plants`]): `PlaneMoney` renamed to `Node` (the name of the other
+    // type that defines `settle_end`) in the calling file, at module level (A), inside the calling
+    // fn (B), as a typed binding's type (C), beside the real `Node` (D) and as a raw identifier (I);
+    // and re-exported from another file, imported plainly (G) or by a glob (H). Each binds `Node`
+    // tree-wide, so they share one run and each caller is named in it. That each SHAPE is read on
+    // its own (a rename the rule did not read would still be counted here, for its neighbour's
+    // sake) is proven per shape, over the rule alone, by
+    // `construction::tests::single_terminal_counts_a_terminal_called_through_each_rename_shape`.
+    let mut ov = on(base);
+    let mut callers = Vec::new();
+    for (files, caller) in rename_plants() {
+        for (file, body) in files {
+            ov.set(file, body);
+        }
+        callers.push(caller);
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called through a `use … as` rename, in its own file or another's, is counted",
+        &["single-terminal"],
+        ov,
+        &callers,
+    ));
+
+    // THE GREEN GROUP, one run: THE REAL TYPE STAYS ITS OWN. A binding declared in its own fn as the
+    // real `Node`, whatever another fn of its file declares the name as (the twin of the untyped
+    // binding above); the same shapes as the renames naming the real `Node`, imported plainly; and
+    // AN UNRELATED `fn settle_end` ON ANOTHER TYPE, NEITHER COUNTED NOR ALLOWED: the terminal is
     // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
     // `self`, is that type's business.
     let mut ov = on(base);
-    ov.set(
-        "crates/busbar/src/root/zz_planted_unrelated_settle_end.rs",
-        "pub struct ZzUnrelated;\n\nimpl ZzUnrelated {\n    fn settle_end(&self) {}\n\n    \
-         fn zz_caller(&self) {\n        self.settle_end();\n    }\n}\n",
-    );
+    for (file, body) in [
+        (
+            "crates/busbar/src/root/zz_planted_typed_own_fn.rs",
+            "use crate::root::plane_node::Node;\n\nfn zz_other_fn(n: &crate::plane_driver::PlaneMoney) \
+             {\n    let _ = n;\n}\n\npub fn zz_typed_own_fn(m: &Node) {\n    let n: &Node = m;\n    \
+             n.settle_end();\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_real_node_path.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_real_node_path(n: &Node) {\n    \
+             Node::settle_end(n);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_real_node_in_fn.rs",
+            "pub fn zz_real_node_in_fn(n: &crate::root::plane_node::Node) {\n    use \
+             crate::root::plane_node::Node;\n    Node::settle_end(n);\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_real_node_binding.rs",
+            "use crate::root::plane_node::Node;\n\npub fn zz_real_node_binding(m: &Node) {\n    \
+             let n: &Node = m;\n    n.settle_end();\n}\n",
+        ),
+        (
+            "crates/busbar/src/root/zz_planted_unrelated_settle_end.rs",
+            "pub struct ZzUnrelated;\n\nimpl ZzUnrelated {\n    fn settle_end(&self) {}\n\n    \
+             fn zz_caller(&self) {\n        self.settle_end();\n    }\n}\n",
+        ),
+        // AND NOT EVERY ATOMIC: a counter a `pub fn` adds to launders no pointer, and is no store.
+        (
+            "crates/busbar-kernel/src/zz_planted_counter.rs",
+            "use std::sync::atomic::{AtomicUsize, Ordering};\n\nstatic SEEN: AtomicUsize = \
+             AtomicUsize::new(0);\n\npub fn zz_count(n: usize) {\n    SEEN.fetch_add(n, \
+             Ordering::Relaxed);\n}\n",
+        ),
+        // AND NOT EVERY STATIC: a fn-local memo nothing outside the kernel reaches is not installed.
+        (
+            "crates/busbar-kernel/src/zz_planted_private_memo.rs",
+            "use std::sync::OnceLock;\n\nfn zz_memo_len() -> usize {\n    static seen: \
+             OnceLock<Vec<String>> = OnceLock::new();\n    seen.get_or_init(Vec::new).len()\n}\n",
+        ),
+    ] {
+        ov.set(file, body);
+    }
     r.push(prove_green(
         &cx.with_overlay(ov),
         gate,
         "the real `Node` (bound in its own fn, or named plainly) and a same-named method on another \
-         type are not the terminal",
-        &["single-terminal"],
+         type are not the terminal; an atomic counter a pub fn adds to and a fn-local memo nothing \
+         outside the kernel reaches are not installed stores",
+        &["single-terminal", rules2::ROW_INSTALLED_STORE],
     ));
 
     // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates

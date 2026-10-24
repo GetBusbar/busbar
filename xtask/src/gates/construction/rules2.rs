@@ -1328,17 +1328,6 @@ pub const ROW_STORE_DEBT: &str = "kernel-no-protocol-registry:debt";
 /// point (an alias of an alias is an alias): `type X = …T…;`, `T as X` (a `use` or re-export), and a
 /// `const`/`static` bound to `T` (a fn pointer). Read over every file the tree holds, test or not.
 fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
-    let texts: Vec<String> = tree
-        .files
-        .values()
-        .map(|lines| {
-            lines
-                .iter()
-                .map(|l| l.code.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect();
     let mut known: Vec<String> = targets.to_vec();
     let mut i = 0;
     while i < known.len() {
@@ -1353,15 +1342,32 @@ fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
             ))?,
         ];
         let needle = known[i].clone();
+        // ONE READ PER FILE AND NAME, SHARED BY EVERY RUN: a file's aliases of `needle` depend on
+        // its lines and the name alone, so they are memoised on the file's scan
+        // ([`memo_file_scan`]); a plant re-reads only the files it planted.
+        let tag = format!("kernel-no-protocol-registry:aliases-of:{needle}");
         let mut found = Vec::new();
-        for text in texts.iter().filter(|x| x.contains(needle.as_str())) {
-            for shape in &shapes {
-                for m in shape.find_iter(text.as_bytes()) {
-                    if let Some(alias) = m.str_of(text.as_bytes(), 1) {
-                        found.push(alias);
+        for lines in tree.files.values() {
+            let hits = memo_file_scan(tag.clone(), lines, |lines| {
+                let text = lines
+                    .iter()
+                    .map(|l| l.code.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut out = Vec::new();
+                if !text.contains(needle.as_str()) {
+                    return out;
+                }
+                for shape in &shapes {
+                    for m in shape.find_iter(text.as_bytes()) {
+                        if let Some(alias) = m.str_of(text.as_bytes(), 1) {
+                            out.push(alias);
+                        }
                     }
                 }
-            }
+                out
+            });
+            found.extend(hits.iter().cloned());
         }
         for alias in found {
             if !known.contains(&alias) {

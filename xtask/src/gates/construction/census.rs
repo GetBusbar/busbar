@@ -862,20 +862,72 @@ fn base_view(cx: &Ctx, sha: &str) -> Result<Ctx, String> {
                 .filter(|l| !l.is_empty())
                 .map(str::to_string),
         ),
-        None => {
-            changed.extend(cx.git_lines(&["diff", "--name-only", "--no-renames", sha, "--"])?);
-            changed.extend(cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?);
-        }
+        None => changed.extend(base_diff_names(cx, sha)?),
     }
     let mut ov = cx.overlay().cloned().unwrap_or_default();
     changed.extend(ov.paths().map(|p| p.to_string_lossy().replace('\\', "/")));
     for rel in changed.iter().filter(|r| r.ends_with(".rs")) {
-        match cx.git_show(sha, rel) {
+        match base_file(cx, sha, rel) {
             Ok(text) => ov.set(rel, text),
             Err(_) => ov.remove(rel),
         }
     }
     Ok(cx.with_overlay(ov))
+}
+
+/// The paths that differ from `sha` (`git diff --name-only <sha>` and the untracked files), read
+/// ONCE PER PROCESS for a checkout and a base: neither moves while a battery runs, so every plant's
+/// base view reads the same answer without spawning git again.
+fn base_diff_names(cx: &Ctx, sha: &str) -> Result<Vec<String>, String> {
+    type Memo = std::collections::HashMap<(std::path::PathBuf, String), Vec<String>>;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    let key = (cx.root().to_path_buf(), sha.to_string());
+    if let Some(hit) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return Ok(hit.clone());
+    }
+    let mut names = cx.git_lines(&["diff", "--name-only", "--no-renames", sha, "--"])?;
+    names.extend(cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?);
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, names.clone());
+    Ok(names)
+}
+
+/// `rel` as the commit `sha` holds it, read ONCE PER PROCESS for a checkout, a commit and a path:
+/// a commit's file never changes. A plant that answers the read itself (`git-show:<sha>:<rel>`) or
+/// plants the ref (`git-ref:<sha>`) is asked every time, as [`Ctx::git_show`] asks it.
+fn base_file(cx: &Ctx, sha: &str, rel: &str) -> Result<String, String> {
+    if cx
+        .overlay_command(&format!("git-show:{sha}:{rel}"))
+        .is_some()
+        || cx.overlay_command(&format!("git-ref:{sha}")).is_some()
+    {
+        return cx.git_show(sha, rel);
+    }
+    type Memo =
+        std::collections::HashMap<(std::path::PathBuf, String, String), Result<String, String>>;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    let key = (cx.root().to_path_buf(), sha.to_string(), rel.to_string());
+    if let Some(hit) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return hit.clone();
+    }
+    let got = cx.git_show(sha, rel);
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, got.clone());
+    got
 }
 
 /// THE LEDGERS A RE-MEASURE READS AS THE BASE HAD THEM (ARCHITECT ruling on a6's third review of
