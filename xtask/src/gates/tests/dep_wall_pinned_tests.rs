@@ -86,13 +86,13 @@ fn a_carrier_the_base_ledger_does_not_carry_is_refused() {
     ov.set(
         LEDGER,
         format!(
-            "{}\ncarrier\tbusbar-transport-ws\n",
+            "{}\ncarrier\tbusbar-transport-tcp\n",
             cx.read(LEDGER).unwrap_or_default().trim_end()
         ),
     );
     let (red, scope) = row(&cx, ov, ROW_SCOPE);
     assert!(
-        red && scope.contains("busbar-transport-ws"),
+        red && scope.contains("busbar-transport-tcp") && scope.contains("carries no such line"),
         "a carrier exemption written in this change was accepted: {scope}"
     );
 }
@@ -129,21 +129,50 @@ fn a_renamed_tokio_or_a_net_feature_the_plugin_forwards_is_an_offence() {
 }
 
 #[test]
-fn a_carrier_outside_the_transport_kind_is_refused_whatever_its_name_says() {
+fn a_framer_carrier_line_the_base_carries_is_refused_and_exempts_nothing() {
     let cx = Ctx::workspace().expect("workspace context");
-    let mut ov = based(&cx);
-    // The kind table no longer names the transport directory: no carrier is a transport crate.
-    let config = cx.read(CONFIG).expect("the kind table reads");
-    ov.set(
-        CONFIG,
-        config.replace(
-            "transport = [\"crates/busbar-transport-*\"]",
-            "transport = [\"crates/zz-no-transport-*\"]",
-        ),
+    // The base AND the head carry `carrier busbar-transport-ws`: Law 9 is met, and ws is a framer.
+    let carried = format!(
+        "{}\ncarrier\tbusbar-transport-ws\n",
+        cx.read(LEDGER).unwrap_or_default().trim_end()
     );
-    let (red, scope) = row(&cx, ov, ROW_SCOPE);
+    let mut ov = Overlay::new();
+    ov.set_command(BASE_PIN_KEY, BASE);
+    ov.set_command(format!("git-show:{BASE}:{LEDGER}"), carried.clone());
+    ov.set(LEDGER, carried);
+    ov.set("crates/busbar-transport-ws/src/planted_socket.rs", SOCKET);
+    let (red, scope) = row(&cx, ov.clone(), ROW_SCOPE);
     assert!(
-        red && scope.contains("busbar-transport-stdio") && scope.contains("not a transport crate"),
-        "a carrier whose name says `transport` was admitted outside the transport kind: {scope}"
+        red && scope.contains("busbar-transport-ws") && scope.contains("is no carrier"),
+        "a carrier line on the ws framer was admitted: {scope}"
     );
+    let (red, new) = row(&cx, ov, ROW_NEW);
+    assert!(
+        red && new.contains("busbar-transport-ws") && new.contains("std::net"),
+        "the ws framer's socket went unmeasured behind a carrier line: {new}"
+    );
+}
+
+#[test]
+fn only_the_spec_carriers_may_be_exempted() {
+    assert_eq!(CARRIERS, ["busbar-transport-tcp", "busbar-transport-stdio"]);
+}
+
+#[test]
+fn an_invented_plugin_joins_the_planted_workspace_with_its_edges() {
+    let real = r#"{"packages":[{"name":"socket2","id":"socket2-id"}],"resolve":{"nodes":[]}}"#;
+    let out: Value = serde_json::from_str(&with_crate(
+        real,
+        "/r",
+        "busbar-transport-evildep",
+        &["socket2"],
+    ))
+    .expect("the planted answer reads");
+    let pkg = &out["packages"][1];
+    assert_eq!(pkg["name"], "busbar-transport-evildep");
+    assert!(pkg["source"]
+        .as_str()
+        .is_some_and(|s| s.starts_with(EXTERNAL_SOURCE)));
+    assert_eq!(out["resolve"]["nodes"][0]["deps"][0]["pkg"], "socket2-id");
+    assert_eq!(with_crate("not json", "/r", "x", &[]), "");
 }
