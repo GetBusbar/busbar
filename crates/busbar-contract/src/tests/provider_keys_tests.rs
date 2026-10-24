@@ -139,12 +139,20 @@ fn a_non_neutral_shape_word_is_refused() {
             "{shape}: {err}"
         );
         assert!(
-            err.contains("str, one-of, int, bool, list, str-map, table"),
+            err.contains("str, one-of, int, u32, u64, usize, bool, list, str-map, table"),
             "{err}"
         );
     }
     // Each neutral word is accepted where the same position refused the others.
-    for shape in [r#""str""#, r#""int""#, r#""bool""#, r#""str-map""#] {
+    for shape in [
+        r#""str""#,
+        r#""int""#,
+        r#""u32""#,
+        r#""u64""#,
+        r#""usize""#,
+        r#""bool""#,
+        r#""str-map""#,
+    ] {
         assert!(decode(with_shape(shape).as_bytes()).is_ok(), "{shape}");
     }
 }
