@@ -711,7 +711,7 @@ fn planted(body: &str) -> Overlay {
 
 fn planted_at(path: &str, body: &str) -> Overlay {
     let mut ov = Overlay::new();
-    ov.set(path.to_string(), body);
+    ov.set(path, body);
     ov
 }
 
