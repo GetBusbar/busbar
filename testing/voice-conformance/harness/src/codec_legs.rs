@@ -32,7 +32,7 @@ use busbar_plane_streaming::codec::ir::{
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, SessionConfig, WireEvent,
 };
 use busbar_plane_streaming::door::{read_settings, RIDES_LIVE_SOCKET, RIDES_REALTIME_SOCKET};
-use busbar_plane_streaming::driven::{GEMINI_SOCKET_PATH, REALTIME_SOCKET_PATH};
+use busbar_plane_streaming::driven::GEMINI_SOCKET_PATH;
 use busbar_plane_streaming::session_door::PER_SESSION_CLASS;
 use busbar_plane_streaming::splice::{splice, LockedKeys};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
@@ -41,15 +41,21 @@ use bytes::Bytes;
 use serde_json::Value;
 
 use crate::door::{
-    judge_planted, open, result, Emission, Log, Plant, Rig, Session, PUBLIC, SESSION,
+    judge_planted, open, result, Emission, Log, Plant, Rig, Session, PUBLIC, REALTIME_CLAIM,
+    SESSION,
 };
 
 // ── the two dialects ────────────────────────────────────────────────────────────────────────────
 
+/// What a plain OpenAI Realtime session dials under the member's base URL: the realtime socket
+/// naming the session's model ([`crate::door::MODEL`], the model [`SESSION`] locks), as OpenAI's
+/// own WS surface takes it (ARCHITECT ruling 2026-10-23 on Part 2 #45).
+pub const REALTIME_DIAL: &str = "/v1/realtime?model=m-cap";
+
 /// A duplex dialect the plane dials, and the session door that speaks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
-    /// OpenAI Realtime: the browser's sideband socket (claim 2).
+    /// OpenAI Realtime: the plain realtime socket (`GET /v1/realtime`, [`REALTIME_CLAIM`]).
     OpenAi,
     /// Gemini Live: the Gemini socket (claim 3).
     Gemini,
@@ -76,7 +82,7 @@ impl Dialect {
     /// The door claim that opens a session in it.
     pub const fn claim(self) -> u32 {
         match self {
-            Dialect::OpenAi => 2,
+            Dialect::OpenAi => REALTIME_CLAIM,
             Dialect::Gemini => 3,
         }
     }
@@ -89,10 +95,11 @@ impl Dialect {
         }
     }
 
-    /// The far end's socket, under the member's base URL.
+    /// The far end's socket, under the member's base URL, as a session on the dialect's door dials
+    /// it: OpenAI Realtime's names the session's model ([`REALTIME_DIAL`]).
     pub const fn socket(self) -> &'static str {
         match self {
-            Dialect::OpenAi => REALTIME_SOCKET_PATH,
+            Dialect::OpenAi => REALTIME_DIAL,
             Dialect::Gemini => GEMINI_SOCKET_PATH,
         }
     }

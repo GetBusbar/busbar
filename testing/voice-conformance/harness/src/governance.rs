@@ -17,7 +17,7 @@ use crate::codec_legs::{caller_norms, downscope_bridge, far_norms, frame, Dialec
 use crate::composition::{downlink, uplink, usage_units, USAGE_DONE};
 use crate::door::{
     drive, judge, open, piece, refusal, result, session, tick, Emission, Log, Piece, Rendered, Rig,
-    Session, PUBLIC, SESSION,
+    Session, PUBLIC, REALTIME_CLAIM, SESSION,
 };
 
 /// `governance <checkpoint>`: one observation; always exit 0.
@@ -37,7 +37,7 @@ pub fn run(rig: &Rig, checkpoint: &str) -> i32 {
 
 fn barge_script(p: &Plugin<Plane>) -> Log {
     let _ = open(p, SESSION, Some(PUBLIC));
-    let mut s = Session::open(p, 100, 2);
+    let mut s = Session::open(p, 100, REALTIME_CLAIM);
     // 96 bytes of 24 kHz PCM16: the caller has heard 2 ms of the far end's answer.
     s.push(FROM_FAR_END, 0, &downlink(96));
     s.push(
@@ -102,7 +102,7 @@ struct CeilingObs {
 
 fn ceiling_script(p: &Plugin<Plane>) -> CeilingObs {
     let _ = open(p, CEILING, Some(PUBLIC));
-    let mut s = Session::open(p, 110, 2);
+    let mut s = Session::open(p, 110, REALTIME_CLAIM);
     let (_, next) = tick(p, 1_000);
     let _ = tick(p, 1_000 + 1_000_000_000);
     let (_, owed) = drive(p);
@@ -163,15 +163,21 @@ struct Settled {
 
 fn settle_script(p: &Plugin<Plane>) -> Settled {
     let _ = open(p, SESSION, Some(PUBLIC));
-    let mut s = Session::open(p, 120, 2);
+    let mut s = Session::open(p, 120, REALTIME_CLAIM);
     s.push(FROM_CALLER, 0, &uplink(1000));
     let narrow = Piece {
         units_cap: 2,
-        ..session(120, 2, FROM_FAR_END, 0, USAGE_DONE)
+        ..session(120, REALTIME_CLAIM, FROM_FAR_END, 0, USAGE_DONE)
     };
     let a = piece(p, &narrow);
-    let b = piece(p, &session(120, 2, FROM_FAR_END, 0, USAGE_DONE));
-    let c = piece(p, &session(120, 2, FROM_CALLER, PIECE_LAST, &[]));
+    let b = piece(
+        p,
+        &session(120, REALTIME_CLAIM, FROM_FAR_END, 0, USAGE_DONE),
+    );
+    let c = piece(
+        p,
+        &session(120, REALTIME_CLAIM, FROM_CALLER, PIECE_LAST, &[]),
+    );
     Settled {
         lines: vec![
             format!("narrow {:?} units=[{}]", a.outcome, a.units_line()),
@@ -225,7 +231,7 @@ fn widened(text: &str) -> bool {
 
 fn downscope_script(p: &Plugin<Plane>) -> Log {
     let _ = open(p, SESSION, Some(PUBLIC));
-    let mut s = Session::open(p, 140, 2);
+    let mut s = Session::open(p, 140, REALTIME_CLAIM);
     s.push(FROM_CALLER, 0, &frame(&downscope_update()));
     s.log
 }
@@ -292,10 +298,13 @@ struct CloseObs {
 
 fn close_script(p: &Plugin<Plane>) -> CloseObs {
     let _ = open(p, SESSION, Some(PUBLIC));
-    let mut s = Session::open(p, 130, 2);
+    let mut s = Session::open(p, 130, REALTIME_CLAIM);
     s.push(FROM_FAR_END, 0, &downlink(96));
     s.push(FROM_CALLER, PIECE_LAST, &[]);
-    let late = piece(p, &session(130, 2, FROM_FAR_END, 0, &downlink(96)));
+    let late = piece(
+        p,
+        &session(130, REALTIME_CLAIM, FROM_FAR_END, 0, &downlink(96)),
+    );
     CloseObs {
         log: s.log,
         late: (late.outcome, late.emitted.len()),
