@@ -2443,7 +2443,9 @@ mod transport_pin {
     }
 
     /// GREEN twin: a need declared once under its operator CA keeps pooling: its next open rides
-    /// the line its first exchange finished on, and the far end accepts one connection only.
+    /// the line its first exchange finished on, and the far end accepts one connection only. (The
+    /// scripted framer answers on its one stream, so an exchange over a lent line is read to its
+    /// first byte, as `a_pooled_line_is_never_lent_to_another_need_or_instance`'s is.)
     #[test]
     fn a_need_under_its_operator_ca_rides_its_own_pooled_line() {
         worker().block_on(async {
@@ -2451,17 +2453,21 @@ mod transport_pin {
             let (far, accepted) = counting_tls_far_end(&pki.leaf("localhost")).await;
             let c = pooled_public_roots();
             declare_operator_ca(&c, &pki.ca_pem).expect("declared under its CA");
-            for body in [&b"first"[..], b"again", b"third"] {
-                assert_eq!(
-                    pooled_exchange(&c, (OWNER, 0), &far, body, true).await,
-                    (b"x".to_vec(), true, None),
-                    "each exchange finishes whole under the need's CA"
-                );
-            }
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                (b"x".to_vec(), true, None),
+                "under the need's CA, the exchange finishes whole and its line is kept"
+            );
+            let (got, _, failed) = pooled_exchange(&c, (OWNER, 0), &far, b"again", false).await;
+            assert_eq!(
+                (got, failed),
+                (b"x".to_vec(), None),
+                "the need's next open is answered under its CA"
+            );
             assert_eq!(
                 accepted.load(Ordering::SeqCst),
                 1,
-                "every exchange rode the one line"
+                "the need's next open rode its kept line"
             );
         });
     }
