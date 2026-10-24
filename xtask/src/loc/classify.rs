@@ -68,7 +68,7 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use proc_macro2::{Delimiter, LineColumn, TokenStream, TokenTree};
+use proc_macro2::{LineColumn, TokenStream, TokenTree};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -744,7 +744,9 @@ pub fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
 ///
 /// * `test`                                  -> yes
 /// * `all(test, feature = "x")`              -> yes (the item exists only in test builds)
-/// * `any(test, feature = "test-support")`   -> yes (same rule `xtask`'s purity scanner applies)
+/// * `any(test, feature = "test-support")`   -> yes (every arm is `test` or a test-only feature)
+/// * `any(test, feature = "root-admin")`    -> **NO**. `root-admin` is a default feature, so the
+///   item ships; one shipping arm puts it in the shipping build
 /// * `not(test)`                             -> **NO**. This is the arm that SHIPS. Twelve of them
 ///   in this tree, and the regex it replaces — `\btest\b` anywhere inside the attribute — dropped
 ///   every one as if it were a test module.
@@ -752,35 +754,5 @@ pub fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
 /// * `feature = "test-support"`              -> no. A feature whose NAME contains "test" is a
 ///   feature; `\btest\b` matched that too, because `test-support` has a word boundary after `test`.
 fn predicate_is_test(tokens: TokenStream) -> bool {
-    let trees: Vec<TokenTree> = tokens.into_iter().collect();
-    let mut i = 0;
-    while i < trees.len() {
-        let TokenTree::Ident(id) = &trees[i] else {
-            i += 1;
-            continue;
-        };
-        let name = id.to_string();
-        let paren = match trees.get(i + 1) {
-            Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
-                Some(g.stream())
-            }
-            _ => None,
-        };
-        let is_kv = matches!(trees.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '=');
-        match (name.as_str(), paren) {
-            // NEGATION IS NOT DESCENDED INTO. Whatever `test` does inside a `not(...)`, the item it
-            // guards is the one that exists when tests are NOT being built: production code.
-            ("not", Some(_)) => i += 2,
-            ("all", Some(inner)) | ("any", Some(inner)) => {
-                if predicate_is_test(inner) {
-                    return true;
-                }
-                i += 2;
-            }
-            ("test", None) if !is_kv => return true,
-            (_, Some(_)) => i += 2,
-            _ => i += if is_kv { 3 } else { 1 },
-        }
-    }
-    false
+    crate::cfg_scope::parse_attr(&format!("#[cfg({tokens})]")).is_some_and(|p| p.requires_test())
 }

@@ -2503,3 +2503,4 @@ http.crosscut|wrong-method|GET-chat-completions	PASS	HTTP 405; usage Δ {}
 http.crosscut|wrong-method|GET-converse	PASS	HTTP 405; usage Δ {}	
 http.crosscut|wrong-method|GET-responses	PASS	HTTP 405; usage Δ {}	
 http.crosscut|wrong-method|GET-v2-chat	PASS	HTTP 405; usage Δ {}	
+auth.lifecycle|aws-credential-chain-without-keys	PASS	script aws-credential-chain-without-keys.sh: status 0	

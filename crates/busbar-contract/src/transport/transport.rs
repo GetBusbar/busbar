@@ -30,8 +30,8 @@ pub mod plane {
     /// member. A served card's upper-cased `HTTP+JSON` is this word lower-cased and nothing else.
     pub const WIRE_HTTP_JSON: &str = "http+json";
 
-    /// gRPC, as a wire-format name: lower-case here, upper-cased once by the plane that advertises
-    /// it.
+    /// The call-per-path binary wire format, as a wire-format name: lower-case here, upper-cased
+    /// once by the plane that advertises it.
     pub const WIRE_GRPC: &str = "grpc";
 }
 
@@ -56,14 +56,14 @@ pub enum Transport {
     /// A CHILD PROCESS with a pipe on each side of it: newline-delimited messages on its stdin and
     /// stdout. Outbound only: busbar is the parent, never itself launched as the child.
     ///
-    /// None of what [`Transport::Http`] gets from the shared connection pool — a destination, a
-    /// connection, a resolver to check — exists here, which is why it is its own channel rather than
-    /// a flavour of another.
+    /// None of what the request-response channel gets from the shared connection pool — a
+    /// destination, a connection, a resolver to check — exists here, which is why it is its own
+    /// channel rather than a flavour of another.
     Stdio,
     /// A FULL-DUPLEX FRAMED CONNECTION — one long-lived socket carrying framed messages in BOTH
-    /// directions at once, rather than the one-request-one-response exchange [`Transport::Http`]
-    /// models. Each side may send a frame at any time without a prior request from the other, so
-    /// "which frame answers which" is not a property the channel can assume.
+    /// directions at once, rather than the one-request-one-response exchange the request-response
+    /// channel models. Each side may send a frame at any time without a prior request from the
+    /// other, so "which frame answers which" is not a property the channel can assume.
     WebSocket,
 }
 
