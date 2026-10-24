@@ -71,6 +71,7 @@ pub mod readme_assets;
 pub mod rx;
 pub mod scan;
 pub mod selftest;
+pub mod settle;
 pub mod sha256;
 pub mod toml_doc;
 pub mod toml_lite;

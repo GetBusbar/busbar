@@ -25,6 +25,7 @@ usage:
   cargo xtask abi-header [--write]   (the generated C header; the same gate as `gate abi-header`)
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
+  cargo xtask gate --settle [--selftest]   (rewrite ONLY the gates' measured numbers to this tree's measure, ceilings down and floors up; refuses, writing nothing, exit 1, on any that would loosen)
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>] [--jobs N]
   cargo xtask selftest --shard=K/N [--jobs N]   (every K-th of N slices of the registry, one process per gate)
@@ -280,6 +281,7 @@ const GATE_FLAGS: &[&str] = &[
     "--execute",
     "--require-dated-top",
     "--format=tsv",
+    "--settle",
 ];
 /// `--flag=value` forms `cargo xtask gate` knows.
 const GATE_VALUED: &[&str] = &["--jobs=", "--require-version=", "--root-flag="];
@@ -347,6 +349,28 @@ fn gate(args: &[String]) -> i32 {
         Ok(w) => w,
         Err(why) => return refuse_args("gate", &why),
     };
+    // `--settle` names no gate: it settles every measured number this tree's gates hold
+    // (crate::settle), so it takes no gate name and no flag but `--selftest`.
+    if args.iter().any(|a| a == "--settle") {
+        if let Some(extra) = args
+            .iter()
+            .find(|a| a.as_str() != "--settle" && a.as_str() != "--selftest")
+        {
+            return refuse_args(
+                "gate",
+                &format!(
+                    "`--settle` takes no gate name and no flag but `--selftest`, not `{extra}`"
+                ),
+            );
+        }
+        if args.iter().any(|a| a == "--selftest") {
+            return crate::settle::selftest_cmd();
+        }
+        return match open_ctx() {
+            Ok(cx) => crate::settle::run(&cx),
+            Err(code) => code,
+        };
+    }
     let listing = args.iter().any(|a| a == "--list" || a == "--all");
     if words.len() > usize::from(!listing) {
         return refuse_args(
