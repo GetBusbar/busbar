@@ -473,6 +473,7 @@ extern "C" {
 #define BB_PLANE_MAX_ARRIVAL_SPAN ((size_t)64) /* The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]). */
 #define BB_PLANE_PROJECT_FAULT_STATUS UINT16_C(500) /* The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite */
 #define BB_PLANE_PROJECT_FAULT_MESSAGE "request rewrite could not be applied" /* The words a FAULT `project` answers the caller with, byte for byte 1.5.5's. */
+#define BB_PLANE_PROJECT_FAULT_UNPARSEABLE UINT32_C(0x80000000) /* THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */

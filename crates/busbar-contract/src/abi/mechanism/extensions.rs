@@ -100,7 +100,7 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
 /// on the door-only gaps; BUSBAR-1.6.0.md l.246, the One Statement table: the Statement's `declares`
 /// row is "metric series, diagnostics, structured answers", diagnostics in full; l.3574's
 /// "diagnostic ids" is the indexed view of the same document). The WHOLE document travels here as a
-/// JSON payload (catalog entries, metric families with `shed`, the disk need of §11.11 R4,
+/// JSON payload (catalog entries, metric families with `shed`, the disk need of the host's bounded disk lane (the Q-DISK ruling),
 /// `breaker`), read ONCE at load and never per request ("JSON only as a payload"). It rides the
 /// shared mechanism's extensions blob, not a `repr(C)` field: a field would change the Statement's
 /// layout and its ABI version. `contract_abi` is not part of it: the Statement's own `kind_abi`
@@ -126,11 +126,25 @@ pub const fn entries_len(entries: &[(&str, &[u8])]) -> usize {
 ///
 /// # Panics
 ///
-/// `N` is not [`entries_len`] of `entries`, or a key or value is past its length field's range; in
-/// a `const`, that is a compile error.
+/// `N` is not [`entries_len`] of `entries`, two entries name one key (a reader would answer the
+/// first and never see the second, so a Statement that states a key twice is refused where it is
+/// written), or a key or value is past its length field's range; in a `const`, each is a compile
+/// error.
 #[must_use]
 pub const fn concat<const N: usize>(entries: &[(&str, &[u8])]) -> [u8; N] {
     assert!(N == entries_len(entries), "N is not entries_len(entries)");
+    let mut a = 0;
+    while a < entries.len() {
+        let mut b = a + 1;
+        while b < entries.len() {
+            assert!(
+                !same_key(entries[a].0, entries[b].0),
+                "two Statement extensions entries name one key"
+            );
+            b += 1;
+        }
+        a += 1;
+    }
     let mut out = [0u8; N];
     let mut at = 0;
     let mut e = 0;
@@ -167,6 +181,22 @@ pub const fn concat<const N: usize>(entries: &[(&str, &[u8])]) -> [u8; N] {
     out
 }
 
+/// Whether `a` and `b` are one key, byte for byte (`str` equality is not `const`).
+const fn same_key(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// `bytes` as a Statement's extensions blob ([`BLOB_OCTETS`](super::call::BLOB_OCTETS)).
 #[must_use]
 pub const fn statement_blob(bytes: &'static [u8]) -> super::call::Blob {
@@ -188,7 +218,7 @@ pub fn declares(extensions: &[u8]) -> Option<&[u8]> {
 /// THE ONE CALL A PLUGIN WRITES ITS STATEMENT'S EXTENSIONS WITH: a `const` [`Blob`] named `$name`
 /// holding every `(key, value)` entry, built at compile time, for `Statement::extensions`.
 ///
-/// ```ignore
+/// ```text
 /// busbar_contract::statement_extensions!(EXTENSIONS: [
 ///     (busbar_contract::abi::mechanism::extensions::EXT_DECLARES, include_bytes!("../declares.json")),
 /// ]);
