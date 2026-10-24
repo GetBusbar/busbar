@@ -16,15 +16,6 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::media::base64_encode;
 use busbar_kernel::plane_driver::refusal_status;
-use busbar_plane_streaming::claims::{HTTP_TRANSPORT, WS_TRANSPORT};
-use busbar_plane_streaming::door::{
-    refusal_body, refusal_render, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR,
-    RIDES_LIVE_SOCKET, RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
-};
-use busbar_plane_streaming::driven::{
-    mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, SESSION_OPEN_ACTION,
-};
-use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use serde_json::{json, Value};
@@ -34,6 +25,12 @@ use crate::door::{
     arrive, attempt, drive, judge, judge_planted, open, piece, refusal, refusal_for, request,
     result, session, Answer, Arrived, Emission, Log, Opened, Piece, Rendered, Rig, Session,
     CALLER_REF, MODEL, PUBLIC, REALTIME_CLAIM, SESSION,
+};
+use crate::stated::{
+    minted_answer, refusal_body, refusal_render, AUDIT_KIND, BILLABLE_CLASSES, GEMINI_LIVE,
+    GEMINI_SOCKET_PATH, HTTP_TRANSPORT, LIVE_STYLE, MINT_FAILED_STATUS, OPENAI_REALTIME,
+    PER_SESSION_CLASS, REALTIME_STYLE, REFUSAL_NO_DOOR, RIDES_LIVE_SOCKET, RIDES_REALTIME_PASS,
+    RIDES_REALTIME_SOCKET, SESSION_OPEN_ACTION, WS_TRANSPORT,
 };
 
 // ── the frames the legs push ────────────────────────────────────────────────────────────────────
@@ -47,7 +44,7 @@ pub const GEMINI_USAGE: &[u8] = br#"{"usageMetadata":{"promptTokenCount":140,"re
 /// The cumulative units a session reports once `USAGE_DONE` closed a turn holding `secs` seconds
 /// of the caller's audio: the four token classes, the audio seconds and the session fee.
 pub fn usage_units(secs: u64) -> String {
-    format!("0:1=10 1:1=20 2:1=3 3:1=4 4:1={secs} 6:1=1")
+    format!("0:1=10 1:1=20 2:1=3 3:1=4 4:1={secs} {PER_SESSION_CLASS}:1=1")
 }
 
 /// `ms` milliseconds of the caller's 24 kHz PCM16 audio, as an OpenAI Realtime frame.
@@ -72,6 +69,8 @@ pub fn downlink(bytes: usize) -> Vec<u8> {
 
 /// The OpenAI Realtime mint's far-end answer.
 const MINTED: &[u8] = br#"{"value":"ek_oracle_0001","expires_at":1767225600}"#;
+/// The secret and expiry [`MINTED`] states.
+const MINTED_SECRET: (&str, u64) = ("ek_oracle_0001", 1_767_225_600);
 
 /// One `answer` as a line: the step, the outcome and the cumulative units.
 pub fn units_of(what: &str, a: &Answer) -> String {
@@ -378,16 +377,7 @@ fn meter_expected() -> Vec<String> {
 }
 
 fn meter_check(o: &MeterObs) -> Result<String, String> {
-    let classes = [
-        "audio_tokens_in/token",
-        "audio_tokens_out/token",
-        "text_tokens_in/token",
-        "text_tokens_out/token",
-        "audio_seconds_in/duration",
-        "tool_calls/count",
-        "per_session/count",
-    ];
-    if o.classes != classes {
+    if o.classes != BILLABLE_CLASSES {
         return Err(format!("the tail's billable classes are {:?}", o.classes));
     }
     if o.fees != ["per_session"] {
@@ -404,7 +394,7 @@ fn meter_check(o: &MeterObs) -> Result<String, String> {
         return Err(format!("the session reported {:?}; want {want:?}", o.lines));
     }
     Ok(
-        "the door counts in its six declared classes plus the per-session fee, admits on no \
+        "the door counts in its eight declared classes plus the per-session fee, admits on no \
          estimate, and reports every turn's far-end tokens and audio seconds as cumulative \
          REPORTED units: the open turn's seconds running in every answer (so the last answer \
          before a cancel or a cut bills what streamed), each turn counted once (a short answer's \
@@ -692,7 +682,13 @@ fn dial_one(
         .filter(|u| u.0 < 4)
         .map(|u| (u.0, u.2))
         .collect();
-    if want.is_empty() || got != want || !log.units.iter().any(|u| u.0 == 6 && u.2 == 1) {
+    if want.is_empty()
+        || got != want
+        || !log
+            .units
+            .iter()
+            .any(|u| u.0 == PER_SESSION_CLASS && u.2 == 1)
+    {
         return Err(format!(
             "{}: the far end's usage {want:?} was reported as {:?}",
             dialect.name(),
@@ -1041,7 +1037,7 @@ fn fail_check(o: &FailObs) -> Result<String, String> {
     if a.outcome != Outcome::Ready
         || !a.done
         || a.status != 200
-        || a.emitted != mint_reply(200, MINTED).body
+        || a.emitted != minted_answer(MINTED_SECRET.0, MINTED_SECRET.1)
     {
         return Err(format!(
             "attempt 2's answer was not the caller's whole answer, free of attempt 1: {a:?}"

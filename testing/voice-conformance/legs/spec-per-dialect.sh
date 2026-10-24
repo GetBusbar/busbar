@@ -7,19 +7,20 @@
 # LEG: spec-per-dialect — the voice conformance spec, run once PER DIALECT (openai, gemini, twilio).
 #
 # Every captured fixture in `testing/voice-conformance/fixtures/$dialect/`:
-#   * CODEC: wire JSON → IR → wire JSON → IR through the dialect's codec in the plane crate
-#     (`OpenAiRealtimeCodec` / `GeminiLiveCodec`), stable at the level the codec guarantees
-#     (IR-fixpoint, or the correlation fingerprint for an atomic Gemini toolCall); a fixture that
-#     decodes to nothing passes only as a documented drop;
+#   * READ: the harness's own reader of the dialect's wire (ARCHITECT ruling R-18: a black-box rig
+#     never calls the plane's codec) places it as a caller or a far-end frame; a fixture it reads as
+#     neither passes only as a documented drop. The codec round trip (wire → IR → wire → IR) is the
+#     plane's own test (`every_corpus_fixture_round_trips_to_an_ir_fixpoint`);
 #   * DOOR: pushed through a live session on the dialect's door (the caller's frames as caller pieces,
-#     the far end's as far-end pieces), linked AND dropped; the door must relay it by the session rules,
-#     byte for byte (Law 5: a documented drop is relayed to the caller unchanged like every far-end
-#     frame), every far frame on the dialect's socket need, the far end's tokens reported as units.
+#     the far end's as far-end pieces), linked AND dropped; the door must relay it by the session rules
+#     (Law 5: byte for byte, a documented drop relayed to the caller unchanged like every far-end
+#     frame; a frame configuring the session or asking for a response held to the lock at the JSON
+#     level), every far frame on the dialect's socket need, the far end's tokens reported as units.
 #     RED arms per fixture: a door reporting a token never sent, re-encoding a frame, or dropping one
 #     fails.
 #   * TWILIO (`fixtures/twilio/`, Twilio's published Media Streams messages, one file per message in
-#     each direction, `from-twilio.*` and `to-twilio.*`): the codec half is the plane's Twilio envelope
-#     (`TwilioEnvelope`, `event`-tagged); the door half pushes Twilio's frames as caller pieces and the
+#     each direction, `from-twilio.*` and `to-twilio.*`): the read half is the harness's reading of
+#     Twilio's published formats (`event`-tagged); the door half pushes Twilio's frames as caller pieces and the
 #     far-end event that makes the door write a Twilio frame as far-end pieces, and holds the door to
 #     Twilio's shapes (`start` locks the far end in µ-law, media to the far end as caller audio, the
 #     far end's audio as `media`, a barge-in as `clear`; every far-bound frame is judged, and the end

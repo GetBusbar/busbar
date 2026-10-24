@@ -7,19 +7,17 @@
 # LEG: cross-parity — the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg).
 #
 # For every shared concept of the machine-readable `qa/evidence/voice-cross-dialect-map.json`:
-#   * CODEC: the plane's own codecs (`busbar_plane_streaming::codec`, the module the door's sessions
-#     run) bridge the concept A → IR → B → IR keeping its load-bearing fields (correlation-collapsed
-#     fingerprint; documented non-survivors excluded per the map);
-#   * DOOR: the bridged B wire is pushed through a live session on the door that speaks B, on the
-#     linked AND the dropped door, and what the door relays must equal the session rules byte for byte
-#     (a caller frame reaches the far end as sent, the caller's session config taking the locked keys;
-#     a far-end frame reaches the caller as sent, its usage also reported as units; nothing goes to the
-#     far end on the caller's behalf). RED arms per concept: a door reporting a token the far end never
-#     sent, re-encoding a frame, or dropping one fails.
-# Every asymmetry row is exercised as a documented drop+warn in its origin→other direction (codec);
-# concepts with no decoding source fixture print a SUBITEM PENDING line, never a pass. The diagonal
-# pairs (oo, gg) are slices in their own right: a mapping that is not identity within a dialect is
-# already broken.
+#   * DOOR: B's own fixtures of the concept are pushed through one live session on the door that
+#     speaks B, on the linked AND the dropped door (ARCHITECT ruling R-18: the door half pushes
+#     per-concept fixtures), and what the door relays must equal the session rules (a caller frame
+#     reaches the far end as sent, a frame configuring the session or asking for a response held to
+#     the lock at the JSON level; a far-end frame reaches the caller as sent, its usage also reported
+#     as units; nothing goes to the far end on the caller's behalf). RED arms per concept: a door
+#     reporting a token the far end never sent, re-encoding a frame, or dropping one fails.
+# The bridge A → IR → B → IR and every asymmetry row are the plane's codec half, its own test
+# (`every_shared_concept_survives_the_cross_dialect_bridge`): the harness reads the wire itself and
+# never calls the plane's codec. A concept B carries no fixture of prints a SUBITEM PENDING line,
+# never a pass.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

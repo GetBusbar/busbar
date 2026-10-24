@@ -6,7 +6,7 @@
 //! against `busbar-plane-streaming`, linked and dlopened, RED arm kept).
 //!
 //! A dev-only testkit binary: never shipped, no production dependency. Every assertion drives the door
-//! through `busbar-plugin-loader` BOTH ways — the LINKED door (`busbar_plane_streaming::door::door`)
+//! through `busbar-plugin-loader` BOTH ways — the LINKED door (`busbar_plane_streaming::door`)
 //! and the DROPPED door (the plane's cdylib twin, `busbar-plane-streaming-plugin`, dlopened) — and requires both to
 //! answer identically, then judges the answer, then requires the leg's planted wrong answer to be
 //! refused by the same judgment (`door::judge`). `VOICE_CONFORM_RED=1` makes the planted answers
@@ -31,7 +31,9 @@ mod codec_legs;
 mod composition;
 mod door;
 mod governance;
+mod stated;
 mod twilio_legs;
+mod wire;
 
 fn usage() -> ! {
     eprintln!(

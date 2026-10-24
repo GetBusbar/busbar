@@ -4016,7 +4016,6 @@ dependencies = [
  "busbar-plane-streaming",
  "busbar-plane-streaming-plugin",
  "busbar-plugin-loader",
- "bytes",
  "serde_json",
 ]
 

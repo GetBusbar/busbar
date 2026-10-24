@@ -11,7 +11,7 @@ shells out to one dev-only harness, the `voice_conform` binary of the testkit cr
 `voice-conformance-harness` (`testing/voice-conformance/harness/`), which loads the door through
 `busbar-plugin-loader` **both ways** (ARCHITECT Q6):
 
-- **linked** — `busbar_plane_streaming::door::door`, through `load_linked`;
+- **linked** — `busbar_plane_streaming::door` (the crate's only public item), through `load_linked`;
 - **dropped** — the plane's cdylib twin (`busbar-plane-streaming-plugin`), dlopened through
   `load_dropped` against the linked row's own Statement.
 
@@ -23,6 +23,15 @@ Each assertion drives a fresh instance of each door with one script and is PASS 
 3. **the RED arm bit**: the leg's planted wrong answer (the wrong door, restated as the answer it
    would give) is refused by the same check. `VOICE_CONFORM_RED=1` makes the planted answers the
    subject; every conformance leg must then go RED.
+
+The harness is a black-box rig (ARCHITECT ruling R-18): it reads the wire with its own reader
+(`harness/src/wire.rs`) and never calls the plane's codec or splice, because computing what the door
+owes with the plane's own code would be circular. A frame the session's lock does not govern is held
+to the bytes the caller or far end sent; a frame that configures the session or asks for a response
+is held to the lock at the JSON level (cut members absent, locked members equal, the token caps
+applied, every other member unchanged and in order). The codec halves (the IR round trip, the
+cross-dialect bridge and its asymmetry rows, the V4 down-scope) and the byte-level splice proof are
+the plane's own tests.
 
 `lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
 voice_conform`, and the cdylib twin at the rev the root pins the plane, in this workspace and so
@@ -38,9 +47,9 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 
 | leg | slices | what it judges at the door |
 |---|---|---|
-| `spec-per-dialect` | `openai`, `gemini`, `twilio` | every fixture: codec round trip, and the door's relay of it by the session rules; the `twilio` slice also replays `transcript.jsonl`, one whole call |
-| `replay` | `default` | each captured transcript through one session: codec skeleton; the door's relay and skeleton |
-| `cross-parity` | `oo og go gg` | the codec bridge per the cross-dialect map; the bridged wire through the destination door |
+| `spec-per-dialect` | `openai`, `gemini`, `twilio` | every fixture: the harness's reading, and the door's relay of it by the session rules; the `twilio` slice also replays `transcript.jsonl`, one whole call |
+| `replay` | `default` | each captured transcript through one session: the skeleton read; the door's relay and skeleton |
+| `cross-parity` | `oo og go gg` | per shared concept of the cross-dialect map, the destination dialect's own fixtures through its door |
 | `provider-credential` | 1 | every far request rides a declared outbound need; none carries a credential |
 | `metering-lease` | 1 | a session's units, reported per declared class, once per turn; the fee once answered |
 | `session-scope` | 1 | the `session` grant kind; every door asks for a principal; 404 off the guest list |
@@ -77,7 +86,7 @@ transcribed from Twilio's published messages
 Twilio's echo of a mark a sender wrote) and `to-twilio.{media,mark,clear}.json` (what a sender may
 write Twilio), plus `transcript.jsonl` (one call: `client` is Twilio to busbar, `server` busbar to
 Twilio). No spec line asks busbar to write Twilio a `mark` (THE DESIGN §2 l.418-419, Part 2 #45), so
-the legs read the `mark` fixtures through the codec and take no position on what the caller is told
+the legs read the `mark` fixtures as Twilio's format states them and take no position on what the caller is told
 when the far end's audio ends; they require only that the far end is sent nothing for it.
 
 The legs are written to the spec and to Twilio's formats, not to what the reader does today, and
