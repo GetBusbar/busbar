@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
+# The composition root (crates/busbar) is the DISTRIBUTION: its own workspace, where core meets the
+# pinned plugins. Core depends on no plugin.
+exclude = ["crates/busbar"]
 members = [
-    "crates/busbar",
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
@@ -14,11 +16,7 @@ members = [
     "crates/busbar-kernel-breaker",
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
-    "crates/busbar-plane-llm",
     "crates/plugin-loader",
-    "testing/ws-conformance/subject",
-    "testing/voice-conformance/harness",
-    "testing/webrtc-conformance/subject",
 ]
 
 # ── the single source of truth for external dependency VERSIONS ──────────────────────────────────
