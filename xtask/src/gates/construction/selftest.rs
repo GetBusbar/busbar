@@ -54,7 +54,7 @@ use crate::gates::construction::{
     ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
 use crate::gates::{
-    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, CasePlan, Expect, Gate, Report,
+    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
 };
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
