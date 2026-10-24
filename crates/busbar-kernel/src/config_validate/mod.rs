@@ -1845,8 +1845,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         None => errors.push(crate::config::store_required(cfg.legacy)),
         Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
-                "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
+                "store.module must be non-empty; use `{}` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
+                crate::config::migrated_store_module(cfg.legacy),
                 crate::config::migrate::legacy_store_text(cfg.legacy, "module_examples")
             ));
         }
