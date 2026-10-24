@@ -1706,7 +1706,7 @@ mod walker_tests {
     #[test]
     fn an_overlaid_context_drops_write_mode() {
         let root = tmp("write");
-        let cx = Ctx::at(&root, &root.join(".fix").join("xtask"))
+        let cx = Ctx::at(&root, root.join(".fix").join("xtask"))
             .expect("ctx opens")
             .write_mode(true);
         assert!(cx.env().write);
@@ -1721,7 +1721,7 @@ mod walker_tests {
         let root = tmp("dot");
         std::fs::create_dir_all(root.join("src")).expect("src creates");
         std::fs::write(root.join("src/a.txt"), "a").expect("writes");
-        let cx = Ctx::at(&root, &root.join(".fix").join("xtask")).expect("ctx opens");
+        let cx = Ctx::at(&root, root.join(".fix").join("xtask")).expect("ctx opens");
         let mut ov = Overlay::new();
         ov.set("src/.hidden/b.txt", "b");
         ov.set("src/target/c.txt", "c");
@@ -1747,7 +1747,7 @@ mod walker_tests {
         std::fs::create_dir_all(root.join("src/sub")).expect("dirs create");
         std::fs::write(root.join("src/a.txt"), "a").expect("writes");
         std::os::unix::fs::symlink(root.join("src"), root.join("src/sub/back")).expect("links");
-        let cx = Ctx::at(&root, &root.join(".fix").join("xtask")).expect("ctx opens");
+        let cx = Ctx::at(&root, root.join(".fix").join("xtask")).expect("ctx opens");
         let err = cx
             .list(&WalkSpec::new(["src"]).ext("txt"))
             .expect_err("a loop is refused");
@@ -1766,7 +1766,7 @@ mod walker_tests {
         std::fs::create_dir_all(&locked).expect("dirs create");
         std::fs::write(root.join("src/a.txt"), "a").expect("writes");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
-        let cx = Ctx::at(&root, &root.join(".fix").join("xtask")).expect("ctx opens");
+        let cx = Ctx::at(&root, root.join(".fix").join("xtask")).expect("ctx opens");
         let got = cx.list(&WalkSpec::new(["src"]).ext("txt"));
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let _ = std::fs::remove_dir_all(&root);
