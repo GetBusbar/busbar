@@ -38,8 +38,6 @@ mod what_the_usage_report_says;
 /// 326).
 mod take_site_census;
 
-/// The crate's honesty table names only types that exist (items 319, 327).
-
 /// Every implementor of the sealed plugin seal trait, against the minter's documentation (item 329).
 mod seal_implementors;
 
