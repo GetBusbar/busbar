@@ -771,7 +771,7 @@ fn a_validate_failure_states_its_text() {
 /// host's own slice (same pointer, same length), and the message text is the host's bytes, not a
 /// copy.
 #[test]
-fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
+fn red_the_content_body_a_hook_sees_is_the_hosts_own_bytes() {
     std::thread_local! {
         static SAW: std::cell::Cell<(usize, usize, usize)> = const { std::cell::Cell::new((0, 0, 0)) };
     }
