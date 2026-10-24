@@ -172,6 +172,14 @@ pub(crate) struct Buried {
     pub(crate) flight: Option<Box<dyn PieceInFlight>>,
     /// The principal the kernel verified for the unit: its cancel row is written under it.
     pub(crate) principal: Option<busbar_contract::caps::PrincipalId>,
+    /// The unit is closed already (a done answer, or a cancel that crossed before the drop): the
+    /// sweep bills it and makes no second closing call.
+    pub(crate) closed: bool,
+    /// The flags of the piece its op in flight was pushed: a refused piece's done answer is not
+    /// the unit's close.
+    pub(crate) piece_flags: u32,
+    /// That op's answer was marked `PIECE_FINAL` on its first piece (`route::closes_unit`).
+    pub(crate) final_answer: bool,
 }
 
 impl PlaneDriver {
@@ -198,12 +206,25 @@ impl PlaneDriver {
                     }
                     // The client-drop path cancelled the op on its worker; an op that ended on its
                     // own before the cancel reached it leaves the plane owing one.
+                    // An op whose own done answer closed the unit owes it nothing more.
                     Some(done) => match (done.disposition, done.outcome) {
                         (Some(d), _) => Some((d, flight.cancel_writes())),
                         (None, AbiOutcome::Fault) => None,
+                        (None, _)
+                            if unit.closed
+                                || super::route::answered_done(
+                                    &done,
+                                    &*flight,
+                                    unit.piece_flags,
+                                    unit.final_answer,
+                                ) =>
+                        {
+                            None
+                        }
                         (None, _) => now(unit.ticket),
                     },
                 },
+                None if unit.closed => None,
                 None => now(unit.ticket),
             };
             // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote.
