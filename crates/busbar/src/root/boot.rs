@@ -877,7 +877,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind(), &transport_uses())
+            .open_transport_entries(&crate::root::doors::bind(), &transport_uses(), plugin_logs())
             .and_then(|entries| {
                 entries
                     .doors
