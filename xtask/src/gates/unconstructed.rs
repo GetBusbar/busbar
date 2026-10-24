@@ -1135,6 +1135,35 @@ impl Gate for UnconstructedGate {
             &["NO PRODUCTION CONSTRUCTION SITE", "signing_with"],
         ));
 
+        // ── CONTROL 6c — UNWIRING THE BOOK'S RETIREMENT REDS ITS ROW, BY NAME. ─────────────
+        // The constructed-guard half of `ledger-book-retirement` (row 159): the checkpoint sealer
+        // retires the windows a durable seal left out, and the chain reader retires them from its
+        // scratch book at the same seal. Take both production calls away and the row must go RED.
+        const SEAL: &str = "crates/busbar/src/root/durability/seal.rs";
+        const HELD: &str = "crates/busbar/src/root/durability/held.rs";
+        let unretired_seal = cx
+            .read(SEAL)
+            .unwrap_or_default()
+            .replace("self.ledger.retire_windows(windows);", "let _ = windows;");
+        let unretired_held = cx.read(HELD).unwrap_or_default().replace(
+            "scratch.retire_windows(&left_behind);",
+            "let _ = &left_behind;",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "removing the sealer's and the chain reader's `retire_windows` calls reds \
+             `ledger-book-retirement`, BY NAME",
+            &[&row_site("ledger-book-retirement")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(SEAL, unretired_seal);
+                ov.set(HELD, unretired_held);
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "retire_windows"],
+        ));
+
         // ── CONTROL 7 — A NON-CALL NEEDLE IS REFUSED AT THE DECLARATION. ────────────────────
         // The gate cannot be CONFIGURED to accept decoration. Weakening a row's needle to a bare
         // name is refused outright rather than quietly passing on the `use` line control 4 plants.
