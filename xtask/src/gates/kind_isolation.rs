@@ -147,6 +147,8 @@ mod truths;
 
 pub use closure::ROW_CLOSURE;
 pub use inputs::ROW_INPUTS;
+/// The Law 0 row `cargo xtask gate --settle` reads its per-cell measure off ([`crate::settle`]).
+pub use matrix::ROW_LAW0;
 pub use matrix::ROW_MATRIX;
 pub use truths::ROW_TRUTHS;
 
@@ -7081,16 +7083,32 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 /// [`KindIsolationGate::run`] returns it INSTEAD of the ordinary rows when the flag is set.
 pub const ROW_WRITE: &str = "kind-isolation:write";
 
-/// One row of the registry whose number this run would move.
-struct Repin {
+/// One row of the registry whose number this run would move. `pub(crate)` for one reader,
+/// `cargo xtask gate --settle` ([`settle_repins`]), which settles off this measure, never a second.
+pub(crate) struct Repin {
     /// `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
     /// is looking at.
-    label: String,
+    pub(crate) label: String,
     /// The lines that identify the row in the file, so the rewrite cannot move the wrong one.
-    keys: Vec<(String, String)>,
-    table: &'static str,
-    was: i64,
-    now: i64,
+    pub(crate) keys: Vec<(String, String)>,
+    pub(crate) table: &'static str,
+    pub(crate) was: i64,
+    pub(crate) now: i64,
+}
+
+/// THE `[[dep]]` / `[[face]]` MEASURE FOR `cargo xtask gate --settle` ([`crate::settle`]): the same
+/// pinned mount, census, registry and [`repins`] the `--write` arm re-pins from, so the merge train
+/// settles a measured count off the gate's one measuring path (BUSBAR-1.6.0.md Law 8 and Law 9: a
+/// ceiling is today's MEASURED value). Every row whose count is off its measure, either way; which
+/// way may be written is the caller's rule.
+pub(crate) fn settle_repins(cx: &Ctx) -> Result<Vec<Repin>, String> {
+    let mounted = pinned::with_pinned(cx);
+    let cx = &mounted;
+    let mut crates = census(cx)?;
+    let (planes, ports) = vocabularies(&crates);
+    assign_instances(&mut crates, &planes, &ports);
+    let reg = load_registry(cx)?;
+    repins(cx, &crates, &reg)
 }
 
 /// EVERY EXACT-COUNT ROW IN THE REGISTRY, MEASURED, and which way each one would have to move.
@@ -7402,6 +7420,32 @@ impl KindIsolationGate {
                 },
                 cx,
             ))
+        })
+    }
+}
+
+impl KindIsolationGate {
+    /// ONE RULE OF THIS GATE, OVER THE CENSUS THE GATE READS, WITHOUT THE OTHER FIFTEEN. A battery
+    /// case that asks about one row (the matrix total, the closure's cargo cross-check) reads it
+    /// here rather than running the whole registered gate: the answer is the same row, computed by
+    /// the same function over the same mounted census, at the cost of that row alone.
+    fn rows_of(
+        &self,
+        cx: &Ctx,
+        rule: impl Fn(&Ctx, &[CrateInfo], &KindRegistry) -> Vec<Row>,
+    ) -> Result<Vec<Row>, String> {
+        let mounted = pinned::with_pinned(cx);
+        let mut crates = census(&mounted)?;
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        let reg = load_registry(&mounted)?;
+        Ok(rule(&mounted, &crates, &reg))
+    }
+
+    /// The matrix row exactly as this registration emits it.
+    fn matrix_rows(&self, cx: &Ctx) -> Result<Vec<Row>, String> {
+        self.rows_of(cx, |cx, crates, reg| {
+            matrix::rule_matrix_rows(cx, crates, reg, self.ship, self.matrix_gating)
         })
     }
 }
@@ -8597,9 +8641,32 @@ impl Gate for KindIsolationGate {
                 }
                 ov
             };
+            // THE CONTROL IS THE BARE PLANTED CRATE: `busbar-planted-clean` is a new core-neutral
+            // crate, and one that measures 0 on every Law 0 axis is `law0-unarmed` on the matrix
+            // row with or without the dev-edge. That finding is about the crate existing, so the green
+            // claim is judged over the crate with its manifest and registration and nothing else
+            // (`matrix::OverFixture`); the two red cases below keep `subject`.
+            let bare_clean = {
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-planted-clean/Cargo.toml",
+                    "[package]\nname = \"busbar-planted-clean\"\nversion = \"0.0.0\"\n".to_string(),
+                );
+                ov.set(
+                    REGISTRY_FILE,
+                    manifest_plus(
+                        cx,
+                        REGISTRY_FILE,
+                        "[[registered]]\ncrate = \"busbar-planted-clean\"\nkind = \"cleanliness\"\n\
+                         reason = \"planted\"\n",
+                    ),
+                );
+                ov
+            };
+            let over_clean: &'a dyn Gate = matrix::OverFixture::leak_over(cx, subject, bare_clean);
             report.push(prove_rows_green(
                 cx,
-                subject,
+                over_clean,
                 "a cleanliness crate's dev-edge to the loader, used only by its own \
                  `tests/universal_needs.rs`, is its universal-needs witness: no edge, closure reach \
                  or cell",
@@ -10912,6 +10979,9 @@ impl Gate for KindIsolationGate {
         // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
         // ceilings and the ship twin holds zero, and neither is a claim the other proves.
         matrix::selftest(cx, subject, self, self.ship, &mut report);
+        // Row 159 (audit XC2): the build-input spellings and the closure's cargo cross-check.
+        inputs::selftest(cx, subject, &mut report);
+        closure::selftest(cx, self, &mut report);
 
         if !self.ship {
             // AN ANNOUNCED CRATE LANDING IS GREEN — no unknown kind, no dead kind, no new edge

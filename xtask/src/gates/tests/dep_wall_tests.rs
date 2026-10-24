@@ -189,3 +189,106 @@ fn only_the_named_test_marks_are_test_code() {
         paths("#[tokio::test] async fn f() { std::net::TcpStream::connect(\"a\"); }").is_empty()
     );
 }
+
+/// THE MEMOISED READINGS EQUAL THE FRESH ONES. [`banned_paths_memo`], [`checkout_source_memo`] and
+/// [`workspace`] answer each self-test case from what an earlier case read; each answer must be
+/// exactly the one a fresh reading of the same input gives, a second call must be the memo's own
+/// answer, and a planted `cargo metadata` must be read as planted, never answered from the memo.
+#[test]
+fn the_memoised_readings_equal_the_fresh_readings() {
+    let cx = Ctx::workspace().expect("workspace context");
+    let dir = "crates/busbar-plane-decisions/src";
+    let files = cx
+        .walk(&WalkSpec::new([dir]).ext("rs"))
+        .expect("the decisions plane's own source walks");
+    assert!(!files.is_empty(), "{dir} read no file");
+    let planted = [
+        "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        "use std::{io, net::TcpStream};\n",
+        "#[cfg(test)] fn f() { std::net::TcpStream::connect(\"a\"); }",
+        "fn f() { std::net::TcpStream::connect(\"a\"); ",
+        "use std::net::Ipv4Addr;\n",
+    ];
+    let texts = files
+        .iter()
+        .map(|f| f.text.as_str())
+        .chain(planted)
+        .collect::<Vec<_>>();
+    for text in &texts {
+        let memo = banned_paths_memo(text);
+        assert_eq!(*memo, banned_paths(text), "{text}");
+        assert!(
+            std::sync::Arc::ptr_eq(&memo, &banned_paths_memo(text)),
+            "a second reading of the same text was lexed again"
+        );
+    }
+    assert_ne!(
+        *banned_paths_memo(planted[0]),
+        *banned_paths_memo(planted[4])
+    );
+
+    // Every pinned plugin's cargo checkout, as [`own_source`] reads it when no layer lays it.
+    let ws = workspace(&cx).expect("the workspace resolves");
+    let mut read = 0;
+    for p in ws.pkgs.values() {
+        if !p
+            .source
+            .as_deref()
+            .is_some_and(|s| s.starts_with(EXTERNAL_SOURCE))
+        {
+            continue;
+        }
+        let checkout = std::path::Path::new(&p.manifest_path)
+            .parent()
+            .map(|d| d.join("src"))
+            .unwrap_or_default();
+        let src = format!("crates/{}/src", p.name);
+        let memo = checkout_source_memo(&checkout, &src);
+        let fresh = checkout_source(&checkout, &src);
+        read += fresh.len();
+        let flat = |m: &BTreeMap<String, crate::ctx::SourceFile>| {
+            m.iter()
+                .map(|(k, f)| (k.clone(), f.rel_str(), f.abs.clone(), f.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(flat(&memo), flat(&fresh), "{}", p.name);
+        assert!(std::sync::Arc::ptr_eq(
+            &memo,
+            &checkout_source_memo(&checkout, &src)
+        ));
+    }
+    assert!(read > 0, "no pinned plugin's checkout read a file");
+
+    let flat = |w: &Workspace| {
+        let pkgs = w
+            .pkgs
+            .iter()
+            .map(|(id, p)| {
+                format!(
+                    "{id} {} {:?} {} {:?} {:?} {:?}",
+                    p.name, p.source, p.manifest_path, p.deps, p.features, p.packages
+                )
+            })
+            .collect::<Vec<_>>();
+        (pkgs, w.nodes.clone())
+    };
+    let memo = workspace(&cx).expect("the workspace resolves");
+    let fresh = read_workspace(
+        &cx.cargo_metadata("Cargo.toml")
+            .expect("cargo metadata runs"),
+    )
+    .expect("the workspace resolves");
+    assert!(!fresh.pkgs.is_empty() && !fresh.nodes.is_empty());
+    assert_eq!(flat(&memo), flat(&fresh));
+    assert!(std::sync::Arc::ptr_eq(
+        &memo,
+        &workspace(&cx).expect("the workspace resolves")
+    ));
+    let mut ov = Overlay::new();
+    ov.set_command(
+        "cargo-metadata:Cargo.toml",
+        "{\"packages\": [], \"resolve\": {\"nodes\": []}}",
+    );
+    let planted = workspace(&cx.with_overlay(ov)).expect("the planted answer reads");
+    assert!(planted.pkgs.is_empty() && planted.nodes.is_empty());
+}

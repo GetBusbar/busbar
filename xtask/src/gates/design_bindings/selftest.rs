@@ -231,6 +231,85 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         ov,
     ));
 
+    // (a2) THE INDEX READS THE TREE THE OVERLAY MAKES (XE#13). The cited test is real; the plant
+    //      changes the SOURCE so that it no longer runs, and the citation must go RED.
+    //      One plant moves the test (renamed away from its file) into a file no `mod` declares;
+    //      the other leaves it where it is and marks it `#[ignore]`.
+    // A real test whose declaration this case can rewrite textually (`fn name(`).
+    let picked = DesignBindingsGate::inputs(cx).ok().and_then(|i| {
+        i.ctx
+            .idx
+            .iter()
+            .filter(|(_, files)| files.len() == 1)
+            .filter_map(|(n, files)| files.iter().next().map(|f| (n.clone(), f.clone())))
+            .find(|(n, f)| {
+                cx.read(f)
+                    .is_ok_and(|t| t.matches(&format!("fn {n}(")).count() == 1)
+            })
+    });
+    let (real_fn, home) = match picked {
+        Some((n, f)) => (n, Some(f)),
+        None => (real_fn, None),
+    };
+    if let Some(home) = home {
+        let text = cx.read(&home).unwrap_or_default();
+        let decl = format!("fn {real_fn}(");
+        let cited = |ov: &mut Overlay| {
+            ov.set(
+                build::OUT_JSON_REL,
+                ledger(vec![
+                    binding(
+                        CONTROL,
+                        "good",
+                        "mapped",
+                        vec![check("oracle-cell", &recorded)],
+                    ),
+                    binding("PB-2", "moved", "mapped", vec![check("test", &real_fn)]),
+                ]),
+            );
+        };
+        if text.contains(&decl) {
+            let covers: Vec<&str> = all.iter().copied().filter(|id| *id != CONTROL).collect();
+            let dir = home.rsplit_once('/').map_or("", |(d, _)| d);
+            let mut ov = Overlay::new();
+            cited(&mut ov);
+            ov.set(
+                &home,
+                text.replace(&decl, &format!("fn {real_fn}_renamed_away(")),
+            );
+            ov.set(
+                format!("{dir}/zz_selftest_undeclared_orphan.rs"),
+                format!("#[test]\nfn {real_fn}() {{}}\n"),
+            );
+            r.push(prove_red(
+                cx,
+                gate,
+                "a cited test moved into a file no `mod` declares is no longer a running test",
+                &covers,
+                ov,
+                &[real_fn.as_str()],
+            ));
+            let mut ov = Overlay::new();
+            cited(&mut ov);
+            ov.set(&home, text.replace(&decl, &format!("#[ignore]\n{decl}")));
+            r.push(prove_red(
+                cx,
+                gate,
+                "a cited test an overlay marks #[ignore] is no longer a running test",
+                &covers,
+                ov,
+                &[real_fn.as_str()],
+            ));
+        } else {
+            r.note_infra_failure(format!(
+                "`{real_fn}` is not declared as `{decl}` in {home}, so the overlay-source cases \
+                 have nothing to rewrite"
+            ));
+        }
+    } else {
+        r.note_infra_failure(format!("no file of the index declares `{real_fn}`"));
+    }
+
     // (b) a vanished cell id, and (b2) a cell the golden never recorded. Both are FAIL, and the
     //     second is the one an existence-only check would have called proof.
     let mut ov = Overlay::new();
