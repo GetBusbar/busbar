@@ -695,6 +695,43 @@ async fn showing_the_consent_screen_does_not_spend_the_pushed_request() {
     );
 }
 
+/// RED: a pushed request that names no scope is granted the client's default (for a provisioned
+/// client, the operator's whole `default_grant`), and the consent screen names that scope. Before
+/// the fix the screen said `no scopes` while the approval minted a token for the default.
+#[tokio::test]
+async fn a_pushed_request_naming_no_scope_is_shown_the_default_it_is_granted() {
+    let s = serve(true).await;
+    let dpop = Key::new("dpop");
+    let form = with(&push_form(&s, CLIENT_ID, &s.key), "scope", Value::Null);
+    let request_uri = push(&s, &form, &dpop).await;
+    let authorize = authorize_url(&s, CLIENT_ID, &request_uri);
+    let mut jar = Jar::new(false);
+    let (status, headers, body) =
+        send(&s.client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(
+        status, 302,
+        "an undecided pushed request goes to consent: {body}"
+    );
+    let screen = location(&headers, &s.origin);
+    let (status, _, page) = send(&s.client, &mut jar, reqwest::Method::GET, &screen, None).await;
+    assert_eq!(status, 200, "the consent screen renders: {page}");
+    assert!(
+        page.contains(&format!("<p>Requesting: <code>{SCOPE}</code></p>")),
+        "the screen names the default the pushed request is granted, not `no scopes`: {page}"
+    );
+
+    let redirect = consent(&s, &mut jar, &authorize, "approve").await;
+    let code = query_param(&redirect, "code").expect("a code");
+    let proof = dpop.proof("POST", &format!("{}/token", s.origin));
+    let (status, token) = post(&s, "/token", &token_form(&s, &code), Some(proof)).await;
+    assert_eq!(status, 200, "{token}");
+    assert_eq!(
+        token["scope"],
+        json!(SCOPE),
+        "the token carries the scope the screen named: {token}"
+    );
+}
+
 /// RFC 6749 s4.1.2.1: the resource owner may refuse, and the client hears `access_denied` at its
 /// redirect URI, with its `state` and (RFC 9207) the issuer.
 #[tokio::test]

@@ -1163,6 +1163,29 @@ mod ticketed {
     }
 }
 
+/// AN AUTH CHAIN MODULE WHOSE `open` FAILS IS NAMED IN 1.5.5's WORDS (oracle BOOT-162): the
+/// operator reads `plugin '<name>' open failed: <reason>`, the plugin's own name and its reason,
+/// as at boot ([`crate::dispatch::Called::open_failure`]). RED before: `auth plugin '<module>': …`.
+#[test]
+fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
+    use crate::dispatch::ready::ready_plugins::auth::with_secret;
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door_named(
+            "busbar-auth-witness",
+            "witness",
+            with_secret::door,
+        )])
+        .expect("the linked door registers");
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    let Err(refused) = rows.open("witness", "witness", &serde_json::json!({})) else {
+        panic!("an open that refuses does not open");
+    };
+    assert!(
+        refused.starts_with("plugin 'busbar-auth-witness' open failed: "),
+        "{refused}"
+    );
+}
+
 /// A CREDENTIAL FORM IS FORMED ONLY THROUGH THE ONE CAPPED, VALIDATED READER (`BUSBAR-1.6.0.md`
 /// THE DESIGN §11.13 M1: "Every slice built from a plugin-reported length is capped and validated
 /// before it is formed").
