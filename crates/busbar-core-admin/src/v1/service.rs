@@ -273,8 +273,11 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
 /// the latest `priced_from_ms` among this key's rows on this lane that is not after the epoch
 /// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
 /// its `was` — so it is the unit's latest counts minus what it recorded.
+///
+/// `corrections` is the row's own share — the usage read indexes the node's list by (key, lane)
+/// once and hands each row only what can land on it; every condition is still checked here.
 pub fn row_count_corrections(
-    corrections: &[amend::Amendment],
+    corrections: &[&amend::Amendment],
     key_id: &str,
     lane: &str,
     window: (u64, u64),

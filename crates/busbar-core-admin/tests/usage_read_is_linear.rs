@@ -56,3 +56,37 @@ fn the_rescan_scan_sees_a_rescan() {
     let linear = "pub(crate) async fn get_usage(\n        for r in &rows {\n            let eras = eras_of.get(&key);\n        }\n    pub(crate) fn next(";
     assert!(!rescans(per_row_loop(linear)));
 }
+
+/// THE COUNT CORRECTIONS ARE INDEXED ONCE, TOO. The node's correction list holds every `adjust`
+/// ever sealed and is never trimmed, so handing ALL of it to `row_count_corrections` for every row
+/// made the read rows × lifetime corrections. The corrections that can land in this window are
+/// grouped once by (key, lane) before the loop, and each row is handed only its own.
+///
+/// RED while the per-row loop passed the whole list (`&corrections`) to every row.
+#[test]
+fn the_usage_reads_per_row_loop_never_hands_a_row_every_correction() {
+    let source = include_str!("../src/v1/service_operations.rs");
+    let body = per_row_loop(source);
+    assert!(
+        !hands_every_correction(body),
+        "the usage read hands every correction the node ever sealed to each row (rows × \
+         corrections): {body}"
+    );
+}
+
+/// Whether a loop body passes the node's whole correction list to a per-row call.
+fn hands_every_correction(body: &str) -> bool {
+    body.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .flat_map(str::split_whitespace)
+        .any(|word| word.trim_end_matches(',') == "&corrections")
+}
+
+/// The scan sees the whole list handed to a row, and not a row's own share.
+#[test]
+fn the_correction_scan_sees_the_whole_list_handed_to_a_row() {
+    let every = "pub(crate) async fn get_usage(\n        for r in &rows {\n            for (c, d) in row_count_corrections(\n                &corrections,\n                &r.key_id,\n        }\n    pub(crate) fn next(";
+    assert!(hands_every_correction(per_row_loop(every)));
+    let own = "pub(crate) async fn get_usage(\n        for r in &rows {\n            for (c, d) in row_count_corrections(\n                own,\n                &r.key_id,\n        }\n    pub(crate) fn next(";
+    assert!(!hands_every_correction(per_row_loop(own)));
+}
