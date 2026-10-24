@@ -2065,6 +2065,55 @@ impl DeclaredConns for Connector {
             .insert((owner, need), (spec.clone(), answer));
         answer
     }
+
+    /// THE INSTANCE IS GONE: its connections close (a member lease among them ends), then every
+    /// need it declared is dropped, which retires its members ([`Connector::set_need`]), so each
+    /// member program is killed now that no lease holds it. What it sealed, bound and held per
+    /// destination goes with it.
+    fn forget(&self, owner: InstanceId) {
+        for conn in self.slab.forget(owner) {
+            let _ = self.close(owner, conn);
+        }
+        let needs: Vec<NeedId> = self
+            .over
+            .lock()
+            .expect("needs")
+            .keys()
+            .filter(|(o, _)| *o == owner)
+            .map(|(_, n)| *n)
+            .collect();
+        for need in needs {
+            self.set_need(owner, need, None);
+        }
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .retain(|(o, _), _| *o != owner);
+        self.anchored
+            .lock()
+            .expect("anchored")
+            .retain(|(o, _, _), _| *o != owner);
+        self.member_anchored
+            .lock()
+            .expect("member anchored")
+            .retain(|(o, _, _), _| *o != owner);
+        self.registered
+            .lock()
+            .expect("registered")
+            .retain(|(o, _, _), _| *o != owner);
+        self.reaching
+            .lock()
+            .expect("reaching")
+            .retain(|(o, _, _), _| *o != owner);
+        self.auths
+            .lock()
+            .expect("auths")
+            .retain(|(o, _, _, _), _| *o != owner);
+        self.authority_held
+            .lock()
+            .expect("authority held")
+            .remove(&owner);
+    }
 }
 
 impl Connector {

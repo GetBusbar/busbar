@@ -449,6 +449,16 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, need, spec, programs);
         Err(ConnError::Refused)
     }
+
+    /// THE INSTANCE IS GONE (closed, replaced by a reload, or quarantined): it never crosses
+    /// again, so nothing `owner` declared outlives it. Every need it declared is dropped (an open
+    /// on one is refused as undeclared, and [`DeclaredConns::declared`] reads `None`), every
+    /// connection it still holds is closed, and every member program of its member-program needs
+    /// is retired and killed: the instance that replaces it declares its own. A table that holds
+    /// nothing per instance ignores it. Forgetting an instance twice is forgetting it once.
+    fn forget(&self, owner: InstanceId) {
+        let _ = owner;
+    }
 }
 
 /// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
@@ -889,6 +899,28 @@ impl<T> ConnSlab<T> {
             Entry::Live { state, .. } => Ok(state),
             Entry::Free { .. } => unreachable!("checked live above"),
         }
+    }
+
+    /// Forget `owner`: every need it declared is dropped (an insert or a need check for it is
+    /// refused as undeclared), and the ids of every connection it still holds are answered, live,
+    /// for the host to close through [`ConnSlab::remove`].
+    pub fn forget(&self, owner: InstanceId) -> Vec<ConnId> {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(o, _)| *o != owner);
+        self.lock()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                Entry::Live {
+                    generation,
+                    owner: o,
+                    ..
+                } if *o == owner => Some(ConnId((u64::from(*generation) << 32) | (i as u64 + 1))),
+                _ => None,
+            })
+            .collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry<T>>> {

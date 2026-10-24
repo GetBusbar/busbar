@@ -2472,6 +2472,169 @@ mod transport_pin {
         });
     }
 
+    /// Every per-instance record `c` still holds for `owner`, by name.
+    fn records_of(c: &Connector, owner: InstanceId) -> Vec<&'static str> {
+        let mut held = Vec::new();
+        if c.over.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("needs");
+        }
+        if c.declared.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("declarations");
+        }
+        if c.slab.check_need(owner, NeedId(0)).is_ok() {
+            held.push("table needs");
+        }
+        if c.anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed destinations");
+        }
+        if c.member_anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed registrations");
+        }
+        if c.registered
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("registrations at a destination");
+        }
+        if c.reaching
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("private reaches");
+        }
+        if c.auths
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _, _)| *o == owner)
+        {
+            held.push("auth bindings");
+        }
+        if c.authority_held.lock().unwrap().contains(&owner) {
+            held.push("held authority");
+        }
+        if c.listeners.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("listeners");
+        }
+        held
+    }
+
+    /// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"):
+    /// a reload replaces an instance with one under a new id and the gone one is forgotten. Over
+    /// every replace cycle nothing a gone instance declared, sealed, bound or held stays on the
+    /// connector. GREEN twins: the instance that replaced it, and a neighbour never replaced, keep
+    /// every record and still exchange; a forgotten id declared again works.
+    #[test]
+    fn a_forgotten_instance_leaves_no_record_however_many_reloads() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let far = keeping_tls_far_end(&served).await;
+            let c = pooled_trusting(&pki);
+            let pinned = Anchors {
+                key_pin: Some(served.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            let hold = |owner: InstanceId| {
+                c.declare_over(owner, NeedId(0), "sec").expect("declared");
+                c.hold_authority(owner);
+                c.anchor(owner, NeedId(0), "", &far, &pinned)
+                    .expect("the destination sealed");
+                c.anchor(owner, NeedId(0), "planner", &far, &pinned)
+                    .expect("the registration sealed");
+                c.seal_reach(owner, NeedId(0), "planner", &far, true)
+                    .expect("the reach sealed");
+                c.bind_auth(
+                    owner,
+                    NeedId(0),
+                    "planner",
+                    "https://vendor.example",
+                    bound_as(1),
+                );
+            };
+            let every = vec![
+                "needs",
+                "declarations",
+                "table needs",
+                "sealed destinations",
+                "sealed registrations",
+                "registrations at a destination",
+                "private reaches",
+                "auth bindings",
+                "held authority",
+            ];
+            let whole = (b"x".to_vec(), true, None);
+            hold(OWNER);
+            let mut live = InstanceId(10);
+            hold(live);
+            assert_eq!(
+                records_of(&c, live),
+                every,
+                "a live instance holds its records"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                whole
+            );
+            let mut gone = Vec::new();
+            for cycle in 11..15 {
+                let next = InstanceId(cycle);
+                hold(next);
+                c.forget(live);
+                gone.push(live);
+                live = next;
+                for g in &gone {
+                    assert_eq!(
+                        records_of(&c, *g),
+                        Vec::<&str>::new(),
+                        "a forgotten instance holds no record (reload {cycle})"
+                    );
+                }
+                assert_eq!(
+                    records_of(&c, live),
+                    every,
+                    "the instance that replaced it holds its own"
+                );
+                assert_eq!(
+                    pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                    whole,
+                    "the instance that replaced it exchanges"
+                );
+            }
+            assert_eq!(
+                records_of(&c, OWNER),
+                every,
+                "a neighbour's records are untouched"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                whole,
+                "a neighbour still exchanges"
+            );
+            hold(gone[0]);
+            assert_eq!(
+                pooled_exchange(&c, (gone[0], 0), &far, b"first", true).await,
+                whole,
+                "a forgotten id declared again exchanges"
+            );
+        });
+    }
+
     /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
     /// anchors alone (none, where they are empty)"): a registration holding NO anchors, sealed
     /// BEFORE another registration at the same authority that holds a client identity, still
@@ -3226,6 +3389,68 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
             accepted.load(Ordering::SeqCst),
             3,
             "control: the need's own next open rides its kept line"
+        );
+    });
+}
+
+/// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"): a
+/// forgotten instance's lines and listener go with it. The idle line its exchange finished on is
+/// closed at once, never left on the pool for the idle reaper, and its listener leaves the table.
+/// GREEN twin: a neighbour's kept line stays open and is lent to its next open.
+#[test]
+fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
+    worker().block_on(async {
+        let (far, accepted, ended) = keeping_far_end().await;
+        let c = pooled_messages(std::time::Duration::from_secs(60));
+        for owner in [OWNER, OTHER] {
+            c.declare_over(owner, NeedId(0), "messages")
+                .expect("a served scheme declares");
+        }
+        c.listen(
+            OTHER,
+            NeedId(0),
+            "127.0.0.1:0",
+            None,
+            crate::listen::AcceptLimits::default(),
+        )
+        .expect("listens");
+        let whole = (b"x".to_vec(), true, None);
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(
+            pooled_exchange(&c, (OTHER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(accepted.load(Ordering::SeqCst), 2, "each kept its own line");
+        c.forget(OTHER);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ended.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            1,
+            "the forgotten instance's idle line is closed at once"
+        );
+        assert!(
+            !c.listeners.lock().unwrap().keys().any(|(o, _)| *o == OTHER),
+            "the forgotten instance's listener leaves the table"
+        );
+        let again = pooled_exchange(&c, (OWNER, 0), &far, b"ask", false).await;
+        assert_eq!(
+            again.0,
+            b"x".to_vec(),
+            "the neighbour's next open is answered"
+        );
+        assert_eq!(
+            (
+                accepted.load(Ordering::SeqCst),
+                ended.load(Ordering::SeqCst)
+            ),
+            (2, 1),
+            "the neighbour's next open rides its kept line, still open"
         );
     });
 }
