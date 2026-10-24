@@ -252,3 +252,49 @@ fn a_pinned_door_planes_cells_are_read_at_its_census_mount() {
         Ok("root::serve::plane_q_door::a_pinned_cell")
     );
 }
+
+/// A DRIVER-PROOFS PLANE'S OWN CASES (status row 178): a test target of the composition root
+/// includes the build script's `driver_proofs.rs`, `#[path] pub(crate) mod proofs;` at the plane
+/// crate's `tests/on_driver/mod.rs` for the `[package.metadata.busbar.driver-proofs]` row. The tree
+/// reads the row off the nearest manifest above the target, so a case there is `proofs::<..>::<fn>`
+/// under the row's feature. RED arm: with no row, the plane crate's case resolves nowhere.
+#[test]
+fn a_driver_proofs_include_reaches_the_rows_plane_crate_cases() {
+    let files = |manifest: &str| {
+        let map: BTreeMap<String, String> = [
+            (
+                "c/tests/driver/main.rs",
+                "#![cfg(linked_driver_proofs)]\n\
+                 include!(concat!(env!(\"OUT_DIR\"), \"/driver_proofs.rs\"));\n",
+            ),
+            ("c/Cargo.toml", manifest),
+            ("q/tests/on_driver/mod.rs", "pub(crate) mod seam;\n"),
+            (
+                "q/tests/on_driver/seam.rs",
+                "#[tokio::test]\nasync fn a_plane_case() {}\n",
+            ),
+        ]
+        .iter()
+        .map(|(p, s)| ((*p).to_string(), (*s).to_string()))
+        .collect();
+        module_tree(&|p: &str| map.get(p).cloned(), "c/tests/driver/main.rs")
+    };
+    let tree = files(
+        "[dependencies]\nplane-q = { path = \"../q\", optional = true }\n\n\
+         [package.metadata.busbar.driver-proofs]\nplane-q-door = \"plane-q\"\n",
+    );
+    let cell = resolve_cell(&tree, "q/tests/on_driver/seam.rs", "a_plane_case").expect("reached");
+    assert_eq!(cell.path, "proofs::seam::a_plane_case");
+    assert_eq!(
+        cell.chain,
+        vec![
+            "linked_driver_proofs".to_string(),
+            "feature=\"plane-q-door\"".to_string()
+        ]
+    );
+    let tree = files("[dependencies]\nplane-q = { path = \"../q\", optional = true }\n");
+    assert!(
+        resolve(&tree, "q/tests/on_driver/seam.rs", "a_plane_case").is_err(),
+        "no row, no module"
+    );
+}
