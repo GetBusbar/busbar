@@ -57,13 +57,13 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # auth-ldap is 52ff062 (#8/#10/#11, 2026-10-09: the sans-IO LDAP codec over the host's connector, pinned to
 # busbar predev 39374ec00e). The rest
 # are each repo's dev head on 2026-10-05.
-store-sqlite	src:59e325437c5082ab0d2f06bc61b28e66c6b32faa	build:busbar-store-sqlite	-	1.6
-store-postgres	src:1eb57fb7572bd14ffed995df823d43242b0fbc9c	build:busbar-store-postgres	-	1.6
-store-valkey	src:602a44f13d780104b317dbf0306b888c721d0596	build:busbar-store-valkey	-	1.6
-store-mysql	src:f8f6a2f652f8a320243f98f0ffff720c10f37cdd	build:busbar-store-mysql	-	1.6
-hashicorp-vault	src:4a6316fc2e7fd9d1e9f06aebd650dda7fee9d7f1	build:busbar-secret-vault	-	1.6
-auth-oidc	src:cc59d737972c1b881a164b437d63c4f29f6a15c1	build:busbar-auth-oidc	-	1.6
-auth-github	src:96cf0d401dc7a70a235d5abdc5eec911cd2696ed	build:busbar-auth-github	-	1.6
-auth-ldap	src:52ff062381f984791e7da2e27b3d80d4c1cec85b	build:busbar-auth-ldap	-	1.6
-webrequest-hook	src:5f0207dc4a3f5887a763280a8dd7450bd6669332	build:busbar-hook-webrequest	-	1.6
+store-sqlite	src:510ee41265ca48a63e8a7e5507d92a88b08d51a2	build:busbar-store-sqlite	-	1.6
+store-postgres	src:2bfa17522f77c80c37c9b6de9019ded9d72ca1a8	build:busbar-store-postgres	-	1.6
+store-valkey	src:f37a6d9ee73b3f54669855885e6af1436f80b477	build:busbar-store-valkey	-	1.6
+store-mysql	src:cd609b8f3bcf3e8c13906ecef9471bd4556e3aa5	build:busbar-store-mysql	-	1.6
+hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
+auth-oidc	src:a75349ebcb41dc49edc3ff77605f4a6edb15b7b2	build:busbar-auth-oidc	-	1.6
+auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
+auth-ldap	src:cbc5d83e38604037eba85a56adc8ee650202f145	build:busbar-auth-ldap	-	1.6
+webrequest-hook	src:214bfc79b1a12f91f81bfa91c02f8e7e20e2d83f	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
