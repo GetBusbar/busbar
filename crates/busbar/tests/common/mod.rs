@@ -557,16 +557,6 @@ pub fn enabled_features() -> std::collections::BTreeSet<&'static str> {
     env!("BUSBAR_ENABLED_FEATURES").split_whitespace().collect()
 }
 
-/// THE ROOT LEGS THIS BUILD CARRIES: each ledger root leg whose `feature` is enabled.
-pub fn compiled_root_legs() -> std::collections::BTreeSet<&'static str> {
-    let on = enabled_features();
-    root_leg_features()
-        .into_iter()
-        .filter(|(_, feature)| on.contains(feature))
-        .map(|(leg, _)| leg)
-        .collect()
-}
-
 /// [`linked_plane_crates`] whose entry module is the crate's OWN `linked` module (no
 /// `[package.metadata.busbar.linked-entry]` row) — the planes whose code lives in their own crate,
 /// not in a composition-root module.
