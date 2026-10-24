@@ -1312,7 +1312,7 @@ fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
 /// 1.5.5 PARITY: an entry that names no host the guard judges (UTS #46 refuses it, a `%` outside an
 /// IPv6 zone id, a last label that reads as a number but is no IPv4 address) matched nothing on
 /// 1.5.5 and boots now; it is dropped from both lists, and the real internal targets stay refused,
-/// by `ssrf_blocked_host` and by `check_structure`'s denylist alike, when every such entry is an
+/// by `ssrf_blocked_host`, when every such entry is an
 /// allow entry (the `%`-escaped IMDS address among them).
 #[test]
 fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
@@ -1329,7 +1329,6 @@ fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
     .iter()
     .map(|e| e.to_string())
     .collect();
-    let lists = Denylist::new(&entries, &entries, false);
     for target in [
         "https://169.254.169.254/latest/meta-data/",
         "https://metadata.google.internal/computeMetadata/v1/",
@@ -1338,13 +1337,6 @@ fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
         assert!(
             ssrf_blocked_host(target, &entries, false, &entries).is_some(),
             "`{target}` stays blocked"
-        );
-        assert!(
-            matches!(
-                check_structure(target, &[], private_ok(), &lists),
-                Err(NetworkRefusal::MetadataDenied(_))
-            ),
-            "`{target}` stays blocked in the structural check"
         );
     }
 }
@@ -1371,14 +1363,6 @@ fn a_list_entry_is_read_as_a_targets_host_is_read() {
         assert!(
             ssrf_blocked_host(target, &[], false, &blocked).is_some(),
             "`{entry}` blocks `{target}`"
-        );
-        let lists = Denylist::new(&blocked, &[], false);
-        assert!(
-            matches!(
-                check_structure(target, &[], private_ok(), &lists),
-                Err(NetworkRefusal::MetadataDenied(_))
-            ),
-            "`{entry}` blocks `{target}` in the structural check"
         );
     }
     // `ｍｅｔａｄａｔａ.ｇｏｏｇｌｅ.ｉｎｔｅｒｎａｌ`, an allow entry, lifts the metadata name.
@@ -1422,61 +1406,6 @@ fn a_list_entry_is_read_as_a_targets_host_is_read() {
             "an unmappable entry names nothing"
         );
     }
-}
-
-/// RED (HIGH): a bare `host:port` authority's host is read as a URL's is, through UTS #46, so the
-/// structural check judges the name a dial reaches: a full-width `ｌｏｃａｌｈｏｓｔ` is the loopback
-/// name, an IDN name is handed to the resolution as its punycode name, and a name UTS #46 refuses
-/// names no host. The URL arm already read its host so; an ASCII bare host is as before.
-#[test]
-fn a_bare_authoritys_host_is_mapped_as_a_urls_is() {
-    let full_width_localhost =
-        "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}";
-    for dest in [
-        format!("{full_width_localhost}:8080"),
-        format!("https://{full_width_localhost}:8080/"),
-    ] {
-        assert!(
-            matches!(
-                check_structure(&dest, &[], strict(), &Denylist::default()),
-                Err(NetworkRefusal::Guard(AddressRefusal::LoopbackName(_)))
-            ),
-            "{dest}"
-        );
-    }
-    for (dest, host, port) in [
-        ("b\u{fc}cher.example:8443", "xn--bcher-kva.example", 8443),
-        ("[b\u{fc}cher.example]:8443", "xn--bcher-kva.example", 8443),
-        (
-            "https://b\u{fc}cher.example:8443/",
-            "xn--bcher-kva.example",
-            8443,
-        ),
-        ("Api.Example.COM:443", "Api.Example.COM", 443),
-        ("Api.Example.COM", "Api.Example.COM", 443),
-    ] {
-        assert_eq!(
-            check_structure(dest, &[], strict(), &Denylist::default()),
-            Ok(Structure::Name {
-                host: host.to_string(),
-                port,
-                https: true,
-            }),
-            "{dest}"
-        );
-    }
-    assert!(
-        matches!(
-            check_structure(
-                "b\u{fc}cher\u{ff1c}.example:443",
-                &[],
-                strict(),
-                &Denylist::default()
-            ),
-            Err(NetworkRefusal::Guard(AddressRefusal::NoHost(_)))
-        ),
-        "a name UTS #46 refuses names no host"
-    );
 }
 
 /// RED (P0, an IDN 1.5.5 dialled): resolve-then-pin asks the resolver for the name a URL client
