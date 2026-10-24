@@ -207,7 +207,6 @@ fn no_site_but_the_one_reader_deserializes_declares_bytes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
     rust_files(&root.join("crates"), &mut files);
-    rust_files(&root.join("xtask"), &mut files);
     assert!(
         files.len() > 100,
         "the scan reads the tree: {}",

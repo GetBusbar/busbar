@@ -559,6 +559,9 @@ pub struct DoorFacts {
     /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
     /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
+    /// The plane's dialect names, by the index `arrive` answers: the `ingress` its units' request
+    /// span records (status row 173).
+    pub dialects: Arc<[String]>,
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
@@ -956,6 +959,43 @@ impl DriverSteps for DoorSteps<'_> {
         let mut u = self.lock();
         u.op = Some(op);
         u.named = Some((route, pool.map(<[u8]>::to_vec)));
+    }
+
+    /// THE UNIT'S REQUEST SPAN, `forward`, as the previous release opened it around its dispatch
+    /// (v1.5.5 `proxy/engine/mod.rs:120-152`): at the hot-path level, with the pool the charge
+    /// landed on (a budget downgrade's, else the one the unit named), the dialect it was read in,
+    /// its operation class and a correlation id off the process's one counter, stamped once per
+    /// dispatched unit as 1.5.5 stamped one per dispatched request (status row 173).
+    fn request_span(
+        &self,
+        _ctx: &UnitCtx,
+        decoded: &busbar_kernel::plane_driver::Decoded,
+        op: OpClassId,
+    ) -> Option<(tracing::Span, u64)> {
+        let request_id = self.app.next_request_id();
+        let pool = self.downgraded().or_else(|| {
+            decoded
+                .pool
+                .as_deref()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+        });
+        let ingress = self.facts.dialects.get(decoded.dialect as usize);
+        let span = tracing::span!(
+            busbar_kernel::observability::HOTPATH_LEVEL,
+            "forward",
+            pool = tracing::field::Empty,
+            ingress = tracing::field::Empty,
+            op = %op,
+            request_id = tracing::field::Empty
+        );
+        if let Some(pool) = pool.as_deref() {
+            span.record("pool", tracing::field::display(pool));
+        }
+        if let Some(ingress) = ingress {
+            span.record("ingress", tracing::field::display(ingress));
+        }
+        span.record("request_id", request_id);
+        Some((span, request_id))
     }
 
     fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
@@ -1385,6 +1425,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
+        dialects: Arc::from(Vec::new()),
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,
@@ -1703,6 +1744,11 @@ pub struct Rules {
     /// The deployment's one destination guard (`root::connector::dest_judge`), told each committed
     /// configuration's destinations ([`Rules::hearing`]). `None`: no guard hears a commit.
     guard: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
+    /// The discovered plane doors the boot's configuration did not use, so the boot never loaded
+    /// them (Law 7), held from the boot plan ([`Rules::hold_unloaded`]). A running process cannot
+    /// take a first section of one: an apply or reload that writes one is refused
+    /// ([`unloaded_plane_refusal`]).
+    unloaded: Mutex<Vec<crate::root::loader::boot::Candidate>>,
 }
 
 impl std::fmt::Debug for Rules {
@@ -1743,6 +1789,15 @@ impl Rules {
         }
     }
 
+    /// Hold the discovered plane doors the boot did not load (`candidates`): each one the boot's
+    /// configuration used by no section of its ([`unloaded_doors`]).
+    pub fn hold_unloaded(&self, candidates: Vec<crate::root::loader::boot::Candidate>) {
+        self.unloaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(candidates);
+    }
+
     /// Hold the declaring sections of the door planes the boot left unopened (`sections`): each a
     /// plane bound through its door whose section the boot configuration did not write.
     pub fn hold_unopened(&self, sections: impl IntoIterator<Item = &'static str>) {
@@ -1765,7 +1820,60 @@ pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) 
     cfg.plane_sections.contains(section)
 }
 
+/// THE DISCOVERED PLANE DOORS THE BOOT DID NOT LOAD: every plane door discovered (linked or dropped
+/// in) that [`crate::root::boot::load_door_planes`] did not bind, because the boot's configuration
+/// uses it by no section (`used_planes`, Law 7). Read once the door planes are loaded.
+#[must_use]
+pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
+    let bound = crate::root::boot::door_planes();
+    crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| c.kind == busbar_contract::abi::mechanism::KindCode::Plane)
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .cloned()
+        .collect()
+}
+
+/// THE REFUSAL OF A FIRST SECTION OF AN UNLOADED PLANE (u67 BLOCK 2 item 2, ruled (iv)): the first
+/// of `unloaded` that a document whose root keys are `keys` uses (`plane_use`, the boot's own
+/// selection), named with the section that uses it. A plane is loaded only at start, when config
+/// uses it (Law 7, BUSBAR-1.6.0.md l.547), so its first section cannot take effect on a running
+/// process: the change is refused whole and nothing is changed (§6 item 8, l.980-982).
+#[must_use]
+pub fn unloaded_plane_refusal(
+    unloaded: &[crate::root::loader::boot::Candidate],
+    keys: &[&str],
+) -> Option<String> {
+    let uses = crate::root::loader::boot::Uses {
+        roots: keys.iter().map(|k| (*k).to_string()).collect(),
+        ..Default::default()
+    };
+    unloaded.iter().find_map(|c| {
+        crate::root::loader::boot::plane_use(&uses, c).map(|section| {
+            format!(
+                "`{section}:` is the section of the `{plane}` plane, which this process did not \
+                 load because its configuration did not use it at start; a first `{section}:` \
+                 cannot take effect on a running process, so the change was refused and nothing \
+                 was changed: write it in the config file and restart.",
+                plane = c.name
+            )
+        })
+    })
+}
+
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
+        unloaded_plane_refusal(
+            &self
+                .unloaded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            keys,
+        )
+    }
+
     fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = self
             .unopened

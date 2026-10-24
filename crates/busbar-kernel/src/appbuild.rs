@@ -315,6 +315,32 @@ pub fn load_config_from_disk(
     safe_mode: bool,
     env_mode: config::EnvSubst,
 ) -> Result<LoadedConfig, String> {
+    load_config_from_disk_judged(
+        config_path,
+        providers_override,
+        safe_mode,
+        env_mode,
+        &AcceptAll,
+    )
+}
+
+/// [`load_config_from_disk`] for a RUNNING process: the document is judged by the running
+/// generation's root `rules` ([`RootRules::unloaded_plane_refusal`]) before it is parsed, so a
+/// config file that first writes the section of a plane this process did not load is refused with
+/// the rules' sentence rather than parsed.
+///
+/// # Errors
+///
+/// As [`load_config_from_disk`]; and the rules' refusal, prefixed `config.yaml: `.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+pub fn load_config_from_disk_judged(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+) -> Result<LoadedConfig, String> {
     let mut unset_env_vars: Vec<String> = Vec::new();
     // 1.5.3: read + parse config.yaml FIRST — it may name the providers catalog (`providers_file:`).
     let raw_config = std::fs::read_to_string(config_path).map_err(|e| {
@@ -337,6 +363,17 @@ pub fn load_config_from_disk(
                 "config.yaml: {}",
                 config::migrate::legacy_config_error(&markers)
             ));
+        }
+        // A section of a plane this process did not load: refused before the parse, in the rules'
+        // words (the parse would name it an unknown field).
+        let keys: Vec<&str> = doc
+            .as_mapping()
+            .into_iter()
+            .flat_map(|m| m.keys())
+            .filter_map(serde_yaml::Value::as_str)
+            .collect();
+        if let Some(refusal) = rules.unloaded_plane_refusal(&keys) {
+            return Err(format!("config.yaml: {refusal}"));
         }
     }
     // The 1.6.0-additive keys come off the document FIRST (see `config::prepass`), so what the
@@ -600,6 +637,16 @@ pub trait RootRules: Send + Sync {
     /// at every commit as 1.5.5 did. Called once per kept build ([`InstalledLimits::keep`]), never
     /// for a build that is dropped unkept. Default: no guard hears it.
     fn destinations_applied(&self, _destinations: &config::Destinations) {}
+
+    /// THE REFUSAL OF A DOCUMENT THAT FIRST WRITES AN UNLOADED PLANE'S SECTION, judged on its root
+    /// `keys` before it is parsed: a plane this process did not load at start (Law 7,
+    /// BUSBAR-1.6.0.md l.547: a plane loads iff config uses it) cannot take its section on a
+    /// running process, so a runtime apply or disk reload carrying one is refused whole,
+    /// fail-closed, and nothing is stored or changed (§6 item 8, l.980-982). `Some` is the operator's sentence.
+    /// Default: none (a build with no composition root's planes refuses nothing here).
+    fn unloaded_plane_refusal(&self, _keys: &[&str]) -> Option<String> {
+        None
+    }
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it

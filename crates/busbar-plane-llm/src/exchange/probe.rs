@@ -63,17 +63,26 @@ pub fn request(host: &dyn busbar_contract::codec::CodecHost, lane: &Lane) -> Opt
     };
     let (target, _canonical) = wire_and_canonical_path(&path);
     let user_agent = decl(lane.dialect).map_or(EGRESS_UA_DEFAULT, |d| d.egress_user_agent);
+    // The lane's declared static fields first, as an organic request of the lane writes them
+    // (`attempt::head_fields`): a far end that requires its version field answers a probe that
+    // lacks it with a 400, which the breaker would read as the lane's health.
+    let mut fields: Vec<(String, Vec<u8>)> = lane
+        .statics
+        .iter()
+        .map(|(n, v)| ((*n).to_string(), v.as_bytes().to_vec()))
+        .collect();
+    fields.extend([
+        (
+            "content-type".to_string(),
+            APPLICATION_JSON.as_bytes().to_vec(),
+        ),
+        ("user-agent".to_string(), user_agent.as_bytes().to_vec()),
+        ("accept".to_string(), APPLICATION_JSON.as_bytes().to_vec()),
+    ]);
     Some(FarRequest {
         verb: "POST",
         target,
-        fields: vec![
-            (
-                "content-type".to_string(),
-                APPLICATION_JSON.as_bytes().to_vec(),
-            ),
-            ("user-agent".to_string(), user_agent.as_bytes().to_vec()),
-            ("accept".to_string(), APPLICATION_JSON.as_bytes().to_vec()),
-        ],
+        fields,
         body,
         pristine: false,
         dropped_controls: Vec::new(),

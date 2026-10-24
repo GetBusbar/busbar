@@ -802,6 +802,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // refuse is refused, its running generation untouched. They hold the destination guard, which
     // hears every configuration commit through them.
     let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
+    // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
+    // a running process refuses a first section of one (u67 BLOCK 2 item 2).
+    root_rules.hold_unloaded(root::door_steps::unloaded_doors());
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.
