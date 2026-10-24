@@ -91,6 +91,11 @@ pub(crate) trait WakeRoute: Send + Sync {
     fn framing_of(&self, t: Ticket) -> u64 {
         t.framing()
     }
+
+    /// The INLINE tickets of this route's dispatcher (`super::inline`); `None` = none.
+    fn inline(&self) -> Option<std::sync::Arc<super::inline::InlineTickets>> {
+        None
+    }
 }
 
 /// What an instance's `HostCtx` names (through [`super::handle`], never by address): the dispatcher its tickets live in, and who the instance
