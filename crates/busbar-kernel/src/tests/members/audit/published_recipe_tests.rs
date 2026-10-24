@@ -305,8 +305,9 @@ fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
 ///
 /// The `v3` page stays published as the history of the field list, so its table must still
 /// reproduce its own example's digest and its example must still name `v3`. The `v4` table is the
-/// `v3` table with exactly `incarnation` (a number) inserted after `unit_key` and `node` (a number)
-/// inserted after `mono`. Read off the two pages, never off the code.
+/// `v3` table with exactly `incarnation` (a number) inserted after `unit_key`, `node` (a number)
+/// inserted after `mono`, and each hook's `head` (text) and `failed` (a number) inserted after its
+/// key. Read off the two pages, never off the code.
 #[test]
 fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
     let v3 = published_page("audit-chain-digest-v3.md");
@@ -333,13 +334,17 @@ fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
             + 1
     };
     let mut v3_plus = v3_order.clone();
-    // `mono` sits after `unit_key`, so inserting at the later position first keeps the earlier one.
+    // Inserting at the later positions first keeps the earlier ones: `hooks[].hook` sits after
+    // `mono`, which sits after `unit_key`.
+    let hook = after("hooks[].hook");
+    v3_plus.insert(hook, ("hooks[].failed".to_string(), Kind::Num));
+    v3_plus.insert(hook, ("hooks[].head".to_string(), Kind::Text));
     v3_plus.insert(after("mono"), ("node".to_string(), Kind::Num));
     v3_plus.insert(after("unit_key"), ("incarnation".to_string(), Kind::Num));
     assert_eq!(
         v4_order, v3_plus,
-        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key` and `node` \
-         after `mono`"
+        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key`, `node` \
+         after `mono` and `hooks[].head` and `hooks[].failed` after `hooks[].hook`"
     );
     assert_eq!(
         spec_json_block(&published_spec(), 0)["recipe"].as_str(),

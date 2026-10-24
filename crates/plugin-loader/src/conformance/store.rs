@@ -708,6 +708,58 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("release unknown", 1, || {
         ans(block(&rt, st.slice_release(op(7), 0, &[(u64::MAX, 1)])))
     });
+    // A release on window 0 is FINAL (`abi::store` slice life (e)): the partial release takes back
+    // what it names, the slice closes, and the spent rest stays counted against the cap.
+    let window_zero = CellKey {
+        bucket: "window-0",
+        pool: None,
+        dimension: Dimension::NanoUnits,
+        window_start: 0,
+    };
+    let window_zero_cap = [Cap {
+        key: window_zero,
+        cap: 10,
+        config_gen: 1,
+    }];
+    let window_zero_draw = |amount| {
+        [Cell {
+            key: window_zero,
+            amount,
+        }]
+    };
+    r.line("caps window 0", 1, || {
+        ans(block(&rt, st.window_caps(op(14), &window_zero_cap)))
+    });
+    let zero = r.step("reserve window 0", 1, || {
+        let g = block(
+            &rt,
+            StoreCalls::reserve(&st, op(15), 0, &window_zero_draw(6)),
+        );
+        (granted(&g), g)
+    });
+    let zero_slice = zero
+        .as_ref()
+        .ok()
+        .and_then(|g| g.first())
+        .map_or(u64::MAX, |g| g.slice_id);
+    r.line("release window 0", 1, || {
+        ans(block(&rt, st.slice_release(op(16), 0, &[(zero_slice, 2)])))
+    });
+    r.line("release window 0 again", 1, || {
+        ans(block(&rt, st.slice_release(op(17), 0, &[(zero_slice, 4)])))
+    });
+    r.line("reserve window 0 rest", 1, || {
+        granted(&block(
+            &rt,
+            StoreCalls::reserve(&st, op(18), 0, &window_zero_draw(6)),
+        ))
+    });
+    r.line("reserve window 0 over", 1, || {
+        granted(&block(
+            &rt,
+            StoreCalls::reserve(&st, op(19), 0, &window_zero_draw(1)),
+        ))
+    });
     let batch = [(ub, w, delta(1, 5)), (ub, w, delta(1, 5))];
     r.line("usage batch", 1, || {
         ans(block(&rt, st.add_usage_batch(op(8), &batch)))
@@ -1000,6 +1052,28 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         at("release replay"),
         at("release"),
         "a replayed release answers the original"
+    );
+    assert_eq!(at("caps window 0"), "= ()", "the window-0 cap is pushed");
+    assert_eq!(at("reserve window 0"), "= [6]");
+    assert_eq!(
+        at("release window 0"),
+        "= [2]",
+        "a window-0 release takes back the unspent it names"
+    );
+    assert_eq!(
+        at("release window 0 again"),
+        "= [0]",
+        "a window-0 slice stayed open after its release: a release on window 0 is final"
+    );
+    assert_eq!(
+        at("reserve window 0 rest"),
+        "= [6]",
+        "the returned 2 are drawable"
+    );
+    assert!(
+        at("reserve window 0 over").contains("Exhausted"),
+        "the spent part of a released window-0 slice was not counted: {}",
+        at("reserve window 0 over")
     );
     assert_eq!(at("usage batch replay"), at("usage batch"));
     assert_eq!(at("usage batch conflict"), "! STORE_OPID_CONFLICT");

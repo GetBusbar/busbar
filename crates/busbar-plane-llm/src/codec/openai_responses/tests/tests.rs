@@ -8372,6 +8372,70 @@ fn writer_logprob_accumulator_is_bounded_in_entries_and_bytes() {
     );
 }
 
+/// LLM3#4: THE CITATION ACCUMULATOR IS LINEAR. Each item keeps its held text weight beside its
+/// citations, so an append weighs only the batch it brings, never the held list again (which made
+/// a long run of citation deltas against one item quadratic), and the weight it keeps is exactly
+/// [`citation_bytes`] summed over what it holds, through the cap's refusals. A `raw` entry weighs
+/// its compact serialised length.
+///
+/// RED on dev: the accumulator held a bare `Vec<IrCitation>` and re-summed (and re-serialised every
+/// `raw` of) the held list on every append, so `entry.bytes` does not exist there.
+#[test]
+fn writer_citation_accumulator_keeps_its_held_weight() {
+    let raw = serde_json::json!({"type": "url_citation", "url": "https://example.invalid/r"});
+    let citation = crate::codec::ir::IrCitation {
+        kind: Some("web_search_result_location".to_string()),
+        cited_text: Some("c".repeat(16 * 1024)),
+        url: Some("https://example.invalid/a".to_string()),
+        raw: Some(raw.clone()),
+        ..Default::default()
+    };
+    let one = citation_bytes(&citation);
+    assert_eq!(
+        one,
+        "web_search_result_location".len()
+            + 16 * 1024
+            + "https://example.invalid/a".len()
+            + raw.to_string().len(),
+        "a citation weighs its strings and its compact raw entry"
+    );
+
+    let cap = busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
+    let writer = ResponsesWriter;
+    let batch: Vec<_> = (0..8).map(|_| citation.clone()).collect();
+    let weight = one * batch.len();
+    for _ in 0..((cap / weight) + 8) {
+        writer.append_citations(0, &batch);
+    }
+    let map = writer.citation_accum.lock().unwrap();
+    let entry = map.get(&0).expect("the item accumulates");
+    let summed: usize = entry.items.iter().map(citation_bytes).sum();
+    assert_eq!(
+        entry.bytes, summed,
+        "the kept weight is the held list's weight"
+    );
+    assert!(
+        entry.bytes <= cap,
+        "citations never exceed the translate cap ({cap})"
+    );
+    assert!(
+        entry.bytes + weight > cap,
+        "the test drove the buffer up to the cap, got {}",
+        entry.bytes
+    );
+    assert_eq!(
+        entry.items.len() % batch.len(),
+        0,
+        "a batch is kept whole or dropped whole"
+    );
+    drop(map);
+    assert_eq!(
+        writer.take_citation_accum(0).len(),
+        summed / one,
+        "take hands back every held citation"
+    );
+}
+
 /// A URL citation must SURVIVE a Responses→Responses hop.
 ///
 /// The Responses wire shape for an annotation is the published `UrlCitationBody`, which FLATTENS

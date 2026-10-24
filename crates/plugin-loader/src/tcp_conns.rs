@@ -195,6 +195,7 @@ fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnE
         TcpStream::connect(target).map_err(|_| ConnError::Refused)?
     } else {
         // Every address the name resolves to, in order, as the connector tries them.
+        // A never-shipped test stand-in that judges no names: its unmapped resolve is intended.
         let addrs: Vec<_> = target
             .to_socket_addrs()
             .map_err(|_| ConnError::Refused)?
