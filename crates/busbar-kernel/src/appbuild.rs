@@ -725,7 +725,7 @@ pub fn build_app_from_config(
     )?);
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
-    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+    if let Some(admit) = root.secret_admit {
         admit(&plugin_registry)?;
     }
 
