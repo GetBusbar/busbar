@@ -1095,9 +1095,10 @@ impl Instance {
         }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
-        // The unit this crossing serves, for the host services it calls.
+        // The unit this crossing serves, and the ticket it carries, for the host services it calls.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
+        let _ticket = super::services::crossing(ticket);
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -1123,6 +1124,7 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
+                let _ticket = super::services::crossing(ticket);
                 with_crossing(Some(self), || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
