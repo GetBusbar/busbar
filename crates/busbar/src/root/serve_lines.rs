@@ -372,6 +372,7 @@ where
             app: app.load(),
             // The process's own stdin/stdout: no listener, no connection security.
             scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
+            consumed_fields: Vec::new(),
         };
         let routes = Arc::clone(&routes);
         let caller = Arc::clone(&caller);

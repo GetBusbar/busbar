@@ -895,6 +895,12 @@ pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
     locate_as(door, "", true).map(|l| l.offer)
 }
 
+/// THE MOST ROOM THE HOST GIVES ONE `locate` ANSWER, per buffer: a short answer naming more is the
+/// transport's FAULT, never an allocation of what it named (the contract admits up to 4 GiB a
+/// buffer). An authority, an offered name and head lines are far smaller; a protocol offer is at
+/// most `MAX_ALPN_BYTES`, the handshake's own bound.
+const LOCATE_CAP: usize = 64 * 1024;
+
 fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     let mut defaults_cap = 256_usize;
@@ -921,11 +927,22 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
             || o.alpn_needed > alpn_cap as u64
             || o.defaults_needed > defaults_cap as u64;
         if c.outcome == Outcome::Failed && short {
-            let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
-            auth_cap = grow(o.authority_needed, auth_cap);
-            name_cap = grow(o.name_needed, name_cap);
-            alpn_cap = grow(o.alpn_needed, alpn_cap);
-            defaults_cap = grow(o.defaults_needed, defaults_cap);
+            let grow = |needed: u64, cap: usize, what: &str| -> Result<usize, Refused> {
+                match usize::try_from(needed) {
+                    Ok(n) if n <= LOCATE_CAP => Ok(n.max(cap)),
+                    _ => Err(Refused {
+                        outcome: Outcome::Fault,
+                        error: format!(
+                            "the framer's locate answer asks {needed} bytes for its {what}, past \
+                             the host's {LOCATE_CAP}"
+                        ),
+                    }),
+                }
+            };
+            auth_cap = grow(o.authority_needed, auth_cap, "authority")?;
+            name_cap = grow(o.name_needed, name_cap, "name")?;
+            alpn_cap = grow(o.alpn_needed, alpn_cap, "protocol offer")?;
+            defaults_cap = grow(o.defaults_needed, defaults_cap, "head lines")?;
             continue;
         }
         ready(c)?;
