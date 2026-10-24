@@ -32,17 +32,18 @@ mod plane;
 
 use std::ffi::c_void;
 use std::hint::black_box;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{MessageView, SignalEntry, SignalValue};
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{AbiStr, Op, Outcome as AbiOutcome, RawOutcome};
-use busbar_contract::abi::mechanism::lifecycle::OpenIn;
+use busbar_contract::abi::mechanism::door::Door;
+use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpsHead};
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, Ops, OutField, PlaneOpenIn, PlaneOpenOut,
-    ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CONTRACTS,
-    FROM_FAR_END,
+    slot, ArriveIn, ArriveOut, CatalogIn, CatalogOut, OnPieceIn, OnPieceOut, Ops, OutField,
+    PlaneOpenIn, PlaneOpenOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, CONTRACTS, FROM_FAR_END,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_plugin_loader::dispatch::{
@@ -114,6 +115,53 @@ fn over_budget(op: u32, direct: (u64, u64), door: (u64, u64)) -> Vec<String> {
 
 // ── the door under measurement: the test plane's, loaded LINKED and opened ────────────────────────
 
+/// A `'static` table of raw pointers, shared read-only.
+struct Shared<T>(T);
+// SAFETY: written once (`OnceLock`) before any read, never mutated after; the pointers it holds
+// are to `'static` plugin data.
+unsafe impl<T> Sync for Shared<T> {}
+// SAFETY: as above.
+unsafe impl<T> Send for Shared<T> {}
+
+/// The `catalog` the door answers (the shared test plane states none, ARCHITECT ruling 2026-10-16,
+/// 3b C): an empty listing, `200`, as `door_ready_alloc`'s door answers it.
+extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+    let out = out.cast::<CatalogOut>();
+    // SAFETY: the host lends `catalog` a whole, writable `CatalogOut`.
+    unsafe {
+        std::ptr::addr_of_mut!((*out).status).write_unaligned(200);
+        std::ptr::addr_of_mut!((*out).head.outcome)
+            .write_unaligned(RawOutcome::of(AbiOutcome::Ready));
+    }
+    RawOutcome::of(AbiOutcome::Ready)
+}
+
+/// The door this witness loads: the test plane's own Statement and slot bodies, and a `catalog`
+/// beside them, so every request-path op the kind names has a body to cross into. The shared
+/// fixture is not changed.
+extern "C" fn door() -> *const Door {
+    static OPS: OnceLock<Shared<Ops>> = OnceLock::new();
+    static DOOR: OnceLock<Shared<Door>> = OnceLock::new();
+    let ops = &OPS
+        .get_or_init(|| {
+            Shared(Ops {
+                catalog: Some(catalog),
+                // SAFETY: the test plane's door is `'static`; a plane door's `ops` is a plane `Ops`.
+                ..unsafe { *(*plane::door()).ops.cast::<Ops>() }
+            })
+        })
+        .0;
+    &DOOR
+        .get_or_init(|| {
+            Shared(Door {
+                ops: (ops as *const Ops).cast::<OpsHead>(),
+                // SAFETY: the test plane's door is `'static`.
+                ..unsafe { *plane::door() }
+            })
+        })
+        .0
+}
+
 /// The plane, loaded linked and opened, and the instance its `open` answered.
 fn opened(dispatcher: &Dispatcher) -> (Plugin<Plane>, *mut c_void) {
     let bind = Bind {
@@ -123,7 +171,7 @@ fn opened(dispatcher: &Dispatcher) -> (Plugin<Plane>, *mut c_void) {
         dispatcher: dispatcher.adopter(),
         conns: ConnTable::Probe,
     };
-    let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
+    let row = LinkedRow::of(door).expect("the plane states its Statement");
     let plugin = load_linked::<Plane>(&row, bind).expect("the linked door loads");
     let mut open = Frame::new(
         PlaneOpenIn {
@@ -144,10 +192,10 @@ fn opened(dispatcher: &Dispatcher) -> (Plugin<Plane>, *mut c_void) {
     (plugin, instance)
 }
 
-/// The test plane's own ops table: the slot bodies the direct leg calls.
+/// The door's own ops table: the slot bodies the direct leg calls.
 fn ops() -> Ops {
-    // SAFETY: the test plane's door is `'static`; a plane door's `ops` is a plane `Ops`.
-    unsafe { *(*plane::door()).ops.cast::<Ops>() }
+    // SAFETY: the witness's door is `'static`; a plane door's `ops` is a plane `Ops`.
+    unsafe { *(*door()).ops.cast::<Ops>() }
 }
 
 /// Host buffers a crossing lends, kept alive across the measured calls.
@@ -202,6 +250,7 @@ impl Bufs {
 
 const STATS: &[u8] = b"/stats";
 const POST: &[u8] = b"POST";
+const GET: &[u8] = b"GET";
 const REASON_TEXT: &[u8] = b"in-flight cap";
 
 /// One op's two legs over one frame: the slot body `op` called directly on `instance`, and the same
@@ -351,6 +400,26 @@ fn measured(
                 blank_out::<ProjectOut>(),
             ),
         ),
+        slot::CATALOG => legs(
+            plugin,
+            s,
+            body(ops.catalog),
+            instance,
+            Frame::new(
+                CatalogIn {
+                    method: AbiStr::over(GET),
+                    target: AbiStr::over(STATS),
+                    reply_buf: b.reply.as_mut_ptr(),
+                    reply_cap: b.reply.len(),
+                    fields_buf: b.fields.as_mut_ptr(),
+                    fields_cap: b.fields.len(),
+                    arena_buf: b.arena.as_mut_ptr(),
+                    arena_cap: b.arena.len(),
+                    ..blank_in()
+                },
+                blank_out::<CatalogOut>(),
+            ),
+        ),
         other => panic!(
             "request-path op {other} has no measured case: the <1µs claim is unproven for it until \
              one is added here"
@@ -423,4 +492,132 @@ fn every_request_path_op_crosses_under_budget() {
         over.join(" | "),
         table.join("; ")
     );
+}
+
+// TEMPORARY COST PROBE (removed before review): what the primitives the door uses cost in this
+// build on the measuring machine, so the crossing's time can be attributed.
+#[test]
+fn zz_temporary_cost_probe() {
+    use busbar_plugin_loader::dispatch::{in_head, out_head};
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Mutex;
+    fn per_call(f: &mut dyn FnMut()) -> u64 {
+        for _ in 0..1000 {
+            f();
+        }
+        let mut v = Vec::with_capacity(400);
+        for _ in 0..400 {
+            let t = Instant::now();
+            for _ in 0..100 {
+                f();
+            }
+            v.push(t.elapsed().as_nanos() as u64 / 100);
+        }
+        v.sort_unstable();
+        v[v.len() / 2]
+    }
+    #[inline(never)]
+    fn three(a: u64, b: u64, c: u64) -> u64 {
+        a ^ b ^ c
+    }
+    thread_local! {
+        static C: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+    }
+    let mut lines: Vec<(&str, u64)> = Vec::new();
+    lines.push((
+        "empty",
+        per_call(&mut || {
+            black_box(1_u32);
+        }),
+    ));
+    lines.push((
+        "fn_call_x10",
+        per_call(&mut || {
+            let mut x = 0;
+            for k in 0..10 {
+                x = three(black_box(x), k, 3);
+            }
+            black_box(x);
+        }),
+    ));
+    lines.push((
+        "instant_now",
+        per_call(&mut || {
+            black_box(Instant::now());
+        }),
+    ));
+    let m: Mutex<Vec<(u64, Instant, u32)>> = Mutex::new(Vec::with_capacity(8));
+    let mut id = 0_u64;
+    lines.push((
+        "mutex_push_retain",
+        per_call(&mut || {
+            id += 1;
+            m.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((id, Instant::now(), 15));
+            m.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|c| c.0 != id);
+        }),
+    ));
+    lines.push((
+        "mutex_lock_unlock",
+        per_call(&mut || {
+            drop(black_box(m.lock().unwrap_or_else(|e| e.into_inner())));
+        }),
+    ));
+    lines.push((
+        "tls_replace_restore",
+        per_call(&mut || {
+            let o = C.with(|c| c.replace(black_box(8_usize as *const u8)));
+            C.with(|c| c.set(o));
+        }),
+    ));
+    let a = AtomicU32::new(0);
+    lines.push((
+        "atomic_fetch_update_sub",
+        per_call(&mut || {
+            let _ = a.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < 64).then_some(n + 1)
+            });
+            a.fetch_sub(1, Ordering::AcqRel);
+        }),
+    ));
+    let flag = AtomicBool::new(false);
+    lines.push((
+        "atomic_load_x10",
+        per_call(&mut || {
+            for _ in 0..10 {
+                black_box(flag.load(Ordering::Acquire));
+            }
+        }),
+    ));
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let (plugin, instance) = opened(&dispatcher);
+    let hydrate = ops().hydrate.expect("hydrate");
+    let mut frame = Frame::new(in_head(), out_head());
+    let fp: *mut Frame<_, _> = &mut frame;
+    lines.push((
+        "door_hydrate",
+        per_call(&mut || {
+            // SAFETY: the frame outlives the probe; one leg at a time.
+            let f = unsafe { &mut *fp };
+            black_box(plugin.call(slot::HYDRATE, f));
+        }),
+    ));
+    lines.push((
+        "direct_hydrate",
+        per_call(&mut || {
+            // SAFETY: as the witness's direct leg.
+            black_box(unsafe {
+                hydrate(
+                    instance,
+                    std::ptr::addr_of!((*fp).input).cast(),
+                    std::ptr::addr_of_mut!((*fp).out).cast(),
+                )
+            });
+        }),
+    ));
+    panic!("COST PROBE (ns per call, median of 400 batches of 100): {lines:?}");
 }
