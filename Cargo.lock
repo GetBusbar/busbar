@@ -337,6 +337,7 @@ dependencies = [
  "opentelemetry-proto",
  "prost",
  "rcgen",
+ "regex",
  "reqwest",
  "rustls",
  "rustls-pki-types",

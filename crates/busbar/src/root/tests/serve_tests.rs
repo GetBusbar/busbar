@@ -11259,8 +11259,12 @@ mod model_door_root_cells {
         status: u16,
         headers: serde_json::Map<String, serde_json::Value>,
         body: serde_json::Value,
-        /// The oracle's normalisations of this cell (`ts.unix`: a timestamp read as 0).
+        /// The oracle's normalisations of this cell (`ts.unix`: a timestamp read as 0;
+        /// `metrics.timing`: a numeric duration member dropped, [`TIMING_KEYS`]).
         applied: Vec<String>,
+        /// The oracle cell id this answer was recorded under (`llm|<ingress>|<egress>|request|ok`,
+        /// the file's stem with `__` read as `|`): the id the register's `cells` patterns match.
+        cell: String,
     }
 
     /// A door word naming a 1.5.5 golden cell file, its `{ingress}` and `{egress}` filled (the
@@ -11308,6 +11312,11 @@ mod model_door_root_cells {
                 .clone(),
             body: answer["body"].clone(),
             applied,
+            cell: std::path::Path::new(rel)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("a golden cell file")
+                .replace("__", "|"),
         }
     }
 
@@ -11379,12 +11388,29 @@ mod model_door_root_cells {
         what: &str,
         out: &mut Vec<String>,
     ) {
+        for (_, lines) in held_classes(golden, status, head, body, what) {
+            out.extend(lines);
+        }
+    }
+
+    /// [`held_to`], each divergence filed under the oracle's class of it (`status`, `headers`,
+    /// `body`), the classes a register row names when it forgives.
+    fn held_classes(
+        golden: &Golden,
+        status: u16,
+        head: &HeaderMap,
+        body: &[u8],
+        what: &str,
+    ) -> [(&'static str, Vec<String>); 3] {
+        let (mut status_out, mut head_out, mut body_out) = (Vec::new(), Vec::new(), Vec::new());
+        let out = &mut status_out;
         if status != golden.status {
             out.push(format!(
                 "{what}: status {status}, 1.5.5 answered {}",
                 golden.status
             ));
         }
+        let out = &mut head_out;
         for (name, want) in &golden.headers {
             let name = name.to_ascii_lowercase();
             if WIRE_ONLY.contains(&name.as_str()) {
@@ -11412,10 +11438,16 @@ mod model_door_root_cells {
                 out.push(format!("{what}: `{name}` is a header 1.5.5 did not send"));
             }
         }
+        let out = &mut body_out;
         let unix = golden.applied.iter().any(|a| a == "ts.unix");
         if let Some(json) = golden.body.get("json") {
             match serde_json::from_slice::<serde_json::Value>(body) {
-                Ok(door) => same(json, &door, &format!("{what} body"), unix, out),
+                Ok(mut door) => {
+                    if golden.applied.iter().any(|a| a == "metrics.timing") {
+                        drop_timing(&mut door);
+                    }
+                    same(json, &door, &format!("{what} body"), unix, out);
+                }
                 Err(_) => out.push(format!(
                     "{what}: the body is not JSON: {}",
                     String::from_utf8_lossy(body)
@@ -11428,6 +11460,31 @@ mod model_door_root_cells {
                     String::from_utf8_lossy(body)
                 ));
             }
+        }
+        [
+            ("status", status_out),
+            ("headers", head_out),
+            ("body", body_out),
+        ]
+    }
+
+    /// The oracle's `metrics.timing` keys (busbar-release `busbar-release-oracle/src/normalize.rs`
+    /// `TIMING_KEYS`): a request's own duration, which nothing can drive.
+    const TIMING_KEYS: [&str; 2] = ["latency_ms", "latencyMs"];
+
+    /// THE ORACLE'S `metrics.timing` NORMALISATION, applied to the door's body exactly as the
+    /// oracle applied it to the recording: every member named in [`TIMING_KEYS`] whose value is a
+    /// number is dropped, at any depth. 1.5.5 sent it too (a native Converse answer's
+    /// `metrics.latencyMs`); the golden records `metrics: {}` because this rule removed it. A
+    /// non-numeric member of that name is not a duration and stays to be compared.
+    fn drop_timing(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(o) => {
+                o.retain(|k, x| !(TIMING_KEYS.contains(&k.as_str()) && x.is_number()));
+                o.values_mut().for_each(drop_timing);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(drop_timing),
+            _ => {}
         }
     }
 
@@ -12153,6 +12210,270 @@ mod model_door_root_cells {
         })
     }
 
+    /// ONE OWNER-SIGNED ROW OF `testing/shadow-oracle/accepted-differences.json`, the register the
+    /// oracle reads, as the oracle reads it (busbar-release `busbar-release-oracle/src/run.rs`): its
+    /// `cells` pattern, the classes it may forgive and its premise. Only a plain row forgives a
+    /// class wholesale; an `additive` row or one carrying a `transform` forgives by its own rule
+    /// (a claimed shape, a rewrite), which this test does not model, so it forgives nothing here.
+    struct Accepted {
+        id: String,
+        cells: regex::Regex,
+        /// The row's `classes`, or its kind's default set when it names none (`breaking`: every
+        /// class; any other kind: every class but the money classes).
+        classes: Vec<String>,
+        /// A `breaking` row with a changelog line: the only row that may forgive `status`, a money
+        /// class on every cell.
+        money_ok: bool,
+        premise: Option<serde_json::Value>,
+    }
+
+    /// The register, read once.
+    fn register() -> &'static [Accepted] {
+        static REGISTER: std::sync::OnceLock<Vec<Accepted>> = std::sync::OnceLock::new();
+        REGISTER.get_or_init(|| {
+            let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testing/shadow-oracle/accepted-differences.json");
+            let doc: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&at)
+                    .unwrap_or_else(|e| panic!("the register {} reads: {e}", at.display())),
+            )
+            .expect("the register is JSON");
+            doc["accepted"]
+                .as_array()
+                .expect("the register holds `accepted`")
+                .iter()
+                .filter(|e| e["kind"] != "additive" && e.get("transform").is_none())
+                .map(|e| {
+                    let id = e["id"]
+                        .as_str()
+                        .expect("a register row has an id")
+                        .to_string();
+                    let kind = e["kind"].as_str().unwrap_or_default();
+                    let named: Vec<String> = e["classes"]
+                        .as_array()
+                        .map(|c| {
+                            c.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let classes = if named.is_empty() {
+                        let all = ["status", "headers", "body"].map(str::to_string).to_vec();
+                        if kind == "breaking" {
+                            all
+                        } else {
+                            all.into_iter().filter(|c| c != "status").collect()
+                        }
+                    } else {
+                        named
+                    };
+                    let changelog = e["changelog"].as_str().is_some_and(|c| !c.is_empty());
+                    Accepted {
+                        cells: regex::Regex::new(
+                            e["cells"]
+                                .as_str()
+                                .unwrap_or_else(|| panic!("{id} names its cells")),
+                        )
+                        .unwrap_or_else(|err| panic!("{id}: its cells pattern compiles: {err}")),
+                        classes,
+                        money_ok: kind == "breaking" && changelog,
+                        premise: e.get("premise").filter(|p| !p.is_null()).cloned(),
+                        id,
+                    }
+                })
+                .collect()
+        })
+    }
+
+    /// A premise of the oracle's grammar (busbar-release `busbar-release-oracle/src/premise.rs`)
+    /// judged against this leg's own answer: `Some` for a probe that names this leg's cell, `None`
+    /// for one naming a cell this leg does not answer (that cell's answer is the oracle's run to
+    /// judge, and a row the oracle honours there is honoured here). A probe of no known shape is
+    /// refused, as the oracle refuses it when the register loads.
+    fn premise_holds(p: &serde_json::Value, cell: &str, status: u16, body: &[u8]) -> Option<bool> {
+        let each = |key: &str| -> Vec<Option<bool>> {
+            p[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{key}` holds a list of premises"))
+                .iter()
+                .map(|q| premise_holds(q, cell, status, body))
+                .collect()
+        };
+        if p.get("all").is_some() {
+            let v = each("all");
+            return Some(!v.contains(&Some(false)));
+        }
+        if p.get("any").is_some() {
+            let v = each("any");
+            return Some(v.iter().any(|h| *h != Some(false)));
+        }
+        if let Some(q) = p.get("not") {
+            return premise_holds(q, cell, status, body).map(|h| !h);
+        }
+        let named = p["cell"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a probe names its cell: {p}"));
+        if named != cell {
+            return None;
+        }
+        let json = || serde_json::from_slice::<serde_json::Value>(body).ok();
+        Some(if let Some(recorded) = p.get("recorded") {
+            recorded.as_bool() == Some(true)
+        } else if let Some(want) = p.get("status") {
+            want.as_u64() == Some(u64::from(status))
+        } else if let Some(not) = p.get("status_not") {
+            not.as_u64() != Some(u64::from(status))
+        } else if let Some(text) = p.get("body_contains") {
+            String::from_utf8_lossy(body).contains(text.as_str().expect("a text probe"))
+        } else if let Some(pointer) = p["pointer"].as_str() {
+            let at = json().and_then(|j| j.pointer(pointer).cloned());
+            if let Some(exists) = p.get("exists") {
+                at.is_some() == (exists.as_bool() == Some(true))
+            } else if let Some(want) = p.get("equals") {
+                at.as_ref() == Some(want)
+            } else {
+                panic!("a pointer probe asks `exists` or `equals`: {p}")
+            }
+        } else {
+            panic!("a probe of no known shape: {p}")
+        })
+    }
+
+    /// The register row that forgives `class` on `cell`, as the oracle finds it: the first row
+    /// whose `cells` pattern matches the cell, that may take the class (`status` only by a
+    /// changelogged `breaking` row), and whose premise holds on this answer. `None`: nothing in
+    /// the register forgives it, and the divergence stands.
+    fn forgiven_by(cell: &str, class: &str, status: u16, body: &[u8]) -> Option<&'static str> {
+        register()
+            .iter()
+            .filter(|e| e.cells.is_match(cell))
+            .filter(|e| e.classes.iter().any(|c| c == class))
+            .filter(|e| class != "status" || e.money_ok)
+            .find(|e| {
+                e.premise
+                    .as_ref()
+                    .is_none_or(|p| premise_holds(p, cell, status, body) != Some(false))
+            })
+            .map(|e| e.id.as_str())
+    }
+
+    /// AN ANSWER HELD TO 1.5.5'S, FORGIVEN ONLY WHERE THE REGISTER FORGIVES: each class of
+    /// divergence [`held_classes`] finds stands as a failure unless an owner-signed row of the
+    /// register the oracle reads forgives that class on the answer's own cell ([`forgiven_by`]).
+    /// A member name matching a row's rationale forgives nothing outside the row's cells (R-17).
+    fn held_to_register(
+        golden: &Golden,
+        status: u16,
+        head: &HeaderMap,
+        body: &[u8],
+        what: &str,
+        out: &mut Vec<String>,
+    ) -> Vec<&'static str> {
+        let mut forgiving = Vec::new();
+        for (class, lines) in held_classes(golden, status, head, body, what) {
+            if lines.is_empty() {
+                continue;
+            }
+            match forgiven_by(&golden.cell, class, status, body) {
+                Some(id) => forgiving.push(id),
+                None => out.extend(lines),
+            }
+        }
+        forgiving
+    }
+
+    /// THE REGISTER FORGIVES ONLY INSIDE ITS OWN ROWS, AND THE TIMING RULE ONLY A DURATION. Each
+    /// arm holds a 1.5.5 golden's own answer, one thing planted in it, to [`held_to_register`]:
+    ///
+    /// * RED: an extra member on `llm|bedrock|openai|request|ok`, a cell no register row's `cells`
+    ///   pattern names, is a divergence;
+    /// * RED: the same member on `llm|anthropic|openai|request|ok`, inside S-4's cells, while the
+    ///   answer lacks the `container` S-4's premise requires: the row is withheld and the member
+    ///   stands;
+    /// * GREEN: that member with S-4's premise true is forgiven, by S-4 and nothing else;
+    /// * GREEN: a numeric `metrics.latencyMs` on the bedrock cell, whose recording applied
+    ///   `metrics.timing`, is the duration the oracle dropped; RED: the same member as a string is
+    ///   not a duration and is a divergence.
+    #[test]
+    fn the_register_forgives_only_inside_its_rows_and_the_timing_rule_only_a_duration() {
+        let cell = |name: &str| {
+            golden_at(
+                &format!("testing/shadow-oracle/golden/1.5.5/cells/{name}.json"),
+                None,
+            )
+        };
+        let held = |golden: &Golden, body: &serde_json::Value| {
+            let mut head = HeaderMap::new();
+            for (name, value) in &golden.headers {
+                head.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                    axum::http::HeaderValue::from_str(value.as_str().expect("a header value"))
+                        .expect("a header value"),
+                );
+            }
+            let mut out = Vec::new();
+            let forgiving = held_to_register(
+                golden,
+                golden.status,
+                &head,
+                &serde_json::to_vec(body).expect("a body"),
+                "planted",
+                &mut out,
+            );
+            (out, forgiving)
+        };
+        let planted = |golden: &Golden, member: &str, value: serde_json::Value| {
+            let mut body = golden.body["json"].clone();
+            body[member] = value;
+            body
+        };
+
+        let unscoped = cell("llm__bedrock__openai__request__ok");
+        assert_eq!(unscoped.cell, "llm|bedrock|openai|request|ok");
+        assert!(
+            register().iter().all(|e| !e.cells.is_match(&unscoped.cell)),
+            "the RED arm's cell is one no register row names"
+        );
+        let (as_recorded, none) = held(&unscoped, &unscoped.body["json"]);
+        assert!(as_recorded.is_empty() && none.is_empty(), "{as_recorded:?}");
+        let (out, forgiving) = held(
+            &unscoped,
+            &planted(&unscoped, "planted", serde_json::Value::Null),
+        );
+        assert!(forgiving.is_empty(), "{forgiving:?}");
+        assert_eq!(
+            out.len(),
+            1,
+            "the planted member is the one divergence: {out:?}"
+        );
+
+        let scoped = cell("llm__anthropic__openai__request__ok");
+        let (out, forgiving) = held(
+            &scoped,
+            &planted(&scoped, "planted", serde_json::Value::Null),
+        );
+        assert!(
+            forgiving.is_empty(),
+            "S-4's premise is false on this answer: {forgiving:?}"
+        );
+        assert_eq!(out.len(), 1, "a withheld row forgives nothing: {out:?}");
+        let mut body = planted(&scoped, "planted", serde_json::Value::Null);
+        body["container"] = serde_json::Value::Null;
+        body["stop_details"] = serde_json::Value::Null;
+        let (out, forgiving) = held(&scoped, &body);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(forgiving, ["S-4 anthropic required members"]);
+
+        assert!(unscoped.applied.iter().any(|a| a == "metrics.timing"));
+        let mut timed = unscoped.body["json"].clone();
+        timed["metrics"]["latencyMs"] = serde_json::json!(12);
+        let (out, forgiving) = held(&unscoped, &timed);
+        assert!(out.is_empty() && forgiving.is_empty(), "{out:?}");
+        timed["metrics"]["latencyMs"] = serde_json::json!("12");
+        let (out, _) = held(&unscoped, &timed);
+        assert_eq!(out.len(), 1, "a string is not a duration: {out:?}");
+    }
+
     /// **THE DECODE STEP ON EVERY DIALECT THE PLANE STATES, ALL FOUR SHAPES.** Door successor of
     /// `plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`: each
     /// caller dialect the plane's door words state (as many as the plane declares on the protocol
@@ -12179,7 +12500,12 @@ mod model_door_root_cells {
     /// leg leaves zero side effects: no dial, no metering row, no tokens, no spend, the member's
     /// breaker closed and admissible as 1.5.5 left it.
     ///
-    /// RED: any field of a leg off what 1.5.5 answered and left.
+    /// Each answer is held as the oracle holds it ([`held_to_register`]): the cell's own `applied`
+    /// normalisations first, then a class of divergence stands unless an owner-signed row of the
+    /// register the oracle reads forgives that class on the leg's own cell (R-17, R-17a).
+    ///
+    /// RED: any field of a leg off what 1.5.5 answered and left that no register row forgives on
+    /// its cell.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_door_decodes_every_dialect_it_mounts_in_every_shape() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -12260,7 +12586,7 @@ mod model_door_root_cells {
                     caller.name, leg.method, leg.path, leg.shape
                 );
                 let seen = decode_leg(&format!("{}-{}", caller.name, leg.shape), &leg).await;
-                held_to(
+                held_to_register(
                     &leg.golden,
                     seen.status,
                     &seen.head,

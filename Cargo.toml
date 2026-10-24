@@ -286,6 +286,11 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 # this normal-dependency one, so enabling `span-locations` here does not re-build anybody's proc
 # macros.
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# THE ORACLE'S PATTERN ENGINE, for the root's tests that read the accepted-differences register the
+# oracle reads (testing/shadow-oracle/accepted-differences.json): a row's `cells` is a pattern of
+# this crate's syntax, matched as the oracle (busbar-release-oracle) matches it. Already in the lock
+# through jsonschema; a dev-dependency only, so no production graph gains it.
+regex = "1"
 # The floor shared by the dependency and dev-dependency uses; busbar adds `http2` to one and `json`
 # to the other. Both decline default features — rustls only, so no second crypto backend enters.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

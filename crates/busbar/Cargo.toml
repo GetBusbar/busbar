@@ -563,6 +563,9 @@ sha2 = { workspace = true }
 url = { workspace = true }
 # The admin tests' OpenAPI drift guard writes the committed document's deterministic gz twin.
 flate2 = { workspace = true }
+# root/tests/serve_tests.rs: the accepted-differences register's `cells` patterns, matched as the
+# oracle matches them.
+regex = { workspace = true }
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true, features = ["pem"] }
 # root/tests/connector_h2.rs: the TLS far end the connector dials with the http door's protocol
