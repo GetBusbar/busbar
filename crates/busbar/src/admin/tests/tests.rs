@@ -12576,6 +12576,17 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
             }))
             .unwrap(),
         )
+        .export_def(
+            "traces",
+            serde_json::from_value(serde_json::json!({
+                "module": "otlp",
+                "settings": {
+                    "url": "https://api.honeycomb.io/v1/traces",
+                    "headers": {"x-honeycomb-team": "hunter2-otlp"}
+                }
+            }))
+            .unwrap(),
+        )
         .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -12591,6 +12602,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
             ["client_secret", "issuer"],
         ),
         ("export", "siem", "hunter2-siem", ["auth_header", "url"]),
+        ("export", "traces", "hunter2-otlp", ["headers", "url"]),
     ] {
         for url in [
             format!("http://{addr}/api/v1/admin/{section}"),
@@ -12613,7 +12625,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
             let json: serde_json::Value = serde_json::from_str(&body).unwrap();
             let def = json
                 .get("items")
-                .and_then(|i| i.get(0))
+                .and_then(|i| i.as_array()?.iter().find(|d| d["name"] == name))
                 .cloned()
                 .unwrap_or(json);
             assert_eq!(

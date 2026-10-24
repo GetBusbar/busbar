@@ -836,7 +836,7 @@ async fn run() {
 
     // Install the tracing subscriber now (stderr fmt always; OTLP export if configured) so all
     // subsequent startup and request-path logging is captured.
-    observability::init_logging(otlp_cfg.as_ref().map(|o| o.url.as_str()));
+    observability::init_logging(otlp_cfg.as_ref());
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.

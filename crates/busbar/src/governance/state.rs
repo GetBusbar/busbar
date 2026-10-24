@@ -1657,13 +1657,16 @@ impl GovState {
             let Some(cap) = groups[gi].concurrent_cap else {
                 continue;
             };
+
             let gauge = self.concurrent_gauge(&groups[gi].name);
             let cap = i64::try_from(cap).unwrap_or(i64::MAX);
+
             let admitted = gauge
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                     (v < cap).then_some(v + 1)
                 })
                 .is_ok();
+
             if !admitted {
                 drop(grant); // release the holds taken so far
                 return Err(LimitBlocked::Limit {
