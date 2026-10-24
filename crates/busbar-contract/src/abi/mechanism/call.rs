@@ -39,12 +39,14 @@ pub enum Outcome {
 impl RawOutcome {
     /// The byte for an outcome.
     #[must_use]
+    #[inline(always)]
     pub const fn of(o: Outcome) -> Self {
         Self(o as u8)
     }
 
     /// The outcome the byte states; an unknown byte is [`Outcome::Fault`].
     #[must_use]
+    #[inline(always)]
     pub const fn outcome(self) -> Outcome {
         match self.0 {
             1 => Outcome::Ready,

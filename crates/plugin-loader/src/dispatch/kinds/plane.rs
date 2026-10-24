@@ -223,6 +223,14 @@ pub struct NeedKeep {
     pub denied: Vec<&'static str>,
 }
 
+/// No tail bounds: what an answer that writes no record is judged against.
+const NO_BOUNDS: Bounds = Bounds {
+    op_classes: 0,
+    dialects: 0,
+    billable_classes: 0,
+    record_kinds: 0,
+};
+
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
 /// binds with its tail).
 #[inline(always)]
@@ -1407,7 +1415,8 @@ impl Kind for Plane {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
-                    ..Caps::default()
+                    units: 0,
+                    records: 0,
                 };
                 judged!(check_refusal(a.outcome, o, fields, &caps));
                 // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
@@ -1422,7 +1431,7 @@ impl Kind for Plane {
                 });
                 // A refusal that writes no record needs no tail to be judged against.
                 let b = if o.records_written == 0 {
-                    Bounds::default()
+                    NO_BOUNDS
                 } else {
                     *judged!(bounds(a))
                 };
@@ -1444,7 +1453,8 @@ impl Kind for Plane {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
-                    ..Caps::default()
+                    units: 0,
+                    records: 0,
                 };
                 judged!(check_serve(a.outcome, o, fields, &caps));
                 // SAFETY: as `refusal`: the host's `records_buf` of `records_cap` elements.
@@ -1457,7 +1467,7 @@ impl Kind for Plane {
                     )
                 });
                 let b = if o.records_written == 0 {
-                    Bounds::default()
+                    NO_BOUNDS
                 } else {
                     *judged!(bounds(a))
                 };
@@ -1480,7 +1490,8 @@ impl Kind for Plane {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
-                    ..Caps::default()
+                    units: 0,
+                    records: 0,
                 };
                 plane::check::check_catalog(a.outcome, o, fields, &caps)
             }
@@ -1515,7 +1526,7 @@ impl Kind for Plane {
                     )
                 });
                 let b = if o.records_written == 0 {
-                    Bounds::default()
+                    NO_BOUNDS
                 } else {
                     *judged!(bounds(a))
                 };
@@ -1750,6 +1761,7 @@ impl DriveFrame for PlaneDrive {
 }
 
 /// `arrive`: the expected units over the host's `units_buf`, `units_cap` from `ArriveIn`.
+#[inline(always)]
 fn arrive(a: &Answer) -> Result<(), Fault> {
     let i = judged!(a.input::<ArriveIn>());
     let o = judged!(a.out::<ArriveOut>());
@@ -1768,6 +1780,7 @@ fn arrive(a: &Answer) -> Result<(), Fault> {
 }
 
 /// `on_piece`: units, records and fields over the host's buffers, every cap from `OnPieceIn`.
+#[inline(always)]
 fn on_piece(a: &Answer) -> Result<(), Fault> {
     let i = judged!(a.input::<OnPieceIn>());
     let o = judged!(a.out::<OnPieceOut>());
@@ -1813,6 +1826,7 @@ fn on_piece(a: &Answer) -> Result<(), Fault> {
 
 /// `project`: the view's signals over the host's `signals_buf`, its prompt turns over the host's
 /// `messages_buf`, its strings and bodies over the host's arena, every cap from `ProjectIn`.
+#[inline(always)]
 fn project(a: &Answer) -> Result<(), Fault> {
     let i = judged!(a.input::<ProjectIn>());
     let o = judged!(a.out::<ProjectOut>());

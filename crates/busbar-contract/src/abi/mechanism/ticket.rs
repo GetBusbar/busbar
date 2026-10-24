@@ -49,6 +49,7 @@ impl Ticket {
 
     /// Whether this is [`Ticket::NONE`].
     #[must_use]
+    #[inline(always)]
     pub const fn is_none(self) -> bool {
         self.generation == 0
     }

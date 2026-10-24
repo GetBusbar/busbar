@@ -279,8 +279,11 @@ pub unsafe fn reported<'a, T>(
     if count == 0 {
         return Ok(&[]);
     }
-    listed(ptr, 1, field)?;
-    let n = usize::try_from(count).map_err(|_| fault(Rule::OverCap, field))?;
+    judged!(listed(ptr, 1, field));
+    let n = match usize::try_from(count) {
+        Ok(n) => n,
+        Err(_) => return Err(fault(Rule::OverCap, field)),
+    };
     // SAFETY: the caller's contract; `n <= cap` elements of the host's own buffer.
     Ok(unsafe { core::slice::from_raw_parts(ptr, n) })
 }

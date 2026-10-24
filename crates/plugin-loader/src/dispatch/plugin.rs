@@ -667,6 +667,7 @@ impl CallBoard {
     }
 
     /// List the crossing `id` of slot `s`, started now.
+    #[inline(always)]
     pub(crate) fn enter(&self, id: u64, s: u32) -> Listed {
         let now = Instant::now();
         let started = now.saturating_duration_since(self.epoch).as_nanos() as u64;
@@ -783,6 +784,7 @@ pub(crate) fn enter_lifecycle(
     op(instance, input, output)
 }
 
+#[inline(always)]
 pub(crate) fn is_lifecycle(s: u32) -> bool {
     matches!(
         s,
@@ -856,7 +858,9 @@ impl Instance {
         let want = if close { self.cap } else { 1 };
         // One compare-exchange per attempt (`fetch_update`'s loop, written out: this runs on every
         // crossing).
-        let mut n = self.inflight.load(Ordering::SeqCst);
+        // The first attempt guesses no unit is held (the common case: one compare-exchange, no
+        // load); a wrong guess answers the count, and the loop goes on from it.
+        let mut n = 0;
         loop {
             let fits = if close { n == 0 } else { n < self.cap };
             if !fits {
@@ -894,7 +898,8 @@ impl Instance {
                 .is_ok();
         }
         // `fetch_update`'s loop, written out: this runs on every crossing.
-        let mut g = self.gate.load(Ordering::Acquire);
+        // The first attempt guesses no crossing is in progress, as `acquire` does.
+        let mut g = 0;
         loop {
             if g & CLOSING != 0 {
                 return false;
@@ -1110,6 +1115,7 @@ impl Instance {
     /// # Safety
     /// `input`/`out` lead with their heads and are `in_size`/`out_size` bytes, live and not
     /// aliased for the call; `s` passed [`Instance::refuse`].
+    #[inline(always)]
     pub(crate) unsafe fn cross(
         &self,
         s: u32,
@@ -1369,7 +1375,7 @@ impl Instance {
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
         let outcome = judge(raw, &head, ticket, out_size);
-        if outcome == Outcome::Fault {
+        if matches!(outcome, Outcome::Fault) {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the op's own host `in`/`out`; the host wrote `in.size` itself.
@@ -1398,7 +1404,7 @@ impl Instance {
                 return Crossed::host(Outcome::Fault);
             }
         }
-        let short = outcome == Outcome::Failed && (self.short)(&answer);
+        let short = matches!(outcome, Outcome::Failed) && (self.short)(&answer);
         // An `open` that completed hands back the buffer it was lent, holding its reason.
         let reason = if s == slot::OPEN && outcome != Outcome::Pending {
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
@@ -2074,6 +2080,7 @@ impl<K: Kind> Plugin<K> {
         called
     }
 
+    #[inline(always)]
     fn call_ticketed<I: InFrame, O: OutFrame>(
         &self,
         s: u32,
