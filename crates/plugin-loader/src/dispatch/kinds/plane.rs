@@ -647,6 +647,41 @@ pub fn linked_cli_help(
     Ok((!help.is_empty()).then_some(help))
 }
 
+/// THE COMMAND-LINE HELP A DROPPED-IN PLANE STATES: its tail's `cli_help`, read off its SIGNED
+/// MANIFEST's Statement rendering with no dlopen, as [`linked_cli_help`] reads a linked door's off
+/// its tail (BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path; the
+/// rendering carries the whole kind tail, and admitting the plane compares its door's Statement
+/// with it). `None` when the tail states none.
+///
+/// # Errors
+///
+/// The rendering does not read back, is not a plane Statement's, or states no tail.
+pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
+    use busbar_contract::abi::mechanism::rendering::{read, read_plane_cli_help};
+    let r = read(rendering).map_err(|e| {
+        format!(
+            "the plane Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    if r.kind != KindCode::Plane as u32 {
+        return Err(format!(
+            "the Statement rendering states kind {}, not plane",
+            r.kind
+        ));
+    }
+    if r.kind_tail_size == 0 {
+        return Err("a plane states no kind tail".to_string());
+    }
+    let help = read_plane_cli_help(&r.kind_tail).map_err(|e| {
+        format!(
+            "the plane tail's rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    Ok((!help.is_empty()).then_some(help))
+}
+
 /// A linked plane door's DECLARING section, read off its Statement through the one load (the
 /// section the `linked-section` manifest row names for it; the root's tests hold the two together).
 /// `None`: the door declares no section.
