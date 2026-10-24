@@ -207,7 +207,8 @@ fn the_memoised_readings_equal_the_fresh_readings() {
         "use std::{io, net::TcpStream};\n",
         "#[cfg(test)] fn f() { std::net::TcpStream::connect(\"a\"); }",
         "fn f() { std::net::TcpStream::connect(\"a\"); ",
-        "use std::net::Ipv4Addr;\n",
+        // An address named through the contract reads no banned path (#1194).
+        "use busbar_contract::net::SocketAddr;\n",
     ];
     let texts = files
         .iter()
