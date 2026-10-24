@@ -31,7 +31,7 @@ use std::sync::Arc;
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::PlaneDeclaration;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -100,10 +100,6 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
-    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
-    pub gauntlet_one_shot: &'static [&'static str],
-    pub gauntlet_session: &'static [&'static str],
     /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
     /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
@@ -127,7 +123,7 @@ pub mod node {
     use std::sync::Arc;
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
+    use busbar_kernel::plane_driver::PlaneAnswer;
     use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
@@ -189,8 +185,8 @@ pub type ClaimsOf = fn() -> Vec<&'static str>;
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
-/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
-/// door over.
+/// A wire's build: handed the deployment's settings, it opens the row's door and answers the boot's
+/// admission of it (`HostWire::new`: a claim, no layer).
 pub type BuildTransport = fn(
     &busbar_contract::transport::TransportSettings,
 ) -> Arc<busbar_core_connector::wire::HostWire>;
@@ -338,9 +334,12 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
-/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
-/// before anything resolves a store or a secret.
+/// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
+/// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
+/// taken of every configuration as it is built (`crate::root::door_steps::door_config`), so a
+/// config apply refreshes them onto the new generation. No row is a default store: the store is
+/// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
+/// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
@@ -351,21 +350,22 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            secret_admit: Some(crate::root::boot::admit_secrets),
+            // The root's card repricer is the kernel's rate holder and dater (the node unit, in
+            // every build's root-unit table, arms its journal before the boot resolution:
+            // `crate::root::kernel::install_card_repricer`).
+            rate_apply: Some(&crate::root::kernel::CardRepricer),
+            rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
-    // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
-    // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
-    // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
-    busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
@@ -386,7 +386,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
 
 /// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
 /// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
-/// ones each registry build replaces (`root::boot::registry`).
+/// ones each app build and boot's scan replace (`root::boot::admit_secrets`).
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
     std::sync::OnceLock::new();
 
@@ -471,32 +471,16 @@ pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
     let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
     // A linked door's folded row goes at its manifest row's place among the linked plane rows (the
     // layering order is the manifest's whichever axis a plane registers on); a dropped one follows.
-    // Only the doors config uses have rows (Law 7), each with its place among the discovered doors:
-    // the linked ones first, in manifest order, then the dropped-in ones.
-    let used = door_rows()?;
-    let linked_door = |at: usize| linked.plane_door_slots.get(at).copied();
-    for (at, row) in used.iter().rev() {
-        if let Some(slot) = linked_door(*at) {
-            rows.insert(slot.min(rows.len()), *row);
-        }
+    let doors = door_rows()?;
+    let (linked_doors, dropped_doors) =
+        doors.split_at(linked.plane_door_slots.len().min(doors.len()));
+    for (row, slot) in linked_doors.iter().zip(linked.plane_door_slots).rev() {
+        rows.insert((*slot).min(rows.len()), row);
     }
-    rows.extend(
-        used.iter()
-            .filter(|(at, _)| linked_door(*at).is_none())
-            .map(|(_, row)| *row),
-    );
-    let doors: Vec<&'static PlaneDecl> = used.iter().map(|(_, row)| *row).collect();
+    rows.extend(dropped_doors.iter().copied());
     // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
     // key yields that axis alone and keeps every other axis it registers (its tables are its own).
-    // A door config does not use still owns its key: the legacy row does not serve in its place.
-    let discovered: Vec<&str> = crate::root::boot::DOOR_CANDIDATES
-        .get()
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect();
     let rows = doors_own_their_plane_keys(rows, &doors);
-    let rows = unused_doors_own_their_plane_keys(rows, &doors, &discovered);
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
@@ -525,21 +509,6 @@ pub fn doors_own_their_plane_keys(
     let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
     rows.into_iter()
         .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
-        .collect()
-}
-
-/// LAW 7 ON THE PLANE AXIS: a door config does not use is never bound, so it registers no row, yet
-/// it still owns its plane's key: a row of `rows` that is not one of `doors` (a linked legacy or
-/// HOT-lane row) and whose key is a discovered door's name (its Statement's, read off its
-/// rendering) is dropped, so a plane config does not use is served by nothing. Order is kept.
-pub fn unused_doors_own_their_plane_keys(
-    rows: Vec<&'static PlaneDecl>,
-    doors: &[&'static PlaneDecl],
-    discovered: &[&str],
-) -> Vec<&'static PlaneDecl> {
-    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
-    rows.into_iter()
-        .filter(|row| is_door(row) || !discovered.contains(&row.key))
         .collect()
 }
 
@@ -574,18 +543,10 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
 /// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
 /// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
 /// refuse the boot naming both. A door that will not bind refuses the boot, as its load would.
-fn door_rows() -> Result<Vec<(usize, &'static PlaneDecl)>, String> {
+fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     let doors = crate::root::boot::DOOR_CANDIDATES
         .get()
         .map_or(&[][..], Vec::as_slice);
-    // LAW 7: only a plane the boot's configuration uses is bound for its row; the others are not
-    // opened. Each keeps its place among the discovered doors.
-    let uses = crate::root::boot::plane_uses();
-    let doors: Vec<(usize, &crate::root::loader::boot::Candidate)> = doors
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| crate::root::loader::boot::plane_use(uses, c).is_some())
-        .collect();
     if doors.is_empty() {
         return Ok(Vec::new());
     }
@@ -595,15 +556,14 @@ fn door_rows() -> Result<Vec<(usize, &'static PlaneDecl)>, String> {
     let probe = door_probe_dispatcher();
     let registrations = doors
         .iter()
-        .map(|(at, candidate)| {
+        .map(|candidate| {
             let name = candidate.name.clone();
-            let candidate = (*candidate).clone();
+            let bound = candidate.clone();
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
-                        crate::root::boot::plane_uses(),
-                        std::slice::from_ref(&candidate),
+                        std::slice::from_ref(&bound),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),
                         probe.adopter(),
@@ -613,22 +573,21 @@ fn door_rows() -> Result<Vec<(usize, &'static PlaneDecl)>, String> {
                     .into_iter()
                     .next()
                     .map(|(_, plane)| plane)
-                    .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
+                    .ok_or_else(|| format!("{}: the door bound nothing", bound.name))
                 });
             Ok((
-                *at,
                 name,
-                crate::root::loader::dispatch::kinds::plane::registration(bind)?,
+                crate::root::loader::dispatch::kinds::plane::stated_registration(candidate, bind)?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let named: Vec<(String, &str)> = (registrations.iter())
-        .map(|(_, name, reg)| (name.clone(), reg.key))
+        .map(|(name, reg)| (name.clone(), reg.key))
         .collect();
     refuse_a_key_two_doors_register(&named)?;
     registrations
         .into_iter()
-        .map(|(at, _, reg)| busbar_kernel::plane_driver::door::fold(reg).map(|row| (at, row)))
+        .map(|(_, reg)| busbar_kernel::plane_driver::door::fold(reg))
         .collect()
 }
 
@@ -790,7 +749,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
     busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
-    // `proxy_vocab`'s crate-private constant, spelled here as it renders.
+    // `hooks::taps`' crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
 

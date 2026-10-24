@@ -3628,6 +3628,7 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
     let pool = crate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
+        breaker: None,
     };
     assert_eq!(
         pool.repeatability("search_code"),
@@ -4390,34 +4391,6 @@ fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field
     assert_eq!(err.to_string(), "missing field `providers`");
 }
 
-/// LAW 7 KEEPS 1.5.5's BYTES (BUSBAR-1.6.0.md §4: a plane loads iff its verb is present, and "a
-/// plane's section is required only when that plane is linked; the default build keeps 1.5.5's
-/// error bytes"): a plane LINKED into the build that config does not use is never registered, yet
-/// the sections its rendered Statement requires (`install_linked_required_sections`, which the
-/// composition root reads off each linked door's rendering without opening it) are refused exactly
-/// as a registered plane's are. RED before: with no plane registered the document was accepted.
-#[test]
-fn a_section_a_linked_but_unused_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
-    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
-    busbar_kernel::plane::registry::install_linked_required_sections(&["providers", "models"]);
-    // No `pools:` here: the plane's verb would USE the plane (Law 7), and with no plane registered
-    // the section has no owner to parse it, so the refusal would name the unowned section first.
-    let none = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\n").map(|_| ());
-    let providers_only =
-        crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n").map(|_| ());
-    let both = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n").map(|_| ());
-    busbar_kernel::plane::registry::install_linked_required_sections(&[]);
-    assert_eq!(
-        none.expect_err("providers required").to_string(),
-        "missing field `providers`"
-    );
-    assert_eq!(
-        providers_only.expect_err("models required").to_string(),
-        "missing field `models`"
-    );
-    both.expect("a document carrying both parses");
-}
-
 /// A plane that requires `providers` only makes `providers` required: `models` reads empty.
 #[test]
 fn a_plane_requiring_one_section_leaves_the_other_omissible() {
@@ -4529,7 +4502,7 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
     // legacy lane carrier reads them.
     let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_host::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
+        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
     };
     assert_eq!(tenant(&def, &deploy).organization, None);
     def.organization = Some("org-catalog".to_string());

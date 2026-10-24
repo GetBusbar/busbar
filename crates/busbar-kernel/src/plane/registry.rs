@@ -155,22 +155,22 @@ impl PlaneBootCtx for BootCtx {
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
     /// hydration, which is correct: hydration reads exactly the generation it is restoring into). Named
-    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane_host::engine_host`
+    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane_driver::engine_host`
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
-    fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
+    fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_driver::EngineHost> {
         // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY
         // host over it (no live handle yet, which is correct — hydration reads exactly the
         // generation it restores into); the start phase supplies the live `handle` and mints a host
         // over its current load (`from_handle`), byte-identical to the old start hook's
         // `handle.load()`-driven reads. Exactly one of the two is present per phase.
         if let Some(handle) = self.handle.as_ref() {
-            crate::plane_host::engine_host_from_handle(handle)
+            crate::plane_driver::engine_host_from_handle(handle)
         } else {
             let app = self.app.as_ref().expect(
                 "engine_host runs in the HYDRATE phase (app) or the START phase (handle); one is present",
             );
-            crate::plane_host::engine_host(app)
+            crate::plane_driver::engine_host(app)
         }
     }
 
@@ -257,29 +257,6 @@ static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLoc
 
 /// Declarations the COMPOSITION ROOT installed before the plane list was first read.
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
-
-/// THE DEFAULT BUILD'S REQUIRED SECTIONS (Law 7 and 1.5.5's bytes): every section a plane door
-/// LINKED into this build marks required (`SECTION_REQUIRED`), read by the composition root off
-/// each door's rendered Statement whether or not config uses the plane, so nothing is opened. A
-/// plane config does not use is never loaded or registered, yet a document missing a section the
-/// build's own planes require is still refused with 1.5.5's missing-field text. A dropped-in
-/// plane's requirement is read off its registered row, so it holds only when config uses it.
-static LINKED_REQUIRED: std::sync::RwLock<&'static [&'static str]> = std::sync::RwLock::new(&[]);
-
-/// Install [`LINKED_REQUIRED`]: the composition root's, once, before any configuration is read.
-pub fn install_linked_required_sections(sections: &'static [&'static str]) {
-    *LINKED_REQUIRED
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = sections;
-}
-
-/// The default build's required sections ([`install_linked_required_sections`]), in the linked
-/// doors' order; none before the root installs them.
-pub fn linked_required_sections() -> &'static [&'static str] {
-    *LINKED_REQUIRED
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
 /// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
@@ -729,7 +706,7 @@ pub trait PlaneBootCtx {
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
     /// hydration). The returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
-    fn engine_host(&self) -> std::sync::Arc<dyn crate::plane_host::EngineHost>;
+    fn engine_host(&self) -> std::sync::Arc<dyn crate::plane_driver::EngineHost>;
 
     /// Recover the concrete core `BootCtx` as `&dyn Any` — the hatch an in-core plane twin (A2A)
     /// downcasts through to reach the phase fields (`app`, `handle`, `card_issuer`) that name core-live

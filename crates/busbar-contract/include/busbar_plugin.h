@@ -68,15 +68,18 @@ extern "C" {
 #define BB_MECH_MARK_WORD_ISSUED_SECRET_LENGTH UINT32_C(6) /* [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED. */
 #define BB_MECH_MARK_WORD_ISSUED_SECRET_ALPHABET UINT32_C(7) /* [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn */
 #define BB_MECH_REWRITE_ALIAS UINT32_C(1) /* [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The */
-#define BB_MECH_REWRITE_SUGAR UINT32_C(2) /* [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to`, if */
+#define BB_MECH_REWRITE_SUGAR UINT32_C(2) /* [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret */
 #define BB_MECH_REWRITE_KEY UINT32_C(3) /* [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's */
 #define BB_MECH_REWRITE_SUGAR_SHOWN UINT32_C(4) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder */
 #define BB_MECH_REWRITE_SUGAR_NAMES UINT32_C(5) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value */
 #define BB_MECH_REWRITE_SUGAR_ROLE UINT32_C(6) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role */
+#define BB_MECH_SUGAR_ROLE_FILL "fill" /* [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this */
+#define BB_MECH_SUGAR_ROLE_PATH "path" /* [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of */
 #define BB_MECH_SECTION_DECLARING UINT32_C(1) /* [`Section::flags`]: the plugin's declaring section (a plane's verb). */
 #define BB_MECH_SECTION_REQUIRED UINT32_C(2) /* [`Section::flags`]: a document must carry the section when the plugin is linked. */
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
 #define BB_MECH_SECTION_SELECTS UINT32_C(16) /* [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7). */
+#define BB_MECH_EXT_DECLARES "declares" /* THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21 */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */
@@ -468,6 +471,9 @@ extern "C" {
 #define BB_PLANE_MAX_METRIC_LANES ((size_t)16) /* The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]). */
 #define BB_PLANE_EXT_OWNED "owned" /* A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
 #define BB_PLANE_MAX_ARRIVAL_SPAN ((size_t)64) /* The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]). */
+#define BB_PLANE_PROJECT_FAULT_STATUS UINT16_C(500) /* The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite */
+#define BB_PLANE_PROJECT_FAULT_MESSAGE "request rewrite could not be applied" /* The words a FAULT `project` answers the caller with, byte for byte 1.5.5's. */
+#define BB_PLANE_PROJECT_FAULT_UNPARSEABLE UINT32_C(0x80000000) /* THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
@@ -861,6 +867,14 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_CredentialUnavailable ((bb_plane_RefusalCode)43)
 #define BB_PLANE_RefusalCode_MethodNotAllowed ((bb_plane_RefusalCode)44)
 #define BB_PLANE_RefusalCode_Internal ((bb_plane_RefusalCode)45)
+#define BB_PLANE_RefusalCode_UnsentNoAttempt ((bb_plane_RefusalCode)46)
+#define BB_PLANE_RefusalCode_UnsentNoRoute ((bb_plane_RefusalCode)47)
+#define BB_PLANE_RefusalCode_UnsentNeedUnbound ((bb_plane_RefusalCode)48)
+#define BB_PLANE_RefusalCode_UnsentTargetNotPath ((bb_plane_RefusalCode)49)
+#define BB_PLANE_RefusalCode_UnsentFieldName ((bb_plane_RefusalCode)50)
+#define BB_PLANE_RefusalCode_UnsentUnrecorded ((bb_plane_RefusalCode)51)
+#define BB_PLANE_RefusalCode_UnsentAuthFailed ((bb_plane_RefusalCode)52)
+#define BB_PLANE_RefusalCode_UnsentOpenRefused ((bb_plane_RefusalCode)53)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;

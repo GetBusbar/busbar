@@ -534,17 +534,8 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         let mut lifted = Lifted::default();
         lifted.watch.push(NESTED_TOP_LEVEL_KEY);
-        // The registered planes first (a reader during a test's registry isolation waits here),
-        // then the default build's linked planes whether config uses them or not (Law 7 loads only
-        // a used plane; 1.5.5's bytes still refuse a document missing what the build's planes
-        // require). Each section is watched once, in that order.
-        let registered = crate::plane::registry::plane_decls();
-        let linked = crate::plane::registry::linked_required_sections().iter();
-        let declared = registered.iter().flat_map(|d| d.required_config_sections);
-        for s in linked.chain(declared).copied() {
-            if !lifted.watch.contains(&s) {
-                lifted.watch.push(s);
-            }
+        for d in crate::plane::registry::plane_decls() {
+            lifted.watch.extend(d.required_config_sections);
         }
         let table = lift_table();
         let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {

@@ -39,6 +39,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
             bytes: Arc::new(Vec::new()),
         },
         disk: false,
+        orders: true,
     }
 }
 
@@ -436,7 +437,6 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let bind = |set: crate::boot::PlaneSet| {
         let stated: Vec<Vec<u8>> = set.doors.iter().map(|c| c.stated.clone()).collect();
         let bound = load_planes(
-            &uses_door(),
             &set.doors,
             &logs,
             Arc::new(NoSink),
@@ -495,8 +495,7 @@ fn a_plane_config_does_not_use_is_never_opened() {
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
     let bind = |uses: &Uses| {
         load_planes(
-            uses,
-            &doors,
+            &used_planes(uses, &doors),
             &logs,
             Arc::new(NoSink),
             Adopter::unwatched(),
@@ -565,10 +564,6 @@ fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
     .unwrap();
     assert_eq!(c.verbs, vec!["pools".to_string()]);
     assert_eq!(c.selecting, vec!["models".to_string()]);
-    assert_eq!(
-        c.required_sections(),
-        vec!["providers".to_string(), "models".to_string()]
-    );
     let cands = vec![c];
     let direct = Uses::of(&doc(r#"{"providers": {}, "models": {}}"#));
     assert_eq!(plane_use(&direct, &cands[0]), Some("models"));
@@ -632,7 +627,6 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         .open_planes(&[bad_door])
         .expect("the plane states itself");
     let err = load_planes(
-        &uses_door(),
         &set.doors,
         &logs,
         Arc::new(NoSink),
@@ -647,7 +641,6 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         .open_planes(&[plug::door])
         .unwrap();
     load_planes(
-        &uses_door(),
         &ok.doors,
         &logs,
         Arc::new(NoSink),
@@ -1105,4 +1098,32 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
         dropped_cand("busbar-hook-x", "1.2.4"),
     ];
     one_owner(&dropped).expect("not the one-version rule's pair");
+}
+
+/// LAW 7 FOR PLANES (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its configuration
+/// section is present. No verb configured → that plugin is never loaded."; l.547: "A plane loads
+/// iff its verb is present.").
+///
+/// RED before the boot bound only the planes the configuration uses: every discovered plane door,
+/// linked or dropped in, was bound on the dispatcher whatever the document wrote.
+#[test]
+fn a_plane_the_configuration_does_not_use_is_never_bound() {
+    let set = crate::PluginRegistry::empty()
+        .open_planes(&[plug::door])
+        .unwrap();
+    let plane = set.doors[0].clone();
+    assert!(
+        used_planes(&Uses::default(), &set.doors).is_empty(),
+        "a document that writes none of the plane's sections binds no plane"
+    );
+    let uses = Uses {
+        roots: plane.verbs.iter().cloned().collect(),
+        ..Uses::default()
+    };
+    let used = used_planes(&uses, &set.doors);
+    assert_eq!(
+        used.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        [plane.name.as_str()],
+        "its verb selects it"
+    );
 }
