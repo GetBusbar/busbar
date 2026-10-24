@@ -38,19 +38,32 @@ fn the_contract_index_names_the_zero_bearing_structs() {
         .map(String::from)
         .into();
     assert!(idx.judged("Tail", &export_tail));
-    // `ConnFacts` is two structs too: the ABI's facts (a `ZERO`) and the host-side stack's (none).
-    let abi_facts: BTreeSet<String> = ["size", "offered_name", "claim"].map(String::from).into();
+    // `ConnFacts` is a shared name too: the ABI struct states a `ZERO`, the transport stack's
+    // Rust-side facts (derive `Default`, no ZERO) do not. The abi literal's fields pick the ABI one.
+    let abi_facts: BTreeSet<String> = ["size", "offered_name", "agreed_protocol", "claim"]
+        .map(String::from)
+        .into();
     assert!(idx.judged("ConnFacts", &abi_facts));
-    let stack_facts: BTreeSet<String> = ["sni", "alpn", "client_identity"].map(String::from).into();
+    let stack_facts: BTreeSet<String> = ["sni", "alpn", "peer_cert"].map(String::from).into();
     assert!(!idx.judged("ConnFacts", &stack_facts));
-    // `Claim` is four: the transport ABI's and the plane ABI's (each a `ZERO`), the grammar's and
-    // the host stack's (none).
-    let fields =
-        |names: &[&str]| -> BTreeSet<String> { names.iter().map(|n| (*n).to_string()).collect() };
-    assert!(idx.judged("Claim", &fields(&["selector_forms", "facts_len"])));
-    assert!(idx.judged("Claim", &fields(&["verb", "carrier"])));
-    assert!(!idx.judged("Claim", &fields(&["transport", "selector"])));
-    assert!(!idx.judged("Claim", &fields(&["key", "session_bound"])));
+    // `Claim` is shared four ways: the transport and plane ABI rows state a `ZERO`; the grammar's
+    // claim and the transport stack's Rust-side claim do not. Each ABI literal's fields pick its
+    // own row; the Rust-side ones, and a field set the stack's claim also fits, are never judged.
+    assert!(!idx.zero_names().contains(&"Claim"));
+    let abi_transport_claim: BTreeSet<String> = ["selector_forms", "facts", "facts_len", "session"]
+        .map(String::from)
+        .into();
+    assert!(idx.judged("Claim", &abi_transport_claim));
+    let abi_plane_claim: BTreeSet<String> = ["verb", "target", "carrier", "flags"]
+        .map(String::from)
+        .into();
+    assert!(idx.judged("Claim", &abi_plane_claim));
+    let grammar_claim: BTreeSet<String> = ["transport", "selector"].map(String::from).into();
+    assert!(!idx.judged("Claim", &grammar_claim));
+    let stack_claim: BTreeSet<String> = ["key", "transport_facts"].map(String::from).into();
+    assert!(!idx.judged("Claim", &stack_claim));
+    let both: BTreeSet<String> = ["session", "session_bound"].map(String::from).into();
+    assert!(!idx.judged("Claim", &both));
 }
 
 /// THE IN-TREE PLUGINS build every ZERO-bearing contract struct with a base: each fixture plugin

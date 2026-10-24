@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Process-wide operational limits ("NEVER CODED CAPS"), installed from the resolved config
-//! (`config::LimitsResolved`) at startup AND on every config apply/reload (the config plane
-//! refreshes them live), read by the use sites that live too deep in a call stack to thread
-//! `App`/`&self` through.
+//! Process-wide operational limits ("NEVER CODED CAPS"), published from the resolved config
+//! (`config::LimitsResolved`) when a generation goes live — the boot generation's commit and every
+//! subsequent swap (`config::limits::publish`) — and read by the use sites that live too deep in a call
+//! stack to thread `App`/`&self` through. A configuration build reads its own candidate's values
+//! through a build-scoped view no other thread sees (`config::limits::BuildScope`).
 //!
-//! Each accessor returns the operator-configured value when `install` has run, and otherwise the
-//! HISTORICAL hardcoded default (the same `config::DEFAULT_*` const the serde defaults use). So a
-//! unit test that never calls `install` sees byte-for-byte today's behavior, and a double-`install`
-//! (only `main` calls it) is a no-op rather than a panic.
+//! Each accessor returns the published value, and otherwise the HISTORICAL hardcoded default (the
+//! same `config::DEFAULT_*` const the serde defaults use), so a unit test that publishes nothing
+//! sees byte-for-byte the default behaviour. Publishing again replaces the values.
 //!
 //! Values threaded explicitly (the upstream client timeout/pool-idle, the axum `DefaultBodyLimit`,
 //! the inbound concurrency layer, the TLS handshake bound, and the store's hard-down /
@@ -20,22 +20,17 @@ pub(crate) mod admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
-    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 // The body-cap default is no longer read by any accessor on this page (the translate cap moved to
 // its own home); the tests below still assert the uninstalled fallback against it.
 #[cfg(test)]
 use crate::config::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
-// THE INSTALL SIDE lives with the shape it installs, in `busbar_kernel::config::limits`: the
-// process-global slot, the build-scoped rollback guard, and the test-only unconditional installer
-// with the lock that serializes it. Re-exported here BY IDENTITY at their historical
-// `busbar_kernel::limits::` paths — same statics, same guard type, same lock — so this crate's
-// composition root, its accessors below and its tests are untouched, and a plane crate's tests
-// install the same posture against the same slot without naming this crate.
-// `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
-// busbar-core reaches this path.
+// THE PUBLISH SIDE lives with the shape it publishes, in `busbar_kernel::config::limits`: the
+// process-global slot, the build scope, the publication, and the test-only installers with the
+// lock that serializes them. The test guard is re-exported here for this module's own tests.
+#[cfg(test)]
 pub(crate) use busbar_kernel::config::limits::InstallGuard;
 // `install` is dropped: nothing in the workspace names `busbar_kernel::limits::install` -- every real
 // caller spells `busbar_kernel::config::limits::install`, its home. `LIMITS_TEST_LOCK` stays,
@@ -75,19 +70,15 @@ pub fn request_body_read_timeout_secs() -> u64 {
         .unwrap_or(crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS)
 }
 
-/// Cap on a buffered upstream ERROR / verbatim-relay body (bytes).
-pub(crate) fn upstream_error_body_max_bytes() -> usize {
-    get()
-        .map(|l| l.upstream_error_body_max_bytes)
-        // No standalone const re-export needed: the resolved value always carries the default.
-        .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES)
-}
+// The upstream ERROR-body cap has no accessor here: its one reader, proxy_vocab.rs's
+// `max_upstream_buffered_bytes`, left with that file, and the cap is read through the process
+// global `config::limits::mirror_derived_caps` sets (`busbar_kernel_egress::upstream`).
 
-// There is deliberately NO process-global webhook-delivery accessor here, for concurrency or for
-// the deadline: the request-log webhook is an export PLUGIN (`busbar-export-webhook`), and each
-// NAMED instance states its own in-flight bound when started and carries its own
-// `delivery_timeout_secs` on each request — so one saturated sink can never consume another's
-// budget, and no accessor has to pick one instance's value for the others.
+// There is deliberately NO process-global delivery accessor here for an export sink, for
+// concurrency or for the deadline: an export sink is a plugin, and each NAMED instance states its
+// own in-flight bound when started and carries its own delivery timeout on each request — so one
+// saturated sink can never consume another's budget, and no accessor has to pick one instance's
+// value for the others.
 
 /// Max per-key gauge series emitted per `/metrics` scrape.
 pub(crate) fn key_gauge_limit() -> usize {
@@ -110,30 +101,6 @@ pub(crate) fn usage_flush_interval_ms() -> u64 {
     get()
         .map(|l| l.usage_flush_interval_ms)
         .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
-}
-
-/// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
-///
-/// `pub(crate)`: the PUBLIC form of this reading is the host seam
-/// `busbar_kernel::plane_host::PlaneHost::default_probe_interval_secs`, whose own doc already
-/// names itself "the neutral home" for it — the accessor cannot relocate by identity because it
-/// reads the process-global slot, so the seam is the home and this free fn is the one line behind
-/// it. Its single caller is this crate's `impl PlaneHost` (`plane_host/mod.rs`).
-pub(crate) fn default_probe_interval_secs() -> u64 {
-    get()
-        .map(|l| l.default_probe_interval_secs)
-        .unwrap_or(DEFAULT_PROBE_INTERVAL_SECS)
-}
-
-/// Process-wide active-probe timeout fallback (seconds). Per-lane `health.timeout_secs` overrides.
-///
-/// `pub(crate)`, for the same reason as its interval twin above: the public form is
-/// `busbar_kernel::plane_host::PlaneHost::default_probe_timeout_secs`, and this crate's
-/// `impl PlaneHost` is its only caller.
-pub(crate) fn default_probe_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.default_probe_timeout_secs)
-        .unwrap_or(DEFAULT_PROBE_TIMEOUT_SECS)
 }
 
 /// Global default routing-policy timeout (ms). Per-policy `policy.timeout_ms` overrides.

@@ -72,10 +72,13 @@ pub struct AuditEntry {
     ///
     /// `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed
     /// simply lacks the key, and an absent tag means exactly scheme 1, because that is what every
-    /// such row actually is — no migration of stored data is required. `link` always writes
-    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A
-    /// verifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing
-    /// both eras checks each entry under the rules it actually used.
+    /// such row actually is — no migration of stored data is required. A FRESH admin record (the
+    /// seam's `admin_suffix`) is sealed under [`AUDIT_SCHEME_PIPE`], so its `hash` is 1.5.5's own,
+    /// whenever its `action`, `resource` and `outcome` carry no `|`, and under
+    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] only when one of them does; the ring's own `link` writes
+    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`]. A verifier reads this straight off the record
+    /// (`ChainedRecord::framing`), so a chain mixing both schemes checks each entry under the rules
+    /// it actually used.
     #[serde(default = "audit_scheme_default")]
     pub scheme: u8,
     /// TRUE only for entries THIS process appended live (via `record_by` on this ring, or the seam's

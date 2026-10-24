@@ -29,11 +29,14 @@
 #              the shipped closure, and no socket or TLS import in the post-LTO cdylib; BUSBAR-1.6.0.md
 #              line 3980); the C-dependency allow-list; Cargo.lock parity with busbar's lock at the pin
 #              (RED); declares.json's contract_abi against the loader at the pin. A repo with no crates
-#              yet (plugins.yaml pending_crate) runs the pin job only. Plugin tests read busbar's golden
+#              yet runs the pin job only, and only when plugins.yaml at the pin marks it
+#              pending_crate: any other failure to read its Cargo workspace is RED. Plugin tests read busbar's golden
 #              cells from BUSBAR_GOLDEN_DIR (busbar's testing/shadow-oracle/golden at the pin), never a copy.
 #   macos      build and the macOS test command (the plugin's own choice of what runs without a
 #              Linux service container; postgres and valkey are provisioned from Homebrew).
-#   coverage   informational only (llvm-cov; uploaded when CODECOV_TOKEN is present).
+#   coverage   llvm-cov over the same tests, with the same busbar checkout. A failing test FAILS this job
+#              (only a plugin that needs a service container, which this job does not provision, runs
+#              with --ignore-run-fail); the upload is made when CODECOV_TOKEN is present.
 #
 # The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: ModernCI's compile
 # and test checks (.ci/default.yaml, .ci/dev.yaml) build the linked plugins on every busbar move.
@@ -100,7 +103,7 @@ on:
         default: ""
     secrets:
       CODECOV_TOKEN:
-        description: "Codecov upload token; the coverage job is informational and skips the upload without it."
+        description: "Codecov upload token; the coverage job skips the upload without it."
         required: false
 
 permissions:
@@ -212,16 +215,44 @@ jobs:
           repository: GetBusbar/busbar
           ref: ${{ needs.pin.outputs.sha }}
           path: busbar
-      - name: does the repo have its crates yet
+      # THE NO-CRATES PASS IS plugins.yaml's `pending_crate: true` FOR THIS REPO, NOTHING ELSE'S (the
+      # registry at the pin). Any other failure to read the workspace, a broken manifest included, is
+      # RED with cargo's error shown: read as "no crates yet", it skipped every build and test below
+      # and the leg went green (hook-webrequest #24). The same text on both legs;
+      # xtask/tests/plugin_ci_crates_step.rs runs it against planted checkouts.
+      - name: does the repo have its crates yet (no crates passes only when plugins.yaml marks it pending_crate)
         id: crates
         working-directory: plugin
+        env:
+          PLUGIN_LANG: ${{ inputs.plugin_lang }}
+          REGISTRY: ${{ github.workspace }}/busbar/plugins.yaml
         run: |
-          if [ -f Cargo.toml ] && cargo metadata --format-version 1 --no-deps >/dev/null 2>&1; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no crates yet (plugins.yaml pending_crate): the pin job is this repo's whole proof"
+          set -euo pipefail
+          # A C plugin has no Cargo workspace by design (pin-check refuses one); its proof is the C path.
+          if [ "$PLUGIN_LANG" = c ]; then echo "present=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          repo="${GITHUB_REPOSITORY#*/}"
+          err=""
+          if [ ! -f Cargo.toml ]; then
+            err="no Cargo.toml at the repo root"
+          elif ! out="$(cargo metadata --format-version 1 --no-deps 2>&1 >/dev/null)"; then
+            err="cargo metadata failed: $out"
           fi
+          if [ -z "$err" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          [ -f "$REGISTRY" ] || { echo "::error::no plugins.yaml at the pin ($REGISTRY): cannot tell a pending_crate repo from a broken one"; printf '%s\n' "$err"; exit 1; }
+          pending="$(awk -v r="$repo" '
+            /^[^[:space:]#]/ { inp = ($1 == "plugins:"); cur = "" }
+            inp && $1 == "-" && $2 == "repo:" { cur = $3 }
+            inp && cur == r && $1 == "pending_crate:" && $2 == "true" { print "true" }
+          ' "$REGISTRY")"
+          if [ "$pending" = true ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no crates yet (plugins.yaml marks $repo pending_crate): the pin job is this repo's whole proof"
+            printf '%s\n' "$err"
+            exit 0
+          fi
+          echo "::error::$repo: the Cargo workspace does not read, and plugins.yaml at the pin does not mark $repo pending_crate; the error:"
+          printf '%s\n' "$err"
+          exit 1
       - name: the test environment (only the variables that apply are SET; an empty one reads as set)
         env:
           SERVICE: ${{ inputs.service }}
@@ -459,6 +490,10 @@ jobs:
           "$PLUGIN_GATES" plugin-gates imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
           rm -rf plugin/target/release
           exit $rc
+      - name: busbar-contract's dev-only features (alloc-counter, test-seal, services-double) are off in the shipped build (the release graph, normal and build edges)
+        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
+        run: |
+          "$PLUGIN_GATES" plugin-gates devfeatures --tree "$RUNNER_TEMP/tree.txt"
       - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
@@ -572,15 +607,44 @@ jobs:
         with:
           workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || (inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin') }}
           key: busbar-${{ needs.pin.outputs.sha }}
-      - name: does the repo have its crates yet
+      # THE NO-CRATES PASS IS plugins.yaml's `pending_crate: true` FOR THIS REPO, NOTHING ELSE'S (the
+      # registry at the pin). Any other failure to read the workspace, a broken manifest included, is
+      # RED with cargo's error shown: read as "no crates yet", it skipped every build and test below
+      # and the leg went green (hook-webrequest #24). The same text on both legs;
+      # xtask/tests/plugin_ci_crates_step.rs runs it against planted checkouts.
+      - name: does the repo have its crates yet (no crates passes only when plugins.yaml marks it pending_crate)
         id: crates
         working-directory: plugin
+        env:
+          PLUGIN_LANG: ${{ inputs.plugin_lang }}
+          REGISTRY: ${{ github.workspace }}/busbar/plugins.yaml
         run: |
-          if [ -f Cargo.toml ] && cargo metadata --format-version 1 --no-deps >/dev/null 2>&1; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # A C plugin has no Cargo workspace by design (pin-check refuses one); its proof is the C path.
+          if [ "$PLUGIN_LANG" = c ]; then echo "present=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          repo="${GITHUB_REPOSITORY#*/}"
+          err=""
+          if [ ! -f Cargo.toml ]; then
+            err="no Cargo.toml at the repo root"
+          elif ! out="$(cargo metadata --format-version 1 --no-deps 2>&1 >/dev/null)"; then
+            err="cargo metadata failed: $out"
           fi
+          if [ -z "$err" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          [ -f "$REGISTRY" ] || { echo "::error::no plugins.yaml at the pin ($REGISTRY): cannot tell a pending_crate repo from a broken one"; printf '%s\n' "$err"; exit 1; }
+          pending="$(awk -v r="$repo" '
+            /^[^[:space:]#]/ { inp = ($1 == "plugins:"); cur = "" }
+            inp && $1 == "-" && $2 == "repo:" { cur = $3 }
+            inp && cur == r && $1 == "pending_crate:" && $2 == "true" { print "true" }
+          ' "$REGISTRY")"
+          if [ "$pending" = true ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no crates yet (plugins.yaml marks $repo pending_crate): the pin job is this repo's whole proof"
+            printf '%s\n' "$err"
+            exit 0
+          fi
+          echo "::error::$repo: the Cargo workspace does not read, and plugins.yaml at the pin does not mark $repo pending_crate; the error:"
+          printf '%s\n' "$err"
+          exit 1
       - name: build
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
@@ -620,11 +684,10 @@ jobs:
           [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
 
   coverage:
-    name: coverage (informational)
+    name: coverage
     needs: pin
     # Rust only: a C plugin's lines are not llvm-cov's to count.
     if: inputs.plugin_lang != 'c' && (github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref))
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -634,13 +697,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
+      # The same busbar the linux test job uses: a plugin test that reads BUSBAR_CHECKOUT (the
+      # end-to-end tests) or BUSBAR_GOLDEN_DIR must find it here too, or coverage runs it red.
+      - name: busbar at the pin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.pin.outputs.sha }}
+          path: busbar
+      - name: the test environment (as the linux job sets it)
+        env:
+          CHECKOUT: ${{ inputs.busbar_checkout }}
+        run: |
+          set -euo pipefail
+          {
+            echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            if [ "$CHECKOUT" = true ]; then
+              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "CARGO_PROFILE_RELEASE_LTO=off"
+              echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
+            fi
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
-      - name: collect (live-service cases without a service fail and are ignored here; linux is the gate)
+      - name: collect (a failing test fails the job; a plugin that needs a service container ignores run failures here, linux is its gate)
         working-directory: plugin
-        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$SERVICE" != none ]; then flags+=(--ignore-run-fail); fi
+          cargo llvm-cov --workspace --locked "${flags[@]}" --lcov --output-path lcov.info
       - name: upload
         if: env.HAS_CODECOV_TOKEN == 'true'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1

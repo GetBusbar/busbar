@@ -60,7 +60,9 @@ pub struct PlaneBreakers {
     /// lane-global gates index it, and every entry is the same inert placeholder.
     health: HealthState,
     /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
-    /// Not operator-tunable per section, as `docs/circuit-breaker.md` discloses.
+    /// The process-wide `limits.*` (hard-down cooldown, honoured-wait ceiling) reach these cells
+    /// through [`Self::set_limits`]; a pool's `breaker:` block is applied where the pool's cells are
+    /// walked (the root's door egress), as it is for every pool.
     cfg: BreakerCfg,
     /// FALSE for the [`Self::new_inert`] handle a planeless config gets: the lane table is EMPTY
     /// (none of the [`MAX_POOL_MEMBERS`] placeholder cells — their preallocated outcome windows
@@ -117,10 +119,28 @@ impl PlaneBreakers {
         Self::new()
     }
 
+    /// [`Self::new_with_limits`] under the historical limit defaults (the defaults the config layer
+    /// resolves an absent `limits:` block to, so a default deployment's handle is the same either way).
     pub(crate) fn new() -> Self {
+        Self::new_with_limits(
+            crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
+            crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+        )
+    }
+
+    /// A PROVISIONED handle under the operator's `limits.hard_down_cooldown_secs` /
+    /// `limits.max_honored_retry_after_secs` — the same two limits the lane store is built
+    /// with (`appbuild`'s `HealthState::new_with_limits`). THE DESIGN §1 (BUSBAR-1.6.0.md): "Any
+    /// plugin gets all functionality" — a limit an operator sets reaches every plane's cells, not
+    /// one plane's. The handle is process-lifetime, so each subsequent generation's limits arrive through
+    /// [`Self::set_limits`] (`App::publish_limits`, at the swap) rather than a rebuild.
+    pub(crate) fn new_with_limits(
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) -> Self {
         Self {
             provisioned: true,
-            health: HealthState::new(
+            health: HealthState::new_with_limits(
                 (0..MAX_POOL_MEMBERS)
                     .map(|_| LaneData {
                         member: "plane-target".to_string(),
@@ -138,6 +158,8 @@ impl PlaneBreakers {
                         client_fault: 0,
                     })
                     .collect(),
+                hard_down_cooldown_secs,
+                max_honored_retry_after_secs,
             ),
             cfg: BreakerCfg {
                 // A target is DEGENERATE unless an operator put it in a pool, and the unpooled single
@@ -156,6 +178,21 @@ impl PlaneBreakers {
                 bench_below_trip_threshold: false,
                 ..BreakerCfg::default()
             },
+        }
+    }
+
+    /// Carry a new generation's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`
+    /// onto the cells: the next hard-down arms the new sticky cooldown, the next honoured upstream
+    /// wait is clamped to the new ceiling. Learned state is kept (the handle is process-lifetime).
+    /// The inert handle has no cells and takes nothing.
+    pub(crate) fn set_limits(
+        &self,
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) {
+        if self.provisioned {
+            self.health
+                .set_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
         }
     }
 
@@ -221,7 +258,8 @@ impl PlaneBreakers {
         if !self.provisioned {
             return; // inert: nothing was ever dispatched (see `try_admit`).
         }
-        self.health.record_success_in(key, lane);
+        self.health
+            .record_success_in(key, lane, HealthState::now_secs());
     }
 
     /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`crate::breaker::classify`],

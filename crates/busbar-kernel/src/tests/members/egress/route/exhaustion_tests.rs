@@ -1331,6 +1331,7 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         pools,
         token,
         walk,
+        shape: _,
     } = &mut walker;
     let ports = super::ports(n, pools);
     let Step::Wait(wait) = walk.next(&ports, n.affinity, token) else {
@@ -1458,4 +1459,110 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
     assert_eq!(far.member_wait(&token, "b"), Some(110));
     assert_eq!(far.member_wait(&token, "a"), Some(30));
     assert_eq!(far.member_wait(&token, "stranger"), None);
+}
+
+// ── the hooks' restriction holds through the terminals (arch-audit u42 BLOCK) ───────────────────
+
+/// A required restriction the unit's hooks put on every pick: only these destinations are kept,
+/// and a pick that keeps none is the restriction no member satisfies.
+struct Restrict(Vec<DestinationId>);
+
+impl busbar_kernel_egress::walk::Shape for Restrict {
+    fn shape(
+        &self,
+        members: Vec<busbar_kernel_egress::pool::Member>,
+        _primary: bool,
+    ) -> Option<(Vec<busbar_kernel_egress::pool::Member>, Vec<DestinationId>)> {
+        let kept: Vec<_> = members
+            .into_iter()
+            .filter(|m| self.0.contains(&m.destination))
+            .collect();
+        (!kept.is_empty()).then_some((kept, Vec::new()))
+    }
+}
+
+/// Every member of `node`'s pool benched with its cooldown, by destination.
+fn bench(node: &Node, cooldowns: &[u64]) {
+    for (d, cooldown) in cooldowns.iter().enumerate() {
+        node.breaker.set(
+            DestinationId::new(d as u64),
+            Health {
+                cooldown: *cooldown,
+                ..Health::default()
+            },
+        );
+    }
+}
+
+/// v1.5.5 shrank the walk's candidates to the restriction's survivors so the restriction
+/// "PERSISTS across every failover hop" (`crates/busbar/src/proxy/engine/mod.rs:1085`,
+/// `:1298-1300`), and its last resort ranked only those candidates
+/// (`crates/busbar/src/proxy/engine/walk.rs:1126-1130`).
+/// The soonest-cooldown member is one the restriction excludes: the last resort must pass it over.
+#[test]
+fn the_last_resort_never_reaches_a_member_the_restriction_excludes() {
+    let node = least_bad_node();
+    bench(&node, &[10, 300, 120]);
+
+    let taken = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1), DestinationId::new(2)]))
+        .take();
+    assert_eq!(
+        taken.member.destination,
+        DestinationId::new(2),
+        "the last resort ranks the members the hooks kept, never the whole pool: {taken:?}"
+    );
+    assert!(taken.degraded);
+}
+
+/// The kept members are all busy, an excluded one is free: the last resort sheds (v1.5.5
+/// `crates/busbar/src/proxy/engine/walk.rs:1142-1146`, over the restricted `cands`) rather than
+/// dispatch to the excluded one, and the shed's wait is the kept member's own.
+#[test]
+fn the_last_resort_sheds_rather_than_reach_an_excluded_member() {
+    let node = least_bad_node();
+    bench(&node, &[10, 300, 120]);
+    let held = saturated(&node, DestinationId::new(1));
+
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1)]))
+        .shed();
+    assert_eq!(shed.detail, DETAIL_OVERLOADED);
+    assert!(!shed.gate_rejected);
+    assert_eq!(
+        shed.retry_after_secs,
+        Some(300),
+        "the wait is read off the members the restriction kept (v1.5.5 handle_status_503 over the \
+         restricted cands)"
+    );
+    drop(held);
+}
+
+/// The shed's Retry-After reads only the kept members (v1.5.5
+/// `crates/busbar/src/proxy/engine/walk.rs:100` and `:49-61`, over the restricted `cands`): an
+/// excluded member's sooner cooldown is not the client's to wait for.
+#[test]
+fn the_shed_advertises_only_the_kept_members_cooldown() {
+    let node = exhausted_pool(3, &[10, 300, 120]);
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1), DestinationId::new(2)]))
+        .shed();
+    assert_eq!(shed.detail, DETAIL_OVERLOADED);
+    assert_eq!(shed.retry_after_secs, Some(120));
+}
+
+/// The queue terminal's shed reads the same kept members (v1.5.5
+/// `crates/busbar/src/proxy/engine/walk.rs:202`, over the restricted `cands`).
+#[test]
+fn the_wait_terminals_shed_advertises_only_the_kept_members_cooldown() {
+    let node = queue_node(250);
+    bench(&node, &[10, 300]);
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1)]))
+        .shed();
+    assert_eq!(shed.retry_after_secs, Some(300));
 }
