@@ -1894,6 +1894,41 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     );
 }
 
+/// THE NODE AMENDMENT JOURNAL IS ONE OBJECT FOR THE LIFE OF THE NODE (item 404): the boot
+/// generation carries the journal its governance owns, and an apply carries the SAME one — the
+/// prior generation's, which is still governance's. A journal rebuilt on an apply would be one with
+/// no durable sink and none of the node's corrections: every count correction would read as never
+/// made, and every one made after the apply would go unjournalled. Pointer identity, no clock.
+#[test]
+fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_AMENDMENT_JOURNAL",
+        ))
+    };
+    let prior = build_once(cfg(), None).expect("boot");
+    let gov = prior
+        .governance
+        .clone()
+        .expect("the boot builds governance");
+    assert!(
+        std::sync::Arc::ptr_eq(&prior.amendments, gov.amendments()),
+        "the boot generation carries the journal its governance owns"
+    );
+    let next = build_once(cfg(), Some(&prior)).expect("apply");
+    assert!(
+        std::sync::Arc::ptr_eq(&next.amendments, &prior.amendments),
+        "an apply carries the prior generation's journal, never a new one"
+    );
+    let next_gov = next.governance.clone().expect("the apply keeps governance");
+    assert!(
+        std::sync::Arc::ptr_eq(&next.amendments, next_gov.amendments()),
+        "and it is still the journal governance owns"
+    );
+}
+
 /// #39: a `secrets:` block written under BOTH a plugin's ALIAS and its CANONICAL name resolves to
 /// one module, and the second entry used to silently overwrite the first — one block's configured
 /// address/token/CA just vanished while the module loaded happily on the survivor. Ambiguous by

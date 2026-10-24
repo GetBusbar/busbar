@@ -106,7 +106,13 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 /// withhold it: an identity measured over a balance with no figure is not a measurement. Every
 /// other check still runs and every other finding is still reported — one refused row is a hole
 /// in one balance, and a verify that went dark over it would hide everything else it found.
-pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
+///
+/// `journal` is the node's amendment journal, verified as it is held now; a binding no root gave one
+/// holds no amendments to check.
+pub(crate) fn verify_effect(
+    ledger: &dyn LedgerView,
+    journal: Option<&busbar_kernel_audit::amend::NodeAmendments>,
+) -> Result<AdminAnswer, GovernanceError> {
     use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
     // THE SAME RE-DERIVATION THE CHECKPOINTS READ SERVES (ARCHITECT A1): each held checkpoint is
@@ -179,7 +185,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
     );
     // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held
     // corrections and content accesses after boot is a finding, as a rewound checkpoint is.
-    if let Err(broken) = crate::root::durability::verify_held() {
+    if let Some(Err(broken)) = journal.map(crate::root::durability::verify_held) {
         findings.push(format!("amendment chain: {broken}"));
     }
     // THE FIXED AUDIT CHAIN, walked as it is held now: a retained record edited, relinked or

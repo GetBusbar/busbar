@@ -33,10 +33,19 @@
 //! the one thing this contract cannot survive is two spellings of itself.
 //!
 //! JSON is written out by hand rather than derived. The bodies must be byte-deterministic (a
-//! counter-signer that hashes what it fetched needs the same bytes twice), the numeric fields that
-//! are 128-bit go out as TEXT because a JSON number wide enough to hold them is not safely
-//! readable by most parsers — and `i128` through an `f64` is exactly the loss #81 bans — and the
-//! member order has to be the recipe's order rather than a serializer's.
+//! counter-signer that hashes what it fetched needs the same bytes twice), wide numbers go out as
+//! TEXT because a JSON number wide enough to hold them is not safely readable by most parsers — and
+//! `i128` through an `f64` is exactly the loss #81 bans — and the member order has to be the
+//! recipe's order rather than a serializer's.
+//!
+//! "Wide" covers every recipe number. A record's `u64` fields (the sealing `node` is a uniform
+//! 64-bit draw, so above 2^53 on almost every node) are each published as their canonical decimal
+//! text in a JSON STRING, never a JSON number: a verifier whose reader maps numbers to doubles would
+//! round them, recompute a different preimage, and call an honest chain tampered. The framing does
+//! not change — a recipe number is still framed as its big-endian eight-byte form, and a verifier
+//! takes each field's framing kind from the published recipe page, not from the JSON type. The
+//! envelope members that are positions or whole seconds (`from`, `to`, `next_seq`, and a head's
+//! `seq` and `wall`) stay JSON numbers: they stay far below 2^53 for the life of any chain.
 
 use crate::heads::SignedHead;
 use crate::recipe::{digest_fields, DigestField, DigestValue, DIGEST_RECIPE};
@@ -76,7 +85,7 @@ fn member_str(out: &mut String, name: &str, value: &str) {
     push_json_string(out, value);
 }
 
-/// `"name":<number>`.
+/// `"name":<number>` — envelope positions and whole seconds only, never a recipe number.
 fn member_num(out: &mut String, name: &str, value: u64) {
     push_json_string(out, name);
     out.push(':');
@@ -116,9 +125,10 @@ const GROUPS: &[(&str, &str)] = &[
 /// ONE RECORD, rendered as the fields its digest ate, plus the digest and the signature.
 ///
 /// Member order is the recipe's order, and every value is already reduced to the exact text or
-/// number that goes into the digest. A verifier walks the members in order, length-prefixes each
-/// one, and has the preimage — without reimplementing a single one of this crate's tag functions.
-/// A third party should not have to port `outcome_tag` to check a signature.
+/// number that goes into the digest (a number as its decimal text). A verifier walks the members
+/// in order, frames each one by the kind its page names, and has the preimage — without
+/// reimplementing a single one of this crate's tag functions. A third party should not have to port
+/// `outcome_tag` to check a signature.
 fn push_record(out: &mut String, record: &AuditRecord) {
     out.push('{');
     let fields = digest_fields(record);
@@ -208,12 +218,14 @@ fn push_group(out: &mut String, fields: &[DigestField], mut i: usize, group: &st
     i
 }
 
-/// One recipe value, as JSON. Text is a string, a number is a number — the distinction the digest
-/// makes, kept visible in the published body so a verifier does not have to infer it.
+/// One recipe value, as JSON. Text is a string; a number is its canonical decimal text in a string
+/// (`"node":"16045690984833335023"`), because a `u64` above 2^53 does not survive a reader that
+/// maps JSON numbers to doubles. Which of the two framings a field takes is the recipe's to say —
+/// the published page's kind column — not the JSON type's.
 fn push_value(out: &mut String, value: &DigestValue) {
     match value {
         DigestValue::Text(s) => push_json_string(out, s),
-        DigestValue::Num(n) => out.push_str(&n.to_string()),
+        DigestValue::Num(n) => push_json_string(out, &n.to_string()),
     }
 }
 

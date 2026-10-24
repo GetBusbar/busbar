@@ -44,6 +44,7 @@ impl CallerFacts for Nobody {
     fn budget(&self, _: &str) -> Vec<BudgetBucketState> {
         Vec::new()
     }
+    fn hook_read(&self, _: &str, _: Option<&str>, _: &str, _: bool) {}
 }
 
 fn bound(
@@ -515,6 +516,7 @@ impl busbar_kernel::plane_driver::HookBinder for GatedRewrites {
             rewrites: self.rewrites.clone(),
             key: None,
             scan: None,
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
         })
     }
 }
@@ -1029,6 +1031,7 @@ impl busbar_kernel::plane_driver::HookBinder for GatedGates {
             rewrites: Vec::new(),
             key: None,
             scan: None,
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
         })
     }
 }

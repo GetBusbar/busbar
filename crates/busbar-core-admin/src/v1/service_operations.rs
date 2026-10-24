@@ -1540,7 +1540,7 @@ impl AdminService {
         // THE COUNT CORRECTIONS (item 404, OWNER RULING Q9): every `adjust` the node amendment
         // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
         // (`row_count_corrections`), never a money figure a correction carried — it carries none.
-        let corrections = amend::node_corrections();
+        let corrections = self.app.amendments.corrections();
         // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
         // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
         // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives

@@ -104,12 +104,38 @@ fn published_field_order(doc: &str) -> Vec<(String, Kind)> {
     order
 }
 
+/// How a page's body spells a recipe number.
+///
+/// Every page whose body this build can be asked to answer with, and every page the out-of-process
+/// verifier checks, publishes a recipe number as its canonical decimal text in a JSON string: a
+/// `u64` above 2^53 does not survive a reader that maps JSON numbers to doubles. The `v1` page,
+/// whose body no node can serve, is kept as it was published, with bare JSON numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Numbers {
+    /// Canonical decimal text in a JSON string (`"seq": "1"`).
+    AsText,
+    /// A bare JSON number (`"seq": 1`): the kept `v1` page only.
+    AsJson,
+}
+
+/// A recipe number's published text, read back by the page's rule: unsigned ASCII digits, no sign,
+/// no leading zero but `"0"` itself, no whitespace, fits a `u64`.
+fn canonical_decimal(s: &str) -> Option<u64> {
+    let canonical =
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
+    if canonical {
+        s.parse().ok()
+    } else {
+        None
+    }
+}
+
 /// One field, framed exactly as the document's framing section specifies.
 ///
 /// Written out here rather than delegated, because the framing is half of what is being checked.
 /// Length-prefixed, never separator-joined: `be_u64(len) ‖ bytes` for text, `be_u64(8) ‖ be_u64(v)`
-/// for a number.
-fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind) {
+/// for a number. The kind comes off the page's table, never off the JSON type.
+fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind, numbers: Numbers) {
     match kind {
         Kind::Text => {
             let s = value
@@ -119,8 +145,12 @@ fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind) {
             out.extend_from_slice(s.as_bytes());
         }
         Kind::Num => {
-            let n = value.as_u64().unwrap_or_else(|| {
-                panic!("a published number field is not a JSON number: {value}")
+            let n = match numbers {
+                Numbers::AsText => value.as_str().and_then(canonical_decimal),
+                Numbers::AsJson => value.as_u64(),
+            };
+            let n = n.unwrap_or_else(|| {
+                panic!("a published number field is not spelled {numbers:?}: {value}")
             });
             out.extend_from_slice(&8u64.to_be_bytes());
             out.extend_from_slice(&n.to_be_bytes());
@@ -134,7 +164,11 @@ fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind) {
 /// `group[].member` belongs to the array published under `group`, and `group[]` with no member is
 /// an array of bare values. The run of consecutive fields sharing a prefix IS the element's shape,
 /// so no knowledge beyond the table itself is needed — which is the property being checked.
-fn preimage_from_published(order: &[(String, Kind)], record: &serde_json::Value) -> Vec<u8> {
+fn preimage_from_published(
+    order: &[(String, Kind)],
+    record: &serde_json::Value,
+    numbers: Numbers,
+) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < order.len() {
@@ -143,7 +177,7 @@ fn preimage_from_published(order: &[(String, Kind)], record: &serde_json::Value)
             let value = record.get(name).unwrap_or_else(|| {
                 panic!("the published record carries no member `{name}` the field table names")
             });
-            frame(&mut out, value, *kind);
+            frame(&mut out, value, *kind, numbers);
             i += 1;
             continue;
         };
@@ -170,7 +204,7 @@ fn preimage_from_published(order: &[(String, Kind)], record: &serde_json::Value)
                         panic!("a published `{array_name}` element carries no `{member}`")
                     })
                 };
-                frame(&mut out, value, *kind);
+                frame(&mut out, value, *kind, numbers);
             }
         }
     }
@@ -183,8 +217,14 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The digest of one published record, computed only from the published table.
-fn digest_from_published(order: &[(String, Kind)], record: &serde_json::Value) -> String {
-    hex(&Sha256::digest(preimage_from_published(order, record)))
+fn digest_from_published(
+    order: &[(String, Kind)],
+    record: &serde_json::Value,
+    numbers: Numbers,
+) -> String {
+    hex(&Sha256::digest(preimage_from_published(
+        order, record, numbers,
+    )))
 }
 
 /// Pull the nth fenced `json` block out of the published spec.
@@ -220,7 +260,7 @@ fn the_published_table_reproduces_the_published_examples_digest() {
         .as_str()
         .expect("the example carries its digest");
     assert_eq!(
-        digest_from_published(&order, record),
+        digest_from_published(&order, record, Numbers::AsText),
         published_hash,
         "the published field table does not reproduce the published example's own digest — the \
          page is not followable"
@@ -240,7 +280,7 @@ fn the_v1_page_is_kept_and_v2_is_v1_less_the_three_priced_fields() {
     let v1_order = published_field_order(&v1);
     let v1_record = &spec_json_block(&v1, 0)["records"][0];
     assert_eq!(
-        digest_from_published(&v1_order, v1_record),
+        digest_from_published(&v1_order, v1_record, Numbers::AsJson),
         v1_record["hash"]
             .as_str()
             .expect("the v1 example carries its digest"),
@@ -277,7 +317,7 @@ fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
     let v2_order = published_field_order(&v2);
     let v2_record = &spec_json_block(&v2, 0)["records"][0];
     assert_eq!(
-        digest_from_published(&v2_order, v2_record),
+        digest_from_published(&v2_order, v2_record, Numbers::AsText),
         v2_record["hash"]
             .as_str()
             .expect("the v2 example carries its digest"),
@@ -314,7 +354,7 @@ fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
     let v3_order = published_field_order(&v3);
     let v3_record = &spec_json_block(&v3, 0)["records"][0];
     assert_eq!(
-        digest_from_published(&v3_order, v3_record),
+        digest_from_published(&v3_order, v3_record, Numbers::AsText),
         v3_record["hash"]
             .as_str()
             .expect("the v3 example carries its digest"),
@@ -387,7 +427,7 @@ fn the_published_table_still_describes_what_this_build_seals() {
     .expect("a published body is JSON");
 
     assert_eq!(
-        digest_from_published(&order, &body["records"][0]),
+        digest_from_published(&order, &body["records"][0], Numbers::AsText),
         sealed.hash,
         "this build seals a digest the PUBLISHED field order does not reproduce. The chain still \
          verifies against itself, so nothing else in this crate goes red — and the chain has \
@@ -468,10 +508,13 @@ fn the_recomputation_rejects_the_published_example_with_one_cosmetic_field_alter
     let mut record = range["records"][0].clone();
     let published_hash = record["hash"].as_str().expect("a digest").to_string();
 
-    let was = record["mono"].as_u64().expect("the example carries a mono");
-    record["mono"] = serde_json::json!(was + 1);
+    let was = record["mono"]
+        .as_str()
+        .and_then(canonical_decimal)
+        .expect("the example carries a mono");
+    record["mono"] = serde_json::json!((was + 1).to_string());
     assert_ne!(
-        digest_from_published(&order, &record),
+        digest_from_published(&order, &record, Numbers::AsText),
         published_hash,
         "altering the monotonic clock left the recomputed digest unchanged — the preimage builder \
          is not reading its inputs"
@@ -523,7 +566,7 @@ fn the_published_bodies_expose_a_window_that_stops_short() {
     let delivered = short["records"]
         .as_array()
         .and_then(|r| r.last())
-        .and_then(|r| r["seq"].as_u64())
+        .and_then(|r| r["seq"].as_str().and_then(canonical_decimal))
         .expect("the window delivered something");
 
     assert!(

@@ -1933,6 +1933,11 @@ impl TestApp {
             plane_slots,
             plane_sections: self.plane_sections,
             demotion_record: Default::default(),
+            // The node journal the fixture's governance owns, else one of the fixture's own.
+            amendments: self
+                .governance
+                .as_ref()
+                .map_or_else(Default::default, |g| std::sync::Arc::clone(g.amendments())),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
@@ -2189,6 +2194,20 @@ pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
         .filter_map(|l| l.rsplit(' ').next())
         .filter_map(|v| v.trim().parse::<f64>().ok())
         .sum()
+}
+
+/// A hook was handed a unit's content: record the access on `amendments`, through the kernel's own
+/// seat on a node journal (the audit step's token is the kernel's to mint). For a test double that
+/// stands where a node's host would record (a `CallerFacts` of its own), so its tests read the
+/// accesses off the journal they handed it.
+pub fn record_hook_read(
+    amendments: &crate::audit::amend::NodeAmendments,
+    name: &str,
+    principal: Option<&str>,
+    op: &str,
+    identity: bool,
+) {
+    crate::audit::amend::hook_read(amendments, name, principal, op, identity);
 }
 
 /// Create (and return) a PRIVATE scratch directory for one test, under the process temp dir.

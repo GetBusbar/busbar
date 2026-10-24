@@ -592,8 +592,8 @@ busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
-# The amendment-chain verify test edits the held journal in memory (`tamper_node_for_test`), which the
-# audit crate exposes to a dependent's tests only behind this feature.
+# The amendment-chain verify test edits a node's held journal in memory (`tamper_for_test`), which
+# the audit crate exposes to a dependent's tests only behind this feature.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
 # loader's fake-call store harness and oracle-cache locator are `test-support` only.

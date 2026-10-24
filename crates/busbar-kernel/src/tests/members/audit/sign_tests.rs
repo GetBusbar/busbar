@@ -286,10 +286,12 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
             altered, sealed,
             "the edit to {what} did not actually change the record"
         );
+        // Reported as the EDIT it is, never as a key problem: the record no longer hashes to its
+        // own fields, and an operator told "bad signature" goes looking at the key.
         assert_eq!(
             AuditChain::verify_signature(&altered, &published),
-            Err(KeyError::BadSignature),
-            "editing {what} left a record that still verifies"
+            Err(KeyError::DigestMismatch),
+            "editing {what} left a record that is not reported as edited"
         );
         // And the same edit with the hash recomputed — the forger who remembered to rehash — still
         // fails, because the signature is over a digest they cannot re-mint without the key.
@@ -401,10 +403,8 @@ fn debug_never_shows_the_secret() {
 ///
 /// A hex decoder from a general library names the offending character and its index. For a signing
 /// seed that is a byte of the secret, printed into whatever caught the error — a log line, a
-/// terminal, a support ticket. (The packaging CLI's own `$BUSBAR_SIGN_KEY` reader does exactly
-/// that today and is a separate known defect, tracked outside this crate.) So every rejection here
-/// is a
-/// whole-input judgement, and this checks that no fragment of a bad key survives into the message.
+/// terminal, a support ticket. So every rejection here is a whole-input judgement, and this checks
+/// that no fragment of a bad key survives into the message.
 #[test]
 fn a_rejected_key_is_never_quoted_back() {
     let nearly = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7fZZ";
@@ -750,10 +750,16 @@ fn an_empty_group_publishes_an_empty_array() {
     let mut chain = AuditChain::new().signing_with(signer());
     let record = chain.seal(empty_group_inputs(), &token());
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
-    assert!(body.contains("\"lines_count\":0,\"lines\":[]"), "{body}");
-    assert!(body.contains("\"hooks_count\":0,\"hooks\":[]"), "{body}");
     assert!(
-        body.contains("\"children_count\":0,\"children\":[]"),
+        body.contains("\"lines_count\":\"0\",\"lines\":[]"),
+        "{body}"
+    );
+    assert!(
+        body.contains("\"hooks_count\":\"0\",\"hooks\":[]"),
+        "{body}"
+    );
+    assert!(
+        body.contains("\"children_count\":\"0\",\"children\":[]"),
         "{body}"
     );
 }
@@ -838,20 +844,27 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v4"));
     // The inputs a read-time price takes ARE published: the counts, the tier, the fee count and the
     // card version.
-    assert_eq!(parsed["records"][0]["tier_bp"].as_u64(), Some(9_000));
-    assert_eq!(parsed["records"][0]["fee_count"].as_u64(), Some(1));
-    assert_eq!(parsed["records"][0]["rate_card_version"].as_u64(), Some(3));
-    // And the fields the digest takes as numbers stay numbers, because the distinction is what the
-    // framing turns on.
-    assert!(parsed["records"][0]["seq"].is_u64());
-    assert!(parsed["records"][0]["lines"][0]["quantity"].is_u64());
+    assert_eq!(parsed["records"][0]["tier_bp"].as_str(), Some("9000"));
+    assert_eq!(parsed["records"][0]["fee_count"].as_str(), Some("1"));
+    assert_eq!(
+        parsed["records"][0]["rate_card_version"].as_str(),
+        Some("3")
+    );
+    // And the fields the digest takes as numbers go out as their decimal text, in a record and in a
+    // group alike: a `u64` above 2^53 does not survive a reader that maps JSON numbers to doubles.
+    assert_eq!(parsed["records"][0]["seq"].as_str(), Some("1"));
+    assert!(parsed["records"][0]["lines"][0]["quantity"].is_string());
+    // The envelope's positions stay JSON numbers.
+    assert_eq!(parsed["from"].as_u64(), Some(1));
+    assert_eq!(parsed["to"].as_u64(), Some(2));
 }
 
-/// Every value the recipe calls `Num` is published as a JSON number and every `Text` as a JSON
-/// string. A verifier reads the distinction off the body; getting it backwards computes a different
-/// preimage and reports an honest chain as tampered.
+/// Every value the recipe calls `Num` is published as its canonical decimal text in a JSON string,
+/// and every `Text` as a JSON string. The kind comes from the published recipe page, not from the
+/// JSON type; what the body must hold is the exact value, unrounded, which a JSON number above 2^53
+/// would not survive through a reader that maps numbers to doubles.
 #[test]
-fn the_body_keeps_the_texts_texts_and_the_numbers_numbers() {
+fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
     let mut chain = AuditChain::new().signing_with(signer());
     let record = chain.seal(inputs(1), &token());
     let parsed: serde_json::Value = serde_json::from_str(&expose::range_body(
@@ -871,12 +884,34 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_numbers() {
                 published[name].is_string(),
                 "{name} is a recipe text but is not published as a string"
             ),
-            DigestValue::Num(_) => assert!(
-                published[name].is_u64(),
-                "{name} is a recipe number but is not published as a number"
+            DigestValue::Num(n) => assert_eq!(
+                published[name].as_str(),
+                Some(n.to_string().as_str()),
+                "{name} is a recipe number but is not published as its decimal text"
             ),
         }
     }
+}
+
+/// A sealing node above 2^53 — the normal case, since a node is a uniform 64-bit draw — comes out
+/// exact. A JSON number this wide would be rounded by any reader that maps numbers to doubles.
+#[test]
+fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
+    let node: u64 = 16_045_690_984_833_335_023;
+    let mut chain = AuditChain::new().signing_with(signer()).sealing_as(node);
+    let record = chain.seal(inputs(1), &token());
+    let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
+    assert!(
+        body.contains("\"node\":\"16045690984833335023\","),
+        "{body}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(
+        parsed["records"][0]["node"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok()),
+        Some(node)
+    );
 }
 
 /// THE CANONICAL RECORD THE PUBLISHED SPEC'S WORKED EXAMPLE IS BUILT FROM.

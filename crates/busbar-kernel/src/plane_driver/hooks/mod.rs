@@ -305,11 +305,10 @@ pub trait CallerFacts: Send + Sync {
     fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64>;
     /// The caller's budget chain.
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
-    /// Leave the access amendment of a hook handed the prompt: the kernel's one seam (the node
-    /// journal), field names only.
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
-        crate::audit::amend::hook_read(hook, principal, dialect, identity);
-    }
+    /// Leave the access amendment of a hook handed the prompt on the node's amendment journal,
+    /// field names only — through the host's own seat on it
+    /// ([`crate::plane_driver::EngineHost::hook_read`]).
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
     /// Fire the `response` taps of a unit refused at authentication.
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
@@ -2086,11 +2085,7 @@ fn gated_unit(g: GatedHooks, dialect: String) -> UnitHooks {
         budget: Vec::new(),
         requested: crate::hooks::RequestedSignals::default(),
         groups: Arc::new(|_: &[String]| true),
-        reads: Arc::new(
-            |hook: &str, principal: Option<&str>, dialect: &str, identity: bool| {
-                crate::audit::amend::hook_read(hook, principal, dialect, identity);
-            },
-        ),
+        reads: g.reads,
         dialect,
     }
 }

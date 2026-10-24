@@ -1144,6 +1144,10 @@ pub struct CoreGovernance {
     /// Where a sealed rate-card amendment is made durable, where a root bound one. `None` refuses
     /// `amend_rate_history` (`Store`): a correction nothing can record is not applied.
     amendments: Option<Arc<AmendmentJournal>>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404), where a root bound it: what `adjust` seals a count
+    /// correction on and what `verify` checks as held. `None` refuses `adjust` (`Store`): a
+    /// correction nothing records is not applied.
+    node_amendments: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
     /// Who submitted this unit's call.
     attribution: AmendAttribution,
     /// The scope the caller was admitted under. `adjust` hands it to the kernel half, which
@@ -1182,6 +1186,7 @@ impl CoreGovernance {
             request,
             verb,
             amendments: None,
+            node_amendments: None,
             attribution: AmendAttribution {
                 principal: String::new(),
             },
@@ -1242,6 +1247,16 @@ impl CoreGovernance {
         self
     }
 
+    /// Bind the node's amendment journal (`adjust`, `verify`).
+    #[must_use]
+    pub fn noting(
+        mut self,
+        journal: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
+    ) -> Self {
+        self.node_amendments = journal;
+        self
+    }
+
     /// Run the operation and pack its whole answer.
     fn run(&self) -> Vec<u8> {
         self.dispatch.execute(self.verb, &self.request).pack()
@@ -1295,6 +1310,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 scope,
                 principal,
                 &*self.pools,
+                self.node_amendments.as_deref(),
                 self.amendments.as_deref(),
                 |amends| self.ledger.recorded_counts(amends),
             )
@@ -1304,7 +1320,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
         // and rate class — before this seam was reached; none of them is the mounted router's.
         match verb {
             KernelVerb::Verify => {
-                return bound::verify_effect(self.ledger.as_ref()).map(|a| a.pack());
+                let journal = self.node_amendments.as_deref();
+                return bound::verify_effect(self.ledger.as_ref(), journal).map(|a| a.pack());
             }
             KernelVerb::PlaneFacts => {
                 return bound::plane_facts_effect(&self.request.path, &*self.planes)
@@ -2975,6 +2992,10 @@ pub struct AdminBinding {
     /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
     /// applied without its durable record (item 30).
     pub amendments: Option<Arc<AmendmentJournal>>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404): the one its `App` carries, where `adjust` seals a
+    /// count correction and which `verify` checks as held. `None` until a root binds it, and
+    /// `adjust` refuses while it is `None`.
+    pub node_amendments: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
     /// Where an idempotency claim the admin plane's replay cache takes is made durable (item 271).
     /// `None` until a root binds one — a node with no data dir behaves exactly as it did before
     /// this seam existed.
@@ -3031,6 +3052,7 @@ impl AdminBinding {
             ledger: Arc::new(UnopenedLedger),
             audit: None,
             amendments: None,
+            node_amendments: None,
             claims: None,
             pools: no_pools(),
             planes: no_planes(),
@@ -3070,6 +3092,16 @@ impl AdminBinding {
     #[must_use]
     pub fn with_amendment_journal(mut self, journal: Arc<AmendmentJournal>) -> Self {
         self.amendments = Some(journal);
+        self
+    }
+
+    /// Bind the node's amendment journal (item 404): the one its `App` carries.
+    #[must_use]
+    pub fn with_node_amendments(
+        mut self,
+        journal: Arc<busbar_kernel_audit::amend::NodeAmendments>,
+    ) -> Self {
+        self.node_amendments = Some(journal);
         self
     }
 
@@ -3426,6 +3458,7 @@ pub(crate) fn route(
                     principal: actor.clone(),
                 },
             )
+            .noting(binding.node_amendments.clone())
             .granted(granted)
             .pooled(Arc::clone(&binding.pools))
             .planed(Arc::clone(&binding.planes), binding.records.clone())

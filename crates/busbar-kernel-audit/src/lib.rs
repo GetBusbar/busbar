@@ -51,7 +51,15 @@
 //!
 //! Sealing a record, or appending an amendment, takes the audit step's token. A caller can say what
 //! it saw and a hook can say what it did; turning either into something on a chain is the audit
-//! unit's act. Evidence anybody could add is evidence nobody can rely on.
+//! unit's act. Evidence anybody could add is evidence nobody can rely on. Rebuilding a node's
+//! amendment journal from durable storage, and binding where its amendments are made durable, take
+//! the durable-write grant: replacing a node's corrections is the boot's act, never a caller's.
+//!
+//! ## And no process statics
+//!
+//! A node's amendment journal is an instance ([`amend::NodeAmendments`]) held by the kernel state
+//! that outlives every config apply, never a process static, and its durable sink is bound on that
+//! instance: nothing is installed into this crate from outside it.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -69,11 +77,11 @@ mod wiped;
 
 pub use amend::{
     content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal,
-    Amendment, ClassCounts, CorrectionError, CorrectionRefused, CountCorrection, Reader,
-    AMENDMENTS_RETAINED,
+    AmendSink, Amendment, ClassCounts, CorrectionError, CorrectionRefused, CountCorrection,
+    NodeAmendments, Reader, AMENDMENTS_RETAINED,
 };
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
-pub use journal::{from_journal_body, journal_body, JOURNAL_TAG};
+pub use journal::{from_journal_body, journal_body, FieldTooLong, JOURNAL_TAG};
 pub use recipe::{
     digest_fields, digest_over, DigestField, DigestValue, Recipe, DIGEST_RECIPE, DIGEST_RECIPE_V2,
 };

@@ -939,6 +939,9 @@ pub fn mount_node(
             // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
             // live snapshot (Law 7) and write through the configured store's plane-facing seam.
             units.admin.planes = live_planes(Arc::clone(app));
+            // Item 404: `adjust` seals on, and `verify` checks, the node's own amendment journal —
+            // the one instance every generation of this node carries.
+            units.admin.node_amendments = Some(Arc::clone(&app.load().amendments));
             units.admin.records = Some(live_records(Arc::clone(app)));
             // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
             // book — the composed services, reached through the late install.

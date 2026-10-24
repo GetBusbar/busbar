@@ -838,8 +838,9 @@ pub fn dropped_transports(
 ///    record goes through `lane`, the host's bounded write-behind lane, to the store's v3
 ///    `record_put` slot under the journal schema. With no data directory the chain the store kept is
 ///    READ BACK first and the journal resumes it, so the book, the open holds, the audit records,
-///    the dated rate-card history and the amendments are what they were before the restart; with
-///    one the disk is the record and the store is catch-up work. See [`super::durability`]'s
+///    the dated rate-card history and the amendment records are what they were before the restart
+///    ([`book`] rebuilds the node's amendment journal from them); with one the disk is the record
+///    and the store is catch-up work. See [`super::durability`]'s
 ///    preamble for what a full lane means.
 /// 2. **The ledger dual-writes onto the in-memory reconciliation rows.** That half stays memory: it
 ///    is the cross-check the reconciliation identity is read from, not the acknowledgement path.
@@ -893,11 +894,6 @@ pub fn compose_book(
         Some(&crate::root::kernel::ROOT_CARD),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
-    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
-    // corrected count and every recorded content access survive the restart — off the disk, or off
-    // the chain the store kept. A chain that will not read back refuses the boot here as it would
-    // have at the book's build: taken for an empty one, every signed correction would revert.
-    durability.restore_amendments()?;
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
@@ -1009,10 +1005,17 @@ pub fn book(
         ..super::migration::config_from(&app.cost, now)
     };
     let token = super::kernel::new_kernel().durability_token();
-    let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    let (mut durability, rows, migration) =
+        compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
     // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the store's epoch floor, read back through
     // `record_get`, fences a node below it out; the chain's operator breaks are read as deliberate.
     super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
+    // The node amendment journal — the one the boot generation carries — is rebuilt from the chain
+    // before anything can seal onto it, so a corrected count and every recorded content access
+    // survive the restart: off the disk, or off the chain the store kept.
+    // A chain that will not read back refuses the boot here: taken for an empty one, every signed
+    // correction would revert.
+    durability.restore_amendments(&app.amendments, &token)?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
     // an empty reference and two principals never share one. A node with neither keeps this
@@ -1059,7 +1062,7 @@ pub fn book(
     }
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
-    super::durability::bind_amendments(&durability);
+    super::durability::bind_amendments(&durability, &app.amendments);
     // The disaster-recovery verbs reach this book's journal and the store it is shipped to: one
     // store behind the node, not one per seam (row 113, ruling (B); row 187).
     let verb_store = super::durability::node_verb_store(

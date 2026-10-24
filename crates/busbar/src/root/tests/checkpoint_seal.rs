@@ -436,7 +436,7 @@ fn verify_reports_a_rewound_checkpoint_against_the_anchored_head() {
     let view = NodeLedger::new(std::sync::Arc::clone(&book), legacy);
     let verify = || {
         String::from_utf8(
-            crate::root::units_admin::bound::verify_effect(&view)
+            crate::root::units_admin::bound::verify_effect(&view, None)
                 .expect("verify answers")
                 .body,
         )
@@ -515,7 +515,7 @@ fn verify_names_what_the_boot_reconciliation_found() {
     let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
     let verify = || {
         String::from_utf8(
-            crate::root::units_admin::bound::verify_effect(&view)
+            crate::root::units_admin::bound::verify_effect(&view, None)
                 .expect("verify answers")
                 .body,
         )
@@ -550,7 +550,7 @@ fn verify_names_a_tampered_retained_audit_record() {
     let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
     let verify = || {
         String::from_utf8(
-            crate::root::units_admin::bound::verify_effect(&view)
+            crate::root::units_admin::bound::verify_effect(&view, None)
                 .expect("verify answers")
                 .body,
         )

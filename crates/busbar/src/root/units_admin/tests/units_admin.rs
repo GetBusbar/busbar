@@ -2881,7 +2881,8 @@ fn verify_names_a_refused_balance_and_every_other_finding() {
         ));
     post_a_refused_counts_row_on(&node_book.durability, "vk_refused");
 
-    let answer = crate::root::units_admin::bound::verify_effect(&view)
+    let journal = busbar_kernel::audit::amend::NodeAmendments::new();
+    let answer = crate::root::units_admin::bound::verify_effect(&view, Some(&journal))
         .expect("a refused counts row must not take /admin/verify down");
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]
@@ -3064,7 +3065,8 @@ fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_and_named_by_verify
         "no figure is served for a checkpoint the chain cannot vouch for"
     );
 
-    let answer = crate::root::units_admin::bound::verify_effect(&view).expect("verify answers");
+    let answer =
+        crate::root::units_admin::bound::verify_effect(&view, None).expect("verify answers");
     let verified: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let named = format!(
         "checkpoint {}: no record on the chain carries it",
@@ -5539,7 +5541,7 @@ fn adjust_through_route(
         .map_err(|refusal| refusal.reason())
 }
 
-/// A binding over `book`'s node ledger.
+/// A binding over `book`'s node ledger and a node amendment journal of its own.
 #[cfg(feature = "root-admin")]
 fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBinding {
     let legacy: Arc<dyn LegacyRowsRead> = book.rows.clone();
@@ -5549,12 +5551,27 @@ fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBindin
             legacy,
         )))
         .with_pools(Arc::new(|pool| pool == "pool-a"))
+        .with_node_amendments(Arc::new(busbar_kernel::audit::amend::NodeAmendments::new()))
 }
 
-/// What the recorded unit costs at its card epoch over the counts the node journal stands it at
-/// NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
+/// The node amendment journal `binding` seals `adjust` on.
 #[cfg(feature = "root-admin")]
-fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &RecordedCounts) -> u128 {
+fn node_journal(binding: &AdminBinding) -> &busbar_kernel::audit::amend::NodeAmendments {
+    binding
+        .node_amendments
+        .as_deref()
+        .expect("the adjusting binding has a node journal")
+}
+
+/// What the recorded unit costs at its card epoch over the counts `journal` (the node's) stands it
+/// at NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
+#[cfg(feature = "root-admin")]
+fn priced_now_at_two_and_a_half_micro(
+    journal: &busbar_kernel::audit::amend::NodeAmendments,
+    lane: &str,
+    digest: &str,
+    recorded: &RecordedCounts,
+) -> u128 {
     let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         [(
             busbar_kernel_ledger::cost::LaneClass::new(
@@ -5574,7 +5591,8 @@ fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &Recor
         author: busbar_kernel_ledger::cost::Author::Opening,
     });
     let pinned = crate::root::kernel::PinnedHistory::for_test(Arc::new(history), seq);
-    let entry = busbar_kernel::audit::amend::counts_now(digest, &recorded.classes)
+    let entry = journal
+        .counts_now(digest, &recorded.classes)
         .into_iter()
         .fold(
             busbar_kernel_ledger::cost::LedgerEntry::new(lane, recorded.card_epoch_ms),
@@ -5605,7 +5623,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
     assert_eq!(recorded.lane, lane);
     assert_eq!(recorded.card_epoch_ms, ADJUST_ARRIVED_MS);
     assert_eq!(
-        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        priced_now_at_two_and_a_half_micro(node_journal(&binding), lane, &digest, &recorded),
         2_500_000,
         "before: 1,000 input units at 2.5 micro-units"
     );
@@ -5632,7 +5650,8 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
         "the answer carries counts, never money"
     );
 
-    let sealed: Vec<_> = busbar_kernel::audit::amend::node_corrections()
+    let sealed: Vec<_> = node_journal(&binding)
+        .corrections()
         .into_iter()
         .filter_map(|a| match a.body {
             busbar_kernel::audit::amend::AmendBody::Adjust(adj) if adj.amends_hash == digest => {
@@ -5654,7 +5673,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
         "the pool is sealed (Q64/Q67)"
     );
     assert_eq!(
-        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        priced_now_at_two_and_a_half_micro(node_journal(&binding), lane, &digest, &recorded),
         2_000_000,
         "after: 800 input units at 2.5 micro-units"
     );
@@ -5724,13 +5743,15 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
             busbar_contract::authz::Scope::ReadOnly,
             "admin",
             &|_| true,
+            binding.node_amendments.as_deref(),
             None,
             |_| binding.ledger.recorded_counts(&digest),
         ),
         Err(busbar_core_admin::GovernanceError::Validation)
     ));
     assert!(
-        busbar_kernel::audit::amend::node_corrections()
+        node_journal(&binding)
+            .corrections()
             .iter()
             .all(|a| !matches!(
                 &a.body,
@@ -5766,7 +5787,8 @@ fn an_adjust_naming_no_pool_or_an_unknown_pool_is_refused_and_seals_nothing() {
         )
     };
     let sealed = || {
-        busbar_kernel::audit::amend::node_corrections()
+        node_journal(&binding)
+            .corrections()
             .iter()
             .filter(|a| {
                 matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
@@ -6315,6 +6337,7 @@ fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
 #[cfg(feature = "root-admin")]
 fn an_adjusting_binding_over(
     book: &Arc<Mutex<crate::root::durability::Durability>>,
+    node: &Arc<busbar_kernel::audit::amend::NodeAmendments>,
 ) -> AdminBinding {
     let legacy: Arc<dyn LegacyRowsRead> =
         Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
@@ -6322,6 +6345,7 @@ fn an_adjusting_binding_over(
         .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)))
         .with_pools(Arc::new(|pool| pool == "pool-a"))
         .with_amendment_journal(Arc::new(a_journal_over(book)))
+        .with_node_amendments(Arc::clone(node))
 }
 
 /// A store-kept book holding one recorded unit the store has taken. Answers the book and the
@@ -6347,8 +6371,8 @@ fn a_store_kept_book_with_one_recorded_unit(
 
 /// The corrections the node journal holds for `digest`.
 #[cfg(feature = "root-admin")]
-fn corrections_of(digest: &str) -> usize {
-    busbar_kernel::audit::amend::node_corrections()
+fn corrections_of(node: &busbar_kernel::audit::amend::NodeAmendments, digest: &str) -> usize {
+    node.corrections()
         .iter()
         .filter(|a| {
             matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
@@ -6387,8 +6411,9 @@ fn an_adjust_while_the_store_refuses_the_journal_is_refused_503_and_seals_nothin
     .expect("an answer");
     assert_eq!(seen.status, 503, "{}", String::from_utf8_lossy(&seen.body));
 
+    let node = Arc::new(busbar_kernel::audit::amend::NodeAmendments::new());
     let answer = adjust_through_route(
-        &an_adjusting_binding_over(&book),
+        &an_adjusting_binding_over(&book, &node),
         VerbScope::Full,
         serde_json::json!({
             "amends": digest,
@@ -6402,7 +6427,7 @@ fn an_adjust_while_the_store_refuses_the_journal_is_refused_503_and_seals_nothin
     assert_eq!(answer.status, 503, "{body}");
     assert!(body.contains("the test store refuses writes"), "{body}");
     assert_eq!(
-        corrections_of(&digest),
+        corrections_of(&node, &digest),
         0,
         "nothing is sealed while the store refuses"
     );
@@ -6413,7 +6438,7 @@ fn an_adjust_while_the_store_refuses_the_journal_is_refused_503_and_seals_nothin
 const ADJUST_ACK_PHASE: &str = "BUSBAR_TEST_ADJUST_ACK_PHASE";
 
 /// THE CHILD HALF of [`an_adjust_answers_only_once_the_store_kept_its_correction`], run only in a
-/// process of its own: it binds the node amendment journal's sink — one per process — to its book,
+/// process of its own: it binds a node amendment journal's sink to its book,
 /// as the production boot does (`root::boot`, `bind_amendments`). Ignored so the default run never
 /// counts it as a pass.
 #[cfg(feature = "root-admin")]
@@ -6428,15 +6453,19 @@ fn adjust_ack_phase() {
     let slots = crate::root::store_double::RecordSlots::new();
     let (book, digest) =
         a_store_kept_book_with_one_recorded_unit(&slots, "vk_adjust_h3_ack", "adjust-h3-ack");
+    let node = Arc::new(busbar_kernel::audit::amend::NodeAmendments::new());
     book.lock()
         .unwrap()
-        .restore_amendments()
+        .restore_amendments(
+            &node,
+            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+        )
         .expect("the chain reads back");
-    crate::root::durability::bind_amendments(&book);
+    crate::root::durability::bind_amendments(&book, &node);
     slots.refuse(true);
 
     let answer = adjust_through_route(
-        &an_adjusting_binding_over(&book),
+        &an_adjusting_binding_over(&book, &node),
         VerbScope::Full,
         serde_json::json!({
             "amends": digest,
@@ -6453,7 +6482,7 @@ fn adjust_ack_phase() {
         "{body}"
     );
     assert_eq!(
-        corrections_of(&digest),
+        corrections_of(&node, &digest),
         1,
         "the correction is sealed and on the chain, offered again: in force, not yet kept"
     );

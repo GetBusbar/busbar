@@ -1803,6 +1803,20 @@ pub fn build_app_from_config(
     // A refused build never publishes it.
     let limits_resolved = cfg.limits.clone();
 
+    // THE NODE'S AMENDMENT JOURNAL: the one the node's governance owns, carried across the apply
+    // (its durable sink is bound on it once at boot, so an instance rebuilt here would silently stop
+    // being made durable); a generation built with no governance keeps one of its own. The export
+    // sinks, opened once before the first generation, record every hand-off on it from that first
+    // generation on.
+    let amendments = match (prior, governance.as_ref()) {
+        (Some(p), _) => Arc::clone(&p.amendments),
+        (None, Some(g)) => Arc::clone(g.amendments()),
+        (None, None) => Arc::new(crate::audit::amend::NodeAmendments::new()),
+    };
+    if prior.is_none() {
+        crate::export::plugin::record_reads_on(&amendments);
+    }
+
     let app = App {
         // The limits this generation goes live with: `AppHandle::swap` publishes them before any
         // reader of the new generation runs, and carries them onto the plane breaker store.
@@ -1986,6 +2000,7 @@ pub fn build_app_from_config(
             || Arc::new(crate::trust::demotion::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
         ),
+        amendments,
         auth_scope_caps: cfg
             .auth
             .as_ref()

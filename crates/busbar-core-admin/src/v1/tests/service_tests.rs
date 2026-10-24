@@ -3114,8 +3114,11 @@ mod dated_rate_card_history {
             busbar_contract::records::UNIT_INPUT.to_string(),
             count(1_000),
         )]);
+        // The node journal the served read prices through: the one this node's governance owns.
+        let journal = Arc::clone(gov.amendments());
         let correct = |principal: &'static str, amends: &'static str| {
             correct_counts(
+                &journal,
                 busbar_contract::authz::Scope::Full,
                 &was,
                 CountCorrection {

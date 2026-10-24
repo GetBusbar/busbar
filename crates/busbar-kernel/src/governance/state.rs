@@ -152,7 +152,15 @@ impl GovState {
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
             store_calls: std::sync::OnceLock::new(),
+            amendments: Arc::default(),
         })
+    }
+
+    /// THE NODE'S AMENDMENT JOURNAL this state owns: the one every hook and export read and every
+    /// count correction of this node is sealed on, and the one its budget reads price through.
+    #[must_use]
+    pub fn amendments(&self) -> &Arc<crate::audit::amend::NodeAmendments> {
+        &self.amendments
     }
 
     /// Keep the configured store's store v3 slots beside its 1.5.5 op set, once (boot opens the
@@ -1564,7 +1572,9 @@ impl GovState {
     ) -> RecordStoreResult<DerivedUsage> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell(bucket_id, window)?;
-        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
+        let corrections = self.amendments.corrections_sealed();
+        let inputs =
+            money_view::Inputs::of(cost, budget_period, include_request_fee, &cell, corrections);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
@@ -1646,8 +1656,8 @@ impl GovState {
         (bucket_id, period, window): (&str, &str, u64),
         segments: &mut Vec<ModelCell>,
     ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
-        use crate::audit::amend::{node_corrections, AmendBody, Subject};
-        for amendment in node_corrections() {
+        use crate::audit::amend::{AmendBody, Subject};
+        for amendment in self.amendments.corrections() {
             let AmendBody::Adjust(adj) = &amendment.body else {
                 continue;
             };

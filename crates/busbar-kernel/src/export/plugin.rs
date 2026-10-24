@@ -137,6 +137,9 @@ pub(super) struct PluginSink {
     pub(super) projection: Projection,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
+    /// THE NODE'S AMENDMENT JOURNAL every hand-off to this sink is recorded on, as an access: the
+    /// one the node's first generation holds ([`record_reads_on`]).
+    reads: OnceLock<Arc<crate::audit::amend::NodeAmendments>>,
 }
 
 /// A started sink's admission: whether it takes deliveries this run, and its in-flight gate.
@@ -217,6 +220,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             scrape: p.scrape,
             projection,
             admission: OnceLock::new(),
+            reads: OnceLock::new(),
         });
     }
     if !errors.is_empty() {
@@ -226,6 +230,15 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     // What a span CALLSITE's interest is depends on which sinks exist (`super::traces::layer`).
     tracing::callsite::rebuild_interest_cache();
     Ok(())
+}
+
+/// RECORD EVERY HAND-OFF TO THE OPENED SINKS ON `amendments`, the node's amendment journal: set
+/// once, by the node's first generation (the sinks are opened before it is built, and live as long
+/// as the process does). A second call leaves each sink on the journal it was first given.
+pub(crate) fn record_reads_on(amendments: &Arc<crate::audit::amend::NodeAmendments>) {
+    for s in sinks() {
+        let _ = s.reads.set(Arc::clone(amendments));
+    }
 }
 
 /// Hand the request-log line to every opened sink subscribed to `logs`, built to that sink's own
@@ -249,7 +262,9 @@ pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projecti
             continue;
         };
         let payload = f(s.projection);
-        crate::audit::amend::export_read(&s.module, op, &payload);
+        if let Some(amendments) = s.reads.get() {
+            crate::audit::amend::export_read(amendments, &s.module, op, &payload);
+        }
         let line = serde_json::to_vec(&*payload).unwrap_or_default();
         if s.sink.deliver(stream as u8, line, Box::new(permit)) == Delivered::Shed {
             s.sink.shed();

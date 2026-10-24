@@ -3,7 +3,8 @@
 
 //! THE NODE AMENDMENT JOURNAL, BOUND TO THE ONE CHAIN.
 //!
-//! The audit unit keeps one node-wide amendment journal: every hook or export handed content leaves
+//! The node keeps one amendment journal (`busbar_kernel_audit::NodeAmendments`, the instance its
+//! governance owns and every `App` generation carries): every hook or export handed content leaves
 //! an access on it, and every root correction of a unit's counts an adjustment. Held in memory
 //! only, a restart dropped every one — a corrected count read as recorded again, and money with it.
 //!
@@ -17,23 +18,23 @@
 //! are part of its public surface.
 
 use super::*;
-#[cfg(all(test, feature = "root-admin"))]
-use busbar_kernel_audit::amend::tamper_node_for_test;
 use busbar_kernel_audit::amend::{
-    self as amend, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment, ClassCounts, Reader,
+    self as amend, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment, ClassCounts,
+    NodeAmendments, Reader,
 };
 use busbar_kernel_audit::record::OpClassId;
 use std::sync::{Arc, Mutex, Weak};
 
-/// THE NODE'S HELD AMENDMENT RUN, verified as it stands now — what `GET /admin/verify` reports
-///. The boot restore verifies what it reads back; this sees an edit made after boot.
+/// THE NODE'S HELD AMENDMENT RUN (`journal`, the one its `App` carries), verified as it stands
+/// now — what `GET /admin/verify` reports. The boot restore verifies what it reads back; this sees
+/// an edit made after boot.
 ///
 /// # Errors
 ///
 /// The held run does not verify; the break, rendered.
 #[cfg(feature = "root-admin")]
-pub(crate) fn verify_held() -> Result<(), String> {
-    amend::verify_node().map_err(|broken| broken.to_string())
+pub(crate) fn verify_held(journal: &NodeAmendments) -> Result<(), String> {
+    journal.verify().map_err(|broken| broken.to_string())
 }
 
 /// The first field of every amendment record: names the shape, so no other record on the chain is
@@ -184,11 +185,12 @@ fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
 }
 
 impl Durability {
-    /// **THE BOOT'S REBUILD OF THE NODE AMENDMENT JOURNAL**, before anything can seal onto it: the
-    /// node journal becomes exactly the run this book's chain holds, so a count a root correction
-    /// amended reads as corrected after a restart, and so does its money. It runs whenever the chain
-    /// has a durable source ([`Durability::keeps_chain`]): a disk, or the configured store the
-    /// chain was resumed from. A book with neither rebuilds nothing.
+    /// **THE BOOT'S REBUILD OF THE NODE AMENDMENT JOURNAL** `journal` (the node's one, which its
+    /// `App` carries), before anything can seal onto it: it becomes exactly the run this book's
+    /// chain holds, so a count a root correction amended reads as corrected after a restart, and so
+    /// does its money. It runs whenever the chain has a durable source
+    /// ([`Durability::keeps_chain`]): a disk, or the configured store the chain was resumed from. A
+    /// book with neither rebuilds nothing.
     ///
     /// An amendment record the walk cannot link is REPORTED on
     /// [`Durability::restart_findings`], never spliced in. Once rebuilt, the book is the one
@@ -200,7 +202,11 @@ impl Durability {
     /// not read the chain back the first time: taken for an empty chain, the failed read rebuilt no
     /// amendment, so every signed count correction reverted for the life of the process and none
     /// sealed afterwards was journalled (audit R1#3).
-    pub fn restore_amendments(&mut self) -> Result<(), String> {
+    pub fn restore_amendments(
+        &mut self,
+        journal: &NodeAmendments,
+        token: &Grant<DurableWrite>,
+    ) -> Result<(), String> {
         if !self.keeps_chain() {
             return Ok(());
         }
@@ -219,7 +225,7 @@ impl Durability {
             tracing::error!(finding = %finding, "the amendment journal was rebuilt without them");
             self.restart_findings.push(finding);
         }
-        match amend::restore_node(run) {
+        match journal.restore(run, token) {
             Ok(through) => self.amendments_through = Some(through),
             Err(broken) => self
                 .restart_findings
@@ -231,7 +237,7 @@ impl Durability {
     }
 }
 
-/// Journals each amendment the node journal seals onto the book it was rebuilt from.
+/// Journals each amendment the node's journal seals onto the book it was rebuilt from.
 struct BookAmendments {
     book: Weak<Mutex<Durability>>,
     token: Grant<DurableWrite>,
@@ -259,11 +265,11 @@ impl AmendSink for BookAmendments {
     }
 }
 
-/// **BIND THE BOOK THE NODE AMENDMENT JOURNAL WAS REBUILT FROM**: every amendment sealed from here
-/// on — and any sealed since the rebuild — goes on its journal as it is sealed. A no-op for a book
-/// that rebuilt nothing ([`Durability::restore_amendments`] never ran, or the chain has no durable
-/// source), which leaves the node journal memory-only.
-pub fn bind_amendments(book: &Arc<Mutex<Durability>>) {
+/// **BIND THE BOOK THE NODE AMENDMENT JOURNAL `journal` WAS REBUILT FROM**: every amendment sealed
+/// on it from here on — and any sealed since the rebuild — goes on the book's journal as it is
+/// sealed. A no-op for a book that rebuilt nothing ([`Durability::restore_amendments`] never ran,
+/// or the chain has no durable source), which leaves the node journal memory-only.
+pub fn bind_amendments(book: &Arc<Mutex<Durability>>, journal: &NodeAmendments) {
     let Some(through) = book
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -271,11 +277,17 @@ pub fn bind_amendments(book: &Arc<Mutex<Durability>>) {
     else {
         return;
     };
-    let sink = BookAmendments {
+    // ONE durable-write grant, minted once: the sink journals under it, and the binding is made
+    // under it.
+    let sink = Arc::new(BookAmendments {
         book: Arc::downgrade(book),
         token: busbar_kernel::teller::Kernel::new().durability_token(),
-    };
-    amend::bind_node_sink(Some(Arc::new(sink)), through);
+    });
+    journal.bind(
+        Some(Arc::clone(&sink) as Arc<dyn AmendSink>),
+        through,
+        &sink.token,
+    );
 }
 
 #[cfg(test)]

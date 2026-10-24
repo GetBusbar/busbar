@@ -121,6 +121,7 @@ impl busbar_kernel::plane_driver::HookBinder for Rewrites {
             )],
             key: None,
             scan: None,
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
         })
     }
 }
@@ -151,6 +152,7 @@ impl busbar_kernel::plane_driver::CallerFacts for Nobody {
     fn budget(&self, _: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         Vec::new()
     }
+    fn hook_read(&self, _: &str, _: Option<&str>, _: &str, _: bool) {}
 }
 
 /// A driver whose ROUTED request stage (the head of the route leg, before the unit's pump and its

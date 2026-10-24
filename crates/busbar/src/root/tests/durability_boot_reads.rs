@@ -107,7 +107,8 @@ fn an_amendment_rebuild_the_store_will_not_read_refuses_the_boot() {
     }
     let mut restarted = over_store(&slots);
     slots.fail_reads(true);
-    let answered = format!("{:?}", restarted.restore_amendments());
+    let journal = busbar_kernel_audit::amend::NodeAmendments::new();
+    let answered = format!("{:?}", restarted.restore_amendments(&journal, &token));
     assert!(
         answered.starts_with("Err(") && answered.contains("could not be read back"),
         "a store that would not read the chain back at the amendment rebuild must refuse the \

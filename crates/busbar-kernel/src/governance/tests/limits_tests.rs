@@ -1365,7 +1365,8 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         reason: "duplicate charge on a retried request",
         pool: None,
     };
-    correct_counts(Scope::Full, &counts(1_000_000), correction).expect("root correction seals");
+    correct_counts(g.amendments(), Scope::Full, &counts(1_000_000), correction)
+        .expect("root correction seals");
     assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
 }
 
@@ -1395,6 +1396,8 @@ fn q64_two_pools(
     let now = crate::store::now();
     g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
     g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
+    // The correction lands on THIS state's node journal, the one its reads price through.
+    let journal = Arc::clone(g.amendments());
     let adjust = move |pool: Option<&str>| {
         let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
         let correction = CountCorrection {
@@ -1408,8 +1411,13 @@ fn q64_two_pools(
             pool,
         };
         let recorded = counts(1_000_000);
-        correct_counts(busbar_contract::authz::Scope::Full, &recorded, correction)
-            .expect("root correction seals");
+        correct_counts(
+            &journal,
+            busbar_contract::authz::Scope::Full,
+            &recorded,
+            correction,
+        )
+        .expect("root correction seals");
     };
     (g, cm, k, now, adjust)
 }

@@ -28,7 +28,7 @@ use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_mes
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{DriverSteps, FarEnd, PlaneUnits};
-use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
+use super::{rewrite_applied, veto_by, HookBinder, HookRead, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
 use busbar_kernel_audit::record::HookApplied;
@@ -67,6 +67,9 @@ pub struct GatedHooks {
     pub key: Option<Arc<busbar_contract::records::VirtualKey>>,
     /// The incremental scan's substrate; `None` = every request is screened whole.
     pub scan: Option<GatedScan>,
+    /// Where a hook handed the unit's content leaves its access amendment: the node's amendment
+    /// journal, through the generation's own seat on it.
+    pub reads: HookRead,
 }
 
 /// The CURRENT generation's engine host, read per unit (a config apply replaces it).
@@ -114,14 +117,20 @@ impl HookBinder for HostGatedHooks {
         if gates.is_empty() && rewrites.is_empty() {
             return None;
         }
+        let scan = host
+            .gate_scan()
+            .map(|(store, generation)| GatedScan { store, generation });
         Some(GatedHooks {
             request_id: host.next_request_id(),
             gates,
             rewrites,
             key: principal.and_then(|p| (self.keys)(p)),
-            scan: host
-                .gate_scan()
-                .map(|(store, generation)| GatedScan { store, generation }),
+            scan,
+            reads: Arc::new(
+                move |hook: &str, principal: Option<&str>, op: &str, identity: bool| {
+                    host.hook_read(hook, principal, op, identity);
+                },
+            ),
         })
     }
 }
@@ -210,12 +219,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         for (timeout, hook) in &hooks.rewrites {
             let req = view.request(hooks.request_id, &view.pool, true, None);
             if req.prompt.is_some() {
-                crate::audit::amend::hook_read(
-                    hook.name(),
-                    principal.as_deref(),
-                    &view.dialect,
-                    false,
-                );
+                (hooks.reads)(hook.name(), principal.as_deref(), &view.dialect, false);
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
@@ -287,6 +291,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     generation: s.generation,
                     now_ms,
                 }),
+                reads: &*hooks.reads,
                 // THE DESIGN Appendix B.9 l.5436-5437: the hook view's plane-derived fields.
                 plane: crate::hooks::gate::DoorShape {
                     max_tokens: view.max_tokens,

@@ -97,11 +97,15 @@ impl Recipe {
 /// big-endian eight-byte form. The distinction is not cosmetic — `d.num(7)` and `d.text("7")`
 /// produce different bytes, so a verifier that guessed wrong gets a different digest and reports a
 /// good chain as tampered.
+///
+/// The range read publishes BOTH arms as JSON strings: a number goes out as its canonical decimal
+/// text, because a `u64` above 2^53 does not survive a JSON reader that maps numbers to doubles. So
+/// the JSON type does not carry the arm; the published recipe page's kind column does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DigestValue {
     /// A length-prefixed run of bytes.
     Text(String),
-    /// An unsigned 64-bit integer, big-endian.
+    /// An unsigned 64-bit integer, big-endian. Published as its decimal text.
     Num(u64),
 }
 

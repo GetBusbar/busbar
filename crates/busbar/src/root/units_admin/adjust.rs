@@ -5,8 +5,8 @@
 //! unit's COUNTS, never to a money figure.
 //!
 //! The kernel half ([`busbar_kernel::audit::amend::correct_counts`]) seals the correction on the
-//! node amendment journal and refuses a count below zero, a blank reason and any scope below
-//! `full`. This half is the composition root's: it decodes the body, reads what the book RECORDED
+//! node's amendment journal (the one its `App` carries, bound on the admin units) and refuses a
+//! count below zero, a blank reason and any scope below `full`. This half is the composition root's: it decodes the body, reads what the book RECORDED
 //! for the entry the correction names ([`recorded_in`]) — the lane, the card epoch (#79) and the
 //! counts, never from the body, so a correction cannot misstate what it corrects — and hands both
 //! to the kernel half.
@@ -17,7 +17,8 @@
 //!
 //! Money stays a read-time view (#71): what a recorded unit costs is the one function
 //! (`cost::price_exact`) over the counts it stands at NOW
-//! ([`busbar_kernel::audit::amend::counts_now`]) at its own card epoch. Nothing here prices.
+//! ([`busbar_kernel::audit::amend::NodeAmendments::counts_now`]) at its own card epoch. Nothing
+//! here prices.
 
 use super::AdminAnswer;
 use crate::root::durability::{ChainAt, Posting, PostingKind, RecordEra};
@@ -89,20 +90,23 @@ pub fn recorded_in(chain: ChainAt, amends: &str) -> Option<RecordedCounts> {
 /// Refusals are client-safe: a malformed body, a count that is not an exact decimal, a count below
 /// zero, a blank reason or a scope below `full` is `Validation` (400); an entry the book does not
 /// hold is `NotFound`. A missing `pool`, or one `pool_known` does not know, answers `400
-/// invalid_request` whose message names the fault (Q64/Q67). The answer names the sealed
-/// amendment's position and digest, the pool, and the counts it now stands at.
+/// invalid_request` whose message names the fault (Q64/Q67). With no node journal bound
+/// (`node` is `None`) the correction is refused as `Store`: a correction nothing records is not
+/// applied. The answer names the sealed amendment's position and digest, the pool, and the counts
+/// it now stands at.
 ///
 /// A COUNT CORRECTION IS A DURABLE VERB (ARCHITECT 2026-10-07 H3 ruling (d)): it moves money (#71).
-/// With `journal` bound — the node's journal, which the node amendment journal's sink writes the
-/// correction onto as it is sealed (`durability::bind_amendments`) — nothing is sealed while the
-/// store is refusing the journal's records, and the answer waits for the store to keep the
-/// correction: either refusal is a `503` with the reason. With none bound the node amendment
-/// journal is memory-only and there is nothing to wait for.
+/// With `journal` bound — the store's record of the node journal, which the node amendment
+/// journal's sink writes the correction onto as it is sealed (`durability::bind_amendments`) —
+/// nothing is sealed while the store is refusing the journal's records, and the answer waits for
+/// the store to keep the correction: either refusal is a `503` with the reason. With none bound
+/// the node amendment journal is memory-only and there is nothing to wait for.
 pub(crate) fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
     authorised_by: &str,
     pool_known: &dyn Fn(&str) -> bool,
+    node: Option<&busbar_kernel::audit::amend::NodeAmendments>,
     journal: Option<&super::AmendmentJournal>,
     recorded: impl FnOnce(&str) -> Option<RecordedCounts>,
 ) -> Result<AdminAnswer, GovernanceError> {
@@ -139,6 +143,7 @@ pub(crate) fn adjust_effect(
         now.insert(class.clone(), count);
     }
     let was = recorded(amends).ok_or(GovernanceError::NotFound)?;
+    let node = node.ok_or(GovernanceError::Store)?;
     // WHERE THE STORE KEEPS THE JOURNAL, nothing is sealed while it is refusing the journal's
     // records: the correction is refused 503 with the reason.
     if let Some(journal) = journal {
@@ -147,6 +152,7 @@ pub(crate) fn adjust_effect(
         }
     }
     let sealed = correct_counts(
+        node,
         scope,
         &was.classes,
         CountCorrection {
