@@ -35,8 +35,9 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The dropped-in door's library: the sink repo's cdylib crate, snake-cased.
-const CDYLIB: &str = "busbar_export_otlp_plugin";
+/// The dropped-in door's library: the span collector's cdylib crate, snake-cased, reached by its
+/// `test-fixtures` row (`export-trace`, build.rs) and never by its name.
+const CDYLIB: &str = env!("BUSBAR_TEST_CDYLIB_EXPORT_TRACE");
 
 /// The name the dropped-in tarball's manifest states.
 const DROPPED: &str = "k9e-dropped";

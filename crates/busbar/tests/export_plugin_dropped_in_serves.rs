@@ -40,9 +40,10 @@ use std::time::{Duration, Instant};
 /// `module:` names, and the provenance label the host attaches to what it reports.
 const PLUGIN: &str = "dropped-sink";
 
-/// The dropped-in door's library: the export-file repo's cdylib crate, snake-cased — built into this
-/// target dir by this crate's dev-edge on it (under `deps/`, hashed).
-const CDYLIB: &str = "busbar_export_file_plugin";
+/// The dropped-in door's library: the host-written sink's cdylib crate, snake-cased, reached by its
+/// `test-fixtures` row (`export`, build.rs) and never by its name — built into this target dir by
+/// this crate's dev-edge on it (under `deps/`, hashed).
+const CDYLIB: &str = env!("BUSBAR_TEST_CDYLIB_EXPORT");
 
 /// The real sink's `cdylib`, newest wins: uplifted by its exact name, or under `deps/` with a metadata
 /// hash. A missing artifact is a hard failure in every run, never a silent skip of item 141's

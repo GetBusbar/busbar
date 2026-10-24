@@ -553,6 +553,25 @@ planes = ["door:busbar-plane-llm", "door:busbar-plane-mcp", "door:busbar-plane-a
 # through: the one the root links for it (`auth-admin-tokens`), so that test requires the feature.
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
+# THE ROOT TESTS' PLUGIN FIXTURES: `<row> = "<plugin crate>"` (the logic crate, never its `-plugin`
+# packaging crate), the real pinned plugin a root test needs, reached by its ROW as the loader's
+# `both-ways` rows are. `build.rs` hands each row to the tests as data, `BUSBAR_TEST_FIXTURE_<ROW>`
+# (the crate's name, the name its linked row answers on) and `BUSBAR_TEST_CDYLIB_<ROW>` (its `-plugin`
+# crate's `cdylib`, snake-cased), so no test source names a plugin instance (instance-noun
+# neutrality; architect ruling 2026-10-24 (R-14)). Each crate is a dependency or dev-dependency here.
+[package.metadata.busbar.test-fixtures]
+# The token-verifying `kind: auth` plugin the auth-chain proofs drop in (`tests/common/plugins.rs`).
+auth = "busbar-auth-oidc"
+# The INBOUND auth-chain module the default build links beside the operator credential's: what
+# `build.auth_modules` lists after 1.5.5's two, and what a chain resolves to the linked row.
+auth-chain = "busbar-auth-webhook-signature"
+# The export sink whose destination the host writes, dropped in as a third party's
+# (`tests/export_plugin_dropped_in_serves.rs`).
+export = "busbar-export-file"
+# The span collector with a first-party egress class, linked and dropped in
+# (`tests/traces_stream_both_doors.rs`).
+export-trace = "busbar-export-otlp"
+
 [dev-dependencies]
 # The tests' own ed25519 keys (credential and keyset cells). No production path verifies an
 # operator signature (#77(9)), so it is a test dependency only.
@@ -587,7 +606,8 @@ busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-plane-mcp = { workspace = true }
 busbar-plane-a2a = { workspace = true }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
-# token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.
+# token-style auth plugin through its own need (TODO row 22), reached among the linked auth rows by
+# the styles its Statement states. The same pin the `auth-oauth` row links.
 busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.

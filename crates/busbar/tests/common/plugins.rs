@@ -198,9 +198,9 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
 
 /// The pinned token-verifying `kind: auth` plugin's built `cdylib` (a git dev-dependency of this
 /// crate, so the build leaves it under `deps/` with a metadata hash): the ONE place the root's auth
-/// proofs name it.
+/// proofs reach it, by its `test-fixtures` row (`auth`, build.rs) and never by its name.
 pub fn token_verifier_cdylib_path() -> Option<PathBuf> {
-    cdylib_path("busbar_auth_oidc_plugin")
+    cdylib_path(env!("BUSBAR_TEST_CDYLIB_AUTH"))
 }
 
 /// Every loadable plugin library in the target directory (uplifted, under `deps/`, or an example

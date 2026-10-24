@@ -182,8 +182,10 @@ fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
 /// before the fix: the outbound-only header row's name was listed third. The default build also
 /// links the INBOUND webhook-signature row (ARCHITECT 2026-10-14, accepted difference `#64-class
 /// build.auth_modules lists the webhook-signature module`), an auth-chain module an operator names,
-/// so it is listed after 1.5.5's two. The case rides every linked auth row (`linked_every_auth`,
-/// build.rs): every outbound-only row is then linked, and none of them is listed.
+/// so it is listed after 1.5.5's two; the case reaches that row by its `test-fixtures` row
+/// (`auth-chain`, build.rs), never by its name. The case rides every linked auth row
+/// (`linked_every_auth`, build.rs): every outbound-only row is then linked, and none of them is
+/// listed.
 #[cfg(linked_every_auth)]
 #[test]
 fn the_info_auth_modules_are_the_inbound_rows_only() {
@@ -198,7 +200,7 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
         vec![
             "keys",
             config::operator_provider(),
-            "busbar-auth-webhook-signature"
+            env!("BUSBAR_TEST_FIXTURE_AUTH_CHAIN")
         ],
         "only inbound auth-chain modules are listed, 1.5.5's two first and the default build's \
          webhook-signature row after them (ARCHITECT 2026-10-14; linked rows: {linked:?})"

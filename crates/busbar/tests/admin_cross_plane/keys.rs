@@ -2819,15 +2819,20 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 }
 
 /// THE EXPORT AXIS these tests resolve an `export:` block against — once, as the composition root
-/// installs it: the scrape sink (`module: prometheus`) LINKED through the one admission.
+/// installs it: the scrape sink (`module: prometheus`) LINKED through the one admission, found among
+/// the build's linked export rows (`TEST_EXPORT_DOORS`, build.rs) by the frozen scrape module word
+/// it answers to, never by its name.
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_kernel::test_support::export_axis::install_first_party_door(
-            busbar_export_prometheus::NAME,
-            busbar_export_prometheus::ALIAS,
-            busbar_export_prometheus::door::door,
-        );
+        let module = busbar_kernel::test_support::export_axis::scrape_module();
+        let &(name, alias, door) = crate::TEST_EXPORT_DOORS
+            .iter()
+            .find(|(_, alias, _)| *alias == module)
+            .unwrap_or_else(|| {
+                panic!("the build links the export row answering the scrape module `{module}`")
+            });
+        busbar_kernel::test_support::export_axis::install_first_party_door(name, alias, door);
     });
 }
 

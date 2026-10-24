@@ -1463,7 +1463,34 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
     }
 }
 
-/// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
+/// The mint styles the linked auth plugin under these cells serves.
+const MINT_STYLES: [&str; 2] = ["oauth-client-credentials", "jwt-bearer"];
+
+/// The build's linked auth rows whose Statement states both [`MINT_STYLES`], read off each row's
+/// `'static` Statement (reading, not loading; Law 7): exactly one, the row these cells mint through.
+fn mint_rows() -> Vec<busbar_kernel::preflight::LinkedAuth> {
+    let rows: Vec<busbar_kernel::preflight::LinkedAuth> = crate::LINKED
+        .auths
+        .iter()
+        .copied()
+        .filter(|&(_, _, door)| {
+            crate::root::loader::dispatch::kinds::auth::stated_facts(door).is_ok_and(|facts| {
+                MINT_STYLES
+                    .iter()
+                    .all(|style| facts.styles.iter().any(|s| s.name == *style))
+            })
+        })
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the build links one auth row serving {MINT_STYLES:?}: {:?}",
+        crate::LINKED.auths.iter().map(|r| r.0).collect::<Vec<_>>()
+    );
+    rows
+}
+
+/// The linked auth plugin that serves both mint styles ([`MINT_STYLES`]),
 /// its mint connections declared and opened over `table`, on a dispatcher serving the host services
 /// the root's own does at boot (`root::dispatch::dispatcher`: [`crate::root::serve::LateServices`],
 /// whose `clock.now` is the kernel's clock before any install). ROW 176: a dispatcher serving none
@@ -1483,9 +1510,9 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-    // The row's canonical name is its key.
-    let name = "busbar-auth-oauth";
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
+    // The build's linked auth row that serves the mint styles, found by what its own Statement
+    // states and never by its name (Law 0: the root names no auth plugin).
+    let linked = mint_rows();
     super::OutboundAuths::new(
         dispatcher,
         &linked,
@@ -2647,13 +2674,10 @@ pub(crate) mod tool_door {
             let providers = BTreeMap::new();
             let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
                 std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
-            // The build's linked auth rows, and the OAuth plugin (a dropped-in plugin in a
-            // deployment) a token-exchange registration's style is served by. Its own need (the
-            // `open-web` token endpoint, connection security only) reaches a table standing in for
-            // the authorization server.
-            let mut linked = crate::LINKED.auths.to_vec();
-            let name = "busbar-auth-oauth";
-            linked.push((name, name, busbar_auth_oauth::door));
+            // The build's linked auth rows (below), among them the row a token-exchange
+            // registration's style is served by (found by the style its Statement states, never by
+            // its name). Its own need (the `open-web` token endpoint, connection security only)
+            // reaches a table standing in for the authorization server.
             let tokens = Arc::new(super::TokenEndpoint {
                 answer: Some(|body: &str| {
                     let scope = body
@@ -2666,7 +2690,7 @@ pub(crate) mod tool_door {
             });
             let auths = crate::root::door_steps::OutboundAuths::new(
                 Arc::clone(&dispatcher),
-                &linked,
+                crate::LINKED.auths,
                 None,
                 crate::root::loader::dispatch::ConnTable::Host(
                     Arc::clone(&tokens) as Arc<dyn DeclaredConns>

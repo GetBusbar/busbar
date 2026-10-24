@@ -41,8 +41,6 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SE
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 #[cfg(feature = "plane-decisions")]
-use busbar_plane_decisions::plane_door::door as decisions_door;
-#[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(feature = "plane-decisions")]
@@ -257,7 +255,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door()).expect("the door states its Statement");
     let plane = Arc::new(
         load_linked::<Plane>(
             &row,
@@ -472,7 +470,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door()).expect("the door states its Statement");
     let plane = Arc::new(
         load_linked::<Plane>(
             &row,
@@ -551,7 +549,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door()).expect("the door states its Statement");
     let plane = Arc::new(
         load_linked::<Plane>(
             &row,
@@ -4315,7 +4313,7 @@ async fn serve_configured(
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door()).expect("the door states its Statement");
     let plane = Arc::new(
         load_linked::<Plane>(
             &row,
@@ -4484,6 +4482,31 @@ async fn serve_configured(
 }
 
 #[cfg(feature = "plane-decisions")]
+/// The linked plane door that declares the `decisions` section (the `linked-section` row the build
+/// links it under), found by the declaring section its own Statement states and never by its crate
+/// (Law 0: the root names no plane).
+fn decisions_door() -> busbar_contract::abi::mechanism::door::DoorFn {
+    crate::LINKED
+        .plane_doors
+        .iter()
+        .copied()
+        .find(|&door| {
+            crate::root::loader::dispatch::kinds::plane::linked_declaring_section(door)
+                .is_ok_and(|section| section == Some(DECISIONS_SECTION))
+        })
+        .unwrap_or_else(|| panic!("the build links the plane door declaring `{DECISIONS_SECTION}`"))
+}
+
+#[cfg(feature = "plane-decisions")]
+/// The section the decisions door declares (frozen 1.5.x configuration vocabulary).
+const DECISIONS_SECTION: &str = "decisions";
+
+#[cfg(feature = "plane-decisions")]
+/// The label the table below gives the decisions door's `declares` row (the root reads a row's
+/// facts by its door's Statement name; the label only names it in a refusal).
+const DECISIONS_ROW: &str = "decisions-door";
+
+#[cfg(feature = "plane-decisions")]
 /// The decisions door's `declares` section stating the breaker fact false (ARCHITECT Q4).
 const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
 
@@ -4492,12 +4515,7 @@ const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}
 /// `[package.metadata.busbar.linked-declares]` row a plane's door crate names).
 fn declaring(declares: &'static str) -> crate::root::linked::Linked {
     crate::root::linked::Linked {
-        plane_door_declares: vec![(
-            "busbar-plane-decisions",
-            decisions_door as busbar_contract::abi::mechanism::door::DoorFn,
-            declares,
-        )]
-        .leak(),
+        plane_door_declares: vec![(DECISIONS_ROW, decisions_door(), declares)].leak(),
         ..crate::LINKED
     }
 }
@@ -4505,7 +4523,7 @@ fn declaring(declares: &'static str) -> crate::root::linked::Linked {
 #[cfg(feature = "plane-decisions")]
 /// The decisions door's Statement name: the name the root finds its declared facts by.
 pub(super) fn decisions_name() -> String {
-    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door()).expect("the door states its Statement");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
         .expect("its Statement reads")
         .name
@@ -10532,7 +10550,7 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
 fn the_decisions_doors_facing_lists_its_configured_models() {
     let reg = crate::root::loader::dispatch::kinds::plane::registration(
         crate::root::loader::dispatch::kinds::plane::linked_probe(
-            decisions_door,
+            decisions_door(),
             "decisions-listed",
         ),
     )

@@ -16,6 +16,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The webhook-signature module's name, the name its linked row answers on: its `test-fixtures` row
+/// (`auth-chain`, build.rs), so this case names no plugin.
+const MODULE: &str = env!("BUSBAR_TEST_FIXTURE_AUTH_CHAIN");
+
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-webhook-signature-linked-{}-{}",
@@ -36,10 +40,11 @@ fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
         dir.join("config.yaml"),
         format!(
             "listen: \"127.0.0.1:0\"\nproviders: {{}}\nmodels: {{}}\nstore: {{module: memory}}\n\
-             identity-providers:\n  twilio:\n    module: busbar-auth-webhook-signature\n    \
+             identity-providers:\n  twilio:\n    module: {}\n    \
              settings: {{ variant: twilio, origin: \"wss://edge.example.com\" }}\n\
              auth:\n  chain: [twilio]\n\
              plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    allow_unsigned: true\n",
+            MODULE,
             dir.join("plugins").display()
         ),
     )

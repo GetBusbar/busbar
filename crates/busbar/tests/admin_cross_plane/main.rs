@@ -25,6 +25,9 @@ include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
 // `LINKED_HOOK_NAMES`: the root's own generated list of the hook rows this build links, as the
 // admin surface prints them (`main.rs` includes the same file onto the root's install record).
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
+// `TEST_EXPORT_DOORS`: the build's linked export rows, as the root links them (`keys.rs` installs the
+// scrape sink from it by the module word it answers to).
+include!(concat!(env!("OUT_DIR"), "/test_export_doors.rs"));
 
 // The served-surface reconciliation reads the plane-complete document through its sibling's helper.
 #[cfg(feature = "openapi-schema")]
