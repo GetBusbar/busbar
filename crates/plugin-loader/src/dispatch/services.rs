@@ -1552,7 +1552,8 @@ extern "C" fn ticket_mint(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             let provider = Arc::clone(&served.provider);
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
-                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                let req = Fp::of(&[&i.ttl_secs.to_le_bytes(), &record]);
+                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
                     Ran::Now(provider.ticket_mint(&caller, unit, i.ttl_secs, &record))
                 })
             }
@@ -1581,9 +1582,14 @@ extern "C" fn ticket_take(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             let provider = Arc::clone(&served.provider);
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
-                serve(&served.store, &route, &head, Some(&i.into), |_| {
-                    Ran::Now(provider.ticket_take(&caller, unit))
-                })
+                serve(
+                    &served.store,
+                    &route,
+                    &head,
+                    Fp::of(&[]),
+                    Some(&i.into),
+                    |_| Ran::Now(provider.ticket_take(&caller, unit)),
+                )
             }
         },
     )
