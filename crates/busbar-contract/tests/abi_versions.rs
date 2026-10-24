@@ -14,6 +14,7 @@ use busbar_contract::abi::mechanism::call::{Op, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
+use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
 
 /// `git show v1.5.5:crates/plugin-abi/src/lib.rs` line 71: `pub const TRANSPORT_VERSION: u32 = 1;`
@@ -109,17 +110,51 @@ extern "C" fn an_op(_i: *mut c_void, _in: *const c_void, _out: *mut c_void) -> R
 extern "C" fn a_door() -> *const Door {
     std::ptr::null()
 }
+extern "C" fn a_sealed_door() -> &'static Door {
+    static_door::door()
+}
+mod static_door {
+    struct Life;
+    impl busbar_contract::abi::sdk::life::Life for Life {
+        const CANCEL: u32 = 0;
+        fn open(
+            _: &[u8],
+            _: &[&[u8]],
+            _: u64,
+        ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+            Ok(Life)
+        }
+        fn refresh(
+            &self,
+            _: &[u8],
+            _: &[&[u8]],
+            _: u64,
+        ) -> Result<
+            busbar_contract::abi::sdk::life::Refreshed,
+            busbar_contract::abi::sdk::life::Refusal,
+        > {
+            Ok(busbar_contract::abi::sdk::life::Refreshed::default())
+        }
+    }
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::sdk::door::statement("a-door", "0", 1),
+        lifecycle: life(Life),
+    }
+}
 extern "C" fn a_wake(_c: HostCtx, _t: Ticket) {}
 
 #[test]
 fn every_slot_type_is_extern_c() {
     let op: Op = an_op;
-    let door: DoorFn = a_door;
+    let raw: RawDoorFn = a_door;
+    let door: DoorFn = a_sealed_door;
     let wake: WakeFn = a_wake;
     assert_eq!(
         op(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut()).outcome(),
         Outcome::Ready
     );
-    assert!(door().is_null());
+    assert!(raw().is_null());
+    assert_eq!(door().magic(), DOOR_MAGIC);
     wake(HostCtx::NONE, Ticket::NONE);
 }

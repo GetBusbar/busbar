@@ -1637,12 +1637,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // TRANSPARENCY (opt-in, `advanced.response_headers.route_policy`): which
                         // hook chose the serving member, after the plane's own fields, as 1.5.5
                         // stamped them; nothing on the default path or when no hook chose.
-                        let chosen = self.lock().route_policy;
+                        let chosen = self.lock().route_policy.clone();
                         if chosen.is_some() {
                             route_policy_fields(
                                 &mut fields,
                                 crate::proxy::route_policy_headers_enabled(),
-                                chosen,
+                                chosen.as_deref(),
                                 &bufs.member,
                             );
                         }

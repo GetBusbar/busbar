@@ -12,9 +12,9 @@
 //! These tests hand-build the connector stack (the stack shape is `EngineConnector` exactly) over
 //! the TLS test double (`egress::fixtures::TlsDouble`): the TLS itself is the connector's, which this
 //! crate cannot name, so what is proven here is the engine's side — the name it hands the wrap, the
-//! leaf it observes, the deadline over the whole connect. The real-TLS twins (the ClientHello's SNI
-//! on the wire, the wrong-name refusal, the observed pin of a real handshake) are the connector's
-//! `tls/engine_tests.rs`, which drives this engine over the connector's wrap.
+//! leaf it observes, the deadline over the whole connect. The connector's own outbound TLS proves
+//! its pin over a real handshake in `busbar-core-connector`'s `tls/client_tests.rs`
+//! (`a_pinned_dial_reaches_only_the_pinned_key`).
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -144,7 +144,8 @@ async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin
 /// name the engine hands the TLS wrap — the SNI, and therefore the name the certificate is checked
 /// against — stays on the hostname. (The refusing twin, a wrong-name certificate at the pinned
 /// address refused at the handshake, is a check the connector's TLS makes on that name: the
-/// connector's `tls/engine_tests.rs` drives it over the real wrap.)
+/// connector's `tests/connector_tests.rs` drives it over the real wrap, in
+/// `the_real_wrap_offers_the_configured_name_and_refuses_a_certificate_for_another`.)
 #[tokio::test]
 async fn sni_stays_on_the_hostname_under_the_pin() {
     let right = ca_and_leaf(&["pinned.test"]);
