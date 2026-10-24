@@ -15,6 +15,7 @@
 use std::path::PathBuf;
 
 use xtask::ctx::{Ctx, Overlay};
+use xtask::gates::construction::ceilings::with_head_pin;
 use xtask::gates::execute;
 use xtask::gates::kind_isolation::KindIsolationGate;
 use xtask::ledger::Status;
@@ -85,7 +86,12 @@ fn a_planted_store_crate_coupling_is_found_exactly_as_the_serial_gate_found_it()
     let mut ov = Overlay::new();
     ov.set(PLANT, PLANT_TEXT);
     ov.set(LIB, format!("{lib}mod gates_fast_plant;\n"));
-    let verdict = execute(&KindIsolationGate::check(), &cx.with_overlay(ov));
+    // THE BASE IS PINNED TO `HEAD` (`with_head_pin`, as every base-held gate's proof does): the
+    // matrix's presence is judged against the merge-base (row 159, XC2#5), and a detached test
+    // checkout with no `XTASK_CEILING_BASE` has no other base, so the gate would answer `no-base`
+    // and nothing else. Against `HEAD` the plant is exactly what is new.
+    let cx = with_head_pin(&cx.with_overlay(ov));
+    let verdict = execute(&KindIsolationGate::check(), &cx);
     let row = |id: &str| {
         verdict
             .rows
@@ -122,13 +128,20 @@ fn a_planted_store_crate_coupling_is_found_exactly_as_the_serial_gate_found_it()
         );
     }
 
-    // The matrix is REPORT-ONLY on predev (owner 2026-10-03, e106f8d74d): a PASS row whose detail
-    // carries the measured total and the first findings, the per-file counts living in `--report`.
-    // So what is pinned here is that it stays report-only and still finds the planted homoglyph;
-    // the counts themselves are proven by the gate's whole TSV over the real tree, byte-identical
-    // to predev's serial gate.
+    // The matrix's COUNTS are report-only (owner 2026-10-03, e106f8d74d), but its PRESENCE gates on
+    // the registered gate (row 159, XC2#5; BUSBAR-1.6.0.md: "a crate newly naming another kind's
+    // vocabulary, is still DENIED"): the planted homoglyph is a presence finding the base did not
+    // carry, so the row is RED and names it against the merge-base, not as `no-base`. The counts
+    // themselves are proven by the gate's whole TSV over the real tree.
     let matrix = row("kind-isolation:matrix");
-    assert_eq!(matrix.status, Status::Pass, "{}", matrix.detail);
+    assert_eq!(matrix.status, Status::Fail, "{}", matrix.detail);
+    assert!(
+        matrix
+            .detail
+            .contains("new presence finding(s) over the merge-base"),
+        "the matrix row is not the presence verdict against the merge-base: {}",
+        matrix.detail
+    );
     assert!(
         matrix.detail.contains(PLANT),
         "the planted file is not among the matrix findings: {}",

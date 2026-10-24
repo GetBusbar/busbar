@@ -508,6 +508,22 @@ pub(super) fn mounted_source(
         .map(|p| p.source.clone())
 }
 
+/// IS `cx` A PLANTED TREE: an overlay that claims anything beyond the pinned [`mount`] (a file, an
+/// absence, a canned derived input)? The mount alone is the tree every production run reads, and
+/// the `cargo metadata` that resolved it is the one a cross-check asks (row 159, XC2#3); a plant is
+/// a tree cargo never saw.
+pub(super) fn is_planted(cx: &Ctx) -> bool {
+    let Some(ov) = cx.overlay() else {
+        return false;
+    };
+    if ov.has_commands() {
+        return true;
+    }
+    let base = mount(cx);
+    ov.changes().count() != base.changes().count()
+        || ov.changes().zip(base.changes()).any(|(a, b)| a != b)
+}
+
 /// THE TREE THE GATE READS: `cx` with every pinned crate of [`mount`] laid beneath its overlay.
 pub(super) fn with_pinned(cx: &Ctx) -> Ctx {
     let base = mount(cx);
