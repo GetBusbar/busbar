@@ -20,6 +20,8 @@ env:
   BUSBAR_ORACLE_SHA256_LINUX_AARCH64: 188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4
   BUSBAR_ORACLE_CRATE: busbar-release-oracle
   BUSBAR_ORACLE_BIN: busbar-oracle
+  # The 1.5.5 golden the replay judges against: git rev-parse dev:testing/shadow-oracle/golden/1.5.5.
+  BUSBAR_GOLDEN_1_5_5_TREE: 5e33e76f77af35b01674da6dedf37e8dd434602c
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
