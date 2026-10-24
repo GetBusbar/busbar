@@ -4521,6 +4521,162 @@
           ]
         ]
       }
+    },
+    {
+      "id": "M18 LDAP a malformed reply or a hostless URL fails closed",
+      "kind": "breaking",
+      "status": "owner-approved 2026-09-28",
+      "changelog": "The LDAP auth plugin differs from 1.5.5 in three ways:",
+      "by": "owner (Matthew Jackson), ruling 2026-09-28; registered 2026-10-24 (M18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-28",
+        "ruling": "LDAP: fail closed on a malformed reply or hostless URL instead of a panic (spec BUSBAR-1.6.0.md: LDAP l.863-865 and l.4435, STORE_OPID_CONFLICT l.1093 and l.4436); registration confirmed by the owner 2026-10-24 (done-audit M18)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^auth\\.ldap\\|(malformed-reply|hostless-url)$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-001|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-002|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-003|validate",
+            "status": 1
+          }
+        ]
+      },
+      "rationale": "1.5.5's LDAP client panicked on a malformed server reply or a URL with no host; the 1.6.0 sans-IO plugin refuses the login (fails closed). No oracle cell drives an LDAP server today, so the entry matches no cell; it records the signed difference for the day one does."
+    },
+    {
+      "id": "M18 LDAP an overrunning nested BER length fails fast",
+      "kind": "breaking",
+      "status": "owner-approved 2026-09-28",
+      "changelog": "The LDAP auth plugin differs from 1.5.5 in three ways:",
+      "by": "owner (Matthew Jackson), ruling 2026-09-28; registered 2026-10-24 (M18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-28",
+        "ruling": "LDAP: fail fast on an overrunning nested BER length (spec BUSBAR-1.6.0.md: LDAP l.863-865 and l.4435, STORE_OPID_CONFLICT l.1093 and l.4436); registration confirmed by the owner 2026-10-24 (done-audit M18)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^auth\\.ldap\\|ber-overrun$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-001|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-002|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-003|validate",
+            "status": 1
+          }
+        ]
+      },
+      "rationale": "1.5.5 read past a nested BER length that overran its parent; 1.6.0 fails the reply fast. No oracle cell drives an LDAP server today."
+    },
+    {
+      "id": "M18 LDAP inbound replies are capped at 16 MiB",
+      "kind": "breaking",
+      "status": "owner-approved 2026-09-28",
+      "changelog": "The LDAP auth plugin differs from 1.5.5 in three ways:",
+      "by": "owner (Matthew Jackson), ruling 2026-09-28; registered 2026-10-24 (M18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-28",
+        "ruling": "LDAP: a 16 MiB inbound cap (spec BUSBAR-1.6.0.md: LDAP l.863-865 and l.4435, STORE_OPID_CONFLICT l.1093 and l.4436); registration confirmed by the owner 2026-10-24 (done-audit M18)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^auth\\.ldap\\|reply-over-16mib$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-001|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-002|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-003|validate",
+            "status": 1
+          }
+        ]
+      },
+      "rationale": "1.5.5 read an LDAP reply of any size; 1.6.0 caps an inbound reply at 16 MiB and refuses a larger one. No oracle cell drives an LDAP server today."
+    },
+    {
+      "id": "M18 STORE_OPID_CONFLICT: an op_id replayed with different fields is refused",
+      "kind": "breaking",
+      "status": "owner-approved 2026-09-28",
+      "changelog": "**A store plugin refuses an `op_id` replayed with different value fields** with the diagnostic",
+      "by": "owner (Matthew Jackson), ruling 2026-09-28; registered 2026-10-24 (M18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-28",
+        "ruling": "STORE_OPID_CONFLICT: approved; registered as a new-surface difference (spec BUSBAR-1.6.0.md: LDAP l.863-865 and l.4435, STORE_OPID_CONFLICT l.1093 and l.4436); registration confirmed by the owner 2026-10-24 (done-audit M18)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^store\\.(opid-conflict|op_id-conflict)",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-001|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-002|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-003|validate",
+            "status": 1
+          }
+        ]
+      },
+      "rationale": "New store-ABI surface: the same op_id with a different body is refused with STORE_OPID_CONFLICT and nothing is applied (1.5.5 had no op_id). No oracle cell replays a store op_id today."
     }
   ]
 }
