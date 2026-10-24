@@ -1369,6 +1369,74 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
     assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
 }
 
+/// Q51 AT THE DOOR (Q128 arch u32 #18): admission prices the same corrected counts every read of
+/// the book prices. A group day budget of 300 cents over input at 2.5 micro-units: `recorded` input
+/// units are served, then an `adjust` corrects them to `corrected`. Returns what `try_admit`
+/// answers after the adjust and the group bucket's read spend.
+fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool, i64) {
+    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+    use busbar_contract::records::UNIT_INPUT;
+    use busbar_kernel_ledger::cost::whole;
+    let g = gov();
+    let day = limit(LimitMetric::Budget, 300, Some(LimitWindow::Day));
+    let group = id.trim_start_matches("vk_");
+    let cm = model_with_card(
+        &[(group, group_cfg(None, true, vec![day]))],
+        0,
+        &[("m", 2.5, 0.0)],
+    );
+    let k = key(id, Some(group));
+    g.store.put_key(&k).expect("key persists");
+    let now = crate::store::now();
+    g.record_usage(&cm, &k, "", "m", &toks(recorded, 0), now);
+    let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
+    let correction = CountCorrection {
+        amends: id,
+        principal: Some(id),
+        lane: "m",
+        card_epoch_ms: now * 1_000,
+        now: counts(corrected),
+        authorised_by: "root",
+        reason: "the recorded count was wrong",
+        pool: None,
+    };
+    correct_counts(
+        busbar_contract::authz::Scope::Full,
+        &counts(recorded),
+        correction,
+    )
+    .expect("root correction seals");
+    let bucket = format!("group:{group}@day");
+    let read = (g.derived_bucket_usage(&cm, &bucket, "day", true, now))
+        .expect("the read derives")
+        .spend_cents;
+    (g.try_admit(&cm, &k, "", now).is_ok(), read)
+}
+
+/// An `adjust` that corrects a capped bucket's counts UP past its budget is enforced: the read
+/// says 350 of 300 cents, and admission refuses. RED before the fix: admission priced the live
+/// cell's uncorrected 250 cents and admitted a key the book shows over its cap.
+#[test]
+fn an_upward_adjust_past_the_cap_is_enforced_at_admission() {
+    assert_eq!(
+        admit_after_adjust("vk_q51_door_up", 1_000_000, 1_400_000),
+        (false, 350),
+        "the book reads 350 of 300 cents, so admission refuses"
+    );
+}
+
+/// An `adjust` that corrects a capped bucket's counts DOWN under its budget stops the refusal: the
+/// read says 200 of 300 cents, and admission admits. RED before the fix: admission priced the
+/// uncorrected 325 cents and kept refusing a key the book shows under its cap.
+#[test]
+fn a_downward_adjust_under_the_cap_admits_at_admission() {
+    assert_eq!(
+        admit_after_adjust("vk_q51_door_down", 1_300_000, 800_000),
+        (true, 200),
+        "the book reads 200 of 300 cents, so admission admits"
+    );
+}
+
 /// Q64/Q67 fixture: group `group` with a group-wide day budget and a day budget scoped to each of
 /// `pool-a` and `pool-b`; key `id` served 1,000,000 input units through EACH pool at 2.5 micro-units
 /// (250 cents a pool, 500 group-wide). `adjust(pool)` corrects the pool-a unit to 800,000.

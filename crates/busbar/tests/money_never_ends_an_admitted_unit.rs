@@ -265,11 +265,15 @@ fn named(sites: &[(String, Reason)]) -> BTreeSet<&str> {
 /// whose digest must then match. It never raises an abort and never refuses a unit.
 const AUDIT_JOURNAL_DECODER: &str = "busbar-kernel-audit/src/journal.rs";
 
-/// The kernel's abort vocabulary is `ClientGone` and `Drain`, and no money reason is in it.
+/// The kernel's abort vocabulary is `ClientGone`, and no money reason is in it.
 ///
-/// These are the two ends a kernel raises on its own initiative: the client went away, and the node
-/// is draining. Neither is about money. The day a third is added, this names it — and an abort whose
-/// reason is carried in a variable is refused outright, because its vocabulary is not on the page.
+/// That is the one end a kernel constructs on its own initiative: the client went away. It is not
+/// about money. The `Drain` site this once counted was `tick::drain_outcome`, which no production
+/// path called and which GetBusbar/busbar#1259 deleted with the rest of the dead drain and fleet
+/// rule code; a plane generation's reload still stops its pump with `ReasonCode::Drain`
+/// (`plane_driver/route.rs`), a reason and not a constructed abort. The day another is added, this
+/// names it — and an abort whose reason is carried in a variable is refused outright, because its
+/// vocabulary is not on the page.
 #[test]
 fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     let built = census(abort_sites_in);
@@ -307,7 +311,7 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 
     assert_eq!(
         reasons,
-        BTreeSet::from(["ClientGone", "Drain"]),
+        BTreeSet::from(["ClientGone"]),
         "the shipped abort vocabulary; sites: {built:?}"
     );
     for money in MONEY_REASONS {

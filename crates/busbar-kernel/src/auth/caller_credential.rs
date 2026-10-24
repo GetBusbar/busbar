@@ -84,29 +84,53 @@ impl ConsumedCredentials {
 /// The caller's verified credential, as a REF a plane carries and cannot read: no byte accessor
 /// leaves the auth gate, and its `Debug` prints presence only. The host resolves it at egress
 /// ([`present_caller`]).
+///
+/// ZEROISED AT EXIT (THE DESIGN §6: the kernel "holds it on the unit, zeroised at exit, for the
+/// caller-credential style"; "auth material is zeroised"): the bytes live in ONE zeroising buffer,
+/// and a clone shares it, so the plaintext is wiped when the last holder drops, never left behind in
+/// a copy a clone made.
 #[derive(Clone)]
-pub struct CallerCredential(pub(super) String);
+pub struct CallerCredential(std::sync::Arc<zeroize::Zeroizing<Vec<u8>>>);
 
 impl CallerCredential {
+    /// A ref over the credential the gate verified: its bytes are copied once into the zeroising
+    /// buffer every clone shares.
+    pub(super) fn verified(token: &str) -> Self {
+        Self(std::sync::Arc::new(zeroize::Zeroizing::new(
+            token.as_bytes().to_vec(),
+        )))
+    }
+
+    /// The credential as text, borrowed from the shared buffer (it was text when the gate took it).
+    fn text(&self) -> &str {
+        std::str::from_utf8(&self.0).unwrap_or_default()
+    }
+
     /// THE CREDENTIAL LENT TO THE HOST'S EGRESS (L2 credential lending): the bytes, zeroised on
     /// drop and printed as presence only, for the one outbound auth call of a passthrough member
     /// (`FieldsRequest::caller_credential`). Never handed to a plane.
     #[must_use]
     pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
-        busbar_contract::redacted::Secret::new(self.0.as_bytes().to_vec())
+        busbar_contract::redacted::Secret::new(self.0.to_vec())
     }
 
     /// A ref over `token`, for a test that stands in for the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(token: &str) -> Self {
-        Self(token.to_string())
+        Self::verified(token)
     }
 
     /// The credential, for the host's test-only verifier seam (`EngineHost::verify_token_test`) —
     /// compiled only into a test build, never into a served binary.
     #[cfg(any(test, feature = "test-support"))]
     pub fn reveal_for_test(&self) -> &str {
-        &self.0
+        self.text()
+    }
+
+    /// Where the credential's bytes live, for the test that proves a clone shares one buffer.
+    #[cfg(test)]
+    pub(crate) fn buffer_for_test(&self) -> *const u8 {
+        self.0.as_ptr()
     }
 }
 
@@ -124,9 +148,13 @@ pub fn present_caller(
     caller: Option<&CallerCredential>,
     ctx: &SigningContext,
 ) -> Vec<(HeaderName, HeaderValue)> {
-    let key = caller.map_or("", |c| c.0.as_str());
+    let key = caller.map_or("", CallerCredential::text);
     if key.is_empty() && credential.uses_key() {
         return Vec::new();
     }
     credential.headers_for(key, ctx)
 }
+
+#[cfg(test)]
+#[path = "tests/caller_credential_tests.rs"]
+mod caller_credential_tests;

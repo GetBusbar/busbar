@@ -157,3 +157,45 @@ fn the_header_states_the_take_count_the_tree_holds() {
         words[stated]
     );
 }
+
+/// EXEMPT ORIGINS DRAW NO COUNTED SLOT (Q128 arch u33 #40; THE DESIGN §1 l.202-204, "exempt
+/// origins stay exempt: ... draw no concurrency"): a table of one whose one slot is free still
+/// admits a client unit while administrative-listener and heartbeat units are live, and every unit
+/// is still in the table.
+///
+/// RED before the fix: an exempt unit incremented the same count clients are checked against, so
+/// the client was refused `InFlightCap` with the table's only counted slot unused.
+#[test]
+fn exempt_units_never_take_a_client_slot() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(1);
+    let mut admin = enter(UnitKey::new(10), &kernel);
+    admin.admin_listener = true;
+    let mut tick = enter(UnitKey::new(11), &kernel);
+    tick.zero_hold_tick = true;
+    let _admin = table
+        .insert(admin)
+        .expect("an admin unit is outside the cap");
+    let _tick = table
+        .insert(tick)
+        .expect("a heartbeat unit is outside the cap");
+    assert!(
+        table.admits(&enter(UnitKey::new(12), &kernel)),
+        "the one counted slot is free"
+    );
+    let _client = table
+        .insert(enter(UnitKey::new(12), &kernel))
+        .expect("the client takes the one counted slot");
+    assert_eq!(table.len(), 3, "every live unit is in the table");
+    let refused = table
+        .insert(enter(UnitKey::new(13), &kernel))
+        .expect_err("a second client finds the counted slot taken");
+    assert_eq!(refused.reason, ReasonCode::InFlightCap);
+    table.remove(UnitKey::new(10));
+    table.remove(UnitKey::new(11));
+    assert_eq!(table.len(), 1);
+    assert!(
+        !table.admits(&enter(UnitKey::new(14), &kernel)),
+        "an exempt unit leaving frees no client slot"
+    );
+}

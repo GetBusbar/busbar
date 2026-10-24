@@ -3,18 +3,14 @@
 
 //! The clock's work: what a node does when nothing arrived.
 //!
-//! Two jobs, both of them the same idea — a thing that is not happening still has to be accounted
-//! for.
+//! A thing that is not happening still has to be accounted for.
 //!
 //! **The node tick** sweeps. A task can disappear: a runtime shuts down, a thread is cancelled, a
 //! future is dropped. The unit it was running still has a hold in its cell, and the sweep is the
 //! SECOND holder of a key to that cell. It takes the hold and settles it, so a lost task costs
 //! exactly one tick of delay and never a lost posting. A unit that is merely SLOW is a different
-//! thing and gets a different answer: an alarm, and a drain, and — where the protocol is one whose
-//! long silences are normal — no ending at all.
-//!
-//! **Drain** is how a node stops without cutting anyone off mid-sentence, and the fleet rule is how
-//! a node decides whether stopping is even the right thing to do when it cannot reach the store.
+//! thing and gets a different answer: an alarm, and — where the protocol is one whose long silences
+//! are normal — no ending at all.
 //!
 //! **The beat** is the clock lending itself to the compiled-in crates (THE DESIGN §1: "one clock,
 //! which also drives every plugin's tick"). A crate with time-driven work starts no timer and no
@@ -23,8 +19,8 @@
 //! answers. The clock holds the work WEAKLY, so letting the work go is the whole of stopping it.
 
 use busbar_contract::caps::{
-    Abort, Audit, Canary, Consumption, Exit, Grant, Outcome, Pass, Posted, PostingFlags,
-    QuantitySource, ReasonCode, StepName, UnitEnd, Usage, UsageLine, WriteMoney,
+    Audit, Canary, Consumption, Exit, Grant, Outcome, Pass, Posted, PostingFlags, QuantitySource,
+    ReasonCode, StepName, UnitEnd, Usage, UsageLine, WriteMoney,
 };
 
 use crate::inflight::UnitSlot;
@@ -82,105 +78,6 @@ pub fn sweep_outcome(verdict: Sweep) -> Option<Outcome> {
         Sweep::TaskLost { at } => Some(Outcome::Failed(at, ReasonCode::TaskLost)),
         Sweep::Stalled { at } => Some(Outcome::Failed(at, ReasonCode::Stalled)),
         Sweep::Running | Sweep::AlarmOnly => None,
-    }
-}
-
-/// What drain does to one unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrainVerdict {
-    /// Let it finish. Some protocols have no idle bound and were never cut before; draining is not
-    /// the moment to start.
-    RunToEnd,
-    /// Pump it for up to the maximum unit duration, then end it.
-    PumpThenAbort {
-        /// How long it may keep going.
-        grace: Millis,
-    },
-}
-
-/// Decide what drain does to a unit.
-pub fn drain_verdict(has_idle_bound: bool, max_unit_duration: Millis) -> DrainVerdict {
-    if has_idle_bound {
-        DrainVerdict::PumpThenAbort {
-            grace: max_unit_duration,
-        }
-    } else {
-        DrainVerdict::RunToEnd
-    }
-}
-
-/// The end a drained unit gets.
-pub fn drain_outcome() -> Outcome {
-    Outcome::Aborted(Abort::Kernel {
-        reason: ReasonCode::Drain,
-    })
-}
-
-/// What a node decides to do when it cannot reach the store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FleetAction {
-    /// Carry on as normal.
-    Serve,
-    /// Keep serving on slices already drawn, taking no new ones, until the bound. Postings are
-    /// marked as having been made under stale policy, and the outage is journaled every tick.
-    ServeStale {
-        /// How long this may go on.
-        until: Millis,
-    },
-    /// Stop taking work and drain.
-    Drain,
-}
-
-/// How many peers it takes before "enough peers agree" is a fleet's verdict rather than one other
-/// node's opinion.
-///
-/// A two-node fleet — this node and one peer — cannot decide which side of a partition is the
-/// majority: each node sees exactly one peer it cannot reach, and both would read the other's
-/// silence as the fleet agreeing with it, so both would keep serving on slices the other believes
-/// it still holds. Below this bound the quorum branch does not apply and the node takes the
-/// odd-one-out answer, which serves for a short grace and then drains. That is the answer that
-/// cannot spend one slice on two sides.
-pub const MIN_QUORUM_PEERS: usize = 2;
-
-/// The fleet rule.
-///
-/// Three branches, and the first one matters more than the other two put together: a node with NO
-/// configured peers never drains for a store it cannot reach. That is every single-node deployment
-/// there has ever been, and for it "the store is slow" has never meant "stop serving". It keeps
-/// admitting against what it last knew, journals locally, and reconciles when the store returns.
-///
-/// With peers, the question is whether this node is the odd one out. Asking it needs a fleet big
-/// enough to have a majority at all — see [`MIN_QUORUM_PEERS`] for why a single peer agreeing with
-/// this node is not a quorum. If enough peers are also stale
-/// or draining, the partition is the fleet's, not this node's, and the availability answer is to
-/// keep serving on slices already drawn until a bound that is long enough for every admitted unit
-/// to settle before the store would release its slice — so no slice is ever spent on two sides of a
-/// partition. If the quorum is not met, this node is probably the broken one, and it serves only
-/// for a short grace and then drains.
-pub fn fleet_action(
-    peers_configured: usize,
-    stale_or_draining_peers: usize,
-    drain_quorum: usize,
-    stale_for: Millis,
-    outage_grace: Millis,
-    stale_serve_max: Millis,
-) -> FleetAction {
-    if peers_configured == 0 {
-        FleetAction::Serve
-    } else if peers_configured >= MIN_QUORUM_PEERS && stale_or_draining_peers >= drain_quorum {
-        if stale_for < stale_serve_max {
-            FleetAction::ServeStale {
-                until: stale_serve_max,
-            }
-        } else {
-            FleetAction::Drain
-        }
-    } else if stale_for < outage_grace {
-        FleetAction::ServeStale {
-            until: outage_grace,
-        }
-    } else {
-        FleetAction::Drain
     }
 }
 

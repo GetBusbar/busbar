@@ -263,3 +263,33 @@ fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
     drop(tx);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// AN APPEND WHOSE COMPLETION PANICS FAILS ONLY ITSELF (Q128 arch u32 #39; the per-append
+/// fail-closed rule above): the appends behind it still land and still answer.
+///
+/// RED before the fix: the Append arm called `later` with no `catch_unwind`, so the panic ended the
+/// lane thread; every later submit answered LANE_GONE and nothing restarted the lane.
+#[test]
+fn an_append_whose_completion_panics_leaves_the_lane_running() {
+    let d = dir("later-panic");
+    let file = d.join("log.jsonl");
+    let lane = DiskLane::default();
+    let panicking: Later = Box::new(|_| panic!("a completion that panics"));
+    assert!(lane
+        .submit(dest(&file, None), b"first\n".to_vec(), panicking)
+        .is_ok());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let later: Later = Box::new(move |s| {
+        let _ = tx.send(s);
+    });
+    // The submit may race the panicking completion: before the fix it is refused LANE_GONE at once
+    // or never answered; either is the lane lost.
+    let submitted = lane.submit(dest(&file, None), b"second\n".to_vec(), later);
+    assert!(submitted.is_ok(), "the lane still takes appends");
+    let stored = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the lane still answers after a completion panicked");
+    assert_eq!(stored.outcome, Outcome::Ready);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\nsecond\n");
+    let _ = std::fs::remove_dir_all(&d);
+}

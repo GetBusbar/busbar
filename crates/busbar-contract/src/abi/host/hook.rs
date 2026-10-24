@@ -195,61 +195,56 @@ fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
     }
 }
 
-/// THE `decide`/`transform` VIEW: everything the two ops' shared [`DecideIn`] points at, built once
-/// per call from the kernel's projections. Immutable; shared by the call's frames.
-pub struct DecideView {
-    base: DecideIn,
+/// THE STATIC HALF OF A DECIDE VIEW'S CANDIDATES: each candidate's configured facts (its `idx`,
+/// model, provider, weight, context ceiling, tier, cost and tags), which do not move between
+/// requests while the configuration does not. A caller may build it once and hand it to every
+/// [`DecideView::build_with`] whose candidates it [`matches`](Self::matches); a configuration that
+/// changes any of those facts no longer matches, so a kept half is never handed a stale view.
+pub struct CandidateStatics {
     _store: Store,
-    _statics: Box<[CandidateStatic]>,
-    _dynamics: Box<[CandidateDynamic]>,
-    _budget: Box<[BudgetBucketState]>,
-    /// The candidates' `idx`es, in order (what an `order` answer may name).
-    idx: Box<[usize]>,
+    statics: Box<[CandidateStatic]>,
+    /// What it was built from, for [`Self::matches`].
+    facts: Box<[StaticFacts]>,
 }
 
-// SAFETY: every pointer in `base` names storage this view owns and never mutates; it moves between
-// threads as a whole and is only read.
-unsafe impl Send for DecideView {}
-// SAFETY: as above; shared reads only.
-unsafe impl Sync for DecideView {}
+/// One candidate's configured facts, owned.
+struct StaticFacts {
+    idx: usize,
+    model: Box<str>,
+    provider: Box<str>,
+    weight: u32,
+    context_max: Option<usize>,
+    tier: Option<Box<str>>,
+    /// The configured cost per million tokens, as its `f64` bit pattern: compared for identity,
+    /// never priced with.
+    cost_bits: Option<u64>,
+    tags: Box<[Box<str>]>,
+}
 
-impl DecideView {
-    /// The view of one request: `prompt`/`user` are populated exactly when the kernel's projection
-    /// carries them (the grants already applied), `budget_remaining` when the pool is capped.
+impl StaticFacts {
+    fn is(&self, c: &Candidate<'_>) -> bool {
+        self.idx == c.idx
+            && *self.model == *c.model
+            && *self.provider == *c.provider
+            && self.weight == c.weight
+            && self.context_max == c.context_max
+            && self.tier.as_deref() == c.tier
+            && self.cost_bits == c.cost_per_mtok.map(f64::to_bits)
+            && self.tags.len() == c.tags.len()
+            && self.tags.iter().zip(c.tags).all(|(a, b)| **a == **b)
+    }
+}
+
+// SAFETY: every pointer in `statics` names storage this value owns and never mutates.
+unsafe impl Send for CandidateStatics {}
+// SAFETY: as above; shared reads only.
+unsafe impl Sync for CandidateStatics {}
+
+impl CandidateStatics {
+    /// The static half of `candidates`, in order.
     #[must_use]
-    pub fn build(
-        req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        ctx: &RoutingContext<'_>,
-    ) -> Arc<Self> {
+    pub fn build(candidates: &[Candidate<'_>]) -> Arc<Self> {
         let mut store = Store::default();
-        let request = request_view(&mut store, req);
-        let mut present = 0;
-        let prompt = match store.prompt(req) {
-            Some(p) => {
-                present |= VIEW_HAS_PROMPT;
-                p
-            }
-            None => empty_prompt(),
-        };
-        let user = match &req.identity {
-            Some(i) => {
-                present |= VIEW_HAS_USER;
-                UserView {
-                    key_id: store.opt(i.key_id.as_deref()),
-                    key_name: store.opt(i.key_name.as_deref()),
-                    user: store.opt(i.user.as_deref()),
-                }
-            }
-            None => UserView {
-                key_id: NULL,
-                key_name: NULL,
-                user: NULL,
-            },
-        };
-        if ctx.budget_remaining.is_some() {
-            present |= VIEW_HAS_BUDGET_REMAINING;
-        }
         let statics: Box<[CandidateStatic]> = candidates
             .iter()
             .map(|c| {
@@ -281,6 +276,111 @@ impl DecideView {
                 }
             })
             .collect();
+        let facts = candidates
+            .iter()
+            .map(|c| StaticFacts {
+                idx: c.idx,
+                model: c.model.into(),
+                provider: c.provider.into(),
+                weight: c.weight,
+                context_max: c.context_max,
+                tier: c.tier.map(Into::into),
+                cost_bits: c.cost_per_mtok.map(f64::to_bits),
+                tags: c.tags.iter().map(|t| t.as_str().into()).collect(),
+            })
+            .collect();
+        Arc::new(Self {
+            _store: store,
+            statics,
+            facts,
+        })
+    }
+
+    /// Whether these are exactly `candidates`' configured facts, in order. Allocates nothing.
+    #[must_use]
+    pub fn matches(&self, candidates: &[Candidate<'_>]) -> bool {
+        self.facts.len() == candidates.len()
+            && self.facts.iter().zip(candidates).all(|(f, c)| f.is(c))
+    }
+}
+
+/// THE `decide`/`transform` VIEW: everything the two ops' shared [`DecideIn`] points at, built once
+/// per call from the kernel's projections. Immutable; shared by the call's frames.
+pub struct DecideView {
+    base: DecideIn,
+    _store: Store,
+    _statics: Arc<CandidateStatics>,
+    _dynamics: Box<[CandidateDynamic]>,
+    _budget: Box<[BudgetBucketState]>,
+    /// The candidates' `idx`es, in order (what an `order` answer may name).
+    idx: Box<[usize]>,
+}
+
+// SAFETY: every pointer in `base` names storage this view owns and never mutates; it moves between
+// threads as a whole and is only read.
+unsafe impl Send for DecideView {}
+// SAFETY: as above; shared reads only.
+unsafe impl Sync for DecideView {}
+
+impl DecideView {
+    /// The view of one request: `prompt`/`user` are populated exactly when the kernel's projection
+    /// carries them (the grants already applied), `budget_remaining` when the pool is capped.
+    #[must_use]
+    pub fn build(
+        req: &RoutingRequest<'_>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+    ) -> Arc<Self> {
+        let statics = CandidateStatics::build(candidates);
+        Self::build_with(req, statics, candidates, ctx)
+    }
+
+    /// [`Self::build`] over a STATIC HALF already built for these candidates
+    /// ([`CandidateStatics::build`], which a caller may keep while [`CandidateStatics::matches`]
+    /// says the candidates are the ones it was built for): only the per-request half is built.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when `statics` does not match `candidates`.
+    #[must_use]
+    pub fn build_with(
+        req: &RoutingRequest<'_>,
+        statics: Arc<CandidateStatics>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+    ) -> Arc<Self> {
+        debug_assert!(
+            statics.matches(candidates),
+            "a static half built for other candidates"
+        );
+        let mut store = Store::default();
+        let request = request_view(&mut store, req);
+        let mut present = 0;
+        let prompt = match store.prompt(req) {
+            Some(p) => {
+                present |= VIEW_HAS_PROMPT;
+                p
+            }
+            None => empty_prompt(),
+        };
+        let user = match &req.identity {
+            Some(i) => {
+                present |= VIEW_HAS_USER;
+                UserView {
+                    key_id: store.opt(i.key_id.as_deref()),
+                    key_name: store.opt(i.key_name.as_deref()),
+                    user: store.opt(i.user.as_deref()),
+                }
+            }
+            None => UserView {
+                key_id: NULL,
+                key_name: NULL,
+                user: NULL,
+            },
+        };
+        if ctx.budget_remaining.is_some() {
+            present |= VIEW_HAS_BUDGET_REMAINING;
+        }
         let dynamics: Box<[CandidateDynamic]> = candidates
             .iter()
             .map(|c| {
@@ -330,9 +430,9 @@ impl DecideView {
         let base = DecideIn {
             head: blank_head(),
             request,
-            candidates: ptr_or_null(statics.len(), statics.as_ptr().cast()).cast(),
+            candidates: ptr_or_null(statics.statics.len(), statics.statics.as_ptr().cast()).cast(),
             candidate_dynamics: ptr_or_null(dynamics.len(), dynamics.as_ptr().cast()).cast(),
-            candidates_len: statics.len(),
+            candidates_len: statics.statics.len(),
             prompt,
             user,
             budget_remaining: ctx.budget_remaining.unwrap_or(0),

@@ -5624,8 +5624,8 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 /// Reading the finer clock made the same script answer 277,530,000 exactly.
 ///
 /// Behavioural: `record_metered_request_dated` is driven with a wall-clock double and a rate-dater
-/// double (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
-/// dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
+/// double (the governance's own dater, `GovState::effective_from_at`, is not touched, so no other
+/// accrual is dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
 /// inside the same second as both. The cell must carry the SECOND card's start. An accrual that
 /// lifts `now * 1_000` into milliseconds asks the dater for `T0` and dates the cell at the first
 /// card, which is the RED arm: this test fails against that implementation.
