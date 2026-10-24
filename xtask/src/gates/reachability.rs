@@ -1309,22 +1309,41 @@ fn driver_names(f: &Scanned) -> BTreeSet<String> {
             if !whole {
                 continue;
             }
-            // The nearest `:` (not `::`) or `=` before the type, then the word before that.
+            // THE BINDING THIS TYPE IS WRITTEN AFTER, and only that: `name: …PlaneDriver…` (a field,
+            // a parameter, `let name: …`) or `let [mut] name = …PlaneDriver…`. The scan back stops
+            // at `)`, `;`, `,`, a brace and the arrow, so `fn f(egress: u8) -> PlaneDriver`
+            // binds nothing: `egress` is a parameter of a function that RETURNS a driver.
             let head: Vec<char> = code[..at].chars().collect();
             let mut k = head.len();
             while k > 0 {
                 k -= 1;
-                let single_colon = head[k] == ':'
-                    && head.get(k.wrapping_sub(1)) != Some(&':')
-                    && head.get(k + 1) != Some(&':');
-                let eq = head[k] == '=' && head.get(k + 1) != Some(&'=');
-                if single_colon || eq {
-                    let before: String = head[..k].iter().collect();
-                    if let Some(w) = words(&before).pop() {
-                        out.insert(w);
-                    }
+                let c = head[k];
+                let arrow = c == '>' && k > 0 && head[k - 1] == '-';
+                if matches!(c, ')' | ';' | ',' | '{' | '}') || arrow {
                     break;
                 }
+                let single_colon = c == ':'
+                    && head.get(k.wrapping_sub(1)) != Some(&':')
+                    && head.get(k + 1) != Some(&':');
+                let eq = c == '='
+                    && head.get(k + 1) != Some(&'=')
+                    && head.get(k + 1) != Some(&'>')
+                    && !matches!(head.get(k.wrapping_sub(1)), Some('=' | '!' | '<' | '>'));
+                if !(single_colon || eq) {
+                    continue;
+                }
+                let before: String = head[..k].iter().collect();
+                let toks = words(&before);
+                if let Some(name) = toks.last() {
+                    let n = toks.len();
+                    let is_let = n >= 2
+                        && (toks[n - 2] == "let"
+                            || (toks[n - 2] == "mut" && n >= 3 && toks[n - 3] == "let"));
+                    if single_colon || is_let {
+                        out.insert(name.clone());
+                    }
+                }
+                break;
             }
         }
     }
@@ -3127,6 +3146,18 @@ impl Gate for ReachabilityGate {
             decision_door(true, true, true),
             "spec K5 composes the door planes in ONE",
         ));
+        // A PARAMETER OF A FUNCTION THAT RETURNS A DRIVER IS NOT A DRIVER (XE#15): `egress` is bound
+        // by `fn zz_planted_ctor(egress: u8) -> PlaneDriver`, and `egress.unit(` is another type's
+        // method. It must not serve the door plane.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a `.unit(` on a name bound only as a parameter of a fn returning PlaneDriver is not served evidence",
+            &[row_unit_path("decision")],
+            decision_door_planted_ctor(),
+            "on a receiver declared or built as a `PlaneDriver`",
+        ));
         // A PLUGIN CRATE'S OWN ENTRY MODULE, both ways: mcp's flip removed, and its `linked`
         // module exporting a Units impl — built in an exported item (green), or not (red).
         report.push(green_over(
@@ -3632,6 +3663,21 @@ fn decision_door(door_row: bool, driven: bool, twice: bool) -> Overlay {
     ov.set(
         MAIN_RS,
         FIXTURE_GREEN_MAIN.replace(INSTALL_CALL_LINE, &format!("{INSTALL_CALL_LINE}{calls}")),
+    );
+    ov
+}
+
+/// [`decision_door`] whose only `.unit(` is on `egress`, a parameter of a fn that returns a
+/// `PlaneDriver` (the plant that credited the door plane before the binding scan stopped at `)`
+/// and `->`).
+fn decision_door_planted_ctor() -> Overlay {
+    let mut ov = decision_door(true, true, false);
+    ov.set(
+        SERVE_RS,
+        "pub struct ServedPlane {\n    driver: PlaneDriver,\n}\n\n\
+         pub fn compose_planes() -> Vec<ServedPlane> {\n    let driver = PlaneDriver::new(1);\n    vec![ServedPlane { driver }]\n}\n\n\
+         pub fn zz_planted_ctor(egress: u8) -> PlaneDriver {\n    let _ = egress;\n    loop {}\n}\n\n\
+         pub fn serve(planes: &[ServedPlane]) -> u64 {\n    let egress = Egress::new();\n    egress.unit(planes.len() as u64)\n}\n",
     );
     ov
 }
