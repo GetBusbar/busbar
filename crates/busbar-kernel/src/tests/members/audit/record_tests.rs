@@ -9,8 +9,8 @@ use busbar_contract::caps::{
 };
 
 use busbar_kernel_audit::record::{
-    Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied, OpClassId,
-    OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
+    Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied, HookHead,
+    OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
 
 fn token() -> Pass<AuditStep> {
@@ -68,6 +68,8 @@ fn inputs(unit: u64) -> AuditInputs {
             policy_epoch: 7,
             hooks_applied: vec![HookApplied {
                 hook: "compress".into(),
+                head: HookHead::Modify,
+                failed: false,
             }],
             replayed: false,
             children: vec![UnitKey::new(unit + 1000)],
@@ -123,22 +125,26 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
 /// (wall + monotonic, node)"): `v4` had not shipped, and until the 1.6.0 tag a first version is
 /// edited in place with its golden regenerated in the same commit (owner, 2026-09-28). The v2 value
 /// is still pinned by [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`] and the v1 value
-/// by [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`]. From the 1.6.0 tag on,
-/// the next move needs a new recipe beside these.
+/// by [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`]. Moved a sixth time, in
+/// place under the same rule, when each hook that ran gained its decision `head` and its `failed`
+/// mark beside its key (audit root#3; THE DESIGN §1: "controls (... hooks applied)"): the new hex
+/// was derived outside this crate, from the published table's framing over this fixture's values,
+/// and that derivation reproduces the previous hex `05669b6c…a654` with the two fields left out.
+/// From the 1.6.0 tag on, the next move needs a new recipe beside these.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let record = frozen_record();
     assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V4);
     assert_eq!(record.node, FROZEN_NODE);
     assert_eq!(
-        record.hash, "05669b6c9c61f45500a020440eadac8eb6f296d269b2d6b22d2da0da2bd1a654",
+        record.hash, "c52e40669e4afb81c8a244a7dfbd9142281e3b74179d51426075ad2564b2668b",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
 }
 
 /// A `v4` PREIMAGE NAMES NO CURRENCY (#34), and it is `v2` less exactly `currency`, plus
-/// `incarnation` straight after `unit_key` and `node` straight after `mono`, both numbers. Nothing
-/// else moves.
+/// `incarnation` straight after `unit_key` and `node` straight after `mono`, both numbers, and each
+/// hook's `head` (text) and `failed` (number) straight after its key. Nothing else moves.
 #[test]
 fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_incarnation_and_node()
 {
@@ -165,9 +171,12 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
     expected.insert(at, "node");
     let at = after(&expected, "unit_key");
     expected.insert(at, "incarnation");
+    let at = after(&expected, "hooks[].hook");
+    expected.insert(at, "hooks[].failed");
+    expected.insert(at, "hooks[].head");
     assert_eq!(
         v4_names, expected,
-        "v4 is not v2 less `currency` plus `incarnation` and `node`"
+        "v4 is not v2 less `currency` plus `incarnation`, `node` and each hook's head and failure"
     );
     let node = v4
         .iter()
@@ -429,6 +438,12 @@ fn editing_any_recorded_fact_is_caught() {
         ("the policy epoch", |r| r.controls.policy_epoch += 1),
         ("a hook's name", |r| {
             r.controls.hooks_applied[0].hook = "decompress".into()
+        }),
+        ("a hook's head", |r| {
+            r.controls.hooks_applied[0].head = HookHead::Veto
+        }),
+        ("whether a hook failed", |r| {
+            r.controls.hooks_applied[0].failed = true
         }),
         ("the replay mark", |r| r.controls.replayed = true),
         ("the wall clock", |r| r.wall += 1),

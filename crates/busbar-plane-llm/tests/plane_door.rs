@@ -275,10 +275,17 @@ fn the_fallback_is_a_prefix_claim_on_the_root_for_every_verb() {
     }
     // No claim is open: every llm path takes a credential, as it did.
     assert!(all.iter().all(|c| c.flags & CLAIM_OPEN == 0));
-    // Every claim arrives over the one transport the far ends are reached over, and is named.
-    assert!(all
-        .iter()
-        .all(|c| !c.verb.is_empty() && c.target.starts_with('/') && c.carrier == "http"));
+    // Every claim arrives over the one transport the far ends are reached over, and is named: a
+    // route by its path, an entry fact (status row 173) by its predicates.
+    assert!(all.iter().all(|c| {
+        let entry = c.flags & busbar_contract::abi::plane::CLAIM_ENTRY != 0;
+        let named = if entry {
+            busbar_contract::abi::plane::check::entry_fact(&c.target).is_some()
+        } else {
+            c.target.starts_with('/')
+        };
+        !c.verb.is_empty() && named && c.carrier == "http"
+    }));
 }
 
 /// RED for the `$` G3 commit: an open count the far end reported reaches the kernel in its

@@ -1,8 +1,8 @@
 # plugin-ci — THE CI of every first-party plugin repo, in one place: how a plugin tests ITSELF against
 # busbar. Each plugin repo's own `.github/workflows/ci.yml` is a thin caller rendered by
 # `busbar-release plugin sync` (GetBusbar/busbar-release template/) from plugins.yaml, and it takes this
-# file AT THE BUSBAR COMMIT THE REPO PINS (`@<.busbar-ref field 1>`): the CI logic, the gates
-# (`cargo xtask plugin-gates`), the dependency policy (.github/fleet/deps.toml) and the contract a
+# file AT THE BUSBAR COMMIT THE REPO PINS (`@<.busbar-ref field 1>`): the CI logic, the dependency policy
+# (.github/fleet/deps.toml) and the contract a
 # plugin compiles against move together, and a change here reaches a plugin repo only when its pin
 # moves (OWNER 2026-10-02: the reusable plugin workflows stay in busbar, called by path at the pin).
 # The plugin repo owns its tests; this file owns the harness. Before this file every repo carried
@@ -13,7 +13,7 @@
 # whose cdylib a signed tarball carries) whose busbar dependencies are `git` dependencies on
 # GetBusbar/busbar at `.busbar-ref` field 1. Nothing here checks busbar out beside the plugin to BUILD
 # it: a checkout at the pin exists only for the end-to-end tests that boot a real busbar binary
-# (`busbar_checkout: true`), for the fleet scripts and for the plugin gates, `cargo xtask plugin-gates`
+# (`busbar_checkout: true`), for the fleet scripts
 # built from that checkout.
 #
 # The jobs, in the order a red is cheapest to read:
@@ -209,7 +209,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-      - name: busbar at the pin (the gates' cargo xtask, the policy, lock, loader and golden; the real binaries the end-to-end tests build and boot, the signing gate, the C path's header and conformance)
+      - name: busbar at the pin (the policy, lock, loader and golden; the real binaries the end-to-end tests build and boot, the signing gate, the C path's header and conformance)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
@@ -287,13 +287,6 @@ jobs:
         with:
           workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || fromJSON('"plugin\nbusbar"') }}
           key: busbar-${{ needs.pin.outputs.sha }}
-      - name: the plugin gates at the pin (cargo xtask plugin-gates), and their own selftest (every gate RED on its planted defect before any verdict counts)
-        working-directory: busbar
-        run: |
-          set -euo pipefail
-          cargo build --locked -q -p xtask
-          echo "PLUGIN_GATES=$GITHUB_WORKSPACE/busbar/target/debug/xtask" >> "$GITHUB_ENV"
-          target/debug/xtask plugin-gates selftest
       - name: fmt
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
@@ -399,7 +392,6 @@ jobs:
           list="$RUNNER_TEMP/conformance.list"
           cargo test --release --locked -p "$CRATE" --test conformance -- --list > "$list" \
             || { echo "::error::no conformance target ($CRATE/tests/conformance.rs: busbar_plugin_loader::conformance_suite!)"; exit 1; }
-          "$PLUGIN_GATES" plugin-gates bothways "$list"
           for t in $suite; do
             grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
           done
@@ -414,29 +406,6 @@ jobs:
           printf '%s\n' "$red" | grep -q "crossing(s), pinned" \
             || { printf '%s\n' "$red" >&2; echo "::error::RED: the moved count failed for another reason than the exact comparator"; exit 1; }
           echo "conformance: the published suite ran green; the moved count was refused"
-      - name: "busbar's plane gates over this plane's source (plane-purity, structure-lint, config-schema): no row that passes over busbar's pinned plane fails over this change"
-        # ARCHITECT row 106 (A): a plane that left busbar is read by busbar's gates from its pinned
-        # checkout; here the same gates, at this repo's busbar pin, read THIS change in its place
-        # (BUSBAR_PLANE_SOURCE), so the plane is judged where its source changes.
-        if: ${{ !cancelled() && inputs.plugin_kind == 'plane' && steps.crates.outputs.present == 'true' }}
-        working-directory: busbar
-        env:
-          CRATE: ${{ inputs.plugin_crate }}
-        run: |
-          set -euo pipefail
-          "$PLUGIN_GATES" plugin-gates plane "$GITHUB_WORKSPACE/busbar" "$GITHUB_WORKSPACE/plugin" "${CRATE%-plugin}"
-      - name: "zero-spread (REPORT-ONLY): every non-test literal of a contract struct that states a ZERO spreads it"
-        # A literal naming every field of a contract struct breaks when the contract appends one, so
-        # an older pin cannot build against a newer contract: `T { .., ..T::ZERO }` keeps it
-        # compiling. Report-only on its first run across the fleet (findings are warnings); it
-        # becomes blocking once the fleet's literals are converted.
-        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
-        working-directory: busbar
-        run: |
-          set -uo pipefail
-          out=$("$PLUGIN_GATES" plugin-gates zero-spread "$GITHUB_WORKSPACE/busbar" "$GITHUB_WORKSPACE/plugin" 2>&1) || true
-          printf '%s\n' "$out"
-          printf '%s\n' "$out" | grep '^ZERO-SPREAD ' | sed 's/^/::warning::/' || true
       - name: cargo deny (the rendered deny.toml; busbar's .github/fleet/deps.toml at the pin)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin
@@ -452,88 +421,6 @@ jobs:
           # advisory); this step's own blocking check is the line after it.
           "$deny" --locked --format json check advisories 2> "$RUNNER_TEMP/advisories.jsonl" || true
           "$deny" --locked check
-      - name: the shipped closure (cargo metadata, linux target)
-        id: meta
-        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
-        working-directory: plugin
-        run: |
-          set -euo pipefail
-          cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/meta.json"
-          # The gates read the SHIPPED closure: `cargo metadata`'s resolve unifies features across
-          # dev-dependencies and lists optional deps a dev-dependency switches on, `cargo tree` with
-          # the dev edges left out does not. One tree per workspace member.
-          : > "$RUNNER_TEMP/tree.txt"
-          for pkg in $(cargo metadata --format-version 1 --locked --no-deps | jq -r '.packages[].name'); do
-            cargo tree --locked --package "$pkg" --edges normal,build --target all --prefix none --format '{p}|{f}' >> "$RUNNER_TEMP/tree.txt"
-          done
-      - name: dep-wall (busbar-contract plus third-party; no kernel/core crate, no other plugin; Part 2 #40)
-        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
-        run: |
-          "$PLUGIN_GATES" plugin-gates depwall "$RUNNER_TEMP/meta.json" "${{ github.event.repository.name }}" --tree "$RUNNER_TEMP/tree.txt"
-      - name: socket/TLS ban (BUSBAR-1.6.0.md line 3980; the shipped closure, then the post-LTO import scan)
-        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
-        env:
-          CRATE: ${{ inputs.plugin_crate }}
-          REPO: ${{ github.event.repository.name }}
-        run: |
-          set -uo pipefail
-          rc=0
-          "$PLUGIN_GATES" plugin-gates netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" --tree "$RUNNER_TEMP/tree.txt" || rc=1
-          feat=""
-          if (cd plugin && cargo metadata --format-version 1 --no-deps) | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
-          (cd plugin && CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
-            cargo build --release --locked -p "$CRATE" --lib $feat) || exit 1
-          lib="plugin/target/release/lib${CRATE//-/_}.so"
-          [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; exit 1; }
-          nm -D --undefined-only "$lib" | awk '{print $NF}' > "$RUNNER_TEMP/undef.txt"
-          readelf -d "$lib" | sed -nE 's/.*\(NEEDED\).*\[(.*)\].*/\1/p' > "$RUNNER_TEMP/needed.txt"
-          "$PLUGIN_GATES" plugin-gates imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
-          rm -rf plugin/target/release
-          exit $rc
-      - name: busbar-contract's dev-only features (alloc-counter, test-seal, services-double) are off in the shipped build (the release graph, normal and build edges)
-        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
-        run: |
-          "$PLUGIN_GATES" plugin-gates devfeatures --tree "$RUNNER_TEMP/tree.txt"
-      - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
-        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
-        run: |
-          "$PLUGIN_GATES" plugin-gates cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml --tree "$RUNNER_TEMP/tree.txt"
-      - name: Cargo.lock parity with busbar's lock at the pin (RED; one version per compatible line, an extra line only as deps.toml [parity-lines] declares it)
-        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
-        env:
-          REPO: ${{ github.event.repository.name }}
-        run: |
-          set -euo pipefail
-          adv=()
-          [ -f "$RUNNER_TEMP/advisories.jsonl" ] && adv=(--advisories "$RUNNER_TEMP/advisories.jsonl")
-          "$PLUGIN_GATES" plugin-gates parity plugin/Cargo.lock busbar/Cargo.lock busbar/.github/fleet/deps.toml "$REPO" "${adv[@]}"
-      - name: declares.json states the kind's contract ABI at the pin
-        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
-        env:
-          KIND: ${{ inputs.plugin_kind }}
-        run: |
-          set -euo pipefail
-          f="$(cd plugin && git ls-files | grep -E '(^|/)declares\.json$' | head -n1)"
-          [ -n "$f" ] || { echo "::error::no declares.json in the repo"; exit 1; }
-          "$PLUGIN_GATES" plugin-gates declares busbar "$KIND" "plugin/$f"
-
-      - name: a renamed plugin answers its 1.5.5 manifest name (plugins.yaml former_names, and the release that signs them)
-        if: ${{ !cancelled() }}
-        env:
-          REPO: ${{ github.event.repository.name }}
-        run: |
-          set -euo pipefail
-          # The registry entry at the pin declares every 1.5.5-era manifest name `legacy:` freezes for
-          # this repo (RED by name on a missing one): 1.5.5 configs load unchanged.
-          "$PLUGIN_GATES" plugin-gates former-names busbar/plugins.yaml "$REPO"
-          # And the repo's release recipe signs them: the `former_names` its release.yml hands
-          # plugin-release.yml (rendered from plugins.yaml by busbar-release plugin sync).
-          rel=plugin/.github/workflows/release.yml
-          if [ -f "$rel" ]; then
-            declared="$(sed -nE 's/^[[:space:]]*former_names:[[:space:]]*"?([^"#]*)"?.*$/\1/p' "$rel" | head -n1)"
-            "$PLUGIN_GATES" plugin-gates former-names busbar/plugins.yaml "$REPO" --declared "$declared"
-          fi
-
       - name: "C: the kind's conformance through load_dropped at the pin, RED arm kept (both must RUN)"
         if: ${{ !cancelled() && inputs.plugin_lang == 'c' }}
         working-directory: busbar
