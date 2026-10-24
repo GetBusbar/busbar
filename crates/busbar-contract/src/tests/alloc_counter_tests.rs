@@ -5,7 +5,10 @@
 //! not a zeroised one. This crate's own test binary installs [`super::Counting`] as its
 //! `#[global_allocator]` (`lib.rs`).
 
-use super::{allocations, allocations_of, allocations_with, freed_unzeroed, marked_key, reset};
+use super::{
+    allocations, allocations_of, allocations_with, freed_unzeroed, last_seen, marked_key, reset,
+    watch, WINDOW,
+};
 
 /// The counter counts: this crate's own test binary installs [`super::Counting`] as its
 /// `#[global_allocator]` (`lib.rs`), so a heap allocation moves this thread's count and a call
@@ -91,4 +94,51 @@ fn the_freed_key_witness_sees_an_unzeroed_key_and_not_a_zeroised_one() {
     let held = zeroize::Zeroizing::new(marked_key::<56>(6).to_vec());
     drop(std::hint::black_box(held));
     assert_eq!(freed_unzeroed(6), 0, "a zeroised key was counted");
+}
+
+/// THE WITNESS SEES A SPLIT COPY: any [`WINDOW`] consecutive bytes of a marked key, wherever they
+/// sit in a freed block (a 16-byte master key split out of the keying material, at an offset
+/// behind other bytes), are counted; fewer than a window's bytes are not.
+#[test]
+fn the_freed_key_witness_sees_any_window_of_a_key_and_not_less() {
+    let key = marked_key::<56>(1);
+    let mut split = vec![0xA5_u8; 40];
+    split.extend_from_slice(&key[20..20 + WINDOW]);
+    drop(std::hint::black_box(split));
+    assert!(
+        freed_unzeroed(1) >= 1,
+        "a window of the key behind other bytes was not seen"
+    );
+    let seen = last_seen(1).expect("the sighting is recorded");
+    assert_eq!((seen.at, seen.nth, seen.len), (40, 0, 56), "{seen:?}");
+    assert!(seen.block >= 56, "{seen:?}");
+
+    let key = marked_key::<56>(2);
+    let short: Vec<u8> = key[30..30 + WINDOW - 1].to_vec();
+    drop(std::hint::black_box(short));
+    assert_eq!(freed_unzeroed(2), 0, "less than a window was counted");
+}
+
+/// THE WITNESS SEES A DERIVED COPY: a secret a test names with [`watch`] (a 12-byte salt, shorter
+/// than a window, is matched whole; a derived 16-byte key at any offset) is counted under the
+/// test's id once freed in a plain `Vec`, and not when its holder zeroises it.
+#[test]
+fn the_freed_key_witness_sees_a_watched_derived_secret() {
+    let salt: [u8; 12] = *b"salt-of-id-3";
+    watch(3, &salt);
+    drop(std::hint::black_box(salt.to_vec()));
+    assert!(freed_unzeroed(3) >= 1, "a watched salt was not seen");
+
+    let derived: [u8; 16] = *b"derived-key-id-4";
+    watch(4, &derived);
+    let held = zeroize::Zeroizing::new(derived.to_vec());
+    drop(std::hint::black_box(held));
+    assert_eq!(freed_unzeroed(4), 0, "a zeroised derived key was counted");
+    let mut plain = vec![7_u8; 3];
+    plain.extend_from_slice(&derived);
+    drop(std::hint::black_box(plain));
+    assert!(
+        freed_unzeroed(4) >= 1,
+        "a derived key freed unzeroed was not seen"
+    );
 }

@@ -234,6 +234,26 @@ impl Parser {
         })
     }
 
+    /// True when the text after a just-consumed `{` reads `n}`, `n,}` or `n,m}`.
+    fn interval_ahead(&self) -> bool {
+        let mut j = self.i;
+        let digits = |j: &mut usize| {
+            let from = *j;
+            while self.chars.get(*j).is_some_and(|c| c.is_ascii_digit()) {
+                *j += 1;
+            }
+            *j > from
+        };
+        if !digits(&mut j) {
+            return false;
+        }
+        if self.chars.get(j) == Some(&',') {
+            j += 1;
+            digits(&mut j);
+        }
+        self.chars.get(j) == Some(&'}')
+    }
+
     fn atom(&mut self) -> Result<Node, String> {
         let c = self.peek().ok_or("unexpected end of pattern")?;
         self.i += 1;
@@ -241,6 +261,15 @@ impl Parser {
             '^' => Ok(Node::Start),
             '$' => Ok(Node::End),
             '.' => Ok(Node::Any),
+            '*' | '+' | '?' => Err(format!(
+                "`{c}` with nothing to repeat (a lazy or possessive quantifier is not an ERE)"
+            )),
+            '{' if self.interval_ahead() => {
+                Err("an interval `{n}` / `{n,m}` is not in this ERE subset".to_string())
+            }
+            '(' if self.peek() == Some('?') => {
+                Err("`(?` (lookaround, non-capturing or flagged group) is not an ERE".to_string())
+            }
             '(' => {
                 let alts = self.alternation()?;
                 if self.peek() != Some(')') {
@@ -253,6 +282,11 @@ impl Parser {
             '\\' => {
                 let e = self.peek().ok_or("a trailing `\\`")?;
                 self.i += 1;
+                if e.is_ascii_alphanumeric() {
+                    return Err(format!(
+                        "`\\{e}` is not in this ERE subset (a letter or digit escape would be read as the literal `{e}`)"
+                    ));
+                }
                 Ok(Node::Char(e))
             }
             other => Ok(Node::Char(other)),
@@ -397,5 +431,36 @@ fn mandatory_literal(seq: &[Node]) -> Option<String> {
         None
     } else {
         Some(best)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ere;
+
+    /// XA2#10 RED: shapes outside the subset are refused at construction, not matched as literals.
+    #[test]
+    fn constructs_outside_the_subset_are_refused() {
+        for bad in [
+            r"a\s", r"a\d+", r"a.*?b", r"a+?", r"(?=a)", r"(?:a)", r"a{2}", r"a{1,3}", r"a{2,}",
+            r"*a", r"\1",
+        ] {
+            assert!(Ere::new(bad).is_err(), "`{bad}` must be refused");
+        }
+    }
+
+    /// The subset the tables use still compiles and matches; a literal `{` is not an interval.
+    #[test]
+    fn the_subset_still_compiles() {
+        for good in [
+            r"fn[[:space:]]+x\(",
+            r"a{b",
+            r"(a|b)?c*d+",
+            r"\.\{",
+            r"[Oo]peration(\(\))?",
+        ] {
+            assert!(Ere::new(good).is_ok(), "`{good}` must compile");
+        }
+        assert!(Ere::new(r"a{b").unwrap().is_match("a{b"));
     }
 }
