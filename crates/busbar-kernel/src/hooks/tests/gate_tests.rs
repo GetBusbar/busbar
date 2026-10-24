@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 /// The gate pass over a request whose content was read: the cells below drive the one pass the door
 /// path runs (`decide_door` reaches it the same way), shown readable content.
 async fn decide(gates: &[(u16, ResolvedPolicy)], subject: &GateSubject<'_>) -> GateVerdict {
-    decide_over(gates, subject, true).await
+    decide_over(gates, subject, true, &mut Vec::new()).await
 }
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
@@ -916,7 +916,10 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
                 }),
                 plane: DoorShape::default(),
             };
-            matches!(decide_door(gates, &door).await, GateVerdict::Proceed)
+            matches!(
+                decide_door(gates, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            )
         }
     };
     let alice: &'static busbar_contract::records::VirtualKey = Box::leak(Box::new(alice));
@@ -1282,7 +1285,13 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
             true,
             false,
         );
-        match decide_door(&gates, &door_on(body, DoorShape::default())).await {
+        match decide_door(
+            &gates,
+            &door_on(body, DoorShape::default()),
+            &mut Vec::new(),
+        )
+        .await
+        {
             GateVerdict::Reject { status, .. } => {
                 assert_eq!(status, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
             }
@@ -1301,7 +1310,12 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
             false,
         );
         assert!(matches!(
-            decide_door(&gates, &door_on(body, DoorShape::default())).await,
+            decide_door(
+                &gates,
+                &door_on(body, DoorShape::default()),
+                &mut Vec::new()
+            )
+            .await,
             GateVerdict::Proceed
         ));
         assert!(
@@ -1331,7 +1345,7 @@ async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
     };
     let body = br#"{"message":{"text":"the secret"}}"#;
     assert!(matches!(
-        decide_door(&gates, &door_on(Some(&body[..]), plane)).await,
+        decide_door(&gates, &door_on(Some(&body[..]), plane), &mut Vec::new()).await,
         GateVerdict::Proceed
     ));
     let seen = spy
@@ -1348,4 +1362,81 @@ async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
     assert_eq!(request["max_tokens"], 64, "{seen}");
     assert_eq!(request["stream"], true, "{seen}");
     assert_eq!(request["user"]["user"], "end-user-1", "{seen}");
+}
+
+/// THE HOOKS APPLIED INCLUDE THE `on_error` WALK (THE DESIGN §1: the audit record's "controls (...
+/// hooks applied)"; §11.7 l.1357-1358, the chain is 1.5.5's): a failed gate is recorded first, its
+/// head what its chain made of it and its failure kept, then every link the walk asked, in order,
+/// each as it ran. One record: the list the gate pushes is the one the hook report carries.
+#[tokio::test]
+async fn the_hooks_applied_carry_the_failed_gate_and_every_link_its_walk_asked() {
+    use busbar_kernel_audit::record::{HookApplied, HookHead};
+    let ran_as = |hook: &str, head: HookHead, failed: bool| HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    };
+
+    // A broken link is passed over; the next link abstains: the unit proceeds.
+    let gates = chained(
+        Arc::new(Broken),
+        vec![
+            link(Arc::new(Broken), false, false),
+            link(abstaining(), false, false),
+        ],
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    let mut ran = Vec::new();
+    assert!(matches!(
+        decide_door(
+            &gates,
+            &door_on(Some(PROJECTED), DoorShape::default()),
+            &mut ran
+        )
+        .await,
+        GateVerdict::Proceed
+    ));
+    assert_eq!(
+        ran,
+        vec![
+            ran_as("broken", HookHead::Pass, true),
+            ran_as("broken", HookHead::Pass, true),
+            ran_as("spy", HookHead::Pass, false),
+        ]
+    );
+
+    // A link that rejects closes the failed gate: both carry the veto.
+    let gates = chained(
+        Arc::new(Broken),
+        vec![link(
+            spying(RoutingDecision::Reject {
+                status: 403,
+                message: "fallback screened".to_string(),
+            }),
+            false,
+            false,
+        )],
+        crate::config::PolicyOnError::Weighted,
+        false,
+        false,
+    );
+    let mut ran = Vec::new();
+    assert!(matches!(
+        decide_door(
+            &gates,
+            &door_on(Some(PROJECTED), DoorShape::default()),
+            &mut ran
+        )
+        .await,
+        GateVerdict::Reject { .. }
+    ));
+    assert_eq!(
+        ran,
+        vec![
+            ran_as("broken", HookHead::Veto, true),
+            ran_as("spy", HookHead::Veto, false),
+        ]
+    );
 }

@@ -807,6 +807,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // planes name once the planes are composed (below), so an apply carrying one the boot would
     // refuse is refused, its running generation untouched.
     let root_rules = Arc::new(root::door_steps::Rules::default());
+    // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
+    // a running process refuses a first section of one (u67 BLOCK 2 item 2).
+    root_rules.hold_unloaded(root::door_steps::unloaded_doors());
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.
