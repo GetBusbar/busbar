@@ -493,7 +493,7 @@ impl Node {
                 &self.durability_token,
                 principal,
                 arrived,
-                card_in_force(card, arrived.ms()),
+                card,
                 outcome,
                 lines,
                 0,
@@ -994,7 +994,7 @@ impl Node {
             &self.durability_token,
             &principal,
             arrived,
-            card_in_force(history.as_ref(), arrived.ms()),
+            history.as_ref(),
             outcome,
             lines,
             fee_count,
@@ -1531,7 +1531,6 @@ impl LateAccrual {
             seal,
         } = self;
         let book = crate::root::durability::SharedBook::over(Arc::clone(&held));
-        let card = card_in_force(Some(&history), arrived.ms());
         // A unit that did not complete and whose reading counts nothing at all (no class, no
         // billable request: a unit a gate hook refused before its dial) leaves no line of counts on
         // the book: the exit's posting closes its hold, as when no reading arrived.
@@ -1559,7 +1558,7 @@ impl LateAccrual {
                         &durability_token,
                         &principal,
                         arrived,
-                        card,
+                        Some(&history),
                         outcome,
                         lines,
                         0,
@@ -1591,7 +1590,7 @@ impl LateAccrual {
                 &durability_token,
                 &principal,
                 arrived,
-                card,
+                Some(&history),
                 outcome,
                 report_lines(&report),
                 report.fee_count,
@@ -2670,7 +2669,8 @@ impl Ran {
 
 impl Sealing {
     /// Seal the record beside the line just written: its outcome is how the unit ended, its amount
-    /// is the line's counts (none for a refused unit), and the book stamps this boot's incarnation.
+    /// is the line's counts (none for a refused unit) at the card in force when it arrived, off the
+    /// history `card` pinned at its door, and the book stamps this boot's incarnation.
     #[allow(clippy::too_many_arguments)]
     fn seal(
         self,
@@ -2678,7 +2678,7 @@ impl Sealing {
         token: &Grant<busbar_contract::caps::DurableWrite>,
         principal: &PrincipalId,
         arrived: Arrived,
-        rate_card_version: u64,
+        card: Option<&crate::root::kernel::PinnedHistory>,
         outcome: Outcome,
         lines: Vec<RecordLine>,
         fee_count: u32,
@@ -2690,11 +2690,14 @@ impl Sealing {
         // applied"): the hold its admission opened on the chain and the settlement its one line
         // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
         // running, in order, with its head; a hook that failed is recorded failed, never dropped.
+        // And the policy generation it ran under: the configuration whose card was in force at its
+        // arrival, off the same pin at the same instant its card version is read.
         let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
         let destination = ran.destination(line.served);
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
             settle_ref: line.settled_at.map(|seq| seq.to_string()),
+            policy_epoch: policy_in_force(card, arrived.ms()),
             hooks_applied: ran.hooks,
             ..Controls::default()
         };
@@ -2724,7 +2727,7 @@ impl Sealing {
                 lines: if refused { Vec::new() } else { lines },
                 tier_bp: 10_000,
                 fee_count: if refused { 0 } else { fee_count },
-                rate_card_version,
+                rate_card_version: card_in_force(card, arrived.ms()),
                 bucket_chain_ref: String::new(),
             },
             controls,
@@ -2891,6 +2894,36 @@ pub(crate) fn card_in_force(
 ) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
         .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
+}
+
+/// THE POLICY GENERATION a unit ran under (THE DESIGN §1, `BUSBAR-1.6.0.md` l.190-193: the fixed
+/// record's "controls"): the policy epoch of the configuration whose card was in force when the unit
+/// ARRIVED, off the same pinned history at the same instant [`card_in_force`] resolves its card at —
+/// so a configuration applied after the door, or effective after the arrival, is not the one named.
+///
+/// The root counts its configuration resolutions, and every configured entry records the one that
+/// produced it (`RootHistory::resolutions`, `Author::Config`). An amendment corrects a price and is
+/// no configuration, so it is passed over for the configured entry beneath it. Where no configured
+/// entry covers the instant — no history pinned, or only the opening entry — there is no generation
+/// to name, and the record carries 0, the journal's own "no epoch to report" (`Entry::new`).
+pub(crate) fn policy_in_force(
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    arrived_ms: u64,
+) -> u64 {
+    card.and_then(|pinned| {
+        pinned
+            .view()
+            .entries()
+            .iter()
+            .rev()
+            .filter(|entry| entry.covers(arrived_ms))
+            .find_map(|entry| match entry.author() {
+                busbar_kernel_ledger::cost::Author::Config { policy_epoch } => Some(*policy_epoch),
+                busbar_kernel_ledger::cost::Author::Opening
+                | busbar_kernel_ledger::cost::Author::Amend { .. } => None,
+            })
+    })
+    .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------------------------
