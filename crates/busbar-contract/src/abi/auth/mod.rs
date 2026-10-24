@@ -67,6 +67,63 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
+/// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the auth table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x00c89280c6692621;
+
+/// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/auth/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops =>
+        head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target
+    ),
+    crate::layout_shape!(StyleDecl => name, flags, points),
+    crate::layout_shape!(AuthTail =>
+        head, caps, facts, login_kind, inbound_points, styles, styles_len, operator_principal,
+        credential_kinds, credential_kinds_len
+    ),
+    crate::layout_shape!(NamedValue => name, value),
+    crate::layout_shape!(RequestFacts => method, authority, canonical_path, query, timestamp),
+    crate::layout_shape!(IdentityBuf => buf, buf_cap, groups, groups_cap, _reserved),
+    crate::layout_shape!(IdentityOut =>
+        subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
+        groups_len, _reserved, replay_key, replay_ttl_secs, credential
+    ),
+    crate::layout_shape!(StripName => name, place, _reserved),
+    crate::layout_shape!(VerifyIn =>
+        head, credential, lines, lines_len, request, out_buf, point, _reserved, conn, unit, peer,
+        body, strip, strip_cap, _reserved2
+    ),
+    crate::layout_shape!(IdentifyOut =>
+        head, verdict, needed_groups, needed_bytes, identity, decision, strip_len, needed_strip,
+        _reserved
+    ),
+    crate::layout_shape!(BeginLoginIn =>
+        head, redirect_uri, state, nonce, code_challenge, scopes, scopes_len
+    ),
+    crate::layout_shape!(LoginField => name, label, kind, required),
+    crate::layout_shape!(BeginLoginOut => head, shape, _reserved, authorize_url, form, form_len),
+    crate::layout_shape!(CompleteLoginIn =>
+        head, code, state, redirect_uri, code_verifier, submitted, submitted_len, out_buf, nonce
+    ),
+    crate::layout_shape!(OpenOutboundIn => head, style, credential, settings),
+    crate::layout_shape!(OpenOutboundOut => head, handle),
+    crate::layout_shape!(OutboundReadyIn => head, handle),
+    crate::layout_shape!(OutboundReadyOut => head, ready, _reserved),
+    crate::layout_shape!(FieldSpan => name, value, flags, _reserved),
+    crate::layout_shape!(FieldsIn =>
+        head, handle, mode, point, request, caller_credential, field_buf, field_buf_cap, fields,
+        fields_cap, _reserved, headers, headers_len, conn, unit, body
+    ),
+    crate::layout_shape!(FieldsOut => head, fields_len, needed_fields, needed_bytes),
+    crate::layout_shape!(TargetIn => head, style, credential, settings, buf, buf_cap),
+    crate::layout_shape!(TargetOut => head, target),
+];
+
 /// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot
 /// [`LIFECYCLE_SLOTS`]` + k`, contiguous, in [`Ops`] field order.
 ///

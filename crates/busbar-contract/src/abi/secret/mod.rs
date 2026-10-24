@@ -39,6 +39,23 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The secret kind's ABI version: v1.5.5 shipped `1` (`SECRET_ABI_VERSION`), so 1.6.0 ships `2`.
 pub const ABI_VERSION: u32 = 2;
 
+/// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the secret table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x9080d3c67b6b6df4;
+
+/// The secret kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/secret/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops => head, resolve, check),
+    crate::layout_shape!(ResolveIn => head, settings),
+    crate::layout_shape!(ResolveOut => head, secret, error_kind, _reserved),
+    crate::layout_shape!(CheckIn => head, settings, err_buf, err_cap),
+];
+
 /// [`InHead::op`] values the secret kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples

@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=2cd7e1c6f70397e964d61fa47b1cc64c65ecf2e1#2cd7e1c6f70397e964d61fa47b1cc64c65ecf2e1"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=e19ff4ff7645edc369ccbeb7abb1cad6d4273a11#e19ff4ff7645edc369ccbeb7abb1cad6d4273a11"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -925,7 +925,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=2531ef131e492385788b6714687346e48d864d44#2531ef131e492385788b6714687346e48d864d44"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=7789b68211cfb6bf480f09f23c507f7ddeb4b9c5#7789b68211cfb6bf480f09f23c507f7ddeb4b9c5"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -939,7 +939,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=12b078389496d4c1fd81b730f5d9d0887537c3b0#12b078389496d4c1fd81b730f5d9d0887537c3b0"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=6614562f361e9c42f8f3a16f6434713fba177cbb#6614562f361e9c42f8f3a16f6434713fba177cbb"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -961,7 +961,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=223ec3f02000de94089a1752635b9e206f7492e5#223ec3f02000de94089a1752635b9e206f7492e5"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=de7af6404e1e281841c39a01d48fd2b405e2f1bc#de7af6404e1e281841c39a01d48fd2b405e2f1bc"
 dependencies = [
  "busbar-contract",
 ]
@@ -969,7 +969,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=223ec3f02000de94089a1752635b9e206f7492e5#223ec3f02000de94089a1752635b9e206f7492e5"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=de7af6404e1e281841c39a01d48fd2b405e2f1bc#de7af6404e1e281841c39a01d48fd2b405e2f1bc"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -990,7 +990,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=7fc1dd8065f7bb95f93530426217a71b63ab7727#7fc1dd8065f7bb95f93530426217a71b63ab7727"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=d25cd025859f7a7f64c139cf233b4a7ddb7de304#d25cd025859f7a7f64c139cf233b4a7ddb7de304"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -1398,7 +1398,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3125,7 +3125,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3600,7 +3600,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4197,7 +4197,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

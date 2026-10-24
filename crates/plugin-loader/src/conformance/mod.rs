@@ -1641,6 +1641,8 @@ static CONNECTED: Restated = Restated::new();
 static PIECED: Restated = Restated::new();
 /// `red.rs`'s plane door whose tail states another answer layout.
 static LAID: Restated = Restated::new();
+/// `red.rs`'s door, of any kind, stating another kind layout fingerprint.
+static FINGERPRINTED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
@@ -1649,10 +1651,19 @@ extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
 }
 /// The door function of restated door `I`: [`NETWORKED`] (0), [`VERSIONED`] (1), [`CONNECTED`]
-/// (2), [`PIECED`] (3), [`LAID`] (4). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
+/// (2), [`PIECED`] (3), [`LAID`] (4), [`FINGERPRINTED`] (5). One generic entry rather than one
+/// `extern` per door: `kind-isolation:law0` reads each ABI
 /// string literal as the secret instance `c`.
 extern "C" fn restated_door<const I: usize>() -> *const Door {
-    [&NETWORKED, &VERSIONED, &CONNECTED, &PIECED, &LAID][I].get()
+    [
+        &NETWORKED,
+        &VERSIONED,
+        &CONNECTED,
+        &PIECED,
+        &LAID,
+        &FINGERPRINTED,
+    ][I]
+        .get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -1741,8 +1752,8 @@ macro_rules! by_kind {
 // The admission and connection arms every kind's run carries (`red.rs`), after `by_kind!`.
 mod red;
 pub use red::{
-    red_cross_instance_conn, red_frame_piece, red_plane_layout, red_statement, red_undeclared_need,
-    red_wrong_kind,
+    red_cross_instance_conn, red_frame_piece, red_kind_layout, red_plane_layout, red_statement,
+    red_undeclared_need, red_wrong_kind,
 };
 
 /// **RED: a door at another kind ABI is refused, both ways.** The real door restated at its kind
@@ -2271,6 +2282,13 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_door_at_another_kind_abi_is_refused() {
             $crate::conformance::red_kind_abi(&__busbar_conformance_subject());
+        }
+
+        /// RED: a door stating another layout fingerprint than its kind's is refused at load, for
+        /// every kind (status row 188).
+        #[test]
+        fn red_a_door_built_against_another_kind_layout_is_refused() {
+            $crate::conformance::red_kind_layout(&__busbar_conformance_subject());
         }
 
         /// RED: a transport door whose tail states another frame piece size is refused at load

@@ -2535,6 +2535,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
             kind: auth as u32,
             kind_abi: auth.abi_version(),
+            layout: auth.layout_fingerprint(),
             statement: st,
             ..real.parts()
         })

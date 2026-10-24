@@ -2651,6 +2651,7 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             statement: st,
             ops: std::ptr::null(),
             ready: None,
+            layout: KindCode::Transport.layout_fingerprint(),
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -2726,6 +2727,7 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
             statement: st,
             ops: std::ptr::null(),
             ready: None,
+            layout: KindCode::Plane.layout_fingerprint(),
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -3532,6 +3534,7 @@ fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
             statement: Box::leak(Box::new(statement)),
             ops: whole_table::<K>(),
             ready: None,
+            layout: kind.layout_fingerprint(),
         })
     }
 }
