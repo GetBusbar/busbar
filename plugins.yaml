@@ -339,7 +339,7 @@ plugins:
     busbar_checkout: true
     # macOS runners have no OpenLDAP: the published suite's two arms that log in against the live
     # directory (through the suite's StartTLS front) run on the linux leg, against the service.
-    macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused"
+    macos_test: "env -u CI cargo test --workspace --locked --lib --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused"
     declares: "auth-ldap/declares.json"
     former_names: [busbar-auth-ldap-plugin]
   - repo: busbar-auth-admin-tokens

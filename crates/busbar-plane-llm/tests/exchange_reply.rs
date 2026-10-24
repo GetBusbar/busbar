@@ -809,6 +809,51 @@ fn a_reply_takes_a_whole_answer_whole() {
     assert_eq!(v["object"], "chat.completion", "{v}");
 }
 
+/// A TRANSLATED WHOLE ANSWER BILLS ON AN EARLY LEAVE (row 159, plane-llm HIGH). The door writes a
+/// whole answer to the caller in windows; a caller that leaves before the last one is a cancel, and
+/// the cancel bills the units the answer stated only when the reply says the caller had a usable
+/// part of it. 1.5.5 billed a buffered translated answer before writing a byte of it, so a delivered
+/// whole answer is that part from the moment it is handed over. An end that delivers nothing (here
+/// a body over the cap) is not.
+#[test]
+fn a_whole_answer_handed_to_the_caller_bills_when_the_caller_leaves_early() {
+    let arrived = arrival("openai", false);
+    let lane = lane("cohere");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    };
+    let (_, far) = native_answers("cohere")
+        .into_iter()
+        .next()
+        .expect("an answer");
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
+    let last = reply.feed(HOST, &ctx, &far, true, AT);
+    assert_eq!(last.verdict, Verdict::Ok);
+    assert!(last.units.tokens_in > 0 && last.units.tokens_out > 0);
+    assert!(
+        reply.partial(),
+        "a delivered whole answer must bill its stated units when the caller leaves before its \
+         last window"
+    );
+
+    let tight = ReplyCtx {
+        translate_cap: 4,
+        ..ctx
+    };
+    let mut over = Reply::new(HOST, &tight, 200, head);
+    let refused = over.feed(HOST, &tight, &far, true, AT);
+    assert_eq!(refused.verdict, Verdict::Hard);
+    assert!(
+        !over.partial(),
+        "an end that delivers nothing bills nothing"
+    );
+}
+
 /// A far-end error: a client fault is `Hard` with the caller's answer; a transient is `Retry`
 /// with the relay the walk ends on; the fault names the disposition and the class.
 #[test]
