@@ -1011,8 +1011,13 @@ extern "C" fn never_completes(_: HostCtx, _: *const c_void, o: *mut ServiceOut) 
 /// Log the CLOSE `i` names into `log`.
 fn log_close(log: &std::sync::Mutex<Vec<(u64, Ticket)>>, i: *const c_void) {
     // SAFETY: a CLOSE's `in` is a `StreamIn`.
-    let i = unsafe { i.cast::<crate::abi::host::conn::connector::StreamIn>().read() };
-    let mut log = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let i = unsafe {
+        i.cast::<crate::abi::host::conn::connector::StreamIn>()
+            .read()
+    };
+    let mut log = log
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     log.push((i.stream, i.head.handle.ticket));
 }
 
