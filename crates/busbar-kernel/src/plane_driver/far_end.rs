@@ -1989,6 +1989,28 @@ impl FarEnd for EgressFarEnd<'_> {
         self.next_member(token)
     }
 
+    /// A TERMINAL'S DISPATCH OPENS `forward_once` (status row 173): 1.5.5 opened it, at the
+    /// hot-path level, around each degraded dispatch (a spill into a fallback pool, the least-bad
+    /// bypass, a queued slot) and around no attempt of the walk itself, naming the member's lane
+    /// index, the index its breaker cells are keyed by (v1.5.5 `proxy/engine/walk.rs:382`,
+    /// `fields(lane = i)`; `docs/observability.md` l.162-174).
+    fn attempt_span(&self, _token: &Pass<Route>) -> tracing::Span {
+        let lane = self
+            .lock()
+            .live
+            .as_ref()
+            .filter(|l| l.degraded)
+            .map(|l| l.member.destination.get());
+        match lane {
+            Some(lane) => tracing::span!(
+                crate::observability::HOTPATH_LEVEL,
+                "forward_once",
+                lane = lane
+            ),
+            None => tracing::Span::none(),
+        }
+    }
+
     fn send<'a>(
         &'a self,
         token: &'a Pass<Route>,
