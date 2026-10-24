@@ -515,11 +515,13 @@ impl<'a> Parser<'a> {
                 c.add(lo);
             }
         }
-        if neg {
-            c.negate();
-        }
+        // Fold BEFORE negating: `(?i)[^a]` is "not a, not A". Negating first then folding re-adds
+        // the case partner of every member the negation just admitted.
         if self.ci {
             c.fold_case();
+        }
+        if neg {
+            c.negate();
         }
         Ok((c, multi, neg))
     }
@@ -1267,6 +1269,15 @@ mod tests {
 
     fn m(pat: &str, subject: &str) -> bool {
         Regex::new(pat).expect("compiles").is_match_str(subject)
+    }
+
+    /// XA1#11 RED: a negated class is case-folded BEFORE it is negated.
+    #[test]
+    fn case_insensitive_negated_class_excludes_both_cases() {
+        assert!(!m(r"(?i)^[^a]$", "a"));
+        assert!(!m(r"(?i)^[^a]$", "A"));
+        assert!(m(r"(?i)^[^a]$", "b"));
+        assert!(m(r"^[^a]$", "A"));
     }
 
     #[test]

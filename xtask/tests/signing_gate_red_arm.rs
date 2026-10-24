@@ -242,17 +242,19 @@ fn red_the_planted_arm_fails_when_allow_unsigned_changes_nothing() {
 
 // ── a plugin whose Statement declares a need in a first-party egress class ─────────────────────────
 //
-// THE BUG THESE HOLD (auth-oidc and auth-ldap at busbar 08d4d7c501, failing "unsigned-loads (planted:
-// allow_unsigned)"): the loader admits an unsigned plugin under allow_unsigned, then refuses it at the
+// THE BUG THESE HOLD: the loader admits an unsigned plugin under allow_unsigned, then refuses it at the
 // egress-class grant when its Statement declares a need in a class the host grants a first-party
-// plugin only (`registry.rs` phase 2b, `sign::egress_grant`). Every networked auth plugin declares
-// its outbound needs operator-infrastructure, so under the plant it can never LOAD, and an arm that
-// demands a load can never pass for it. The arm must instead assert, from the plugin's own declared
-// needs, that the signing refusal is gone and the grant refusal is the ONLY one, word for word; any
-// other refusal stays red, so the arm still cannot be satisfied by an unrelated refusal.
+// plugin only (`registry.rs` phase 2b, `sign::egress_grant`: provider, loopback-allowed). Under the
+// plant such a plugin can never LOAD, and an arm that demands a load can never pass for it. The arm
+// must instead assert, from the plugin's own declared needs, that the signing refusal is gone and the
+// grant refusal is the ONLY one, word for word; any other refusal stays red, so the arm still cannot
+// be satisfied by an unrelated refusal. `operator-infrastructure` is any trusted plugin's
+// (`BUSBAR-1.6.0.md` §5, l.604-613), so a networked auth plugin declaring it must LOAD under the plant.
 
 /// The `operator-infrastructure` egress class (`busbar_contract::abi::host::conn::connector`).
 const EGRESS_OPERATOR_INFRASTRUCTURE: u32 = 2;
+/// The `loopback-allowed` egress class, a first-party grant.
+const EGRESS_LOOPBACK_ALLOWED: u32 = 4;
 /// The connector's default class, which any trusted plugin is granted.
 const EGRESS_DEFAULT: u32 = 0;
 
@@ -305,8 +307,21 @@ fn rendering(name: &str, needs: &[(u32, &str)]) -> String {
     o.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The fixture's Statement: a default-class need first, then an operator-infrastructure `tcp` need,
-/// the first need in a first-party class and so the one the loader's refusal names.
+/// The fixture's Statement: a default-class need, an operator-infrastructure `http` need (any trusted
+/// plugin's), then a loopback-allowed `tcp` need, the first need in a first-party class and so the
+/// one the loader's refusal names.
+fn first_party_class_fixture() -> String {
+    rendering(
+        "busbar-hook-fixture",
+        &[
+            (EGRESS_DEFAULT, "http"),
+            (EGRESS_OPERATOR_INFRASTRUCTURE, "http"),
+            (EGRESS_LOOPBACK_ALLOWED, "tcp"),
+        ],
+    )
+}
+
+/// A Statement whose only non-default need is operator-infrastructure: no first-party grant.
 fn operator_infrastructure_fixture() -> String {
     rendering(
         "busbar-hook-fixture",
@@ -317,17 +332,17 @@ fn operator_infrastructure_fixture() -> String {
     )
 }
 
-/// THE GREEN TWIN: the fixture declares an operator-infrastructure need, and the loader refuses its
+/// THE GREEN TWIN: the fixture declares a loopback-allowed need, and the loader refuses its
 /// unsigned tarball under allow_unsigned for exactly that grant, in its own words, and for nothing
 /// else. Every arm passes. Before the fix this was the bug: the planted arm demanded a load the
 /// loader can never give such a plugin, and the gate was red for every networked plugin.
 #[test]
-fn a_plugin_with_an_operator_infrastructure_need_passes_when_the_grant_is_its_only_refusal() {
+fn a_plugin_with_a_first_party_class_need_passes_when_the_grant_is_its_only_refusal() {
     let r = gate_with(
         "grant",
         &[
-            ("STUB_STATEMENT", operator_infrastructure_fixture()),
-            ("STUB_GRANT_NEED", "tcp operator-infrastructure".to_string()),
+            ("STUB_STATEMENT", first_party_class_fixture()),
+            ("STUB_GRANT_NEED", "tcp loopback-allowed".to_string()),
         ],
     );
     assert!(
@@ -344,13 +359,10 @@ fn a_plugin_with_an_operator_infrastructure_need_passes_when_the_grant_is_its_on
 }
 
 /// RED: the same fixture, refused under allow_unsigned for a reason that is not the grant. The arm
-/// is red: a declared operator-infrastructure need excuses the grant refusal and nothing else.
+/// is red: a declared first-party-class need excuses the grant refusal and nothing else.
 #[test]
-fn red_a_plugin_with_an_operator_infrastructure_need_refused_for_another_reason_fails() {
-    let r = gate_with(
-        "other",
-        &[("STUB_STATEMENT", operator_infrastructure_fixture())],
-    );
+fn red_a_plugin_with_a_first_party_class_need_refused_for_another_reason_fails() {
+    let r = gate_with("other", &[("STUB_STATEMENT", first_party_class_fixture())]);
     assert!(
         !r.ok,
         "a plugin refused under allow_unsigned for a reason that is not its egress-class grant \
@@ -367,18 +379,15 @@ fn red_a_plugin_with_an_operator_infrastructure_need_refused_for_another_reason_
 }
 
 /// RED: the same fixture, refused for an egress-class grant that is not the one it declares (the
-/// refusal names its `http` need in the operator-infrastructure class; the first first-party need it
+/// refusal names its `http` need in the loopback-allowed class; the first first-party need it
 /// declares is `tcp`). The refusal is matched word for word against the declared need, not by shape.
 #[test]
 fn red_a_grant_refusal_naming_a_need_the_plugin_does_not_declare_fails() {
     let r = gate_with(
         "grant",
         &[
-            ("STUB_STATEMENT", operator_infrastructure_fixture()),
-            (
-                "STUB_GRANT_NEED",
-                "http operator-infrastructure".to_string(),
-            ),
+            ("STUB_STATEMENT", first_party_class_fixture()),
+            ("STUB_GRANT_NEED", "http loopback-allowed".to_string()),
         ],
     );
     assert!(
@@ -400,10 +409,7 @@ fn red_a_grant_refusal_for_a_plugin_declaring_no_first_party_need_fails() {
                 "STUB_STATEMENT",
                 rendering("busbar-hook-fixture", &[(EGRESS_DEFAULT, "http")]),
             ),
-            (
-                "STUB_GRANT_NEED",
-                "http operator-infrastructure".to_string(),
-            ),
+            ("STUB_GRANT_NEED", "http loopback-allowed".to_string()),
         ],
     );
     assert!(
@@ -420,8 +426,8 @@ fn red_a_grant_refusal_naming_another_egress_class_fails() {
     let r = gate_with(
         "grant",
         &[
-            ("STUB_STATEMENT", operator_infrastructure_fixture()),
-            ("STUB_GRANT_NEED", "tcp loopback-allowed".to_string()),
+            ("STUB_STATEMENT", first_party_class_fixture()),
+            ("STUB_GRANT_NEED", "tcp provider".to_string()),
         ],
     );
     assert!(
@@ -439,14 +445,54 @@ fn red_a_grant_refusal_under_another_code_fails() {
     let r = gate_with(
         "grant",
         &[
-            ("STUB_STATEMENT", operator_infrastructure_fixture()),
-            ("STUB_GRANT_NEED", "tcp operator-infrastructure".to_string()),
+            ("STUB_STATEMENT", first_party_class_fixture()),
+            ("STUB_GRANT_NEED", "tcp loopback-allowed".to_string()),
             ("STUB_GRANT_CODE", "BUSBAR-6001".to_string()),
         ],
     );
     assert!(
         !r.ok,
         "a grant refusal under a code that is not BUSBAR-6009 passed the planted arm:\n{}",
+        r.log
+    );
+}
+
+/// RED (`BUSBAR-1.6.0.md` §5 egress-class table, l.604-613): a plugin whose only non-default need is
+/// `operator-infrastructure`, refused at the grant under allow_unsigned, is red. That class is any
+/// trusted plugin's, so the grant is not a refusal the planted arm may excuse for it: the unsigned
+/// oidc and ldap modules load under allow_unsigned, as 1.5.5 loaded them.
+#[test]
+fn red_a_grant_refusal_for_an_operator_infrastructure_need_fails() {
+    let r = gate_with(
+        "grant",
+        &[
+            ("STUB_STATEMENT", operator_infrastructure_fixture()),
+            ("STUB_GRANT_NEED", "tcp operator-infrastructure".to_string()),
+        ],
+    );
+    assert!(
+        !r.ok,
+        "an operator-infrastructure plugin refused at the egress grant passed the planted arm:\n{}",
+        r.log
+    );
+}
+
+/// GREEN TWIN: the same operator-infrastructure plugin LOADS unsigned under allow_unsigned, and every
+/// arm passes, the planted one judged as the load it is.
+#[test]
+fn an_operator_infrastructure_plugin_that_loads_under_the_plant_passes() {
+    let r = gate_with(
+        "loads",
+        &[("STUB_STATEMENT", operator_infrastructure_fixture())],
+    );
+    assert!(
+        r.ok,
+        "the gate refused an operator-infrastructure plugin that loads under allow_unsigned:\n{}",
+        r.log
+    );
+    assert!(
+        r.log.contains("ALL SIGNING ASSERTIONS PASSED"),
+        "the gate did not reach its verdict:\n{}",
         r.log
     );
 }
