@@ -396,9 +396,13 @@
 #
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
+#
+# 2026-10-24: moved to busbar-release main 0fb50362 (#424): a REPEATED request starts inside one
+# wall-clock minute, so a rate-limit cell's repeats never straddle the product's fixed-minute window
+# (admin.ops|PostConfigReload|rate-limit recorded no refusal when its 11 reloads crossed :00).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=151ad095a21819dca97e8bdb3384c3c3eb2eb806
-sha256_linux_x86_64=0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-sha256_linux_aarch64=188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4
+release_ref=0fb503621c3cfac453359451c2eccdbd2ee4e8eb
+sha256_linux_x86_64=10074791d0557e34b033163479799b3ffb193c3acd2b9e7ef78f4941e1d29e75
+sha256_linux_aarch64=bbf1c6c5c62add4e097b1695e939aa5502a95780870bdd1b53b237e0bf3a2834
 crate=busbar-release-oracle
 bin=busbar-oracle
