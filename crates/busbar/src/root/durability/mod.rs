@@ -125,7 +125,7 @@ use busbar_kernel_wal::{
 /// that are part of this module's own public surface are re-exported below so no caller's path
 /// changes.
 mod replay;
-use replay::{apply_opened, replay_into, same_movement, Replayed, Replayer};
+use replay::{apply_opened, replay_into, same_movement, Replayer};
 
 /// The checkpoints this node holds, re-derived from the chain for a reader (Q128 kernel-ledger
 /// HIGH 1, ARCHITECT ruling A1). Split out for `structure-lint`.
