@@ -920,7 +920,12 @@ fn repo_root() -> PathBuf {
 /// cannot be resolved or built is a test failure that names it, not a quietly-skipped assertion.
 fn oracle_shim() -> PathBuf {
     let root = repo_root();
-    let shim = root.join("bin/oracle");
+    // ModernCI hands the trusted copy of the shim (the target's, never this tree's) as
+    // BUSBAR_ORACLE_SHIM; elsewhere this checkout's own.
+    let shim = std::env::var_os("BUSBAR_ORACLE_SHIM")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("bin/oracle"));
     assert!(
         shim.exists(),
         "the oracle shim is missing at {shim:?}; it is what obtains and locates the pinned \
