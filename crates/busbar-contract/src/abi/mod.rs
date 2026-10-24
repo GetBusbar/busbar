@@ -73,6 +73,101 @@ macro_rules! slot_table {
     };
 }
 
+/// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods (status row 194): a list
+/// is a pointer and a length, which these set together, to items that live for the program. The
+/// fields themselves stay pub until row 194 makes them private (#1471); these methods are the
+/// surface a plugin moves to first. Per list `name, name_len: T => name_ptr, with_name,
+/// with_raw_name;` it states, in the struct's `impl`:
+///
+/// * `with_name(&'static [T])` — the safe setter, `const`: the pointer and the length together;
+/// * `with_raw_name(ptr, len)` — `unsafe`: a list stated unchecked, as a host's own test states
+///   what a foreign plugin could, for the host's checks to judge;
+/// * `name()` — the items, `unsafe` while the fields are pub (safe code could state any pointer by
+///   hand); #1471 makes the fields private and this reader safe;
+/// * `name_ptr()` / `name_len()` — the raw pointer and length, which a host reads a foreign
+///   struct by, under its own checks.
+macro_rules! abi_lists {
+    ($($list:ident, $len:ident: $t:ty => $ptr:ident, $with:ident, $raw:ident;)+) => {$(
+        #[doc = concat!(
+            "Set `", stringify!($list), "` to `items`, which live for the program: its pointer ",
+            "and its length together (status row 194)."
+        )]
+        #[must_use]
+        pub const fn $with(mut self, items: &'static [$t]) -> Self {
+            self.$list = items.as_ptr();
+            self.$len = items.len();
+            self
+        }
+
+        #[doc = concat!(
+            "Set `", stringify!($list), "` to `len` items at `ptr`, unchecked: a host's own test ",
+            "stating a list as a foreign plugin could, for the host's checks to judge."
+        )]
+        ///
+        /// # Safety
+        ///
+        #[doc = concat!(
+            "Every read of the list as items finds `len` initialised items at `ptr`, alive and ",
+            "unwritten for as long as that read. A list nothing reads that way (one only a host's ",
+            "checks read, through [`Self::", stringify!($ptr), "`]) may be anything."
+        )]
+        #[must_use]
+        pub const unsafe fn $raw(mut self, ptr: *const $t, len: usize) -> Self {
+            self.$list = ptr;
+            self.$len = len;
+            self
+        }
+
+        #[doc = concat!(
+            "The `", stringify!($list), "` items: a list set by [`Self::", stringify!($with),
+            "`] lives for the program."
+        )]
+        ///
+        /// # Safety
+        ///
+        #[doc = concat!(
+            "The list's pointer and length name `len` initialised items, alive and unwritten for ",
+            "the borrow of `self`: true of a list set by [`Self::", stringify!($with), "`] (items ",
+            "that live for the program) and not since written through the pub pointer and length ",
+            "fields, which this tree's code honours. #1471 makes those fields private and this ",
+            "reader safe; a plugin calls it as `unsafe { x.", stringify!($list), "() }` under ",
+            "`#[allow(unused_unsafe)]`, and the same line compiles before and after."
+        )]
+        #[must_use]
+        pub unsafe fn $list(&self) -> &[$t] {
+            // SAFETY: the caller's contract.
+            unsafe { crate::abi::abi_slice(self.$list, self.$len) }
+        }
+
+        #[doc = concat!("The raw pointer of `", stringify!($list), "` (NULL = none).")]
+        #[must_use]
+        pub const fn $ptr(&self) -> *const $t {
+            self.$list
+        }
+
+        #[doc = concat!("How many items `", stringify!($list), "` states.")]
+        #[must_use]
+        pub const fn $len(&self) -> usize {
+            self.$len
+        }
+    )+};
+}
+
+/// `len` items at `p`, or none for a NULL `p` or a zero `len`: the one place the lists and strings
+/// of the ABI are read as slices by their `unsafe` readers (status row 194).
+///
+/// # Safety
+///
+/// A non-NULL `p` with a non-zero `len` names `len` initialised, aligned `T`s, alive and unwritten
+/// for `'a`.
+pub(crate) unsafe fn abi_slice<'a, T>(p: *const T, len: usize) -> &'a [T] {
+    if p.is_null() || len == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's contract.
+    unsafe { std::slice::from_raw_parts(p, len) }
+}
+
 pub mod host;
 pub mod sdk;
 

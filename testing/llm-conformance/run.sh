@@ -75,7 +75,7 @@ echo
 # the verdict it had. When the fallback IS needed and the tool is absent, validate.py fails that ONE
 # row and says so. `tool-dir` is silent about installing, so a cold CI runner still resolves the pin.
 if [ -z "${BUSBAR_ORACLE_TOOL_DIR:-}" ]; then
-  BUSBAR_ORACLE_TOOL_DIR="$("${repo}/bin/oracle" tool-dir 2>/dev/null || true)"
+  BUSBAR_ORACLE_TOOL_DIR="$("${BUSBAR_ORACLE_SHIM:-${repo}/bin/oracle}" tool-dir 2>/dev/null || true)"
   [ -n "$BUSBAR_ORACLE_TOOL_DIR" ] && export BUSBAR_ORACLE_TOOL_DIR
 fi
 
