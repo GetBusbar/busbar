@@ -7,8 +7,8 @@
 //
 // The protocol, routing, and plane-specific behavior this binary boots are each owned by their own
 // crate (the engine core and the individual plane crates) and are not this file's concern — see the
-// linked crates' own docs and the README for what a running deployment answers on the wire and the
-// `--help` output above for the CLI surface this binary exposes.
+// linked crates' own docs and the README for what a running deployment answers on the wire, and
+// `root::cli` (what `busbar --help` renders) for the CLI surface this binary exposes.
 //
 // See `register_protocols`/`register_planes`/`register_diagnostics` below
 // for the composition root's one write into each axis: each linked crate contributes its own
@@ -65,8 +65,9 @@ use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 ///
 /// This is the piece that would have PREVENTED the ~20% "regression" incident: a non-PGO or
 /// non-release build self-reports `pgo=false` / `profile=debug` instead of masquerading as a code
-/// regression. CI asserts these values (the build-provenance gate), so a mis-built binary can neither
-/// be misdiagnosed nor shipped green. Format is `key=value` space-separated, stable for grep/awk.
+/// regression. The optimized release build (`scripts/pgo-build.sh`) asserts these values through
+/// `scripts/build-provenance-gate.sh`; no CI check runs that gate. Format is `key=value`
+/// space-separated, stable for grep/awk.
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
@@ -122,8 +123,9 @@ fn line_serve_requested(
     args.any(|a| root::cli::is_plane_flag(planes, &a))
 }
 
-/// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
-/// `main()` for why this exists).
+/// Cap on the resolved data-plane worker count ([`resolve_worker_threads`] applies it to every
+/// source): each worker is an OS thread with its own runtime, listener and allocator arena, so an
+/// operator typo (`worker_threads: 10000`) is held to a count a host can carry.
 const MAX_WORKER_THREADS: usize = 128;
 
 /// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
@@ -289,7 +291,6 @@ fn register_planes() {
         LINKED.auths,
         root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
@@ -371,12 +372,6 @@ fn main() {
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
-    // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
-    // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. LIVE — it flips every plane in the build onto the unified kernel
-    // loop, whose runner opens a zero hold and reports no evidence, so
-    // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
-    root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -451,11 +446,9 @@ fn main() {
         });
     }
     // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
-    // DEFAULT is one worker per available core (`available_parallelism`, which respects CPU affinity and
-    // cgroup cpuset — but NOT the CFS bandwidth quota `cpu.max`, which it cannot see). So on a
-    // quota-limited pod (e.g. 2 CPUs of quota on a 64-core node) this defaults to the NODE's core count,
-    // oversubscribing the quota; such deployments should pin `advanced.worker_threads` to their CPU
-    // limit. Uncapped-by-default is what lets throughput scale with cores: v1.3.1–1.3.3 capped the pool
+    // DEFAULT is one worker per available core (`available_parallelism`, which respects CPU affinity,
+    // the cgroup cpuset and, on Linux, the cgroup CPU quota). Uncapped-by-default is what lets
+    // throughput scale with cores: v1.3.1–1.3.3 capped the pool
     // at `min(cores, 4)`, which pinned the data plane to ~4 cores and made throughput plateau no matter
     // how big the box (v1.3.0 itself was uncapped via `#[tokio::main]`; 1.4.0 restores that default
     // explicitly). The request path is CPU-bound on JSON translate, so it genuinely uses the cores.
@@ -469,7 +462,7 @@ fn main() {
     // the normal default path). `TOKIO_WORKER_THREADS` is read as a back-compat fallback so an operator
     // who pinned it on 1.3.0 keeps the same pool size. `eprintln!` because this runs
     // before the tracing subscriber is installed.
-    // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
+    // The resolved count is capped at [`MAX_WORKER_THREADS`] (see its doc for why).
     // `advanced.worker_threads` in config.yaml is the home for this knob. The deprecated
     // `BUSBAR_WORKER_THREADS` env var still works (deprecation-warned when it parses) and wins when
     // set, so an existing pin is honored across the upgrade; else config.yaml; else the standard
@@ -581,7 +574,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
 
     // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE
-    // spot: `server_timing` is baked into router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
+    // spot: `server_timing` is baked into router middleware state below (`build_split_routers_serving_doors`) and `route_policy` seeds a
     // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
     // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
     let response_headers_cfg = deploy.advanced.response_headers.clone();
@@ -709,7 +702,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
     // THE MONEY THE ROOT-DRIVEN PLANE NODE PRICES WITH is not captured here and handed over once. It
-    // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
+    // arrives through the engine's rate-apply seam, on the root's install record, raised by the ONE
     // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
     // reading taken here instead would be the boot's rates forever: the usage projection would
     // reprice on an apply and this node's ledger would not, and the identity that says the two are
@@ -721,6 +714,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
+    // The resolved providers' URLs select the dropped-in transports the seal opens (Law 7).
+    root::boot::note_provider_urls(cfg.providers.values().map(|p| p.base_url.clone()));
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
     // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
@@ -740,13 +735,20 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
-    root::boot::load_door_planes();
+    // Law 7: a plane binds only when the sections its composition reads are written.
+    root::boot::load_door_planes(
+        deploy
+            .door_sections()
+            .keys()
+            .chain(root::door_steps::kernel_sections(&cfg).keys())
+            .copied(),
+    );
     // THE EXPORT AXIS'S SINKS, opened once on the same dispatcher, each declaring its needs on the
     // one connector just built — before the first app is built, so the routes they declare are in
     // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
     // that will not open refuses the boot.
     export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
-    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
+    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is armed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
     // at the moment it landed and none is ever rewritten. A build without those units runs none and
@@ -791,9 +793,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
-    // What the door planes are sealed over, projected from every configuration as it is built
-    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
-    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
     // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
@@ -945,7 +944,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 std::sync::Arc::clone(&app),
             );
             std::sync::Arc::new(move || {
-                busbar_kernel::plane_host::engine_host(
+                busbar_kernel::plane_driver::engine_host(
                     &live
                         .get()
                         .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
@@ -955,13 +954,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
-    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
-    // once, here, so an apply that first writes one's section is stored and validated but
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED OR NEVER BOUND (their section absent, Law 7): a door
+    // plane is bound and opened once, at boot, so an apply that first writes one's section is stored and validated but
     // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
     // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
     // Without governance no door plane is opened at all, at boot or after a restart: none is held.
     if app.governance.is_some() {
-        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+        root_rules.hold_unopened(
+            served
+                .unopened(root::boot::door_planes())
+                .into_iter()
+                .chain(root::boot::unbound_sections()),
+        );
     }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
@@ -993,7 +997,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // unit (`root::serve`'s probe target over the plane's sealed egress), so no linked row carries
     // the `on-host` axis for it: one prober per lane, as 1.5.5 ran.
     let on_host = LINKED.on_host;
-    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
+    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
     if let Some(host) = &boot_host {
         for spawn in on_host {
             spawn(host);
@@ -1021,7 +1025,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    #[cfg(linked_section_pools)]
     let door_post = served.post.clone();
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
     // served plane claiming the line carrier, the served planes are kept for the process's own
@@ -1075,9 +1078,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }));
     // A CONFIG APPLY REFRESHES THE PLANE SERVING THE `pools` MAP onto the new generation
     // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
-    // table and its secret seam. A build with no node composes no door plane's money, so it has
-    // none to refresh.
-    #[cfg(linked_section_pools)]
+    // table and its secret seam. Which plane that is, is read at run time off each served plane's
+    // declared section, so a plane dropped into `plugins.dir` is refreshed exactly as the same plane
+    // compiled in is (BUSBAR-1.6.0.md l.2179: compiled in or dropped in, one loading path). No
+    // door plane served: no posting site, nothing to refresh.
     if let Some(post) = door_post {
         let (auths, live) = (
             std::sync::Arc::clone(&door_auths),
@@ -1138,11 +1142,23 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     app_handle.on_apply(Box::new(|app| {
         root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
     }));
+    // Every opened transport instance is refreshed with the applied limits, as boot opened it with
+    // them (`root::doors::refresh_live`): a plugin is a plugin, and every kind's `refresh` slot is
+    // called on an apply. A refresh binds nothing; a listener set change applies on restart.
+    app_handle.on_apply(Box::new(|_| {
+        let refused = root::doors::refresh_live(&root::policy::client_settings(
+            &busbar_kernel::config::limits::installed().unwrap_or_default(),
+        ));
+        for why in refused {
+            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
+        }
+    }));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {
-        let _attached =
-            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
+        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::live_standing(
+            app_handle.clone(),
+        ));
     }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
@@ -1298,13 +1314,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // transport. With none there is nothing to serve on stdin/stdout, and `serve_lines` refuses:
     // nonzero exit, the sentence on stderr, no listener bound.
     if let Some(served) = line_served {
+        // The signal is handed to the serve, never raced against it: dropping the serve on the
+        // signal would end the units in flight unanswered and unsettled. The serve stops reading,
+        // drains them within the grace, and returns.
         let stop = recv_shutdown(line_shutdown.unwrap_or_else(|| shutdown_tx.subscribe()));
-        let code = tokio::select! {
-            code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
-                root::kernel::ROOT_CARD.pin()
-            }) => code,
-            () = stop => 0,
-        };
+        let code = root::serve::lines::serve_lines(
+            served,
+            app_handle.clone(),
+            || root::kernel::ROOT_CARD.pin(),
+            stop,
+        )
+        .await;
         let gov = app_handle.load().governance.clone();
         root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
         std::process::exit(code);
@@ -1684,8 +1704,8 @@ async fn serve_listener(
 
 /// Resolve when the process receives a shutdown signal: SIGINT/ctrl_c everywhere, plus SIGTERM on
 /// unix and CTRL_CLOSE/CTRL_SHUTDOWN on Windows (the events an orderly non-interactive stop
-/// actually delivers on each platform). Used as
-/// the `axum::serve(...).with_graceful_shutdown` future. Never panics: a signal-handler
+/// actually delivers on each platform). Awaited once, by the task that fans the stop out on the
+/// shutdown broadcast every listener and the line serve subscribe to. Never panics: a signal-handler
 /// registration error is logged and the corresponding branch parks forever, so the other branch
 /// still triggers shutdown and a registration failure can never abort a worker.
 async fn shutdown_signal() {

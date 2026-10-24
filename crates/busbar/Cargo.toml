@@ -335,7 +335,7 @@ auth-oauth = ["dep:busbar-auth-oauth"]
 # inbound capability, so `GET /api/v1/admin/info` `build.auth_modules` lists it after 1.5.5's
 # `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
-hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -395,8 +395,6 @@ plane-a2a-door = "busbar-plane-a2a"
 # kernel-side), `protocols`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
 # module — and the root-bound seam it drives: `egress`.
-# `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
-# `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
@@ -576,9 +574,8 @@ tokio-rustls = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http = { workspace = true }
-# The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
-# `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
-# is `#[async_trait]`, so its test impl needs the macro.
+# The hook-seat tests (`root/tests/serve_hook_seats.rs`) implement the kernel's `#[async_trait]`
+# hook policy trait, so their test impls need the macro.
 async-trait = { workspace = true }
 # The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
 # whatever plane features the build enables.
@@ -601,6 +598,10 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-suppo
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
 # loader's fake-call store harness and oracle-cache locator are `test-support` only.
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
+# THE PINNED DOOR ROOT CELLS' CONNECTOR BUILD (`process::build`, the connector's `test-support`
+# bridge to `build_with_secrets`): the door cells compiled into the bin's tests call it until their
+# pin moves (FINAL-REPIN).
+busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
