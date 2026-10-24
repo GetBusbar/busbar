@@ -757,7 +757,10 @@ fn exposed_binding(stmt: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let name = let_binding(stmt)?;
-    (name.len() > 1 && (name[0].is_ascii_lowercase() || name[0] == b'_')).then_some(name)
+    // A one-letter binding (`let v = k.expose(..)`) is a binding like any other; only the bare `_`
+    // binds nothing a later statement can name.
+    (!name.is_empty() && name != b"_" && (name[0].is_ascii_lowercase() || name[0] == b'_'))
+        .then_some(name)
 }
 
 /// CHECK 2 over `(path, text)` files: the sealed accessor (Part 2 #54) and a sink on one STATEMENT,
