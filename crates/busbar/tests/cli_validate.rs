@@ -2039,3 +2039,23 @@ fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
         "the credential refusal is named: {out}"
     );
 }
+
+/// `--validate` NAMES AN UNREADABLE SERVICE-ACCOUNT KEY FILE IN 1.5.5's WORDS (oracle BOOT-036):
+/// `provider '<p>' jwt-bearer credential (from <source>) is invalid: could not read
+/// service-account key file …`, the same line as a malformed one.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
+    let (code, out) = validate_lane(
+        "unreadable-key",
+        "{ file: \"{dir}/pair.txt\" }",
+        "jwt-bearer",
+        "",
+    );
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("provider 'mock' jwt-bearer credential (from file:")
+            && out.contains(") is invalid: could not read service-account key file"),
+        "the unreadable key file is refused in 1.5.5's words: {out}"
+    );
+}
