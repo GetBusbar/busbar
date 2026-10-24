@@ -4909,6 +4909,15 @@ pub(crate) mod door_boundary {
         method: &str,
         path: &str,
     ) -> (u16, serde_json::Value) {
+        admin_on(&rig.app, method, path).await
+    }
+
+    /// One admin request on the admin router over the generation `app`: its status and JSON body.
+    async fn admin_on(
+        app: &Arc<busbar_kernel::state::App>,
+        method: &str,
+        path: &str,
+    ) -> (u16, serde_json::Value) {
         use tower::ServiceExt as _;
         let req = axum::http::Request::builder()
             .method(method)
@@ -4916,7 +4925,7 @@ pub(crate) mod door_boundary {
             .header("x-admin-token", ADMIN_TOKEN)
             .body(axum::body::Body::empty())
             .expect("a request");
-        let router = busbar_core_admin::build_router(Arc::clone(&rig.app));
+        let router = busbar_core_admin::build_router(Arc::clone(app));
         let response = router.oneshot(req).await.expect("answers");
         let status = response.status().as_u16();
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
@@ -5154,6 +5163,139 @@ pub(crate) mod door_boundary {
             "{body}"
         );
         assert!(heard.try_recv().is_err(), "connect fetched nothing");
+    }
+
+    /// The environment variable busbar's own subject token is named by in the apply cases below.
+    const APPLY_SUBJECT_VAR: &str = "BUSBAR_DOOR_APPLY_CONNECT_TEST_SUBJECT";
+
+    /// The `tools:` section of one registration `fs` on loopback `port`, its one tool approved;
+    /// with `exchanged`, a `token_exchange:` registration under busbar's own subject token
+    /// [`APPLY_SUBJECT_VAR`] (`aud:` the server's origin).
+    fn connect_section(port: u16, exchanged: bool) -> serde_yaml::Value {
+        let digest = super::tool_door::surface("tool_digest");
+        let token_url = super::tool_door::TOKEN_URL;
+        let exchange = if exchanged {
+            format!(
+                "  aud: \"http://127.0.0.1:{port}\"\n  token_exchange:\n    \
+                 token_url: \"{token_url}\"\n    subject_token: {{ env: {APPLY_SUBJECT_VAR} }}\n"
+            )
+        } else {
+            String::new()
+        };
+        serde_yaml::from_str(&format!(
+            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+             allow_private: true\n{exchange}  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
+        ))
+        .expect("a section")
+    }
+
+    /// The door composed as `instance` over the `tools:` section `before` (the boot), then a config
+    /// apply of the generation whose `tools:` section is `after`, as the handle's appliers take it
+    /// (`DoorApply::apply`); the operator's `connect` of `fs` on the applied generation's admin
+    /// router, and what the server was sent for it.
+    async fn connect_across_an_apply(
+        instance: &'static str,
+        port: u16,
+        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        before: serde_yaml::Value,
+        after: serde_yaml::Value,
+    ) -> (u16, serde_json::Value, String) {
+        std::env::set_var(APPLY_SUBJECT_VAR, "busbar-own-apply-subject");
+        busbar_kernel::preflight::install_linked_auth(
+            crate::LINKED.auths,
+            crate::root::auth_bindings::operator_words(),
+        );
+        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        let row = row();
+        registry(row);
+        let booted = slot_over(row, before.clone());
+        let rig = rig_tools(instance, port, before, &|app| {
+            dispatched(app.admin_chain(chain.clone()), row, &booted)
+        });
+        let generation = rig.live.current().generation;
+        let applied = dispatched(
+            TestApp::new()
+                .keys_chain()
+                .governance(Arc::clone(&rig.gov))
+                .cost(busbar_kernel::cost::CostModel::flat(1))
+                .admin_chain(chain.clone()),
+            row,
+            &slot_over(row, after),
+        )
+        .build();
+        rig.live.apply(&applied);
+        assert_eq!(
+            rig.live.current().generation,
+            generation + 1,
+            "the door took the apply"
+        );
+        let (status, body) = admin_on(&applied, "POST", "/tools/fs/connect").await;
+        let list = heard.try_recv().unwrap_or_default().to_ascii_lowercase();
+        (status, body, list)
+    }
+
+    /// THE DOOR'S OWN FETCHES PRESENT THE APPLIED GENERATION'S BINDING (round 4 (d): "admin connect +
+    /// verify-on-call fetches use the same binding"; BUSBAR-1.6.0.md l.455: "Auth objects are
+    /// rebuilt per generation", l.980: "Guest lists and bindings belong to a generation"): a
+    /// registration booted with no credential, then given a `token_exchange:` by a config apply, is
+    /// fetched by the operator's `connect` with the token its new binding exchanges, as the walk's
+    /// relayed calls present it.
+    ///
+    /// RED before the fix: an apply re-sealed only the walk; the plane's own fetches stayed on the
+    /// bindings boot bound, so `connect` presented nothing for the member and the server saw no
+    /// `authorization`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_after_an_apply_presents_the_binding_the_apply_gave_the_member() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-connect-apply-added";
+        let _published = Published(instance);
+        let listed = Arc::new(std::sync::Mutex::new(serde_json::json!([
+            {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
+             "inputSchema": super::tool_door::tool_schema()}
+        ])));
+        let (port, mut heard) = tool_server_listing(listed).await;
+        let (status, body, list) = connect_across_an_apply(
+            instance,
+            port,
+            &mut heard,
+            connect_section(port, false),
+            connect_section(port, true),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            list.contains("authorization: bearer tok-fs_read_file"),
+            "connect presents the token the applied binding exchanged: {list}"
+        );
+    }
+
+    /// GREEN TWIN: a `token_exchange:` registration a config apply leaves as it was keeps presenting
+    /// its exchanged token on the operator's `connect` (BUSBAR-1.6.0.md l.455, l.980).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_after_an_apply_that_keeps_the_member_presents_its_binding() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-connect-apply-kept";
+        let _published = Published(instance);
+        let listed = Arc::new(std::sync::Mutex::new(serde_json::json!([
+            {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
+             "inputSchema": super::tool_door::tool_schema()}
+        ])));
+        let (port, mut heard) = tool_server_listing(listed).await;
+        let (status, body, list) = connect_across_an_apply(
+            instance,
+            port,
+            &mut heard,
+            connect_section(port, true),
+            connect_section(port, true),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            list.contains("authorization: bearer tok-fs_read_file"),
+            "connect presents the token the member's binding exchanged: {list}"
+        );
     }
 }
 
