@@ -279,14 +279,21 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // declares its grammar any more, its door row in the composition root's manifest is its
     // declaration. Taking the `plane-door` axis off that row leaves a roster plane with no home,
     // which must be PLANE-ROOT-MISSING naming it rather than a plane every rule scans zero files of.
+    //
+    // THE PLANT TAKES THE AXIS, NOT A SPELLING OF THE ROW. The row carries more axes than its door
+    // (`plane-door protocols` since the llm door fills the protocol axis), and a plant keyed on one
+    // exact spelling of it stopped finding the row the day another axis joined it: the RED proof
+    // went to an infra note instead of red. Only the `plane-door` word leaves; every other axis on
+    // the row stays, so the plant moves exactly what locates the plane and nothing else.
     let llm_manifest_rel = format!("{}/{}", roots::CRATES, crate::planes::DOOR_MANIFEST);
-    match cx.read(&llm_manifest_rel) {
-        Ok(text) if text.contains("plane-llm-door = \"plane-door\"") => {
+    match cx
+        .read(&llm_manifest_rel)
+        .ok()
+        .and_then(|text| without_door_axis(&text, "plane-llm-door"))
+    {
+        Some(doorless) => {
             let mut ov = Overlay::new();
-            ov.set(
-                &llm_manifest_rel,
-                text.replace("plane-llm-door = \"plane-door\"", "plane-llm-door = \"\""),
-            );
+            ov.set(&llm_manifest_rel, doorless);
             report.push(tree_case(
                 cx,
                 gate,
@@ -296,9 +303,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
                 &["PLANE-ROOT-MISSING", "llm"],
             ));
         }
-        _ => report.note_infra_failure(
-            "structure-lint selftest: the manifest carries no `plane-llm-door = \"plane-door\"` row, \
-             so the llm plane-root rule has nothing to plant against",
+        None => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-llm-door` row with the \
+             `plane-door` axis, so the llm plane-root rule has nothing to plant against",
         ),
     }
 
@@ -1270,4 +1277,40 @@ fn with_census_empty_scope(t: &Tables) -> Tables {
         r.scope = vec!["Cargo.toml".to_string()];
     }
     t
+}
+
+/// `manifest` with the [`crate::planes::PLANE_DOOR_AXIS`] word taken off `row`'s axes, every other
+/// axis on it kept; `None` when no `row = "..."` line carries that axis (the plant has nothing to
+/// take). The axes are whitespace-separated words, as `planes::door_planes` reads them.
+fn without_door_axis(manifest: &str, row: &str) -> Option<String> {
+    let lead = format!("{row} = \"");
+    let mut found = false;
+    let out: Vec<String> = manifest
+        .lines()
+        .map(|line| {
+            let Some(rest) = line.trim_start().strip_prefix(&lead) else {
+                return line.to_string();
+            };
+            let Some((axes, after)) = rest.split_once('"') else {
+                return line.to_string();
+            };
+            let words: Vec<&str> = axes.split_whitespace().collect();
+            if found || !words.contains(&crate::planes::PLANE_DOOR_AXIS) {
+                return line.to_string();
+            }
+            found = true;
+            let kept: Vec<&str> = words
+                .into_iter()
+                .filter(|w| *w != crate::planes::PLANE_DOOR_AXIS)
+                .collect();
+            format!("{lead}{}\"{after}", kept.join(" "))
+        })
+        .collect();
+    found.then(|| {
+        let mut text = out.join("\n");
+        if manifest.ends_with('\n') {
+            text.push('\n');
+        }
+        text
+    })
 }

@@ -11,7 +11,8 @@
 # stream is refused on every side (a collection and a far-end piece) and `drive` names nothing; a
 # session torn down before its first frame ends with no units and no fee. RED arm: a second end fails.
 #
-# THE KERNEL'S HALF: sealing the session's one line and evicting its durable row (served leg:
+# THE KERNEL'S HALF: sealing the session's one line and evicting its durable row (the streaming door's
+# served leg, its money and node facts closed once at the end:
 # crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091

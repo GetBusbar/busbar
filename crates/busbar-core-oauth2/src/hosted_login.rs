@@ -1,46 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `GET /auth/token` — the HOSTED BROWSER LOGIN page (1.5.2).
+//! `GET /auth/token` — the HOSTED BROWSER LOGIN flow (1.5.2), this crate's (THE DESIGN §8:
+//! `busbar-core-oauth2` owns "the authorization server and the hosted login flow"; row 159, K3#2).
 //!
 //! One param-less path, three sub-states read off the query string:
-//! * **chooser** (no params): one button per `identity-providers:` entry that has a `browser_login` block,
-//!   in config order. `base_url` (= `public_url`, verbatim, no `/v1`) is shown for BYOK.
-//! * **begin** (`?method=<name>`): the CORE mints PKCE (`code_verifier`/`code_challenge` S256),
+//! * **chooser** (no params): one button per `identity-providers:` entry that has a `browser_login`
+//!   block, in config order. `base_url` (= `public_url`, verbatim, no `/v1`) is shown for BYOK.
+//! * **begin** (`?method=<name>`): this flow mints PKCE (`code_verifier`/`code_challenge` S256),
 //!   `state`, and `nonce`, stores them in a hand-rolled HttpOnly+Secure+SameSite=Lax cookie, and
 //!   302s to the IdP authorize URL the module's `begin_login` returned.
-//! * **callback** (`?code=&state=`): the CORE validates `state` against the cookie BEFORE anything
-//!   is asked of the plugin (CSRF), then hands the plugin ONE `complete_login` on the auth kind's
-//!   door carrying the cookie's state and nonce — the plugin makes its own token exchange with the
-//!   client secret it was lent at `open` and binds the IdP's answer to the nonce — and on `Identify`
-//!   mints the caller's key through the SAME [`super::self_keys`] seam the headless `POST` uses (no
-//!   second mint path). The cookie is cleared on completion.
+//! * **callback** (`?code=&state=`): this flow validates `state` against the cookie BEFORE anything
+//!   is asked of the plugin (CSRF), then hands the plugin ONE `complete_login` carrying the cookie's
+//!   state and nonce — the plugin makes its own token exchange with the client secret it was lent
+//!   at `open` and binds the IdP's answer to the nonce — and on `Identify` the kernel mints the
+//!   caller's key through the SAME self-serve seam the headless `POST` uses (no second mint path).
+//!   The cookie is cleared on completion.
+//!
+//! The identity side stays the kernel's ([`busbar_kernel::auth::login`]): the login methods it
+//! opened, one login step on a plugin's door under the anonymous-flood budget, and the self-serve
+//! key. The kernel mounts the path and reaches this flow through its seam ([`SEAM`]); it names no
+//! page, cookie or brand. Every byte here is 1.5.5's.
 //!
 //! SECURITY: `state` is validated before identity is established; the `client_secret` is the
 //! plugin's (lent at `open`, never in the cookie, never logged, never rendered); the login page
 //! issues via the shared self-serve seam.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::State;
 use axum::http::{header, Request, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use base64::Engine as _;
-use indexmap::IndexMap;
 
 use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
-use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
-
-use super::self_keys::{
-    admit_self_mint, issue_key, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
-    SelfMint,
+use busbar_contract::auth_calls::LoginCallback;
+use busbar_kernel::auth::login::seam::{Answer, FormAnswer, LoginSeam};
+use busbar_kernel::auth::login::{
+    issue_self_key, login_method, login_methods, login_step, LoginStep, SelfKeyIssue,
 };
-use super::ChainVerdict;
-use crate::config::AuthCfg;
-use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
-use crate::state::{App, AppHandle};
+use busbar_kernel::state::{App, AppHandle};
 
 /// The login-state cookie name. Scoped to `/auth/token` (Path), HttpOnly + Secure + SameSite=Lax.
 const LOGIN_COOKIE: &str = "busbar_login";
@@ -53,307 +52,9 @@ const LOGIN_COOKIE_MAX_AGE: u32 = 600;
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-// ── login-method registry (App.login_methods) ───────────────────────────────────────────────────
-
-/// One resolved hosted-login method (`identity-providers.<name>`): the login-capable plugin instance
-/// the build's auth axis opened ON THE AUTH KIND'S DOOR (THE DESIGN 6.7; WIRE-AUTH (A)(3)), its
-/// `begin_login`/`complete_login` submitted on the one dispatcher and awaited (no thread parked).
-/// The plugin makes its own token exchange over its own declared need with the client secret the
-/// host lent it at `open`, and binds the IdP's answer to the login's nonce itself; the core holds no
-/// secret for it and runs no hop.
-pub(crate) struct LoginMethod {
-    pub(crate) module: Arc<dyn AuthCalls>,
-    /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
-    pub(crate) has_button: bool,
-    /// The OIDC issuer from the method's opaque settings, used only to infer a button icon/label.
-    pub(crate) issuer: Option<String>,
-    /// The plugin's redirect-vs-credential classification, as its tail states it, read ONCE at
-    /// build. Read by `credential_submit` to gate the credential POST to `Credential` methods only
-    /// (a redirect method never completes via the form POST).
-    pub(crate) login_kind: busbar_contract::auth::LoginKind,
-}
-
-/// The resolved hosted-login map — insertion-ordered (config order = button order), keyed by the
-/// method/module name. Built on boot AND reload in `build_app_from_config`.
-pub(crate) struct LoginMethods {
-    pub(crate) methods: IndexMap<String, LoginMethod>,
-}
-
-// ── the login budget (the anonymous-flood class) ─────────────────────────────────────────────────
-
-/// The bound on CONCURRENT in-flight login-plugin steps, and a SEPARATE budget from the data-plane
-/// auth chain's [`super::AUTH_OFFLOAD_MAX_INFLIGHT`] and the admin chain's
-/// `ADMIN_OFFLOAD_MAX_INFLIGHT`: `/auth/token` is reachable ANONYMOUSLY (it is mounted on the data
-/// router and the auth middleware bypasses that exact path — `auth/mod.rs`'s bypass list), so its
-/// concurrency is attacker-chosen. Sharing a budget with the credential-verifying chain would let an
-/// unauthenticated flood of logins deny auth to authenticated traffic. Smaller than the auth chain's
-/// 64 for the same reason: a human login round-trip is not customer request volume.
-const LOGIN_OFFLOAD_MAX_INFLIGHT: usize = 16;
-
-/// How long a login request waits for a permit before giving up. A login that cannot even be
-/// STARTED in this window is not going to complete, so it is answered rather than left hanging.
-const LOGIN_OFFLOAD_WAIT: Duration = Duration::from_secs(5);
-
-/// The permit pool for [`LOGIN_OFFLOAD_MAX_INFLIGHT`]. Process-wide (not per-`LoginMethods`) on
-/// purpose — the resource being bounded is the process's ONE dispatcher the login steps are
-/// submitted on, and a config reload swaps `App::login_methods` while in-flight steps from the
-/// previous one still hold permits. Same construction as `auth::AUTH_OFFLOAD_PERMITS`.
-static LOGIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
-    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(LOGIN_OFFLOAD_MAX_INFLIGHT));
-
-/// A slot in the login budget ([`LOGIN_OFFLOAD_PERMITS`]) for one login-plugin call, waited for at
-/// most [`LOGIN_OFFLOAD_WAIT`]; `None` = none came free (the caller answers
-/// [`LoginOutcome::Reject`]: the plugin never ran, so no identity was established).
-async fn login_permit(
-    method: &str,
-    op: &'static str,
-) -> Option<tokio::sync::SemaphorePermit<'static>> {
-    // Warn-once transition latch: a saturated login budget persists per request until the wedged
-    // plugin recovers, and this path is anonymously reachable, so warn on the TRANSITION into the
-    // saturated state and hold subsequent rejections at debug. Reset when a permit is acquired again.
-    static LOGIN_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
-    match tokio::time::timeout(LOGIN_OFFLOAD_WAIT, LOGIN_OFFLOAD_PERMITS.acquire()).await {
-        Ok(Ok(p)) => {
-            LOGIN_OFFLOAD_SATURATED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-            Some(p)
-        }
-        // Timed out waiting, or the semaphore was closed. Either way the plugin never ran, so no
-        // identity was established — reject.
-        _ => {
-            if !LOGIN_OFFLOAD_SATURATED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                diag_warn!(
-                    LOGIN_OFFLOAD_SATURATED,
-                    method = %method, op,
-                    "login plugin offload could not be started within {LOGIN_OFFLOAD_WAIT:?} \
-                     ({LOGIN_OFFLOAD_MAX_INFLIGHT} already in flight); a login plugin is not \
-                     returning. Rejecting (fail-closed) rather than completing a login it never ran."
-                );
-            } else {
-                diag_debug!(
-                    LOGIN_OFFLOAD_SATURATED,
-                    method = %method, op,
-                    "login plugin offload could not be started within {LOGIN_OFFLOAD_WAIT:?} \
-                     ({LOGIN_OFFLOAD_MAX_INFLIGHT} already in flight); a login plugin is not \
-                     returning. Rejecting (fail-closed) rather than completing a login it never ran."
-                );
-            }
-            None
-        }
-    }
-}
-
-/// One login step for a door plugin.
-enum DoorStep {
-    Begin(BeginLogin),
-    Complete(LoginCallback),
-}
-
-/// SUBMIT `step` to the door plugin `calls`: a plain `fn`, because nothing here crosses into the
-/// plugin on the caller's thread — the step is queued on the one dispatcher, the plugin runs it on
-/// a dispatcher worker, and the answer is the future handed back ([`door_login_call`] awaits it).
-fn submit_door(
-    calls: &dyn AuthCalls,
-    step: DoorStep,
-) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
-    match step {
-        DoorStep::Begin(request) => calls.begin_login(request),
-        DoorStep::Complete(request) => calls.complete_login(request),
-    }
-}
-
-/// ONE LOGIN STEP ON THE DOOR: submitted on the one dispatcher ([`submit_door`]) and its answer
-/// awaited, so no thread is parked; it holds a slot of the anonymous-flood budget
-/// ([`login_permit`]), released when the step answers. A step that answered no verdict
-/// is [`LoginOutcome::Reject`] (the loader's door, fail-closed). A step the plugin FAULTED (a caught
-/// panic, a malformed answer: [`busbar_contract::auth_calls::LoginCall::faulted`]) is a Reject too,
-/// and says so as 1.5.5 said a panicked login plugin call ([`LOGIN_PLUGIN_PANICKED`]).
-async fn door_login_call(
-    method: &str,
-    op: &'static str,
-    calls: Arc<dyn AuthCalls>,
-    step: DoorStep,
-) -> LoginOutcome {
-    let Some(permit) = login_permit(method, op).await else {
-        return LoginOutcome::Reject;
-    };
-    let mut call = submit_door(&*calls, step);
-    let outcome = (&mut call).await;
-    drop(permit);
-    if call.faulted() {
-        diag_warn!(LOGIN_PLUGIN_PANICKED, method = %method, op, error = "the login plugin faulted", "login plugin call panicked; rejecting (fail-closed)");
-        return LoginOutcome::Reject;
-    }
-    outcome
-}
-
-impl std::fmt::Debug for LoginMethods {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoginMethods")
-            .field("methods", &self.methods.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
-
-impl LoginMethods {
-    /// The empty map (no hosted login) — the default for tests and configs with no `identity-providers:`.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn empty() -> Self {
-        Self {
-            methods: IndexMap::new(),
-        }
-    }
-
-    /// Resolve every `identity-providers:` entry as a login-capable `kind: auth` plugin on the auth
-    /// kind's door, opened through the build's auth axis over the validated `registry` — the same
-    /// trust/load pipeline as the data-plane chain. SecretRef-typed module settings resolve before
-    /// the config crosses the ABI; the `browser_login.client_secret` resolves and is lent to the
-    /// plugin at `open`. A module no door answers is refused in the loader's words (a 1.5.5 JSON
-    /// auth plugin does not load). FAIL-CLOSED: any unresolvable method aborts the boot/reload
-    /// build. Runs inside `build_app_from_config`.
-    pub(crate) fn build(
-        cfg: &AuthCfg,
-        registry: &Arc<busbar_plugin_loader::PluginRegistry>,
-        secret_resolver: &crate::config::secret::SecretResolver,
-    ) -> Result<Self, String> {
-        Self::build_on(cfg, registry, secret_resolver, || {
-            crate::preflight::auth_axis(registry.clone())
-        })
-    }
-
-    /// [`Self::build`] over the auth axis `open_axis` answers (opened on first use).
-    fn build_on(
-        cfg: &AuthCfg,
-        registry: &busbar_plugin_loader::PluginRegistry,
-        secret_resolver: &crate::config::secret::SecretResolver,
-        open_axis: impl Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
-    ) -> Result<Self, String> {
-        let mut methods = IndexMap::new();
-        // The build's auth axis, opened on first use: every method's plugin opens there (the
-        // chain's own rows, the same dispatcher and connection table).
-        let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
-        for (name, mc) in &cfg.methods {
-            let mut resolved = crate::config::secret::resolve_settings(
-                &mc.settings,
-                secret_resolver,
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
-            // The OAuth `client_id` (the PUBLIC half) rides the module's settings so the module can
-            // build the authorize URL + token-exchange with it. It is NOT a secret and is passed
-            // through.
-            if let Some(bl) = &mc.browser_login {
-                if let Some(cid) = &bl.client_id {
-                    resolved
-                        .entry("client_id".to_string())
-                        .or_insert_with(|| serde_json::Value::String(cid.clone()));
-                }
-            }
-            let refused = |e: String| {
-                format!(
-                    "identity-providers.{name} (module '{}') could not be loaded as a \
-                     `kind: auth` login plugin: {e}",
-                    mc.module
-                )
-            };
-            let axis = match &axis {
-                Some(a) => a.clone(),
-                None => axis
-                    .insert(
-                        // No auth axis at all: 1.5.5's words, never the registry's (they stay
-                        // internal to the loader).
-                        open_axis().ok_or_else(|| {
-                            refused(format!("no `kind: auth` plugin answers to '{}'", mc.module))
-                        })?,
-                    )
-                    .clone(),
-            };
-            // A module no door answers is refused in the registry's own words.
-            if !axis.answers(&mc.module) {
-                return Err(refused(super::auth_refusal(registry, &mc.module)));
-            }
-            let issuer = mc
-                .settings
-                .get("issuer")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let has_button = mc.browser_login.is_some();
-            // The confidential-client secret is the PLUGIN's to hold (THE DESIGN 6.7): it is lent
-            // at `open` as the Statement's `client_secret` secret reference (the loader takes it
-            // out of the settings), never kept here, and the plugin makes its own token exchange
-            // with it.
-            if let Some(sref) = mc
-                .browser_login
-                .as_ref()
-                .and_then(|bl| bl.client_secret.as_ref())
-            {
-                let secret = secret_resolver
-                    .resolve_string_at_config(
-                        sref,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
-                    )
-                    .map_err(|e| {
-                        format!("identity-providers.{name} browser_login.client_secret: {e}")
-                    })?;
-                resolved.insert(
-                    "client_secret".to_string(),
-                    serde_json::Value::String(secret),
-                );
-            }
-            // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
-            // provider NAME (the instance): two named providers may share one login plugin with
-            // different issuers/clients.
-            let calls = axis
-                .open(
-                    &mc.module,
-                    &login_label(name),
-                    &serde_json::Value::Object(resolved),
-                )
-                .map_err(&refused)?;
-            // The plugin's login kind, as its tail states it (read without a `begin_login`).
-            // A plugin whose tail states no login serves only the headless method; a
-            // `browser_login` button needs one that logs in.
-            let login_kind = match (calls.login_kind(), &mc.browser_login) {
-                (Some(kind), _) => kind,
-                (None, None) => busbar_contract::auth::LoginKind::Redirect,
-                (None, Some(_)) => {
-                    return Err(format!(
-                        "identity-providers.{name} sets browser_login but its plugin serves \
-                         no login; a hosted login button requires a login-capable auth plugin"
-                    ))
-                }
-            };
-            // Per-kind rule: a Redirect (OAuth) method REQUIRES the confidential-client secret; a
-            // Credential (LDAP/AD-bind) method must NOT carry one (it has nothing to hold).
-            if let Some(bl) = &mc.browser_login {
-                validate_browser_login_secret(login_kind, bl.client_secret.is_some())
-                    .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
-            }
-            methods.insert(
-                name.clone(),
-                LoginMethod {
-                    module: calls,
-                    has_button,
-                    issuer,
-                    login_kind,
-                },
-            );
-        }
-        Ok(Self { methods })
-    }
-}
-
-/// The host's instance label of a hosted-login method's plugin instance: the provider's name, set
-/// apart from the same provider's chain instance (labels are unique per opened instance).
-fn login_label(name: &str) -> String {
-    format!("{name}#login")
-}
-
-// ── the GET handler + its three sub-states ──────────────────────────────────────────────────────
-
 /// `GET /auth/token`: the hosted browser-login page. Reads the query to pick chooser / begin /
 /// callback. Mounted DATA-plane only; the auth middleware bypasses this exact path.
-pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<Body>) -> Response {
+async fn browser(handle: Arc<AppHandle>, req: Request<Body>) -> Response {
     let app = handle.load();
     // Extract everything needed from `req` UP FRONT (owned) — never hold `&Request<Body>` across an
     // `.await` (axum's `Body` is not `Sync`, so the handler future would not be `Send`).
@@ -422,16 +123,12 @@ fn refresh_rotates_under(
 /// The chooser: one button per method that has a `browser_login` block, in config order.
 fn chooser(app: &App) -> Response {
     let base_url = app.public_url.as_deref().unwrap_or("");
-    let buttons: Vec<(String, (String, &'static str))> = app
-        .login_methods
-        .methods
-        .iter()
-        .filter(|(_, m)| m.has_button)
-        .map(|(name, m)| {
-            (
-                name.clone(),
-                button_brand(app.legacy, name, m.issuer.as_deref()),
-            )
+    let buttons: Vec<(String, (String, &'static str))> = login_methods(app)
+        .into_iter()
+        .filter(|m| m.has_button)
+        .map(|m| {
+            let brand = button_brand(app.legacy, &m.name, m.issuer.as_deref());
+            (m.name, brand)
         })
         .collect();
     html_no_store(render_chooser(&buttons, base_url))
@@ -440,20 +137,14 @@ fn chooser(app: &App) -> Response {
 /// begin: mint PKCE/state/nonce, call the module's `begin_login`, and either 302 to the IdP authorize
 /// URL (REDIRECT flow) or render the credential FORM (CREDENTIAL flow). `refresh` marks a rotate.
 async fn begin(app: &App, method: &str, refresh: bool) -> Response {
-    let Some(calls) = app
-        .login_methods
-        .methods
-        .get(method)
-        .filter(|m| m.has_button)
-        .map(|m| m.module.clone())
-    else {
+    if login_method(app, method).filter(|m| m.has_button).is_none() {
         // Unknown / headless-only method — nothing to begin in the browser.
         return error_page(
             StatusCode::NOT_FOUND,
             "Sign-in method not found",
             "That sign-in method isn't available here. Head back and choose one of the listed options.",
         );
-    };
+    }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
     let code_verifier = random_b64url(32);
     let code_challenge = code_challenge_s256(&code_verifier);
@@ -469,7 +160,7 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     };
     // BOUNDED: this data-plane path is ANONYMOUSLY reachable, so the step holds a slot of the login
     // budget; it is submitted on the one dispatcher and awaited (no worker parked).
-    let outcome = door_login_call(method, "begin_login", calls, DoorStep::Begin(begin)).await;
+    let outcome = login_step(app, method, LoginStep::Begin(begin)).await;
     match outcome {
         // REDIRECT (OAuth) flow: 302 to the IdP; the callback (a GET) completes it.
         LoginOutcome::Authorize(url) => {
@@ -566,19 +257,23 @@ async fn callback(
     if !state_ok {
         return clear_and(security_check_failed());
     }
-    let Some(m) = app
-        .login_methods
-        .methods
-        .get(&cookie.method)
+    // 1.5.5 PARITY (Q128 p9#4, coordinator ruling 2026-10-19): the callback admits any method with
+    // a button, a credential one included, and leaves the refusal of an authorization code it never
+    // asked for to the plugin, exactly as 1.5.5's callback did (crates/busbar/src/auth/token.rs
+    // :466-470 at v1.5.5 filters on `has_button` alone). A method-kind check here would answer 400
+    // where 1.5.5 answered the plugin's verdict; pinned by
+    // `a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it`.
+    if login_method(app, &cookie.method)
         .filter(|m| m.has_button)
-    else {
+        .is_none()
+    {
         return clear_and(error_page(
             StatusCode::BAD_REQUEST,
             "Sign-in method not found",
             "That sign-in method is no longer available. Head back and choose one of the listed \
              options.",
         ));
-    };
+    }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
 
     // ON THE DOOR: ONE `complete_login`. The plugin redeems the code at its token endpoint itself
@@ -595,14 +290,7 @@ async fn callback(
             ..Default::default()
         },
     };
-    let principal = match door_login_call(
-        &cookie.method,
-        "complete_login",
-        m.module.clone(),
-        DoorStep::Complete(request),
-    )
-    .await
-    {
+    let principal = match login_step(app, &cookie.method, LoginStep::Complete(request)).await {
         LoginOutcome::Identify(p) => p,
         LoginOutcome::Outage => return clear_and(provider_unreachable()),
         // The IdP's answer failed the login's security check: 1.5.5's verification page, the one
@@ -632,9 +320,10 @@ async fn callback(
 }
 
 /// The SHARED identify→admit→mint→render tail used by BOTH the redirect callback and the credential
-/// POST (`credential_submit`): builds the `Identified` verdict, runs `admit_self_mint`, and mints via
-/// the ONE `issue_key` seam (`refresh` rotates — the "Refresh key" action). Returns the key-issued
-/// page or a typed refusal; it NEVER clears the cookie (the caller wraps the result in `clear_and`).
+/// POST (`credential_submit`): the kernel's self-serve seam issues the key
+/// ([`busbar_kernel::auth::login::issue_self_key`], the SAME admission and mint the headless `POST`
+/// uses; `refresh` rotates — the "Refresh key" action), and this renders the key-issued page or the
+/// refusal's page. It NEVER clears the cookie (the caller wraps the result in `clear_and`).
 async fn issue_and_render(
     app: &App,
     handle: &Arc<AppHandle>,
@@ -642,78 +331,49 @@ async fn issue_and_render(
     principal: Principal,
     refresh: bool,
 ) -> Response {
-    let verdict = ChainVerdict::Identified {
-        module: module_name.to_string(),
-        principal,
-        resolved: None,
-    };
-    let SelfMint {
-        principal,
-        team,
-        granted_pools: pools,
-        ttl,
-    } =
-        match admit_self_mint(
-            &verdict,
-            &app.role_bindings,
-            &app.mint_policy,
-            app.self_key_ttl_secs,
-        ) {
-            Ok(v) => v,
-            // The mint ceiling refused the key this identity would mint (X-1001).
-            Err(ExchangeError::OverCeiling(_)) => return error_page(
-                StatusCode::FORBIDDEN,
-                "Key not permitted",
-                "Your Busbar policy does not allow the key your account would be issued. Ask your \
-                 Busbar admin to review your access.",
-            ),
-            Err(_) => return error_page(
-                StatusCode::FORBIDDEN,
-                "No access yet",
-                "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \
-                 you a role.",
-            ),
-        };
-    let Some(gov) = app.governance.clone() else {
-        return error_page(
+    match issue_self_key(app, handle, module_name, principal, refresh).await {
+        SelfKeyIssue::Issued {
+            subject,
+            group,
+            secret,
+        } => {
+            let base_url = app.public_url.as_deref().unwrap_or("");
+            let page = render_key_issued(
+                &subject,
+                &group,
+                // `.expose(..)`: the once-shown "key issued" page is the intended plaintext egress.
+                secret.expose(&busbar_kernel::seal::lend()),
+                base_url,
+                module_name,
+            );
+            html_no_store(page)
+        }
+        // The mint ceiling refused the key this identity would mint (X-1001).
+        SelfKeyIssue::OverCeiling => error_page(
+            StatusCode::FORBIDDEN,
+            "Key not permitted",
+            "Your Busbar policy does not allow the key your account would be issued. Ask your \
+             Busbar admin to review your access.",
+        ),
+        // No grant; or (only with the unsigned `SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE` on) the
+        // subject's key is disabled, or another identity provider minted it: the same refusal page.
+        SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound => error_page(
+            StatusCode::FORBIDDEN,
+            "No access yet",
+            "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \
+             you a role.",
+        ),
+        SelfKeyIssue::NoGovernance => error_page(
             StatusCode::BAD_GATEWAY,
             "Key issuing unavailable",
             "Busbar can't issue keys right now. Please contact your Busbar admin.",
-        );
-    };
-    // Auto-provision the `user:<sub>` leaf under `team` (from the team's `child_default`) before the
-    // mint, so the browser-issued key is usable immediately (no 429 MissingGroup).
-    let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys =
-        DeterministicEd25519Keys::new(gov, module_name.to_string(), team, pools, provisioner);
-    let issued =
-        match issue_key(&keys, principal, ttl, refresh).await {
-            Ok(k) => k,
-            // The subject's key is disabled, or another identity provider minted it (only with the
-            // unsigned `SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE` on): the same refusal page as an
-            // identity with no grant.
-            Err(ExchangeError::Unbound) => return error_page(
-                StatusCode::FORBIDDEN,
-                "No access yet",
-                "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \
-                 you a role.",
-            ),
-            Err(_) => return error_page(
-                StatusCode::BAD_GATEWAY,
-                "Couldn't issue your key",
-                "We couldn't issue your key this time. Please head back and try again in a moment.",
-            ),
-        };
-    let base_url = app.public_url.as_deref().unwrap_or("");
-    let page = render_key_issued(
-        &principal.id,
-        &issued.group,
-        // `.expose(&crate::seal::lend())`: the once-shown "key issued" page is the intended plaintext egress.
-        issued.secret.expose(&crate::seal::lend()),
-        base_url,
-        module_name,
-    );
-    html_no_store(page)
+        ),
+        SelfKeyIssue::Failed => error_page(
+            StatusCode::BAD_GATEWAY,
+            "Couldn't issue your key",
+            "We couldn't issue your key this time. Please head back and try again in a moment.",
+        ),
+    }
 }
 
 /// `credential_submit`: complete a CREDENTIAL-flow login. Called by the POST `/auth/token` handler
@@ -721,7 +381,7 @@ async fn issue_and_render(
 /// [`CompleteLogin`] from the submitted field values (each [`busbar_contract::redacted::Secret`]), runs the
 /// module's `complete_login` (the plugin verifies the credential itself, e.g. an LDAP bind), and — on
 /// `Identify` — issues through the SAME `issue_and_render` seam. Redirect methods never reach here.
-pub(crate) async fn credential_submit(
+async fn credential_submit(
     app: &App,
     handle: &Arc<AppHandle>,
     cookie_raw: String,
@@ -743,12 +403,7 @@ pub(crate) async fn credential_submit(
     if !busbar_contract::redacted::constant_time_eq(submitted_state, &cookie.state) {
         return clear_and(security_check_failed());
     }
-    let Some(m) = app
-        .login_methods
-        .methods
-        .get(&cookie.method)
-        .filter(|m| m.has_button)
-    else {
+    let Some(m) = login_method(app, &cookie.method).filter(|m| m.has_button) else {
         return clear_and(error_page(
             StatusCode::BAD_REQUEST,
             "Sign-in method not found",
@@ -783,13 +438,7 @@ pub(crate) async fn credential_submit(
         nonce: None,
         login: cl,
     };
-    let outcome = door_login_call(
-        &cookie.method,
-        "complete_login",
-        m.module.clone(),
-        DoorStep::Complete(request),
-    )
-    .await;
+    let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
     let principal = match outcome {
         LoginOutcome::Identify(p) => p,
         LoginOutcome::Outage => return clear_and(provider_unreachable()),
@@ -849,7 +498,7 @@ fn clear_cookie() -> String {
 
 /// Read the login cookie's raw value from the request `Cookie` header. Exposed so the POST handler
 /// (`exchange`) can detect a credential-form submission (login cookie present) and route it here.
-pub(crate) fn read_login_cookie(req: &Request<Body>) -> Option<String> {
+fn read_login_cookie(req: &Request<Body>) -> Option<String> {
     read_cookie(req)
 }
 
@@ -873,34 +522,13 @@ fn clear_and(mut resp: Response) -> Response {
     resp
 }
 
-// ── browser_login configuration ───────────────────────────────────────────────────────────────────
-
-/// Per-`login_kind` rule for a `browser_login` method's `client_secret`: a Redirect (OAuth-family,
-/// confidential-client) method REQUIRES it; a Credential (LDAP/AD-bind) method must NOT set one (it
-/// has no confidential-client secret to hold). Pure, so it is unit-tested without a plugin registry.
-pub(crate) fn validate_browser_login_secret(
-    login_kind: busbar_contract::auth::LoginKind,
-    has_secret: bool,
-) -> Result<(), &'static str> {
-    match (login_kind, has_secret) {
-        (busbar_contract::auth::LoginKind::Redirect, false) => Err(
-            "a redirect (OAuth) login method requires browser_login.client_secret (it is a \
-             confidential client)",
-        ),
-        (busbar_contract::auth::LoginKind::Credential, true) => Err(
-            "a credential login method must not set browser_login.client_secret (it has no \
-             confidential-client secret to hold)",
-        ),
-        _ => Ok(()),
-    }
-}
-
 // ── PKCE + randomness ────────────────────────────────────────────────────────────────────────────
 
 /// A URL-safe, no-pad base64 string of `n_bytes` of OS randomness.
 fn random_b64url(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
-    getrandom::fill(&mut buf).expect("OS randomness for PKCE/state/nonce");
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut buf)
+        .expect("OS randomness for PKCE/state/nonce");
     B64.encode(buf)
 }
 
@@ -926,7 +554,7 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
 
 /// Parse an `application/x-www-form-urlencoded` BODY (same grammar as a query string) into ordered
 /// key/value pairs. Used by the POST handler to read the credential form.
-pub(crate) fn parse_form_urlencoded(body: &str) -> Vec<(String, String)> {
+fn parse_form_urlencoded(body: &str) -> Vec<(String, String)> {
     parse_query(body)
 }
 
@@ -990,7 +618,7 @@ const GLYPH: &str = r##"<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000
 /// generic icon. The kernel names no brand: the row is read off the table the composition root
 /// lent (`legacy`), which the generation serving the page keeps (`App::legacy`).
 fn button_brand(
-    legacy: crate::config::Legacy,
+    legacy: busbar_kernel::config::Legacy,
     name: &str,
     issuer: Option<&str>,
 ) -> (String, &'static str) {
@@ -1048,12 +676,6 @@ const COPY_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="tr
 /// The door/arrow-out glyph shown on the quiet "Sign out" link of the key-issued page.
 const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 2.5H4A1.5 1.5 0 002.5 4v8A1.5 1.5 0 004 13.5h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 10.5L12.5 8 10 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
-/// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
-/// the sign-in / key-issued pages (brand lockup, shared CSS, dark-mode aware), an alert glyph, a
-/// human-readable heading + message, and a "Back to sign in" link to `GET /auth/token`. EVERY
-/// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
-/// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
-/// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
 /// 1.5.5's page for an identity provider that could not be reached: a login plugin that answered
 /// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
 fn provider_unreachable() -> Response {
@@ -1065,6 +687,12 @@ fn provider_unreachable() -> Response {
     )
 }
 
+/// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
+/// the sign-in / key-issued pages (brand lockup, shared CSS, dark-mode aware), an alert glyph, a
+/// human-readable heading + message, and a "Back to sign in" link to `GET /auth/token`. EVERY
+/// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
+/// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
+/// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
 fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
     let body = page(&format!(
         "<div class=\"brand\"><span class=\"glyph\">{GLYPH}</span><span class=\"wordmark\">Busbar</span></div>\
@@ -1142,7 +770,7 @@ fn render_chooser(buttons: &[(String, (String, &'static str))], base_url: &str) 
 /// (`Password` masked), a hidden CSRF `__state`, POSTing the values to `/auth/token`. Generic — the
 /// core renders WHATEVER fields the plugin declared, not a hardcoded username/password.
 fn render_login_form(
-    legacy: crate::config::Legacy,
+    legacy: busbar_kernel::config::Legacy,
     method: &str,
     form: &busbar_contract::auth::LoginForm,
     state: &str,
@@ -1282,6 +910,38 @@ fn titlecase(name: &str) -> String {
         .join(" ")
 }
 
+// ── the kernel's seam ────────────────────────────────────────────────────────────────────────────
+
+/// The seam's `GET /auth/token` handler: [`browser`], boxed.
+fn seam_browser(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Response> {
+    Box::pin(browser(handle, req))
+}
+
+/// The seam's `POST /auth/token` handler: a CREDENTIAL-flow form submission carries the browser
+/// login cookie (set by `begin` when a Credential method rendered its form) and is completed here;
+/// a request with no login cookie is not the flow's and goes back to the headless exchange (a
+/// CI/BYOK IdP-bearer exchange has none).
+fn seam_credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<FormAnswer> {
+    Box::pin(async move {
+        let Some(cookie) = read_login_cookie(&req) else {
+            return Err(Box::new(req));
+        };
+        // Small, bounded read of the form body (credential fields + the CSRF `__state`).
+        let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
+            .await
+            .unwrap_or_default();
+        let form = parse_form_urlencoded(&String::from_utf8_lossy(&bytes));
+        let app = handle.load();
+        Ok(credential_submit(&app, &handle, cookie, form).await)
+    })
+}
+
+/// The flow's handlers, as `crate::install` registers them on the kernel.
+pub(crate) const SEAM: LoginSeam = LoginSeam {
+    browser: seam_browser,
+    credential_form: seam_credential_form,
+};
+
 #[cfg(test)]
-#[path = "tests/token_tests.rs"]
-mod token_tests;
+#[path = "tests/hosted_login_tests.rs"]
+mod hosted_login_tests;

@@ -436,6 +436,39 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
     assert_eq!(flag_value(&flags, "lto"), None);
 }
 
+/// THE STAMP REPORTS THE VALUE RUSTC USED (the stamp exists so a perf number is never pinned on the
+/// wrong build, `src/build_stamp.rs`): a `-C` option's value is the one its exact name carries, and
+/// when the option is passed twice rustc takes the last, so the stamp does too.
+/// RED before the fix: the first element CONTAINING `<name>=` won, so `-Ctarget-cpu=native
+/// -Ctarget-cpu=x86-64` stamped `native`, and `-Clinker-plugin-lto=<path>` stamped as `lto=<path>`.
+#[test]
+fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
+    use crate::build_stamp::flag_value;
+    assert_eq!(
+        flag_value(
+            &["-Ctarget-cpu=native", "-Ctarget-cpu=x86-64"],
+            "target-cpu"
+        )
+        .as_deref(),
+        Some("x86-64"),
+        "rustc takes the last of a repeated option"
+    );
+    assert_eq!(
+        flag_value(&["-Clinker-plugin-lto=/usr/lib/LLVMgold.so"], "lto"),
+        None,
+        "another option whose name ends in the one asked for is not it"
+    );
+    // The green twins: both shapes cargo hands a `-C` option in still read.
+    assert_eq!(
+        flag_value(&["-C", "lto=fat"], "lto").as_deref(),
+        Some("fat")
+    );
+    assert_eq!(
+        flag_value(&["-Ctarget-cpu=native"], "target-cpu").as_deref(),
+        Some("native")
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1126,5 +1159,30 @@ fn the_root_spells_no_planes_line_serve_flag() {
             !main.contains(&format!("\"{flag}\"")),
             "main.rs spells the plane flag {flag} as a literal"
         );
+    }
+}
+
+/// COMPILED IN OR DROPPED IN, ONE PATH (BUSBAR-1.6.0.md l.2179, Part 2 #2): which plane serves the
+/// `pools` map is read off each served plane's declared section at run time, so the binary gates no
+/// run-time behaviour (the config-apply refresh, the health probes) on whether that plane's row was
+/// linked into the build. A `linked_section_<name>` cfg may gate a test, never serving code.
+/// RED before the fix: the pools plane's apply refresh (`main.rs`) and its health probes
+/// (`root/serve.rs` `arm_probes`) compiled only under `cfg(linked_section_pools)`, so the same plane
+/// dropped into `plugins.dir` kept its boot providers, secrets and pools until a restart, unprobed.
+#[test]
+fn no_serving_code_is_gated_on_which_plane_rows_were_linked() {
+    for (file, src) in [
+        ("main.rs", include_str!("../main.rs")),
+        ("root/serve.rs", include_str!("../root/serve.rs")),
+    ] {
+        for (n, line) in src.lines().enumerate() {
+            let line = line.trim();
+            assert!(
+                !(line.starts_with("#[cfg(linked_section_")
+                    || line.starts_with("#[cfg(not(linked_section_")),
+                "{file}:{}: serving code is gated on a linked row: {line}",
+                n + 1
+            );
+        }
     }
 }
