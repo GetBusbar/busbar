@@ -363,7 +363,7 @@ fn filter_values(body: &str, key: &str) -> Option<Vec<String>> {
         let before_ok = body[..at]
             .chars()
             .next_back()
-            .map_or(true, |c| c.is_whitespace() || c == '{' || c == ',');
+            .is_none_or(|c| c.is_whitespace() || c == '{' || c == ',');
         let after = body[from..].trim_start();
         let Some(value) = after.strip_prefix(':') else {
             continue;
