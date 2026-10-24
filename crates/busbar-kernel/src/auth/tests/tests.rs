@@ -2178,7 +2178,7 @@ async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overlo
         overloaded,
         (
             503,
-            Some(crate::proxy::APPLICATION_JSON.to_string()),
+            Some(busbar_contract::protocol::APPLICATION_JSON.to_string()),
             Some("1".to_string()),
             r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#
                 .to_string(),
@@ -2796,7 +2796,7 @@ async fn door_serve(
     let (router, _admin, _handle) = crate::build_split_routers_serving(
         app,
         doors,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
@@ -3429,7 +3429,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     let env: serde_json::Value = serde_json::from_str(&raw).expect("401 body is JSON");
     assert_eq!(
         env["error"]["type"],
-        crate::proxy::KIND_AUTHENTICATION,
+        busbar_contract::protocol::KIND_AUTHENTICATION,
         "expected the data plane's native authentication_error: {env}"
     );
     assert!(

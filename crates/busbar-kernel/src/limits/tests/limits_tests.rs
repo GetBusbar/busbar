@@ -59,7 +59,7 @@ fn uninstalled_accessors_return_historical_defaults() {
     // fallbacks it is asserting.
     let _lock = LIMITS_TEST_LOCK.blocking_lock();
     assert_eq!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         DEFAULT_REQUEST_BODY_MAX_BYTES
     );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
@@ -108,7 +108,7 @@ fn committed_guard_keeps_its_limits_live_after_the_guard_is_gone() {
         "a COMMITTED guard must not roll back when it drops"
     );
     assert_eq!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         7 * 1024 * 1024
     );
     assert_eq!(default_probe_interval_secs(), 37);
@@ -135,7 +135,10 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
         // A test's temporary posture, installed process-wide for the guard's scope.
         let _temporary = InstallGuard::install(&distinctive(2_222, 1024, 3));
         assert_eq!(key_gauge_limit(), 2_222);
-        assert_eq!(busbar_kernel::proxy::max_translate_body_bytes(), 1024);
+        assert_eq!(
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            1024
+        );
         // …and the scope ends here, with no explicit unwind of any kind. Only `Drop` can restore.
     }
 
@@ -151,7 +154,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
          a real restore from a reset-to-defaults"
     );
     assert_eq!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         5 * 1024 * 1024
     );
     assert_eq!(default_probe_interval_secs(), 17);
@@ -180,7 +183,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
     );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         DEFAULT_REQUEST_BODY_MAX_BYTES
     );
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
@@ -188,7 +191,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
 
 /// ROLLBACK REACHES THE LIVE READ PATH, not merely the guard's own fields: every read here goes
 /// through the accessors the deep call-stack use sites call per request (`auth`'s body buffer and
-/// `tls`'s total-deadline derivation call `busbar_kernel::proxy::max_translate_body_bytes()`;
+/// `tls`'s total-deadline derivation call `busbar_kernel_egress::upstream::max_translate_body_bytes()`;
 /// `metrics` calls `key_gauge_limit()`), FROM ANOTHER THREAD — the guard is not reachable from it,
 /// so only the process-global slot can carry the restored value across.
 #[test]
@@ -203,7 +206,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let during = std::thread::spawn(|| {
         (
             key_gauge_limit(),
-            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
         )
     })
     .join()
@@ -219,7 +222,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let after = std::thread::spawn(|| {
         (
             key_gauge_limit(),
-            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
             default_probe_interval_secs(),
         )
     })
@@ -257,7 +260,7 @@ fn a_build_scope_is_seen_by_its_own_thread_only() {
         let live = std::thread::spawn(|| {
             (
                 key_gauge_limit(),
-                busbar_kernel::proxy::max_translate_body_bytes(),
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
                 default_probe_interval_secs(),
             )
         })
@@ -269,7 +272,7 @@ fn a_build_scope_is_seen_by_its_own_thread_only() {
             "live traffic on another thread must keep the published limits during a build"
         );
         assert_eq!(
-            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
             9 * 1024 * 1024,
             "a derived cap is never moved by a candidate"
         );
@@ -285,7 +288,7 @@ fn a_build_scope_is_seen_by_its_own_thread_only() {
     let live = std::thread::spawn(|| {
         (
             key_gauge_limit(),
-            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
         )
     })
     .join()
@@ -309,7 +312,7 @@ fn uncommitted_guard_restores_the_hook_content_ceiling() {
         ..distinctive(1_111, 5 * 1024 * 1024, 17)
     };
     busbar_kernel::config::limits::install(&previous);
-    assert_eq!(busbar_kernel::proxy::hook_content_max_bytes(), 4_096);
+    assert_eq!(busbar_kernel::hooks::hook_content_max_bytes(), 4_096);
 
     {
         let _temporary = InstallGuard::install(&LimitsResolved {
@@ -317,14 +320,14 @@ fn uncommitted_guard_restores_the_hook_content_ceiling() {
             ..distinctive(2_222, 1024, 3)
         });
         assert_eq!(
-            busbar_kernel::proxy::hook_content_max_bytes(),
+            busbar_kernel::hooks::hook_content_max_bytes(),
             64,
             "the temporary ceiling is in force while the guard is held"
         );
     }
 
     assert_eq!(
-        busbar_kernel::proxy::hook_content_max_bytes(),
+        busbar_kernel::hooks::hook_content_max_bytes(),
         4_096,
         "a dropped guard left its hook content ceiling in force"
     );

@@ -586,7 +586,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // `x-busbar-route-policy` / `x-busbar-route-target` are a fingerprintable observable, same class
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
-    busbar_kernel::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
+    busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in scrape
     // EXPORTER (its `export:` entry) — present ⇒ install the recorder (COLLECTION) with the operator's
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the

@@ -16,7 +16,7 @@ use crate::diagnostics::{
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, snapshot, state, store,
+    observability, operation, plane, plugin_routes, profile, proto, snapshot, state, store,
     telemetry, tls, transport, trust,
 };
 

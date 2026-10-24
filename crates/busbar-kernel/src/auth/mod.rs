@@ -1383,10 +1383,23 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 ///
 /// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
 /// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
-// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
-// historical path are unchanged.
-pub use busbar_kernel::proxy::auth_failure_status_and_kind;
+// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
+// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind`. `BedrockWriter`
+// resolves to (403, "auth"); `GeminiWriter` to (400, "invalid_request_error"); every other dialect and
+// an unknown/dropped protocol fall back to the default (401, `KIND_AUTHENTICATION`). Kind-neutral
+// refusal classification: reads only the protocol registry, so it survives every LLM dialect being
+// dropped from the build; the door shapes the dialect body (`crate::plane_driver::refusal`).
+pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
+    crate::proto::decl_for(proto)
+        .and_then(|d| {
+            let (status, kind) = d.auth_failure_status_and_kind;
+            Some((http::StatusCode::from_u16(status).ok()?, kind))
+        })
+        .unwrap_or((
+            http::StatusCode::UNAUTHORIZED,
+            busbar_contract::protocol::KIND_AUTHENTICATION,
+        ))
+}
 
 /// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
@@ -2483,8 +2496,11 @@ pub(crate) async fn auth_middleware(
             // reachable from attacker-controlled headers alone, so the cap is enforced here, not
             // assumed of the layer stack.
             let (parts, body) = req.into_parts();
-            let Ok(body_bytes) =
-                axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
+            let Ok(body_bytes) = axum::body::to_bytes(
+                body,
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            )
+            .await
             else {
                 return Err(unauthorized_response(&app, &path, door.as_ref()));
             };

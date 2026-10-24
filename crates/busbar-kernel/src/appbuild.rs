@@ -26,8 +26,8 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
-    state, store, telemetry, tls, transport, trust,
+    observability, operation, plane, plugin_routes, profile, proto, ratelimit, snapshot, state,
+    store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_driver::route_input::{
     AffinityInput, AuthStyleInput, FailoverInput, HealthInput, HealthModeInput, LaneInput,
@@ -38,7 +38,7 @@ use busbar_kernel::plane_driver::route_input::{
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
 // `request_body_max_bytes`), each defaulting to its historical value at the config layer. They are
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
-// is COUPLED to `request_body_max_bytes` via `busbar_kernel::proxy::max_translate_body_bytes`.
+// is COUPLED to `request_body_max_bytes` via `busbar_kernel_egress::upstream::max_translate_body_bytes`.
 
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";

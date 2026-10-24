@@ -64,11 +64,17 @@ pub mod host;
 mod money;
 mod needs;
 mod probe;
+pub mod refusal;
 mod route;
 pub mod route_input;
 pub mod route_tables;
 pub mod serve;
 pub mod slots;
+
+pub use route::{
+    configure_route_policy_headers, route_policy_headers_enabled, HDR_ROUTE_POLICY,
+    HDR_ROUTE_TARGET,
+};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -95,7 +95,7 @@ pub trait ArrivalHost: Send + Sync {
     ) -> Response;
 
     /// Render `status`/`kind`/`message` in `proto`'s native error envelope
-    /// (`crate::proxy::ingress_error`).
+    /// (`crate::plane_driver::refusal::ingress_error`).
     fn ingress_error(&self, proto: &str, status: StatusCode, kind: &str, message: &str)
         -> Response;
 
@@ -117,9 +117,9 @@ pub trait ArrivalHost: Send + Sync {
     /// (`crate::observability::percent_decode`).
     fn percent_decode(&self, s: &str) -> String;
 
-    /// `crate::proxy::KIND_NOT_FOUND` (the neutral "not found" error category).
+    /// `busbar_contract::protocol::KIND_NOT_FOUND` (the neutral "not found" error category).
     fn kind_not_found(&self) -> &'static str;
-    /// `crate::proxy::KIND_INVALID_REQUEST`.
+    /// `busbar_contract::protocol::KIND_INVALID_REQUEST`.
     fn kind_invalid_request(&self) -> &'static str;
     /// `crate::admin::ERR_TYPE_NOT_FOUND`.
     fn err_type_not_found(&self) -> &'static str;

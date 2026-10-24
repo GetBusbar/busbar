@@ -41,7 +41,7 @@ pub fn pool_authorized(
             return Some(ingress_error(
                 proto,
                 StatusCode::FORBIDDEN,
-                crate::proxy::KIND_PERMISSION,
+                busbar_contract::protocol::KIND_PERMISSION,
                 "Your API key does not have permission to access this resource.",
             ));
         }
@@ -219,7 +219,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            busbar_contract::protocol::KIND_RATE_LIMIT,
             format!(
                 "Too many concurrent requests (group '{group}' is at its in-flight \
                      limit). Please retry shortly."
@@ -240,7 +240,7 @@ pub fn limit_refusal(
             crate::proto::decl_for(proto)
                 .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
                      exhausted). Please check your plan and billing details.",
@@ -263,7 +263,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            busbar_contract::protocol::KIND_RATE_LIMIT,
             format!(
                 "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
                      after the indicated time.",
@@ -276,7 +276,7 @@ pub fn limit_refusal(
         // vendor-plausible shape is a permission denial.
         LimitBlocked::Disabled(group) => (
             StatusCode::FORBIDDEN,
-            crate::proxy::KIND_PERMISSION,
+            busbar_contract::protocol::KIND_PERMISSION,
             format!(
                 "Your API key does not currently have access to this resource (group \
                      '{group}' is disabled)."
@@ -289,7 +289,7 @@ pub fn limit_refusal(
             crate::proto::decl_for(proto)
                 .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \
                      configured). Please contact your administrator."
@@ -392,7 +392,7 @@ pub fn destination_guard(
         let resp = ingress_error(
             proto,
             StatusCode::BAD_REQUEST,
-            crate::proxy::KIND_INVALID_REQUEST,
+            busbar_contract::protocol::KIND_INVALID_REQUEST,
             &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
         );
         return Err(Box::new(finish_rejected(
@@ -446,7 +446,7 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
     if v.pools().iter().any(|(n, _)| *n == model) || v.model_index(model).is_some() {
         model
     } else {
-        crate::proxy::POOL_LABEL_UNRESOLVED
+        crate::telemetry::POOL_LABEL_UNRESOLVED
     }
 }
 
@@ -612,14 +612,14 @@ fn finish_inner(
 /// names the ingress protocol of the route that failed; `status` is the HTTP status; `kind` is a
 /// protocol-appropriate error category; `message` is the human-readable detail.
 ///
-/// Thin delegation to the CANONICAL `crate::proxy::ingress_error` (the single
+/// Thin delegation to the CANONICAL `crate::plane_driver::refusal::ingress_error` (the single
 /// source of truth for native error shaping + per-protocol headers — Bedrock
 /// `x-amzn-RequestId`/`x-amzn-errortype` via the `ProtocolWriter::attach_error_response_headers` vtable method (BedrockWriter delegates to its private helper), the generic
 /// fallback envelope, etc.). Keeping ingress on this one function rather than a private copy means
 /// route/forward error shaping cannot drift. The route call sites (and the in-module tests) keep
 /// the short `proto`/`message` parameter names; the canonical fn names them `ingress`/`msg`.
 pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
-    crate::proxy::ingress_error(proto, status, kind, message)
+    crate::plane_driver::refusal::ingress_error(proto, status, kind, message)
 }
 
 // The one JSON-RPC body the kernel writes: a mounted path's refusal made before any envelope was
@@ -783,10 +783,10 @@ async fn delegate_body_arrival(
         .await
         .into_response();
     }
-    crate::proxy::ingress_error(
+    crate::plane_driver::refusal::ingress_error(
         proto,
         StatusCode::NOT_FOUND,
-        crate::proxy::KIND_NOT_FOUND,
+        busbar_contract::protocol::KIND_NOT_FOUND,
         "This endpoint does not support that operation.",
     )
 }
@@ -815,10 +815,10 @@ pub async fn adhoc(
         let view = app.engine_tables_view();
         if let Some(idx) = view.model_index(&model) {
             if !view.lane_view(idx).is_some_and(|l| l.provider == provider) {
-                return crate::proxy::ingress_error(
+                return crate::plane_driver::refusal::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
+                    busbar_contract::protocol::KIND_INVALID_REQUEST,
                     &not_found_message(&model, None),
                 );
             }

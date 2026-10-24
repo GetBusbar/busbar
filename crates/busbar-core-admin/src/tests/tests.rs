@@ -5295,7 +5295,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         };
         let resp = req
             .header("x-admin-token", "admintok")
-            .header("content-type", busbar_kernel::proxy::APPLICATION_JSON)
+            .header("content-type", busbar_contract::protocol::APPLICATION_JSON)
             .body(malformed.clone())
             .send()
             .await

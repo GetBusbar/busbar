@@ -168,8 +168,8 @@ fn built_route_fields(enabled: bool, policy: Option<&str>, member: &[u8]) -> (St
             .unwrap_or_default()
     };
     (
-        get(crate::proxy::HDR_ROUTE_POLICY),
-        get(crate::proxy::HDR_ROUTE_TARGET),
+        get(crate::plane_driver::HDR_ROUTE_POLICY),
+        get(crate::plane_driver::HDR_ROUTE_TARGET),
     )
 }
 
