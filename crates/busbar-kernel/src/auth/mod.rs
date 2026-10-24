@@ -2866,11 +2866,11 @@ pub mod self_keys;
 /// the [`self_keys`] seam).
 pub mod exchange;
 
-/// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
-/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
-/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
-pub mod token;
+/// The hosted login's identity side (row 159, K3#2): the login methods, one login step on a
+/// plugin's door, and the self-serve key a verified identity is issued through the SAME
+/// [`self_keys`] seam as the headless `POST`. The flow itself (pages, cookie, PKCE) is
+/// `busbar-core-oauth2`'s, reached through [`login::seam`].
+pub mod login;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.
 #[cfg(any(test, feature = "test-support"))]

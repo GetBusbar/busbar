@@ -713,6 +713,11 @@ pub fn build_app_from_config(
         &plugins_cfg,
         &cfg.export,
     )?);
+    // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
+    // secret axis here, never in the registry build `--validate` and every dry run share.
+    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+        admit(&plugin_registry)?;
+    }
 
     // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
     // `kind: secret` plugin — the deferred half of the check `config_validate::validate` cannot do
@@ -1114,7 +1119,7 @@ pub fn build_app_from_config(
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
     // — aborts the build rather than surfacing a 500 at request time.
     let login_methods = Arc::new(
-        crate::auth::token::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
+        crate::auth::login::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
             .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
     // Thread the operator-configured hard-down cooldown + honored-Retry-After ceiling into the store
