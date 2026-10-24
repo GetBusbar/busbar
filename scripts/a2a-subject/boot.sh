@@ -923,7 +923,11 @@ leg_tck() {
   # and, for a subject, does no baseline comparison (correctly: a subject baseline would pin our own
   # defects as the expectation). So this leg's verdict cannot be that script's exit code, and the
   # step is piped through `tee` rather than read from `$?`.
-  BUSBAR_A2A_ENDPOINT="$SUBJECT_URL" testing/a2a-tck/run-tck.sh subject 2>&1 | tee "$out"
+  # THE TCK IS POINTED AT ONE FRONTED AGENT (architect ruling 2026-10-23, R-15): each fronted agent
+  # is reached at its own endpoint, its card at the protocol's discovery path under it and naming it;
+  # the bare front names no agent and refuses a send that names none, so pointing the suite at the
+  # origin measured that refusal 55 times instead of busbar fronting an agent.
+  BUSBAR_A2A_ENDPOINT="$SUBJECT_AGENT_URL" testing/a2a-tck/run-tck.sh subject 2>&1 | tee "$out"
   # SAME PATH ARITHMETIC AS `run-tck.sh`'s own `$OUT` (`${A2A_TCK_OUT:-${A2A_TCK_WORK:-$TMPDIR/a2a-tck-work}/out}`),
   # duplicated rather than sourced because `run-tck.sh` is a `case` dispatcher with no function this
   # script can call standalone. If that arithmetic ever moves, this one has to move with it -- there
