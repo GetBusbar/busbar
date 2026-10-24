@@ -322,7 +322,7 @@ pub fn linked_exports(
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
-                .map(busbar_kernel::preflight::answering_former_names)
+                .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
     // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
@@ -419,7 +419,7 @@ pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, &declared) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
-            registry_build: Some(crate::root::boot::registry),
+            registry_build: Some(crate::root::boot::registry_rows),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             hook_names: crate::LINKED_HOOK_NAMES,
@@ -432,7 +432,12 @@ pub fn register_stores(linked: &Linked) {
             rate_apply: Some(&crate::root::kernel::CardRepricer),
             rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
-            trust_policy: Some(crate::root::boot::trust_policy),
+            admission: Some(&crate::root::admission::ADMISSION),
+            durable: Some(&crate::root::admission::DURABLE),
+            plugin_logs: Some(crate::root::admission::plugin_logs),
+            hook_answers: Some(crate::root::admission::hook_answers),
+            auth_chain_module: Some(crate::root::admission::auth_chain_module),
+            dispatch_latched: Some(crate::root::admission::dispatch_latched),
             auth_axis: Some(crate::root::dispatch::auth_axis),
             config_projection: Some(crate::root::door_steps::door_config),
         }),

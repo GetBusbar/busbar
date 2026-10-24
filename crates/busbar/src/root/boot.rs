@@ -16,11 +16,14 @@
 use std::sync::Arc;
 
 use super::linked::{linked_exports, Linked};
-use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
+use super::loader::{
+    boot::*, dispatch::LoadError, dispatch::ManifestFacts, LinkedPlugin, PluginRegistry,
+};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
-use busbar_kernel::preflight::{Fetched, RegistryIn};
+use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
 
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
 /// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
@@ -34,25 +37,21 @@ use busbar_kernel::preflight::{Fetched, RegistryIn};
 /// `plugins.trust is invalid: …`, an invalid tarball, manifest or conflict, or a linked row the
 /// admission refuses.
 pub fn registry(
-    i: RegistryIn<'_>,
+    linked: Vec<LinkedPlugin>,
+    plugins: Option<&PluginsCfg>,
+    data_dir: Option<&std::path::Path>,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
-    let scan = match i.plugins {
+    let scan = match plugins {
         None => None,
         Some(p) => Some(Scan {
             policy: trust_policy(p, env!("CARGO_PKG_VERSION"))
                 .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
-            data_dir: i.data_dir,
+            data_dir,
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    let registry = super::loader::boot::registry(
-        Build {
-            linked: i.linked,
-            scan,
-        },
-        note,
-    )?;
+    let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
     // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
     // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
     // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
@@ -63,22 +62,111 @@ pub fn registry(
 
 /// STAGE 3's SECRET ADMISSION (BUSBAR-1.6.0.md §3, 3a/3e; the kernel's `RootInstall::secret_admit`):
 /// the dropped-in secret plugins that state a door join the secret axis (the root's, over the one
-/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). Boot's
-/// scan and the app build call it; the registry build ([`registry`]) never does.
+/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). The
+/// app build calls it through the install record with the rows the kernel holds, read back as the
+/// registry this root built them as (a test build's rows double admits nothing); boot's scan calls
+/// [`admit_dropped_secrets`] on its own registry. The registry build ([`registry`]) never does.
 ///
 /// # Errors
 ///
 /// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
 /// another plugin answers to, naming both.
-pub fn admit_secrets(registry: &PluginRegistry) -> Result<(), String> {
+pub fn admit_secrets(rows: &Arc<dyn PluginRows>) -> Result<(), String> {
+    match super::loader::rows::registry_arc(Arc::clone(rows)) {
+        Some(registry) => admit_dropped_secrets(&registry),
+        None => Ok(()),
+    }
+}
+
+/// [`admit_secrets`] over a registry this root built.
+///
+/// # Errors
+///
+/// As [`admit_secrets`].
+pub fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
     super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
+}
+
+/// THE REGISTRY BUILD THE KERNEL RECEIVES (`RootInstall::registry_build`): [`registry`] over the
+/// kernel's linked rows ([`linked_row`]), each loader note handed on in the kernel's words, and the
+/// registry handed back as the contract's `PluginRows` view (the kernel names no loader type).
+///
+/// # Errors
+///
+/// As [`registry`].
+pub fn registry_rows(
+    i: RegistryIn<'_>,
+    note: &mut dyn FnMut(BuildNote<'_>),
+) -> Result<Arc<dyn PluginRows>, String> {
+    let linked = i.linked.iter().map(linked_row).collect();
+    let registry = registry(linked, i.plugins, i.data_dir, &mut |n| match n {
+        Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
+        Note::Off => note(BuildNote::Off),
+        Note::Scanned(scanned) => {
+            let copies: Vec<CopyLine> = scanned
+                .linked_copies()
+                .iter()
+                .map(|c| CopyLine {
+                    name: c.name.clone(),
+                    version: c.version.clone(),
+                    file: c.file.clone(),
+                    line: c.line(),
+                })
+                .collect();
+            note(BuildNote::Scanned {
+                rows: scanned,
+                copies: &copies,
+            });
+        }
+        Note::FloorUnwritable(e) => note(BuildNote::FloorUnwritable(e)),
+    })?;
+    Ok(Arc::new(registry))
+}
+
+/// The registry row one of the kernel's linked rows states: a STORE under its canonical name,
+/// answering also to its key; an AUTH row likewise — each answering also to the former names the
+/// root legacy table gives that key ([`answering_former_names`]).
+#[must_use]
+pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
+    match *row {
+        LinkedRow::Store((key, ephemeral, door, canonical)) => {
+            answering_former_names(LinkedPlugin::store_named(canonical, key, door, ephemeral))
+        }
+        LinkedRow::Auth((key, canonical, door)) => {
+            answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door))
+        }
+    }
+}
+
+/// THE REGISTRY OF THIS BUILD'S LINKED ROWS ALONE (the kernel's `preflight::linked_rows`): what an
+/// axis answers over when the rows it is handed are not a registry this root built (a test build's
+/// rows double), and what the one-version rule compares an upload against.
+#[must_use]
+pub fn linked_registry() -> PluginRegistry {
+    let linked = busbar_kernel::preflight::linked_rows()
+        .iter()
+        .map(linked_row)
+        .collect();
+    PluginRegistry::empty()
+        .link(linked)
+        .unwrap_or_else(|_| PluginRegistry::empty())
+}
+
+/// `row`, answering also to the former names the root legacy table declares for its alias
+/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
+/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
+#[must_use]
+pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
+    let former = busbar_kernel::config::legacy::former_names(&row.manifest.alias);
+    row.with_former_names(former)
 }
 
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
 /// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
 /// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
 /// automatic first-party floor is the registry build's to arm. THE ONE BUILDER: the root hands this
-/// same function to the kernel (`RootInstall::trust_policy`, `root::linked::register_stores`), and
+/// same function to the kernel's plugin admission (`root::admission::ADMISSION`, installed by
+/// `root::linked::register_stores`), and
 /// every snapshot carries it to the admin surface, which judges a plugin under nothing else.
 ///
 /// # Errors
@@ -586,13 +674,10 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     }
     plugins.warn_invalid_floors();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let build = RegistryIn {
-        linked: Vec::new(),
-        plugins: Some(&plugins),
-        data_dir: data_dir.as_deref(),
-    };
-    let registry = crate::root::boot::registry(build, &mut |_| {}).ok()?;
-    admit_secrets(&registry).ok()?;
+    let registry =
+        crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})
+            .ok()?;
+    admit_dropped_secrets(&registry).ok()?;
     Some(registry)
 }
 

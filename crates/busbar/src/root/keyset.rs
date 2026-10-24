@@ -311,10 +311,10 @@ pub fn bind(
                             }
                         }
                     };
-                    busbar_kernel::durable::write_with(
+                    crate::root::loader::durable::write_with(
                         &file,
                         format!("{seed}\n").as_bytes(),
-                        busbar_kernel::durable::DurableOpts {
+                        crate::root::loader::durable::DurableOpts {
                             mode: Some(0o600),
                             exclusive: true,
                         },

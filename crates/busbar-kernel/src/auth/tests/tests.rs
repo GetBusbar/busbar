@@ -1772,7 +1772,7 @@ fn the_operator_credential_opens_from_the_axis() {
     use crate::auth::{open_operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
-    let linked = std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
+    let linked = crate::preflight::linked().expect("the linked registry");
     let none = Default::default();
     let open = |digest| open_operator(&linked, digest, &none).expect("opens");
     assert!(matches!(
@@ -3511,9 +3511,12 @@ impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
     }
 }
 
+/// The style's lines, in its Statement's order.
+const OTHER_LINES: [&str; 2] = ["x-other-key", "authorization"];
+
 const OTHER_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
-    busbar_contract::abi::sdk::auth_door::carrier("x-other-key"),
-    busbar_contract::abi::sdk::auth_door::carrier("authorization"),
+    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[0]),
+    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[1]),
 ];
 
 const OTHER_TAIL: &busbar_contract::abi::auth::AuthTail =
@@ -3536,17 +3539,18 @@ mod other_style {
     );
 }
 
-/// `chain: [keys]` over a registry linking the fixture style.
+/// `chain: [keys]` over a registry linking the fixture style. The test build reads no Statement
+/// (it has no loader), so the row states the lines its door's Statement states.
 fn other_style_chain() -> AuthMiddleware {
-    let registry = busbar_plugin_loader::PluginRegistry::empty()
-        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
-            "other-style",
-            other_style::door,
-        )])
-        .expect("the fixture links");
+    let registry = crate::test_support::rows::Rows::new()
+        .with_linked_style(
+            crate::preflight::LinkedRow::Auth(("other-style", "other-style", other_style::door)),
+            &OTHER_LINES,
+        )
+        .into_rows();
     AuthMiddleware::new(
         &chain_cfg(&["keys"]),
-        &std::sync::Arc::new(registry),
+        &registry,
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .expect("the chain builds")

@@ -420,11 +420,12 @@ pub struct App {
     /// catalog entry's trust verdict. Carried on the snapshot (not a global) so it is testable and
     /// survives swaps.
     pub plugins_cfg: crate::config::PluginsCfg,
-    /// The composition root's ONE plugin trust builder ([`crate::preflight::RootInstall`]'s
-    /// `trust_policy`, the one boot admits plugins under): every admin moment that judges a plugin
-    /// (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through nothing
-    /// else, so the operator surface reports the verdict boot reaches. `None` = no root installed one.
-    pub plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    /// The composition root's PLUGIN ADMISSION ([`crate::preflight::RootInstall`]'s `admission`,
+    /// over the one trust builder boot admits plugins under): every admin moment that judges a
+    /// plugin (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through
+    /// nothing else, so the operator surface reports the verdict boot reaches. `None` = no root
+    /// installed one.
+    pub plugin_admission: Option<&'static dyn crate::admission::PluginAdmission>,
     // The cross-protocol translation seam's global fallback max-output-tokens and effort→budget table
     // no longer live on `App`: they are plane-specific vocabulary and now ride that plane's own
     // per-generation runtime object, populated from the neutral `PlaneBuildInput` carrier `appbuild`

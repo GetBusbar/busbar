@@ -645,6 +645,9 @@ futures = { workspace = true }
 # runtime dep after the core split, so the integration test needs its own copy.
 base64 = { workspace = true }
 bytes = { workspace = true }
+# `src/root/tests/admin_plugin_admission.rs` types the admin contract's request and view bodies it
+# drives (derive only; no wire shape is spelled as a string).
+serde = { workspace = true }
 serde_json = { workspace = true }
 # The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge

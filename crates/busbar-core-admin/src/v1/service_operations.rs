@@ -16,20 +16,26 @@
 //! where the block now lives.
 
 use super::*;
+use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::groups::LimitMetric;
-use busbar_kernel::plugin_admission::sign::TrustPolicy;
 
-/// `plugins.trust` resolved by THE ROOT'S ONE BUILDER — the one boot admits plugins under, carried
-/// on the snapshot (`App::plugin_trust`) — after warning about any malformed anti-downgrade floor,
-/// so every admin moment the policy resolves (catalog, install, inspect, rollback) reaches boot's
-/// verdict and warns exactly as boot does. No builder lives here. `binary_version` is carried for
-/// diagnostics only.
-pub(crate) fn trust_policy(app: &App, binary_version: &str) -> Result<TrustPolicy, String> {
+/// THE ROOT'S PLUGIN ADMISSION — the one boot admits plugins under, carried on the snapshot
+/// (`App::plugin_admission`) — after warning about any malformed anti-downgrade floor, so every
+/// admin moment that judges a plugin (catalog, install, inspect, rollback) reaches boot's verdict
+/// and warns exactly as boot does. No policy is built here: the admission judges under the root's
+/// one trust builder over `app.plugins_cfg`.
+pub(crate) fn admission(app: &App) -> Result<&'static dyn PluginAdmission, String> {
     app.plugins_cfg.warn_invalid_floors();
-    let build = app.plugin_trust.ok_or_else(|| {
-        "no plugin trust policy is installed (the composition root's)".to_string()
-    })?;
-    build(&app.plugins_cfg, binary_version)
+    app.plugin_admission
+        .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
+}
+
+/// A refusal of the root's admission, in the class the operator surface answers it with.
+fn refused(refusal: Refusal) -> AdminError {
+    match refusal {
+        Refusal::Validation(m) => AdminError::Validation(m),
+        Refusal::Conflict(m) => AdminError::Conflict(m),
+    }
 }
 
 impl AdminService {
@@ -675,9 +681,12 @@ impl AdminService {
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
         let mut out = linked_store_rows();
-        let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
+        let Ok(admission) = admission(&self.app) else {
             return out;
         };
+        if admission.policy_resolves(&self.app.plugins_cfg).is_err() {
+            return out;
+        }
 
         let now = busbar_kernel::store::now();
         // Bound the cache with the same TTL+`retain()` idiom
@@ -750,7 +759,11 @@ impl AdminService {
                 }
             }
 
-            let rows = Self::scan_store_plugin_rows(&self.app.plugins_dir, &policy);
+            let rows = Self::scan_store_plugin_rows(
+                &self.app.plugins_dir,
+                admission,
+                &self.app.plugins_cfg,
+            );
 
             // "After" fingerprint: only memoize if the directory still looks like it did before the
             // scan started (see the race caveat in the doc comment above — this narrows, it does
@@ -779,35 +792,48 @@ impl AdminService {
             out.extend(rows);
             out
         } else {
-            out.extend(Self::scan_store_plugin_rows(&self.app.plugins_dir, &policy));
+            out.extend(Self::scan_store_plugin_rows(
+                &self.app.plugins_dir,
+                admission,
+                &self.app.plugins_cfg,
+            ));
             out
         }
     }
 
-    /// The pure scan half of [`Self::store_plugin_catalog`]: run `inventory_tarballs` and project
-    /// each row to a [`PluginView`]. No cache read, no cache write — split out so both the
+    /// The pure scan half of [`Self::store_plugin_catalog`]: run the admission's manifest-only
+    /// `inventory` and project each row to a [`PluginView`]. No cache read, no cache write — split out so both the
     /// cache-miss path above and (indirectly, via the whole-method `spawn_blocking`)
     /// [`Self::store_plugin_catalog_async`] share exactly one implementation of "what a scan is."
-    fn scan_store_plugin_rows(dir: &Path, policy: &TrustPolicy) -> Vec<PluginView> {
+    fn scan_store_plugin_rows(
+        dir: &Path,
+        admission: &dyn PluginAdmission,
+        cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Vec<PluginView> {
         // TEST-ONLY injection point: expands to nothing outside
         // `#[cfg(test)]`, so the release path carries zero indirection. See
         // `catalog_scan_test_hooks` above for what it does and why.
         catalog_scan_test_hook!(dir);
         let mut rows = Vec::new();
-        for row in busbar_kernel::plugin_admission::inventory_tarballs(dir, policy) {
+        // The policy resolved a moment ago (the caller checked); a refusal here lists nothing
+        // beyond the linked rows, the same answer an unresolvable policy gets.
+        let Ok(inventory) = admission.inventory(dir, cfg) else {
+            return rows;
+        };
+        for row in inventory {
             let trust = if row.status == "ready" {
                 if row.signature == "first-party" || row.signature.starts_with("publisher:") {
                     Some("trusted")
                 } else {
                     Some("unverified")
                 }
-            } else if row.manifest.is_some() {
+            } else if row.stated.is_some() {
                 Some("rejected")
             } else {
                 None
             };
             let name = row
-                .manifest
+                .stated
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
@@ -817,7 +843,7 @@ impl AdminService {
             // preserving the exact pre-existing behavior for every case this change doesn't newly
             // cover (a broken upload of unknown kind still surfaces somewhere an operator will see
             // it, and `type=hooks` has its own, unrelated listing mechanism below — not this scan).
-            let r#type = match row.manifest.as_ref().map(|m| m.kind.as_str()) {
+            let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
                 Some("secret") => "secret",
                 Some("auth") => "auth",
                 _ => "store",
@@ -828,7 +854,7 @@ impl AdminService {
             // admin-prefixed RELATIVE path to `GET /plugins/{name}/schema`, resolved by this
             // plugin's real manifest `name` (what that endpoint resolves against), never the
             // installed tarball's filename.
-            let (schema_url, schema_error) = match row.manifest.as_ref() {
+            let (schema_url, schema_error) = match row.stated.as_ref() {
                 Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
                 None => (None, None),
             };
@@ -840,9 +866,9 @@ impl AdminService {
                 target: Some(row.file.clone()),
                 file: Some(row.file.clone()),
                 has_schema: schema_url.is_some(),
-                version: row.manifest.as_ref().map(|m| m.version.clone()),
-                publisher: row.manifest.as_ref().map(|m| m.publisher.clone()),
-                interface_version: row.manifest.as_ref().map(|m| m.abi_version),
+                version: row.stated.as_ref().map(|m| m.version.clone()),
+                publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
+                interface_version: row.stated.as_ref().map(|m| m.abi_version),
                 trust,
                 valid: Some(row.status == "ready"),
                 error: (row.status != "ready").then(|| row.status.clone()),
@@ -910,7 +936,7 @@ impl AdminService {
                 );
                 // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
-                // an unparseable `plugins_cfg` (`trust_policy` failing) just above.
+                // an unparseable `plugins_cfg` (the policy not resolving) just above.
                 Ok(linked_store_rows())
             }
         }
@@ -939,106 +965,46 @@ impl AdminService {
         file: &str,
         tarball: &[u8],
     ) -> Result<crate::v1::contract::PluginInstallView, AdminError> {
-        use busbar_kernel::plugin_admission::sign::{
-            evaluate, validate_structure, Verdict, HOST_IDENTITY,
-        };
-
         // ── 1. filename sanity: a bare tarball filename ──
-        let file = validate_plugin_filename(file)?;
+        let file = validate_plugin_filename(&self.app, file)?;
 
-        let policy =
-            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
-
-        // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
-        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_kernel::plugin_admission::supported_abi,
-            HOST_IDENTITY,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
-        let manifest = &unpacked.manifest;
-
-        // ── 3. TRUST re-verify against the RUNNING posture (server-side) ──
-        let (trust, publisher) = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { publisher, .. }) => ("trusted", Some(publisher)),
-            Ok(Verdict::Allowed { .. }) => ("unverified", Some(manifest.publisher.clone())),
-            // An untrusted upload with no matching opt-in is forbidden - a terminal state conflict
-            // (retrying the same bytes can't fix it; sign it, or set the opt-in). The `evaluate`
-            // reason already names the exact flag to set and is safe to surface.
-            Err(rejected) => {
+        // ── 2–4b. THE ROOT'S ADMISSION, nothing written: STRUCTURAL (in-memory unpack + manifest
+        // completeness + integrity + abi, `400`); TRUST re-verified against the RUNNING posture
+        // server-side (an untrusted upload with no matching opt-in is a terminal `409` — retrying
+        // the same bytes cannot fix it; the refusal names the exact flag to set); CONFLICT with the
+        // already-installed loadable set (a corrupt installed tarball refuses rather than skipping
+        // the check, and a same-name upload under a DIFFERENT filename is refused because boot
+        // would reject two files claiming one plugin name, `409`); and THE ONE-VERSION RULE against
+        // the plugins this build LINKS (ARCHITECT C'), after trust: the same plugin at the same
+        // version is served by the linked row, so the install is an accepted no-op; another
+        // version is refused now, in the words boot would refuse it with, never published to brick
+        // the next boot.
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let admitted = admission
+            .admit_upload(&self.app.plugins_dir, &file, tarball, &self.app.plugins_cfg)
+            .map_err(refused)?;
+        let manifest = &admitted.stated;
+        let (trust, publisher) = match &admitted.judged {
+            Judged::Trusted { publisher } => ("trusted", Some(publisher.clone())),
+            Judged::Allowed => ("unverified", Some(manifest.publisher.clone())),
+            // An admission never admits a rejected upload; the mapping stays total.
+            Judged::Rejected { reason } => {
                 return Err(AdminError::Conflict(format!(
-                    "plugin rejected by the trust policy: {}",
-                    rejected.reason
+                    "plugin rejected by the trust policy: {reason}"
                 )));
             }
         };
-
-        // ── 4. CONFLICT vs the already-installed loadable set ──
-        // FAIL-OPEN GAP: a corrupt tarball already in the plugins dir makes scan_and_validate Err.
-        // The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Propagate
-        // it as a Conflict so we never admit a plugin whose conflict status we could not determine.
-        let reg =
-            busbar_kernel::plugin_admission::scan_and_validate(&self.app.plugins_dir, &policy)
-                .map_err(|errors| {
-                    AdminError::Conflict(format!(
-                    "cannot validate the installed plugin set before publishing (fix or remove the \
-                     offending tarball first): {}",
-                    errors.join("; ")
-                ))
-                })?;
-        for existing in reg.loadable() {
-            if existing.file == file {
-                continue; // overwriting the same tarball file is a legitimate upgrade
-            }
-            // Every identifier either claims (name, alias, former names) against the other's.
-            let clash = manifest
-                .identities()
-                .any(|word| existing.manifest.answers_to(word));
-            // BRICKS THE NEXT BOOT: the old gate exempted a SAME-NAME upload under a DIFFERENT
-            // filename (`&& existing.manifest.name != manifest.name`). But boot's phase-3
-            // conflicts() hard-rejects two loadable plugins with the same name (different files) -
-            // admitting one BRICKS the next restart. Reject it here (409) so we never publish a
-            // state boot will refuse: a same-name upgrade must REUSE the existing filename (which
-            // hits the `existing.file == file` overwrite path above), not add a second file.
-            if clash {
-                return Err(AdminError::Conflict(format!(
-                    "plugin name/alias conflict: uploaded '{}' (alias '{}', file {}) collides with \
-                     installed '{}' (alias '{}', file {}); a same-name upgrade must reuse the \
-                     existing filename, not add a second file (boot would reject two files claiming \
-                     the same plugin name)",
-                    manifest.name,
-                    manifest.alias,
-                    file,
-                    existing.manifest.name,
-                    existing.manifest.alias,
-                    existing.file
-                )));
-            }
-        }
-
-        // ── 4b. THE ONE-VERSION RULE against the plugins this build LINKS (ARCHITECT C'), after
-        // trust (an untrusted upload was refused above, before its identity was compared): the same
-        // plugin at the same version is already served by the linked row, so the install is an
-        // accepted no-op (nothing is written); another version is refused now, in the words boot
-        // would refuse it with, never published to brick the next boot.
-        match busbar_kernel::preflight::linked().and_then(|r| r.linked_copy(manifest, &file)) {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                return Ok(crate::v1::contract::PluginInstallView {
-                    file,
-                    name: manifest.name.clone(),
-                    interface_version: manifest.abi_version,
-                    trust,
-                    version: Some(manifest.version.clone()),
-                    publisher,
-                    note: "this build links the plugin at this version and the linked build \
-                           serves it: nothing was written",
-                });
-            }
-            Err(refusal) => return Err(AdminError::Conflict(refusal)),
+        if admitted.linked_serves {
+            return Ok(crate::v1::contract::PluginInstallView {
+                file,
+                name: manifest.name.clone(),
+                interface_version: manifest.abi_version,
+                trust,
+                version: Some(manifest.version.clone()),
+                publisher,
+                note: "this build links the plugin at this version and the linked build \
+                       serves it: nothing was written",
+            });
         }
 
         // ── 5. atomic publish via the crate's ONE durable-write choke point ──
@@ -1090,10 +1056,10 @@ impl AdminService {
     /// base64-encoded, COMPRESSED ARCHIVE, reachable by the WEAKEST admin credential in the system,
     /// and the archive must be decompressed and its manifest parsed BEFORE the signature can even be
     /// checked, so the trust check happens strictly after the dangerous part):
-    ///   1. a hard cap on the DECODED tarball size, `busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES`
+    ///   1. a hard cap on the DECODED tarball size, the admission's `max_tarball_bytes`
     ///      — the same ceiling `POST /plugins` (install) and the on-disk catalog scan both already
-    ///      enforce, checked here BEFORE `unpack` ever runs;
-    ///   2. `busbar_kernel::plugin_admission::tarball::unpack` itself streams each archive member through a
+    ///      enforce, checked here BEFORE anything else, the unpack included;
+    ///   2. the admission's unpack itself streams each archive member through a
     ///      cap enforced DURING decompression (`read_entry_bounded`'s `.take(cap + 1)`) — a
     ///      decompression bomb fails fast, never after allocating the bomb — and rejects any
     ///      non-regular-file or path-traversal entry name outright, and errors immediately on a
@@ -1110,38 +1076,24 @@ impl AdminService {
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
-        use busbar_kernel::plugin_admission::sign::{
-            evaluate, validate_structure, Verdict, HOST_IDENTITY,
-        };
-
-        if tarball.len() as u64 > busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES {
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let cap = admission.max_tarball_bytes();
+        if tarball.len() as u64 > cap {
             return Err(AdminError::Validation(format!(
-                "decoded tarball is {} bytes, exceeding the {}-byte cap",
-                tarball.len(),
-                busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES
+                "decoded tarball is {} bytes, exceeding the {cap}-byte cap",
+                tarball.len()
             )));
         }
 
-        let policy =
-            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
-
-        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_kernel::plugin_admission::supported_abi,
-            HOST_IDENTITY,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
-        let manifest = &unpacked.manifest;
-
         // Trust is REPORTED, never a refusal to answer — an untrusted/rejected candidate is exactly
         // the case an operator most wants to preview before deciding whether to trust it at all.
-        let trust = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { .. }) => "trusted",
-            Ok(Verdict::Allowed { .. }) => "unverified",
-            Err(_rejected) => "rejected",
+        let (manifest, judged) = admission
+            .inspect(tarball, &self.app.plugins_cfg)
+            .map_err(refused)?;
+        let trust = match judged {
+            Judged::Trusted { .. } => "trusted",
+            Judged::Allowed => "unverified",
+            Judged::Rejected { .. } => "rejected",
         };
 
         let (schema, schema_error) = match manifest.settings_schema.as_deref() {
@@ -1166,7 +1118,7 @@ impl AdminService {
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&manifest.kind),
+            "restart_required_default": admission.restart_default(&manifest.kind),
         }))
     }
 
@@ -1178,7 +1130,7 @@ impl AdminService {
         &self,
         file: &str,
     ) -> Result<crate::v1::contract::PluginRemoveView, AdminError> {
-        let file = validate_plugin_filename(file)?;
+        let file = validate_plugin_filename(&self.app, file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
@@ -1236,56 +1188,22 @@ impl AdminService {
         &self,
         file: &str,
         prior_pins: &std::collections::BTreeMap<String, String>,
-    ) -> Result<
-        (
-            busbar_kernel::plugin_admission::sign::Manifest,
-            std::collections::BTreeMap<String, String>,
-        ),
-        AdminError,
-    > {
-        use busbar_kernel::plugin_admission::sign::{
-            evaluate, validate_structure, Verdict, HOST_IDENTITY,
-        };
-        let file = validate_plugin_filename(file)?;
+    ) -> Result<(Stated, std::collections::BTreeMap<String, String>), AdminError> {
+        let file = validate_plugin_filename(&self.app, file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
         let bytes = std::fs::read(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
-        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(&bytes)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball `{file}`: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_kernel::plugin_admission::supported_abi,
-            HOST_IDENTITY,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest `{file}`: {e}")))?;
-        let manifest = unpacked.manifest;
-
-        // Build the trust policy with the first-party floor LOWERED to the target artifact's own
-        // version — the EXPLICIT relaxation. `min_versions` is carried from base config as-is; we
-        // additionally lower THIS plugin's configured floor to the target version so a floored
-        // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
-        // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
-        // never the ARTIFACT.
-        let mut policy =
-            trust_policy(&self.app, &manifest.version).map_err(AdminError::Validation)?;
-        policy
-            .min_versions
-            .insert(manifest.name.clone(), manifest.version.clone());
-        match evaluate(&unpacked.lib_bytes, &manifest, &policy) {
-            Ok(Verdict::Trusted { .. }) | Ok(Verdict::Allowed { .. }) => {}
-            Err(rejected) => {
-                return Err(AdminError::Conflict(format!(
-                    "rollback target `{file}` is not loadable under the trust policy even with the \
-                     floor lowered to its own version {}: {}. A rollback lowers the anti-downgrade \
-                     floor for an explicit operator action; it cannot load an untrusted artifact.",
-                    manifest.version, rejected.reason
-                )));
-            }
-        }
+        // The root's admission checks the target's structure and judges its trust with THIS
+        // plugin's floor LOWERED to the target's own version — the EXPLICIT relaxation. Anything the
+        // target does NOT satisfy (a broken signature, an un-opted-in third party) still fails: a
+        // rollback authenticates the OPERATOR, never the ARTIFACT.
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let manifest = admission
+            .rollback_target(&file, &bytes, &self.app.plugins_cfg)
+            .map_err(refused)?;
 
         // Merge: this plugin's pin becomes the target version; other plugins' prior pins are preserved.
         let mut pins = prior_pins.clone();

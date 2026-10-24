@@ -340,6 +340,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-pki-types",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
@@ -488,7 +489,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "flate2",
- "hex",
  "http-body-util",
  "reqwest",
  "schemars",
@@ -667,7 +667,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-scope",
  "busbar-kernel-wal",
- "busbar-plugin-loader",
  "bytes",
  "crc32fast",
  "criterion",
@@ -774,7 +773,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=0565fcf1fa040ed986e0abcc8528e1b336e2e83c#0565fcf1fa040ed986e0abcc8528e1b336e2e83c"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=fafb021f9f5ff4f109da47a9ea711353a003d26e#fafb021f9f5ff4f109da47a9ea711353a003d26e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",

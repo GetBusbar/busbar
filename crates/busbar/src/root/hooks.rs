@@ -17,21 +17,26 @@ use busbar_contract::conn::DeclaredConns;
 use busbar_contract::hook_calls::HookAxis;
 use std::sync::Arc;
 
-use crate::root::loader::{hook_door::HookRows, PluginRegistry};
+use busbar_contract::plugin_rows::PluginRows;
+
+use crate::root::loader::{hook_door::HookRows, rows::registry_of};
 
 /// The process's one connection table, as an opened hook instance declares its needs on it.
 fn conns() -> Arc<dyn DeclaredConns> {
     crate::root::connector::the().clone()
 }
 
-/// The hook axis over `registry` (`busbar_kernel::preflight::RootInstall::hook_axis`).
+/// The hook axis over `registry` (`busbar_kernel::preflight::RootInstall::hook_axis`): the rows the
+/// kernel holds as the contract's view, read back as the registry this root built them as. Rows
+/// this root did not build carry no dropped-in hook of the loader's: the axis answers the linked
+/// doors alone over them.
 ///
 /// # Errors
 /// A `kind: hook` row that will not state itself, named.
-pub fn axis(registry: &Arc<PluginRegistry>) -> Result<Arc<dyn HookAxis>, String> {
+pub fn axis(registry: &Arc<dyn PluginRows>) -> Result<Arc<dyn HookAxis>, String> {
     let rows = HookRows::new(
         crate::LINKED.hook_doors,
-        Some(registry.as_ref()),
+        registry_of(registry.as_ref()),
         crate::root::dispatch::dispatcher(),
     )?
     .with_former_names(busbar_kernel::config::legacy::former_names)?

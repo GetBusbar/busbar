@@ -726,8 +726,8 @@ fn write_atomically(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    busbar_kernel::durable::create_dir_all(dir)?;
-    busbar_kernel::durable::write(path, bytes)
+    crate::root::loader::durable::create_dir_all(dir)?;
+    crate::root::loader::durable::write(path, bytes)
 }
 
 /// Every node the registry names: `(host, node id)`, in key order.

@@ -593,7 +593,7 @@ pub struct Restrict {
     /// What an empty intersection does.
     pub on_empty: PolicyOnError,
     /// The deciding hook.
-    pub name: &'static str,
+    pub name: std::sync::Arc<str>,
 }
 
 /// THE CONSTRAINT THE HOOKS PUT ON THE WALK.
@@ -604,7 +604,7 @@ pub struct Constraint {
     /// The order the walk tries them in (`None` = the walk's own pick).
     pub order: Option<Vec<usize>>,
     /// The policy that ordered or restricted, when one did.
-    pub policy: Option<&'static str>,
+    pub policy: Option<std::sync::Arc<str>>,
     /// Every restrict the hooks decided, re-applied to a fallback pool's members.
     pub restricts: Vec<Restrict>,
 }
@@ -825,7 +825,7 @@ enum Decided {
     /// This ranked order.
     Order {
         order: Vec<usize>,
-        name: &'static str,
+        name: std::sync::Arc<str>,
     },
     /// No opinion: the walk's own pick.
     Weighted,
@@ -835,12 +835,12 @@ enum Decided {
     RejectRequest {
         status: u16,
         message: String,
-        name: &'static str,
+        name: std::sync::Arc<str>,
     },
     /// Only members carrying one of these tags.
     Restrict {
         tags_any: Vec<String>,
-        name: &'static str,
+        name: std::sync::Arc<str>,
         on_empty: PolicyOnError,
     },
 }
@@ -871,7 +871,7 @@ fn fault_clear(key: &str) {
 /// `on_empty`.
 fn map_answer(
     answer: RoutingDecision,
-    name: &'static str,
+    name: std::sync::Arc<str>,
     candidates: &[Candidate<'_>],
     on_empty: &PolicyOnError,
 ) -> Decided {
@@ -902,7 +902,7 @@ fn map_answer(
 fn coerce_on_error(
     on_error: &PolicyOnError,
     candidates: &[Candidate<'_>],
-    name: &'static str,
+    name: std::sync::Arc<str>,
 ) -> Decided {
     if failed_call_refuses(on_error) {
         return Decided::Reject;
@@ -981,7 +981,7 @@ impl Asked<'_> {
         {
             Ok(Ok(answer)) => {
                 fault_clear(&key);
-                let decided = map_answer(answer, policy.name(), self.candidates, on_empty);
+                let decided = map_answer(answer, policy.name_arc(), self.candidates, on_empty);
                 let ran = applied(policy.name(), head_of(&decided), false);
                 return (decided, Some(ran));
             }
@@ -1003,7 +1003,7 @@ impl Asked<'_> {
                         "routing policy still failing; applying on_error fallback"
                     );
                 }
-                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
+                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name_arc())
                     .await
             }
             Err(_) => {
@@ -1024,7 +1024,7 @@ impl Asked<'_> {
                         "routing policy deadline still exceeded; applying on_error fallback"
                     );
                 }
-                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
+                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name_arc())
                     .await
             }
         };
@@ -1041,7 +1041,7 @@ impl Asked<'_> {
         terminal: &PolicyOnError,
         req: &RoutingRequest<'_>,
         ctx: &RoutingContext<'_>,
-        failed: &'static str,
+        failed: std::sync::Arc<str>,
     ) -> Decided {
         for fb in chain {
             let fb_req = RoutingRequest {
@@ -1071,12 +1071,12 @@ impl Asked<'_> {
                     fault_clear(&key);
                     crate::diag_debug!(
                         ON_ERROR_FALLBACK_ANSWERED,
-                        policy = failed,
+                        policy = &failed[..],
                         fallback = fb.policy.name(),
                         pool = self.pool,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return map_answer(answer, fb.policy.name(), self.candidates, &fb.on_empty);
+                    return map_answer(answer, fb.policy.name_arc(), self.candidates, &fb.on_empty);
                 }
                 Ok(Err(e)) => {
                     if fault_enter(&key) {
@@ -1677,7 +1677,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             kept.sort_unstable();
             constraint.keep = Some(kept);
         }
-        self.lock().route_policy = constraint.policy;
+        self.lock().route_policy = constraint.policy.clone();
         if constraint != Constraint::default() {
             self.far.constrain(token, constraint);
         }
@@ -1695,7 +1695,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         (keep, constraint): (&mut HashSet<usize>, &mut Constraint),
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
-        let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
+        let mut gate_order: Option<(Vec<usize>, std::sync::Arc<str>)> = None;
         if !hooks.gates.is_empty() {
             let shown = candidates_of(all, hooks, keep);
             let asked = Asked {
@@ -1726,14 +1726,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } => {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                             "status" => status.to_string(),
                         )
                         .increment(1);
                         crate::diag_debug!(
                             DECISION_GATE_REJECTED,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             status,
                             message = %message,
@@ -1761,20 +1761,20 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     constraint.restricts.push(Restrict {
                         tags_any: tags_any.clone(),
                         on_empty: on_empty.clone(),
-                        name,
+                        name: Arc::clone(name),
                     });
                     if narrow(keep, all, tags_any) {
                         metrics::counter!(
                             ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                         )
                         .increment(1);
-                        constraint.policy = Some(name);
+                        constraint.policy = Some(Arc::clone(name));
                     } else if matches!(on_empty, PolicyOnError::Weighted) {
                         crate::diag_debug!(
                             DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             "decision gate restrict left no eligible lane; on_empty: weighted \
                              escape — this gate's restriction is skipped"
@@ -1782,14 +1782,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } else {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                             "status" => "503".to_string(),
                         )
                         .increment(1);
                         crate::diag_debug!(
                             DECISION_GATE_RESTRICT_REJECT,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             "decision gate restrict left no eligible lane (on_empty: reject)"
                         );
@@ -1813,7 +1813,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             if let Some((_, name)) = &gate_order {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => *name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1841,7 +1841,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             Decided::Order { order, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1861,14 +1861,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             } => {
                 metrics::counter!(
                     ROUTE_POLICY_REJECTIONS_TOTAL,
-                    "policy" => name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                     "status" => status.to_string(),
                 )
                 .increment(1);
                 crate::diag_debug!(
                     ROUTING_POLICY_REJECTED,
-                    policy = name,
+                    policy = &name[..],
                     pool = pool,
                     status,
                     message = %message,
@@ -1884,12 +1884,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 constraint.restricts.push(Restrict {
                     tags_any: tags_any.clone(),
                     on_empty: on_empty.clone(),
-                    name,
+                    name: Arc::clone(&name),
                 });
                 if narrow(keep, all, &tags_any) {
                     metrics::counter!(
                         ROUTE_POLICY_SELECTIONS_TOTAL,
-                        "policy" => name,
+                        "policy" => name.to_string(),
                         "pool" => pool.to_string(),
                     )
                     .increment(1);
@@ -1898,7 +1898,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else if matches!(on_empty, PolicyOnError::Weighted) {
                     crate::diag_debug!(
                         ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
-                        policy = name,
+                        policy = &name[..],
                         pool = pool,
                         "routing policy restrict left no eligible lane; on_empty: weighted \
                          escape to full-pool SWRR"
@@ -1907,14 +1907,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else {
                     metrics::counter!(
                         ROUTE_POLICY_REJECTIONS_TOTAL,
-                        "policy" => name,
+                        "policy" => name.to_string(),
                         "pool" => pool.to_string(),
                         "status" => "503".to_string(),
                     )
                     .increment(1);
                     crate::diag_debug!(
                         ROUTING_POLICY_RESTRICT_REJECT,
-                        policy = name,
+                        policy = &name[..],
                         pool = pool,
                         "routing policy restrict left no eligible lane (on_empty: reject)"
                     );

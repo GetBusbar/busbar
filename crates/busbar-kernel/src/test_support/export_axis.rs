@@ -1,106 +1,71 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT AXIS a test binary resolves `export:` against. The kernel names no export plugin, so
-//! the axis here is a plugin registry scanned out of a temp `plugins/` directory holding NEUTRAL
-//! `kind: export` rows whose library bytes are not a library, and THE SCRAPE DOUBLE
-//! ([`ScrapeDouble`]): an in-process sink answering the frozen scrape module word (R-FIX3: the
+//! THE EXPORT AXIS a test binary resolves `export:` against. The kernel names no export plugin and
+//! no loader (BUSBAR-1.6.0.md THE DESIGN l.322), so the axis here answers IN PROCESS: a set of
+//! NEUTRAL dropped-in `kind: export` rows that state no door, and THE SCRAPE DOUBLE
+//! ([`ScrapeDouble`]), an in-process sink answering the frozen scrape module word (R-FIX3: the
 //! kernel's own tests use in-crate doubles; the real scrape sink's proofs live with the composition
 //! root, which links it).
+//!
+//! WHAT THE NEUTRAL ROWS ANSWER mirrors what the loader's export rows (`ExportRows`,
+//! `crates/plugin-loader/src/export_axis.rs`) answered for the unsigned rows this kit once packed
+//! over bytes that are not a library and scanned: such a row RESOLVES (by its canonical name or its
+//! alias), so `probe` states no streams and no problem and `check` finds nothing (the row "will not
+//! load here: its open refuses the boot naming the instance"); `open` refuses, naming the row and
+//! the rebuild ([`NO_DOOR`], the loader's words); and the row is neither linked nor first-party,
+//! states no `one_instance` mark and declares no route. How the loader admits, binds and opens a
+//! real export row is the loader's and the root's to prove (`crates/plugin-loader`,
+//! `crates/busbar/tests`).
 
 use busbar_contract::abi::export::ExportStream;
-use busbar_plugin_loader::{
-    dispatch::{DispatchConfig, Dispatcher},
-    export_axis::ExportRows,
-    PluginRegistry,
-};
 
-/// A structurally valid, unsigned `kind: export` tarball named `name`/`alias` over `lib`.
-fn write_row(dir: &std::path::Path, name: &str, alias: &str, lib: &[u8]) {
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "export".into(),
-        version: "1.6.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("export")
-            .iter()
-            .max()
-            .expect("an export payload schema"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        ..Default::default()
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).expect("package");
-    std::fs::write(dir.join(format!("{name}.tar.gz")), bytes).expect("write the tarball");
+/// Why a neutral row does not open: it states no export door (the loader's `NO_DOOR`, verbatim).
+pub const NO_DOOR: &str = "it states no export door (the 1.5.5 JSON export contract, which this host does not load) — rebuild the plugin against the 1.6.0 SDK";
+
+/// One neutral dropped-in `kind: export` row: its canonical name and its alias.
+#[derive(Debug, Clone)]
+struct NeutralRow {
+    name: String,
+    alias: String,
 }
 
-/// A registry scanned from a fresh directory holding one export row per `(name, alias)`.
-pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> PluginRegistry {
-    let dir = std::env::temp_dir().join(format!("busbar-export-axis-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("plugins dir");
-    for (name, alias) in rows {
-        write_row(&dir, name, alias, b"not a library");
-    }
-    let plugins: crate::config::PluginsCfg = serde_json::from_value(serde_json::json!({
-        "enabled": true,
-        "dir": dir.display().to_string(),
-        "trust": { "allow_unsigned": true },
-    }))
-    .expect("a plugins block");
-    let policy = crate::test_support::trust_policy(&plugins).expect("a trust policy");
-    busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan")
-}
-
-/// The registry the stand-in axis reads, kept for the test binary's life. Unset = no export module
-/// resolves (a test binary that installs none).
-static REGISTRY: std::sync::OnceLock<&'static PluginRegistry> = std::sync::OnceLock::new();
-
-/// The registry [`install_export_axis_with`] builds, owned for the test binary's life.
-static BUILT: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
+/// The neutral rows the stand-in axis answers, kept for the test binary's life. Unset = no export
+/// module resolves (a test binary that installs none), the scrape double's word included.
+static ROWS: std::sync::OnceLock<Vec<NeutralRow>> = std::sync::OnceLock::new();
 
 /// THE STAND-IN EXPORT AXIS: `preflight::RootInstall`'s `export_axis` in a test build (a test build
-/// has no root). It answers over the registry installed here, on one test dispatcher, through the
-/// export rows the root's axis answers with.
+/// has no root). It answers over the rows [`install_export_axis`] installs, in process.
 #[derive(Debug)]
 pub struct StandIn;
 
 /// The stand-in axis `preflight::RootInstall` holds in a test build.
 pub static STAND_IN: StandIn = StandIn;
 
-fn rows() -> Option<ExportRows<'static>> {
-    static DISPATCHER: std::sync::OnceLock<std::sync::Arc<Dispatcher>> = std::sync::OnceLock::new();
-    let registry = REGISTRY.get()?;
-    // The kernel's own host services, so an opened sink's `serve` reads the host snapshot
-    // service as it does in a booted process.
-    let dispatcher = DISPATCHER.get_or_init(|| {
-        std::sync::Arc::new(Dispatcher::with_services(
-            DispatchConfig::default(),
-            std::sync::Arc::new(crate::host_services::KernelServices::new()),
-        ))
-    });
-    Some(ExportRows::new(registry, dispatcher.clone()))
+/// The installed rows, `None` before [`install_export_axis`].
+fn rows() -> Option<&'static [NeutralRow]> {
+    ROWS.get().map(Vec::as_slice)
+}
+
+/// The neutral row `module` resolves to: canonical name first, then alias (the registry's order).
+fn row<'r>(rows: &'r [NeutralRow], module: &str) -> Option<&'r NeutralRow> {
+    rows.iter()
+        .find(|r| r.name == module)
+        .or_else(|| rows.iter().find(|r| r.alias == module))
 }
 
 impl busbar_contract::export_calls::ExportAxis for StandIn {
     fn probe(
         &self,
         module: &str,
-        instance: &str,
-        settings: &serde_json::Value,
+        _instance: &str,
+        _settings: &serde_json::Value,
     ) -> Option<busbar_contract::export_calls::Probed> {
         let rows = rows()?;
-        match by_double(&rows, module) {
+        match by_double(rows, module) {
             Some(_) => Some(ScrapeDouble::probed()),
-            None => rows.probe(module, instance, settings),
+            // It will not load here: its open refuses the boot naming the instance.
+            None => row(rows, module).map(|_| (None, Vec::new())),
         }
     }
 
@@ -111,57 +76,53 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
         let rows = rows()?;
-        match by_double(&rows, module) {
+        match by_double(rows, module) {
             Some(_) => Some(ScrapeDouble::check(phase, instances)),
-            None => rows.check(module, phase, instances),
+            None => row(rows, module).map(|_| Vec::new()),
         }
     }
 
     fn open(
         &self,
         module: &str,
-        label: &str,
-        settings: &serde_json::Value,
+        _label: &str,
+        _settings: &serde_json::Value,
     ) -> Result<std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls>, String> {
-        let rows =
-            rows().ok_or_else(|| format!("no `kind: export` plugin answers to '{module}'"))?;
-        match by_double(&rows, module) {
+        let unanswered = || format!("no `kind: export` plugin answers to '{module}'");
+        let rows = rows().ok_or_else(unanswered)?;
+        match by_double(rows, module) {
             Some(double) => Ok(std::sync::Arc::new(double)),
-            None => rows.open(module, label, settings),
+            None => {
+                let r = row(rows, module).ok_or_else(unanswered)?;
+                Err(format!("export plugin '{}': {NO_DOOR}", r.name))
+            }
         }
     }
 
     fn linked(&self, module: &str) -> bool {
-        rows().is_some_and(|r| by_double(&r, module).is_some() || r.linked(module))
+        rows().is_some_and(|r| by_double(r, module).is_some())
     }
 
     fn first_party(&self, module: &str) -> bool {
-        rows().is_some_and(|r| by_double(&r, module).is_some() || r.first_party(module))
+        rows().is_some_and(|r| by_double(r, module).is_some())
     }
 
     fn one_instance(&self, module: &str) -> bool {
-        rows().is_some_and(|r| by_double(&r, module).is_some() || r.one_instance(module))
+        rows().is_some_and(|r| by_double(r, module).is_some())
     }
 
     fn linked_modules(&self) -> Vec<String> {
         rows()
-            .map(|r| {
-                let mut linked = r.linked_modules();
-                if by_double(&r, scrape_module()).is_some() {
-                    // Linked ahead of the neutral rows, as the root links its scrape sink.
-                    linked.insert(0, scrape_module().to_string());
-                }
-                linked
-            })
+            .filter(|r| by_double(r, scrape_module()).is_some())
+            // Linked as the root links its scrape sink; the neutral rows are dropped in.
+            .map(|_| vec![scrape_module().to_string()])
             .unwrap_or_default()
     }
 
     fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
         rows()
-            .map(|r| match by_double(&r, module) {
-                Some(_) => lines_routes().to_vec(),
-                None => r.routes(module),
-            })
+            .and_then(|r| by_double(r, module))
+            .map(|_| lines_routes().to_vec())
             .unwrap_or_default()
     }
 }
@@ -179,20 +140,15 @@ pub fn scrape_module() -> &'static str {
         .map_or("", |(_, _, module)| module)
 }
 
-/// The scrape double, when `module` is the word it answers to and no row of the installed registry
-/// answers to it (a test binary that links a real sink under that word is answered by the sink).
-fn by_double(rows: &ExportRows<'static>, module: &str) -> Option<ScrapeDouble> {
+/// The scrape double, when `module` is the word it answers to and no neutral row answers to it (the
+/// installed rows leave that word to the double).
+fn by_double(rows: &[NeutralRow], module: &str) -> Option<ScrapeDouble> {
     let word = scrape_module();
-    (!word.is_empty()
-        && module == word
-        && rows
-            .probe(module, module, &serde_json::Value::Null)
-            .is_none())
-    .then_some(ScrapeDouble)
+    (!word.is_empty() && module == word && row(rows, module).is_none()).then_some(ScrapeDouble)
 }
 
-/// THE SCRAPE DOUBLE (R-FIX3): the stand-in axis's answer for [`scrape_module`] when no row of the
-/// installed registry answers to it — a FIRST-PARTY, `one_instance` sink carrying exactly the
+/// THE SCRAPE DOUBLE (R-FIX3): the stand-in axis's answer for [`scrape_module`] when no neutral
+/// row answers to it — a FIRST-PARTY, `one_instance` sink carrying exactly the
 /// `metrics` stream and declaring the two well-known scrape routes. It is not a plugin and not a
 /// door: it answers in process, its words are its own, and it validates nothing (the recorder's
 /// settings are the kernel's to read off the scrape instance). Opened, it renders a snapshot as the
@@ -280,44 +236,25 @@ impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
 /// for each FIRST-PARTY sink's frozen 1.5.5 module word but the scrape one, read off the root
 /// legacy table's `export_modules` row (K9b, K9c, K9e-2): a linked build resolves that module on
 /// its axis, so a test configuration naming it resolves here too. The host spells none of them.
-/// The rows' bytes are not a library, so each sink validates nothing and opens nothing — enough
-/// for the configuration layer, which is all a kernel test drives. The scrape module word ([`scrape_module`]) is answered by the [`ScrapeDouble`],
-/// linked ahead of the rows.
+/// The rows state no door, so each sink validates nothing and opens nothing (see the module doc) —
+/// enough for the configuration layer, which is all a kernel test drives. The scrape module word
+/// ([`scrape_module`]) is answered by the [`ScrapeDouble`], linked ahead of the rows. The first
+/// install holds.
 pub fn install_export_axis() {
-    install_export_axis_with(Vec::new());
-}
-
-/// [`install_export_axis`], with `linked` registered ahead of the neutral rows through the linked
-/// door — for a test binary that links a sink of its own. The first install holds.
-pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>) {
-    let built = BUILT.get_or_init(|| {
-        let modules: Vec<&'static str> = crate::config::legacy::text("export_modules")
+    let _ = ROWS.get_or_init(|| {
+        let modules = crate::config::legacy::text("export_modules")
             .split(" | ")
-            .filter(|module| !module.is_empty() && *module != scrape_module())
-            .collect();
-        let names: Vec<String> = (0..modules.len())
-            .map(|n| format!("k9-first-party-sink-{n}"))
-            .collect();
-        let mut rows: Vec<(&str, &str)> = vec![("k9-axis-sink", "k9-tail")];
-        rows.extend(names.iter().map(String::as_str).zip(modules));
-        let scanned = registry_of("installed", &rows);
-        scanned
-            .link(linked)
-            .expect("the linked door admits the rows")
+            .filter(|module| !module.is_empty() && *module != scrape_module());
+        let mut rows = vec![NeutralRow {
+            name: "k9-axis-sink".to_string(),
+            alias: "k9-tail".to_string(),
+        }];
+        rows.extend(modules.enumerate().map(|(n, module)| NeutralRow {
+            name: format!("k9-first-party-sink-{n}"),
+            alias: module.to_string(),
+        }));
+        rows
     });
-    let _ = REGISTRY.set(built);
-}
-
-/// A FIRST-PARTY memory-ABI sink linked as the composition root links it, by its `door` (its logic
-/// crate's `plugin_door!`), under `name`/`alias` — for a test binary whose axis must know that sink.
-pub fn install_first_party_door(
-    name: &str,
-    alias: &str,
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) {
-    install_export_axis_with(vec![busbar_plugin_loader::LinkedPlugin::first_party_door(
-        "export", name, alias, door,
-    )]);
 }
 
 /// THE TEST VIEW of a scrape snapshot: each family's `# HELP` (when it has one) and `# TYPE` lines,

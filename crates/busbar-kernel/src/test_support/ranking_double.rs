@@ -217,3 +217,164 @@ busbar_contract::hook_door! {
 #[cfg(test)]
 #[path = "tests/ranking_double_tests.rs"]
 mod ranking_double_tests;
+
+// ── THE DOUBLE ON THE HOOK AXIS, IN PROCESS ──────────────────────────────────────────────────────
+//
+// A test build has no composition root and so no loader to cross the door above (THE DESIGN
+// l.322: the kernel never names the loader). The kernel's hook port — the contract's [`HookAxis`] /
+// [`HookCalls`] — answers the double's words here, in process: the same strategies, ranked by
+// [`rank`] itself over the frame's view as the SDK decodes it for the door
+// ([`DecideFrame::decoded`], every key as the `in` carries it), answered through the frame exactly
+// as an in-process hook answers ([`DecideFrame::answer_decide`]). That the door states and ranks the
+// same is the root's proof, which crosses it (`the_kernel_ranking_double_states_what_the_linked_
+// ranking_door_states`).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
+use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pending, Probed};
+
+/// The call budget the double's calls are bounded by: the root's dispatcher's `Call` class budget
+/// at its defaults (`busbar-plugin-loader`, `dispatch::worker::Budgets::default`).
+pub const CALL_BUDGET: Duration = Duration::from_secs(1);
+
+/// Whether `module` names the double on the hook axis: its Statement name or one of its words, in
+/// every test build (THE DESIGN l.1443: the kernel has no hook feature to switch it on).
+fn answers(module: &str) -> bool {
+    module == NAME || WORDS.contains(&module)
+}
+
+/// One opened instance, on the hook port.
+struct RankingCalls(Strategy);
+
+impl HookCalls for RankingCalls {
+    fn name(&self) -> &str {
+        NAME
+    }
+
+    fn decide(
+        &self,
+        frame: Arc<DecideFrame>,
+        budget: Duration,
+    ) -> Pending<Answered<busbar_contract::abi::hook::DecideOut>> {
+        let strategy = self.0;
+        Box::pin(super::hook_double::verdict(
+            frame,
+            budget,
+            move |f| f.decoded(|view| rank(strategy, &view.candidates)),
+            |f, v| {
+                let (outcome, out) = f.answer_decide(v);
+                (outcome, out, None, outcome == Outcome::Failed)
+            },
+            |f, out| f.regrown_decide(out),
+        ))
+    }
+
+    fn transform(
+        &self,
+        frame: Arc<DecideFrame>,
+        budget: Duration,
+    ) -> Pending<Answered<busbar_contract::abi::hook::TransformOut>> {
+        // The SDK's default `transform`: no change.
+        Box::pin(super::hook_double::verdict(
+            frame,
+            budget,
+            |_| busbar_contract::abi::sdk::hook::RewriteVerdict::Abstain,
+            |f, v| {
+                let (outcome, out) = f.answer_transform(v);
+                (outcome, out, None, outcome == Outcome::Failed)
+            },
+            |f, out| f.regrown_transform(out),
+        ))
+    }
+
+    fn notify(&self, _frame: Arc<NotifyFrame>, _budget: Duration) -> Pending<()> {
+        Box::pin(async {})
+    }
+
+    fn configure(
+        &self,
+        _name: &str,
+        _settings: &str,
+        _version: u64,
+        _budget: Duration,
+    ) -> Pending<Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn status(&self, _budget: Duration) -> Pending<Option<Vec<u8>>> {
+        Box::pin(async { None })
+    }
+
+    fn describe(&self, _budget: Duration) -> Pending<Option<Vec<u8>>> {
+        Box::pin(async { None })
+    }
+}
+
+/// THE STAND-IN HOOK AXIS's linked half: the double's words, opened in process.
+#[derive(Debug)]
+pub struct RankingAxis;
+
+impl RankingAxis {
+    /// What the double states: a gate asking for neither view, claiming [`WORDS`].
+    fn facts() -> HookFacts {
+        HookFacts {
+            name: NAME.to_string(),
+            class: CLASS_GATE,
+            prompt: PROMPT_NO,
+            user: USER_NO,
+            infallible: false,
+            words: WORDS.iter().map(|w| (*w).to_string()).collect(),
+        }
+    }
+}
+
+impl HookAxis for RankingAxis {
+    fn probe(&self, module: &str, _instance: &str, settings: &serde_json::Value) -> Option<Probed> {
+        if !answers(module) {
+            return None;
+        }
+        let text = serde_json::to_string(settings).unwrap_or_default();
+        let problems = match <Open as HookOpen>::open(&text) {
+            Ok(_) => Vec::new(),
+            Err(e) => vec![e],
+        };
+        Some((Some(Self::facts()), problems))
+    }
+
+    fn open(
+        &self,
+        module: &str,
+        _label: &str,
+        settings: &serde_json::Value,
+        _budget: Duration,
+    ) -> Result<Arc<dyn HookCalls>, String> {
+        if !answers(module) {
+            return Err(format!("no `kind: hook` plugin answers to '{module}'"));
+        }
+        let text = serde_json::to_string(settings).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("{NAME}: the settings are not JSON: {e}"))?;
+        let word = v
+            .get("policy")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("{NAME}: settings.policy is required"))?;
+        let strategy = Strategy::of(word)
+            .ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))?;
+        Ok(Arc::new(RankingCalls(strategy)))
+    }
+
+    fn linked(&self, module: &str) -> bool {
+        answers(module)
+    }
+
+    fn call_budget(&self) -> Duration {
+        CALL_BUDGET
+    }
+
+    fn first_party(&self, module: &str) -> bool {
+        answers(module)
+    }
+}

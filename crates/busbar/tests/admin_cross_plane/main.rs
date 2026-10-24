@@ -15,6 +15,9 @@
 #[path = "../linked/mod.rs"]
 mod linked;
 
+#[path = "../common/root_install.rs"]
+mod root_install;
+
 mod keys;
 #[cfg(feature = "openapi-schema")]
 mod openapi;
@@ -40,6 +43,10 @@ use busbar_core_admin::{admin_codec, restart, v1, verb, witness};
 pub(crate) fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
     SEAM_ONCE.call_once(|| {
+        // The loader-backed root over the kernel's stand-in (`root_install`): the operator
+        // credential's row below is the root's REAL operator auth door, which only the loader's auth
+        // rows open (the kernel's stand-in axis answers its in-process doubles alone).
+        root_install::install();
         // The root's hook names, as the root's install record carries them
         // (`root::linked::register_stores`), before anything renders the admin surface: the
         // document this binary renders lists the hooks the shipped binary lists (1.5.5's served
@@ -66,7 +73,7 @@ pub(crate) fn ensure_seam() {
 /// `.build()` resolves them.
 pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     ensure_seam();
-    busbar_kernel::test_support::TestApp::new()
+    busbar_kernel::test_support::TestApp::new().plugin_admission(&root_install::ADMISSION)
 }
 
 /// The admin service's router over `app`, after [`ensure_seam`].

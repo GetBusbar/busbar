@@ -104,9 +104,17 @@ fn drift(rows: &[Row], entries: &[Entry]) -> (Vec<String>, Vec<String>, Vec<Stri
 fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let mut rows: Vec<Row> = Vec::new();
     let stores = crate::LINKED.stores.iter();
-    rows.extend(stores.map(|s| Row::of(&busbar_kernel::preflight::linked_store_row(s))));
+    rows.extend(stores.map(|s| {
+        Row::of(&crate::root::boot::linked_row(
+            &busbar_kernel::preflight::LinkedRow::Store(*s),
+        ))
+    }));
     let auths = crate::LINKED.auths.iter();
-    rows.extend(auths.map(|a| Row::of(&busbar_kernel::preflight::linked_auth_row(a))));
+    rows.extend(auths.map(|a| {
+        Row::of(&crate::root::boot::linked_row(
+            &busbar_kernel::preflight::LinkedRow::Auth(*a),
+        ))
+    }));
     let exports = linked_exports(crate::LINKED.export_doors).expect("the export rows state");
     rows.extend(exports.iter().map(Row::of));
     for door in crate::LINKED.secrets {
