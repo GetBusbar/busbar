@@ -141,6 +141,10 @@ legacy:
   gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
   module_examples: "sqlite | postgres | valkey"
+  # The store a config with no `store:` block ran on, which the empty-`store.module` refusal names and
+  # `--migrate-config` writes in. v1.5.5:crates/busbar/src/config/mod.rs:3026 (GOVERNANCE_STORE_MEMORY);
+  # v1.5.5:crates/busbar/src/config_validate/mod.rs:1655
+  store_1_5_default: memory
   # The browser-login button brands, in 1.5.5's match order: `<match tokens> : <label> : <icon ref>`, the
   # tokens matched (any) against the lower-cased method name and OIDC issuer host; a method none matches
   # is its title-cased name under the generic icon. v1.5.5:crates/busbar/src/auth/token.rs:1073-1112
