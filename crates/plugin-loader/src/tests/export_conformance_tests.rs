@@ -72,7 +72,7 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::abi::mechanism::call::{
     Diag, MetricEntry, OutHead, RawOutcome, DIAG_LOG, DIAG_LOG_DROPPED,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::DOOR_SYMBOL;
@@ -565,13 +565,18 @@ unsafe impl Sync for OlderDoor {}
 fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const Door {
     &cell
         .get_or_init(|| {
-            // SAFETY: the linked door answers its `'static` Door; its table is the export kind's.
-            let door = unsafe { *FILE_DOOR() };
-            // SAFETY: as above.
-            let mut ops = unsafe { *door.ops.cast::<Ops>() };
+            let door = *FILE_DOOR();
+            // SAFETY: the linked door's table is the export kind's, `'static`.
+            let mut ops = unsafe { *door.ops().cast::<Ops>() };
             strip(&mut ops);
             let mut older = Box::new(OlderDoor(door, ops));
-            older.0.ops = std::ptr::from_ref(&older.1).cast::<OpsHead>();
+            let parts = DoorParts {
+                ops: std::ptr::from_ref(&older.1).cast::<OpsHead>(),
+                ..older.0.parts()
+            };
+            // SAFETY: the linked door's own `'static` Statement over the boxed table, built once
+            // and held for the process.
+            older.0 = unsafe { Door::__from_parts(parts) };
             older
         })
         .0
@@ -591,10 +596,12 @@ extern "C" fn door_without_check() -> *const Door {
 }
 
 /// Why the one load refuses `door`.
-fn refused_at_load(door: DoorFn) -> String {
+fn refused_at_load(door: busbar_contract::abi::sdk::door::RawDoorFn) -> String {
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    match LinkedRow::of(door).and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d))) {
+    match LinkedRow::of_raw(door)
+        .and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d)))
+    {
         Ok(_) => panic!("a door that predates an op was bound"),
         Err(e) => e.to_string(),
     }
@@ -1077,23 +1084,33 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let bytes = cdylib_bytes(file_cdylib());
     let (lib, staged) = crate::stage::load_library_from_bytes(&bytes, "#11-pre-envelope")
         .expect("stage the file sink cdylib");
-    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the library is leaked below, so the
-    // pointer stays valid for the life of the process.
-    let real_door: DoorFn = unsafe { *lib.get::<DoorFn>(DOOR_SYMBOL).expect("the image's door") };
+    // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; the library is leaked below, so
+    // the pointer stays valid for the life of the process.
+    let real_door: busbar_contract::abi::sdk::door::RawDoorFn = unsafe {
+        *lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
+            .expect("the image's door")
+    };
     std::mem::forget(lib);
     std::mem::forget(staged);
     // SAFETY: the image's door answers its `'static` Door; its ops table is the export kind's.
     let door = unsafe { *real_door() };
     // SAFETY: as above: the export kind's table, `'static` in the image.
-    let real_ops = unsafe { *door.ops.cast::<Ops>() };
+    let real_ops = unsafe { *door.ops().cast::<Ops>() };
     let _ = PRE_ENVELOPE_REAL.set(RealOps(real_ops));
     let shim = PRE_ENVELOPE_DOORS.get_or_init(|| {
         let mut shim = Box::new(ShimDoor(door, pre_envelope_ops(&real_ops)));
-        shim.0.ops = std::ptr::from_ref(&shim.1).cast::<OpsHead>();
+        let parts = DoorParts {
+            ops: std::ptr::from_ref(&shim.1).cast::<OpsHead>(),
+            ..shim.0.parts()
+        };
+        // SAFETY: the image's own `'static` Statement over the boxed shim table, built once and
+        // held for the process.
+        shim.0 = unsafe { Door::__from_parts(parts) };
         shim
     });
     assert_eq!(
-        shim.0.statement, door.statement,
+        shim.0.statement(),
+        door.statement(),
         "the image's own Statement"
     );
     PRE_ENVELOPE_PLUGIN_LOCAL
@@ -1102,7 +1119,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         .clear();
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    let row = LinkedRow::of(pre_envelope_door).expect("the image's Statement renders");
+    let row = LinkedRow::of_raw(pre_envelope_door).expect("the image's Statement renders");
     assert_eq!(
         row.statement,
         rendering_of(FILE_DOOR).expect("renders"),

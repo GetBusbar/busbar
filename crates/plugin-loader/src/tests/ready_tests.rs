@@ -137,12 +137,13 @@ fn ready_before_open_is_refused_without_a_crossing() {
 /// host never reads past its size — whatever lies there.
 #[test]
 fn a_door_that_ends_before_ready_loads_with_none() {
-    // SAFETY: the witness's door is `'static`.
-    let real: Door = unsafe { *with_ready::door() };
-    assert!(real.ready.is_some(), "the witness states ready");
-    let older: &'static Door = Box::leak(Box::new(Door {
-        size: std::mem::offset_of!(Door, ready) as u32,
-        ..real
+    let real: Door = *with_ready::door();
+    assert!(real.ready().is_some(), "the witness states ready");
+    let older: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            size: Door::ready_at() as u32,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<Secret>(older).unwrap_or_else(|e| panic!("an older door loads: {e}"));
     assert!(

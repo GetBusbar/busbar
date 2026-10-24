@@ -586,40 +586,48 @@ fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
 /// own door with its tail's `trust_keys` swapped for a pin that names nothing to be rooted in.
 #[test]
 fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
-    use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
     use busbar_contract::abi::plane::{PlaneTail, TrustKey, TRUST_PIN};
     use std::sync::OnceLock;
 
-    extern "C" fn bad_door() -> *const Door {
+    extern "C" fn bad_door() -> &'static Door {
         static BAD: OnceLock<usize> = OnceLock::new();
-        let door = *BAD.get_or_init(|| {
+        let at = *BAD.get_or_init(|| {
+            let good = plug::door();
             // SAFETY: `plug::door` answers the fixture's `'static` Door, Statement and tail.
-            unsafe {
-                let good = plug::door();
-                let mut tail = (*(*good).statement)
+            let mut tail = unsafe {
+                (*good.statement())
                     .kind_tail
                     .cast::<PlaneTail>()
-                    .read_unaligned();
-                let keys: &'static [TrustKey] = Box::leak(Box::new([TrustKey {
-                    key: abi_str("anchor"),
-                    role: TRUST_PIN,
-                    flags: 0,
-                    default: abi_str(""),
-                    mechanisms: std::ptr::null(),
-                    mechanisms_len: 0,
-                }]));
-                tail.trust_keys = keys.as_ptr();
-                tail.trust_keys_len = keys.len();
-                let tail: &'static PlaneTail = Box::leak(Box::new(tail));
-                let mut st: Statement = *(*good).statement;
-                st.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
-                let st: &'static Statement = Box::leak(Box::new(st));
-                let mut d: Door = *good;
-                d.statement = st;
-                std::ptr::from_ref::<Door>(Box::leak(Box::new(d))) as usize
-            }
+                    .read_unaligned()
+            };
+            let keys: &'static [TrustKey] = Box::leak(Box::new([TrustKey {
+                key: abi_str("anchor"),
+                role: TRUST_PIN,
+                flags: 0,
+                default: abi_str(""),
+                mechanisms: std::ptr::null(),
+                mechanisms_len: 0,
+            }]));
+            tail.trust_keys = keys.as_ptr();
+            tail.trust_keys_len = keys.len();
+            let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+            // SAFETY: as above.
+            let mut st: Statement = unsafe { *good.statement() };
+            st.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
+            let st: &'static Statement = Box::leak(Box::new(st));
+            // SAFETY: the fixture's own door with a `'static` Statement restated over its own lists
+            // and a leaked tail.
+            let door: &'static Door = Box::leak(Box::new(unsafe {
+                Door::__from_parts(DoorParts {
+                    statement: st,
+                    ..good.parts()
+                })
+            }));
+            std::ptr::from_ref(door) as usize
         });
-        door as *const Door
+        // SAFETY: the address of the door leaked above, for the process.
+        unsafe { &*(at as *const Door) }
     }
 
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
