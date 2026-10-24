@@ -10,8 +10,11 @@
 //! process registry, or a pure DER walk), but nothing NAMES the three together as ONE host capability
 //! a plane reaches through a trait object.
 //!
-//! This seam is that name. [`EgressTrustHost`] groups the three as one capability the composition root
-//! installs once at boot ([`install_egress_trust_host`]); a plane reads it back through
+//! This seam is that name. [`EgressTrustHost`] groups the three as one capability. A shipped build
+//! holds none in a process-wide static: an engine client is handed its judge, its names and its TLS
+//! on its spec, and a config commit reaches the deployment's guard through the root's rules
+//! (`appbuild::RootRules::destinations_applied`). A test binary hands its own capability in
+//! (`test_support::install_egress_trust`) and reads it back through
 //! [`egress_trust_host`] and calls typed methods instead of the free functions directly, so the trust
 //! machinery is swappable behind a stable boundary without any call site changing. It mirrors the
 //! engine-host pattern ([`EngineHost`](crate::plane_driver::EngineHost)).
@@ -40,9 +43,8 @@ pub mod trust_anchor;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use crate::config::Destinations;
 use crate::egress::engine::ClientIdentity;
-use crate::host_services::{DestJudge, DestRefusal};
+use crate::host_services::DestRefusal;
 use crate::secure::SecureLayer;
 use busbar_kernel_egress::trust::net::Resolver;
 use spki::SpkiError;
@@ -113,9 +115,6 @@ pub trait EgressTrustHost: Send + Sync {
             reason: format!("host `{host}` was not dialled: no destination guard is installed"),
         })
     }
-    /// A config commit: the deployment's destinations are now `d`, raised to the guard behind the
-    /// capability ([`DestJudge::destinations_applied`]); the pass-through has none and keeps nothing.
-    fn destinations_applied(&self, _: &Destinations) {}
 
     /// THE TLS AN OUTBOUND CONNECTION IS SECURED WITH: the connector's wrap (`crate::secure`), the
     /// one TLS path (THE DESIGN: TLS stays in the connector; this crate names no TLS library). The
@@ -127,10 +126,9 @@ pub trait EgressTrustHost: Send + Sync {
 
     /// THE NAME RESOLUTION a kernel dial's resolve-then-pin asks for (row 130 E2): every address
     /// `host` answers with, de-duplicated, unsorted, unfiltered (the guard judges all of them). The
-    /// lookup is the connector's (`busbar_core_connector::hostio::SystemNames`): the kernel opens no
-    /// socket, a resolver's included. The pass-through has none behind it, so a production build
-    /// that installed no guarded capability refuses every name (FAIL CLOSED); a test build resolves
-    /// through the test fixtures' system lookup.
+    /// kernel opens no socket, a resolver's included. The pass-through has none behind it, so a
+    /// production build refuses every name (FAIL CLOSED); a test build resolves through the test
+    /// fixtures' system lookup.
     ///
     /// # Errors
     ///
@@ -170,65 +168,33 @@ impl Resolver for InstalledResolver {
     }
 }
 
-/// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
-/// The composition root installs this today, so a call site that opts onto the seam gets exactly
-/// the refs, identities and pins the free functions produce now.
+/// The pass-through egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side
+/// primitives, so a call site that opts onto the seam gets exactly the refs, identities and pins the
+/// free functions produce now.
 pub struct PassThroughEgressTrust;
 
 impl EgressTrustHost for PassThroughEgressTrust {}
 
-/// The capability the composition root installs: the pass-through primitives, every answer judged by
-/// the deployment's one destination guard, every outbound connection secured by the one TLS wrap,
-/// and every name resolved by the one resolver (all three the connector's; this decides nothing).
-pub struct GuardedEgressTrust(
-    pub Arc<dyn DestJudge>,
-    pub Arc<dyn SecureLayer>,
-    pub Arc<dyn Resolver + Send + Sync>,
-);
+/// THE CAPABILITY A TEST BINARY HANDED IN ([`crate::test_support::install_egress_trust`]), the one
+/// its engine clients fall back to where their spec hands them no judge, names or TLS. Gated to test
+/// builds: a shipped build has no process-wide egress-trust capability at all.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) static TEST_EGRESS_TRUST: std::sync::OnceLock<Arc<dyn EgressTrustHost>> =
+    std::sync::OnceLock::new();
 
-impl EgressTrustHost for GuardedEgressTrust {
-    fn secure_layer(&self) -> Option<Arc<dyn SecureLayer>> {
-        Some(Arc::clone(&self.1))
-    }
-    fn resolve_names(&self, host: &str) -> Result<Vec<IpAddr>, String> {
-        self.2.resolve(host)
-    }
-    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
-        self.0.judge_answer(host, addrs, class)
-    }
-    fn judge_name(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
-        self.0.judge_host(host, class)
-    }
-    fn destinations_applied(&self, d: &Destinations) {
-        self.0.destinations_applied(d);
-    }
-}
-
-/// THE PROCESS-WIDE egress-trust capability, installed once by the composition root
-/// ([`install_egress_trust_host`]). A plane reads it back through [`egress_trust_host`] and gets `None`
-/// in a build that installed none — the dormant default, under which the egress chokepoint calls the
-/// free primitives directly and the outbound path is unchanged.
-static EGRESS_TRUST: std::sync::OnceLock<Arc<dyn EgressTrustHost>> = std::sync::OnceLock::new();
-
-/// Install the process egress-trust capability — the composition root's one write, at boot, before any
-/// hop opens. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
-pub fn install_egress_trust_host(host: Arc<dyn EgressTrustHost>) {
-    let _ = EGRESS_TRUST.set(host);
-}
-
-/// Raise a config commit to the installed capability, so the deployment's one destination guard
-/// re-reads its metadata lists. Called at the commit (`InstalledLimits::keep`), so a rejected apply
-/// leaves the lists in force; with no capability installed there is no guard to hear it.
-pub(crate) fn destinations_applied(d: &Destinations) {
-    if let Some(host) = egress_trust_host() {
-        host.destinations_applied(d);
-    }
-}
-
-/// The installed egress-trust capability, or `None` when none was installed (the dormant default).
+/// The capability a test binary handed in, or `None`: always `None` in a shipped build, whose
+/// engine fallbacks then fail closed (no guard admits an answer, no resolver answers a name, no TLS
+/// wrap secures a connection).
 #[must_use]
 pub fn egress_trust_host() -> Option<&'static dyn EgressTrustHost> {
-    EGRESS_TRUST.get().map(AsRef::as_ref)
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        TEST_EGRESS_TRUST.get().map(AsRef::as_ref)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        None
+    }
 }
 
 // Test body externalised to `tests/egress_trust_tests.rs` (the sibling `identity`/`trust_anchor`

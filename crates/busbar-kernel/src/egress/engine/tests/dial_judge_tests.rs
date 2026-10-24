@@ -212,8 +212,10 @@ async fn a_refusal_is_connect_class_with_no_timeout_in_its_chain() {
 
 /// THE NAME STAYS ON THE WIRE. A judged TLS dial connects to the address the name answered with
 /// and hands the TLS wrap the configured NAME (the SNI, and the name the certificate is verified
-/// against — over the real wrap, the connector's `tls/engine_tests.rs`), and the request head carries it
-/// as `Host`, byte-identical to the head the pinned posture sends for the same request.
+/// against — over the real wrap, with its refused twin, the connector's `tests/connector_tests.rs`
+/// `a_judged_secure_dial_lands_only_where_the_guard_judged_and_keeps_the_name`), and the request
+/// head carries it as `Host`, byte-identical to the head the pinned posture sends for the same
+/// request.
 #[tokio::test]
 async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
     let material = ca_and_leaf(&["provider.test"]);

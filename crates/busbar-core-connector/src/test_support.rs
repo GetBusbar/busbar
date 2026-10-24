@@ -5,8 +5,7 @@
 //! tests that need a real handshake.
 //! TLS stays in the connector (THE DESIGN; 1.6.0-TODO P2), so no other crate names a TLS library —
 //! not even in a test — and every row that needs a real handshake lives in this crate's own suite
-//! (`tls/engine_tests.rs` drives the kernel's engine and listener over this crate's wrap; a plane's
-//! transport battery rides the kernel's TLS test double instead).
+//! (a plane's transport battery rides the kernel's TLS test double instead).
 //!
 //! Test machinery only: compiled under `cfg(test)` for this crate's own suite, and under the
 //! `test-support` feature for a PLUGIN REPO'S conformance test (its host connector's TLS far ends,

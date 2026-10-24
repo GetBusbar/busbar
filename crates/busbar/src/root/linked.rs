@@ -993,18 +993,6 @@ fn catalogue_entries(
     Ok(declared)
 }
 
-/// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
-/// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
-/// a plane dials through the one connector. The egress-trust host is installed by `run` once the
-/// configuration loads, over the destination guard.
-pub fn register_seams() {
-    #[cfg(linked_plane_sections)]
-    busbar_kernel::config::plane_sections::install_plane_sections(
-        busbar_kernel::config::plane_sections::config_sections,
-    );
-}
-
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
 /// listener: the first refusal is written to standard error and the process exits 2.
 pub fn seal(units: &[&RootUnit]) {
