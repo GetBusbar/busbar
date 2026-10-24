@@ -1069,15 +1069,31 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &naming,
     ));
 
-    // EACH ROW HOLDS ITS OWN CEILING (a6's second review of #1454). Under #1408's one shared
+    // EACH ROW HOLDS ITS OWN CEILING (a6's second review of #1454), and THE CEILING ONLY FALLS:
+    // one run, two rows, neither able to speak for the other. Under #1408's one shared
     // `max_hits`, raising it to 1 let a new store in beside the names it bans; the store row is
-    // held to `max_stores` now, so the store stays red under a raised `max_hits`.
+    // held to `max_stores` now, so the store stays red under a raised `max_hits`. And a
+    // `max_debt` left above the count is slack, and red on the debt row, which reads the debt
+    // list and no store.
     if let Ok(text) = cx.read(CEILINGS) {
         let mut ov = on(base);
-        if let Some(raised) =
-            ceilings::set_int(&text, "rules.kernel-no-protocol-registry", "max_hits", 1)
+        let max = ConstructionGate::cfg(cx)
+            .ok()
+            .and_then(|c| {
+                c.rule("kernel-no-protocol-registry")
+                    .ok()
+                    .and_then(|t| t.int_of("max_debt"))
+            })
+            .unwrap_or(0);
+        let rule = "rules.kernel-no-protocol-registry";
+        match ceilings::set_int(&text, rule, "max_hits", 1)
+            .and_then(|t| ceilings::set_int(&t, rule, "max_debt", max + 1))
         {
-            ov.set(CEILINGS, raised);
+            Some(raised) => ov.set(CEILINGS, raised),
+            None => r.note_infra_failure(
+                "[rules.kernel-no-protocol-registry] max_hits/max_debt could not be raised, so the \
+                 rows' own ceilings and the slack debt ceiling are unproven",
+            ),
         }
         ov.set(
             "crates/busbar-kernel/src/zz_planted_shared_ceiling.rs",
@@ -1088,12 +1104,15 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         r.push(prove_red(
             cx,
             gate,
-            "a store let in under the names row's raised ceiling stays red on its own",
-            &[rules2::ROW_INSTALLED_STORE],
+            "a store let in under the names row's raised ceiling stays red on its own, and the \
+             debt ceiling left above the count is slack",
+            &[rules2::ROW_INSTALLED_STORE, rules2::ROW_STORE_DEBT],
             ov,
             &[
                 "static UNDER_HITS at crates/busbar-kernel/src/zz_planted_shared_ceiling.rs",
                 "(ceiling 0)",
+                "under a ceiling of",
+                "lower max_debt",
             ],
         ));
     }
@@ -1117,35 +1136,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             &["kernel-no-protocol-registry"],
             ov,
             &["crates/busbar-kernel/src/zz_planted_decl_under_stores.rs:1"],
-        ));
-    }
-
-    // THE CEILING ONLY FALLS: a `max_debt` left above the count is slack, and red.
-    if let Ok(text) = cx.read(CEILINGS) {
-        let mut ov = on(base);
-        let max = ConstructionGate::cfg(cx)
-            .ok()
-            .and_then(|c| {
-                c.rule("kernel-no-protocol-registry")
-                    .ok()
-                    .and_then(|t| t.int_of("max_debt"))
-            })
-            .unwrap_or(0);
-        if let Some(slack) = ceilings::set_int(
-            &text,
-            "rules.kernel-no-protocol-registry",
-            "max_debt",
-            max + 1,
-        ) {
-            ov.set(CEILINGS, slack);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            "the debt ceiling left above the count",
-            &[rules2::ROW_STORE_DEBT],
-            ov,
-            &["under a ceiling of", "lower max_debt"],
         ));
     }
 
@@ -1971,267 +1961,235 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
         ),
     }
 
-    // A CEILING SET BY ITS MEASURING CHANGE IS SET ONCE (ARCHITECT ruling on #1454, the #1418
-    // MINTED precedent). The debt ceiling the base carries is held like any other: raised again
-    // it is refused. And a fresh
-    // `[gate.census.measured]` entry whose detector did not change in the same diff excuses no
-    // rise from 0.
+    // THE MEASURED-CEILING PLANTS SHARE RUNS. The census judges each `[gate.census.measured]` entry
+    // and each raised ceiling on its own, naming every reason it fails ([`census`]'s
+    // `measured_ceilings`), so plants on DIFFERENT ceiling keys cannot speak for each other and
+    // share one run, each named in it. A key planted more than one way keeps a run per way: the
+    // store row's `max_stores` (the Cell store, the exempted store, the comment smuggle) and the
+    // clock rule's detector (`why`, and a key new against the base). Three runs.
+    //
+    // THE FIRST RUN:
+    // * A CEILING SET BY ITS MEASURING CHANGE IS SET ONCE (ARCHITECT ruling on #1454, the #1418
+    //   MINTED precedent). The debt ceiling the base carries is held like any other: raised again
+    //   it is refused.
+    // * A fresh measured entry for a rule the census cannot re-measure ([rules.lean-core]) excuses
+    //   no rise from 0.
+    // * a6's SECOND REVIEW OF #1454, ARCHITECT rulings (a) detector, (b) base re-measure, (c) drain
+    //   field: a clock read added to a unit crate, a word added to the rule's `why`, `max_hits`
+    //   0 -> 1, and a reason that only says nobody will drain it. The census re-measures no
+    //   [rules.unit-no-wall-clock] (it is not in `MEASURABLE`), so no detector of it counts.
+    // * `Cell` added to `store_cells` (a real detector, changed), the names row's `max_hits` raised
+    //   0 -> 1 (a6's plant, from when the two rows shared it) and a new installed store in neither
+    //   debt nor exempt: the base re-measured with the new detector counts 0, so the 1 covers a
+    //   site this change added, and its drain names no PR, row or file.
+    // * a6's THIRD REVIEW OF #1454: two new stores A and B, each with a root caller; A exempted
+    //   here; a word added to `store_cells`; `max_stores` 0 -> 1 under a measured entry with a
+    //   drain. Re-measured with THIS tree's exemptions, A is a stale name at the base and counts 1,
+    //   and B would sit under the 1 as new debt. The base is re-measured with the BASE's exemptions
+    //   and never counts a stale one, so it counts 0 and the entry excuses nothing.
+    let rule = "rules.kernel-no-protocol-registry";
+    let header = format!("[{}]\n", census::MEASURED);
+    let measured = |t: String, entries: &[(String, &str)]| -> Option<String> {
+        let lines: String = entries
+            .iter()
+            .map(|(key, value)| format!("\"{key}\" = \"{value}\"\n"))
+            .collect();
+        t.contains(&header)
+            .then(|| t.replacen(&header, &format!("{header}{lines}"), 1))
+    };
+    let wall = "crates/busbar-kernel-breaker/src/lib.rs";
+    let wall_lib = cx.read(wall).ok();
+    let plant_wall = |ov: &mut Overlay| {
+        if let Some(lib) = &wall_lib {
+            ov.set(
+                wall,
+                format!(
+                    "{lib}\npub fn zz_planted_wall() -> std::time::SystemTime {{\n    \
+                     std::time::SystemTime::now()\n}}\n"
+                ),
+            );
+        }
+    };
+    let unit_head = "[rules.unit-no-wall-clock]\n";
+    let why_head = format!("{unit_head}why = \"\"\"");
+    let cell_store = "crates/busbar-kernel/src/zz_planted_cell_debt.rs";
+    let cell_text =
+        "use std::cell::Cell;\n\nthread_local! {\n    static ZZ_CELL_TABLE: Cell<&'static \
+                     [String]> = const { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static \
+                     [String]) {\n    ZZ_CELL_TABLE.with(|c| c.set(rows));\n}\n";
+    // The base's ceilings without `Cell` in `store_cells`, so the Cell plants' detector changed.
+    let without_cell = text.replacen("\"Cell\", ", "", 1);
+    let cell_base = |ov: &mut Overlay| {
+        if let Some(based) = base.command(ceilings::BASE_PIN_KEY) {
+            ov.set_command(format!("git-show:{based}:{CEILINGS}"), without_cell.clone());
+        }
+    };
+    let a_store = "crates/busbar-kernel/src/zz_planted_exempted_a.rs";
+    let exempted = format!("{a_store}::ZZ_A -- planted: exempted in the same change");
+    let store_text = |name: &str| {
+        format!(
+            "use std::sync::OnceLock;\n\nstatic {name}: OnceLock<Vec<String>> = \
+             OnceLock::new();\n\npub fn install(rows: Vec<String>) {{\n    let _ = \
+             {name}.set(rows);\n}}\n"
+        )
+    };
     let debt_max = ConstructionGate::cfg(cx).ok().and_then(|c| {
         c.rule("kernel-no-protocol-registry")
             .ok()
             .and_then(|t| t.int_of("max_debt"))
     });
-    let rule = "rules.kernel-no-protocol-registry";
-    let raised_debt = debt_max
-        .and_then(|max| ceilings::set_int(&text, rule, "max_debt", max + 1).map(|t| (max, t)));
-    match raised_debt {
-        Some((max, raised)) => {
-            let mut ov = on(base);
-            ov.set(CEILINGS, raised);
+    let first = debt_max
+        .filter(|_| without_cell != text && wall_lib.is_some())
+        .and_then(|max| {
+            let t = ceilings::set_int(&text, rule, "max_debt", max + 1)?;
+            let t = ceilings::set_int(&t, "rules.lean-core", "max_hits", 3)?;
+            let t = ceilings::set_int(&t, "rules.unit-no-wall-clock", "max_hits", 1)?;
+            let t = t
+                .contains(&why_head)
+                .then(|| t.replacen(&why_head, &format!("{why_head}zz "), 1))?;
+            let t = ceilings::set_int(&t, rule, "max_hits", 1)?;
+            let t = ceilings::set_int(&t, rule, "max_stores", 1)?;
+            let t = ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()])?;
+            let t = ceilings::add_to_list(&t, rule, "exempt_stores", &[exempted.clone()])?;
+            let t = measured(
+                t,
+                &[
+                    (
+                        "rules.lean-core.max_hits".to_string(),
+                        "words -- planted; drain: none",
+                    ),
+                    (
+                        "rules.unit-no-wall-clock.max_hits".to_string(),
+                        "why -- nobody will drain this",
+                    ),
+                    (
+                        format!("{rule}.max_hits"),
+                        "store_cells -- the cell the row did not know; drain: later",
+                    ),
+                    (
+                        format!("{rule}.max_stores"),
+                        "store_cells -- the cell the row did not know; drain: row 82",
+                    ),
+                ],
+            )?;
+            Some((max, t))
+        });
+    match first {
+        Some((max, planted)) => {
+            let mut ov = measured_plant(base, planted);
+            cell_base(&mut ov);
+            plant_wall(&mut ov);
+            ov.set(cell_store, cell_text);
+            let mut stores = Vec::new();
+            store_plant(
+                &mut ov,
+                &mut stores,
+                "zz_planted_exempted_a",
+                &store_text("ZZ_A"),
+                &[],
+            );
+            store_plant(
+                &mut ov,
+                &mut stores,
+                "zz_planted_unlisted_b",
+                &store_text("ZZ_B"),
+                &[],
+            );
             let rose = format!("{max} -> {}", max + 1);
             r.push(prove_rows_red(
                 cx,
                 gate,
-                "a measured debt ceiling raised again in a change after it is refused",
-                &[census::ROW_CENSUS],
+                "a measured debt ceiling raised again, and measured entries naming a rule the \
+                 census cannot re-measure, the rule's `why` and no drain, a new Cell store the \
+                 base re-measure does not hold, and a store exempted in the same change, each \
+                 excuse nothing",
+                &[census::ROW_CENSUS, rules2::ROW_INSTALLED_STORE],
                 ov,
                 &[
                     "[rules.kernel-no-protocol-registry] max_debt",
                     rose.as_str(),
-                ],
-            ));
-        }
-        None => r.note_infra_failure(
-            "[rules.kernel-no-protocol-registry] max_debt could not be raised, so the rule that \
-             holds a measured ceiling once set is unproven",
-        ),
-    }
-    let header = format!("[{}]\n", census::MEASURED);
-    let entry = "\"rules.lean-core.max_hits\" = \"words -- planted; drain: none\"\n";
-    let unmeasured = ceilings::set_int(&text, "rules.lean-core", "max_hits", 3)
-        .filter(|t| t.contains(&header))
-        .map(|t| t.replacen(&header, &format!("{header}{entry}"), 1));
-    match unmeasured {
-        Some(planted) => {
-            let mut ov = on(base);
-            ov.set(CEILINGS, planted);
-            r.push(prove_rows_red(
-                cx,
-                gate,
-                "a measured entry for a rule the census cannot re-measure excuses no rise from 0",
-                &[census::ROW_CENSUS],
-                ov,
-                &[
                     "[rules.lean-core] max_hits",
                     "0 -> 3",
                     "cannot re-measure [rules.lean-core]",
                     "`words` is not a detector key",
-                ],
-            ));
-        }
-        None => r.note_infra_failure(
-            "the measured ledger or [rules.lean-core] max_hits could not be planted, so the rule \
-             that a measured entry needs a rule the census re-measures is unproven",
-        ),
-    }
-
-    // a6's SECOND REVIEW OF #1454: three ways the measured exception excused a real regression.
-    // Each is RED on the census row now, naming every condition it fails (ARCHITECT rulings (a)
-    // detector, (b) base re-measure, (c) drain field).
-    // 1. A clock read added to a unit crate, a word added to the rule's `why`, `max_hits` 0 -> 1,
-    //    and a reason that only says nobody will drain it. The census re-measures no
-    //    [rules.unit-no-wall-clock] (it is not in `MEASURABLE`), so no detector of it counts and
-    //    no ceiling of it is set by measurement.
-    let wall = "crates/busbar-kernel-breaker/src/lib.rs";
-    let unit_head = "[rules.unit-no-wall-clock]\n";
-    let why_head = format!("{unit_head}why = \"\"\"");
-    let raised_unit = ceilings::set_int(&text, "rules.unit-no-wall-clock", "max_hits", 1)
-        .filter(|t| t.contains(&why_head) && t.contains(&header));
-    let entry =
-        |value: &str| format!("{header}\"rules.unit-no-wall-clock.max_hits\" = \"{value}\"\n");
-    match (raised_unit, cx.read(wall)) {
-        (Some(raised), Ok(lib)) => {
-            let planted = raised
-                .replacen(&why_head, &format!("{why_head}zz "), 1)
-                .replacen(&header, &entry("why -- nobody will drain this"), 1);
-            let mut ov = measured_plant(base, planted);
-            ov.set(
-                wall,
-                format!(
-                    "{lib}\npub fn zz_planted_wall() -> std::time::SystemTime {{\n    \
-                     std::time::SystemTime::now()\n}}\n"
-                ),
-            );
-            r.push(prove_rows_red(
-                cx,
-                gate,
-                "a measured entry naming the rule's `why` and no drain excuses no clock read",
-                &[census::ROW_CENSUS],
-                ov,
-                &[
                     "[rules.unit-no-wall-clock] max_hits",
                     "0 -> 1",
                     "`why` is not a detector key",
                     "no `drain:` field",
                     "cannot re-measure [rules.unit-no-wall-clock]",
-                ],
-            ));
-            // 2. The same with a key new against the base named as the detector.
-            let planted = raised
-                .replacen(unit_head, &format!("{unit_head}zz_unused = \"x\"\n"), 1)
-                .replacen(&header, &entry("zz_unused -- drain"), 1);
-            let mut ov = measured_plant(base, planted);
-            ov.set(
-                wall,
-                format!(
-                    "{lib}\npub fn zz_planted_wall() -> std::time::SystemTime {{\n    \
-                     std::time::SystemTime::now()\n}}\n"
-                ),
-            );
-            r.push(prove_rows_red(
-                cx,
-                gate,
-                "a measured entry naming a key new against the base excuses no clock read",
-                &[census::ROW_CENSUS],
-                ov,
-                &[
-                    "[rules.unit-no-wall-clock] max_hits",
-                    "0 -> 1",
-                    "`zz_unused` is not a detector key",
-                    "no `drain:` field",
-                    "cannot re-measure [rules.unit-no-wall-clock]",
+                    "[rules.kernel-no-protocol-registry] max_hits",
+                    "counts 0 under `max_hits`",
+                    "names no PR (`#<n>`), status row (`row <n>`) or file",
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "counts 0 under `max_stores`",
                 ],
             ));
         }
-        _ => r.note_infra_failure(
-            "[rules.unit-no-wall-clock] or the breaker's lib.rs could not be planted, so the rule \
-             that a measured entry needs a real detector and a drain field is unproven",
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] max_debt/max_hits/max_stores/store_cells, \
+             [rules.lean-core], [rules.unit-no-wall-clock] or the breaker's lib.rs could not be \
+             planted, so the rules that a measured ceiling is set once, needs a rule the census \
+             re-measures, a real detector, a drain and the base's own re-measure are unproven",
         ),
     }
-    // 3. `Cell` added to `store_cells` (a real detector, changed), a ceiling raised 0 -> 1 and a
-    //    new installed store in neither debt nor exempt: the base re-measured with the new
-    //    detector counts 0, so the 1 covers a site this change added, and its drain names no PR,
-    //    row or file. Once on the names row's `max_hits` (a6's plant, from when the two rows shared
-    //    it), once on the store row's own `max_stores`.
-    let rule = "rules.kernel-no-protocol-registry";
-    let cell_store = "crates/busbar-kernel/src/zz_planted_cell_debt.rs";
-    let without_cell = text.replacen("\"Cell\", ", "", 1);
-    for (key, row) in [
-        ("max_hits", rules2::ROW_INSTALLED_STORE),
-        ("max_stores", census::ROW_CENSUS),
-    ] {
-        let planted = ceilings::set_int(&text, rule, key, 1)
-            .filter(|t| t.contains(&header) && without_cell != text)
-            .map(|t| {
-                t.replacen(
-                    &header,
-                    &format!(
-                        "{header}\"{rule}.{key}\" = \"store_cells -- the cell the row did not \
-                         know; drain: later\"\n"
+
+    // THE SECOND RUN: the same Cell store under the store row's own `max_stores`, and a measured
+    // entry naming a key new against the base as the clock rule's detector.
+    let second = (without_cell != text && wall_lib.is_some())
+        .then_some(())
+        .and_then(|()| {
+            let t = ceilings::set_int(&text, rule, "max_stores", 1)?;
+            let t = ceilings::set_int(&t, "rules.unit-no-wall-clock", "max_hits", 1)?;
+            let t = t
+                .contains(unit_head)
+                .then(|| t.replacen(unit_head, &format!("{unit_head}zz_unused = \"x\"\n"), 1))?;
+            measured(
+                t,
+                &[
+                    (
+                        "rules.unit-no-wall-clock.max_hits".to_string(),
+                        "zz_unused -- drain",
                     ),
-                    1,
-                )
-            });
-        let Some(planted) = planted else {
-            r.note_infra_failure(format!(
-                "[{rule}] {key} or its store_cells `Cell` could not be planted, so the rule that a \
-                 measured ceiling equals the base's re-measure is unproven"
-            ));
-            continue;
-        };
-        let mut ov = measured_plant(base, planted);
-        if let Some(based) = base.command(ceilings::BASE_PIN_KEY) {
-            ov.set_command(format!("git-show:{based}:{CEILINGS}"), without_cell.clone());
-        }
-        ov.set(
-            cell_store,
-            "use std::cell::Cell;\n\nthread_local! {\n    static ZZ_CELL_TABLE: Cell<&'static \
-             [String]> = const { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static [String]) \
-             {\n    ZZ_CELL_TABLE.with(|c| c.set(rows));\n}\n",
-        );
-        let rose = format!("[{rule}] {key}");
-        let counted = format!("counts 0 under `{key}`");
-        let mut covers = vec![census::ROW_CENSUS];
-        if row != census::ROW_CENSUS {
-            covers.push(row);
-        }
-        r.push(prove_rows_red(
-            cx,
-            gate,
-            format!("a new Cell store under a measured `{key}` the base re-measure does not hold"),
-            &covers,
-            ov,
-            &[
-                rose.as_str(),
-                "0 -> 1",
-                counted.as_str(),
-                "names no PR (`#<n>`), status row (`row <n>`) or file",
-            ],
-        ));
-    }
-    // 4. a6's THIRD REVIEW OF #1454: two new stores A and B, each with a root caller; A exempted
-    //    here; a word added to `store_cells`; `max_stores` 0 -> 1 under a measured entry with a
-    //    drain. Re-measured with THIS tree's exemptions, A is a stale name at the base and counts 1,
-    //    and B would sit under the 1 as new debt. The base is re-measured with the BASE's exemptions
-    //    and never counts a stale one, so it counts 0 and the entry excuses nothing.
-    let a_store = "crates/busbar-kernel/src/zz_planted_exempted_a.rs";
-    let b_store = "crates/busbar-kernel/src/zz_planted_unlisted_b.rs";
-    let exempted = format!("{a_store}::ZZ_A -- planted: exempted in the same change");
-    let planted = ceilings::set_int(&text, rule, "max_stores", 1)
-        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
-        .and_then(|t| ceilings::add_to_list(&t, rule, "exempt_stores", &[exempted]))
-        .filter(|t| t.contains(&header))
-        .map(|t| {
-            t.replacen(
-                &header,
-                &format!(
-                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
-                     know; drain: row 82\"\n"
-                ),
-                1,
+                    (
+                        format!("{rule}.max_stores"),
+                        "store_cells -- the cell the row did not know; drain: later",
+                    ),
+                ],
             )
         });
-    match planted {
+    match second {
         Some(planted) => {
             let mut ov = measured_plant(base, planted);
-            for (file, name, module) in [
-                (a_store, "ZZ_A", "zz_planted_exempted_a"),
-                (b_store, "ZZ_B", "zz_planted_unlisted_b"),
-            ] {
-                ov.set(
-                    file,
-                    format!(
-                        "use std::sync::OnceLock;\n\nstatic {name}: OnceLock<Vec<String>> = \
-                         OnceLock::new();\n\npub fn install(rows: Vec<String>) {{\n    let _ = \
-                         {name}.set(rows);\n}}\n"
-                    ),
-                );
-                ov.set(
-                    format!("crates/busbar/src/root/{module}_root.rs"),
-                    format!(
-                        "pub fn {module}_boot() {{\n    busbar_kernel::{module}::install(PLANTED);\n}}\n"
-                    ),
-                );
-            }
+            cell_base(&mut ov);
+            plant_wall(&mut ov);
+            ov.set(cell_store, cell_text);
             r.push(prove_rows_red(
                 cx,
                 gate,
-                "a new store exempted in the same change is no base debt: the base is re-measured \
-                 with its own exemptions",
+                "a new Cell store under a measured `max_stores` the base re-measure does not \
+                 hold, and a measured entry naming a key new against the base, excuse nothing",
                 &[census::ROW_CENSUS],
                 ov,
                 &[
                     "[rules.kernel-no-protocol-registry] max_stores",
                     "0 -> 1",
                     "counts 0 under `max_stores`",
+                    "names no PR (`#<n>`), status row (`row <n>`) or file",
+                    "[rules.unit-no-wall-clock] max_hits",
+                    "`zz_unused` is not a detector key",
+                    "no `drain:` field",
+                    "cannot re-measure [rules.unit-no-wall-clock]",
                 ],
             ));
         }
         None => r.note_infra_failure(
-            "[rules.kernel-no-protocol-registry] could not take the exempted-store plant, so the \
-             rule that the base is re-measured with its own exemptions is unproven",
+            "[rules.kernel-no-protocol-registry] max_stores, [rules.unit-no-wall-clock] or the \
+             breaker's lib.rs could not be planted, so the rules that a measured `max_stores` \
+             equals the base's re-measure and a detector must exist at the base are unproven",
         ),
     }
+
+    // THE THIRD RUN:
     // 5. a6's FOURTH REVIEW OF #1454: a key smuggled to the re-measure behind a comment. The
     //    list's opening line is `exempt_stores = [ # ] store_holds = ['.',`, which a text editor
     //    that closes the list at the first `]` reads as a `store_holds` matching every type; with
