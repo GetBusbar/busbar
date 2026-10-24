@@ -371,6 +371,29 @@ impl FramerDoor for Dispatched {
             Call::Timer(i, o) => go(p, slot::TIMER, i, o),
         }
     }
+
+    /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
+    /// the process's one dispatcher, as a carrier's side does: each may call the auth service,
+    /// which may pend, and its wake routes there. A new one each time the framing asks, so an op
+    /// parked on one stream's ticket holds that stream alone.
+    fn framing_side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
+        let (p, t) = (&self.live.plugin, side.ticket());
+        match call {
+            Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
+            Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
+            Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
+            other => self.cross(other),
+        }
+    }
 }
 
 /// An opened door and the boot fold's admission of it ([`HostWire`]).

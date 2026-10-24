@@ -40,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.

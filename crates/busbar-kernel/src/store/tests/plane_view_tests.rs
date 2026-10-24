@@ -44,6 +44,12 @@ fn plane_method_set_is_exactly_the_plane_methods() {
         <dyn PlaneStore>::list_plane_record_parents;
     let _: fn(&dyn PlaneStore, &str, u64) -> RecordStoreResult<u64> =
         <dyn PlaneStore>::purge_plane_records_before;
+    let _: fn(
+        &dyn PlaneStore,
+        &str,
+        u64,
+        busbar_contract::records::Retention,
+    ) -> RecordStoreResult<u64> = <dyn PlaneStore>::purge_plane_records;
     let _: fn(&dyn PlaneStore, &str, &str) -> RecordStoreResult<()> =
         <dyn PlaneStore>::delete_plane_record;
     let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =
@@ -58,13 +64,16 @@ fn plane_method_set_is_exactly_the_plane_methods() {
 // it. The bindings above prove each named verb is there; they cannot see a tenth. Two proofs can.
 
 /// The verbs `PlaneStore` carries, by name: what the trait is held to, both ways.
-const PLANE_METHODS: [&str; 9] = [
+/// `purge_plane_records` is the declared-retention purge, DEFAULTED on the contract's rule (an age
+/// purge is `purge_plane_records_before`), so [`EveryVerb`] need not write it and this list must.
+const PLANE_METHODS: [&str; 10] = [
     "upsert_plane_record",
     "get_plane_record",
     "append_plane_record",
     "list_plane_records",
     "list_plane_record_parents",
     "purge_plane_records_before",
+    "purge_plane_records",
     "delete_plane_record",
     "redeem_plane_token",
     "plane_token_live",

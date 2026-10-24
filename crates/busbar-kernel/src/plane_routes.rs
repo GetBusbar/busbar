@@ -253,7 +253,17 @@ pub struct PlaneReqCtx {
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`, from [`ListenerScheme`]):
+    /// secure when the connector terminated connection security on it, plain when it did not;
+    /// `SCHEME_UNDECLARED` when no listener stated one, which a framer's `begin` refuses.
+    pub scheme: u8,
 }
+
+/// THE LISTENER'S SCHEME, as a request extension: the listener that accepted the connection
+/// states, on every request it serves, whether the connector terminated connection security on
+/// it (`SCHEME_SECURE`) or not (`SCHEME_PLAIN`), and [`PlaneReqCtx::scheme`] carries it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListenerScheme(pub u8);
 
 // ── SESSION ROUTES (TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves) ─────────
 

@@ -690,6 +690,9 @@ impl DatagramFraming {
                 };
                 let mut i: BeginIn = blank_in();
                 i.side = self.side;
+                // A datagram lane is always secured: its media rides the host's secure layer,
+                // whose association the rendezvous terms build (no terms is the framer's fault).
+                i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
                 i.facts = &facts;
                 if !fields.is_empty() {
                     i.fields = fields.as_ptr();

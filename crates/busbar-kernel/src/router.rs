@@ -669,6 +669,9 @@ fn mount_plane_route(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
@@ -717,6 +720,10 @@ fn mount_plane_route(
                     engine,
                     host,
                     slot,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                 };
                 handler(ctx).await
             }
@@ -757,6 +764,9 @@ fn mount_plane_session(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
@@ -797,6 +807,10 @@ fn mount_plane_session(
                     host,
                     slot,
                     caller_credential,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                     consumed_fields,
                 };
                 match handler(ctx).await {

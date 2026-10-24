@@ -144,6 +144,10 @@ pub struct Exchange {
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
+    /// The handle of the read whose piece the exchange refused, and why: a replay of that read
+    /// refuses again, so the entry that re-issues the close a failure pended on answers the same
+    /// failure (a replayed piece is not applied again, so it cannot refuse on its own).
+    refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
     /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
@@ -152,6 +156,8 @@ pub struct Exchange {
     observe: bool,
     /// What they said, once read: kept across replays, which answer without writing them again.
     observed: Option<Observed>,
+    /// The reply's head ends the reads; its body is never read ([`Exchange::head_only`]).
+    head_only: bool,
     /// The stream the exchange established, once it has: what a caller that gives the exchange up
     /// closes on the host ([`Exchange::stream`]).
     stream: Option<u64>,
@@ -204,10 +210,12 @@ impl Exchange {
             head_seen: false,
             applied: 0,
             ended: None,
+            refused_at: None,
             within: String::new(),
             member: None,
             observe: false,
             observed: None,
+            head_only: false,
             stream: None,
             reply_ceiling: REPLY_MAX,
             refused_read: None,
@@ -240,6 +248,18 @@ impl Exchange {
     #[must_use]
     pub fn observing(mut self) -> Self {
         self.observe = true;
+        self
+    }
+
+    /// Judge the reply on its HEAD alone: the first head (or ack) piece ends the reads and the
+    /// stream is closed, its facts read first where [`Exchange::observing`] asks. The body is never
+    /// read or buffered, so a slow or huge body after the head neither runs the op into its
+    /// deadline nor passes [`REPLY_MAX`]; the reply answers an empty body. 1.5.5 judged a sink's
+    /// delivery on the response head and dropped the body unread (THE DESIGN: a port keeps
+    /// 1.5.5's surface).
+    #[must_use]
+    pub fn head_only(mut self) -> Self {
+        self.head_only = true;
         self
     }
 
@@ -461,6 +481,34 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
+    // sends once and moves on never leaves a held stream (and its connection) behind per failure.
+    match exchange_once(c, state, need, target) {
+        Poll::Ready(Err(e)) => match state.stream {
+            Some(stream) => match c.close(stream) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => {
+                    state.stream = None;
+                    Poll::Ready(Err(e))
+                }
+            },
+            None => Poll::Ready(Err(e)),
+        },
+        Poll::Ready(Ok(())) => {
+            state.stream = None;
+            Poll::Ready(Ok(()))
+        }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
+fn exchange_once(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<()> {
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     state.stream = Some(stream);
     let ended = match read_to_end(c, state, stream) {
@@ -500,7 +548,10 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
             state.applied = this + 1;
         }
         let p = got.piece;
-        let applied = apply(state, p, got.len, fresh);
+        let applied = match state.refused_at {
+            Some((at, text)) if at == this => Err(text),
+            _ => apply(state, p, got.len, fresh),
+        };
         // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
         // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
         // the read this entry has yet to apply (the one that pended on the last entry).
@@ -521,8 +572,14 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
-        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one.
-        if fresh && matches!(p.kind, REPLY_ACK | REPLY_END) {
+        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one. A
+        // head-only exchange's head is its terminal piece, by the same bookkeeping.
+        let terminal = match p.kind {
+            REPLY_ACK | REPLY_END => true,
+            REPLY_HEAD => state.head_only,
+            _ => false,
+        };
+        if fresh && terminal {
             state.ended = Some(this);
         }
         if state.ended == Some(this) {
@@ -583,7 +640,8 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
 /// `target_from`): establish, send the [`Exchange::request`] (head, body, end), read the reply to
 /// its terminal piece, close. PENDING until it completes; READY with the reply's code, reason,
-/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`].
+/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`]. A
+/// [`Exchange::head_only`] exchange ends at the head and answers an empty body.
 pub fn exchange(
     c: &mut Connector<'_>,
     state: &mut Exchange,
